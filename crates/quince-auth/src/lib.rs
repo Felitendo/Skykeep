@@ -56,6 +56,27 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+/// Apple returns `{"serviceErrors":[{"code":"-21669","message":"..."}]}` on failures.
+/// Surface its own words; a bare status code explains nothing.
+fn apple_error(context: &str, status: StatusCode, body: &str) -> Error {
+    let parsed: Option<Value> = serde_json::from_str(body).ok();
+    if let Some(v) = &parsed {
+        if let Some(errs) = v["serviceErrors"].as_array().filter(|a| !a.is_empty()) {
+            let code = errs[0]["code"].as_str().unwrap_or("");
+            let message = errs[0]["message"].as_str().unwrap_or("").trim();
+            // -21669 is Apple's "incorrect verification code".
+            if code == "-21669" {
+                return Error::BadCode;
+            }
+            if !message.is_empty() {
+                return Error::Protocol(format!("{context}: {message} (Apple code {code}, HTTP {status})"));
+            }
+        }
+    }
+    let snippet: String = body.chars().take(220).collect::<String>().replace('\n', " ");
+    Error::Protocol(format!("{context}: HTTP {status} {snippet}"))
+}
+
 /// A phone Apple will text a code to, when no trusted device responds.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -444,11 +465,19 @@ impl Client {
             .await?;
         self.capture(&r);
         let status = r.status();
+        let body = r.text().await.unwrap_or_default();
         if !status.is_success() && status != StatusCode::NO_CONTENT {
-            return Err(match status {
-                StatusCode::BAD_REQUEST | StatusCode::PRECONDITION_FAILED => Error::BadCode,
-                s => Error::Protocol(format!("code check failed ({s})")),
-            });
+            let err = apple_error("checking that texted code", status, &body);
+            if matches!(err, Error::BadCode) {
+                return Err(err);
+            }
+            if self.trust().await.is_ok() {
+                let data = self.account_login().await?;
+                self.absorb(&data);
+                self.persist()?;
+                return Ok(());
+            }
+            return Err(err);
         }
         self.trust().await?;
         let data = self.account_login().await?;
@@ -470,12 +499,23 @@ impl Client {
             .await?;
         self.capture(&r);
         let status = r.status();
+        let body = r.text().await.unwrap_or_default();
         if !status.is_success() && status != StatusCode::NO_CONTENT {
-            // Apple uses 400/412 for a wrong code; anything else is a real protocol problem.
-            return Err(match status {
-                StatusCode::BAD_REQUEST | StatusCode::PRECONDITION_FAILED => Error::BadCode,
-                s => Error::Protocol(format!("code check failed ({s})")),
-            });
+            let err = apple_error("checking that code", status, &body);
+            // A genuinely wrong code is final; don't burn an attempt probing further.
+            if matches!(err, Error::BadCode) {
+                return Err(err);
+            }
+            // Apple answers 409 on this endpoint in some flows even though the code WAS
+            // accepted. The status alone is not evidence, so ask whether the session became
+            // usable before reporting a failure.
+            if self.trust().await.is_ok() {
+                let data = self.account_login().await?;
+                self.absorb(&data);
+                self.persist()?;
+                return Ok(());
+            }
+            return Err(err);
         }
 
         self.trust().await?;
@@ -491,8 +531,9 @@ impl Client {
         let r = self.http.get(format!("{AUTH}/2sv/trust")).headers(headers).send().await?;
         self.capture(&r);
         let status = r.status();
+        let body = r.text().await.unwrap_or_default();
         if !status.is_success() && status != StatusCode::NO_CONTENT {
-            return Err(Error::Protocol(format!("couldn't trust this device ({status})")));
+            return Err(apple_error("trusting this device", status, &body));
         }
         if self.session.trust_token.is_none() {
             return Err(Error::NoTrustToken);

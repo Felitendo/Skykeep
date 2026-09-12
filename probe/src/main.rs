@@ -111,6 +111,7 @@ fn state_dir() -> PathBuf {
 #[tokio::main]
 async fn main() -> Result<()> {
     let fresh = std::env::args().any(|a| a == "--fresh");
+    let code_only = std::env::args().any(|a| a == "--code");
     let dir = state_dir();
     let mut client = Client::new(&dir)?;
 
@@ -135,7 +136,31 @@ async fn main() -> Result<()> {
     }
 
     // ---- 2. full sign-in --------------------------------------------------------
-    if !resumed {
+    // `--code` resumes an in-flight 2FA challenge using the session already on disk, so a
+    // retry doesn't cost another sign-in.
+    if !resumed && code_only {
+        println!("Resuming the pending two-factor challenge (no new sign-in)…\n");
+        let opts = client.two_factor_options().await?;
+        println!("  trusted devices Apple pushed to : {}", opts.trusted_device_count);
+        for (i, ph) in opts.phones.iter().enumerate() {
+            println!("    [{}] {}", i + 1, ph.masked_number);
+        }
+        loop {
+            let code = prompt("  Code: ")?;
+            let code = code.trim().to_string();
+            if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+                println!("  that isn't a 6-digit code");
+                continue;
+            }
+            match client.submit_two_factor(&code).await {
+                Ok(()) => {
+                    println!("  \x1b[32maccepted\x1b[0m");
+                    break;
+                }
+                Err(e) => println!("  {e}"),
+            }
+        }
+    } else if !resumed {
         let apple_id = match std::env::var("QUINCE_APPLE_ID") {
             Ok(v) if !v.is_empty() => v,
             _ => prompt("Apple ID: ")?,
