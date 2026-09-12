@@ -139,6 +139,43 @@
   font-size: var(--t-11);
 }
 
+.notice {
+  margin: 16px auto 0;
+  max-width: 34ch;
+  color: var(--text-2);
+  font-size: var(--t-13);
+}
+
+/* Recovery options stay folded away until asked for: the code field is the task. */
+.help {
+  margin: 18px auto 0;
+  max-width: 38ch;
+  text-align: left;
+  padding: 14px 15px;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 4.5%, transparent);
+}
+
+.help p {
+  margin: 0 0 10px;
+  color: var(--text-2);
+  font-size: var(--t-11);
+  line-height: 1.55;
+}
+
+.help p:last-child { margin-bottom: 0; }
+.help strong { color: var(--text); font-weight: 600; }
+
+.help-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin: 0 0 10px;
+}
+
+.help-actions .quiet { margin-top: 0; padding: 3px 6px; }
+
 .error {
   margin: 16px auto 0;
   max-width: 32ch;

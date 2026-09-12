@@ -1,7 +1,7 @@
 // Quince — desktop shell.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use quince_auth::{Client, SignInOutcome};
+use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{Manager, State};
@@ -63,6 +63,36 @@ async fn auth_submit_code(code: String, auth: State<'_, Auth>) -> UiResult<()> {
     client.submit_two_factor(&code).await.map_err(|e| e.to_string())
 }
 
+/// Where Apple can send a code, and whether it already pushed one.
+/// A `trustedDeviceCount` of zero means nothing was sent and waiting is pointless.
+#[tauri::command]
+async fn auth_two_factor_options(auth: State<'_, Auth>) -> UiResult<TwoFactorOptions> {
+    let mut client = auth.0.lock().await;
+    client.two_factor_options().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn auth_resend_code(auth: State<'_, Auth>) -> UiResult<()> {
+    let mut client = auth.0.lock().await;
+    client.resend_to_devices().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn auth_send_sms(phone_id: u64, auth: State<'_, Auth>) -> UiResult<()> {
+    let mut client = auth.0.lock().await;
+    client.send_sms(phone_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn auth_submit_sms_code(
+    phone_id: u64,
+    code: String,
+    auth: State<'_, Auth>,
+) -> UiResult<()> {
+    let mut client = auth.0.lock().await;
+    client.submit_sms_code(phone_id, &code).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn auth_sign_out(auth: State<'_, Auth>) -> UiResult<()> {
     let mut client = auth.0.lock().await;
@@ -99,6 +129,10 @@ fn main() {
             auth_resume,
             auth_sign_in,
             auth_submit_code,
+            auth_two_factor_options,
+            auth_resend_code,
+            auth_send_sms,
+            auth_submit_sms_code,
             auth_sign_out,
             account_services,
         ])

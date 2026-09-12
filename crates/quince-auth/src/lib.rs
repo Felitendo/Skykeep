@@ -247,6 +247,25 @@ impl Client {
         with_srp_origin(self.auth_headers())
     }
 
+    /// Headers for `/signin/init` specifically.
+    ///
+    /// Deliberately omits `scnt` and the session id: the flow has not issued them yet, and
+    /// sending leftovers from an abandoned challenge is a conflict.
+    fn srp_init_headers(&mut self) -> HeaderMap {
+        let client_id = self.session.client_id();
+        with_srp_origin(base_oauth_headers(&client_id, None, None))
+    }
+
+    /// Drop transient challenge state, keeping what identifies this install.
+    ///
+    /// `trust_token` and `client_id` survive — they are what lets Apple skip 2FA next time.
+    /// Everything else belongs to a single sign-in attempt and must not leak into the next.
+    fn clear_challenge_state(&mut self) {
+        self.session.scnt = None;
+        self.session.session_id = None;
+        self.session.session_token = None;
+    }
+
     // ---- the restart test -----------------------------------------------------------
 
     /// Try to resume a stored session without a password.
@@ -264,7 +283,12 @@ impl Client {
                 self.persist()?;
                 Ok(true)
             }
-            Err(_) => Ok(false),
+            Err(_) => {
+                // The stored session is dead. Drop its challenge state now so it cannot
+                // contaminate the sign-in that follows.
+                self.clear_challenge_state();
+                Ok(false)
+            }
         }
     }
 
@@ -307,10 +331,14 @@ impl Client {
     /// The password is never sent to Apple — SRP proves knowledge of it without transmitting
     /// it. Apple retired the old cleartext endpoint; it now answers 503.
     pub async fn sign_in(&mut self, apple_id: &str, password: &str) -> Result<SignInOutcome> {
+        // Start clean. An interrupted previous attempt would otherwise announce a
+        // half-finished session and Apple would reject this one as a conflict.
+        self.clear_challenge_state();
+
         let client = srp::Client::new(apple_id);
 
         // --- /signin/init: send A, receive salt, B, protocol, iteration count ---
-        let headers = self.srp_headers();
+        let headers = self.srp_init_headers();
         let r = self
             .http
             .post(format!("{AUTH}/signin/init"))
@@ -638,6 +666,21 @@ mod tests {
         let h = base_oauth_headers("auth-test", Some("scnt-value"), Some("session-value"));
         assert_eq!(h.get("scnt").unwrap(), "scnt-value");
         assert_eq!(h.get("x-apple-id-session-id").unwrap(), "session-value");
+    }
+
+    /// Sign-in must not advertise a session that does not exist yet.
+    #[test]
+    fn init_headers_omit_challenge_state() {
+        let stale = base_oauth_headers("auth-test", Some("stale-scnt"), Some("stale-session"));
+        assert!(stale.get("scnt").is_some(), "sanity: the helper does forward them");
+
+        let init = with_srp_origin(base_oauth_headers("auth-test", None, None));
+        assert!(init.get("scnt").is_none(), "/signin/init must not send scnt");
+        assert!(
+            init.get("x-apple-id-session-id").is_none(),
+            "/signin/init must not send a session id"
+        );
+        assert_eq!(init.get("origin").unwrap(), AUTH_ROOT);
     }
 
     #[test]
