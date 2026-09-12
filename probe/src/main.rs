@@ -164,8 +164,12 @@ async fn main() -> Result<()> {
                 for (i, p) in opts.phones.iter().enumerate() {
                     println!("    [{}] text it to {}", i + 1, p.masked_number);
                 }
-                println!("\n  If nothing arrived, on your iPhone open");
-                println!("  Settings → your name → Sign-In & Security → Get Verification Code.");
+                println!("\n  Nothing arrived? Two things to know:");
+                println!("   • The code is only created once you tap Allow on the iPhone prompt.");
+                println!("     No prompt means no code was ever generated — waiting won't help.");
+                println!("   • iOS 18/26 hides \"Get Verification Code\" while the phone is ONLINE.");
+                println!("     Turn on Airplane Mode, then Settings → your name → Sign-In &");
+                println!("     Security. A popup offers the code while offline.");
                 println!("\n  Type the 6-digit code, or `r` to push again, or `1`/`2`… to text it.");
 
                 let mut sms_phone: Option<u64> = None;
