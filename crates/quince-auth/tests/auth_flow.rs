@@ -504,3 +504,54 @@ async fn an_implausible_work_factor_is_refused() {
         );
     }
 }
+
+/// Apple's service endpoints authenticate by cookie. If the cookies are lost but the tokens
+/// survive — a copied install, a cleared cache, cookies expiring before the trust token —
+/// resuming must re-establish them rather than leaving the app looking signed in while every
+/// service answers 421.
+#[tokio::test]
+async fn resume_rebuilds_a_session_from_tokens_alone() {
+    let server = MockServer::start().await;
+    // No valid cookies, so Apple rejects the cheap check.
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(ResponseTemplate::new(421).set_body_json(json!({
+            "reason": "Missing X-APPLE-WEBAUTH-USER cookie", "error": 1
+        })))
+        .mount(&server)
+        .await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut first = client_for(&server, dir.path());
+        first
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap();
+        first.submit_two_factor("123456").await.unwrap();
+    }
+    // Throw the cookies away, keeping the tokens.
+    let cookies = dir.path().join("cookies.json");
+    if cookies.exists() {
+        std::fs::remove_file(&cookies).unwrap();
+    }
+
+    let mut resumed = client_for(&server, dir.path());
+    assert!(resumed.has_stored_session());
+    assert!(
+        resumed.resume().await.unwrap(),
+        "tokens alone must be enough to re-establish a session"
+    );
+    assert!(
+        resumed.session().webservices.is_some(),
+        "and the service map must come back with it"
+    );
+}

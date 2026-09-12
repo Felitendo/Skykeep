@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, messageOf } from "../lib/ipc";
+import { CalendarView } from "./CalendarView";
 
 const NAMES: Record<string, string> = {
   photos: "Photos",
@@ -37,6 +38,10 @@ const NAMES: Record<string, string> = {
   schoolwork: "Schoolwork",
 };
 
+/** Services with a real screen behind them. Opening on one of these beats opening on a
+ *  placeholder, so selection prefers them. */
+const BUILT = new Set(["calendar"]);
+
 /** What a person actually came for, in the order they'd look for it. */
 const PRIMARY = [
   "photos",
@@ -70,7 +75,12 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
           return true;
         });
         setServices(unique);
-        setSelected(PRIMARY.find((k) => unique.includes(k)) ?? unique[0] ?? null);
+        setSelected(
+          PRIMARY.find((k) => unique.includes(k) && BUILT.has(k)) ??
+            PRIMARY.find((k) => unique.includes(k)) ??
+            unique[0] ??
+            null
+        );
       })
       .catch((e) => setError(messageOf(e)));
   }, []);
@@ -138,6 +148,10 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
       </nav>
 
       <main className="content">
+        {selected === "calendar" ? (
+          <CalendarView />
+        ) : (
+          <>
         <div className="toolbar">
           <button className="quiet" onClick={onSignOut}>Sign out</button>
         </div>
@@ -153,6 +167,8 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
           the data layer isn't built yet.
         </p>
         {error && <p className="error" role="alert">{error}</p>}
+          </>
+        )}
       </main>
     </div>
   );

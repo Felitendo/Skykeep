@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
+use quince_core::calendar::{Calendar, Event};
+use quince_core::Library;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +36,8 @@ struct Status {
     /// Apple's service map is loaded, i.e. we are actually signed in right now.
     signed_in: bool,
 }
+
+struct Data(Mutex<Library>);
 
 /// Errors cross to the UI as plain sentences a person can act on.
 type UiResult<T> = Result<T, String>;
@@ -167,6 +171,55 @@ fn spawn_heartbeat(client: Arc<Mutex<Client>>) {
     });
 }
 
+/// Refresh the calendar window `[from, to]` (both `YYYY-MM-DD`) from Apple.
+///
+/// The interface does not wait on this to render: it reads the library, which still holds
+/// the last good data while a refresh is in flight or failing.
+#[tauri::command]
+async fn calendar_sync(
+    from: String,
+    to: String,
+    timezone: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<quince_icloud::sync::SyncSummary> {
+    // Take what the sync needs and release the auth lock before the network work, so a slow
+    // refresh cannot block the heartbeat or a sign-out.
+    let (http, root, params) = {
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("calendar")
+            .ok_or("Apple hasn't offered a calendar service for this account.")?;
+        (client.http().clone(), root, client.service_params())
+    };
+
+    let mut library = data.0.lock().await;
+    quince_icloud::sync::calendar(&http, &root, params, &mut library, &from, &to, &timezone)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Events overlapping `[from, to]`, as unix seconds. Read straight from the library.
+#[tauri::command]
+async fn calendar_events(from: i64, to: i64, data: State<'_, Data>) -> UiResult<Vec<Event>> {
+    let library = data.0.lock().await;
+    library.events_between(from, to).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn calendar_list(data: State<'_, Data>) -> UiResult<Vec<Calendar>> {
+    let library = data.0.lock().await;
+    library.calendars().map_err(|e| e.to_string())
+}
+
+/// When the calendar last synced, as unix seconds.
+#[tauri::command]
+async fn calendar_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
+    let library = data.0.lock().await;
+    library.last_synced("calendar").map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -176,6 +229,9 @@ fn main() {
                 client: Arc::clone(&client),
                 signing_in: AtomicBool::new(false),
             });
+            // The local library. Opened once at startup so every command shares one
+            // connection and the WAL behaves.
+            app.manage(Data(Mutex::new(Library::open(&dir)?)));
             spawn_heartbeat(client);
             Ok(())
         })
@@ -190,6 +246,10 @@ fn main() {
             auth_submit_sms_code,
             auth_sign_out,
             account_services,
+            calendar_sync,
+            calendar_events,
+            calendar_list,
+            calendar_last_synced,
         ])
         .run(tauri::generate_context!())
         .expect("Quince failed to start");

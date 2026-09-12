@@ -16,7 +16,9 @@ export default function App() {
     (async () => {
       try {
         const status = await api.status();
-        if (status.signedIn) return !cancelled && setPhase("library");
+        // Always resume rather than trusting stored metadata. Apple's service endpoints
+        // authenticate by cookie, and holding a token is not the same as being able to call
+        // them — resuming is what establishes the cookies that make the session usable.
         if (status.hasStoredSession && (await api.resume())) {
           return !cancelled && setPhase("library");
         }

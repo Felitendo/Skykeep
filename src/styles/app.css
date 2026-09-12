@@ -313,3 +313,53 @@
   from { opacity: 0; transform: scale(0.972); }
   to   { opacity: 1; transform: none; }
 }
+
+/* ---- agenda ------------------------------------------------------------------ */
+
+.agenda { margin-top: 4px; }
+
+.agenda-day { margin-bottom: 22px; }
+
+.agenda-day h2 {
+  margin: 0 0 7px;
+  font-size: var(--t-13);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.agenda-day ul { list-style: none; margin: 0; padding: 0; }
+
+.agenda-day li {
+  display: grid;
+  grid-template-columns: 8px 74px 1fr;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: var(--r-field);
+}
+
+.agenda-day li:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  align-self: center;
+}
+
+.when {
+  color: var(--text-2);
+  font-size: var(--t-13);
+  font-variant-numeric: tabular-nums;
+}
+
+.what { font-size: var(--t-15); }
+
+.where {
+  display: block;
+  color: var(--text-2);
+  font-size: var(--t-11);
+  margin-top: 1px;
+}
+
+.toolbar { align-items: center; gap: 12px; }

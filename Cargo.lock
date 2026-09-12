@@ -2771,6 +2771,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "quince-auth",
+ "quince-core",
+ "quince-icloud",
  "serde",
  "serde_json",
  "tauri",

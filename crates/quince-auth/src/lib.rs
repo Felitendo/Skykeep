@@ -80,6 +80,11 @@ const WIDGET_KEY: &str = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde
 const MIN_PBKDF2_ITERATIONS: u32 = 1_000;
 const MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
 
+/// Version strings the iCloud web client sends. Cosmetic to Apple in practice, but sending
+/// something plausible keeps our requests looking like the client they are imitating.
+const CLIENT_BUILD: &str = "2523Project28";
+const CLIENT_MASTERING: &str = "2523B28";
+
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
                   (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36";
 
@@ -379,15 +384,28 @@ impl Client {
         if !self.session.is_resumable() {
             return Ok(false);
         }
-        match self.validate().await {
+        // Cheap path: the cookies are still good, so nothing needs re-establishing.
+        if let Ok(data) = self.validate().await {
+            self.absorb(&data);
+            self.persist()?;
+            return Ok(true);
+        }
+
+        // The cookies are missing or stale but the tokens are not. Apple's service endpoints
+        // authenticate by cookie — without X-APPLE-WEBAUTH-USER they answer 421 — so trade
+        // the stored tokens for a fresh set. No password, no code.
+        //
+        // This is what makes staying signed in survive a lost cookie file, a copied install,
+        // or cookies expiring before the trust token does.
+        match self.account_login().await {
             Ok(data) => {
                 self.absorb(&data);
                 self.persist()?;
                 Ok(true)
             }
             Err(_) => {
-                // The stored session is dead. Drop its challenge state now so it cannot
-                // contaminate the sign-in that follows.
+                // Genuinely dead. Drop the challenge state so it cannot contaminate the
+                // sign-in that follows.
                 self.clear_challenge_state();
                 Ok(false)
             }
@@ -807,6 +825,26 @@ impl Client {
         if let Some(d) = data.pointer("/dsInfo/dsid").and_then(|v| v.as_str()) {
             self.session.dsid = Some(d.to_string());
         }
+    }
+
+    /// Query parameters every iCloud service endpoint expects alongside the session cookies.
+    #[must_use]
+    pub fn service_params(&self) -> Vec<(String, String)> {
+        let mut params = vec![
+            ("clientBuildNumber".to_string(), CLIENT_BUILD.to_string()),
+            (
+                "clientMasteringNumber".to_string(),
+                CLIENT_MASTERING.to_string(),
+            ),
+            (
+                "clientId".to_string(),
+                self.session.client_id.clone().unwrap_or_default(),
+            ),
+        ];
+        if let Some(dsid) = &self.session.dsid {
+            params.push(("dsid".to_string(), dsid.clone()));
+        }
+        params
     }
 
     /// Shared HTTP client, for the service crates that ride this session.
