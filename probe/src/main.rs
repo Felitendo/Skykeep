@@ -489,6 +489,99 @@ async fn main() -> Result<()> {
         println!("  {}", r.line());
     }
 
+    // ---- 5. the real sync path, end to end --------------------------------------
+    // Exercises exactly what the app runs, so a failure here is the app's failure and the
+    // output says why.
+    println!("\n\x1b[1m── Calendar sync (the real path the app uses) ──\x1b[0m");
+    if let Some(root) = session.service_url("calendar") {
+        let zone = "Asia/Kolkata";
+        let params = client.service_params();
+        let http = client.http().clone();
+
+        // Dump exactly what Apple returns, so parsing is checked against reality rather
+        // than against an assumption about the shape.
+        // Scan month by month with the exact parameters the client uses, so "no events"
+        // is a measurement rather than an assumption.
+        println!("  \x1b[1mmonth-by-month scan\x1b[0m");
+        let months = [
+            ("2026-01-01", "2026-01-31"),
+            ("2026-03-01", "2026-03-31"),
+            ("2026-05-01", "2026-05-31"),
+            ("2026-07-01", "2026-07-31"),
+            ("2026-08-01", "2026-08-31"),
+            ("2026-09-01", "2026-09-30"),
+            ("2026-10-01", "2026-10-31"),
+            ("2026-12-01", "2026-12-31"),
+            ("2027-01-01", "2027-01-31"),
+        ];
+        let scan_client =
+            quince_icloud::calendar::CalendarClient::new(&http, &root, params.clone());
+        let mut total = 0usize;
+        for (a, b) in months {
+            let via_startup = scan_client.startup(a, b, zone).await;
+            let via_events = scan_client.events(a, b, zone).await;
+            let s_count = via_startup.as_ref().map(|s| s.events.len()).unwrap_or(0);
+            let e_count = via_events.as_ref().map(|s| s.events.len()).unwrap_or(0);
+            total += s_count.max(e_count);
+            println!(
+                "    {a}  startup={s_count:<4} events={e_count:<4}{}",
+                if via_startup.is_err() || via_events.is_err() {
+                    "  (an endpoint errored)"
+                } else {
+                    ""
+                }
+            );
+        }
+        println!("  total events seen across the scan: {total}");
+
+        let (window_start, window_end) = ("2026-06-01", "2027-03-31");
+
+        match quince_core::Library::open(&dir) {
+            Err(e) => println!("  \x1b[31mcouldn't open the local library:\x1b[0m {e}"),
+            Ok(mut library) => {
+                println!("  window {window_start} … {window_end} ({zone})");
+                match quince_icloud::sync::calendar(
+                    &http,
+                    &root,
+                    params,
+                    &mut library,
+                    window_start,
+                    window_end,
+                    zone,
+                )
+                .await
+                {
+                    Err(e) => println!("  \x1b[31mFAIL\x1b[0m {e}"),
+                    Ok(summary) => {
+                        println!(
+                            "  \x1b[32mPASS\x1b[0m stored {} calendar(s), {} event(s)",
+                            summary.calendars, summary.events
+                        );
+                        for c in library.calendars().unwrap_or_default() {
+                            println!(
+                                "    {:<26} {}",
+                                c.title,
+                                c.colour.unwrap_or_else(|| "—".into())
+                            );
+                        }
+                        let events = library.events_between(0, i64::MAX).unwrap_or_default();
+                        println!("  events held locally: {}", events.len());
+                        for e in events.iter().take(8) {
+                            println!("    {:>11}  {}", e.starts_at, e.title);
+                        }
+                        if events.is_empty() {
+                            println!(
+                                "    \x1b[33m(none in range — that may simply be an empty calendar)\x1b[0m"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        println!("  Apple offered no calendar service for this account");
+    }
+
     // ---- 5. verdict -------------------------------------------------------------
     let passed = results.iter().filter(|r| r.ok).count();
     println!("\n\x1b[1m── Verdict ──\x1b[0m");

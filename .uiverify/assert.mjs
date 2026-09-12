@@ -9,6 +9,10 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
       if (cmd === "auth_resume") return true;
       if (cmd === "account_services") return services;
+      if (cmd === "calendar_events") return [];
+      if (cmd === "calendar_list") return [];
+      if (cmd === "calendar_last_synced") return Math.floor(Date.now() / 1000);
+      if (cmd === "calendar_sync") return { calendars: 0, events: 0 };
       return null;
     },
   };
@@ -36,6 +40,10 @@ console.log("selected       :", JSON.stringify(selected?.trim()));
 console.log("page errors    :", errs.length ? errs : "none");
 
 const collapsed = toggle?.includes("Show") && count === 11;
+// Opening on a screen that works beats opening on a placeholder, so selection must land on
+// a built service rather than simply the first one listed.
+const selectsBuilt = selected?.trim() === "Calendar";
 console.log(collapsed ? "PASS collapsed by default" : "FAIL not collapsed by default");
+console.log(selectsBuilt ? "PASS opens on a built screen" : `FAIL opened on ${selected}`);
 await b.close();
-process.exitCode = collapsed ? 0 : 1;
+process.exitCode = collapsed && selectsBuilt ? 0 : 1;

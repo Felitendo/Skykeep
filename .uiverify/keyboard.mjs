@@ -16,6 +16,10 @@ function installStub({ screen, services, twoFactor }) {
         case "auth_sign_in": return screen === "code" ? "needs_two_factor" : "complete";
         case "auth_two_factor_options": return twoFactor;
         case "account_services": return services;
+        case "calendar_events": return [];
+        case "calendar_list": return [];
+        case "calendar_last_synced": return Math.floor(Date.now() / 1000);
+        case "calendar_sync": return { calendars: 0, events: 0 };
         default: return null;
       }
     },

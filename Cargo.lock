@@ -2834,6 +2834,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "quince-auth",
+ "quince-core",
+ "quince-icloud",
  "rpassword",
  "serde_json",
  "tokio",

@@ -4,9 +4,40 @@
 //! so a slow or failed refresh leaves the last known good data on screen rather than an
 //! empty window.
 
-use crate::calendar::CalendarClient;
-use crate::Result;
+use crate::calendar::{CalendarClient, Snapshot};
+use crate::{Error, Result};
+use jiff::civil::Date;
 use quince_core::Library;
+
+/// Apple rejects a calendar window wider than about a month with a bare 400, so requests are
+/// split into chunks below that. Measured against the live service: one month is accepted,
+/// two months is not.
+const MAX_WINDOW_DAYS: i32 = 28;
+
+fn parse_date(value: &str) -> Result<Date> {
+    value
+        .parse::<Date>()
+        .map_err(|e| Error::Protocol(format!("{value} is not a date: {e}")))
+}
+
+/// Split `[from, to]` into windows Apple will accept, as inclusive `YYYY-MM-DD` pairs.
+fn chunks(from: Date, to: Date) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut start = from;
+    while start <= to {
+        // `- 1` keeps the window inclusive, so chunks meet without overlapping.
+        let end = start
+            .checked_add(jiff::Span::new().days(MAX_WINDOW_DAYS - 1))
+            .unwrap_or(to)
+            .min(to);
+        out.push((start.to_string(), end.to_string()));
+        let Ok(next) = end.checked_add(jiff::Span::new().days(1)) else {
+            break;
+        };
+        start = next;
+    }
+    out
+}
 
 /// What one refresh changed.
 #[derive(Debug, Default, Clone, Copy, serde::Serialize)]
@@ -30,27 +61,31 @@ pub async fn calendar(
     timezone: &str,
 ) -> Result<SyncSummary> {
     let client = CalendarClient::new(http, root, params);
+    let windows = chunks(parse_date(from)?, parse_date(to)?);
 
-    // `/ca/startup` reliably carries the collections but does not always carry events — on
-    // some accounts it returns collections alone. Asking `/ca/events` for the same window is
-    // what actually guarantees them, so do both and merge.
-    let startup = client.startup(from, to, timezone).await?;
-    let windowed = client.events(from, to, timezone).await?;
+    let mut calendars = Vec::new();
+    let mut events = Vec::new();
+    let mut seen = std::collections::HashSet::new();
 
-    library.put_calendars(&startup.calendars)?;
+    for (start, end) in &windows {
+        // `/ca/startup` reliably carries the collections but not always the events — on some
+        // accounts it returns collections alone. Asking `/ca/events` for the same window is
+        // what guarantees them, so do both and merge.
+        let startup = client.startup(start, end, timezone).await?;
+        if calendars.is_empty() {
+            calendars = startup.calendars;
+        }
+        let windowed = client.events(start, end, timezone).await?;
 
-    let mut snapshot = startup;
-    if !windowed.events.is_empty() {
-        let known: std::collections::HashSet<&str> =
-            snapshot.events.iter().map(|e| e.guid.as_str()).collect();
-        let extra: Vec<_> = windowed
-            .events
-            .iter()
-            .filter(|e| !known.contains(e.guid.as_str()))
-            .cloned()
-            .collect();
-        snapshot.events.extend(extra);
+        for event in startup.events.into_iter().chain(windowed.events) {
+            if seen.insert(event.guid.clone()) {
+                events.push(event);
+            }
+        }
     }
+
+    library.put_calendars(&calendars)?;
+    let snapshot = Snapshot { calendars, events };
 
     // Drop events belonging to calendars Apple did not report: storing them would fail the
     // foreign key, and they are not ours to show.
@@ -264,5 +299,70 @@ mod tests {
             1,
             "a failed refresh must not clear what we already had"
         );
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    fn d(s: &str) -> Date {
+        s.parse().unwrap()
+    }
+
+    /// Apple answers 400 for anything much wider than a month, so no chunk may exceed the cap.
+    #[test]
+    fn no_chunk_exceeds_what_apple_accepts() {
+        let windows = chunks(d("2026-01-01"), d("2026-12-31"));
+        assert!(!windows.is_empty());
+        for (start, end) in &windows {
+            let span = d(end) - d(start);
+            let days = i64::from(span.get_days());
+            assert!(
+                days < i64::from(MAX_WINDOW_DAYS),
+                "{start}..{end} spans {days} days, over the limit"
+            );
+        }
+    }
+
+    /// Chunks must tile the range exactly: no gap would silently lose events, and no overlap
+    /// means no wasted request.
+    #[test]
+    fn chunks_tile_the_range_without_gaps_or_overlap() {
+        let (from, to) = (d("2026-01-01"), d("2026-06-30"));
+        let windows = chunks(from, to);
+
+        assert_eq!(windows[0].0, from.to_string());
+        assert_eq!(windows.last().unwrap().1, to.to_string());
+
+        for pair in windows.windows(2) {
+            let previous_end = d(&pair[0].1);
+            let next_start = d(&pair[1].0);
+            assert_eq!(
+                (next_start - previous_end).get_days(),
+                1,
+                "chunks must meet exactly, not skip or repeat a day"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_range_is_a_single_window() {
+        let windows = chunks(d("2026-03-01"), d("2026-03-10"));
+        assert_eq!(
+            windows,
+            vec![("2026-03-01".to_string(), "2026-03-10".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_single_day_still_produces_a_window() {
+        assert_eq!(chunks(d("2026-03-01"), d("2026-03-01")).len(), 1);
+    }
+
+    /// A backwards range should produce nothing rather than looping.
+    #[test]
+    fn an_inverted_range_is_empty() {
+        assert!(chunks(d("2026-06-01"), d("2026-01-01")).is_empty());
     }
 }

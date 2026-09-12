@@ -11,3 +11,5 @@ serde_json.workspace = true
 tokio.workspace = true
 rpassword = "7"
 quince-auth = { path = "../crates/quince-auth" }
+quince-core = { path = "../crates/quince-core" }
+quince-icloud = { path = "../crates/quince-icloud" }

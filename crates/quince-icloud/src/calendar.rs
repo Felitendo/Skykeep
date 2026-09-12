@@ -186,6 +186,11 @@ impl<'a> CalendarClient<'a> {
 
     async fn get(&self, path: &str, from: &str, to: &str, tz: &str) -> Result<Value> {
         let mut query = self.params.clone();
+        // Apple's calendar service returns an empty body unless the web client's own
+        // versioning parameters are present. Without `clientVersion` it answers 200 with no
+        // events at all, which looks exactly like an empty calendar.
+        query.push(("clientVersion".into(), "5.1".into()));
+        query.push(("requestID".into(), "4".into()));
         query.push(("startDate".into(), from.into()));
         query.push(("endDate".into(), to.into()));
         query.push(("lang".into(), "en-us".into()));

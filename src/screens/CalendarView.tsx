@@ -44,10 +44,12 @@ export function CalendarView() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // A four-week window from a week ago: enough to be useful without pulling a decade.
+  // A month back and six months forward. Calendar entries are small, so this costs little
+  // and covers the range people actually look at — a narrow window makes a real calendar
+  // look empty.
   const window = useMemo(() => {
     const now = Math.floor(Date.now() / 1000);
-    return { from: now - 7 * DAY, to: now + 21 * DAY };
+    return { from: now - 30 * DAY, to: now + 180 * DAY };
   }, []);
 
   const read = useCallback(async () => {
@@ -56,9 +58,11 @@ export function CalendarView() {
       api.calendarList(),
       api.calendarLastSynced(),
     ]);
-    setEvents(found);
-    setCalendars(cals);
-    setLastSynced(synced);
+    // Defensive: a command returning an unexpected shape should degrade to an empty view,
+    // never take the screen down.
+    setEvents(Array.isArray(found) ? found : []);
+    setCalendars(Array.isArray(cals) ? cals : []);
+    setLastSynced(typeof synced === "number" ? synced : null);
     setLoaded(true);
   }, [window]);
 

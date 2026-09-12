@@ -13,7 +13,30 @@ const SERVICES = ["account","calendar","ckdatabasews","contacts","drivews","find
 
 /* addInitScript SERIALIZES this function — closures do not cross into the page, so every
    value it needs must arrive through the single argument. */
-function installStub({ screen, services, twoFactor }) {
+/* Fixture events, so the agenda's rendering is verified without inventing rows in anyone's
+   real library. Times are unix seconds relative to now. */
+function installStub({ screen, services, twoFactor, calendarFixture }) {
+  const HOUR = 3600, DAY = 86400;
+  const base = Math.floor(Date.now() / 1000 / DAY) * DAY + 9 * HOUR;
+  const events = !calendarFixture ? [] : [
+    { guid: "e1", calendarGuid: "work", title: "Design review", location: "Studio",
+      startsAt: base + HOUR, endsAt: base + 2 * HOUR, allDay: false,
+      timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
+    { guid: "e2", calendarGuid: "home", title: "Dentist", location: null,
+      startsAt: base + 5 * HOUR, endsAt: base + 6 * HOUR, allDay: false,
+      timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
+    { guid: "e3", calendarGuid: "work", title: "Sprint planning", location: "Room 2",
+      startsAt: base + DAY + 2 * HOUR, endsAt: base + DAY + 3 * HOUR, allDay: false,
+      timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
+    { guid: "e4", calendarGuid: "personal", title: "Flight to Hyderabad", location: null,
+      startsAt: base + 3 * DAY, endsAt: base + 4 * DAY, allDay: true,
+      timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
+  ];
+  const calendars = [
+    { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true },
+    { guid: "home", title: "Home", colour: "#0088ff", ctag: null, sortOrder: 1, enabled: true },
+    { guid: "personal", title: "Asha", colour: "#1badf8", ctag: null, sortOrder: 2, enabled: true },
+  ];
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
     invoke: async (cmd) => {
@@ -24,6 +47,10 @@ function installStub({ screen, services, twoFactor }) {
         case "auth_sign_in":     return screen === "code" ? "needs_two_factor" : "complete";
         case "auth_submit_code": return null;
         case "account_services": return services;
+        case "calendar_events": return events;
+        case "calendar_list": return calendars;
+        case "calendar_last_synced": return calendarFixture ? Math.floor(Date.now()/1000) - 120 : null;
+        case "calendar_sync": return { calendars: calendars.length, events: events.length };
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;
         case "auth_send_sms":       return null;
@@ -58,18 +85,22 @@ const shots = [
       await p.click('button[type="submit"]');
       await p.waitForSelector(".help", { timeout: 5000 });
     } },
+  { name: "07-calendar", screen: "library", theme: "light", calendarFixture: true,
+    act: async (p) => { await p.waitForSelector(".agenda-day"); } },
+  { name: "08-calendar-dark", screen: "library", theme: "dark", calendarFixture: true,
+    act: async (p) => { await p.waitForSelector(".agenda-day"); } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];
 
 const browser = await chromium.launch();
-for (const { name, screen, theme, act, twoFactor = PUSHED } of shots) {
+for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false } of shots) {
   const ctx = await browser.newContext({
     viewport: { width: 1040, height: 720 },
     deviceScaleFactor: 2,
     colorScheme: theme,
   });
-  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor });
+  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture });
   const page = await ctx.newPage();
   const errors = [];
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
