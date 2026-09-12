@@ -146,10 +146,66 @@ async fn main() -> Result<()> {
         match client.sign_in(&apple_id, &password).await? {
             SignInOutcome::Complete => println!("  signed in; Apple already trusted this install"),
             SignInOutcome::NeedsTwoFactor => {
-                println!("  Apple sent a six-digit code to your devices.");
-                let code = prompt("  Code: ")?;
-                client.submit_two_factor(&code).await?;
-                println!("  \x1b[32mcode accepted, trust token stored in the keyring\x1b[0m");
+                let opts = client.two_factor_options().await?;
+                println!();
+                if opts.trusted_device_count > 0 {
+                    println!(
+                        "  Apple pushed a code to {} trusted device(s).",
+                        opts.trusted_device_count
+                    );
+                } else {
+                    println!(
+                        "  \x1b[33mApple reports NO trusted devices, so no code was pushed.\x1b[0m"
+                    );
+                }
+                if opts.too_many_codes_sent {
+                    println!("  \x1b[33mApple is rate-limiting new codes. Wait a few minutes.\x1b[0m");
+                }
+                for (i, p) in opts.phones.iter().enumerate() {
+                    println!("    [{}] text it to {}", i + 1, p.masked_number);
+                }
+                println!("\n  If nothing arrived, on your iPhone open");
+                println!("  Settings → your name → Sign-In & Security → Get Verification Code.");
+                println!("\n  Type the 6-digit code, or `r` to push again, or `1`/`2`… to text it.");
+
+                let mut sms_phone: Option<u64> = None;
+                loop {
+                    let answer = prompt("  Code: ")?;
+                    let trimmed = answer.trim().to_string();
+
+                    if trimmed.eq_ignore_ascii_case("r") {
+                        client.resend_to_devices().await?;
+                        println!("  pushed again — check your devices");
+                        continue;
+                    }
+                    if let Ok(choice) = trimmed.parse::<usize>() {
+                        // A 1-2 digit entry that indexes a phone means "text me"; a 6-digit
+                        // entry is the code itself.
+                        if trimmed.len() <= 2 && choice >= 1 && choice <= opts.phones.len() {
+                            let phone = &opts.phones[choice - 1];
+                            client.send_sms(phone.id).await?;
+                            sms_phone = Some(phone.id);
+                            println!("  texted {} — enter the code when it lands", phone.masked_number);
+                            continue;
+                        }
+                    }
+                    if trimmed.len() != 6 || !trimmed.chars().all(|c| c.is_ascii_digit()) {
+                        println!("  that isn't a 6-digit code — try again");
+                        continue;
+                    }
+
+                    let result = match sms_phone {
+                        Some(id) => client.submit_sms_code(id, &trimmed).await,
+                        None => client.submit_two_factor(&trimmed).await,
+                    };
+                    match result {
+                        Ok(()) => {
+                            println!("  \x1b[32mcode accepted, trust token stored in the keyring\x1b[0m");
+                            break;
+                        }
+                        Err(e) => println!("  {e}"),
+                    }
+                }
             }
         }
     }

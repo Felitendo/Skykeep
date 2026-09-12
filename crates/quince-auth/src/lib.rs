@@ -56,6 +56,26 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+/// A phone Apple will text a code to, when no trusted device responds.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedPhone {
+    pub id: u64,
+    /// Already masked by Apple, e.g. "+91 ••••• ••123".
+    pub masked_number: String,
+}
+
+/// Where Apple is willing to send a code. Read after a `NeedsTwoFactor` outcome.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TwoFactorOptions {
+    /// Devices Apple pushed the code to. Zero means nothing will arrive on its own.
+    pub trusted_device_count: u64,
+    pub phones: Vec<TrustedPhone>,
+    /// Apple refuses further sends for a while.
+    pub too_many_codes_sent: bool,
+}
+
 /// What `sign_in` decided.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignInOutcome {
@@ -328,6 +348,113 @@ impl Client {
             }
             s => Err(Error::Protocol(format!("sign-in finish failed ({s})"))),
         }
+    }
+
+    /// Where Apple can send a code, and whether it already pushed one.
+    ///
+    /// Worth reading whenever a code doesn't arrive: a `trusted_device_count` of zero means
+    /// no push was ever sent and SMS is the only route.
+    pub async fn two_factor_options(&mut self) -> Result<TwoFactorOptions> {
+        let mut headers = self.auth_headers();
+        headers.insert("accept", HeaderValue::from_static("application/json"));
+        let r = self.http.get(AUTH).headers(headers).send().await?;
+        self.capture(&r);
+        let text = r.text().await.unwrap_or_default();
+        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+
+        let phones = v["trustedPhoneNumbers"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        Some(TrustedPhone {
+                            id: p["id"].as_u64()?,
+                            masked_number: p["numberWithDialCode"]
+                                .as_str()
+                                .or_else(|| p["obfuscatedNumber"].as_str())
+                                .unwrap_or("(hidden)")
+                                .to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(TwoFactorOptions {
+            trusted_device_count: v["trustedDeviceCount"].as_u64().unwrap_or(0),
+            phones,
+            too_many_codes_sent: v["securityCode"]["tooManyCodesSent"].as_bool().unwrap_or(false),
+        })
+    }
+
+    /// Ask Apple to push the code to trusted devices again.
+    pub async fn resend_to_devices(&mut self) -> Result<()> {
+        let mut headers = self.auth_headers();
+        headers.insert("accept", HeaderValue::from_static("application/json"));
+        let r = self
+            .http
+            .put(format!("{AUTH}/verify/trusteddevice"))
+            .headers(headers)
+            .send()
+            .await?;
+        self.capture(&r);
+        let status = r.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            return Err(Error::Protocol(format!("couldn't resend the code ({status})")));
+        }
+        Ok(())
+    }
+
+    /// Text the code to one of the trusted phone numbers.
+    pub async fn send_sms(&mut self, phone_id: u64) -> Result<()> {
+        let mut headers = self.auth_headers();
+        headers.insert("accept", HeaderValue::from_static("application/json"));
+        let r = self
+            .http
+            .put(format!("{AUTH}/verify/phone"))
+            .headers(headers)
+            .body(json!({ "phoneNumber": { "id": phone_id }, "mode": "sms" }).to_string())
+            .send()
+            .await?;
+        self.capture(&r);
+        let status = r.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            return Err(Error::Protocol(format!("couldn't send the text ({status})")));
+        }
+        Ok(())
+    }
+
+    /// Submit a code that arrived by SMS. Trusted-device codes use `submit_two_factor`.
+    pub async fn submit_sms_code(&mut self, phone_id: u64, code: &str) -> Result<()> {
+        let mut headers = self.auth_headers();
+        headers.insert("accept", HeaderValue::from_static("application/json"));
+        let r = self
+            .http
+            .post(format!("{AUTH}/verify/phone/securitycode"))
+            .headers(headers)
+            .body(
+                json!({
+                    "phoneNumber": { "id": phone_id },
+                    "securityCode": { "code": code },
+                    "mode": "sms",
+                })
+                .to_string(),
+            )
+            .send()
+            .await?;
+        self.capture(&r);
+        let status = r.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            return Err(match status {
+                StatusCode::BAD_REQUEST | StatusCode::PRECONDITION_FAILED => Error::BadCode,
+                s => Error::Protocol(format!("code check failed ({s})")),
+            });
+        }
+        self.trust().await?;
+        let data = self.account_login().await?;
+        self.absorb(&data);
+        self.persist()?;
+        Ok(())
     }
 
     /// Submit the six-digit code, then ask Apple to trust this install.
