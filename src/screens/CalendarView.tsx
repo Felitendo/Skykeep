@@ -1,34 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, messageOf, type Calendar, type CalendarEvent } from "../lib/ipc";
 
-const DAY = 86_400;
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
-const isoDate = (seconds: number) =>
-  new Date(seconds * 1000).toISOString().slice(0, 10);
+/** Local midnight for a date, as unix seconds. */
+const startOfDay = (d: Date) =>
+  Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000);
 
-const dayKey = (seconds: number) =>
-  new Date(seconds * 1000).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+const isoDate = (seconds: number) => {
+  const d = new Date(seconds * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
-const dayHeading = (seconds: number) =>
-  new Date(seconds * 1000).toLocaleDateString(undefined, {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
+const sameDay = (a: Date, b: Date) =>
+  a.getFullYear() === b.getFullYear() &&
+  a.getMonth() === b.getMonth() &&
+  a.getDate() === b.getDate();
+
+const weekdayNames = () => {
+  // Locale-correct short weekday names, starting Sunday as Apple's calendar does.
+  const base = new Date(2024, 8, 1); // a Sunday
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    return d.toLocaleDateString(undefined, { weekday: "short" });
   });
+};
 
 const clockTime = (seconds: number) =>
-  new Date(seconds * 1000).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  new Date(seconds * 1000)
+    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    .replace(":00", "");
 
 function relative(seconds: number | null): string {
-  if (seconds === null) return "not yet";
+  if (seconds === null) return "never";
   const ago = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
   if (ago < 60) return "just now";
   if (ago < 3600) return `${Math.floor(ago / 60)} min ago`;
@@ -36,7 +42,21 @@ function relative(seconds: number | null): string {
   return `${Math.floor(ago / 86_400)} d ago`;
 }
 
+/** The 42 days a month grid shows: the weeks containing the first and last of the month. */
+function gridDays(anchor: Date): Date[] {
+  const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const start = new Date(first);
+  start.setDate(first.getDate() - first.getDay());
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    return d;
+  });
+}
+
 export function CalendarView() {
+  const today = useMemo(() => new Date(), []);
+  const [anchor, setAnchor] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   const [lastSynced, setLastSynced] = useState<number | null>(null);
@@ -44,31 +64,45 @@ export function CalendarView() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // A month back and six months forward. Calendar entries are small, so this costs little
-  // and covers the range people actually look at — a narrow window makes a real calendar
-  // look empty.
-  const window = useMemo(() => {
-    const now = Math.floor(Date.now() / 1000);
-    return { from: now - 30 * DAY, to: now + 180 * DAY };
-  }, []);
+  const days = useMemo(() => gridDays(anchor), [anchor]);
+  const range = useMemo(
+    () => ({
+      from: startOfDay(days[0]),
+      to: startOfDay(days[41]) + 86_400,
+    }),
+    [days]
+  );
 
   const read = useCallback(async () => {
     const [found, cals, synced] = await Promise.all([
-      api.calendarEvents(window.from, window.to),
+      api.calendarEvents(range.from, range.to),
       api.calendarList(),
       api.calendarLastSynced(),
     ]);
-    // Defensive: a command returning an unexpected shape should degrade to an empty view,
-    // never take the screen down.
     setEvents(Array.isArray(found) ? found : []);
     setCalendars(Array.isArray(cals) ? cals : []);
     setLastSynced(typeof synced === "number" ? synced : null);
     setLoaded(true);
-  }, [window]);
+  }, [range]);
 
-  // Render from the library first — instant, and works offline — then refresh behind it.
-  // On a first ever open there is nothing stored, so fetch straight away rather than
-  // showing an empty screen and asking the person to press a button.
+  const refreshRef = useRef<null | (() => Promise<void>)>(null);
+
+  const refresh = useCallback(async () => {
+    setSyncing(true);
+    setError(null);
+    try {
+      await api.calendarSync(isoDate(range.from), isoDate(range.to - 1), ZONE);
+      await read();
+    } catch (e) {
+      // The library still holds the last good data, so the grid stays usable.
+      setError(messageOf(e));
+    } finally {
+      setSyncing(false);
+    }
+  }, [range, read]);
+  refreshRef.current = refresh;
+
+  // Read the library first — instant, and works offline — then fetch if nothing is stored.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -89,88 +123,140 @@ export function CalendarView() {
     };
   }, [read]);
 
-  // Held in a ref so the first-open effect can trigger a refresh without depending on it.
-  const refreshRef = useRef<null | (() => Promise<void>)>(null);
-
-  const refresh = useCallback(async () => {
-    setSyncing(true);
-    setError(null);
-    try {
-      await api.calendarSync(isoDate(window.from), isoDate(window.to), ZONE);
-      await read();
-    } catch (e) {
-      // The library still holds the last good data, so the view stays usable.
-      setError(messageOf(e));
-    } finally {
-      setSyncing(false);
-    }
-  }, [window, read]);
-
-  refreshRef.current = refresh;
-
   const colours = useMemo(
     () => new Map(calendars.map((c) => [c.guid, c.colour])),
     [calendars]
   );
 
-  const days = useMemo(() => {
-    const grouped = new Map<string, CalendarEvent[]>();
+  /** Events keyed by local day, so each cell is a lookup rather than a scan. */
+  const byDay = useMemo(() => {
+    const map = new Map<string, CalendarEvent[]>();
     for (const event of events) {
-      const key = dayKey(event.startsAt);
-      const bucket = grouped.get(key);
-      if (bucket) bucket.push(event);
-      else grouped.set(key, [event]);
+      // An event spanning days belongs in every day it touches.
+      let cursor = new Date(event.startsAt * 1000);
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate());
+      const last = new Date(Math.max(event.endsAt - 1, event.startsAt) * 1000);
+      let guard = 0;
+      while (cursor <= last && guard++ < 60) {
+        const key = cursor.toDateString();
+        const bucket = map.get(key);
+        if (bucket) bucket.push(event);
+        else map.set(key, [event]);
+        cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1);
+      }
     }
-    return [...grouped.values()];
+    return map;
   }, [events]);
 
-  return (
-    <>
-      <div className="toolbar">
-        <span className="badge">
-          {lastSynced === null && loaded ? "Never synced" : `Updated ${relative(lastSynced)}`}
-        </span>
-        <button className="quiet" onClick={refresh} disabled={syncing}>
-          {syncing ? "Refreshing…" : "Refresh"}
-        </button>
-      </div>
+  const shift = (months: number) =>
+    setAnchor((a) => new Date(a.getFullYear(), a.getMonth() + months, 1));
 
-      <h1>Calendar</h1>
+  const monthLabel = anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+  return (
+    <div className="cal">
+      <header className="cal-bar">
+        <div className="cal-nav">
+          <h1>{monthLabel}</h1>
+          <button className="chev" onClick={() => shift(-1)} aria-label="Previous month">‹</button>
+          <button
+            className="today-btn"
+            onClick={() => setAnchor(new Date(today.getFullYear(), today.getMonth(), 1))}
+          >
+            Today
+          </button>
+          <button className="chev" onClick={() => shift(1)} aria-label="Next month">›</button>
+        </div>
+        <div className="cal-actions">
+          <span className="badge">Updated {relative(lastSynced)}</span>
+          <button className="quiet" onClick={refresh} disabled={syncing}>
+            {syncing ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+      </header>
 
       {error && <p className="error" role="alert">{error}</p>}
 
-      {loaded && events.length === 0 && (
-        <p>
-          Nothing here yet. Refresh to pull the next few weeks from iCloud — after that it
-          opens instantly, with or without a connection.
-        </p>
-      )}
-
-      <div className="agenda">
-        {days.map((day) => (
-          <section key={dayKey(day[0].startsAt)} className="agenda-day">
-            <h2>{dayHeading(day[0].startsAt)}</h2>
-            <ul>
-              {day.map((event) => (
-                <li key={event.guid}>
-                  <span
-                    className="dot"
-                    style={{ background: colours.get(event.calendarGuid) || "var(--gold)" }}
-                    aria-hidden="true"
-                  />
-                  <span className="when">
-                    {event.allDay ? "All day" : clockTime(event.startsAt)}
-                  </span>
-                  <span className="what">
-                    {event.title}
-                    {event.location && <span className="where">{event.location}</span>}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
+      <div className="cal-weekdays" aria-hidden="true">
+        {weekdayNames().map((name) => (
+          <span key={name}>{name}</span>
         ))}
       </div>
-    </>
+
+      <div className="cal-grid" role="grid" aria-label={`${monthLabel} calendar`}>
+        {/* A grid's cells must sit inside rows, or screen readers cannot navigate it by
+            week. The rows use display:contents so the visual layout is unchanged. */}
+        {[0, 1, 2, 3, 4, 5].map((week) => (
+          <div className="cal-week" role="row" key={week}>
+            {days.slice(week * 7, week * 7 + 7).map((day) => {
+              const outside = day.getMonth() !== anchor.getMonth();
+              const isToday = sameDay(day, today);
+              const items = byDay.get(day.toDateString()) ?? [];
+              const label = day.toLocaleDateString(undefined, {
+                weekday: "long",
+                day: "numeric",
+                month: "long",
+              });
+              return (
+                <div
+                  key={day.toISOString()}
+                  className={`cal-day${outside ? " outside" : ""}`}
+                  role="gridcell"
+                  aria-label={
+                    items.length ? `${label}, ${items.length} event(s)` : label
+                  }
+                  aria-current={isToday ? "date" : undefined}
+                >
+                  <span className={`daynum${isToday ? " is-today" : ""}`}>
+                    {day.getDate()}
+                  </span>
+                  <div className="chips">
+                    {items.slice(0, 3).map((event) => (
+                      <span
+                        key={event.guid + day.getDate()}
+                        className={`chip${event.allDay ? " all-day" : ""}`}
+                        style={
+                          event.allDay
+                            ? {
+                                background:
+                                  colours.get(event.calendarGuid) || "var(--gold)",
+                              }
+                            : undefined
+                        }
+                        title={event.title}
+                      >
+                        {!event.allDay && (
+                          <span
+                            className="chip-dot"
+                            style={{
+                              background:
+                                colours.get(event.calendarGuid) || "var(--gold)",
+                            }}
+                          />
+                        )}
+                        {!event.allDay && (
+                          <span className="chip-time">{clockTime(event.startsAt)}</span>
+                        )}
+                        <span className="chip-title">{event.title}</span>
+                      </span>
+                    ))}
+                    {items.length > 3 && (
+                      <span className="chip more">{items.length - 3} more</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {loaded && events.length === 0 && !error && (
+        <p className="cal-empty">
+          No events in this month. Quince keeps them on this computer once synced, so they
+          open instantly and work offline.
+        </p>
+      )}
+    </div>
   );
 }

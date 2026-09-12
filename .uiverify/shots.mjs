@@ -86,9 +86,9 @@ const shots = [
       await p.waitForSelector(".help", { timeout: 5000 });
     } },
   { name: "07-calendar", screen: "library", theme: "light", calendarFixture: true,
-    act: async (p) => { await p.waitForSelector(".agenda-day"); } },
+    act: async (p) => { await p.waitForSelector(".cal-grid"); } },
   { name: "08-calendar-dark", screen: "library", theme: "dark", calendarFixture: true,
-    act: async (p) => { await p.waitForSelector(".agenda-day"); } },
+    act: async (p) => { await p.waitForSelector(".cal-grid"); } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];

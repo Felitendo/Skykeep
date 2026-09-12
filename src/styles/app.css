@@ -314,52 +314,155 @@
   to   { opacity: 1; transform: none; }
 }
 
-/* ---- agenda ------------------------------------------------------------------ */
+/* ---- calendar: month grid ------------------------------------------------------
+   Apple's Calendar is a month grid, not a list. Weekday header, six rows of seven, the day
+   number in the corner, events as coloured chips, today marked with the accent. */
 
-.agenda { margin-top: 4px; }
+.cal { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
-.agenda-day { margin-bottom: 22px; }
+.cal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
 
-.agenda-day h2 {
-  margin: 0 0 7px;
-  font-size: var(--t-13);
+.cal-nav { display: flex; align-items: center; gap: 8px; }
+
+.cal-nav h1 {
+  margin: 0 10px 0 0;
+  font-size: var(--t-22);
   font-weight: 600;
-  color: var(--text-2);
+  letter-spacing: -0.021em;
+  min-width: 8.5ch;
 }
 
-.agenda-day ul { list-style: none; margin: 0; padding: 0; }
-
-.agenda-day li {
-  display: grid;
-  grid-template-columns: 8px 74px 1fr;
-  align-items: baseline;
-  gap: 10px;
-  padding: 7px 9px;
+.chev {
+  width: 26px;
+  height: 24px;
+  border: 1px solid var(--field-edge);
+  background: var(--field);
+  color: var(--text);
   border-radius: var(--r-field);
+  font-size: var(--t-15);
+  line-height: 1;
+  cursor: pointer;
 }
 
-.agenda-day li:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.chev:hover { background: color-mix(in srgb, var(--text) 7%, var(--field)); }
+.chev:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
 
-.dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--r-pill);
-  align-self: center;
-}
-
-.when {
-  color: var(--text-2);
+.today-btn {
+  height: 24px;
+  padding: 0 11px;
+  border: 1px solid var(--field-edge);
+  background: var(--field);
+  color: var(--text);
+  border-radius: var(--r-field);
+  font: inherit;
   font-size: var(--t-13);
+  cursor: pointer;
+}
+
+.today-btn:hover { background: color-mix(in srgb, var(--text) 7%, var(--field)); }
+.today-btn:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
+
+.cal-actions { display: flex; align-items: center; gap: 12px; }
+
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border-bottom: 1px solid var(--separator);
+  padding-bottom: 5px;
+  margin-bottom: 1px;
+}
+
+.cal-weekdays span {
+  font-size: var(--t-11);
+  font-weight: 600;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.cal-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-auto-rows: minmax(84px, 1fr);
+  /* Hairlines drawn by the gap, so cells stay a single element each. */
+  gap: 1px;
+  background: var(--separator);
+  border: 1px solid var(--separator);
+  border-radius: var(--r-plateau);
+  overflow: hidden;
+}
+
+/* Rows exist for assistive technology; the grid still lays the cells out. */
+.cal-week { display: contents; }
+
+.cal-day {
+  background: var(--bg);
+  padding: 4px 5px 5px;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cal-day.outside { background: color-mix(in srgb, var(--bg) 88%, var(--text) 4%); }
+.cal-day.outside .daynum { color: var(--text-3); }
+
+.daynum {
+  align-self: flex-start;
+  font-size: var(--t-11);
+  font-weight: 550;
+  color: var(--text-2);
+  min-width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: var(--r-pill);
   font-variant-numeric: tabular-nums;
 }
 
-.what { font-size: var(--t-15); }
-
-.where {
-  display: block;
-  color: var(--text-2);
-  font-size: var(--t-11);
-  margin-top: 1px;
+/* White on the standard gold falls below 4.5:1, so today's badge uses a deeper shade. */
+.daynum.is-today {
+  background: var(--gold-deep);
+  color: #fff;
+  font-weight: 650;
 }
 
-.toolbar { align-items: center; gap: 12px; }
+.chips { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: var(--t-11);
+  line-height: 1.35;
+  padding: 1px 4px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.chip:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
+
+.chip-dot { width: 6px; height: 6px; border-radius: var(--r-pill); flex: none; }
+.chip-time { color: var(--text-2); font-variant-numeric: tabular-nums; flex: none; }
+.chip-title { overflow: hidden; text-overflow: ellipsis; }
+
+/* An all-day event reads as a filled bar, the way Apple shows it. */
+.chip.all-day { color: #fff; font-weight: 550; }
+.chip.all-day:hover { filter: brightness(1.06); }
+
+.chip.more { color: var(--text-3); }
+
+.cal-empty { margin-top: 14px; color: var(--text-2); max-width: 54ch; }
+
+/* The content pane holds the grid, so it must not scroll independently. */
+.content:has(.cal) { display: flex; flex-direction: column; overflow: hidden; }

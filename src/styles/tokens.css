@@ -10,6 +10,8 @@
   --gold-strong: #a9781f;
   --gold-tint: rgba(200, 145, 42, 0.13);
   --gold-ring: rgba(200, 145, 42, 0.32);
+  /* Passes 4.5:1 against white, for text sitting on a filled accent. */
+  --gold-deep: #7d5a16;
 
   --bg: #f5f5f7;
   --sheet: #ffffff;
