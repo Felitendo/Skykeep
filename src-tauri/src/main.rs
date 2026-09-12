@@ -4,12 +4,27 @@
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{Manager, State};
 use tokio::sync::Mutex;
 
-struct Auth(Arc<Mutex<Client>>);
+struct Auth {
+    client: Arc<Mutex<Client>>,
+    /// A sign-in is in flight. The mutex would serialise a second click rather than reject
+    /// it, so it would run a whole second SRP exchange and trigger another code push.
+    signing_in: AtomicBool,
+}
+
+/// Clears the in-flight flag however the guarded block exits.
+struct InFlight<'a>(&'a AtomicBool);
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,7 +46,7 @@ fn state_dir(app: &tauri::AppHandle) -> PathBuf {
 
 #[tauri::command]
 async fn auth_status(auth: State<'_, Auth>) -> UiResult<Status> {
-    let client = auth.0.lock().await;
+    let client = auth.client.lock().await;
     Ok(Status {
         has_stored_session: client.has_stored_session(),
         signed_in: client.session().webservices.is_some(),
@@ -41,7 +56,7 @@ async fn auth_status(auth: State<'_, Auth>) -> UiResult<Status> {
 /// Try the stored session. `false` just means a sign-in is needed — not an error.
 #[tauri::command]
 async fn auth_resume(auth: State<'_, Auth>) -> UiResult<bool> {
-    let mut client = auth.0.lock().await;
+    let mut client = auth.client.lock().await;
     client.resume().await.map_err(|e| e.to_string())
 }
 
@@ -51,7 +66,14 @@ async fn auth_sign_in(
     password: String,
     auth: State<'_, Auth>,
 ) -> UiResult<&'static str> {
-    let mut client = auth.0.lock().await;
+    // Reject rather than queue. A second attempt would mean a second code sent to the
+    // user's devices and another step toward Apple's rate limit.
+    if auth.signing_in.swap(true, Ordering::AcqRel) {
+        return Err("Already signing in.".into());
+    }
+    let _guard = InFlight(&auth.signing_in);
+
+    let mut client = auth.client.lock().await;
     match client.sign_in(&apple_id, &password).await {
         Ok(SignInOutcome::Complete) => Ok("complete"),
         Ok(SignInOutcome::NeedsTwoFactor) => Ok("needs_two_factor"),
@@ -61,7 +83,7 @@ async fn auth_sign_in(
 
 #[tauri::command]
 async fn auth_submit_code(code: String, auth: State<'_, Auth>) -> UiResult<()> {
-    let mut client = auth.0.lock().await;
+    let mut client = auth.client.lock().await;
     client.submit_two_factor(&code).await.map_err(|e| e.to_string())
 }
 
@@ -69,19 +91,19 @@ async fn auth_submit_code(code: String, auth: State<'_, Auth>) -> UiResult<()> {
 /// A `trustedDeviceCount` of zero means nothing was sent and waiting is pointless.
 #[tauri::command]
 async fn auth_two_factor_options(auth: State<'_, Auth>) -> UiResult<TwoFactorOptions> {
-    let mut client = auth.0.lock().await;
+    let mut client = auth.client.lock().await;
     client.two_factor_options().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn auth_resend_code(auth: State<'_, Auth>) -> UiResult<()> {
-    let mut client = auth.0.lock().await;
+    let mut client = auth.client.lock().await;
     client.resend_to_devices().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn auth_send_sms(phone_id: u64, auth: State<'_, Auth>) -> UiResult<()> {
-    let mut client = auth.0.lock().await;
+    let mut client = auth.client.lock().await;
     client.send_sms(phone_id).await.map_err(|e| e.to_string())
 }
 
@@ -91,20 +113,20 @@ async fn auth_submit_sms_code(
     code: String,
     auth: State<'_, Auth>,
 ) -> UiResult<()> {
-    let mut client = auth.0.lock().await;
+    let mut client = auth.client.lock().await;
     client.submit_sms_code(phone_id, &code).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn auth_sign_out(auth: State<'_, Auth>) -> UiResult<()> {
-    let mut client = auth.0.lock().await;
+    let mut client = auth.client.lock().await;
     client.sign_out().map_err(|e| e.to_string())
 }
 
 /// Services Apple advertises for this account, for the sidebar.
 #[tauri::command]
 async fn account_services(auth: State<'_, Auth>) -> UiResult<Vec<String>> {
-    let client = auth.0.lock().await;
+    let client = auth.client.lock().await;
     Ok(client
         .session()
         .webservices
@@ -149,7 +171,7 @@ fn main() {
         .setup(|app| {
             let dir = state_dir(&app.handle());
             let client = Arc::new(Mutex::new(Client::new(&dir)?));
-            app.manage(Auth(Arc::clone(&client)));
+            app.manage(Auth { client: Arc::clone(&client), signing_in: AtomicBool::new(false) });
             spawn_heartbeat(client);
             Ok(())
         })

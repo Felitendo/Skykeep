@@ -348,3 +348,54 @@ async fn a_successful_sign_in_clears_the_backoff() {
     assert_eq!(client.session().consecutive_failures, 0);
     assert!(client.session().retry_after.is_none());
 }
+
+/// Signing out must leave nothing behind — a later client should find no session at all.
+#[tokio::test]
+async fn signing_out_forgets_everything() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut client = client_for(&server, dir.path());
+        client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+        client.submit_two_factor("123456").await.unwrap();
+        assert!(client.session().trust_token.is_some());
+
+        client.sign_out().unwrap();
+        assert!(client.session().trust_token.is_none());
+        assert!(!client.has_stored_session());
+    }
+
+    // And nothing survives into a fresh client over the same directory.
+    let reopened = client_for(&server, dir.path());
+    assert!(!reopened.has_stored_session(), "sign-out must clear the stored session");
+    assert!(reopened.session().trust_token.is_none());
+    assert!(reopened.session().webservices.is_none());
+}
+
+/// Signing out must also clear a cooldown; otherwise a user who hit a backoff could be
+/// locked out of their own app with no way to reset it.
+#[tokio::test]
+async fn signing_out_clears_a_cooldown() {
+    let server = MockServer::start().await;
+    mount_init(&server, 429).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client.sign_in("someone@example.invalid", "hunter2").await.unwrap_err();
+    assert!(client.session().retry_after.is_some());
+
+    client.sign_out().unwrap();
+    assert!(
+        client.session().retry_after.is_none(),
+        "a fresh start must not inherit the previous account's backoff"
+    );
+}
