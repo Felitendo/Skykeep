@@ -269,6 +269,11 @@
 .nav-item[aria-current="true"] { background: var(--gold-tint); color: var(--gold-strong); font-weight: 550; }
 .nav-item:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
 
+.nav-toggle {
+  margin-top: 6px;
+  color: var(--text-2);
+}
+
 .badge {
   font-size: var(--t-11);
   color: var(--text-3);
@@ -276,7 +281,12 @@
   opacity: 0.62;
 }
 
-.nav-item[aria-current="true"] .badge { opacity: 0.85; }
+.nav-item[aria-current="true"] .nav-toggle {
+  margin-top: 6px;
+  color: var(--text-2);
+}
+
+.badge { opacity: 0.85; }
 
 /* Full-bleed, so it passes under the floating sidebar as it scrolls. */
 .content {

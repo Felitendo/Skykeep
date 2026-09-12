@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../lib/ipc";
 
-/** Which services Quince can actually read yet. Empty on purpose: the sync engine is Phase 2,
- *  and showing anything else here would be inventing data the app doesn't have. */
-const IMPLEMENTED = new Set<string>();
-
 const NAMES: Record<string, string> = {
   photos: "Photos",
   sharedlibrary: "Shared library",
@@ -41,9 +37,24 @@ const NAMES: Record<string, string> = {
   schoolwork: "Schoolwork",
 };
 
+/** What a person actually came for, in the order they'd look for it. */
+const PRIMARY = [
+  "photos",
+  "calendar",
+  "reminders",
+  "notes",
+  "contacts",
+  "drivews",
+  "mail",
+  "findme",
+  "sharedlibrary",
+  "sharedstreams",
+];
+
 export function Library({ onSignOut }: { onSignOut: () => void }) {
   const [services, setServices] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -59,43 +70,61 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
           return true;
         });
         setServices(unique);
-        setSelected(unique[0] ?? null);
+        setSelected(PRIMARY.find((k) => unique.includes(k)) ?? unique[0] ?? null);
       })
       .catch((e) => setError(messageOf(e)));
   }, []);
 
+  const primary = PRIMARY.filter((k) => services.includes(k));
+  // Everything else is infrastructure — real, but not something anyone navigates to.
+  const rest = services.filter((k) => !PRIMARY.includes(k));
+
+  const item = (key: string) => (
+    <button
+      key={key}
+      className="nav-item"
+      aria-current={selected === key}
+      onClick={() => setSelected(key)}
+    >
+      <span>{NAMES[key] ?? key}</span>
+    </button>
+  );
+
   return (
     <div className="library enter-library">
-      <nav className="sidebar" aria-label="Your iCloud services">
-        <h2>On your account</h2>
-        {services.map((key) => (
-          <button
-            key={key}
-            className="nav-item"
-            aria-current={selected === key}
-            onClick={() => setSelected(key)}
-          >
-            <span>{NAMES[key] ?? key}</span>
-            {!IMPLEMENTED.has(key) && <span className="badge">soon</span>}
-          </button>
-        ))}
+      <nav className="sidebar" aria-label="Your iCloud">
+        <h2>Your iCloud</h2>
+        {primary.map(item)}
         {services.length === 0 && !error && <p className="badge">Loading…</p>}
+
+        {rest.length > 0 && (
+          <>
+            <button
+              className="nav-item nav-toggle"
+              aria-expanded={showAll}
+              onClick={() => setShowAll((v) => !v)}
+            >
+              <span>{showAll ? "Hide" : "Show"} {rest.length} more</span>
+            </button>
+            {showAll && rest.map(item)}
+          </>
+        )}
       </nav>
 
       <main className="content">
         <div className="toolbar">
           <button className="quiet" onClick={onSignOut}>Sign out</button>
         </div>
-        <h1>You're signed in</h1>
+        <h1>{selected ? (NAMES[selected] ?? selected) : "You're signed in"}</h1>
         <p>
-          Quince is holding a live session with Apple, and it will still be here after you
-          quit and reopen the app. The list on the left is what Apple actually reports for
-          your account — nothing invented.
+          Quince is holding a live session with Apple, and it survived quitting and reopening
+          the app — no password, no code. The list on the left is what Apple reports for your
+          account, nothing invented.
         </p>
         <p>
-          Reading your calendar, reminders and photos into a local library comes next. Until
-          then this screen tells you the truth: the connection works, the data layer isn't
-          built yet.
+          Reading this into a local library is what comes next, so it opens instantly and
+          works offline. Until then this screen tells you the truth: the connection works,
+          the data layer isn't built yet.
         </p>
         {error && <p className="error" role="alert">{error}</p>}
       </main>
