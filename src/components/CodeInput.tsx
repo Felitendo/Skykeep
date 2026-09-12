@@ -24,6 +24,8 @@ export function CodeInput({
   }, []);
 
   const digits = value.padEnd(6, " ").slice(0, 6).split("");
+  // The box Tab should land on: the first empty one, or the last if the code is complete.
+  const activeIndex = Math.min(digits.findIndex((d) => !d.trim()) === -1 ? 5 : digits.findIndex((d) => !d.trim()), 5);
 
   function setAt(index: number, digit: string) {
     const next = digits.map((d, i) => (i === index ? digit : d)).join("").trimEnd();
@@ -77,6 +79,7 @@ export function CodeInput({
             onChange={(e) => handleChange(i, e.target.value)}
             onKeyDown={(e) => handleKeyDown(i, e)}
             onFocus={(e) => e.target.select()}
+            tabIndex={i === activeIndex ? 0 : -1}
             inputMode="numeric"
             autoComplete={i === 0 ? "one-time-code" : "off"}
             maxLength={6}

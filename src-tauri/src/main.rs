@@ -84,7 +84,10 @@ async fn auth_sign_in(
 #[tauri::command]
 async fn auth_submit_code(code: String, auth: State<'_, Auth>) -> UiResult<()> {
     let mut client = auth.client.lock().await;
-    client.submit_two_factor(&code).await.map_err(|e| e.to_string())
+    client
+        .submit_two_factor(&code)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Where Apple can send a code, and whether it already pushed one.
@@ -108,13 +111,12 @@ async fn auth_send_sms(phone_id: u64, auth: State<'_, Auth>) -> UiResult<()> {
 }
 
 #[tauri::command]
-async fn auth_submit_sms_code(
-    phone_id: u64,
-    code: String,
-    auth: State<'_, Auth>,
-) -> UiResult<()> {
+async fn auth_submit_sms_code(phone_id: u64, code: String, auth: State<'_, Auth>) -> UiResult<()> {
     let mut client = auth.client.lock().await;
-    client.submit_sms_code(phone_id, &code).await.map_err(|e| e.to_string())
+    client
+        .submit_sms_code(phone_id, &code)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -155,12 +157,11 @@ fn spawn_heartbeat(client: Arc<Mutex<Client>>) {
             if guard.session().webservices.is_none() {
                 continue;
             }
-            match guard.heartbeat().await {
-                Ok(true) => {}
-                // A lapsed session is expected roughly every two months. The UI discovers it
-                // on next use and asks for a code; nothing to do here but stop pinging.
-                Ok(false) => break,
-                Err(_) => {}
+            // A lapsed session is expected roughly every two months. The UI discovers it on
+            // next use and asks for a code; nothing to do here but stop pinging a dead one.
+            // A transient error is not proof of that, so only a clean `false` ends the loop.
+            if matches!(guard.heartbeat().await, Ok(false)) {
+                break;
             }
         }
     });
@@ -169,9 +170,12 @@ fn spawn_heartbeat(client: Arc<Mutex<Client>>) {
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let dir = state_dir(&app.handle());
+            let dir = state_dir(app.handle());
             let client = Arc::new(Mutex::new(Client::new(&dir)?));
-            app.manage(Auth { client: Arc::clone(&client), signing_in: AtomicBool::new(false) });
+            app.manage(Auth {
+                client: Arc::clone(&client),
+                signing_in: AtomicBool::new(false),
+            });
             spawn_heartbeat(client);
             Ok(())
         })

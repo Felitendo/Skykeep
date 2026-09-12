@@ -135,7 +135,10 @@ impl Store {
     /// Production: secrets in the OS keyring.
     pub fn keyring(state_dir: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(state_dir)?;
-        Ok(Self { cookie_path: state_dir.join("cookies.json"), backend: Backend::Keyring })
+        Ok(Self {
+            cookie_path: state_dir.join("cookies.json"),
+            backend: Backend::Keyring,
+        })
     }
 
     /// Tests only: secrets in a file under `state_dir`. Never use for real accounts —

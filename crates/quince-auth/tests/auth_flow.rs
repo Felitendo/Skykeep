@@ -96,7 +96,9 @@ fn client_for(server: &MockServer, dir: &std::path::Path) -> Client {
 }
 
 fn requests_to<'a>(reqs: &'a [Request], suffix: &str) -> Vec<&'a Request> {
-    reqs.iter().filter(|r| r.url.path().ends_with(suffix)).collect()
+    reqs.iter()
+        .filter(|r| r.url.path().ends_with(suffix))
+        .collect()
 }
 
 #[tokio::test]
@@ -114,7 +116,10 @@ async fn two_factor_sign_in_stores_the_trust_token() {
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
 
-    let outcome = client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+    let outcome = client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
     assert_eq!(outcome, SignInOutcome::NeedsTwoFactor);
 
     client.submit_two_factor("123456").await.unwrap();
@@ -130,7 +135,10 @@ async fn two_factor_sign_in_stores_the_trust_token() {
 
     // A fresh client over the same store must resume without a password.
     let reloaded = client_for(&server, dir.path());
-    assert!(reloaded.has_stored_session(), "the trust token must outlive the process");
+    assert!(
+        reloaded.has_stored_session(),
+        "the trust token must outlive the process"
+    );
 }
 
 /// The regression: an abandoned attempt left `scnt` behind, and replaying it into a new
@@ -145,11 +153,17 @@ async fn sign_in_never_replays_a_previous_challenge() {
     let mut client = client_for(&server, dir.path());
 
     // First attempt: abandoned after Apple asks for a code, leaving scnt/session id stored.
-    client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
     assert_eq!(client.session().scnt.as_deref(), Some("scnt-from-init"));
 
     // Second attempt from the same session must start clean.
-    client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
 
     let reqs = server.received_requests().await.unwrap();
     let inits = requests_to(&reqs, "/signin/init");
@@ -181,23 +195,38 @@ async fn idmsa_origin_is_used_only_for_sign_in() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
-    client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
     client.submit_two_factor("123456").await.unwrap();
 
     let reqs = server.received_requests().await.unwrap();
     let origin_of = |r: &Request| {
-        r.headers.get("origin").and_then(|v| v.to_str().ok()).unwrap_or("<none>").to_string()
+        r.headers
+            .get("origin")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("<none>")
+            .to_string()
     };
 
     for suffix in ["/signin/init", "/signin/complete"] {
         let found = requests_to(&reqs, suffix);
         assert!(!found.is_empty(), "no request reached {suffix}");
         for r in found {
-            assert_eq!(origin_of(r), SRP_ORIGIN, "{suffix} must use the idmsa origin");
+            assert_eq!(
+                origin_of(r),
+                SRP_ORIGIN,
+                "{suffix} must use the idmsa origin"
+            );
         }
     }
 
-    for suffix in ["/verify/trusteddevice/securitycode", "/2sv/trust", "/accountLogin"] {
+    for suffix in [
+        "/verify/trusteddevice/securitycode",
+        "/2sv/trust",
+        "/accountLogin",
+    ] {
         let found = requests_to(&reqs, suffix);
         assert!(!found.is_empty(), "no request reached {suffix}");
         for r in found {
@@ -225,7 +254,10 @@ async fn a_wrong_code_is_reported_as_a_wrong_code() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
-    client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
 
     let err = client.submit_two_factor("000000").await.unwrap_err();
     assert!(
@@ -252,13 +284,19 @@ async fn a_409_that_still_completes_is_treated_as_success() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
-    client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
 
     client
         .submit_two_factor("123456")
         .await
         .expect("the session became usable, so the code was accepted");
-    assert_eq!(client.session().trust_token.as_deref(), Some("trust-token-xyz"));
+    assert_eq!(
+        client.session().trust_token.as_deref(),
+        Some("trust-token-xyz")
+    );
 }
 
 #[tokio::test]
@@ -269,7 +307,10 @@ async fn throttling_is_named_so_the_fix_is_to_wait() {
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
 
-    let err = client.sign_in("someone@example.invalid", "hunter2").await.unwrap_err();
+    let err = client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, quince_auth::Error::RateLimited),
         "throttling must be distinguishable from a real failure: {err}"
@@ -292,16 +333,27 @@ async fn a_rejected_session_falls_back_cleanly() {
     {
         // Seed a stored session that Apple will reject.
         let mut seed = client_for(&server, dir.path());
-        seed.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+        seed.sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap();
     }
 
     let mut client = client_for(&server, dir.path());
     assert!(client.has_stored_session());
-    assert!(!client.resume().await.unwrap(), "a 421 means the session is dead");
-    assert!(client.session().scnt.is_none(), "a dead session must not keep its challenge state");
+    assert!(
+        !client.resume().await.unwrap(),
+        "a 421 means the session is dead"
+    );
+    assert!(
+        client.session().scnt.is_none(),
+        "a dead session must not keep its challenge state"
+    );
 
     // And signing in again still works.
-    let outcome = client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+    let outcome = client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
     assert_eq!(outcome, SignInOutcome::NeedsTwoFactor);
 }
 
@@ -315,7 +367,10 @@ async fn a_cooldown_survives_a_restart_and_spares_apple() {
     let dir = tempfile::tempdir().unwrap();
     {
         let mut client = client_for(&server, dir.path());
-        let err = client.sign_in("someone@example.invalid", "hunter2").await.unwrap_err();
+        let err = client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap_err();
         assert!(matches!(err, quince_auth::Error::RateLimited));
     }
 
@@ -323,14 +378,20 @@ async fn a_cooldown_survives_a_restart_and_spares_apple() {
 
     // A brand-new client, as if the app had been restarted.
     let mut restarted = client_for(&server, dir.path());
-    let err = restarted.sign_in("someone@example.invalid", "hunter2").await.unwrap_err();
+    let err = restarted
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap_err();
     match err {
         quince_auth::Error::CoolingDown { seconds } => assert!(seconds > 0),
         other => panic!("expected a cooldown after a restart, got {other}"),
     }
 
     let after = server.received_requests().await.unwrap().len();
-    assert_eq!(before, after, "the cooldown must be enforced without contacting Apple");
+    assert_eq!(
+        before, after,
+        "the cooldown must be enforced without contacting Apple"
+    );
 }
 
 /// Reaching the two-factor step means the password was accepted, so it must clear any
@@ -343,7 +404,10 @@ async fn a_successful_sign_in_clears_the_backoff() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
-    client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
 
     assert_eq!(client.session().consecutive_failures, 0);
     assert!(client.session().retry_after.is_none());
@@ -365,7 +429,10 @@ async fn signing_out_forgets_everything() {
     let dir = tempfile::tempdir().unwrap();
     {
         let mut client = client_for(&server, dir.path());
-        client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap();
         client.submit_two_factor("123456").await.unwrap();
         assert!(client.session().trust_token.is_some());
 
@@ -376,7 +443,10 @@ async fn signing_out_forgets_everything() {
 
     // And nothing survives into a fresh client over the same directory.
     let reopened = client_for(&server, dir.path());
-    assert!(!reopened.has_stored_session(), "sign-out must clear the stored session");
+    assert!(
+        !reopened.has_stored_session(),
+        "sign-out must clear the stored session"
+    );
     assert!(reopened.session().trust_token.is_none());
     assert!(reopened.session().webservices.is_none());
 }
@@ -390,7 +460,10 @@ async fn signing_out_clears_a_cooldown() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut client = client_for(&server, dir.path());
-    client.sign_in("someone@example.invalid", "hunter2").await.unwrap_err();
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap_err();
     assert!(client.session().retry_after.is_some());
 
     client.sign_out().unwrap();
@@ -398,4 +471,36 @@ async fn signing_out_clears_a_cooldown() {
         client.session().retry_after.is_none(),
         "a fresh start must not inherit the previous account's backoff"
     );
+}
+
+/// Apple's iteration count drives PBKDF2, arrives over the network, and is therefore
+/// untrusted input controlling how much work we do. An implausible value must be refused
+/// rather than truncated into a cast or left to burn CPU.
+#[tokio::test]
+async fn an_implausible_work_factor_is_refused() {
+    for absurd in [u64::from(u32::MAX) + 1, 5_000_000_000, 3] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/appleauth/auth/signin/init"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "salt": b64(&[0x77; 16]),
+                "b": b64(&[0x5e; 256]),
+                "c": "challenge-c",
+                "iteration": absurd,
+                "protocol": "s2k",
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = client_for(&server, dir.path());
+        let err = client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, quince_auth::Error::Protocol(_)),
+            "iteration={absurd} should be rejected, got {err}"
+        );
+    }
 }

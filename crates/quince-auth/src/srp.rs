@@ -110,7 +110,11 @@ impl Client {
         let n = n();
         let a = BigUint::from_bytes_be(a_bytes);
         let a_pub = BigUint::from(G).modpow(&a, &n);
-        Self { username: username.to_string(), a, a_pub }
+        Self {
+            username: username.to_string(),
+            a,
+            a_pub,
+        }
     }
 
     /// Start with a fresh random private key. Production use.
@@ -184,14 +188,7 @@ impl Client {
             h_n_xor_g[i] = h_n[i] ^ h_g[i];
         }
         let h_i = sha256(&[self.username.as_bytes()]);
-        let m1 = sha256(&[
-            &h_n_xor_g,
-            &h_i,
-            salt,
-            &be(&self.a_pub),
-            &be(&b_pub),
-            &key,
-        ]);
+        let m1 = sha256(&[&h_n_xor_g, &h_i, salt, &be(&self.a_pub), &be(&b_pub), &key]);
 
         // M2 = H(A || M1 || K)
         let m2 = sha256(&[&be(&self.a_pub), &m1, &key]);
@@ -211,7 +208,10 @@ mod tests {
     }
 
     fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     /// Every value must match srp==1.0.22 — the library icloudpd pins — on inputs where
@@ -230,12 +230,18 @@ mod tests {
             let salt = hex(case["salt_hex"].as_str().unwrap());
 
             let derived = derive_key(password, proto, &salt, iterations);
-            assert_eq!(hex_lower(&derived), case["derived_key"].as_str().unwrap(),
-                       "{name}: derived key");
+            assert_eq!(
+                hex_lower(&derived),
+                case["derived_key"].as_str().unwrap(),
+                "{name}: derived key"
+            );
 
             let client = Client::with_private_key(username, &a);
-            assert_eq!(hex_lower(&client.a_public_bytes()), case["A"].as_str().unwrap(),
-                       "{name}: public key A");
+            assert_eq!(
+                hex_lower(&client.a_public_bytes()),
+                case["A"].as_str().unwrap(),
+                "{name}: public key A"
+            );
 
             let p = client
                 .process_challenge(password, proto, &salt, &b_pub, iterations)
@@ -253,10 +259,15 @@ mod tests {
         let v = vectors();
         let case = &v["leading_zero_salt"];
         let salt = hex(case["salt_hex"].as_str().unwrap());
-        assert_eq!(salt[0], 0x00, "this vector only means something with a leading zero salt");
+        assert_eq!(
+            salt[0], 0x00,
+            "this vector only means something with a leading zero salt"
+        );
 
-        let client = Client::with_private_key(v["username"].as_str().unwrap(),
-                                              &hex(v["a_hex"].as_str().unwrap()));
+        let client = Client::with_private_key(
+            v["username"].as_str().unwrap(),
+            &hex(v["a_hex"].as_str().unwrap()),
+        );
         let p = client
             .process_challenge(
                 v["password"].as_str().unwrap(),
@@ -267,9 +278,16 @@ mod tests {
             )
             .expect("challenge is valid");
 
-        assert_eq!(hex_lower(&p.m1), case["M1"].as_str().unwrap(), "spec-correct M1");
-        assert_ne!(hex_lower(&p.m1), case["ctsrp_buggy_M1"].as_str().unwrap(),
-                   "must not reproduce the reference implementation's BIGNUM salt bug");
+        assert_eq!(
+            hex_lower(&p.m1),
+            case["M1"].as_str().unwrap(),
+            "spec-correct M1"
+        );
+        assert_ne!(
+            hex_lower(&p.m1),
+            case["ctsrp_buggy_M1"].as_str().unwrap(),
+            "must not reproduce the reference implementation's BIGNUM salt bug"
+        );
     }
 
     #[test]
@@ -277,6 +295,8 @@ mod tests {
         let client = Client::with_private_key("someone@example.invalid", &[7u8; 32]);
         // B == N  =>  B % N == 0  =>  SRP-6a safety check must reject.
         let b = hex(N_HEX);
-        assert!(client.process_challenge("pw", Protocol::S2k, b"salt", &b, 1000).is_none());
+        assert!(client
+            .process_challenge("pw", Protocol::S2k, b"salt", &b, 1000)
+            .is_none());
     }
 }

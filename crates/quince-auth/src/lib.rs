@@ -75,6 +75,11 @@ impl Endpoints {
 
 /// iCloud web's first-party OAuth widget key. Not a secret — it is public in the web client.
 const WIDGET_KEY: &str = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d";
+/// Bounds on Apple's PBKDF2 iteration count. Apple uses roughly 20k; anything far outside
+/// this is either a corrupted response or something trying to make us burn CPU.
+const MIN_PBKDF2_ITERATIONS: u32 = 1_000;
+const MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
+
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
                   (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36";
 
@@ -96,8 +101,10 @@ pub enum Error {
     CoolingDown { seconds: u64 },
     #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
     ReauthRequired,
-    #[error("Apple is rate-limiting this account. Wait a few minutes before trying again — \
-             repeated attempts risk a temporary lock")]
+    #[error(
+        "Apple is rate-limiting this account. Wait a few minutes before trying again — \
+             repeated attempts risk a temporary lock"
+    )]
     RateLimited,
     #[error("couldn't use the system keyring: {0}")]
     Keyring(String),
@@ -132,11 +139,17 @@ fn apple_error(context: &str, status: StatusCode, body: &str) -> Error {
                 return Error::RateLimited;
             }
             if !message.is_empty() {
-                return Error::Protocol(format!("{context}: {message} (Apple code {code}, HTTP {status})"));
+                return Error::Protocol(format!(
+                    "{context}: {message} (Apple code {code}, HTTP {status})"
+                ));
             }
         }
     }
-    let snippet: String = body.chars().take(220).collect::<String>().replace('\n', " ");
+    let snippet: String = body
+        .chars()
+        .take(220)
+        .collect::<String>()
+        .replace('\n', " ");
     Error::Protocol(format!("{context}: HTTP {status} {snippet}"))
 }
 
@@ -254,7 +267,10 @@ impl Client {
         if let Ok(v) = HeaderValue::from_str(&format!("{}/", endpoints.home)) {
             defaults.insert("referer", v);
         }
-        defaults.insert("accept-language", HeaderValue::from_static("en-US,en;q=0.9"));
+        defaults.insert(
+            "accept-language",
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
 
         let http = HttpClient::builder()
             .cookie_provider(Arc::clone(&jar))
@@ -262,7 +278,13 @@ impl Client {
             .default_headers(defaults)
             .build()?;
 
-        Ok(Self { http, jar, store, session, endpoints })
+        Ok(Self {
+            http,
+            jar,
+            store,
+            session,
+            endpoints,
+        })
     }
 
     pub fn session(&self) -> &Session {
@@ -278,7 +300,11 @@ impl Client {
 
     fn capture(&mut self, response: &Response) {
         for (header, field) in CAPTURED_HEADERS {
-            if let Some(v) = response.headers().get(*header).and_then(|v| v.to_str().ok()) {
+            if let Some(v) = response
+                .headers()
+                .get(*header)
+                .and_then(|v| v.to_str().ok())
+            {
                 self.session.set(*field, v.to_string());
             }
         }
@@ -437,7 +463,9 @@ impl Client {
         if let Some(until) = self.session.retry_after {
             let now = unix_now();
             if now < until {
-                return Err(Error::CoolingDown { seconds: until - now });
+                return Err(Error::CoolingDown {
+                    seconds: until - now,
+                });
             }
         }
 
@@ -478,7 +506,8 @@ impl Client {
             let raw = init[key]
                 .as_str()
                 .ok_or_else(|| Error::Protocol(format!("sign-in response had no `{key}`")))?;
-            B64.decode(raw).map_err(|_| Error::Protocol(format!("`{key}` wasn't valid base64")))
+            B64.decode(raw)
+                .map_err(|_| Error::Protocol(format!("`{key}` wasn't valid base64")))
         };
         let salt = decode("salt")?;
         let b_pub = decode("b")?;
@@ -486,10 +515,19 @@ impl Client {
             .as_str()
             .ok_or_else(|| Error::Protocol("sign-in response had no `c`".into()))?
             .to_string();
-        let iterations = init["iteration"]
-            .as_u64()
-            .ok_or_else(|| Error::Protocol("sign-in response had no `iteration`".into()))?
-            as u32;
+        let iterations = {
+            let raw = init["iteration"]
+                .as_u64()
+                .ok_or_else(|| Error::Protocol("sign-in response had no `iteration`".into()))?;
+            u32::try_from(raw)
+                .ok()
+                .filter(|n| (MIN_PBKDF2_ITERATIONS..=MAX_PBKDF2_ITERATIONS).contains(n))
+                .ok_or_else(|| {
+                    Error::Protocol(format!(
+                        "Apple asked for an implausible {raw} key-derivation rounds"
+                    ))
+                })?
+        };
         let protocol_name = init["protocol"].as_str().unwrap_or("s2k");
         let protocol = srp::Protocol::parse(protocol_name)
             .ok_or_else(|| Error::UnsupportedAccount(format!("SRP protocol {protocol_name}")))?;
@@ -497,7 +535,9 @@ impl Client {
         // --- /signin/complete: submit the proof ---
         let proof = client
             .process_challenge(password, protocol, &salt, &b_pub, iterations)
-            .ok_or_else(|| Error::Protocol("Apple's sign-in challenge failed its safety check".into()))?;
+            .ok_or_else(|| {
+                Error::Protocol("Apple's sign-in challenge failed its safety check".into())
+            })?;
 
         let mut body = json!({
             "accountName": apple_id,
@@ -535,9 +575,9 @@ impl Client {
                 Ok(SignInOutcome::Complete)
             }
             StatusCode::UNAUTHORIZED => Err(Error::BadCredentials),
-            StatusCode::PRECONDITION_FAILED => {
-                Err(Error::UnsupportedAccount("two-factor auth isn't switched on".into()))
-            }
+            StatusCode::PRECONDITION_FAILED => Err(Error::UnsupportedAccount(
+                "two-factor auth isn't switched on".into(),
+            )),
             s => Err(apple_error("finishing sign-in", s, &text)),
         }
     }
@@ -549,7 +589,12 @@ impl Client {
     pub async fn two_factor_options(&mut self) -> Result<TwoFactorOptions> {
         let mut headers = self.auth_headers();
         headers.insert("accept", HeaderValue::from_static("application/json"));
-        let r = self.http.get(&self.endpoints.auth).headers(headers).send().await?;
+        let r = self
+            .http
+            .get(&self.endpoints.auth)
+            .headers(headers)
+            .send()
+            .await?;
         self.capture(&r);
         let text = r.text().await.unwrap_or_default();
         let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -575,7 +620,9 @@ impl Client {
         Ok(TwoFactorOptions {
             trusted_device_count: v["trustedDeviceCount"].as_u64().unwrap_or(0),
             phones,
-            too_many_codes_sent: v["securityCode"]["tooManyCodesSent"].as_bool().unwrap_or(false),
+            too_many_codes_sent: v["securityCode"]["tooManyCodesSent"]
+                .as_bool()
+                .unwrap_or(false),
         })
     }
 
@@ -585,14 +632,19 @@ impl Client {
         headers.insert("accept", HeaderValue::from_static("application/json"));
         let r = self
             .http
-            .put(format!("{}/verify/trusteddevice/securitycode", self.endpoints.auth))
+            .put(format!(
+                "{}/verify/trusteddevice/securitycode",
+                self.endpoints.auth
+            ))
             .headers(headers)
             .send()
             .await?;
         self.capture(&r);
         let status = r.status();
         if !status.is_success() && status != StatusCode::NO_CONTENT {
-            return Err(Error::Protocol(format!("couldn't resend the code ({status})")));
+            return Err(Error::Protocol(format!(
+                "couldn't resend the code ({status})"
+            )));
         }
         Ok(())
     }
@@ -611,7 +663,9 @@ impl Client {
         self.capture(&r);
         let status = r.status();
         if !status.is_success() && status != StatusCode::NO_CONTENT {
-            return Err(Error::Protocol(format!("couldn't send the text ({status})")));
+            return Err(Error::Protocol(format!(
+                "couldn't send the text ({status})"
+            )));
         }
         Ok(())
     }
@@ -663,7 +717,10 @@ impl Client {
         headers.insert("accept", HeaderValue::from_static("application/json"));
         let r = self
             .http
-            .post(format!("{}/verify/trusteddevice/securitycode", self.endpoints.auth))
+            .post(format!(
+                "{}/verify/trusteddevice/securitycode",
+                self.endpoints.auth
+            ))
             .headers(headers)
             .body(json!({ "securityCode": { "code": code } }).to_string())
             .send()
@@ -699,7 +756,12 @@ impl Client {
     /// `GET /2sv/trust` — yields the trust token. Without it, sign-in wouldn't outlive the process.
     async fn trust(&mut self) -> Result<()> {
         let headers = self.auth_headers();
-        let r = self.http.get(format!("{}/2sv/trust", self.endpoints.auth)).headers(headers).send().await?;
+        let r = self
+            .http
+            .get(format!("{}/2sv/trust", self.endpoints.auth))
+            .headers(headers)
+            .send()
+            .await?;
         self.capture(&r);
         let status = r.status();
         let body = r.text().await.unwrap_or_default();
@@ -731,7 +793,9 @@ impl Client {
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(Error::Protocol(format!("couldn't open the account ({status})")));
+            return Err(Error::Protocol(format!(
+                "couldn't open the account ({status})"
+            )));
         }
         Ok(serde_json::from_str(&text)?)
     }
@@ -750,7 +814,6 @@ impl Client {
         &self.http
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -776,7 +839,12 @@ mod tests {
 
     #[test]
     fn session_headers_are_forwarded_when_present() {
-        let h = base_oauth_headers("auth-test", HOME_T, Some("scnt-value"), Some("session-value"));
+        let h = base_oauth_headers(
+            "auth-test",
+            HOME_T,
+            Some("scnt-value"),
+            Some("session-value"),
+        );
         assert_eq!(h.get("scnt").unwrap(), "scnt-value");
         assert_eq!(h.get("x-apple-id-session-id").unwrap(), "session-value");
     }
@@ -784,11 +852,22 @@ mod tests {
     /// Sign-in must not advertise a session that does not exist yet.
     #[test]
     fn init_headers_omit_challenge_state() {
-        let stale = base_oauth_headers("auth-test", HOME_T, Some("stale-scnt"), Some("stale-session"));
-        assert!(stale.get("scnt").is_some(), "sanity: the helper does forward them");
+        let stale = base_oauth_headers(
+            "auth-test",
+            HOME_T,
+            Some("stale-scnt"),
+            Some("stale-session"),
+        );
+        assert!(
+            stale.get("scnt").is_some(),
+            "sanity: the helper does forward them"
+        );
 
         let init = with_srp_origin(base_oauth_headers("auth-test", HOME_T, None, None), ROOT_T);
-        assert!(init.get("scnt").is_none(), "/signin/init must not send scnt");
+        assert!(
+            init.get("scnt").is_none(),
+            "/signin/init must not send scnt"
+        );
         assert!(
             init.get("x-apple-id-session-id").is_none(),
             "/signin/init must not send a session id"
@@ -806,12 +885,17 @@ mod tests {
         for pair in steps.windows(2) {
             assert!(pair[1] >= pair[0], "backoff must never shrink: {steps:?}");
         }
-        assert_eq!(backoff_seconds(u32::MAX), backoff_seconds(5), "and it must be bounded");
+        assert_eq!(
+            backoff_seconds(u32::MAX),
+            backoff_seconds(5),
+            "and it must be bounded"
+        );
     }
 
     #[test]
     fn apple_errors_are_classified() {
-        let wrong = r#"{"serviceErrors":[{"code":"-21669","message":"Incorrect verification code."}]}"#;
+        let wrong =
+            r#"{"serviceErrors":[{"code":"-21669","message":"Incorrect verification code."}]}"#;
         assert!(matches!(
             apple_error("x", StatusCode::CONFLICT, wrong),
             Error::BadCode

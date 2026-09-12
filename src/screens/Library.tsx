@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, messageOf } from "../lib/ipc";
 
 const NAMES: Record<string, string> = {
@@ -79,16 +79,42 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
   // Everything else is infrastructure — real, but not something anyone navigates to.
   const rest = services.filter((k) => !PRIMARY.includes(k));
 
-  const item = (key: string) => (
-    <button
-      key={key}
-      className="nav-item"
-      aria-current={selected === key}
-      onClick={() => setSelected(key)}
-    >
-      <span>{NAMES[key] ?? key}</span>
-    </button>
-  );
+  // Native sidebars move with the arrow keys and occupy a single tab stop. Without this a
+  // keyboard user has to Tab through every row to reach the content.
+  const rows = useRef<(HTMLButtonElement | null)[]>([]);
+  const order = showAll ? [...primary, ...rest] : primary;
+
+  function onKeyDown(e: React.KeyboardEvent, index: number) {
+    const move = (to: number) => {
+      e.preventDefault();
+      const clamped = Math.max(0, Math.min(to, order.length - 1));
+      rows.current[clamped]?.focus();
+      setSelected(order[clamped]);
+    };
+    if (e.key === "ArrowDown") move(index + 1);
+    else if (e.key === "ArrowUp") move(index - 1);
+    else if (e.key === "Home") move(0);
+    else if (e.key === "End") move(order.length - 1);
+  }
+
+  const item = (key: string) => {
+    const index = order.indexOf(key);
+    return (
+      <button
+        key={key}
+        ref={(el) => {
+          rows.current[index] = el;
+        }}
+        className="nav-item"
+        aria-current={selected === key}
+        tabIndex={selected === key ? 0 : -1}
+        onKeyDown={(e) => onKeyDown(e, index)}
+        onClick={() => setSelected(key)}
+      >
+        <span>{NAMES[key] ?? key}</span>
+      </button>
+    );
+  };
 
   return (
     <div className="library enter-library">

@@ -39,9 +39,17 @@ impl Outcome {
     fn line(&self) -> String {
         format!(
             "{} {:<30} {:>4}  {}",
-            if self.ok { "\x1b[32mPASS\x1b[0m" } else { "\x1b[31mFAIL\x1b[0m" },
+            if self.ok {
+                "\x1b[32mPASS\x1b[0m"
+            } else {
+                "\x1b[31mFAIL\x1b[0m"
+            },
             self.label,
-            if self.status == 0 { "—".into() } else { self.status.to_string() },
+            if self.status == 0 {
+                "—".into()
+            } else {
+                self.status.to_string()
+            },
             self.detail
         )
     }
@@ -50,8 +58,18 @@ impl Outcome {
 /// Describe a response without dumping anyone's personal data.
 fn summarise(v: &Value) -> String {
     let mut parts = Vec::new();
-    for key in ["Collections", "collections", "Reminders", "contacts", "Events", "events",
-                "records", "zones", "items", "devices"] {
+    for key in [
+        "Collections",
+        "collections",
+        "Reminders",
+        "contacts",
+        "Events",
+        "events",
+        "records",
+        "zones",
+        "items",
+        "devices",
+    ] {
         if let Some(a) = v.get(key).and_then(|x| x.as_array()) {
             parts.push(format!("{key}={}", a.len()));
         }
@@ -66,21 +84,24 @@ fn summarise(v: &Value) -> String {
     parts.join("  ")
 }
 
-async fn probe_post(
-    client: &Client,
-    label: &'static str,
-    url: String,
-    body: Value,
-) -> Outcome {
+async fn probe_post(client: &Client, label: &'static str, url: String, body: Value) -> Outcome {
     let session = client.session();
     let q: Vec<(String, String)> = vec![
         ("clientBuildNumber".into(), "2523Project28".into()),
         ("clientMasteringNumber".into(), "2523B28".into()),
-        ("clientId".into(), session.client_id.clone().unwrap_or_default()),
+        (
+            "clientId".into(),
+            session.client_id.clone().unwrap_or_default(),
+        ),
         ("dsid".into(), session.dsid.clone().unwrap_or_default()),
     ];
     match client.http().post(&url).query(&q).json(&body).send().await {
-        Err(e) => Outcome { label, ok: false, status: 0, detail: format!("transport: {e}") },
+        Err(e) => Outcome {
+            label,
+            ok: false,
+            status: 0,
+            detail: format!("transport: {e}"),
+        },
         Ok(r) => {
             let status = r.status();
             let text = r.text().await.unwrap_or_default();
@@ -98,9 +119,18 @@ async fn probe_post(
                 }
                 (Some(v), true) => summarise(v),
                 (_, true) => format!("{} bytes", text.len()),
-                _ => text.chars().take(160).collect::<String>().replace('\n', " "),
+                _ => text
+                    .chars()
+                    .take(160)
+                    .collect::<String>()
+                    .replace('\n', " "),
             };
-            Outcome { label, ok: status.is_success(), status: status.as_u16(), detail }
+            Outcome {
+                label,
+                ok: status.is_success(),
+                status: status.as_u16(),
+                detail,
+            }
         }
     }
 }
@@ -115,7 +145,10 @@ async fn probe_get(
     let mut q: Vec<(String, String)> = vec![
         ("clientBuildNumber".into(), "2523Project28".into()),
         ("clientMasteringNumber".into(), "2523B28".into()),
-        ("clientId".into(), session.client_id.clone().unwrap_or_default()),
+        (
+            "clientId".into(),
+            session.client_id.clone().unwrap_or_default(),
+        ),
     ];
     if let Some(d) = &session.dsid {
         q.push(("dsid".into(), d.clone()));
@@ -125,7 +158,12 @@ async fn probe_get(
     }
 
     match client.http().get(&url).query(&q).send().await {
-        Err(e) => Outcome { label, ok: false, status: 0, detail: format!("transport: {e}") },
+        Err(e) => Outcome {
+            label,
+            ok: false,
+            status: 0,
+            detail: format!("transport: {e}"),
+        },
         Ok(r) => {
             let status = r.status();
             let body = r.text().await.unwrap_or_default();
@@ -137,18 +175,29 @@ async fn probe_get(
                 _ if status.as_u16() == 450 => {
                     "needs a fresh sign-in (a resumed session isn't accepted here)".to_string()
                 }
-                _ => body.chars().take(160).collect::<String>().replace('\n', " "),
+                _ => body
+                    .chars()
+                    .take(160)
+                    .collect::<String>()
+                    .replace('\n', " "),
             };
-            Outcome { label, ok: status.is_success(), status: status.as_u16(), detail }
+            Outcome {
+                label,
+                ok: status.is_success(),
+                status: status.as_u16(),
+                detail,
+            }
         }
     }
 }
 
 fn state_dir() -> PathBuf {
-    std::env::var("QUINCE_STATE").map(PathBuf::from).unwrap_or_else(|_| {
-        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
-            .join(".local/share/quince-probe")
-    })
+    std::env::var("QUINCE_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                .join(".local/share/quince-probe")
+        })
 }
 
 #[tokio::main]
@@ -159,7 +208,10 @@ async fn main() -> Result<()> {
     let mut client = Client::new(&dir)?;
 
     println!("\n\x1b[1mQuince Phase 0 probe\x1b[0m");
-    println!("state: {} (secrets live in the system keyring)\n", dir.display());
+    println!(
+        "state: {} (secrets live in the system keyring)\n",
+        dir.display()
+    );
 
     if fresh {
         client.sign_out().ok();
@@ -184,7 +236,10 @@ async fn main() -> Result<()> {
     if !resumed && code_only {
         println!("Resuming the pending two-factor challenge (no new sign-in)…\n");
         let opts = client.two_factor_options().await?;
-        println!("  trusted devices Apple pushed to : {}", opts.trusted_device_count);
+        println!(
+            "  trusted devices Apple pushed to : {}",
+            opts.trusted_device_count
+        );
         for (i, ph) in opts.phones.iter().enumerate() {
             println!("    [{}] {}", i + 1, ph.masked_number);
         }
@@ -227,7 +282,9 @@ async fn main() -> Result<()> {
                     );
                 }
                 if opts.too_many_codes_sent {
-                    println!("  \x1b[33mApple is rate-limiting new codes. Wait a few minutes.\x1b[0m");
+                    println!(
+                        "  \x1b[33mApple is rate-limiting new codes. Wait a few minutes.\x1b[0m"
+                    );
                 }
                 for (i, p) in opts.phones.iter().enumerate() {
                     println!("    [{}] text it to {}", i + 1, p.masked_number);
@@ -235,10 +292,14 @@ async fn main() -> Result<()> {
                 println!("\n  Nothing arrived? Two things to know:");
                 println!("   • The code is only created once you tap Allow on the iPhone prompt.");
                 println!("     No prompt means no code was ever generated — waiting won't help.");
-                println!("   • iOS 18/26 hides \"Get Verification Code\" while the phone is ONLINE.");
+                println!(
+                    "   • iOS 18/26 hides \"Get Verification Code\" while the phone is ONLINE."
+                );
                 println!("     Turn on Airplane Mode, then Settings → your name → Sign-In &");
                 println!("     Security. A popup offers the code while offline.");
-                println!("\n  Type the 6-digit code, or `r` to push again, or `1`/`2`… to text it.");
+                println!(
+                    "\n  Type the 6-digit code, or `r` to push again, or `1`/`2`… to text it."
+                );
 
                 let mut sms_phone: Option<u64> = None;
                 loop {
@@ -257,7 +318,10 @@ async fn main() -> Result<()> {
                             let phone = &opts.phones[choice - 1];
                             client.send_sms(phone.id).await?;
                             sms_phone = Some(phone.id);
-                            println!("  texted {} — enter the code when it lands", phone.masked_number);
+                            println!(
+                                "  texted {} — enter the code when it lands",
+                                phone.masked_number
+                            );
                             continue;
                         }
                     }
@@ -272,7 +336,9 @@ async fn main() -> Result<()> {
                     };
                     match result {
                         Ok(()) => {
-                            println!("  \x1b[32mcode accepted, trust token stored in the keyring\x1b[0m");
+                            println!(
+                                "  \x1b[32mcode accepted, trust token stored in the keyring\x1b[0m"
+                            );
                             break;
                         }
                         Err(e) => println!("  {e}"),
@@ -285,9 +351,15 @@ async fn main() -> Result<()> {
     // ---- 3. account facts -------------------------------------------------------
     let session = client.session();
     println!("\n\x1b[1m── Account ──\x1b[0m");
-    println!("  dsid          : {}", session.dsid.clone().unwrap_or("—".into()));
+    println!(
+        "  dsid          : {}",
+        session.dsid.clone().unwrap_or("—".into())
+    );
     println!("  trust token   : {}", redact(session.trust_token.as_ref()));
-    println!("  session token : {}", redact(session.session_token.as_ref()));
+    println!(
+        "  session token : {}",
+        redact(session.session_token.as_ref())
+    );
 
     println!("\n\x1b[1m── Services Apple advertises for this account ──\x1b[0m");
     if let Some(ws) = session.webservices.as_ref().and_then(|w| w.as_object()) {
@@ -304,41 +376,113 @@ async fn main() -> Result<()> {
     // ---- 4. one session, every service ------------------------------------------
     println!("\n\x1b[1m── Reachability: one sign-in, every service ──\x1b[0m");
     let mut results = Vec::new();
-    let cal_range: &[(&str, &str)] =
-        &[("startDate", "2026-09-01"), ("endDate", "2026-09-30"), ("lang", "en-us"), ("usertz", "UTC")];
+    let cal_range: &[(&str, &str)] = &[
+        ("startDate", "2026-09-01"),
+        ("endDate", "2026-09-30"),
+        ("lang", "en-us"),
+        ("usertz", "UTC"),
+    ];
 
     if let Some(u) = session.service_url("calendar") {
-        results.push(probe_get(&client, "Calendar  /ca/startup", format!("{u}/ca/startup"), cal_range).await);
-        results.push(probe_get(&client, "Calendar  /ca/events", format!("{u}/ca/events"), cal_range).await);
+        results.push(
+            probe_get(
+                &client,
+                "Calendar  /ca/startup",
+                format!("{u}/ca/startup"),
+                cal_range,
+            )
+            .await,
+        );
+        results.push(
+            probe_get(
+                &client,
+                "Calendar  /ca/events",
+                format!("{u}/ca/events"),
+                cal_range,
+            )
+            .await,
+        );
     }
     if let Some(u) = session.service_url("contacts") {
-        results.push(probe_get(&client, "Contacts  /co/startup", format!("{u}/co/startup"),
-            &[("clientVersion", "2.1"), ("locale", "en_US"), ("order", "last,first")]).await);
+        results.push(
+            probe_get(
+                &client,
+                "Contacts  /co/startup",
+                format!("{u}/co/startup"),
+                &[
+                    ("clientVersion", "2.1"),
+                    ("locale", "en_US"),
+                    ("order", "last,first"),
+                ],
+            )
+            .await,
+        );
     }
     if let Some(u) = session.service_url("reminders") {
-        results.push(probe_get(&client, "Reminders /rd/startup", format!("{u}/rd/startup"),
-            &[("clientVersion", "4.0"), ("lang", "en-us"), ("usertz", "UTC")]).await);
+        results.push(
+            probe_get(
+                &client,
+                "Reminders /rd/startup",
+                format!("{u}/rd/startup"),
+                &[
+                    ("clientVersion", "4.0"),
+                    ("lang", "en-us"),
+                    ("usertz", "UTC"),
+                ],
+            )
+            .await,
+        );
     }
     if let Some(u) = session.service_url("drivews") {
-        results.push(probe_post(&client, "Drive     item details",
-            format!("{u}/retrieveItemDetailsInFolders"),
-            serde_json::json!([{
-                "drivewsid": "FOLDER::com.apple.CloudDocs::root",
-                "partialData": false,
-            }])).await);
+        results.push(
+            probe_post(
+                &client,
+                "Drive     item details",
+                format!("{u}/retrieveItemDetailsInFolders"),
+                serde_json::json!([{
+                    "drivewsid": "FOLDER::com.apple.CloudDocs::root",
+                    "partialData": false,
+                }]),
+            )
+            .await,
+        );
     }
     if let Some(u) = session.service_url("findme") {
-        results.push(probe_get(&client, "Find My   initClient",
-            format!("{u}/fmipservice/client/web/initClient"), &[]).await);
+        results.push(
+            probe_get(
+                &client,
+                "Find My   initClient",
+                format!("{u}/fmipservice/client/web/initClient"),
+                &[],
+            )
+            .await,
+        );
     }
     // CloudKit zone lists double as the Advanced Data Protection tell: with ADP on,
     // these return nothing readable because Apple's servers hold no keys.
     if let Some(u) = session.service_url("ckdatabasews") {
-        let ck: &[(&str, &str)] = &[("ckjsBuildVersion", "17DProjectDev77"), ("ckjsVersion", "2.6.1")];
-        results.push(probe_get(&client, "Photos    CloudKit zones",
-            format!("{u}/database/1/com.apple.photos.cloud/production/private/zones/list"), ck).await);
-        results.push(probe_get(&client, "Notes     CloudKit zones",
-            format!("{u}/database/1/com.apple.notes/production/private/zones/list"), ck).await);
+        let ck: &[(&str, &str)] = &[
+            ("ckjsBuildVersion", "17DProjectDev77"),
+            ("ckjsVersion", "2.6.1"),
+        ];
+        results.push(
+            probe_get(
+                &client,
+                "Photos    CloudKit zones",
+                format!("{u}/database/1/com.apple.photos.cloud/production/private/zones/list"),
+                ck,
+            )
+            .await,
+        );
+        results.push(
+            probe_get(
+                &client,
+                "Notes     CloudKit zones",
+                format!("{u}/database/1/com.apple.notes/production/private/zones/list"),
+                ck,
+            )
+            .await,
+        );
     }
 
     for r in &results {
@@ -348,8 +492,14 @@ async fn main() -> Result<()> {
     // ---- 5. verdict -------------------------------------------------------------
     let passed = results.iter().filter(|r| r.ok).count();
     println!("\n\x1b[1m── Verdict ──\x1b[0m");
-    println!("  services reachable from one sign-in : {passed}/{}", results.len());
-    println!("  trust token stored                  : {}", session.trust_token.is_some());
+    println!(
+        "  services reachable from one sign-in : {passed}/{}",
+        results.len()
+    );
+    println!(
+        "  trust token stored                  : {}",
+        session.trust_token.is_some()
+    );
     println!("  resumed with no password or 2FA     : {resumed}");
     if !resumed {
         println!(
@@ -364,8 +514,13 @@ async fn main() -> Result<()> {
         session.trust_token.is_some(), results.len()
     ));
     for r in &results {
-        md.push_str(&format!("- `{}` — **{}** ({}) {}\n",
-            r.label.trim(), if r.ok { "PASS" } else { "FAIL" }, r.status, r.detail));
+        md.push_str(&format!(
+            "- `{}` — **{}** ({}) {}\n",
+            r.label.trim(),
+            if r.ok { "PASS" } else { "FAIL" },
+            r.status,
+            r.detail
+        ));
     }
     std::fs::write(dir.join("findings.md"), md)?;
     println!("\n  findings: {}\n", dir.join("findings.md").display());
