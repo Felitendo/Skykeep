@@ -1,0 +1,26 @@
+[package]
+name = "quince-auth"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+base64 = "0.22"
+num-bigint = "0.4"
+sha2 = "0.10"
+pbkdf2 = { version = "0.12", default-features = false }
+hmac = "0.12"
+rand = "0.9"
+reqwest_cookie_store = "0.8"
+cookie_store = { version = "0.21", features = ["serde_json"] }
+keyring = { version = "3", features = ["linux-native"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { workspace = true }

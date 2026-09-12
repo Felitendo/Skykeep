@@ -1,0 +1,117 @@
+/* Quince design tokens.
+   The idiom is macOS, because familiarity is what earns trust from someone being asked for
+   their Apple ID. The accent is not Apple's system blue: it's quince gold, from the fruit the
+   app is named after, and it is the only saturated colour anywhere in the chrome. */
+
+:root {
+  color-scheme: light dark;
+
+  --gold: #c8912a;
+  --gold-strong: #a9781f;
+  --gold-tint: rgba(200, 145, 42, 0.13);
+  --gold-ring: rgba(200, 145, 42, 0.32);
+
+  --bg: #f5f5f7;
+  --sheet: #ffffff;
+  --text: #1d1d1f;
+  --text-2: #6e6e73;
+  --text-3: #8e8e93;
+  --separator: rgba(0, 0, 0, 0.11);
+  --field: #ffffff;
+  --field-edge: rgba(0, 0, 0, 0.17);
+  --field-edge-hover: rgba(0, 0, 0, 0.28);
+  --danger: #c1121f;
+
+  --shadow-sheet: 0 14px 44px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.09);
+  --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.04);
+
+  /* macOS system text is 13px. Using the web's 16px default is the fastest way to look
+     like a website pretending to be an app. */
+  --t-11: 11px;
+  --t-13: 13px;
+  --t-15: 15px;
+  --t-17: 17px;
+  --t-22: 22px;
+  --t-28: 28px;
+
+
+  /* Liquid Glass. Apple's rules: glass is for CHROME only — never content layers, never
+     stacked on itself. Tint is reserved for the single primary action. */
+  --glass: rgba(255, 255, 255, 0.62);
+  --glass-blur: blur(28px) saturate(180%);
+  --glass-specular: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  --glass-edge: rgba(0, 0, 0, 0.07);
+
+  /* Tahoe moved windows from Sequoia's 4px to 12px, and radii nest concentrically:
+     an inner radius is the outer radius minus the gap between them. */
+  --r-window: 12px;
+  --r-plateau: 10px;
+  --r-field: 7px;
+  --r-pill: 999px;
+
+  /* Apple's sheet-presentation curve. Decisive out, no bounce. */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  /* Reserved for the one moment that earns it: the unlock. */
+  --ease-spring: linear(0.0000 0.0%, 0.0230 2.5%, 0.0834 5.0%, 0.1694 7.5%, 0.2710 10.0%, 0.3800 12.5%, 0.4897 15.0%, 0.5951 17.5%, 0.6927 20.0%, 0.7800 22.5%, 0.8558 25.0%, 0.9194 27.5%, 0.9711 30.0%, 1.0115 32.5%, 1.0416 35.0%, 1.0625 37.5%, 1.0755 40.0%, 1.0821 42.5%, 1.0834 45.0%, 1.0808 47.5%, 1.0752 50.0%, 1.0677 52.5%, 1.0591 55.0%, 1.0499 57.5%, 1.0408 60.0%, 1.0321 62.5%, 1.0241 65.0%, 1.0170 67.5%, 1.0109 70.0%, 1.0058 72.5%, 1.0016 75.0%, 0.9985 77.5%, 0.9961 80.0%, 0.9945 82.5%, 0.9935 85.0%, 0.9931 87.5%, 0.9931 90.0%, 0.9933 92.5%, 0.9938 95.0%, 0.9945 97.5%, 0.9952 100.0%);
+
+  --sf: "SF Pro Text", "SF Pro Display", Inter, "Inter Variable", system-ui,
+    -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --sheet: #2c2c2e;
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #8e8e93;
+    --separator: rgba(255, 255, 255, 0.13);
+    --field: #1c1c1e;
+    --field-edge: rgba(255, 255, 255, 0.16);
+    --field-edge-hover: rgba(255, 255, 255, 0.28);
+    --danger: #ff6b6b;
+    --shadow-sheet: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
+    --glass: rgba(44, 44, 48, 0.62);
+    --glass-specular: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    --glass-edge: rgba(255, 255, 255, 0.08);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sf);
+  font-size: var(--t-13);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  font-synthesis-weight: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Apple frosts the glass under Reduce Transparency and drops to bordered opaque under
+   Increase Contrast. Matching that is the difference between using the design language
+   and merely copying its look. */
+@media (prefers-reduced-transparency: reduce) {
+  :root { --glass: var(--bg); --glass-blur: none; --glass-specular: none; }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --glass: var(--bg);
+    --glass-blur: none;
+    --field-edge: rgba(0, 0, 0, 0.55);
+    --separator: rgba(0, 0, 0, 0.42);
+  }
+}

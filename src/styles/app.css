@@ -1,0 +1,268 @@
+.app-ground {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(110% 80% at 8% -10%, color-mix(in srgb, var(--gold) 7%, transparent), transparent 58%),
+    radial-gradient(90% 70% at 100% 108%, color-mix(in srgb, var(--text) 5%, transparent), transparent 52%);
+}
+
+/* ---- shell ------------------------------------------------------------------ */
+
+.shell {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+/* ---- the sign-in sheet ------------------------------------------------------- */
+
+.sheet {
+  width: 100%;
+  max-width: 344px;
+  text-align: center;
+}
+
+.mark {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 20px;
+  color: var(--gold);
+  display: block;
+}
+
+.sheet h1 {
+  margin: 0 0 7px;
+  font-size: var(--t-22);
+  font-weight: 600;
+  letter-spacing: -0.021em;
+  line-height: 1.2;
+}
+
+.lede {
+  margin: 0 auto 24px;
+  max-width: 36ch;
+  color: var(--text-2);
+  font-size: var(--t-13);
+  line-height: 1.5;
+}
+
+/* macOS groups related fields into one bordered block with a hairline between them,
+   rather than floating separate inputs. */
+.field-group {
+  border: 1px solid var(--field-edge);
+  border-radius: var(--r-field);
+  background: var(--field);
+  box-shadow: var(--shadow-field);
+  overflow: hidden;
+  text-align: left;
+  transition: border-color 140ms var(--ease);
+}
+
+.field-group:hover { border-color: var(--field-edge-hover); }
+
+.field-group:focus-within {
+  border-color: var(--gold);
+  box-shadow: var(--shadow-field), 0 0 0 3px var(--gold-ring);
+}
+
+.field-group input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-15);
+  padding: 10px 12px;
+  outline: none;
+}
+
+.field-group input::placeholder { color: var(--text-3); }
+.field-group input + input { border-top: 1px solid var(--separator); }
+
+/* ---- buttons ----------------------------------------------------------------- */
+
+.primary {
+  margin-top: 18px;
+  width: 100%;
+  border: 0;
+  border-radius: var(--r-field);
+  background: var(--gold);
+  color: #fff;
+  font: inherit;
+  font-size: var(--t-15);
+  font-weight: 550;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: background 130ms var(--ease), transform 130ms var(--ease);
+}
+
+.primary:hover:not(:disabled) { background: var(--gold-strong); }
+.primary:active:not(:disabled) { transform: scale(0.985); }
+.primary:disabled {
+  background: color-mix(in srgb, var(--text) 11%, transparent);
+  color: var(--text-3);
+  cursor: default;
+}
+.primary:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 2px; }
+
+.quiet {
+  margin-top: 14px;
+  border: 0;
+  background: none;
+  color: var(--gold);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--r-field);
+}
+
+.quiet:hover { text-decoration: underline; }
+.quiet:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
+
+/* ---- footnotes --------------------------------------------------------------- */
+
+.assurance {
+  margin: 22px auto 0;
+  max-width: 40ch;
+  color: var(--text-2);
+  font-size: var(--t-11);
+  line-height: 1.55;
+}
+
+.disclaimer {
+  margin: 10px auto 0;
+  color: var(--text-3);
+  font-size: var(--t-11);
+}
+
+.error {
+  margin: 16px auto 0;
+  max-width: 32ch;
+  color: var(--danger);
+  font-size: var(--t-13);
+  line-height: 1.45;
+}
+
+/* ---- six-digit code ---------------------------------------------------------- */
+
+.code {
+  display: flex;
+  gap: 7px;
+  justify-content: center;
+}
+
+.code .gap { width: 9px; }
+
+.code input {
+  width: 40px;
+  height: 50px;
+  text-align: center;
+  font-size: var(--t-22);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--field-edge);
+  border-radius: var(--r-field);
+  box-shadow: var(--shadow-field);
+  outline: none;
+  transition: border-color 120ms var(--ease), box-shadow 120ms var(--ease);
+}
+
+.code input:focus {
+  border-color: var(--gold);
+  box-shadow: var(--shadow-field), 0 0 0 3px var(--gold-ring);
+}
+
+/* ---- library ----------------------------------------------------------------- */
+
+.library {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Chrome, so it gets glass. The content pane deliberately does not — Apple forbids glass
+   on content layers, and a photo grid is exactly the thing it would fight. */
+.sidebar {
+  position: absolute;
+  z-index: 2;
+  left: 8px;
+  top: 8px;
+  bottom: 8px;
+  width: 208px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge);
+  border-radius: var(--r-plateau);
+  padding: 12px 9px;
+  overflow-y: auto;
+}
+
+.sidebar h2 {
+  margin: 6px 8px 10px;
+  font-size: var(--t-11);
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--r-field);
+  cursor: pointer;
+}
+
+.nav-item:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.nav-item[aria-current="true"] { background: var(--gold-tint); color: var(--gold-strong); font-weight: 550; }
+.nav-item:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+
+.badge {
+  font-size: var(--t-11);
+  color: var(--text-3);
+  flex: none;
+  opacity: 0.62;
+}
+
+.nav-item[aria-current="true"] .badge { opacity: 0.85; }
+
+/* Full-bleed, so it passes under the floating sidebar as it scrolls. */
+.content {
+  height: 100%;
+  overflow-y: auto;
+  padding: 28px 34px 28px 248px;
+}
+.content h1 { margin: 0 0 6px; font-size: var(--t-28); font-weight: 600; letter-spacing: -0.022em; }
+.content p { margin: 0 0 18px; color: var(--text-2); font-size: var(--t-15); max-width: 62ch; }
+
+.toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+
+/* ---- the one orchestrated moment: sign-in dissolving into the library ---------- */
+
+.enter-sheet { animation: sheet-in 420ms var(--ease) both; }
+.enter-library { animation: library-in 620ms var(--ease-spring) both; }
+
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes library-in {
+  from { opacity: 0; transform: scale(0.972); }
+  to   { opacity: 1; transform: none; }
+}

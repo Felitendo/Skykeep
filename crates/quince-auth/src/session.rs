@@ -1,0 +1,141 @@
+//! Session state, and the keyring that makes it outlive the process.
+//!
+//! The reason every Electron iCloud wrapper signs you out is that it keeps cookies in a bare
+//! browser partition and never asks Apple for the one durable credential that exists: the
+//! trust token from `/2sv/trust`. We capture it and hand it to the OS keyring, so a restart
+//! resumes instead of re-prompting.
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+const KEYRING_SERVICE: &str = "dev.quince.client";
+const KEYRING_ENTRY: &str = "session";
+
+/// Headers Apple rotates across responses. Any of them can appear on any call, so we capture
+/// after every request rather than only at the end of sign-in.
+pub const CAPTURED_HEADERS: &[(&str, Field)] = &[
+    ("x-apple-id-account-country", Field::AccountCountry),
+    ("x-apple-id-session-id", Field::SessionId),
+    ("x-apple-session-token", Field::SessionToken),
+    ("x-apple-twosv-trust-token", Field::TrustToken),
+    ("scnt", Field::Scnt),
+];
+
+#[derive(Clone, Copy, Debug)]
+pub enum Field {
+    AccountCountry,
+    SessionId,
+    SessionToken,
+    TrustToken,
+    Scnt,
+}
+
+/// Everything needed to resume a signed-in session without a password.
+///
+/// This is secret material. It lives in the OS keyring, never in a plaintext file.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct Session {
+    /// Stable per-install client id. Apple ties the trust token to it, so it must not rotate.
+    pub client_id: Option<String>,
+    pub account_country: Option<String>,
+    pub session_id: Option<String>,
+    pub session_token: Option<String>,
+    /// The durable credential. Roughly 60 days, and the whole reason sign-in survives a restart.
+    pub trust_token: Option<String>,
+    pub scnt: Option<String>,
+    /// Apple's per-account service URL map, from `accountLogin`.
+    pub webservices: Option<serde_json::Value>,
+    pub dsid: Option<String>,
+}
+
+impl Session {
+    pub fn set(&mut self, field: Field, value: String) {
+        if value.is_empty() {
+            return;
+        }
+        match field {
+            Field::AccountCountry => self.account_country = Some(value),
+            Field::SessionId => self.session_id = Some(value),
+            Field::SessionToken => self.session_token = Some(value),
+            Field::TrustToken => self.trust_token = Some(value),
+            Field::Scnt => self.scnt = Some(value),
+        }
+    }
+
+    /// Stable client id, minted once and then reused for the life of the install.
+    pub fn client_id(&mut self) -> String {
+        if self.client_id.is_none() {
+            self.client_id = Some(format!("auth-{}", uuid::Uuid::new_v4()).to_lowercase());
+        }
+        self.client_id.clone().expect("just set")
+    }
+
+    /// A service's base URL from Apple's map, e.g. `calendar`, `ckdatabasews`, `drivews`.
+    pub fn service_url(&self, key: &str) -> Option<String> {
+        self.webservices
+            .as_ref()?
+            .pointer(&format!("/{key}/url"))?
+            .as_str()
+            .map(|s| s.trim_end_matches('/').to_string())
+    }
+
+    /// True when there's enough stored state to try resuming without a password.
+    pub fn is_resumable(&self) -> bool {
+        self.session_token.is_some()
+    }
+}
+
+/// Where the session is kept.
+///
+/// Secrets go to the OS keyring (gnome-keyring / kwallet via the Secret Service API). Cookies
+/// are not independently sensitive once the tokens are protected, so they sit in a state file.
+pub struct Store {
+    cookie_path: PathBuf,
+}
+
+impl Store {
+    pub fn new(state_dir: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(state_dir)?;
+        Ok(Self { cookie_path: state_dir.join("cookies.json") })
+    }
+
+    pub fn cookie_path(&self) -> &Path {
+        &self.cookie_path
+    }
+
+    fn entry() -> Result<keyring::Entry, keyring::Error> {
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_ENTRY)
+    }
+
+    /// Load the stored session. A missing entry is normal (first run), not an error.
+    pub fn load(&self) -> Session {
+        let Ok(entry) = Self::entry() else {
+            return Session::default();
+        };
+        match entry.get_password() {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+            Err(_) => Session::default(),
+        }
+    }
+
+    pub fn save(&self, session: &Session) -> Result<(), crate::Error> {
+        let json = serde_json::to_string(session)?;
+        Self::entry()
+            .and_then(|e| e.set_password(&json))
+            .map_err(|e| crate::Error::Keyring(e.to_string()))
+    }
+
+    /// Forget everything. Used by sign-out, and when Apple rejects the stored session for good.
+    pub fn clear(&self) -> Result<(), crate::Error> {
+        if let Ok(entry) = Self::entry() {
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(e) => return Err(crate::Error::Keyring(e.to_string())),
+            }
+        }
+        if self.cookie_path.exists() {
+            std::fs::remove_file(&self.cookie_path)?;
+        }
+        Ok(())
+    }
+}

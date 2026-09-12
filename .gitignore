@@ -1,0 +1,8 @@
+/target
+/dist
+/node_modules
+/src-tauri/gen
+.uiverify/*.png
+findings.md
+session.json
+cookies.json
