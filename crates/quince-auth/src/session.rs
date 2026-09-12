@@ -85,18 +85,35 @@ impl Session {
     }
 }
 
-/// Where the session is kept.
+/// Where secrets are kept.
 ///
-/// Secrets go to the OS keyring (gnome-keyring / kwallet via the Secret Service API). Cookies
-/// are not independently sensitive once the tokens are protected, so they sit in a state file.
+/// Normally the OS keyring (gnome-keyring / kwallet over the Secret Service API). Tests use
+/// a file instead, so a test run never touches the user's real keyring.
+enum Backend {
+    Keyring,
+    File(PathBuf),
+}
+
 pub struct Store {
     cookie_path: PathBuf,
+    backend: Backend,
 }
 
 impl Store {
-    pub fn new(state_dir: &Path) -> std::io::Result<Self> {
+    /// Production: secrets in the OS keyring.
+    pub fn keyring(state_dir: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(state_dir)?;
-        Ok(Self { cookie_path: state_dir.join("cookies.json") })
+        Ok(Self { cookie_path: state_dir.join("cookies.json"), backend: Backend::Keyring })
+    }
+
+    /// Tests only: secrets in a file under `state_dir`. Never use for real accounts —
+    /// it writes tokens to disk in the clear.
+    pub fn file(state_dir: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(state_dir)?;
+        Ok(Self {
+            cookie_path: state_dir.join("cookies.json"),
+            backend: Backend::File(state_dir.join("session.json")),
+        })
     }
 
     pub fn cookie_path(&self) -> &Path {
@@ -109,28 +126,44 @@ impl Store {
 
     /// Load the stored session. A missing entry is normal (first run), not an error.
     pub fn load(&self) -> Session {
-        let Ok(entry) = Self::entry() else {
-            return Session::default();
+        let json = match &self.backend {
+            Backend::Keyring => match Self::entry().and_then(|e| e.get_password()) {
+                Ok(j) => j,
+                Err(_) => return Session::default(),
+            },
+            Backend::File(path) => match std::fs::read_to_string(path) {
+                Ok(j) => j,
+                Err(_) => return Session::default(),
+            },
         };
-        match entry.get_password() {
-            Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-            Err(_) => Session::default(),
-        }
+        serde_json::from_str(&json).unwrap_or_default()
     }
 
     pub fn save(&self, session: &Session) -> Result<(), crate::Error> {
         let json = serde_json::to_string(session)?;
-        Self::entry()
-            .and_then(|e| e.set_password(&json))
-            .map_err(|e| crate::Error::Keyring(e.to_string()))
+        match &self.backend {
+            Backend::Keyring => Self::entry()
+                .and_then(|e| e.set_password(&json))
+                .map_err(|e| crate::Error::Keyring(e.to_string())),
+            Backend::File(path) => Ok(std::fs::write(path, json)?),
+        }
     }
 
     /// Forget everything. Used by sign-out, and when Apple rejects the stored session for good.
     pub fn clear(&self) -> Result<(), crate::Error> {
-        if let Ok(entry) = Self::entry() {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(e) => return Err(crate::Error::Keyring(e.to_string())),
+        match &self.backend {
+            Backend::Keyring => {
+                if let Ok(entry) = Self::entry() {
+                    match entry.delete_credential() {
+                        Ok(()) | Err(keyring::Error::NoEntry) => {}
+                        Err(e) => return Err(crate::Error::Keyring(e.to_string())),
+                    }
+                }
+            }
+            Backend::File(path) => {
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                }
             }
         }
         if self.cookie_path.exists() {

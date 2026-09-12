@@ -66,6 +66,45 @@ fn summarise(v: &Value) -> String {
     parts.join("  ")
 }
 
+async fn probe_post(
+    client: &Client,
+    label: &'static str,
+    url: String,
+    body: Value,
+) -> Outcome {
+    let session = client.session();
+    let q: Vec<(String, String)> = vec![
+        ("clientBuildNumber".into(), "2523Project28".into()),
+        ("clientMasteringNumber".into(), "2523B28".into()),
+        ("clientId".into(), session.client_id.clone().unwrap_or_default()),
+        ("dsid".into(), session.dsid.clone().unwrap_or_default()),
+    ];
+    match client.http().post(&url).query(&q).json(&body).send().await {
+        Err(e) => Outcome { label, ok: false, status: 0, detail: format!("transport: {e}") },
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            let parsed: Option<Value> = serde_json::from_str(&text).ok();
+            let detail = match (&parsed, status.is_success()) {
+                // Drive answers with an array of folders; summarise the first.
+                (Some(Value::Array(items)), true) => {
+                    let children = items
+                        .first()
+                        .and_then(|f| f.get("items"))
+                        .and_then(|i| i.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    format!("folders={}  items={}", items.len(), children)
+                }
+                (Some(v), true) => summarise(v),
+                (_, true) => format!("{} bytes", text.len()),
+                _ => text.chars().take(160).collect::<String>().replace('\n', " "),
+            };
+            Outcome { label, ok: status.is_success(), status: status.as_u16(), detail }
+        }
+    }
+}
+
 async fn probe_get(
     client: &Client,
     label: &'static str,
@@ -277,8 +316,12 @@ async fn main() -> Result<()> {
             &[("clientVersion", "4.0"), ("lang", "en-us"), ("usertz", "UTC")]).await);
     }
     if let Some(u) = session.service_url("drivews") {
-        results.push(probe_get(&client, "Drive     item details",
-            format!("{u}/retrieveItemDetailsInFolders"), &[]).await);
+        results.push(probe_post(&client, "Drive     item details",
+            format!("{u}/retrieveItemDetailsInFolders"),
+            serde_json::json!([{
+                "drivewsid": "FOLDER::com.apple.CloudDocs::root",
+                "partialData": false,
+            }])).await);
     }
     if let Some(u) = session.service_url("findme") {
         results.push(probe_get(&client, "Find My   initClient",

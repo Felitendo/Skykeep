@@ -22,10 +22,55 @@ use session::{Session, Store, CAPTURED_HEADERS};
 use std::path::Path;
 use std::sync::Arc;
 
-const AUTH_ROOT: &str = "https://idmsa.apple.com";
-const AUTH: &str = "https://idmsa.apple.com/appleauth/auth";
-const SETUP: &str = "https://setup.icloud.com/setup/ws/1";
-const HOME: &str = "https://www.icloud.com";
+/// Base URLs for Apple's auth and setup services.
+///
+/// Injectable so the sign-in flow can be exercised against a mock server, and so Apple's
+/// China domains are a constructor rather than a fork.
+#[derive(Clone, Debug)]
+pub struct Endpoints {
+    /// Origin for the SRP sign-in calls.
+    pub auth_root: String,
+    /// `{auth_root}/appleauth/auth`
+    pub auth: String,
+    /// `.../setup/ws/1`
+    pub setup: String,
+    /// Origin for everything that is not SRP sign-in.
+    pub home: String,
+}
+
+impl Default for Endpoints {
+    fn default() -> Self {
+        Self {
+            auth_root: "https://idmsa.apple.com".into(),
+            auth: "https://idmsa.apple.com/appleauth/auth".into(),
+            setup: "https://setup.icloud.com/setup/ws/1".into(),
+            home: "https://www.icloud.com".into(),
+        }
+    }
+}
+
+impl Endpoints {
+    /// Accounts hosted in mainland China.
+    pub fn china() -> Self {
+        Self {
+            auth_root: "https://idmsa.apple.com.cn".into(),
+            auth: "https://idmsa.apple.com.cn/appleauth/auth".into(),
+            setup: "https://setup.icloud.com.cn/setup/ws/1".into(),
+            home: "https://www.icloud.com.cn".into(),
+        }
+    }
+
+    /// Point every service at one base URL. Test seam.
+    pub fn at(base: &str) -> Self {
+        let base = base.trim_end_matches('/');
+        Self {
+            auth_root: base.into(),
+            auth: format!("{base}/appleauth/auth"),
+            setup: format!("{base}/setup/ws/1"),
+            home: base.into(),
+        }
+    }
+}
 
 /// iCloud web's first-party OAuth widget key. Not a secret — it is public in the web client.
 const WIDGET_KEY: &str = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d";
@@ -118,7 +163,12 @@ pub enum SignInOutcome {
 /// OAuth headers every idmsa call carries. Deliberately sets no Origin: the HTTP client
 /// defaults to the icloud.com origin, which is what the verify, trust and phone endpoints
 /// expect. Only SRP overrides it — see [`with_srp_origin`].
-fn base_oauth_headers(client_id: &str, scnt: Option<&str>, session_id: Option<&str>) -> HeaderMap {
+fn base_oauth_headers(
+    client_id: &str,
+    home: &str,
+    scnt: Option<&str>,
+    session_id: Option<&str>,
+) -> HeaderMap {
     let mut h = HeaderMap::new();
     let mut put = |k: &'static str, v: &str| {
         if let Ok(val) = HeaderValue::from_str(v) {
@@ -129,7 +179,7 @@ fn base_oauth_headers(client_id: &str, scnt: Option<&str>, session_id: Option<&s
     put("content-type", "application/json");
     put("x-apple-oauth-client-id", WIDGET_KEY);
     put("x-apple-oauth-client-type", "firstPartyAuth");
-    put("x-apple-oauth-redirect-uri", HOME);
+    put("x-apple-oauth-redirect-uri", home);
     put("x-apple-oauth-require-grant-code", "true");
     put("x-apple-oauth-response-mode", "web_message");
     put("x-apple-oauth-response-type", "code");
@@ -146,11 +196,11 @@ fn base_oauth_headers(client_id: &str, scnt: Option<&str>, session_id: Option<&s
 
 /// `/signin/init` and `/signin/complete` are served from idmsa and reject the icloud.com
 /// origin. Applying this anywhere else earns a 409.
-fn with_srp_origin(mut h: HeaderMap) -> HeaderMap {
-    if let Ok(v) = HeaderValue::from_str(AUTH_ROOT) {
+fn with_srp_origin(mut h: HeaderMap, auth_root: &str) -> HeaderMap {
+    if let Ok(v) = HeaderValue::from_str(auth_root) {
         h.insert("origin", v);
     }
-    if let Ok(v) = HeaderValue::from_str(&format!("{AUTH_ROOT}/")) {
+    if let Ok(v) = HeaderValue::from_str(&format!("{auth_root}/")) {
         h.insert("referer", v);
     }
     h
@@ -161,11 +211,17 @@ pub struct Client {
     jar: Arc<CookieStoreMutex>,
     store: Store,
     session: Session,
+    endpoints: Endpoints,
 }
 
 impl Client {
     pub fn new(state_dir: &Path) -> Result<Self> {
-        let store = Store::new(state_dir)?;
+        Self::with(state_dir, Endpoints::default(), Store::keyring(state_dir)?)
+    }
+
+    /// Build a client against specific endpoints and a specific secret store.
+    pub fn with(state_dir: &Path, endpoints: Endpoints, store: Store) -> Result<Self> {
+        std::fs::create_dir_all(state_dir)?;
         let session = store.load();
 
         let jar = {
@@ -180,11 +236,15 @@ impl Client {
             Arc::new(CookieStoreMutex::new(inner))
         };
 
-        // Default origin is icloud.com — what setup.icloud.com and the service endpoints expect.
-        // The idmsa SRP endpoints want their own origin, and override it per request.
+        // Default origin is icloud.com — what setup.icloud.com and the service endpoints
+        // expect. The idmsa SRP endpoints want their own origin and override it per request.
         let mut defaults = HeaderMap::new();
-        defaults.insert("origin", HeaderValue::from_static(HOME));
-        defaults.insert("referer", HeaderValue::from_static("https://www.icloud.com/"));
+        if let Ok(v) = HeaderValue::from_str(&endpoints.home) {
+            defaults.insert("origin", v);
+        }
+        if let Ok(v) = HeaderValue::from_str(&format!("{}/", endpoints.home)) {
+            defaults.insert("referer", v);
+        }
         defaults.insert("accept-language", HeaderValue::from_static("en-US,en;q=0.9"));
 
         let http = HttpClient::builder()
@@ -193,7 +253,7 @@ impl Client {
             .default_headers(defaults)
             .build()?;
 
-        Ok(Self { http, jar, store, session })
+        Ok(Self { http, jar, store, session, endpoints })
     }
 
     pub fn session(&self) -> &Session {
@@ -236,7 +296,12 @@ impl Client {
 
     fn auth_headers(&mut self) -> HeaderMap {
         let client_id = self.session.client_id();
-        base_oauth_headers(&client_id, self.session.scnt.as_deref(), self.session.session_id.as_deref())
+        base_oauth_headers(
+            &client_id,
+            &self.endpoints.home,
+            self.session.scnt.as_deref(),
+            self.session.session_id.as_deref(),
+        )
     }
 
     /// Headers for `/signin/init` and `/signin/complete` only.
@@ -244,7 +309,8 @@ impl Client {
     /// Those two are served from idmsa and reject the icloud.com origin. Every other auth
     /// endpoint — verify, trust, phone — wants the icloud.com origin the client defaults to.
     fn srp_headers(&mut self) -> HeaderMap {
-        with_srp_origin(self.auth_headers())
+        let h = self.auth_headers();
+        with_srp_origin(h, &self.endpoints.auth_root)
     }
 
     /// Headers for `/signin/init` specifically.
@@ -253,7 +319,8 @@ impl Client {
     /// sending leftovers from an abandoned challenge is a conflict.
     fn srp_init_headers(&mut self) -> HeaderMap {
         let client_id = self.session.client_id();
-        with_srp_origin(base_oauth_headers(&client_id, None, None))
+        let h = base_oauth_headers(&client_id, &self.endpoints.home, None, None);
+        with_srp_origin(h, &self.endpoints.auth_root)
     }
 
     /// Drop transient challenge state, keeping what identifies this install.
@@ -296,7 +363,7 @@ impl Client {
     async fn validate(&mut self) -> Result<Value> {
         let r = self
             .http
-            .post(format!("{SETUP}/validate"))
+            .post(format!("{}/validate", self.endpoints.setup))
             .header("content-type", "application/json")
             .body("null")
             .send()
@@ -341,7 +408,7 @@ impl Client {
         let headers = self.srp_init_headers();
         let r = self
             .http
-            .post(format!("{AUTH}/signin/init"))
+            .post(format!("{}/signin/init", self.endpoints.auth))
             .headers(headers)
             .body(
                 json!({
@@ -404,7 +471,7 @@ impl Client {
         let headers = self.srp_headers();
         let r = self
             .http
-            .post(format!("{AUTH}/signin/complete"))
+            .post(format!("{}/signin/complete", self.endpoints.auth))
             .query(&[("isRememberMeEnabled", "true")])
             .headers(headers)
             .body(body.to_string())
@@ -439,7 +506,7 @@ impl Client {
     pub async fn two_factor_options(&mut self) -> Result<TwoFactorOptions> {
         let mut headers = self.auth_headers();
         headers.insert("accept", HeaderValue::from_static("application/json"));
-        let r = self.http.get(AUTH).headers(headers).send().await?;
+        let r = self.http.get(&self.endpoints.auth).headers(headers).send().await?;
         self.capture(&r);
         let text = r.text().await.unwrap_or_default();
         let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -475,7 +542,7 @@ impl Client {
         headers.insert("accept", HeaderValue::from_static("application/json"));
         let r = self
             .http
-            .put(format!("{AUTH}/verify/trusteddevice/securitycode"))
+            .put(format!("{}/verify/trusteddevice/securitycode", self.endpoints.auth))
             .headers(headers)
             .send()
             .await?;
@@ -493,7 +560,7 @@ impl Client {
         headers.insert("accept", HeaderValue::from_static("application/json"));
         let r = self
             .http
-            .put(format!("{AUTH}/verify/phone"))
+            .put(format!("{}/verify/phone", self.endpoints.auth))
             .headers(headers)
             .body(json!({ "phoneNumber": { "id": phone_id }, "mode": "sms" }).to_string())
             .send()
@@ -512,7 +579,7 @@ impl Client {
         headers.insert("accept", HeaderValue::from_static("application/json"));
         let r = self
             .http
-            .post(format!("{AUTH}/verify/phone/securitycode"))
+            .post(format!("{}/verify/phone/securitycode", self.endpoints.auth))
             .headers(headers)
             .body(
                 json!({
@@ -553,7 +620,7 @@ impl Client {
         headers.insert("accept", HeaderValue::from_static("application/json"));
         let r = self
             .http
-            .post(format!("{AUTH}/verify/trusteddevice/securitycode"))
+            .post(format!("{}/verify/trusteddevice/securitycode", self.endpoints.auth))
             .headers(headers)
             .body(json!({ "securityCode": { "code": code } }).to_string())
             .send()
@@ -589,7 +656,7 @@ impl Client {
     /// `GET /2sv/trust` — yields the trust token. Without it, sign-in wouldn't outlive the process.
     async fn trust(&mut self) -> Result<()> {
         let headers = self.auth_headers();
-        let r = self.http.get(format!("{AUTH}/2sv/trust")).headers(headers).send().await?;
+        let r = self.http.get(format!("{}/2sv/trust", self.endpoints.auth)).headers(headers).send().await?;
         self.capture(&r);
         let status = r.status();
         let body = r.text().await.unwrap_or_default();
@@ -612,7 +679,7 @@ impl Client {
         });
         let r = self
             .http
-            .post(format!("{SETUP}/accountLogin"))
+            .post(format!("{}/accountLogin", self.endpoints.setup))
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
@@ -646,24 +713,27 @@ impl Client {
 mod tests {
     use super::*;
 
+    const HOME_T: &str = "https://www.icloud.com";
+    const ROOT_T: &str = "https://idmsa.apple.com";
+
     /// Apple answers 409 when the idmsa origin is sent to an endpoint that expects the
     /// icloud.com one. Only the two SRP calls may carry it.
     #[test]
     fn srp_origin_is_scoped_to_sign_in() {
-        let base = base_oauth_headers("auth-test", None, None);
+        let base = base_oauth_headers("auth-test", HOME_T, None, None);
         assert!(
             base.get("origin").is_none(),
             "base headers must not pin an Origin; the client default (icloud.com) applies"
         );
 
-        let srp = with_srp_origin(base_oauth_headers("auth-test", None, None));
-        assert_eq!(srp.get("origin").unwrap(), AUTH_ROOT);
-        assert_eq!(srp.get("referer").unwrap(), &format!("{AUTH_ROOT}/")[..]);
+        let srp = with_srp_origin(base_oauth_headers("auth-test", HOME_T, None, None), ROOT_T);
+        assert_eq!(srp.get("origin").unwrap(), ROOT_T);
+        assert_eq!(srp.get("referer").unwrap(), &format!("{ROOT_T}/")[..]);
     }
 
     #[test]
     fn session_headers_are_forwarded_when_present() {
-        let h = base_oauth_headers("auth-test", Some("scnt-value"), Some("session-value"));
+        let h = base_oauth_headers("auth-test", HOME_T, Some("scnt-value"), Some("session-value"));
         assert_eq!(h.get("scnt").unwrap(), "scnt-value");
         assert_eq!(h.get("x-apple-id-session-id").unwrap(), "session-value");
     }
@@ -671,16 +741,16 @@ mod tests {
     /// Sign-in must not advertise a session that does not exist yet.
     #[test]
     fn init_headers_omit_challenge_state() {
-        let stale = base_oauth_headers("auth-test", Some("stale-scnt"), Some("stale-session"));
+        let stale = base_oauth_headers("auth-test", HOME_T, Some("stale-scnt"), Some("stale-session"));
         assert!(stale.get("scnt").is_some(), "sanity: the helper does forward them");
 
-        let init = with_srp_origin(base_oauth_headers("auth-test", None, None));
+        let init = with_srp_origin(base_oauth_headers("auth-test", HOME_T, None, None), ROOT_T);
         assert!(init.get("scnt").is_none(), "/signin/init must not send scnt");
         assert!(
             init.get("x-apple-id-session-id").is_none(),
             "/signin/init must not send a session id"
         );
-        assert_eq!(init.get("origin").unwrap(), AUTH_ROOT);
+        assert_eq!(init.get("origin").unwrap(), ROOT_T);
     }
 
     #[test]
