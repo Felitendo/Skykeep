@@ -133,6 +133,10 @@ async fn probe_get(
             let detail = match (&parsed, status.is_success()) {
                 (Some(v), true) => summarise(v),
                 (_, true) => format!("{} bytes, non-JSON", body.len()),
+                // 450 means Apple wants a fresh sign-in for this service specifically.
+                _ if status.as_u16() == 450 => {
+                    "needs a fresh sign-in (a resumed session isn't accepted here)".to_string()
+                }
                 _ => body.chars().take(160).collect::<String>().replace('\n', " "),
             };
             Outcome { label, ok: status.is_success(), status: status.as_u16(), detail }

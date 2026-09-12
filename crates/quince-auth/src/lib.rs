@@ -18,7 +18,8 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client as HttpClient, Response, StatusCode};
 use reqwest_cookie_store::CookieStoreMutex;
 use serde_json::{json, Value};
-use session::{Session, Store, CAPTURED_HEADERS};
+pub use session::Store;
+use session::{Session, CAPTURED_HEADERS};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -91,6 +92,8 @@ pub enum Error {
     Network(#[from] reqwest::Error),
     #[error("Apple sent back something unexpected: {0}")]
     Protocol(String),
+    #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
+    ReauthRequired,
     #[error("Apple is rate-limiting this account. Wait a few minutes before trying again — \
              repeated attempts risk a temporary lock")]
     RateLimited,
@@ -109,6 +112,10 @@ type Result<T> = std::result::Result<T, Error>;
 fn apple_error(context: &str, status: StatusCode, body: &str) -> Error {
     if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
         return Error::RateLimited;
+    }
+    // 450 is Apple's "re-authenticate for this service": a resumed session is not enough.
+    if status.as_u16() == 450 {
+        return Error::ReauthRequired;
     }
     let parsed: Option<Value> = serde_json::from_str(body).ok();
     if let Some(v) = &parsed {
@@ -427,7 +434,7 @@ impl Client {
             return Err(Error::BadCredentials);
         }
         if !status.is_success() {
-            return Err(Error::Protocol(format!("sign-in start failed ({status})")));
+            return Err(apple_error("starting sign-in", status, &text));
         }
         let init: Value = serde_json::from_str(&text)?;
 
@@ -495,7 +502,7 @@ impl Client {
             StatusCode::PRECONDITION_FAILED => {
                 Err(Error::UnsupportedAccount("two-factor auth isn't switched on".into()))
             }
-            s => Err(Error::Protocol(format!("sign-in finish failed ({s})"))),
+            s => Err(apple_error("finishing sign-in", s, &text)),
         }
     }
 
@@ -770,6 +777,12 @@ mod tests {
         assert!(matches!(
             apple_error("x", StatusCode::TOO_MANY_REQUESTS, ""),
             Error::RateLimited
+        ));
+
+        // Find My answers 450 on a resumed session; that is "sign in again", not a failure.
+        assert!(matches!(
+            apple_error("x", StatusCode::from_u16(450).unwrap(), ""),
+            Error::ReauthRequired
         ));
 
         // Anything unrecognised must keep Apple's own words rather than flatten to a status.
