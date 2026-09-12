@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["probe", "crates/quince-auth", "src-tauri"]
+members = ["probe", "crates/quince-auth", "crates/quince-core", "src-tauri"]
 
 [workspace.package]
 edition = "2021"
