@@ -46,6 +46,38 @@ pub struct Session {
     /// Apple's per-account service URL map, from `accountLogin`.
     pub webservices: Option<serde_json::Value>,
     pub dsid: Option<String>,
+
+    /// Failed sign-ins in a row. Drives the local backoff.
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// Unix seconds before which we refuse to contact Apple again.
+    ///
+    /// Persisted deliberately: a cooldown that resets when the app restarts is no cooldown
+    /// at all, and repeated attempts are what get accounts temporarily locked.
+    #[serde(default)]
+    pub retry_after: Option<u64>,
+}
+
+/// Seconds to wait after `failures` consecutive failed sign-ins.
+///
+/// Apple rate-limits, and the penalty for ignoring it is a temporary account lock — so the
+/// first retry is nearly free and the ceiling is deliberately high.
+pub fn backoff_seconds(failures: u32) -> u64 {
+    match failures {
+        0 => 0,
+        1 => 5,
+        2 => 15,
+        3 => 60,
+        4 => 180,
+        _ => 600,
+    }
+}
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl Session {

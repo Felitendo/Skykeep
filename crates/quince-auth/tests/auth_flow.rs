@@ -304,3 +304,47 @@ async fn a_rejected_session_falls_back_cleanly() {
     let outcome = client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
     assert_eq!(outcome, SignInOutcome::NeedsTwoFactor);
 }
+
+/// A cooldown that resets on restart is no cooldown. After a failure the next attempt must
+/// be refused locally, without another request reaching Apple.
+#[tokio::test]
+async fn a_cooldown_survives_a_restart_and_spares_apple() {
+    let server = MockServer::start().await;
+    mount_init(&server, 429).await; // Apple says slow down
+
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut client = client_for(&server, dir.path());
+        let err = client.sign_in("someone@example.invalid", "hunter2").await.unwrap_err();
+        assert!(matches!(err, quince_auth::Error::RateLimited));
+    }
+
+    let before = server.received_requests().await.unwrap().len();
+
+    // A brand-new client, as if the app had been restarted.
+    let mut restarted = client_for(&server, dir.path());
+    let err = restarted.sign_in("someone@example.invalid", "hunter2").await.unwrap_err();
+    match err {
+        quince_auth::Error::CoolingDown { seconds } => assert!(seconds > 0),
+        other => panic!("expected a cooldown after a restart, got {other}"),
+    }
+
+    let after = server.received_requests().await.unwrap().len();
+    assert_eq!(before, after, "the cooldown must be enforced without contacting Apple");
+}
+
+/// Reaching the two-factor step means the password was accepted, so it must clear any
+/// backoff rather than count as another failure.
+#[tokio::test]
+async fn a_successful_sign_in_clears_the_backoff() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client.sign_in("someone@example.invalid", "hunter2").await.unwrap();
+
+    assert_eq!(client.session().consecutive_failures, 0);
+    assert!(client.session().retry_after.is_none());
+}

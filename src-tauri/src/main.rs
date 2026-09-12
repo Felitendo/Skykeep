@@ -4,10 +4,12 @@
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{Manager, State};
 use tokio::sync::Mutex;
 
-struct Auth(Mutex<Client>);
+struct Auth(Arc<Mutex<Client>>);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,12 +118,39 @@ async fn account_services(auth: State<'_, Auth>) -> UiResult<Vec<String>> {
         .unwrap_or_default())
 }
 
+/// Keep the session warm.
+///
+/// Apple resets auth cookies after a long idle gap, so a session left untouched can die well
+/// before its nominal life. Roughly hourly contact is what keeps it alive in practice; 45
+/// minutes leaves margin without being chatty enough to look like polling.
+fn spawn_heartbeat(client: Arc<Mutex<Client>>) {
+    tauri::async_runtime::spawn(async move {
+        const INTERVAL: Duration = Duration::from_secs(45 * 60);
+        loop {
+            tokio::time::sleep(INTERVAL).await;
+            let mut guard = client.lock().await;
+            // Only meaningful once signed in; before that there is nothing to keep warm.
+            if guard.session().webservices.is_none() {
+                continue;
+            }
+            match guard.heartbeat().await {
+                Ok(true) => {}
+                // A lapsed session is expected roughly every two months. The UI discovers it
+                // on next use and asks for a code; nothing to do here but stop pinging.
+                Ok(false) => break,
+                Err(_) => {}
+            }
+        }
+    });
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let dir = state_dir(&app.handle());
-            let client = Client::new(&dir)?;
-            app.manage(Auth(Mutex::new(client)));
+            let client = Arc::new(Mutex::new(Client::new(&dir)?));
+            app.manage(Auth(Arc::clone(&client)));
+            spawn_heartbeat(client);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

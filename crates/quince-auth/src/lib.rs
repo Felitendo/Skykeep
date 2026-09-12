@@ -19,7 +19,7 @@ use reqwest::{Client as HttpClient, Response, StatusCode};
 use reqwest_cookie_store::CookieStoreMutex;
 use serde_json::{json, Value};
 pub use session::Store;
-use session::{Session, CAPTURED_HEADERS};
+use session::{backoff_seconds, unix_now, Session, CAPTURED_HEADERS};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -92,6 +92,8 @@ pub enum Error {
     Network(#[from] reqwest::Error),
     #[error("Apple sent back something unexpected: {0}")]
     Protocol(String),
+    #[error("too many attempts just now — try again in {seconds}s")]
+    CoolingDown { seconds: u64 },
     #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
     ReauthRequired,
     #[error("Apple is rate-limiting this account. Wait a few minutes before trying again — \
@@ -405,6 +407,40 @@ impl Client {
     /// The password is never sent to Apple — SRP proves knowledge of it without transmitting
     /// it. Apple retired the old cleartext endpoint; it now answers 503.
     pub async fn sign_in(&mut self, apple_id: &str, password: &str) -> Result<SignInOutcome> {
+        let outcome = self.sign_in_inner(apple_id, password).await;
+        match &outcome {
+            // Reaching the two-factor step means the password was accepted: not a failure.
+            Ok(_) => {
+                self.session.consecutive_failures = 0;
+                self.session.retry_after = None;
+            }
+            Err(Error::CoolingDown { .. }) => {}
+            Err(e) => {
+                self.session.consecutive_failures =
+                    self.session.consecutive_failures.saturating_add(1);
+                // Apple saying "slow down" outranks our own schedule.
+                let wait = if matches!(e, Error::RateLimited) {
+                    backoff_seconds(u32::MAX)
+                } else {
+                    backoff_seconds(self.session.consecutive_failures)
+                };
+                self.session.retry_after = (wait > 0).then(|| unix_now() + wait);
+            }
+        }
+        let _ = self.persist();
+        outcome
+    }
+
+    async fn sign_in_inner(&mut self, apple_id: &str, password: &str) -> Result<SignInOutcome> {
+        // Refuse before touching Apple. Hammering sign-in is what gets an account
+        // temporarily locked, and an impatient user clicking twice should not risk that.
+        if let Some(until) = self.session.retry_after {
+            let now = unix_now();
+            if now < until {
+                return Err(Error::CoolingDown { seconds: until - now });
+            }
+        }
+
         // Start clean. An interrupted previous attempt would otherwise announce a
         // half-finished session and Apple would reject this one as a conflict.
         self.clear_challenge_state();
@@ -758,6 +794,19 @@ mod tests {
             "/signin/init must not send a session id"
         );
         assert_eq!(init.get("origin").unwrap(), ROOT_T);
+    }
+
+    /// The first retry should be nearly free; repeated failures must back off hard, because
+    /// the penalty for hammering Apple is a temporary account lock.
+    #[test]
+    fn backoff_grows_and_is_capped() {
+        use crate::session::backoff_seconds;
+        assert_eq!(backoff_seconds(0), 0, "a first attempt must not be delayed");
+        let steps: Vec<u64> = (1..=6).map(backoff_seconds).collect();
+        for pair in steps.windows(2) {
+            assert!(pair[1] >= pair[0], "backoff must never shrink: {steps:?}");
+        }
+        assert_eq!(backoff_seconds(u32::MAX), backoff_seconds(5), "and it must be bounded");
     }
 
     #[test]
