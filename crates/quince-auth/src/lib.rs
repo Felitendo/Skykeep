@@ -46,6 +46,9 @@ pub enum Error {
     Network(#[from] reqwest::Error),
     #[error("Apple sent back something unexpected: {0}")]
     Protocol(String),
+    #[error("Apple is rate-limiting this account. Wait a few minutes before trying again — \
+             repeated attempts risk a temporary lock")]
+    RateLimited,
     #[error("couldn't use the system keyring: {0}")]
     Keyring(String),
     #[error(transparent)]
@@ -59,6 +62,9 @@ type Result<T> = std::result::Result<T, Error>;
 /// Apple returns `{"serviceErrors":[{"code":"-21669","message":"..."}]}` on failures.
 /// Surface its own words; a bare status code explains nothing.
 fn apple_error(context: &str, status: StatusCode, body: &str) -> Error {
+    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
+        return Error::RateLimited;
+    }
     let parsed: Option<Value> = serde_json::from_str(body).ok();
     if let Some(v) = &parsed {
         if let Some(errs) = v["serviceErrors"].as_array().filter(|a| !a.is_empty()) {
@@ -67,6 +73,9 @@ fn apple_error(context: &str, status: StatusCode, body: &str) -> Error {
             // -21669 is Apple's "incorrect verification code".
             if code == "-21669" {
                 return Error::BadCode;
+            }
+            if message.to_ascii_lowercase().contains("too many") {
+                return Error::RateLimited;
             }
             if !message.is_empty() {
                 return Error::Protocol(format!("{context}: {message} (Apple code {code}, HTTP {status})"));
@@ -104,6 +113,47 @@ pub enum SignInOutcome {
     Complete,
     /// Apple wants a six-digit code. Call [`Client::submit_two_factor`] next.
     NeedsTwoFactor,
+}
+
+/// OAuth headers every idmsa call carries. Deliberately sets no Origin: the HTTP client
+/// defaults to the icloud.com origin, which is what the verify, trust and phone endpoints
+/// expect. Only SRP overrides it — see [`with_srp_origin`].
+fn base_oauth_headers(client_id: &str, scnt: Option<&str>, session_id: Option<&str>) -> HeaderMap {
+    let mut h = HeaderMap::new();
+    let mut put = |k: &'static str, v: &str| {
+        if let Ok(val) = HeaderValue::from_str(v) {
+            h.insert(HeaderName::from_static(k), val);
+        }
+    };
+    put("accept", "application/json, text/javascript, */*; q=0.01");
+    put("content-type", "application/json");
+    put("x-apple-oauth-client-id", WIDGET_KEY);
+    put("x-apple-oauth-client-type", "firstPartyAuth");
+    put("x-apple-oauth-redirect-uri", HOME);
+    put("x-apple-oauth-require-grant-code", "true");
+    put("x-apple-oauth-response-mode", "web_message");
+    put("x-apple-oauth-response-type", "code");
+    put("x-apple-oauth-state", client_id);
+    put("x-apple-widget-key", WIDGET_KEY);
+    if let Some(v) = scnt {
+        put("scnt", v);
+    }
+    if let Some(v) = session_id {
+        put("x-apple-id-session-id", v);
+    }
+    h
+}
+
+/// `/signin/init` and `/signin/complete` are served from idmsa and reject the icloud.com
+/// origin. Applying this anywhere else earns a 409.
+fn with_srp_origin(mut h: HeaderMap) -> HeaderMap {
+    if let Ok(v) = HeaderValue::from_str(AUTH_ROOT) {
+        h.insert("origin", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&format!("{AUTH_ROOT}/")) {
+        h.insert("referer", v);
+    }
+    h
 }
 
 pub struct Client {
@@ -186,32 +236,15 @@ impl Client {
 
     fn auth_headers(&mut self) -> HeaderMap {
         let client_id = self.session.client_id();
-        let mut h = HeaderMap::new();
-        let mut put = |k: &'static str, v: &str| {
-            if let Ok(val) = HeaderValue::from_str(v) {
-                h.insert(HeaderName::from_static(k), val);
-            }
-        };
-        put("accept", "application/json, text/javascript, */*; q=0.01");
-        put("content-type", "application/json");
-        put("x-apple-oauth-client-id", WIDGET_KEY);
-        put("x-apple-oauth-client-type", "firstPartyAuth");
-        put("x-apple-oauth-redirect-uri", HOME);
-        put("x-apple-oauth-require-grant-code", "true");
-        put("x-apple-oauth-response-mode", "web_message");
-        put("x-apple-oauth-response-type", "code");
-        put("x-apple-oauth-state", &client_id);
-        put("x-apple-widget-key", WIDGET_KEY);
-        // SRP is served from idmsa, not the icloud.com default.
-        put("origin", AUTH_ROOT);
-        put("referer", &format!("{AUTH_ROOT}/"));
-        if let Some(s) = self.session.scnt.clone() {
-            put("scnt", &s);
-        }
-        if let Some(s) = self.session.session_id.clone() {
-            put("x-apple-id-session-id", &s);
-        }
-        h
+        base_oauth_headers(&client_id, self.session.scnt.as_deref(), self.session.session_id.as_deref())
+    }
+
+    /// Headers for `/signin/init` and `/signin/complete` only.
+    ///
+    /// Those two are served from idmsa and reject the icloud.com origin. Every other auth
+    /// endpoint — verify, trust, phone — wants the icloud.com origin the client defaults to.
+    fn srp_headers(&mut self) -> HeaderMap {
+        with_srp_origin(self.auth_headers())
     }
 
     // ---- the restart test -----------------------------------------------------------
@@ -277,7 +310,7 @@ impl Client {
         let client = srp::Client::new(apple_id);
 
         // --- /signin/init: send A, receive salt, B, protocol, iteration count ---
-        let headers = self.auth_headers();
+        let headers = self.srp_headers();
         let r = self
             .http
             .post(format!("{AUTH}/signin/init"))
@@ -340,7 +373,7 @@ impl Client {
             body["trustTokens"] = json!([t]);
         }
 
-        let headers = self.auth_headers();
+        let headers = self.srp_headers();
         let r = self
             .http
             .post(format!("{AUTH}/signin/complete"))
@@ -414,7 +447,7 @@ impl Client {
         headers.insert("accept", HeaderValue::from_static("application/json"));
         let r = self
             .http
-            .put(format!("{AUTH}/verify/trusteddevice"))
+            .put(format!("{AUTH}/verify/trusteddevice/securitycode"))
             .headers(headers)
             .send()
             .await?;
@@ -577,5 +610,63 @@ impl Client {
     /// Shared HTTP client, for the service crates that ride this session.
     pub fn http(&self) -> &HttpClient {
         &self.http
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Apple answers 409 when the idmsa origin is sent to an endpoint that expects the
+    /// icloud.com one. Only the two SRP calls may carry it.
+    #[test]
+    fn srp_origin_is_scoped_to_sign_in() {
+        let base = base_oauth_headers("auth-test", None, None);
+        assert!(
+            base.get("origin").is_none(),
+            "base headers must not pin an Origin; the client default (icloud.com) applies"
+        );
+
+        let srp = with_srp_origin(base_oauth_headers("auth-test", None, None));
+        assert_eq!(srp.get("origin").unwrap(), AUTH_ROOT);
+        assert_eq!(srp.get("referer").unwrap(), &format!("{AUTH_ROOT}/")[..]);
+    }
+
+    #[test]
+    fn session_headers_are_forwarded_when_present() {
+        let h = base_oauth_headers("auth-test", Some("scnt-value"), Some("session-value"));
+        assert_eq!(h.get("scnt").unwrap(), "scnt-value");
+        assert_eq!(h.get("x-apple-id-session-id").unwrap(), "session-value");
+    }
+
+    #[test]
+    fn apple_errors_are_classified() {
+        let wrong = r#"{"serviceErrors":[{"code":"-21669","message":"Incorrect verification code."}]}"#;
+        assert!(matches!(
+            apple_error("x", StatusCode::CONFLICT, wrong),
+            Error::BadCode
+        ));
+
+        let throttled = r#"{"serviceErrors":[{"code":"-22222","message":"Too many codes sent."}]}"#;
+        assert!(matches!(
+            apple_error("x", StatusCode::CONFLICT, throttled),
+            Error::RateLimited
+        ));
+
+        assert!(matches!(
+            apple_error("x", StatusCode::TOO_MANY_REQUESTS, ""),
+            Error::RateLimited
+        ));
+
+        // Anything unrecognised must keep Apple's own words rather than flatten to a status.
+        let other = r#"{"serviceErrors":[{"code":"-20101","message":"Account locked."}]}"#;
+        match apple_error("signing in", StatusCode::CONFLICT, other) {
+            Error::Protocol(m) => {
+                assert!(m.contains("Account locked."), "got: {m}");
+                assert!(m.contains("-20101"), "got: {m}");
+            }
+            e => panic!("expected Protocol, got {e:?}"),
+        }
     }
 }
