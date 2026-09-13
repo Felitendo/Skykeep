@@ -370,3 +370,210 @@ mod tests {
         assert_eq!(parse_snapshot(&body).reminders.len(), 1);
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// CloudKit
+// ---------------------------------------------------------------------------------------
+//
+// The legacy /rd endpoints answer with Apple's placeholder once an account's reminders have
+// been migrated — a list named "Reminders ⚠️" holding "Where are my reminders?". The real
+// records live in the CloudKit `Reminders` zone, so this is the path that actually works.
+
+use crate::cloudkit::{field, ZoneClient};
+
+const CONTAINER: &str = "com.apple.reminders";
+const ZONE: &str = "Reminders";
+
+/// Turn one CloudKit `Reminder` record into a reminder.
+///
+/// Returns `None` for records that are deleted or carry no identity, so tombstones — which
+/// are the bulk of the zone — fall away.
+fn reminder_from_record(record: &Value) -> Option<Reminder> {
+    if field::flag(record, "Deleted") {
+        return None;
+    }
+    let guid = field::record_name(record)?;
+    let list_guid = field::reference(record, "List")?;
+
+    let completed = field::flag(record, "Completed");
+    Some(Reminder {
+        guid,
+        list_guid,
+        // A reminder with no readable title is still a reminder; showing it beats hiding it.
+        title: field::document_text(record, "TitleDocument").unwrap_or_else(|| "Untitled".into()),
+        notes: field::document_text(record, "NotesDocument"),
+        due_at: field::timestamp_seconds(record, "DueDate"),
+        // CloudKit stores completion as a flag; the closest instant it also gives us is the
+        // last modification, which is when the tick happened.
+        completed_at: completed
+            .then(|| field::timestamp_seconds(record, "LastModifiedDate"))
+            .flatten()
+            .or(if completed { Some(0) } else { None }),
+        priority: field::int(record, "Priority").unwrap_or(0),
+        etag: record
+            .get("recordChangeTag")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        raw: serde_json::to_string(record).ok(),
+    })
+}
+
+/// Turn a CloudKit list record into a reminder list.
+fn list_from_record(record: &Value) -> Option<ReminderList> {
+    if field::flag(record, "Deleted") {
+        return None;
+    }
+    let guid = field::record_name(record)?;
+    let title = field::string(record, "Name")
+        .or_else(|| field::document_text(record, "NameDocument"))
+        .or_else(|| field::string(record, "DisplayName"))
+        .unwrap_or_else(|| "Reminders".into());
+    Some(ReminderList {
+        guid,
+        title,
+        colour: field::string(record, "Color"),
+        ctag: None,
+        sort_order: field::int(record, "SortOrder").unwrap_or(0),
+        enabled: true,
+    })
+}
+
+/// Read reminders from CloudKit into the local library.
+///
+/// Returns the number of lists and reminders stored, plus the sync token to resume from.
+pub async fn sync_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    library: &mut quince_core::Library,
+    since: Option<&str>,
+) -> Result<(usize, usize, Option<String>)> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let (records, token) = client.all_records(ZONE, since).await?;
+
+    let mut lists: Vec<ReminderList> = Vec::new();
+    let mut reminders: Vec<Reminder> = Vec::new();
+
+    for record in &records {
+        match field::record_type(record).as_deref() {
+            Some("Reminder") => reminders.extend(reminder_from_record(record)),
+            // Apple has used more than one name for the container of a list over the years.
+            Some("List" | "ListSection" | "SmartList") => lists.extend(list_from_record(record)),
+            _ => {}
+        }
+    }
+
+    // Every list a reminder points at must exist, or storing it fails the foreign key.
+    // Apple does not always return the list record in the same page as its reminders.
+    for reminder in &reminders {
+        if !lists.iter().any(|l| l.guid == reminder.list_guid) {
+            lists.push(ReminderList {
+                guid: reminder.list_guid.clone(),
+                title: "Reminders".into(),
+                colour: None,
+                ctag: None,
+                sort_order: 0,
+                enabled: true,
+            });
+        }
+    }
+
+    library.put_reminder_lists(&lists)?;
+    library.put_reminders(&reminders)?;
+    library.mark_synced("reminders", token.as_deref())?;
+    Ok((lists.len(), reminders.len(), token))
+}
+
+#[cfg(test)]
+mod cloudkit_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document(text: &str) -> String {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        use std::io::Write;
+        // Apple's shape: text at field path 2 -> 3 -> 2.
+        fn field(tag: u8, payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![(tag << 3) | 2];
+            let mut len = payload.len();
+            loop {
+                let mut byte = (len & 0x7F) as u8;
+                len >>= 7;
+                if len != 0 {
+                    byte |= 0x80;
+                }
+                out.push(byte);
+                if len == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(payload);
+            out
+        }
+        let proto = field(2, &field(3, &field(2, text.as_bytes())));
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&proto).unwrap();
+        B64.encode(gz.finish().unwrap())
+    }
+
+    fn reminder_record(name: &str, title: &str, completed: bool, deleted: bool) -> Value {
+        json!({
+            "recordName": name,
+            "recordType": "Reminder",
+            "recordChangeTag": "tag1",
+            "fields": {
+                "TitleDocument": { "type": "ENCRYPTED_BYTES", "value": document(title) },
+                "Completed": { "type": "NUMBER_INT64", "value": i64::from(completed) },
+                "Deleted": { "type": "NUMBER_INT64", "value": i64::from(deleted) },
+                "LastModifiedDate": { "type": "TIMESTAMP", "value": 1_753_808_674_659_i64 },
+                "List": { "type": "REFERENCE", "value": { "recordName": "List/abc" } }
+            }
+        })
+    }
+
+    #[test]
+    fn a_record_becomes_a_reminder_with_its_real_title() {
+        let r = reminder_from_record(&reminder_record(
+            "Reminder/1",
+            "🏃 Move more",
+            false,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(r.title, "🏃 Move more");
+        assert_eq!(r.list_guid, "List/abc");
+        assert!(!r.is_done());
+        assert!(r.raw.is_some(), "the record is kept for writes");
+    }
+
+    #[test]
+    fn completion_carries_an_instant() {
+        let r = reminder_from_record(&reminder_record("Reminder/1", "Done thing", true, false))
+            .unwrap();
+        assert!(r.is_done());
+        assert_eq!(r.completed_at, Some(1_753_808_674));
+    }
+
+    /// Tombstones are the bulk of the zone and must not appear as reminders.
+    #[test]
+    fn deleted_records_are_dropped() {
+        assert!(
+            reminder_from_record(&reminder_record("Reminder/1", "Gone", false, true)).is_none()
+        );
+    }
+
+    #[test]
+    fn a_record_with_no_list_is_skipped() {
+        let mut record = reminder_record("Reminder/1", "Orphan", false, false);
+        record["fields"].as_object_mut().unwrap().remove("List");
+        assert!(reminder_from_record(&record).is_none());
+    }
+
+    #[test]
+    fn an_unreadable_title_still_yields_a_reminder() {
+        let mut record = reminder_record("Reminder/1", "x", false, false);
+        record["fields"]["TitleDocument"]["value"] = json!("!!!not base64!!!");
+        let r = reminder_from_record(&record).unwrap();
+        assert_eq!(r.title, "Untitled", "showing it beats hiding it");
+    }
+}

@@ -4,6 +4,8 @@
 //! untrusted: a missing field or a malformed date returns an error, never a panic.
 
 pub mod calendar;
+pub mod ckdocument;
+pub mod cloudkit;
 pub mod reminders;
 pub mod sync;
 

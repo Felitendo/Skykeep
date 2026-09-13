@@ -582,48 +582,50 @@ async fn main() -> Result<()> {
         println!("  Apple offered no calendar service for this account");
     }
 
-    // ---- Reminders, end to end --------------------------------------------------
-    println!("\n\x1b[1m── Reminders sync (the real path the app uses) ──\x1b[0m");
-    if let Some(root) = session.service_url("reminders") {
+    // ---- Reminders from CloudKit, end to end ------------------------------------
+    // The legacy /rd endpoints answer with Apple's placeholder on a migrated account, so
+    // this reads the CloudKit zone where the real records live.
+    println!("\n\x1b[1m── Reminders via CloudKit (the real records) ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
         let params = client.service_params();
         let http = client.http().clone();
         match quince_core::Library::open(&dir) {
             Err(e) => println!("  \x1b[31mcouldn't open the local library:\x1b[0m {e}"),
             Ok(mut library) => {
-                match quince_icloud::reminders::sync(
+                match quince_icloud::reminders::sync_cloudkit(
                     &http,
-                    &root,
+                    &ck,
                     params,
                     &mut library,
-                    "Asia/Kolkata",
+                    None,
                 )
                 .await
                 {
                     Err(e) => println!("  \x1b[31mFAIL\x1b[0m {e}"),
-                    Ok((lists, count)) => {
-                        println!("  \x1b[32mPASS\x1b[0m {lists} list(s), {count} reminder(s)");
+                    Ok((lists, count, token)) => {
+                        println!(
+                            "  \x1b[32mPASS\x1b[0m {lists} list(s), {count} reminder(s), resume token {}",
+                            if token.is_some() { "stored" } else { "none" }
+                        );
                         for l in library.reminder_lists().unwrap_or_default() {
                             let items = library.reminders_in(&l.guid, true).unwrap_or_default();
-                            println!(
-                                "    {:<24} {:<9} {} item(s)",
-                                l.title,
-                                l.colour.unwrap_or_else(|| "—".into()),
-                                items.len()
-                            );
-                            for r in items.iter().take(6) {
-                                println!(
-                                    "      [{}] {}",
-                                    if r.is_done() { "x" } else { " " },
-                                    r.title
-                                );
+                            println!("    \x1b[1m{}\x1b[0m — {} item(s)", l.title, items.len());
+                            for r in items.iter().take(15) {
+                                let mark = if r.is_done() { "x" } else { " " };
+                                let note = r
+                                    .notes
+                                    .as_deref()
+                                    .map(|n| {
+                                        format!("   — {}", n.chars().take(46).collect::<String>())
+                                    })
+                                    .unwrap_or_default();
+                                println!("      [{mark}] {}{note}", r.title);
                             }
                         }
                     }
                 }
             }
         }
-    } else {
-        println!("  Apple offered no reminders service for this account");
     }
 
     // ---- CloudKit containers ----------------------------------------------------
@@ -645,7 +647,14 @@ async fn main() -> Result<()> {
             let mut q = client.service_params();
             q.push(("ckjsBuildVersion".into(), "17DProjectDev77".into()));
             q.push(("ckjsVersion".into(), "2.6.1".into()));
-            match client.http().post(&url).query(&q).json(&serde_json::json!({})).send().await {
+            match client
+                .http()
+                .post(&url)
+                .query(&q)
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+            {
                 Err(e) => println!("  {container:<26} transport error: {e}"),
                 Ok(r) => {
                     let status = r.status();
@@ -712,9 +721,15 @@ async fn main() -> Result<()> {
             let text = r.text().await.unwrap_or_default();
             let v: serde_json::Value =
                 serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-            let Some(zone_result) = v.get("zones").and_then(|z| z.as_array()).and_then(|a| a.first())
+            let Some(zone_result) = v
+                .get("zones")
+                .and_then(|z| z.as_array())
+                .and_then(|a| a.first())
             else {
-                println!("  unexpected: {}", text.chars().take(200).collect::<String>());
+                println!(
+                    "  unexpected: {}",
+                    text.chars().take(200).collect::<String>()
+                );
                 break;
             };
 
@@ -724,7 +739,10 @@ async fn main() -> Result<()> {
                 .cloned()
                 .unwrap_or_default();
             for rec in &records {
-                let rt = rec.get("recordType").and_then(|t| t.as_str()).unwrap_or("?");
+                let rt = rec
+                    .get("recordType")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("?");
                 *types.entry(rt.to_string()).or_default() += 1;
                 if samples.iter().all(|(t, _, _)| t != rt) {
                     let fields: Vec<String> = rec
@@ -758,7 +776,11 @@ async fn main() -> Result<()> {
                 .get("syncToken")
                 .and_then(|t| t.as_str())
                 .map(ToString::to_string);
-            if !zone_result.get("moreComing").and_then(|m| m.as_bool()).unwrap_or(false) {
+            if !zone_result
+                .get("moreComing")
+                .and_then(|m| m.as_bool())
+                .unwrap_or(false)
+            {
                 break;
             }
         }
