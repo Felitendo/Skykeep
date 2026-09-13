@@ -32,6 +32,14 @@ function installStub({ screen, services, twoFactor, calendarFixture }) {
       startsAt: base + 3 * DAY, endsAt: base + 4 * DAY, allDay: true,
       timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
   ];
+  const dueReminders = !calendarFixture ? [] : [
+    { guid: "r1", listGuid: "daily", title: "Water the plants", notes: null,
+      dueAt: base + DAY + 8 * HOUR, completedAt: null, priority: 0, etag: null },
+    { guid: "r2", listGuid: "health", title: "Evening run", notes: null,
+      dueAt: base + 6 * HOUR, completedAt: null, priority: 0, etag: null },
+    { guid: "r3", listGuid: "daily", title: "Plan tomorrow", notes: null,
+      dueAt: base + 13 * HOUR, completedAt: base + 13 * HOUR, priority: 0, etag: null },
+  ];
   const calendars = [
     { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true },
     { guid: "home", title: "Home", colour: "#0088ff", ctag: null, sortOrder: 1, enabled: true },
@@ -54,6 +62,7 @@ function installStub({ screen, services, twoFactor, calendarFixture }) {
         case "reminder_lists": return [];
         case "reminders_in": return [];
         case "reminders_last_synced": return Math.floor(Date.now() / 1000);
+        case "reminders_due_between": return calendarFixture ? dueReminders : [];
         case "reminders_sync": return [0, 0];
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;

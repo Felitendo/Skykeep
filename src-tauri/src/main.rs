@@ -298,6 +298,19 @@ async fn reminder_set_done(
     Ok(())
 }
 
+/// Dated reminders inside a window, for the calendar grid.
+#[tauri::command]
+async fn reminders_due_between(
+    from: i64,
+    to: i64,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Reminder>> {
+    let library = data.0.lock().await;
+    library
+        .reminders_due_between(from, to)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn reminders_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
     let library = data.0.lock().await;
@@ -345,6 +358,7 @@ fn main() {
             reminder_lists,
             reminders_in,
             reminders_last_synced,
+            reminders_due_between,
             reminder_set_done,
         ])
         .run(tauri::generate_context!())

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, messageOf, type Calendar, type CalendarEvent } from "../lib/ipc";
+import { api, messageOf, type Calendar, type CalendarEvent, type Reminder } from "../lib/ipc";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -58,6 +58,7 @@ export function CalendarView() {
   const today = useMemo(() => new Date(), []);
   const [anchor, setAnchor] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
   const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [dueReminders, setDueReminders] = useState<Reminder[]>([]);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   const [lastSynced, setLastSynced] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -74,12 +75,16 @@ export function CalendarView() {
   );
 
   const read = useCallback(async () => {
-    const [found, cals, synced] = await Promise.all([
+    // Apple's Calendar shows reminders beside events, which for most people is most of
+    // what fills a month.
+    const [found, cals, synced, due] = await Promise.all([
       api.calendarEvents(range.from, range.to),
       api.calendarList(),
       api.calendarLastSynced(),
+      api.remindersDueBetween(range.from, range.to),
     ]);
     setEvents(Array.isArray(found) ? found : []);
+    setDueReminders(Array.isArray(due) ? due : []);
     setCalendars(Array.isArray(cals) ? cals : []);
     setLastSynced(typeof synced === "number" ? synced : null);
     setLoaded(true);
@@ -128,9 +133,19 @@ export function CalendarView() {
     [calendars]
   );
 
-  /** Events keyed by local day, so each cell is a lookup rather than a scan. */
+  /** What a day cell shows: an event, or a reminder due that day. */
+  type Entry =
+    | { kind: "event"; event: CalendarEvent }
+    | { kind: "reminder"; reminder: Reminder };
+
+  /** Entries keyed by local day, so each cell is a lookup rather than a scan. */
   const byDay = useMemo(() => {
-    const map = new Map<string, CalendarEvent[]>();
+    const map = new Map<string, Entry[]>();
+    const push = (key: string, entry: Entry) => {
+      const bucket = map.get(key);
+      if (bucket) bucket.push(entry);
+      else map.set(key, [entry]);
+    };
     for (const event of events) {
       // An event spanning days belongs in every day it touches.
       let cursor = new Date(event.startsAt * 1000);
@@ -138,15 +153,24 @@ export function CalendarView() {
       const last = new Date(Math.max(event.endsAt - 1, event.startsAt) * 1000);
       let guard = 0;
       while (cursor <= last && guard++ < 60) {
-        const key = cursor.toDateString();
-        const bucket = map.get(key);
-        if (bucket) bucket.push(event);
-        else map.set(key, [event]);
+        push(cursor.toDateString(), { kind: "event", event });
         cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1);
       }
     }
+    for (const reminder of dueReminders) {
+      if (reminder.dueAt === null) continue;
+      push(new Date(reminder.dueAt * 1000).toDateString(), { kind: "reminder", reminder });
+    }
+    // Within a day, order by time so the cell reads like a schedule.
+    for (const bucket of map.values()) {
+      bucket.sort((a, b) => {
+        const at = a.kind === "event" ? a.event.startsAt : (a.reminder.dueAt ?? 0);
+        const bt = b.kind === "event" ? b.event.startsAt : (b.reminder.dueAt ?? 0);
+        return at - bt;
+      });
+    }
     return map;
-  }, [events]);
+  }, [events, dueReminders]);
 
   const shift = (months: number) =>
     setAnchor((a) => new Date(a.getFullYear(), a.getMonth() + months, 1));
@@ -211,35 +235,52 @@ export function CalendarView() {
                     {day.getDate()}
                   </span>
                   <div className="chips">
-                    {items.slice(0, 3).map((event) => (
-                      <span
-                        key={event.guid + day.getDate()}
-                        className={`chip${event.allDay ? " all-day" : ""}`}
-                        style={
-                          event.allDay
-                            ? {
+                    {items.slice(0, 3).map((entry) =>
+                      entry.kind === "event" ? (
+                        <span
+                          key={entry.event.guid + day.getDate()}
+                          className={`chip${entry.event.allDay ? " all-day" : ""}`}
+                          style={
+                            entry.event.allDay
+                              ? {
+                                  background:
+                                    colours.get(entry.event.calendarGuid) || "var(--gold)",
+                                }
+                              : undefined
+                          }
+                          title={entry.event.title}
+                        >
+                          {!entry.event.allDay && (
+                            <span
+                              className="chip-dot"
+                              style={{
                                 background:
-                                  colours.get(event.calendarGuid) || "var(--gold)",
-                              }
-                            : undefined
-                        }
-                        title={event.title}
-                      >
-                        {!event.allDay && (
-                          <span
-                            className="chip-dot"
-                            style={{
-                              background:
-                                colours.get(event.calendarGuid) || "var(--gold)",
-                            }}
-                          />
-                        )}
-                        {!event.allDay && (
-                          <span className="chip-time">{clockTime(event.startsAt)}</span>
-                        )}
-                        <span className="chip-title">{event.title}</span>
-                      </span>
-                    ))}
+                                  colours.get(entry.event.calendarGuid) || "var(--gold)",
+                              }}
+                            />
+                          )}
+                          {!entry.event.allDay && (
+                            <span className="chip-time">
+                              {clockTime(entry.event.startsAt)}
+                            </span>
+                          )}
+                          <span className="chip-title">{entry.event.title}</span>
+                        </span>
+                      ) : (
+                        <span
+                          key={entry.reminder.guid + day.getDate()}
+                          className={`chip reminder${entry.reminder.completedAt ? " is-done" : ""}`}
+                          title={entry.reminder.title}
+                        >
+                          {/* A ring rather than a dot, so a reminder reads as a task. */}
+                          <span className="chip-ring" />
+                          <span className="chip-time">
+                            {clockTime(entry.reminder.dueAt ?? 0)}
+                          </span>
+                          <span className="chip-title">{entry.reminder.title}</span>
+                        </span>
+                      )
+                    )}
                     {items.length > 3 && (
                       <span className="chip more">{items.length - 3} more</span>
                     )}
@@ -251,7 +292,7 @@ export function CalendarView() {
         ))}
       </div>
 
-      {loaded && events.length === 0 && !error && (
+      {loaded && events.length === 0 && dueReminders.length === 0 && !error && (
         <p className="cal-empty">
           No events in this month. Quince keeps them on this computer once synced, so they
           open instantly and work offline.

@@ -36,6 +36,8 @@ export const api = {
   remindersIn: (listGuid: string, includeDone: boolean) =>
     invoke<Reminder[]>("reminders_in", { listGuid, includeDone }),
   remindersLastSynced: () => invoke<number | null>("reminders_last_synced"),
+  remindersDueBetween: (from: number, to: number) =>
+    invoke<Reminder[]>("reminders_due_between", { from, to }),
   reminderSetDone: (guid: string, listGuid: string, done: boolean) =>
     invoke<void>("reminder_set_done", { guid, listGuid, done }),
 };

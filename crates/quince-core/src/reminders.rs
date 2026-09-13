@@ -102,6 +102,36 @@ impl Library {
         Ok(())
     }
 
+    /// Dated reminders falling inside `[from, to)`, for the calendar.
+    ///
+    /// Apple's Calendar shows reminders alongside events, which is most of what fills a
+    /// month for someone who lives in Reminders rather than Calendar.
+    pub fn reminders_due_between(&self, from: i64, to: i64) -> Result<Vec<Reminder>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
+                    r.priority, r.etag, r.raw
+             FROM reminders r
+             JOIN reminder_lists l ON l.guid = r.list_guid
+             WHERE l.enabled = 1 AND r.due_at IS NOT NULL
+               AND r.due_at >= ?1 AND r.due_at < ?2
+             ORDER BY r.due_at",
+        )?;
+        let rows = stmt.query_map(params![from, to], |row| {
+            Ok(Reminder {
+                guid: row.get(0)?,
+                list_guid: row.get(1)?,
+                title: row.get(2)?,
+                notes: row.get(3)?,
+                due_at: row.get(4)?,
+                completed_at: row.get(5)?,
+                priority: row.get(6)?,
+                etag: row.get(7)?,
+                raw: row.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Where a service's last sync got to, for resuming.
     pub fn sync_token(&self, service: &str) -> Result<Option<String>> {
         Ok(self
@@ -337,6 +367,39 @@ mod tests {
             "its reminders go too"
         );
         assert_eq!(lib.reminder_lists().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dated_reminders_are_found_by_range() {
+        let mut lib = seeded();
+        lib.put_reminders(&[
+            reminder("before", Some(50), None),
+            reminder("inside", Some(150), None),
+            reminder("also-inside", Some(199), Some(400)), // completed still shows on its day
+            reminder("after", Some(250), None),
+            reminder("undated", None, None),
+        ])
+        .unwrap();
+
+        let found = lib.reminders_due_between(100, 200).unwrap();
+        assert_eq!(
+            found.iter().map(|r| r.guid.as_str()).collect::<Vec<_>>(),
+            vec!["inside", "also-inside"],
+            "only dated reminders inside the window, in due order"
+        );
+    }
+
+    #[test]
+    fn a_disabled_list_hides_its_reminders_from_the_calendar() {
+        let mut lib = seeded();
+        lib.put_reminders(&[reminder("r1", Some(150), None)])
+            .unwrap();
+        assert_eq!(lib.reminders_due_between(0, 1000).unwrap().len(), 1);
+
+        let mut hidden = list("l1");
+        hidden.enabled = false;
+        lib.put_reminder_lists(&[hidden]).unwrap();
+        assert!(lib.reminders_due_between(0, 1000).unwrap().is_empty());
     }
 
     #[test]

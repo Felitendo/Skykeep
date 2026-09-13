@@ -566,3 +566,26 @@
 .is-done .rem-notes { color: var(--text-3); }
 
 .content:has(.rem) { display: flex; flex-direction: column; overflow: hidden; }
+
+/* A reminder in the calendar reads as a task, not an event: a ring rather than a dot. */
+.chip.reminder .chip-title { color: var(--text); }
+
+.chip-ring {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  border: 1.5px solid var(--text-3);
+  flex: none;
+  box-sizing: border-box;
+}
+
+.chip.reminder.is-done .chip-title,
+.chip.reminder.is-done .chip-time {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.chip.reminder.is-done .chip-ring {
+  background: var(--text-3);
+  border-color: var(--text-3);
+}

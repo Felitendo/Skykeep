@@ -27,6 +27,7 @@ function installStub({ screen, services, twoFactor }) {
         case "reminder_lists": return [];
         case "reminders_in": return [];
         case "reminders_last_synced": return Math.floor(Date.now() / 1000);
+        case "reminders_due_between": return [];
         case "reminders_sync": return [0, 0];
         default: return null;
       }
