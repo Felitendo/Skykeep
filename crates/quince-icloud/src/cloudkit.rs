@@ -126,19 +126,17 @@ impl<'a> ZoneClient<'a> {
     ///
     /// Returns the records and the final sync token, which a later call can resume from so a
     /// refresh fetches only what changed.
-    pub async fn all_records(
-        &self,
-        zone: &str,
-        since: Option<&str>,
-    ) -> Result<(Vec<Value>, Option<String>)> {
+    pub async fn all_records(&self, zone: &str, since: Option<&str>) -> Result<ZoneWalk> {
         let mut records = Vec::new();
         let mut token = since.map(ToString::to_string);
+        let mut complete = false;
 
         for _ in 0..MAX_PAGES {
             let page = self.changes(zone, token.as_deref()).await?;
             records.extend(page.records);
             token = page.sync_token;
             if !page.more_coming {
+                complete = true;
                 break;
             }
             // A page that says "more coming" but hands back no cursor would loop forever.
@@ -146,8 +144,24 @@ impl<'a> ZoneClient<'a> {
                 break;
             }
         }
-        Ok((records, token))
+        Ok(ZoneWalk {
+            records,
+            token,
+            complete,
+        })
     }
+}
+
+/// What one walk of a zone returned.
+///
+/// `complete` is the part that matters. A walk stops at a page cap, and one that stopped
+/// early has seen only part of the zone — treating that as the whole truth and pruning
+/// everything it did not mention would delete records that are perfectly fine. Nothing
+/// authoritative may be done with a walk that did not finish.
+pub struct ZoneWalk {
+    pub records: Vec<Value>,
+    pub token: Option<String>,
+    pub complete: bool,
 }
 
 /// Field helpers. CloudKit wraps every value as `{"type": …, "value": …}`.
@@ -241,7 +255,7 @@ mod tests {
 
         let http = reqwest::Client::new();
         let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
-        let (records, token) = client.all_records("Reminders", None).await.unwrap();
+        let ZoneWalk { records, token, .. } = client.all_records("Reminders", None).await.unwrap();
 
         assert_eq!(records.len(), 3, "every page must be collected");
         assert_eq!(
@@ -265,7 +279,7 @@ mod tests {
 
         let http = reqwest::Client::new();
         let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
-        let (records, _) = client.all_records("Reminders", None).await.unwrap();
+        let ZoneWalk { records, .. } = client.all_records("Reminders", None).await.unwrap();
         assert_eq!(records.len(), 1);
     }
 
@@ -597,6 +611,79 @@ mod modify_tests {
             1,
             "a non-conflict refusal must not be retried"
         );
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A walk that runs out of pages has seen only part of the zone. Saying so is what
+    /// stops a caller treating it as the whole truth and deleting everything it missed.
+    #[tokio::test]
+    async fn a_walk_that_never_ends_is_reported_incomplete() {
+        let server = MockServer::start().await;
+        // Every page claims there is more, forever.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "zones": [{
+                    "records": [{ "recordName": "Reminder/1", "recordType": "Reminder" }],
+                    "moreComing": true,
+                    "syncToken": "next"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        let walk = client.all_records("Reminders", None).await.unwrap();
+        assert!(!walk.complete, "hitting the page cap is not completion");
+    }
+
+    #[tokio::test]
+    async fn a_walk_that_finishes_says_so() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "zones": [{
+                    "records": [{ "recordName": "Reminder/1", "recordType": "Reminder" }],
+                    "moreComing": false,
+                    "syncToken": "done"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        let walk = client.all_records("Reminders", None).await.unwrap();
+        assert!(walk.complete);
+        assert_eq!(walk.records.len(), 1);
+        assert_eq!(walk.token.as_deref(), Some("done"));
+    }
+
+    /// "More coming" with no cursor to follow would loop forever; stopping is right, and
+    /// calling it complete would not be.
+    #[tokio::test]
+    async fn more_coming_with_no_cursor_stops_and_admits_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "zones": [{ "records": [], "moreComing": true }]
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        let walk = client.all_records("Reminders", None).await.unwrap();
+        assert!(!walk.complete);
     }
 }
 

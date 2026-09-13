@@ -624,7 +624,7 @@ async fn main() -> Result<()> {
                     "  {zone_name:<12} error: {}",
                     e.to_string().chars().take(70).collect::<String>()
                 ),
-                Ok((records, _)) => {
+                Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) => {
                     let mut census: std::collections::BTreeMap<String, usize> =
                         std::collections::BTreeMap::new();
                     for r in &records {
@@ -1001,7 +1001,9 @@ async fn main() -> Result<()> {
             "com.apple.notes",
             client.service_params(),
         );
-        if let Ok((records, _)) = zc.all_records("Notes", None).await {
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Notes", None).await
+        {
             let (mut safe, mut refused) = (0, 0);
             for rec in records
                 .iter()
@@ -1276,7 +1278,9 @@ async fn main() -> Result<()> {
             "com.apple.notes",
             client.service_params(),
         );
-        if let Ok((records, _)) = zc.all_records("Notes", None).await {
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Notes", None).await
+        {
             for rec in records
                 .iter()
                 .filter(|r| {
@@ -1433,7 +1437,9 @@ async fn main() -> Result<()> {
             "com.apple.reminders",
             client.service_params(),
         );
-        if let Ok((records, _)) = zc.all_records("Reminders", None).await {
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Reminders", None).await
+        {
             for rec in records
                 .iter()
                 .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("RecurrenceRule"))

@@ -554,11 +554,13 @@ pub async fn fetch_cloudkit(
     since: Option<&str>,
 ) -> Result<RemindersFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let (records, token) = client.all_records(ZONE, since).await?;
+    let walk = client.all_records(ZONE, since).await?;
     Ok(RemindersFetch {
-        records,
-        token,
-        incremental: since.is_some(),
+        records: walk.records,
+        token: walk.token,
+        // A walk that stopped at its page cap saw only part of the zone, so it cannot be
+        // treated as the whole truth however it was asked for.
+        incremental: since.is_some() || !walk.complete,
     })
 }
 
@@ -684,6 +686,13 @@ pub fn apply_cloudkit(
     library.put_reminders(&reminders)?;
     if !gone_reminders.is_empty() || !gone_lists.is_empty() {
         library.forget_reminders(&gone_reminders, &gone_lists)?;
+    }
+    // A full pass saw everything Apple has, so anything else here is gone. An incremental
+    // pass saw only changes, where absence means unchanged — pruning there would empty the
+    // library on the first refresh.
+    if !incremental {
+        let keep: Vec<String> = reminders.iter().map(|r| r.guid.clone()).collect();
+        library.retain_reminders(&keep)?;
     }
     library.mark_synced("reminders", token.as_deref())?;
     Ok((lists.len(), reminders.len(), token))
@@ -2318,6 +2327,44 @@ mod tombstone_tests {
             library.reminders_in("List/a", true).unwrap().len(),
             1,
             "only an explicit deletion may remove anything"
+        );
+    }
+
+    /// The floor under tombstones: a tombstone is delivered once, so a sync that consumed
+    /// one before this code knew what to do with it would leave that record on screen
+    /// forever. A full pass saw everything Apple has, so anything else is gone.
+    #[test]
+    fn a_full_pass_removes_what_apple_no_longer_reports() {
+        let mut library = library_with("Reminder/ghost");
+        apply_cloudkit(
+            &mut library,
+            RemindersFetch {
+                records: vec![json!({
+                    "recordName": "List/a",
+                    "recordType": "List",
+                    "fields": { "Name": { "type": "STRING", "value": "Daily" } }
+                })],
+                token: Some("t".into()),
+                incremental: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            library.reminders_in("List/a", true).unwrap().is_empty(),
+            "a full pass is the whole truth"
+        );
+    }
+
+    /// And the opposite must never happen: an incremental pass carries only changes, so
+    /// pruning there would empty the library on the first refresh.
+    #[test]
+    fn an_incremental_pass_never_prunes() {
+        let mut library = library_with("Reminder/1");
+        apply(&mut library, vec![]);
+        assert_eq!(
+            library.reminders_in("List/a", true).unwrap().len(),
+            1,
+            "absence in a delta means unchanged, not deleted"
         );
     }
 

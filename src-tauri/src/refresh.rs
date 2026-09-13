@@ -56,6 +56,15 @@ pub struct Refresh {
     pub took_ms: u64,
 }
 
+/// How often a service reconciles against everything Apple has, rather than the changes
+/// since last time.
+///
+/// A delta is what almost every refresh should be — seconds rather than a minute. But a
+/// delta can only apply what Apple chose to send, and a tombstone is sent once, so a record
+/// whose removal was missed would stay forever. Once a day is often enough to be a floor
+/// and rare enough that nobody notices the cost.
+const FULL_SYNC_EVERY: i64 = 24 * 60 * 60;
+
 /// The services one pass covers, in the order a person would notice them going stale.
 const COVERED: [(&str, &str); 4] = [
     ("calendar", "Calendar"),
@@ -153,6 +162,7 @@ pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh 
         None => unavailable("reminders", "Reminders"),
         Some(root) => {
             let since = token(data, "reminders").await;
+            let full = since.is_none();
             let fetched = quince_icloud::reminders::fetch_cloudkit(
                 &ctx.http,
                 root,
@@ -160,14 +170,23 @@ pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh 
                 since.as_deref(),
             )
             .await;
-            store("reminders", "Reminders", data, fetched, |library, f| {
-                let (lists, count, _) = quince_icloud::reminders::apply_cloudkit(library, f)?;
-                Ok(format!(
-                    "{count} reminder{} in {lists} list{}",
-                    plural(count),
-                    plural(lists)
-                ))
-            })
+            store(
+                "reminders",
+                "Reminders",
+                data,
+                fetched,
+                move |library, f| {
+                    let (lists, count, _) = quince_icloud::reminders::apply_cloudkit(library, f)?;
+                    if full {
+                        library.mark_full_sync("reminders")?;
+                    }
+                    Ok(format!(
+                        "{count} reminder{} in {lists} list{}",
+                        plural(count),
+                        plural(lists)
+                    ))
+                },
+            )
             .await
         }
     });
@@ -176,6 +195,7 @@ pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh 
         None => unavailable("notes", "Notes"),
         Some(root) => {
             let since = token(data, "notes").await;
+            let full = since.is_none();
             let fetched = quince_icloud::notes::fetch_cloudkit(
                 &ctx.http,
                 root,
@@ -183,8 +203,11 @@ pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh 
                 since.as_deref(),
             )
             .await;
-            store("notes", "Notes", data, fetched, |library, f| {
+            store("notes", "Notes", data, fetched, move |library, f| {
                 let (folders, notes, _) = quince_icloud::notes::apply_cloudkit(library, f)?;
+                if full {
+                    library.mark_full_sync("notes")?;
+                }
                 Ok(format!(
                     "{notes} note{} in {folders} folder{}",
                     plural(notes),
@@ -275,8 +298,16 @@ fn unavailable(service: &'static str, label: &'static str) -> ServiceReport {
     }
 }
 
+/// Where the last sync got to — or `None` when this service is due a full pass, which is
+/// what makes the next fetch walk everything.
 async fn token(data: &Mutex<Library>, service: &str) -> Option<String> {
     let library = data.lock().await;
+    if library
+        .needs_full_sync(service, FULL_SYNC_EVERY)
+        .unwrap_or(false)
+    {
+        return None;
+    }
     library.sync_token(service).ok().flatten()
 }
 

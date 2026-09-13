@@ -188,4 +188,13 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE notes ADD COLUMN editable INTEGER NOT NULL DEFAULT 1;
     "#,
+    // 10 — when a service last did a full pass, rather than a delta.
+    //
+    // A delta is cheap and is what almost every refresh should be, but it can only ever
+    // apply what Apple chose to send. A tombstone is delivered once; a sync that consumed
+    // one before the code knew what to do with it left that record stranded forever. A full
+    // pass now and then is the floor under that, and this is what schedules it.
+    r#"
+    ALTER TABLE sync_state ADD COLUMN last_full_at INTEGER;
+    "#,
 ];

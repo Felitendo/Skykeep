@@ -95,6 +95,7 @@ pub async fn sync_cloudkit(
 pub struct NotesFetch {
     records: Vec<Value>,
     token: Option<String>,
+    incremental: bool,
 }
 
 /// Ask Apple what changed. Touches no local state.
@@ -105,8 +106,14 @@ pub async fn fetch_cloudkit(
     since: Option<&str>,
 ) -> Result<NotesFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let (records, token) = client.all_records(ZONE, since).await?;
-    Ok(NotesFetch { records, token })
+    let walk = client.all_records(ZONE, since).await?;
+    Ok(NotesFetch {
+        records: walk.records,
+        token: walk.token,
+        // A walk cut short by the page cap is not the whole truth, whatever it was asked
+        // for — pruning against a partial view would delete records that are perfectly fine.
+        incremental: since.is_some() || !walk.complete,
+    })
 }
 
 /// Store a fetched pass. Touches no network.
@@ -114,7 +121,11 @@ pub fn apply_cloudkit(
     library: &mut quince_core::Library,
     fetched: NotesFetch,
 ) -> Result<(usize, usize, Option<String>)> {
-    let NotesFetch { records, token } = fetched;
+    let NotesFetch {
+        records,
+        token,
+        incremental,
+    } = fetched;
 
     let mut folders: Vec<NoteFolder> = Vec::new();
     let mut notes: Vec<Note> = Vec::new();
@@ -202,6 +213,12 @@ pub fn apply_cloudkit(
     library.put_notes(&notes)?;
     if !gone.is_empty() {
         library.forget_notes(&gone)?;
+    }
+    // A full pass is the whole truth; an incremental one only carries changes, where
+    // absence means unchanged rather than deleted.
+    if !incremental {
+        let keep: Vec<String> = notes.iter().map(|n| n.guid.clone()).collect();
+        library.retain_notes(&keep)?;
     }
     library.mark_synced("notes", token.as_deref())?;
     Ok((folders.len(), notes.len(), token))

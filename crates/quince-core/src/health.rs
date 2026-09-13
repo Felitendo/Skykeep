@@ -9,6 +9,12 @@ use crate::{Library, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
 /// One service's standing after the last refresh.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +46,37 @@ impl Library {
              VALUES (?1, NULL, NULL, ?2)
              ON CONFLICT(service) DO UPDATE SET last_error = excluded.last_error",
             params![service, trimmed],
+        )?;
+        Ok(())
+    }
+
+    /// Whether this service is due a full pass rather than a delta.
+    ///
+    /// A delta cannot remove a record whose tombstone it never saw, so a full pass runs
+    /// occasionally to reconcile against the whole truth. Never having done one counts as
+    /// due, which is what heals a library that predates this bookkeeping.
+    pub fn needs_full_sync(&self, service: &str, every_seconds: i64) -> Result<bool> {
+        let last: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT last_full_at FROM sync_state WHERE service = ?1",
+                params![service],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        Ok(match last {
+            None => true,
+            Some(at) => now().saturating_sub(at) >= every_seconds,
+        })
+    }
+
+    /// Record that a service reconciled against everything Apple has.
+    pub fn mark_full_sync(&self, service: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sync_state (service, last_full_at) VALUES (?1, ?2)
+             ON CONFLICT(service) DO UPDATE SET last_full_at = excluded.last_full_at",
+            params![service, now()],
         )?;
         Ok(())
     }
@@ -152,6 +189,53 @@ mod tests {
         assert_eq!(
             lib.oldest_sync(&["notes", "reminders"]).unwrap(),
             Some(1000)
+        );
+    }
+
+    /// A library that has never done a full pass is due one — which is what heals a library
+    /// that predates this bookkeeping and is holding records whose tombstones it missed.
+    #[test]
+    fn never_having_reconciled_counts_as_due() {
+        let lib = library();
+        assert!(lib.needs_full_sync("reminders", 86_400).unwrap());
+        lib.mark_synced("reminders", Some("token")).unwrap();
+        assert!(
+            lib.needs_full_sync("reminders", 86_400).unwrap(),
+            "a delta is not a full pass"
+        );
+    }
+
+    #[test]
+    fn a_recent_full_pass_is_not_repeated() {
+        let lib = library();
+        lib.mark_full_sync("reminders").unwrap();
+        assert!(!lib.needs_full_sync("reminders", 86_400).unwrap());
+    }
+
+    #[test]
+    fn a_stale_full_pass_comes_due_again() {
+        let lib = library();
+        lib.mark_full_sync("reminders").unwrap();
+        lib.conn
+            .execute(
+                "UPDATE sync_state SET last_full_at = last_full_at - 90000 WHERE service = 'reminders'",
+                [],
+            )
+            .unwrap();
+        assert!(lib.needs_full_sync("reminders", 86_400).unwrap());
+    }
+
+    /// Recording a full pass must not disturb the freshness stamp or the resume token.
+    #[test]
+    fn recording_a_full_pass_leaves_everything_else_alone() {
+        let lib = library();
+        lib.mark_synced("reminders", Some("token")).unwrap();
+        let before = lib.last_synced("reminders").unwrap();
+        lib.mark_full_sync("reminders").unwrap();
+        assert_eq!(lib.last_synced("reminders").unwrap(), before);
+        assert_eq!(
+            lib.sync_token("reminders").unwrap().as_deref(),
+            Some("token")
         );
     }
 

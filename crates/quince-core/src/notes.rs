@@ -103,6 +103,36 @@ impl Library {
         Ok(())
     }
 
+    /// Keep only these notes, dropping everything else.
+    ///
+    /// The same floor a full reminder sync has: a tombstone arrives once, so a sync that
+    /// consumed one before it was understood would leave a deleted note on screen forever —
+    /// and saving one of those writes it back to iCloud.
+    pub fn retain_notes(&mut self, keep: &[String]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let removed = {
+            let mut known: std::collections::HashSet<&str> =
+                keep.iter().map(String::as_str).collect();
+            let mut stmt = tx.prepare("SELECT guid FROM notes")?;
+            let all: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+
+            let mut delete = tx.prepare("DELETE FROM notes WHERE guid = ?1")?;
+            let mut count = 0;
+            for guid in &all {
+                if !known.remove(guid.as_str()) {
+                    delete.execute(params![guid])?;
+                    count += 1;
+                }
+            }
+            count
+        };
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub fn forget_notes(&mut self, note_guids: &[String]) -> Result<()> {
         let tx = self.conn.transaction()?;
         {

@@ -310,6 +310,39 @@ impl Library {
         Ok(())
     }
 
+    /// Keep only these reminders, dropping everything else.
+    ///
+    /// A full sync is the whole truth: Apple reported every reminder it has, so anything
+    /// still here that is not in that set no longer exists. Tombstones cover the usual
+    /// case, but a tombstone is only ever delivered once — if a sync consumed one before
+    /// the code knew what to do with it, that record would otherwise stay on screen
+    /// forever. This is the floor under that.
+    pub fn retain_reminders(&mut self, keep: &[String]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let removed = {
+            let mut known: std::collections::HashSet<&str> =
+                keep.iter().map(String::as_str).collect();
+            // A reminder with no list would fail its foreign key anyway; leave those alone.
+            let mut stmt = tx.prepare("SELECT guid FROM reminders")?;
+            let all: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+
+            let mut delete = tx.prepare("DELETE FROM reminders WHERE guid = ?1")?;
+            let mut count = 0;
+            for guid in &all {
+                if !known.remove(guid.as_str()) {
+                    delete.execute(params![guid])?;
+                    count += 1;
+                }
+            }
+            count
+        };
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub fn put_reminders(&mut self, reminders: &[Reminder]) -> Result<()> {
         let tx = self.conn.transaction()?;
         {
