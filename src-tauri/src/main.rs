@@ -48,6 +48,23 @@ type UiResult<T> = Result<T, String>;
 
 /// The HTTP client, CloudKit root and query parameters, with the auth lock released before
 /// any network work so a slow sync cannot block the heartbeat or a sign-out.
+/// Re-read reminders after a write, so what is on screen is what Apple stored.
+///
+/// A list change moves records other than the one written, so this is a full pass rather
+/// than a delta.
+async fn resync_reminders(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    data: &State<'_, Data>,
+) -> Result<(), String> {
+    let mut library = data.0.lock().await;
+    quince_icloud::reminders::sync_cloudkit(http, root, params, &mut library, None)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 async fn cloudkit_context(
     auth: &State<'_, Auth>,
 ) -> Result<(reqwest::Client, String, Vec<(String, String)>), String> {
@@ -416,6 +433,53 @@ async fn reminders_smart(
         .map_err(|e| e.to_string())
 }
 
+/// Create, rename or delete a list, then re-read so the sidebar matches Apple.
+#[tauri::command]
+async fn reminder_list_create(
+    title: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    quince_icloud::reminders::create_list_cloudkit(&http, &root, params.clone(), &title)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_reminders(&http, &root, params, &data).await
+}
+
+#[tauri::command]
+async fn reminder_list_rename(
+    list_guid: String,
+    title: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    quince_icloud::reminders::rename_list_cloudkit(
+        &http,
+        &root,
+        params.clone(),
+        &list_guid,
+        &title,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    resync_reminders(&http, &root, params, &data).await
+}
+
+#[tauri::command]
+async fn reminder_list_delete(
+    list_guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    quince_icloud::reminders::delete_list_cloudkit(&http, &root, params.clone(), &list_guid)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_reminders(&http, &root, params, &data).await
+}
+
 #[tauri::command]
 async fn reminders_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
     let library = data.0.lock().await;
@@ -572,6 +636,9 @@ fn main() {
             reminder_delete,
             reminder_edit,
             reminders_smart,
+            reminder_list_create,
+            reminder_list_rename,
+            reminder_list_delete,
             notes_sync,
             note_folders,
             notes_in,

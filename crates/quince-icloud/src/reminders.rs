@@ -837,6 +837,91 @@ pub async fn edit_cloudkit(
     Ok(())
 }
 
+/// Create a list.
+///
+/// Returns the record name Apple will know it by. `Name` is a plain string here, unlike a
+/// reminder's title, which is wrapped in the document format.
+pub async fn create_list_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    title: &str,
+) -> Result<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(Error::Protocol("a list needs a name".into()));
+    }
+
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let record_name = format!("List/{}", uuid::Uuid::new_v4().to_string().to_uppercase());
+
+    client
+        .create_record(
+            ZONE,
+            &record_name,
+            "List",
+            serde_json::json!({
+                "Name": { "type": "STRING", "value": title },
+                "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+                "IsGroup": { "type": "NUMBER_INT64", "value": 0 },
+                "SortingStyle": { "type": "STRING", "value": "manual" },
+            }),
+        )
+        .await?;
+
+    Ok(record_name)
+}
+
+/// Rename a list.
+pub async fn rename_list_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    list_guid: &str,
+    title: &str,
+) -> Result<()> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(Error::Protocol("a list needs a name".into()));
+    }
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            list_guid,
+            "List",
+            None,
+            serde_json::json!({ "Name": { "type": "STRING", "value": title } }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Remove a list.
+///
+/// Marks it deleted rather than destroying it, matching how Apple's own clients work and
+/// leaving other devices able to reconcile. Its reminders go with it.
+pub async fn delete_list_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    list_guid: &str,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            list_guid,
+            "List",
+            None,
+            serde_json::json!({
+                "Deleted": { "type": "NUMBER_INT64", "value": 1 },
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
 /// Tick a CloudKit reminder off, or put it back.
 ///
 /// Sends only the fields that change, guarded by the record's change tag, so a reminder
@@ -1424,5 +1509,98 @@ mod edit_tests {
         assert!(fields.get("TitleDocument").is_some());
         assert_eq!(fields["DueDate"]["value"], 1_757_000_000_000_i64);
         assert_eq!(fields["Flagged"]["value"], 1);
+    }
+}
+
+#[cfg(test)]
+mod list_write_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn accepting() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "List/x" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn sent(server: &MockServer) -> Value {
+        let requests = server.received_requests().await.unwrap();
+        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["operations"][0].clone()
+    }
+
+    /// A list's name is a plain string, unlike a reminder's title — writing it as a document
+    /// would leave the list unnamed on the phone.
+    #[tokio::test]
+    async fn a_created_list_carries_a_plain_name() {
+        let server = accepting().await;
+        let name =
+            create_list_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], "Groceries")
+                .await
+                .unwrap();
+        assert!(
+            name.starts_with("List/"),
+            "the caller needs the identifier: {name}"
+        );
+
+        let op = sent(&server).await;
+        assert_eq!(op["operationType"], "create");
+        assert_eq!(op["record"]["recordType"], "List");
+        assert_eq!(op["record"]["fields"]["Name"]["value"], "Groceries");
+        assert_eq!(op["record"]["fields"]["Name"]["type"], "STRING");
+    }
+
+    #[tokio::test]
+    async fn renaming_sends_only_the_name() {
+        let server = accepting().await;
+        rename_list_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "List/a",
+            "Errands",
+        )
+        .await
+        .unwrap();
+        let op = sent(&server).await;
+        assert_eq!(op["operationType"], "update");
+        assert_eq!(op["record"]["fields"]["Name"]["value"], "Errands");
+        assert!(op["record"]["fields"].get("Deleted").is_none());
+    }
+
+    /// Deleting marks the flag Apple's own clients use rather than destroying the record.
+    #[tokio::test]
+    async fn deleting_marks_rather_than_destroys() {
+        let server = accepting().await;
+        delete_list_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], "List/a")
+            .await
+            .unwrap();
+        let op = sent(&server).await;
+        assert_eq!(op["operationType"], "update");
+        assert_eq!(op["record"]["fields"]["Deleted"]["value"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_blank_name_is_refused_before_anything_is_sent() {
+        let server = accepting().await;
+        assert!(
+            create_list_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], "  ")
+                .await
+                .is_err()
+        );
+        assert!(
+            rename_list_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], "List/a", "")
+                .await
+                .is_err()
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

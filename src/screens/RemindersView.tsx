@@ -65,6 +65,9 @@ export function RemindersView() {
   const [busyGuid, setBusyGuid] = useState<string | null>(null);
   const [openGuid, setOpenGuid] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [newList, setNewList] = useState("");
+  const [addingList, setAddingList] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -164,6 +167,33 @@ export function RemindersView() {
   const setNotes = (r: Reminder, notes: string) =>
     write(r, () => api.reminderEdit(r.guid, r.listGuid, { notes: notes.trim() || null }));
 
+  /** List writes go to Apple first, then the whole set is re-read. */
+  const listWrite = useCallback(
+    async (run: () => Promise<void>) => {
+      setSyncing(true);
+      setError(null);
+      try {
+        await run();
+        await readLists();
+        await readItems();
+      } catch (e) {
+        setError(messageOf(e));
+      } finally {
+        setSyncing(false);
+      }
+    },
+    [readLists, readItems]
+  );
+
+  async function createList(e: React.FormEvent) {
+    e.preventDefault();
+    const title = newList.trim();
+    if (!title) return;
+    await listWrite(() => api.reminderListCreate(title));
+    setNewList("");
+    setAddingList(false);
+  }
+
   async function add(e: React.FormEvent) {
     e.preventDefault();
     const title = draft.trim();
@@ -207,17 +237,81 @@ export function RemindersView() {
 
         <p className="rem-lists-heading">My Lists</p>
         {lists.map((list) => (
-          <button
-            key={list.guid}
-            className="rem-list"
-            aria-current={listGuid === list.guid}
-            onClick={() => setSelection({ type: "list", guid: list.guid })}
-          >
-            <span className="dot" style={{ background: list.colour || "var(--gold)" }} />
-            <span className="rem-list-name">{list.title}</span>
-          </button>
+          <div className="rem-list-row" key={list.guid}>
+            {renaming === list.guid ? (
+              <input
+                className="rem-list-rename"
+                defaultValue={list.title}
+                autoFocus
+                aria-label={`Rename ${list.title}`}
+                onBlur={(e) => {
+                  const title = e.target.value.trim();
+                  setRenaming(null);
+                  if (title && title !== list.title) {
+                    void listWrite(() => api.reminderListRename(list.guid, title));
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  if (e.key === "Escape") {
+                    e.currentTarget.value = list.title;
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+            ) : (
+              <>
+                <button
+                  className="rem-list"
+                  aria-current={listGuid === list.guid}
+                  onClick={() => setSelection({ type: "list", guid: list.guid })}
+                  onDoubleClick={() => setRenaming(list.guid)}
+                >
+                  <span className="dot" style={{ background: list.colour || "var(--gold)" }} />
+                  <span className="rem-list-name">{list.title}</span>
+                </button>
+                <button
+                  className="rem-list-action"
+                  aria-label={`Rename ${list.title}`}
+                  onClick={() => setRenaming(list.guid)}
+                >
+                  ✎
+                </button>
+                <button
+                  className="rem-list-action danger"
+                  aria-label={`Delete ${list.title}`}
+                  onClick={() => {
+                    // Deleting a list takes its reminders, so ask before doing it.
+                    if (window.confirm(`Delete "${list.title}" and everything in it?`)) {
+                      void listWrite(() => api.reminderListDelete(list.guid));
+                    }
+                  }}
+                >
+                  ×
+                </button>
+              </>
+            )}
+          </div>
         ))}
         {loaded && lists.length === 0 && <p className="badge">No lists yet</p>}
+
+        {addingList ? (
+          <form onSubmit={createList}>
+            <input
+              className="rem-list-rename"
+              value={newList}
+              onChange={(e) => setNewList(e.target.value)}
+              placeholder="List name"
+              aria-label="New list name"
+              autoFocus
+              onBlur={() => !newList.trim() && setAddingList(false)}
+            />
+          </form>
+        ) : (
+          <button className="rem-list add" onClick={() => setAddingList(true)}>
+            <span className="rem-list-name">Add List</span>
+          </button>
+        )}
       </aside>
 
       <section className="rem-items">

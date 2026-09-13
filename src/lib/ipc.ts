@@ -42,6 +42,11 @@ export const api = {
     invoke<void>("reminder_set_done", { guid, listGuid, done }),
   reminderEdit: (guid: string, listGuid: string, edit: ReminderEdit) =>
     invoke<void>("reminder_edit", { guid, listGuid, edit }),
+  reminderListCreate: (title: string) => invoke<void>("reminder_list_create", { title }),
+  reminderListRename: (listGuid: string, title: string) =>
+    invoke<void>("reminder_list_rename", { listGuid, title }),
+  reminderListDelete: (listGuid: string) =>
+    invoke<void>("reminder_list_delete", { listGuid }),
   remindersSmart: (kind: SmartList, until: number) =>
     invoke<Reminder[]>("reminders_smart", { kind, until }),
   reminderCreate: (listGuid: string, title: string) =>

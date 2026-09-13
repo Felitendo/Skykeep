@@ -136,6 +136,8 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
         case "reminder_edit": return null;
+        case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
+          return null;
         case "reminders_smart": return !remindersFixture ? [] : reminderItems.filter(r => !r.completedAt);
         case "note_folders": return !notesFixture ? [] : noteFolders;
         case "notes_in": return !notesFixture ? [] : noteList;

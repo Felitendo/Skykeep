@@ -1076,3 +1076,42 @@
 /* A row holding an open detail panel needs the controls at the top, not centred. */
 .rem-list-items li { align-items: start; }
 .rem-trailing { padding-top: 2px; }
+
+/* List management sits in the sidebar, with its controls out of the way until hovered. */
+.rem-list-row { display: flex; align-items: center; gap: 1px; }
+.rem-list-row .rem-list { flex: 1; min-width: 0; }
+
+.rem-list-action {
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  font-size: var(--t-11);
+  line-height: 1;
+  padding: 4px 5px;
+  border-radius: var(--r-field);
+  cursor: pointer;
+  opacity: 0;
+  flex: none;
+}
+
+.rem-list-row:hover .rem-list-action,
+.rem-list-action:focus-visible { opacity: 1; }
+.rem-list-action:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.rem-list-action.danger:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.rem-list-action:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
+
+.rem-list.add { color: var(--text-3); }
+.rem-list.add:hover { color: var(--text-2); }
+
+.rem-list-rename {
+  width: 100%;
+  font: inherit;
+  font-size: var(--t-13);
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-field);
+  padding: 5px 8px;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--gold-ring);
+}
