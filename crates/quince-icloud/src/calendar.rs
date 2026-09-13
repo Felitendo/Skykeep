@@ -238,8 +238,14 @@ impl<'a> CalendarClient<'a> {
     /// a caller can confirm what was stored rather than assume.
     pub async fn put_event(&self, event: &Event, ctag: Option<&str>) -> Result<Snapshot> {
         let day = day_of(event.starts_at, event.timezone.as_deref());
+        // What Apple already has, if this event exists. An event carries far more than this
+        // app models — its alerts, its guests, its attachments, its link to the series it
+        // repeats in — and Apple takes the whole event on every write. Building one from
+        // our own fields alone did not merely drop those, it cleared them: a weekly meeting
+        // edited here came back a one-off with no alerts and no guests.
+        let existing = self.event_detail(event, &day).await;
         let body = serde_json::json!({
-            "Event": self.event_body(event),
+            "Event": self.event_body(event, existing.as_ref()),
             "ClientState": client_state(&event.calendar_guid, ctag),
         });
         let path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
@@ -272,38 +278,95 @@ impl<'a> CalendarClient<'a> {
         Ok(())
     }
 
+    /// Apple's own full record of an event, or `None` for one it has never heard of.
+    ///
+    /// Asked for before every write so an edit can be merged into what is really there.
+    /// A failure here is not fatal — it only means there is nothing to merge into, which is
+    /// exactly the case for a new event.
+    async fn event_detail(&self, event: &Event, day: &str) -> Option<Value> {
+        let mut query = self.params.clone();
+        query.push(("clientVersion".into(), "5.1".into()));
+        query.push(("lang".into(), "en-us".into()));
+        query.push((
+            "usertz".into(),
+            event.timezone.clone().unwrap_or_else(|| "UTC".into()),
+        ));
+        query.push(("startDate".into(), day.to_string()));
+        query.push(("endDate".into(), day.to_string()));
+
+        let url = format!(
+            "{}/ca/eventdetail/{}/{}",
+            self.root, event.calendar_guid, event.guid
+        );
+        let response = self.http.get(url).query(&query).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let body: Value = serde_json::from_str(&response.text().await.ok()?).ok()?;
+        body.pointer("/Event/0")
+            .or_else(|| body.pointer("/Event"))
+            .filter(|e| e.is_object())
+            .cloned()
+    }
+
     /// Apple's event object, in the shape its own web client sends.
     ///
-    /// Every field is filled rather than left out: the service rejects a partial event, and
-    /// an omitted `duration` or `tz` comes back as a rejection that says nothing useful.
-    fn event_body(&self, event: &Event) -> Value {
+    /// When Apple already has the event, its own record is the starting point and only the
+    /// fields this app actually models are written over it — so alerts, guests,
+    /// attachments, private comments and the dates linking it to a repeating series all
+    /// survive an edit untouched. Only a genuinely new event is built from nothing.
+    fn event_body(&self, event: &Event, existing: Option<&Value>) -> Value {
         let zone = event.timezone.as_deref();
         let minutes = ((event.ends_at - event.starts_at) / 60).max(0);
-        serde_json::json!({
-            "guid": event.guid,
-            "pGuid": event.calendar_guid,
-            "title": event.title,
-            "location": event.location.clone().unwrap_or_default(),
-            "description": event.notes.clone().unwrap_or_default(),
-            "url": event.url,
-            "startDate": format_apple_date(event.starts_at, zone),
-            "endDate": format_apple_date(event.ends_at, zone),
-            "localStartDate": format_apple_date(event.starts_at, zone),
-            "localEndDate": format_apple_date(event.ends_at, zone),
-            "duration": minutes,
-            "allDay": event.all_day,
-            "tz": zone,
-            "etag": event.etag,
-            "icon": 0,
-            "recurrence": Value::Null,
-            "changeRecurring": Value::Null,
-            "alarms": [],
-            "invitees": [],
-            "hasAttachments": false,
-            "isJunk": false,
-            "readOnly": false,
-            "extendedDetailsAreIncluded": true,
-        })
+
+        let mut body = existing.cloned().unwrap_or_else(|| {
+            // A new event has no alerts or guests to keep, so saying so is accurate here in
+            // a way it never was for an edit.
+            serde_json::json!({
+                "icon": 0,
+                "recurrence": Value::Null,
+                "changeRecurring": Value::Null,
+                "alarms": [],
+                "invitees": [],
+                "hasAttachments": false,
+                "isJunk": false,
+                "readOnly": false,
+                "extendedDetailsAreIncluded": true,
+            })
+        });
+        let object = body.as_object_mut().expect("an event is an object");
+
+        for (key, value) in [
+            ("guid", Value::String(event.guid.clone())),
+            ("pGuid", Value::String(event.calendar_guid.clone())),
+            ("title", Value::String(event.title.clone())),
+            (
+                "location",
+                Value::String(event.location.clone().unwrap_or_default()),
+            ),
+            (
+                "description",
+                Value::String(event.notes.clone().unwrap_or_default()),
+            ),
+            ("url", event.url.clone().map_or(Value::Null, Value::String)),
+            ("startDate", format_apple_date(event.starts_at, zone)),
+            ("endDate", format_apple_date(event.ends_at, zone)),
+            ("localStartDate", format_apple_date(event.starts_at, zone)),
+            ("localEndDate", format_apple_date(event.ends_at, zone)),
+            ("duration", Value::from(minutes)),
+            ("allDay", Value::Bool(event.all_day)),
+            (
+                "tz",
+                zone.map_or(Value::Null, |z| Value::String(z.to_string())),
+            ),
+            (
+                "etag",
+                event.etag.clone().map_or(Value::Null, Value::String),
+            ),
+        ] {
+            object.insert(key.to_string(), value);
+        }
+        body
     }
 
     async fn post(
@@ -607,8 +670,16 @@ mod write_tests {
         server
     }
 
+    /// The write itself, not the detail fetch that precedes it — a write reads what Apple
+    /// already has so an edit can be merged into it rather than replace it.
     async fn request(server: &MockServer) -> Request {
-        server.received_requests().await.unwrap().remove(0)
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.method == reqwest::Method::POST)
+            .expect("a write was sent")
     }
 
     #[tokio::test]
@@ -701,6 +772,103 @@ mod write_tests {
 
         let body: Value = serde_json::from_slice(&request(&server).await.body).unwrap();
         assert_eq!(body["Event"]["duration"], 0);
+    }
+
+    /// The one that matters. An event carries alerts, guests, attachments and the dates
+    /// linking it to the series it repeats in; Apple takes the whole event on every write.
+    /// Building one from our own fields alone did not merely drop those, it cleared them —
+    /// a weekly meeting edited here came back a one-off with no alerts and no guests.
+    #[tokio::test]
+    async fn an_edit_keeps_the_alerts_guests_and_repeat_apple_holds() {
+        let server = MockServer::start().await;
+        // Apple's own record of the event, with everything this app does not model.
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/eventdetail/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Event": [{
+                    "guid": "E-1",
+                    "pGuid": "work",
+                    "title": "Dentist",
+                    "tz": "Asia/Kolkata",
+                    "startDate": [20260914, 2026, 9, 14, 9, 30, 570],
+                    "endDate": [20260914, 2026, 9, 14, 10, 30, 630],
+                    "etag": "v1",
+                    "alarms": [{ "messageType": "message", "measurement": { "before": true, "minutes": 15 } }],
+                    "invitees": [{ "email": "someone@example.invalid" }],
+                    "attachments": [{ "name": "form.pdf" }],
+                    "privateComments": [{ "comment": "bring the referral" }],
+                    "recurrenceMaster": true,
+                    "masterStartDate": [20260901, 2026, 9, 1, 9, 30, 570],
+                    "transparent": true
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        let mut renamed = event();
+        renamed.title = "Dentist — moved".into();
+        client.put_event(&renamed, None).await.unwrap();
+
+        let body: Value = serde_json::from_slice(&request(&server).await.body).unwrap();
+        let sent = &body["Event"];
+
+        assert_eq!(sent["title"], "Dentist — moved", "the change lands");
+        // And nothing else was taken away with it.
+        assert_eq!(
+            sent["alarms"][0]["measurement"]["minutes"], 15,
+            "alerts survive"
+        );
+        assert_eq!(
+            sent["invitees"][0]["email"], "someone@example.invalid",
+            "guests survive"
+        );
+        assert_eq!(
+            sent["attachments"][0]["name"], "form.pdf",
+            "attachments survive"
+        );
+        assert_eq!(
+            sent["privateComments"][0]["comment"], "bring the referral",
+            "private comments survive"
+        );
+        assert_eq!(sent["recurrenceMaster"], true, "the repeat survives");
+        assert!(
+            sent.get("masterStartDate").is_some(),
+            "its series link survives"
+        );
+        assert_eq!(sent["transparent"], true, "free/busy survives");
+    }
+
+    /// A genuinely new event has no alerts or guests to keep, so saying so is accurate
+    /// there in a way it never was for an edit.
+    #[tokio::test]
+    async fn a_new_event_is_still_built_from_nothing() {
+        let server = MockServer::start().await;
+        // Apple has never heard of it: no detail comes back.
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/eventdetail/.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        client.put_event(&event(), None).await.unwrap();
+
+        let body: Value = serde_json::from_slice(&request(&server).await.body).unwrap();
+        assert_eq!(body["Event"]["title"], "Dentist");
+        assert_eq!(body["Event"]["alarms"], serde_json::json!([]));
     }
 
     #[tokio::test]
