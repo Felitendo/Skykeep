@@ -642,6 +642,84 @@ mod cloudkit_tests {
     }
 }
 
+/// Milliseconds since the epoch, which is how CloudKit writes timestamps.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Add a reminder to a list.
+///
+/// Returns the record name Apple will know it by, so the caller can store it without waiting
+/// for the next sync.
+pub async fn create_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    list_guid: &str,
+    title: &str,
+) -> Result<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(Error::Protocol("a reminder needs a title".into()));
+    }
+
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let record_name = format!(
+        "Reminder/{}",
+        uuid::Uuid::new_v4().to_string().to_uppercase()
+    );
+    let stamp = now_millis();
+
+    client
+        .create_record(
+            ZONE,
+            &record_name,
+            "Reminder",
+            serde_json::json!({
+                "TitleDocument": {
+                    "type": "ENCRYPTED_BYTES",
+                    "value": crate::ckdocument::text_to_base64(title),
+                },
+                "List": client.reference_to(ZONE, list_guid),
+                "Completed": { "type": "NUMBER_INT64", "value": 0 },
+                "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+                "CreationDate": { "type": "TIMESTAMP", "value": stamp },
+                "LastModifiedDate": { "type": "TIMESTAMP", "value": stamp },
+            }),
+        )
+        .await?;
+
+    Ok(record_name)
+}
+
+/// Remove a reminder.
+///
+/// Apple marks removal with a Deleted flag rather than destroying the record, which is what
+/// its own clients do and what keeps other devices able to reconcile.
+pub async fn delete_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder: &Reminder,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            &reminder.guid,
+            "Reminder",
+            reminder.etag.as_deref(),
+            serde_json::json!({
+                "Deleted": { "type": "NUMBER_INT64", "value": 1 },
+                "LastModifiedDate": { "type": "TIMESTAMP", "value": now_millis() },
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
 /// Tick a CloudKit reminder off, or put it back.
 ///
 /// Sends only the fields that change, guarded by the record's change tag, so a reminder
@@ -932,6 +1010,106 @@ mod recurrence_tests {
         assert!(
             (due - (now() + 7200)).abs() <= 2,
             "due date must survive the round trip"
+        );
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn accepting() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "x" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// A created reminder must be readable again, or it shows up blank on the phone.
+    #[tokio::test]
+    async fn a_created_reminder_carries_its_title() {
+        let server = accepting().await;
+        let http = reqwest::Client::new();
+        let name = create_cloudkit(&http, &server.uri(), vec![], "List/abc", "🥛 Buy milk")
+            .await
+            .unwrap();
+        assert!(
+            name.starts_with("Reminder/"),
+            "the caller needs the record name: {name}"
+        );
+
+        let sent: Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        let record = &sent["operations"][0]["record"];
+        assert_eq!(sent["operations"][0]["operationType"], "create");
+        assert_eq!(record["recordType"], "Reminder");
+        assert_eq!(record["fields"]["Completed"]["value"], 0);
+        assert_eq!(
+            record["fields"]["List"]["value"]["recordName"], "List/abc",
+            "it must land in the list the user chose"
+        );
+
+        let title = record["fields"]["TitleDocument"]["value"].as_str().unwrap();
+        assert_eq!(
+            crate::ckdocument::text_from_base64(title).as_deref(),
+            Some("🥛 Buy milk"),
+            "the title must decode back to what was typed"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_title_is_refused_before_any_request() {
+        let server = accepting().await;
+        let http = reqwest::Client::new();
+        assert!(
+            create_cloudkit(&http, &server.uri(), vec![], "List/abc", "   ")
+                .await
+                .is_err()
+        );
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "nothing should reach Apple"
+        );
+    }
+
+    /// Deleting marks the flag Apple's own clients use, rather than destroying the record.
+    #[tokio::test]
+    async fn deleting_sets_the_flag_with_the_change_tag() {
+        let server = accepting().await;
+        let reminder = Reminder {
+            guid: "Reminder/1".into(),
+            list_guid: "List/abc".into(),
+            title: "Gone".into(),
+            notes: None,
+            due_at: None,
+            completed_at: None,
+            priority: 0,
+            etag: Some("tag-3".into()),
+            raw: None,
+        };
+        delete_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &reminder)
+            .await
+            .unwrap();
+
+        let sent: Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(sent["operations"][0]["operationType"], "update");
+        assert_eq!(
+            sent["operations"][0]["record"]["fields"]["Deleted"]["value"],
+            1
+        );
+        assert_eq!(
+            sent["operations"][0]["record"]["recordChangeTag"], "tag-3",
+            "the change tag guards against clobbering a newer edit"
         );
     }
 }

@@ -29,6 +29,8 @@ export function RemindersView() {
   const [lastSynced, setLastSynced] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [busyGuid, setBusyGuid] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [adding, setAdding] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -117,6 +119,36 @@ export function RemindersView() {
     }
   }
 
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    const title = draft.trim();
+    if (!title || !selected || adding) return;
+    setAdding(true);
+    setError(null);
+    try {
+      await api.reminderCreate(selected, title);
+      setDraft("");
+      await readItems();
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function remove(reminder: Reminder) {
+    setBusyGuid(reminder.guid);
+    setError(null);
+    try {
+      await api.reminderDelete(reminder.guid, reminder.listGuid);
+      await readItems();
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setBusyGuid(null);
+    }
+  }
+
   const current = useMemo(
     () => lists.find((l) => l.guid === selected) ?? null,
     [lists, selected]
@@ -159,6 +191,19 @@ export function RemindersView() {
 
         {error && <p className="error" role="alert">{error}</p>}
 
+        {selected && (
+          <form className="rem-add" onSubmit={add}>
+            <span className="tick ghost" aria-hidden="true" />
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="Add a reminder"
+              aria-label={`Add a reminder to ${current?.title ?? "this list"}`}
+              disabled={adding}
+            />
+          </form>
+        )}
+
         <ul className="rem-list-items">
           {items.map((reminder) => (
             <li key={reminder.guid} className={reminder.completedAt ? "is-done" : undefined}>
@@ -182,7 +227,17 @@ export function RemindersView() {
                 <span className="rem-title">{reminder.title}</span>
                 {reminder.notes && <span className="rem-notes">{reminder.notes}</span>}
               </div>
-              {reminder.dueAt && <span className="rem-due">{dueLabel(reminder.dueAt)}</span>}
+              <span className="rem-trailing">
+                {reminder.dueAt && <span className="rem-due">{dueLabel(reminder.dueAt)}</span>}
+                <button
+                  className="rem-delete"
+                  aria-label={`Delete ${reminder.title}`}
+                  disabled={busyGuid === reminder.guid}
+                  onClick={() => remove(reminder)}
+                >
+                  ×
+                </button>
+              </span>
             </li>
           ))}
         </ul>

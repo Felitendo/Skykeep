@@ -311,6 +311,61 @@ async fn reminders_due_between(
         .map_err(|e| e.to_string())
 }
 
+/// Add a reminder to a list.
+///
+/// Writes to Apple first, then refreshes locally, so nothing appears on screen that Apple
+/// has not accepted.
+#[tauri::command]
+async fn reminder_create(
+    list_guid: String,
+    title: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    quince_icloud::reminders::create_cloudkit(&http, &root, params.clone(), &list_guid, &title)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut library = data.0.lock().await;
+    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
+    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn reminder_delete(
+    guid: String,
+    list_guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+
+    let reminder = {
+        let library = data.0.lock().await;
+        library
+            .reminders_in(&list_guid, true)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|r| r.guid == guid)
+            .ok_or("That reminder is no longer in the local library.")?
+    };
+
+    quince_icloud::reminders::delete_cloudkit(&http, &root, params.clone(), &reminder)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut library = data.0.lock().await;
+    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
+    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn reminders_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
     let library = data.0.lock().await;
@@ -359,6 +414,8 @@ fn main() {
             reminders_in,
             reminders_last_synced,
             reminders_due_between,
+            reminder_create,
+            reminder_delete,
             reminder_set_done,
         ])
         .run(tauri::generate_context!())

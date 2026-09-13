@@ -18,6 +18,9 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "reminders_last_synced") return Math.floor(Date.now() / 1000);
       if (cmd === "reminders_due_between") return [];
       if (cmd === "reminders_sync") return [0, 0];
+      if (cmd === "reminder_create") return null;
+      if (cmd === "reminder_delete") return null;
+      if (cmd === "reminder_set_done") return null;
       return null;
     },
   };

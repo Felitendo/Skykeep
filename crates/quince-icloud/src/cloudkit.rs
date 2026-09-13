@@ -336,11 +336,14 @@ impl ZoneClient<'_> {
             record["recordChangeTag"] = Value::String(tag.to_string());
         }
 
+        self.modify(zone, json!({ "operationType": "update", "record": record }))
+            .await
+    }
+
+    /// Send one operation to `records/modify` and surface what came back.
+    async fn modify(&self, zone: &str, operation: Value) -> Result<Value> {
         let body = json!({
-            "operations": [{
-                "operationType": "update",
-                "record": record,
-            }],
+            "operations": [operation],
             "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
         });
 
@@ -384,6 +387,46 @@ impl ZoneClient<'_> {
             }));
         }
         Ok(parsed)
+    }
+}
+
+impl ZoneClient<'_> {
+    /// Create a record in the zone.
+    ///
+    /// The caller supplies the record name so the same identifier can be stored locally
+    /// without waiting for a round trip.
+    pub async fn create_record(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        fields: Value,
+    ) -> Result<Value> {
+        self.modify(
+            zone,
+            json!({
+                "operationType": "create",
+                "record": {
+                    "recordName": record_name,
+                    "recordType": record_type,
+                    "fields": fields,
+                },
+            }),
+        )
+        .await
+    }
+
+    /// A reference field pointing at another record in the same zone.
+    #[must_use]
+    pub fn reference_to(&self, zone: &str, record_name: &str) -> Value {
+        json!({
+            "type": "REFERENCE",
+            "value": {
+                "action": "VALIDATE",
+                "recordName": record_name,
+                "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+            }
+        })
     }
 }
 

@@ -40,6 +40,10 @@ export const api = {
     invoke<Reminder[]>("reminders_due_between", { from, to }),
   reminderSetDone: (guid: string, listGuid: string, done: boolean) =>
     invoke<void>("reminder_set_done", { guid, listGuid, done }),
+  reminderCreate: (listGuid: string, title: string) =>
+    invoke<void>("reminder_create", { listGuid, title }),
+  reminderDelete: (guid: string, listGuid: string) =>
+    invoke<void>("reminder_delete", { guid, listGuid }),
 };
 
 /** Tauri rejects with a plain string from our commands; keep it readable either way. */

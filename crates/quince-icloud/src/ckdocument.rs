@@ -133,6 +133,56 @@ pub fn text_from_bytes(raw: &[u8]) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+/// Write `text` back in the shape Apple reads: protobuf at field path 2 → 3 → 2, gzipped,
+/// base64-encoded.
+///
+/// Writes must speak the dialect reads decode, or a reminder created here would show up
+/// blank on the phone.
+#[must_use]
+pub fn text_to_base64(text: &str) -> String {
+    B64.encode(gzip(&document_bytes(text)))
+}
+
+/// A length-delimited protobuf field: `(tag << 3) | 2`, then the length, then the payload.
+fn length_delimited(tag: u64, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 4);
+    write_varint((tag << 3) | WIRE_LEN, &mut out);
+    write_varint(payload.len() as u64, &mut out);
+    out.extend_from_slice(payload);
+    out
+}
+
+fn write_varint(mut value: u64, out: &mut Vec<u8>) {
+    loop {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            return;
+        }
+    }
+}
+
+/// The minimal document Apple accepts: the text nested at [`TEXT_PATH`].
+fn document_bytes(text: &str) -> Vec<u8> {
+    let mut nested = length_delimited(TEXT_PATH[2], text.as_bytes());
+    for tag in TEXT_PATH[..2].iter().rev() {
+        nested = length_delimited(*tag, &nested);
+    }
+    nested
+}
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    // Writing to an in-memory buffer cannot fail.
+    let _ = encoder.write_all(bytes);
+    encoder.finish().unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +288,37 @@ mod tests {
             text_from_bytes(&document("")).is_none(),
             "empty text is not text"
         );
+    }
+
+    /// The decisive property: anything written must read back identically, or a reminder
+    /// created here shows up blank on the phone.
+    #[test]
+    fn text_survives_a_write_then_read() {
+        for text in [
+            "Milk",
+            "🏃 Move more",
+            "Café — déjà vu",
+            "日本語のリマインダー",
+            "a line\nand another",
+            "  leading and trailing  ",
+            &"long ".repeat(400),
+        ] {
+            let encoded = text_to_base64(text);
+            assert_eq!(
+                text_from_base64(&encoded).as_deref(),
+                Some(text.trim()),
+                "round trip failed for {text:?}"
+            );
+        }
+    }
+
+    /// What we produce must be the same shape we parse out of Apple's own payloads.
+    #[test]
+    fn an_encoded_document_is_gzip_at_the_expected_path() {
+        let raw = B64.decode(text_to_base64("Milk")).unwrap();
+        assert_eq!(&raw[..3], &[0x1f, 0x8b, 0x08], "Apple's payloads are gzip");
+        let plain = inflate(&raw).unwrap();
+        assert_eq!(field_at(&plain, TEXT_PATH), Some(&b"Milk"[..]));
     }
 
     #[test]

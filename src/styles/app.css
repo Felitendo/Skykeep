@@ -589,3 +589,53 @@
   background: var(--text-3);
   border-color: var(--text-3);
 }
+
+/* Adding a reminder sits where the next row would, the way Apple's does. */
+.rem-add {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--separator);
+}
+
+.rem-add input {
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  outline: none;
+  width: 100%;
+}
+
+.rem-add input::placeholder { color: var(--text-3); }
+.rem-add:focus-within { background: color-mix(in srgb, var(--text) 4%, transparent); }
+
+/* A ring outline that is clearly not actionable, so the row reads as a draft. */
+.tick.ghost {
+  border-style: dashed;
+  border-color: var(--field-edge);
+  cursor: default;
+}
+
+.rem-trailing { display: flex; align-items: center; gap: 6px; }
+
+.rem-delete {
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  font-size: var(--t-15);
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--r-field);
+  cursor: pointer;
+  opacity: 0;
+}
+
+/* Destructive actions stay out of the way until wanted, but must remain keyboard-reachable. */
+.rem-list-items li:hover .rem-delete,
+.rem-delete:focus-visible { opacity: 1; }
+.rem-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.rem-delete:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
