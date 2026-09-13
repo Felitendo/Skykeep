@@ -1033,18 +1033,42 @@ pub async fn edit_cloudkit(
         return Ok(());
     }
 
-    let mut fields = serde_json::Map::new();
-
+    // Refused before anything reaches the network, including the lookup below — asking
+    // Apple about a record only to reject the edit locally is a request for nothing.
     if let Some(title) = &edit.title {
-        let title = title.trim();
-        if title.is_empty() {
+        if title.trim().is_empty() {
             return Err(Error::Protocol("a reminder needs a title".into()));
         }
+    }
+
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
+    let mut fields = serde_json::Map::new();
+
+    // A title and a note are documents, not strings: around the text Apple keeps the state
+    // its devices use to reconcile edits. Building a fresh minimal document for a rename
+    // threw all of that away every time — the same mistake that stopped edited notes from
+    // ever reaching a phone. Rewriting in place keeps it, and only falls back to a new
+    // document when there is genuinely nothing to rewrite.
+    let current = if edit.title.is_some() || edit.notes.is_some() {
+        client.lookup_record(ZONE, &reminder.guid).await?
+    } else {
+        None
+    };
+    let document = |field: &str, text: &str| -> String {
+        current
+            .as_ref()
+            .and_then(|rec| rec.pointer(&format!("/fields/{field}/value")))
+            .and_then(Value::as_str)
+            .and_then(|existing| crate::ckdocument::replace_text_in_base64(existing, text))
+            .unwrap_or_else(|| crate::ckdocument::text_to_base64(text))
+    };
+
+    if let Some(title) = &edit.title {
         fields.insert(
             "TitleDocument".into(),
             serde_json::json!({
                 "type": "ENCRYPTED_BYTES",
-                "value": crate::ckdocument::text_to_base64(title),
+                "value": document("TitleDocument", title.trim()),
             }),
         );
     }
@@ -1057,7 +1081,7 @@ pub async fn edit_cloudkit(
             "NotesDocument".into(),
             serde_json::json!({
                 "type": "ENCRYPTED_BYTES",
-                "value": crate::ckdocument::text_to_base64(text),
+                "value": document("NotesDocument", text),
             }),
         );
     }
@@ -1090,12 +1114,10 @@ pub async fn edit_cloudkit(
     }
 
     if let Some(list_guid) = &edit.list_guid {
-        let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
         fields.insert("List".into(), client.reference_to(ZONE, list_guid));
     }
 
     if let Some(parent) = &edit.parent_guid {
-        let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
         fields.insert(
             "ParentReminder".into(),
             match parent {
@@ -1126,15 +1148,16 @@ pub async fn edit_cloudkit(
         serde_json::json!({ "type": "TIMESTAMP", "value": now_millis() }),
     );
 
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    // The tag Apple has now, when a rename just read the record — fresher than whatever the
+    // caller was holding.
+    let tag = current
+        .as_ref()
+        .and_then(|rec| rec.get("recordChangeTag"))
+        .and_then(Value::as_str)
+        .or(reminder.etag.as_deref());
+
     client
-        .update_record(
-            ZONE,
-            &reminder.guid,
-            "Reminder",
-            reminder.etag.as_deref(),
-            Value::Object(fields),
-        )
+        .update_record(ZONE, &reminder.guid, "Reminder", tag, Value::Object(fields))
         .await?;
     Ok(())
 }
@@ -1649,8 +1672,32 @@ mod edit_tests {
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// A server that answers a lookup with the reminder as Apple currently holds it, and
+    /// accepts the write that follows. A title or note edit reads the record first now, so
+    /// the document it rewrites is the one Apple actually has.
     async fn accepting() -> MockServer {
         let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{
+                    "recordName": "Reminder/1",
+                    "recordType": "Reminder",
+                    "recordChangeTag": "fresh",
+                    "fields": {
+                        "TitleDocument": {
+                            "type": "ENCRYPTED_BYTES",
+                            "value": crate::ckdocument::text_to_base64("Old"),
+                        },
+                        "NotesDocument": {
+                            "type": "ENCRYPTED_BYTES",
+                            "value": crate::ckdocument::text_to_base64("old notes"),
+                        },
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
         Mock::given(method("POST"))
             .and(path_regex(r".*/records/modify$"))
             .respond_with(
@@ -1680,10 +1727,26 @@ mod edit_tests {
         }
     }
 
+    /// The write itself, not whatever lookup preceded it.
     async fn sent(server: &MockServer) -> Value {
         let requests = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/modify"))
+            .expect("a modify was sent");
+        let body: Value = serde_json::from_slice(&modify.body).unwrap();
         body["operations"][0]["record"]["fields"].clone()
+    }
+
+    /// How many writes were sent — lookups do not count.
+    async fn writes(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .count()
     }
 
     #[tokio::test]
@@ -1712,6 +1775,80 @@ mod edit_tests {
             fields.get("DueDate").is_none(),
             "untouched fields must not be sent"
         );
+    }
+
+    /// The point of reading the record first. A title is a document, and around its text
+    /// Apple keeps the state its devices use to reconcile edits. Building a fresh minimal
+    /// document for a rename threw that away every time — the same mistake that stopped
+    /// edited notes from ever reaching a phone.
+    #[tokio::test]
+    async fn renaming_rewrites_the_document_apple_holds_rather_than_replacing_it() {
+        let server = MockServer::start().await;
+        // A title document carrying something beyond the text, as a real one does.
+        let existing = {
+            let mut note =
+                crate::ckdocument::debug_inflate(&crate::ckdocument::text_to_base64("Old"))
+                    .unwrap();
+            // Append a field the minimal encoder never writes, to stand for Apple's state.
+            note.extend_from_slice(&[0x22, 0x02, 0xAB, 0xCD]);
+            use base64::{engine::general_purpose::STANDARD as B64, Engine};
+            B64.encode(note)
+        };
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{
+                    "recordName": "Reminder/1",
+                    "recordChangeTag": "fresh",
+                    "fields": {
+                        "TitleDocument": { "type": "ENCRYPTED_BYTES", "value": existing }
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Reminder/1" }] })),
+            )
+            .mount(&server)
+            .await;
+
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                title: Some("New".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let fields = sent(&server).await;
+        let written = fields["TitleDocument"]["value"].as_str().unwrap();
+        assert_eq!(
+            crate::ckdocument::text_from_base64(written).as_deref(),
+            Some("New"),
+            "the new title is what it says"
+        );
+        let raw = crate::ckdocument::debug_inflate(written).unwrap();
+        assert!(
+            raw.windows(2).any(|w| w == [0xAB, 0xCD]),
+            "and Apple's own state came through the rename intact"
+        );
+        // The tag used is the one the lookup just returned, not the caller's stale copy.
+        let requests = server.received_requests().await.unwrap();
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/modify"))
+            .unwrap();
+        let body: Value = serde_json::from_slice(&modify.body).unwrap();
+        assert_eq!(body["operations"][0]["record"]["recordChangeTag"], "fresh");
     }
 
     /// Seconds in, milliseconds out — a due date landing on the wrong day is worse than none.
@@ -1828,11 +1965,7 @@ mod edit_tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            server.received_requests().await.unwrap().len(),
-            1,
-            "one write, not three"
-        );
+        assert_eq!(writes(&server).await, 1, "one write, not three");
         let fields = sent(&server).await;
         assert!(fields.get("TitleDocument").is_some());
         assert_eq!(fields["DueDate"]["value"], 1_757_000_000_000_i64);
@@ -2076,10 +2209,15 @@ mod recurring_tick_tests {
         }
     }
 
+    /// The write, not whatever lookup preceded it — a title edit reads the record first so
+    /// it can rewrite the document Apple holds rather than replace it.
     async fn fields(server: &MockServer) -> Value {
         let requests = server.received_requests().await.unwrap();
-        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["operations"][0]["record"]
-            ["fields"]
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/modify"))
+            .expect("a modify was sent");
+        serde_json::from_slice::<Value>(&modify.body).unwrap()["operations"][0]["record"]["fields"]
             .clone()
     }
 
@@ -2268,10 +2406,15 @@ mod priority_and_move_tests {
         }
     }
 
+    /// The write, not whatever lookup preceded it — a title edit reads the record first so
+    /// it can rewrite the document Apple holds rather than replace it.
     async fn fields(server: &MockServer) -> Value {
         let requests = server.received_requests().await.unwrap();
-        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["operations"][0]["record"]
-            ["fields"]
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/modify"))
+            .expect("a modify was sent");
+        serde_json::from_slice::<Value>(&modify.body).unwrap()["operations"][0]["record"]["fields"]
             .clone()
     }
 
@@ -2373,11 +2516,16 @@ mod priority_and_move_tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            server.received_requests().await.unwrap().len(),
-            1,
-            "a single request"
-        );
+        // One write, whatever it took to prepare it: a title edit reads the record first
+        // so it can rewrite the existing document rather than replace it.
+        let writes = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .count();
+        assert_eq!(writes, 1, "a single write, however it was prepared");
         let sent = fields(&server).await;
         assert_eq!(sent["Priority"]["value"], 1);
         assert_eq!(sent["List"]["value"]["recordName"], "List/b");
