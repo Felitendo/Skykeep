@@ -505,7 +505,10 @@
 .rem-list:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
 .rem-list-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.rem-items { display: flex; flex-direction: column; min-height: 0; }
+.rem-items { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+
+/* Rows stay a comfortable width on a large display rather than stretching edge to edge. */
+.rem-items > * { width: 100%; max-width: 78ch; }
 
 .rem-list-items {
   list-style: none;
@@ -723,13 +726,21 @@
 .note-row-when { flex: none; color: var(--text-3); }
 .note-row-snippet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* A reading measure has to stay a measure, but stranding it against the left edge of a very
+   wide pane looks broken. Centre the column instead, which is what Apple does. */
 .note-body {
   overflow-y: auto;
   min-height: 0;
   padding: 4px 32px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
-.note-body > * { max-width: 66ch; }
+.note-body > * {
+  width: 100%;
+  max-width: 66ch;
+}
 
 .note-body h2 {
   margin: 0 0 3px;
@@ -875,11 +886,22 @@
 .avatar.large {
   width: 68px;
   height: 68px;
+  min-width: 68px;
   font-size: var(--t-22);
   margin-bottom: 12px;
+  align-self: flex-start;
 }
 
-.contact-detail { overflow-y: auto; min-height: 0; padding: 4px 32px 40px; }
+.contact-detail {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 4px 32px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.contact-detail > * { width: 100%; max-width: 46ch; }
 .contact-detail h2 { margin: 0 0 2px; font-size: var(--t-22); font-weight: 600; letter-spacing: -0.021em; }
 .contact-company { margin: 0 0 18px; color: var(--text-2); font-size: var(--t-13); }
 
@@ -906,6 +928,7 @@
    A file browser: a path you can walk back along, then rows of what is here. */
 
 .drive { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.drive > * { width: 100%; max-width: 96ch; }
 
 .crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; }
 
