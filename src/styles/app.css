@@ -734,6 +734,10 @@
 
 .rem-list-items li:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
 
+/* A subtask is indented to the parent's text, so the tick marks line up under the title
+   rather than under the parent's tick — which is what makes the nesting readable. */
+.rem-list-items li.is-subtask { padding-left: 36px; }
+
 /* Apple's ring: an outline that fills with the list's colour when ticked. */
 .tick {
   width: 18px;
@@ -755,6 +759,8 @@
 
 .rem-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rem-title-row { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+
+.rem-nesting { display: flex; gap: 6px; }
 .rem-title-row .rem-title-edit { flex: 1; min-width: 0; }
 .rem-title { font-size: var(--t-13); }
 .rem-notes {

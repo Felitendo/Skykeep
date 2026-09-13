@@ -18,10 +18,10 @@ function installStub({ screen, services, twoFactor }) {
   ];
   const items = [
     { guid: "R1", listGuid: "L1", title: "Water the plants", notes: null, dueAt: 4102444800,
-      completedAt: null, priority: 0, flagged: false, recurFrequency: null,
+      completedAt: null, priority: 0, flagged: false, parentGuid: null, recurFrequency: null,
       recurInterval: null, etag: "t1" },
     { guid: "R2", listGuid: "L1", title: "Evening run", notes: null, dueAt: 4102448400,
-      completedAt: null, priority: 1, flagged: false, recurFrequency: null,
+      completedAt: null, priority: 1, flagged: false, parentGuid: null, recurFrequency: null,
       recurInterval: null, etag: "t2" },
   ];
   window.__TAURI_INTERNALS__ = {

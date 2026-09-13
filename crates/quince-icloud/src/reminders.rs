@@ -50,6 +50,7 @@ fn reminder_from(v: &Value) -> Option<Reminder> {
         // The legacy endpoint does not carry a flag; CloudKit does, and that is the path
         // this account actually uses.
         flagged: v.get("flagged").and_then(Value::as_bool).unwrap_or(false),
+        parent_guid: string(v, "parentId"),
         recur_frequency: None,
         recur_interval: None,
         etag: string(v, "etag"),
@@ -422,14 +423,20 @@ fn reminder_from_record(record: &Value) -> Option<Reminder> {
         title: field::document_text(record, "TitleDocument").unwrap_or_else(|| "Untitled".into()),
         notes: field::document_text(record, "NotesDocument"),
         due_at,
-        // CloudKit stores completion as a flag; the closest instant it also gives us is the
-        // last modification, which is when the tick happened.
+        // Apple records when it was ticked off in its own field. Falling back to the last
+        // modification was close but wrong: any later edit moved the completion time with it.
         completed_at: completed
-            .then(|| field::timestamp_seconds(record, "LastModifiedDate"))
+            .then(|| {
+                field::timestamp_seconds(record, "CompletionDate")
+                    .or_else(|| field::timestamp_seconds(record, "LastModifiedDate"))
+            })
             .flatten()
             .or(if completed { Some(0) } else { None }),
         priority: field::int(record, "Priority").unwrap_or(0),
         flagged: field::flag(record, "Flagged"),
+        // Apple nests a reminder under another with this reference. Without reading it,
+        // every subtask showed as a sibling of the thing it belongs to.
+        parent_guid: field::reference(record, "ParentReminder"),
         // Filled in from the RecurrenceRule records, which arrive separately.
         recur_frequency: None,
         recur_interval: None,
@@ -994,6 +1001,8 @@ pub struct ReminderEdit {
     pub priority: Option<i64>,
     /// Move to another list.
     pub list_guid: Option<String>,
+    /// Nest under another reminder, or `Some(None)` to bring it back out to the top level.
+    pub parent_guid: Option<Option<String>>,
 }
 
 impl ReminderEdit {
@@ -1005,6 +1014,7 @@ impl ReminderEdit {
             && self.completed.is_none()
             && self.priority.is_none()
             && self.list_guid.is_none()
+            && self.parent_guid.is_none()
     }
 }
 
@@ -1082,6 +1092,19 @@ pub async fn edit_cloudkit(
     if let Some(list_guid) = &edit.list_guid {
         let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
         fields.insert("List".into(), client.reference_to(ZONE, list_guid));
+    }
+
+    if let Some(parent) = &edit.parent_guid {
+        let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
+        fields.insert(
+            "ParentReminder".into(),
+            match parent {
+                Some(guid) => client.reference_to(ZONE, guid),
+                // CloudKit clears a reference with an explicit null; omitting the field
+                // would leave the reminder nested where it was.
+                None => Value::Null,
+            },
+        );
     }
 
     if let Some(flagged) = edit.flagged {
@@ -1594,6 +1617,7 @@ mod write_tests {
             due_at: None,
             completed_at: None,
             priority: 0,
+            parent_guid: None,
             flagged: false,
             recur_frequency: None,
             recur_interval: None,
@@ -1647,6 +1671,7 @@ mod edit_tests {
             due_at: None,
             completed_at: None,
             priority: 0,
+            parent_guid: None,
             flagged: false,
             recur_frequency: None,
             recur_interval: None,
@@ -2042,6 +2067,7 @@ mod recurring_tick_tests {
             due_at: Some(due),
             completed_at: None,
             priority: 0,
+            parent_guid: None,
             flagged: false,
             recur_frequency: Some(frequency),
             recur_interval: Some(interval),
@@ -2233,6 +2259,7 @@ mod priority_and_move_tests {
             due_at: None,
             completed_at: None,
             priority: 0,
+            parent_guid: None,
             flagged: false,
             recur_frequency: None,
             recur_interval: None,
@@ -2287,6 +2314,33 @@ mod priority_and_move_tests {
         })
         .await;
         assert_eq!(sent["Priority"]["value"], 0);
+    }
+
+    /// Apple nests a reminder under another with a reference, and clears it with an
+    /// explicit null — omitting the field would leave it nested where it was.
+    #[tokio::test]
+    async fn nesting_and_unnesting_both_write_the_reference() {
+        let nested = write(ReminderEdit {
+            parent_guid: Some(Some("Reminder/parent".into())),
+            ..ReminderEdit::default()
+        })
+        .await;
+        assert_eq!(nested["ParentReminder"]["type"], "REFERENCE");
+        assert_eq!(
+            nested["ParentReminder"]["value"]["recordName"],
+            "Reminder/parent"
+        );
+
+        let freed = write(ReminderEdit {
+            parent_guid: Some(None),
+            ..ReminderEdit::default()
+        })
+        .await;
+        assert_eq!(
+            freed["ParentReminder"],
+            Value::Null,
+            "coming back out has to be written, not omitted"
+        );
     }
 
     #[tokio::test]
@@ -2373,6 +2427,7 @@ mod tombstone_tests {
                 due_at: None,
                 completed_at: None,
                 priority: 0,
+                parent_guid: None,
                 flagged: false,
                 recur_frequency: None,
                 recur_interval: None,
@@ -2504,6 +2559,7 @@ mod recurrence_write_tests {
             due_at: Some(4_102_444_800),
             completed_at: None,
             priority: 0,
+            parent_guid: None,
             flagged: false,
             recur_frequency: None,
             recur_interval: None,

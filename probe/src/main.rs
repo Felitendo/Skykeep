@@ -1356,11 +1356,100 @@ async fn main() -> Result<()> {
                             completed_at: None,
                             priority: 0,
                             flagged: false,
+                            parent_guid: None,
                             recur_frequency: None,
                             recur_interval: None,
                             etag: None,
                             raw: None,
                         };
+
+                        // Subtasks: nest one reminder under another, read it back, free it.
+                        match quince_icloud::reminders::create_cloudkit(
+                            &http,
+                            &ck,
+                            params.clone(),
+                            &from.guid,
+                            "Quince subtask test — safe to delete",
+                        )
+                        .await
+                        {
+                            Err(e) => println!("  \x1b[31mFAIL\x1b[0m create subtask: {e}"),
+                            Ok(child_guid) => {
+                                let child = quince_core::reminders::Reminder {
+                                    guid: child_guid.clone(),
+                                    ..reminder.clone()
+                                };
+                                let parent_of = |name: String| {
+                                    let zc = &zc;
+                                    async move {
+                                        let rec = zc
+                                            .lookup_record("Reminders", &name)
+                                            .await
+                                            .ok()
+                                            .flatten()?;
+                                        quince_icloud::cloudkit::field::reference(
+                                            &rec,
+                                            "ParentReminder",
+                                        )
+                                    }
+                                };
+
+                                match quince_icloud::reminders::edit_cloudkit(
+                                    &http,
+                                    &ck,
+                                    params.clone(),
+                                    &child,
+                                    &quince_icloud::reminders::ReminderEdit {
+                                        parent_guid: Some(Some(guid.clone())),
+                                        ..Default::default()
+                                    },
+                                )
+                                .await
+                                {
+                                    Err(e) => println!("  \x1b[31mFAIL\x1b[0m nest: {e}"),
+                                    Ok(()) => match parent_of(child_guid.clone()).await {
+                                        Some(p) if p == guid => {
+                                            println!("  \x1b[32mPASS\x1b[0m Apple nested it under its parent");
+                                        }
+                                        other => println!(
+                                            "  \x1b[31mFAIL\x1b[0m parent came back as {other:?}"
+                                        ),
+                                    },
+                                }
+
+                                match quince_icloud::reminders::edit_cloudkit(
+                                    &http,
+                                    &ck,
+                                    params.clone(),
+                                    &child,
+                                    &quince_icloud::reminders::ReminderEdit {
+                                        parent_guid: Some(None),
+                                        ..Default::default()
+                                    },
+                                )
+                                .await
+                                {
+                                    Err(e) => println!("  \x1b[31mFAIL\x1b[0m un-nest: {e}"),
+                                    Ok(()) => match parent_of(child_guid.clone()).await {
+                                        None => {
+                                            println!("  \x1b[32mPASS\x1b[0m and let it back out")
+                                        }
+                                        Some(p) => {
+                                            println!("  \x1b[31mFAIL\x1b[0m still nested under {p}")
+                                        }
+                                    },
+                                }
+
+                                let _ = quince_icloud::reminders::delete_cloudkit(
+                                    &http,
+                                    &ck,
+                                    params.clone(),
+                                    &child,
+                                )
+                                .await;
+                                let _ = zc.delete_record("Reminders", &child_guid).await;
+                            }
+                        }
 
                         // Repeats: set one, read it back, change it, clear it.
                         let dated = quince_core::reminders::Reminder {
@@ -1773,6 +1862,76 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- how does Apple express sections and subtasks? -----------------------------
+    println!("\n\x1b[1m── Reminders: sections and subtasks ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.reminders",
+            client.service_params(),
+        );
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Reminders", None).await
+        {
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("ListSection"))
+                .take(3)
+            {
+                println!(
+                    "  ListSection {}",
+                    quince_icloud::cloudkit::field::record_name(rec).unwrap_or_default()
+                );
+                if let Some(fields) = rec.get("fields").and_then(|f| f.as_object()) {
+                    for (k, v) in fields {
+                        println!(
+                            "      {k} = {}",
+                            v.to_string().chars().take(110).collect::<String>()
+                        );
+                    }
+                }
+            }
+
+            // Which fields on a Reminder could carry a parent or a section?
+            let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("Reminder"))
+            {
+                if let Some(fields) = rec.get("fields").and_then(|f| f.as_object()) {
+                    for k in fields.keys() {
+                        seen.insert(k.clone());
+                    }
+                }
+            }
+            println!(
+                "  every field seen on a Reminder: {}",
+                seen.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+
+            // And any reminder that actually has a parent or section set.
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("Reminder"))
+            {
+                for key in ["ParentID", "Parent", "ListSection", "SectionID", "Subtasks"] {
+                    if let Some(v) = rec.pointer(&format!("/fields/{key}")) {
+                        println!(
+                            "  {} has {key} = {}",
+                            quince_icloud::cloudkit::field::document_text(rec, "TitleDocument")
+                                .unwrap_or_default()
+                                .chars()
+                                .take(28)
+                                .collect::<String>(),
+                            v.to_string().chars().take(100).collect::<String>()
+                        );
                     }
                 }
             }

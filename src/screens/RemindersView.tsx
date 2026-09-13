@@ -244,6 +244,24 @@ export function RemindersView() {
   };
   const setPriority = (r: Reminder, priority: number) =>
     write(r, () => api.reminderEdit(r.guid, r.listGuid, { priority }));
+  /** Nest a reminder under the one above it, the way Tab does in Apple's app. */
+  const indent = (r: Reminder) => {
+    const flat = threaded.map((t) => t.reminder);
+    const index = flat.findIndex((x) => x.guid === r.guid);
+    // Only under something above it, and never under another subtask: Apple nests one deep.
+    const above = flat
+      .slice(0, index)
+      .reverse()
+      .find((x) => !x.parentGuid);
+    if (!above) return Promise.resolve(null);
+    return write(r, () =>
+      api.reminderEdit(r.guid, r.listGuid, { parentGuid: above.guid })
+    );
+  };
+
+  const outdent = (r: Reminder) =>
+    write(r, () => api.reminderEdit(r.guid, r.listGuid, { parentGuid: null }));
+
   const moveToList = (r: Reminder, listGuid: string) =>
     listGuid === r.listGuid
       ? Promise.resolve(null)
@@ -299,6 +317,35 @@ export function RemindersView() {
     : (SMART.find((s) => s.kind === (selection as { kind: SmartList }).kind)
         ?.title ?? "Reminders");
   const outstanding = items.filter((r) => !r.completedAt).length;
+
+  /**
+   * Reminders in Apple's order, with each subtask directly beneath its parent.
+   *
+   * The library returns a flat list sorted by date and priority, which is right for the
+   * top level and wrong for what hangs off it: a subtask sorted away from its parent reads
+   * as an unrelated fragment. This re-threads them without re-sorting either level.
+   */
+  const threaded = useMemo(() => {
+    const children = new Map<string, Reminder[]>();
+    for (const r of items) {
+      if (!r.parentGuid) continue;
+      const bucket = children.get(r.parentGuid);
+      if (bucket) bucket.push(r);
+      else children.set(r.parentGuid, [r]);
+    }
+    const known = new Set(items.map((r) => r.guid));
+    const out: { reminder: Reminder; depth: number }[] = [];
+    for (const r of items) {
+      // A subtask whose parent is not in this view — filtered out, or in another list —
+      // has to appear at the top level rather than vanish.
+      if (r.parentGuid && known.has(r.parentGuid)) continue;
+      out.push({ reminder: r, depth: 0 });
+      for (const child of children.get(r.guid) ?? []) {
+        out.push({ reminder: child, depth: 1 });
+      }
+    }
+    return out;
+  }, [items]);
   const colour = useMemo(
     () => lists.find((l) => l.guid === listGuid)?.colour || "var(--gold)",
     [lists, listGuid],
@@ -459,7 +506,7 @@ export function RemindersView() {
         )}
 
         <ul className="rem-list-items">
-          {items.map((reminder) => {
+          {threaded.map(({ reminder, depth }) => {
             const due =
               reminder.dueAt === null ? null : dueLabel(reminder.dueAt);
             const isOpen = openGuid === reminder.guid;
@@ -468,7 +515,9 @@ export function RemindersView() {
             return (
               <li
                 key={reminder.guid}
-                className={reminder.completedAt ? "is-done" : undefined}
+                className={`${reminder.completedAt ? "is-done" : ""}${
+                  depth > 0 ? " is-subtask" : ""
+                }`.trim() || undefined}
               >
                 <button
                   className="tick"
@@ -531,6 +580,25 @@ export function RemindersView() {
                           onBlur={(e) => void setDue(reminder, e.target.value)}
                         />
                       </label>
+                      <div className="rem-field">
+                        <span>Nesting</span>
+                        <span className="rem-nesting">
+                          <button
+                            className="quiet"
+                            disabled={busyGuid === reminder.guid || depth > 0}
+                            onClick={() => void indent(reminder)}
+                          >
+                            Make subtask
+                          </button>
+                          <button
+                            className="quiet"
+                            disabled={busyGuid === reminder.guid || depth === 0}
+                            onClick={() => void outdent(reminder)}
+                          >
+                            Move out
+                          </button>
+                        </span>
+                      </div>
                       <div className="rem-field">
                         <span>Repeat</span>
                         <Picker

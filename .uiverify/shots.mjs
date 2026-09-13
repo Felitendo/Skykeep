@@ -100,13 +100,13 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
   ];
   const reminderItems = !remindersFixture ? [] : [
     { guid: "r1", listGuid: "l1", title: "Plan tomorrow", notes: null,
-      dueAt: base - 2 * HOUR, completedAt: null, priority: 0, flagged: false, etag: null },
+      dueAt: base - 2 * HOUR, completedAt: null, priority: 0, flagged: false, parentGuid: null, etag: null },
     { guid: "r2", listGuid: "l1", title: "Pick up the parcel", notes: null,
-      dueAt: base + DAY + 7 * HOUR, completedAt: null, priority: 0, flagged: true, etag: null },
+      dueAt: base + DAY + 7 * HOUR, completedAt: null, priority: 0, flagged: true, parentGuid: null, etag: null },
     { guid: "r3", listGuid: "l2", title: "Evening run", notes: "Legs today",
-      dueAt: base + 6 * HOUR, completedAt: null, priority: 0, flagged: false, etag: null },
+      dueAt: base + 6 * HOUR, completedAt: null, priority: 0, flagged: false, parentGuid: null, etag: null },
     { guid: "r4", listGuid: "l1", title: "Water the plants", notes: null,
-      dueAt: base - DAY, completedAt: base - DAY, priority: 0, flagged: false, etag: null },
+      dueAt: base - DAY, completedAt: base - DAY, priority: 0, flagged: false, parentGuid: null, etag: null },
   ];
   const calendars = [
     { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true },

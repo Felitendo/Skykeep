@@ -197,4 +197,13 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE sync_state ADD COLUMN last_full_at INTEGER;
     "#,
+    // 11 — subtasks.
+    //
+    // Apple nests a reminder under another with a ParentReminder reference. Without it,
+    // every subtask showed as a sibling of the thing it belongs to, which reads as a flat
+    // list of fragments rather than as one piece of work broken down.
+    r#"
+    ALTER TABLE reminders ADD COLUMN parent_guid TEXT;
+    CREATE INDEX reminders_by_parent ON reminders (parent_guid);
+    "#,
 ];

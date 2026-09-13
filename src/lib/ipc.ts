@@ -179,6 +179,8 @@ export type ReminderEdit = {
   priority?: number;
   /** Move the reminder to another list. */
   listGuid?: string;
+  /** Nest under another reminder, or null to bring it back out to the top level. */
+  parentGuid?: string | null;
 };
 
 export type Reminder = {
@@ -191,6 +193,8 @@ export type Reminder = {
   completedAt: number | null;
   priority: number;
   flagged: boolean;
+  /** The reminder this one is a subtask of, if any. */
+  parentGuid: string | null;
   /** Apple's repeat frequency: 0 daily, 1 weekly, 2 monthly, 3 yearly. null if it never repeats. */
   recurFrequency: number | null;
   recurInterval: number | null;

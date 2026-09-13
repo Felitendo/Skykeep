@@ -28,6 +28,9 @@ pub struct Reminder {
     pub priority: i64,
     #[serde(default)]
     pub flagged: bool,
+    /// The reminder this one is a subtask of, if any.
+    #[serde(default)]
+    pub parent_guid: Option<String>,
     /// Apple's repeat frequency: 0 daily, 1 weekly, 2 monthly, 3 yearly. `None` if it does
     /// not repeat.
     #[serde(default)]
@@ -198,7 +201,8 @@ impl Library {
     pub fn reminders_due_between(&self, from: i64, to: i64) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
-                    r.priority, r.flagged, r.recur_frequency, r.recur_interval, r.etag, r.raw
+                    r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
+                    r.etag, r.raw
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.due_at IS NOT NULL
@@ -215,10 +219,11 @@ impl Library {
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
                 flagged: row.get::<_, i64>(7)? != 0,
-                recur_frequency: row.get(8)?,
-                recur_interval: row.get(9)?,
-                etag: row.get(10)?,
-                raw: row.get(11)?,
+                parent_guid: row.get(8)?,
+                recur_frequency: row.get(9)?,
+                recur_interval: row.get(10)?,
+                etag: row.get(11)?,
+                raw: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -293,7 +298,8 @@ impl Library {
         };
         let sql = format!(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
-                    r.priority, r.flagged, r.recur_frequency, r.recur_interval, r.etag, r.raw
+                    r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
+                    r.etag, r.raw
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND {clause}
@@ -310,10 +316,11 @@ impl Library {
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
                 flagged: row.get::<_, i64>(7)? != 0,
-                recur_frequency: row.get(8)?,
-                recur_interval: row.get(9)?,
-                etag: row.get(10)?,
-                raw: row.get(11)?,
+                parent_guid: row.get(8)?,
+                recur_frequency: row.get(9)?,
+                recur_interval: row.get(10)?,
+                etag: row.get(11)?,
+                raw: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -409,14 +416,14 @@ impl Library {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminders (guid, list_guid, title, notes, due_at, completed_at,
-                                        priority, flagged, recur_frequency, recur_interval,
-                                        etag, raw, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                                        priority, flagged, parent_guid, recur_frequency,
+                                        recur_interval, etag, raw, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                  ON CONFLICT(guid) DO UPDATE SET
                    list_guid = excluded.list_guid, title = excluded.title,
                    notes = excluded.notes, due_at = excluded.due_at,
                    completed_at = excluded.completed_at, priority = excluded.priority,
-                   flagged = excluded.flagged,
+                   flagged = excluded.flagged, parent_guid = excluded.parent_guid,
                    recur_frequency = excluded.recur_frequency,
                    recur_interval = excluded.recur_interval,
                    etag = excluded.etag, raw = excluded.raw,
@@ -433,6 +440,7 @@ impl Library {
                     r.completed_at,
                     r.priority,
                     i64::from(r.flagged),
+                    r.parent_guid,
                     r.recur_frequency,
                     r.recur_interval,
                     r.etag,
@@ -470,7 +478,7 @@ impl Library {
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
-                    recur_frequency, recur_interval, etag, raw
+                    parent_guid, recur_frequency, recur_interval, etag, raw
              FROM reminders
              WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)
              ORDER BY completed_at IS NOT NULL,
@@ -488,10 +496,11 @@ impl Library {
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
                 flagged: row.get::<_, i64>(7)? != 0,
-                recur_frequency: row.get(8)?,
-                recur_interval: row.get(9)?,
-                etag: row.get(10)?,
-                raw: row.get(11)?,
+                parent_guid: row.get(8)?,
+                recur_frequency: row.get(9)?,
+                recur_interval: row.get(10)?,
+                etag: row.get(11)?,
+                raw: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -522,6 +531,7 @@ mod tests {
             due_at: due,
             completed_at: done,
             priority: 0,
+            parent_guid: None,
             flagged: false,
             recur_frequency: None,
             recur_interval: None,
@@ -708,6 +718,7 @@ mod smart_tests {
             due_at: due,
             completed_at: done,
             priority: 0,
+            parent_guid: None,
             flagged,
             recur_frequency: None,
             recur_interval: None,
@@ -846,6 +857,7 @@ mod count_tests {
             due_at: due,
             completed_at: done.then_some(1),
             priority: 0,
+            parent_guid: None,
             flagged,
             recur_frequency: None,
             recur_interval: None,
