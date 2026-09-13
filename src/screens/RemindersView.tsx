@@ -9,14 +9,15 @@ import {
 } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
+import { Glyph, type GlyphName } from "../components/Glyph";
 
 /** Apple's built-in views, which is how most people enter Reminders. */
 /** Apple's built-in views, in Apple's order, each with the glyph and colour its app uses. */
-const SMART: { kind: SmartList; title: string; glyph: string; colour: string }[] = [
-  { kind: "today", title: "Today", glyph: "\u2600", colour: "#0a84ff" },
-  { kind: "scheduled", title: "Scheduled", glyph: "\ud83d\udcc5", colour: "#ff453a" },
-  { kind: "all", title: "All", glyph: "\u2261", colour: "#8e8e93" },
-  { kind: "flagged", title: "Flagged", glyph: "\u2691", colour: "#ff9f0a" },
+const SMART: { kind: SmartList; title: string; glyph: GlyphName; colour: string }[] = [
+  { kind: "today", title: "Today", glyph: "today", colour: "#0a84ff" },
+  { kind: "scheduled", title: "Scheduled", glyph: "scheduled", colour: "#ff453a" },
+  { kind: "all", title: "All", glyph: "all", colour: "#8e8e93" },
+  { kind: "flagged", title: "Flagged", glyph: "flagged", colour: "#ff9f0a" },
 ];
 
 /** End of today in the viewer's own timezone — the interface knows it, the backend doesn't. */
@@ -295,12 +296,36 @@ export function RemindersView() {
   }
 
   /**
-   * A smart list is a view, not somewhere to keep things — but Apple still lets you add
-   * from Today or All, and quietly files the new reminder in a real list. The first list
-   * is the closest thing this account has to a default one, which is what a smart view
-   * targets.
+   * A smart list is a view, not somewhere to keep things, so adding from Today or All has
+   * to file the reminder in a real list — as Apple's own app does.
+   *
+   * Which one was previously just "the first one", which is why everything landed in
+   * Assignments with no explanation. Apple's default-list setting is a client preference it
+   * does not publish anywhere this app can read, so rather than guess at it, the choice is
+   * shown and it is yours: whichever list you last added to, changeable right there.
    */
-  const targetListGuid = listGuid ?? lists[0]?.guid ?? null;
+  const [preferredList, setPreferredList] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem("quince.reminders.defaultList");
+    } catch {
+      return null;
+    }
+  });
+
+  const chooseList = useCallback((guid: string) => {
+    setPreferredList(guid);
+    try {
+      window.localStorage.setItem("quince.reminders.defaultList", guid);
+    } catch {
+      // A browser with storage switched off still works; it just forgets the choice.
+    }
+  }, []);
+
+  const targetListGuid =
+    listGuid ??
+    (preferredList && lists.some((l) => l.guid === preferredList)
+      ? preferredList
+      : (lists[0]?.guid ?? null));
   const targetList = lists.find((l) => l.guid === targetListGuid) ?? null;
 
   async function add(e: React.FormEvent) {
@@ -377,7 +402,7 @@ export function RemindersView() {
             >
               <span className="rem-smart-top">
                 <span className="rem-smart-glyph" style={{ background: smart.colour }}>
-                  {smart.glyph}
+                  <Glyph name={smart.glyph} />
                 </span>
                 <span className="rem-smart-count">{counts?.[smart.kind] ?? 0}</span>
               </span>
@@ -423,9 +448,11 @@ export function RemindersView() {
                   onDoubleClick={() => setRenaming(list.guid)}
                 >
                   <span
-                    className="dot"
-                    style={{ background: list.colour || "var(--gold)" }}
-                  />
+                    className="rem-list-glyph"
+                    style={{ color: list.colour || "var(--gold)" }}
+                  >
+                    <Glyph name="list" />
+                  </span>
                   <span className="rem-list-name">{list.title}</span>
                   <span className="rem-list-count">
                     {counts?.lists.find(([guid]) => guid === list.guid)?.[1] ?? 0}
@@ -514,12 +541,16 @@ export function RemindersView() {
               }
               disabled={syncing}
             />
-            {/* Only said out loud when it isn't obvious — inside a list, of course it goes
-                there. From a smart view, where it lands is worth naming. */}
-            {!inList && targetList && (
-              <span className="rem-add-target" aria-hidden="true">
-                {targetList.title}
-              </span>
+            {/* Inside a list it obviously goes there. From a smart view, where it lands is
+                a real choice, so it is made here rather than decided for you. */}
+            {!inList && targetList && lists.length > 0 && (
+              <Picker
+                className="rem-add-target"
+                label="List to add to"
+                value={targetListGuid ?? ""}
+                onChange={chooseList}
+                options={lists.map((l) => ({ value: l.guid, label: l.title }))}
+              />
             )}
           </form>
         )}

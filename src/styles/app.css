@@ -735,9 +735,19 @@
   border-radius: var(--r-pill);
   display: grid;
   place-items: center;
-  font-size: 11px;
-  line-height: 1;
   color: #fff;
+}
+
+/* Drawn at 16 and shown at 12, so the stroke stays crisp rather than soft. */
+.rem-smart-glyph svg { width: 12px; height: 12px; }
+
+/* A list's own colour, on the same 16px grid the heading aligns to. */
+.rem-list-glyph {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
 }
 
 .rem-smart-count {
@@ -886,14 +896,10 @@
 
 .rem-add input::placeholder { color: var(--text-3); }
 
-.rem-add-target {
-  white-space: nowrap;
-  font-size: var(--t-11);
-  color: var(--text-3);
-  padding: 2px 7px;
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-}
+/* The destination list, chosen rather than assumed. Sized to sit quietly in the add row
+   rather than compete with the field it follows. */
+.rem-add-target { max-width: 150px; }
+.rem-add-target .picker-button { font-size: var(--t-11); padding: 3px 8px; }
 .rem-add:focus-within { background: color-mix(in srgb, var(--text) 4%, transparent); }
 
 /* A ring outline that is clearly not actionable, so the row reads as a draft. */
@@ -1378,8 +1384,12 @@ textarea.note-text:disabled {
 
 /* ---- reminders: smart lists, inline editing, flags ------------------------------ */
 
+/* Lines up with the list names beneath it, not with their icons — the heading used to sit
+   nineteen pixels to their left, which read as a column that had slipped. 8px of row
+   padding, a 16px icon, and the 8px gap between them is where the names begin. */
 .rem-lists-heading {
-  margin: 14px 8px 4px;
+  margin: 16px 8px 6px;
+  padding-left: 24px;
   font-size: var(--t-11);
   font-weight: 600;
   color: var(--text-3);

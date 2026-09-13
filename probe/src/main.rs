@@ -2349,6 +2349,325 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- how does uploading a file actually work? ----------------------------------
+    // pyicloud's upload is a two-step dance: ask docws for a signed upload URL, PUT the
+    // bytes there, then tell drivews what was uploaded so it becomes a real Drive item.
+    // Measure each step against the real service before writing any of it. --write-test
+    // only, and it cleans up after itself.
+    if std::env::args().any(|a| a == "--write-test") {
+        println!("\n\x1b[1m── Drive: upload capability probe ──\x1b[0m");
+        if let (Some(drivews), Some(docws)) =
+            (session.service_url("drivews"), session.service_url("docws"))
+        {
+            let params = client.service_params();
+            let http = client.http().clone();
+            let bytes = b"Quince upload test - safe to delete\n";
+            let name = "quince-upload-test.txt";
+
+            // Step 1: ask for somewhere to put the bytes. This is a JSON POST, not query
+            // params — sending it as query params is what "Unexpected input at column 0"
+            // turned out to mean: the server tried to parse an empty body as JSON.
+            let url = format!(
+                "{}/ws/com.apple.CloudDocs/upload/web",
+                docws.trim_end_matches('/')
+            );
+            let request_body = serde_json::json!({
+                "filename": name,
+                "type": "FILE",
+                "content_type": "text/plain",
+                "size": bytes.len(),
+            });
+            let response = http
+                .post(&url)
+                .query(&params)
+                .json(&request_body)
+                .send()
+                .await;
+            match response {
+                Err(e) => println!("  upload/web request failed: {e}"),
+                Ok(r) => {
+                    let status = r.status();
+                    let text = r.text().await.unwrap_or_default();
+                    println!("  upload/web -> {status}: {text}");
+                    let Ok(body) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        println!("  not JSON, stopping here");
+                        return Ok(());
+                    };
+                    // Print the whole shape rather than guess a path — the response nests
+                    // this differently across Apple's own client versions.
+                    println!(
+                        "  full parsed shape:\n  {}",
+                        serde_json::to_string_pretty(&body)
+                            .unwrap_or_default()
+                            .lines()
+                            .collect::<Vec<_>>()
+                            .join("\n  ")
+                    );
+                    let upload_url = [
+                        body.pointer("/url"),
+                        body.pointer("/data/upload_url"),
+                        body.pointer("/0/url"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|v| v.as_str())
+                    .map(ToString::to_string);
+                    let Some(upload_url) = upload_url else {
+                        println!("  no upload URL found at any guessed path");
+                        return Ok(());
+                    };
+
+                    // Step 2: PUT the bytes there.
+                    let put = http.put(&upload_url).body(bytes.to_vec()).send().await;
+                    match put {
+                        Err(e) => println!("  PUT to the upload URL failed: {e}"),
+                        Ok(r) => {
+                            let status = r.status();
+                            let text = r.text().await.unwrap_or_default();
+                            println!(
+                                "  PUT bytes -> {status}: {}",
+                                text.chars().take(300).collect::<String>()
+                            );
+                            let Ok(receipt) = serde_json::from_str::<serde_json::Value>(&text)
+                            else {
+                                println!("  not JSON, stopping here");
+                                return Ok(());
+                            };
+
+                            // Step 3: tell drivews this document now belongs in a folder.
+                            let single_file = receipt
+                                .pointer("/singleFile")
+                                .cloned()
+                                .unwrap_or(receipt.clone());
+                            let commit_url = format!(
+                                "{}/ws/com.apple.CloudDocs/update/documents",
+                                docws.trim_end_matches('/')
+                            );
+                            let commit_body = serde_json::json!({
+                                "data": {
+                                    "signature": single_file.get("fileChecksum"),
+                                    "wrapping_key": single_file.get("wrappingKey"),
+                                    "reference_signature": single_file.get("referenceChecksum"),
+                                    "receipt": single_file.get("receipt"),
+                                    "size": bytes.len(),
+                                },
+                                "command": "add_file",
+                                "document_id": single_file.get("document_id"),
+                                "path": {
+                                    "starting_document_id": "FOLDER::com.apple.CloudDocs::root",
+                                    "path": name,
+                                },
+                                "allow_conflict": true,
+                                "file_flags": { "is_writable": true, "is_executable": false, "is_hidden": false },
+                                "mtime": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+                                "btime": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+                            });
+                            let commit = http
+                                .post(&commit_url)
+                                .query(&params)
+                                .json(&commit_body)
+                                .send()
+                                .await;
+                            match commit {
+                                Err(e) => println!("  commit request failed: {e}"),
+                                Ok(r) => {
+                                    let status = r.status();
+                                    let text = r.text().await.unwrap_or_default();
+                                    println!(
+                                        "  commit -> {status}: {}",
+                                        text.chars().take(400).collect::<String>()
+                                    );
+                                }
+                            }
+
+                            // Clean up whatever landed, whether or not the commit worked.
+                            let _ = quince_core::Library::open(&dir).ok();
+                            let cleanup = quince_icloud::drive::sync_folder(
+                                &http,
+                                &drivews,
+                                client.service_params(),
+                                &mut quince_core::Library::open(&dir)?,
+                                quince_core::drive::ROOT,
+                            )
+                            .await;
+                            if cleanup.is_ok() {
+                                let library = quince_core::Library::open(&dir)?;
+                                if let Some(uploaded) = library
+                                    .drive_children(quince_core::drive::ROOT)?
+                                    .into_iter()
+                                    .find(|i| i.name.starts_with("quince-upload-test"))
+                                {
+                                    match quince_icloud::drive::delete(
+                                        &http,
+                                        &drivews,
+                                        client.service_params(),
+                                        &uploaded,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => println!("  cleaned up the uploaded test file"),
+                                        Err(e) => println!(
+                                            "  \x1b[33mcouldn't clean up: {e} — {} may still be there\x1b[0m",
+                                            uploaded.name
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- why does anything we write show up blank? ---------------------------------
+    // Apple's note is NoteStoreProto{2: Document{3: Note}}; the Note holds its text at
+    // field 2 and a repeated AttributeRun at field 5, each run's field 1 being a length.
+    // If those lengths are the text measured in UTF-16 code units, then writing text
+    // without them — or without updating them — leaves every Apple client with runs that
+    // no longer describe what is there, which is exactly what a blank note looks like.
+    println!("\n\x1b[1m── Do attribute runs carry the text length? ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.notes",
+            client.service_params(),
+        );
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Notes", None).await
+        {
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("Note"))
+            {
+                let Some(encoded) = rec
+                    .pointer("/fields/TextDataEncrypted/value")
+                    .and_then(|v| v.as_str())
+                else {
+                    continue;
+                };
+                let Ok(raw) = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    encoded.trim(),
+                ) else {
+                    continue;
+                };
+                let Some(text) = quince_icloud::ckdocument::text_from_bytes(&raw) else {
+                    continue;
+                };
+                let title = quince_icloud::cloudkit::field::document_text(rec, "TitleEncrypted")
+                    .unwrap_or_default();
+                let lengths = quince_icloud::ckdocument::debug_attribute_lengths(&raw);
+                let total: u64 = lengths.iter().sum();
+                let utf16 = text.encode_utf16().count() as u64;
+
+                println!(
+                    "  {:<34} chars {:<6} utf16 {:<6} runs {:?} total {} {}",
+                    title.chars().take(32).collect::<String>(),
+                    text.chars().count(),
+                    utf16,
+                    lengths,
+                    total,
+                    if total == utf16 {
+                        "\x1b[32m← matches UTF-16 exactly\x1b[0m"
+                    } else {
+                        "\x1b[33m← does not match\x1b[0m"
+                    }
+                );
+            }
+        }
+
+        // What is actually inside one run? Writing one from scratch means knowing whether a
+        // bare length is enough or whether Apple expects styling fields alongside it.
+        println!("\n  \x1b[1mThe raw bytes of real attribute runs\x1b[0m");
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Notes", None).await
+        {
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("Note"))
+            {
+                let Some(encoded) = rec
+                    .pointer("/fields/TextDataEncrypted/value")
+                    .and_then(|v| v.as_str())
+                else {
+                    continue;
+                };
+                let Ok(raw) = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    encoded.trim(),
+                ) else {
+                    continue;
+                };
+                let runs = quince_icloud::ckdocument::debug_attribute_runs(&raw);
+                if runs.is_empty() {
+                    continue;
+                }
+                let title = quince_icloud::cloudkit::field::document_text(rec, "TitleEncrypted")
+                    .unwrap_or_default();
+                println!("    {}", title.chars().take(30).collect::<String>());
+                for run in runs.iter().take(3) {
+                    println!(
+                        "      {} byte(s): {}",
+                        run.len(),
+                        run.iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+                }
+            }
+        }
+
+        // A reminder's title uses the same document format, and also comes back blank when
+        // written from here.
+        println!("\n  \x1b[1mReminder titles, same format\x1b[0m");
+        let zr = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.reminders",
+            client.service_params(),
+        );
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zr.all_records("Reminders", None).await
+        {
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("Reminder"))
+                .take(4)
+            {
+                let Some(encoded) = rec
+                    .pointer("/fields/TitleDocument/value")
+                    .and_then(|v| v.as_str())
+                else {
+                    continue;
+                };
+                let Ok(raw) = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    encoded.trim(),
+                ) else {
+                    continue;
+                };
+                let text = quince_icloud::ckdocument::text_from_bytes(&raw).unwrap_or_default();
+                let lengths = quince_icloud::ckdocument::debug_attribute_lengths(&raw);
+                let total: u64 = lengths.iter().sum();
+                let utf16 = text.encode_utf16().count() as u64;
+                println!(
+                    "    {:<34} utf16 {:<5} runs {:?} total {} {}",
+                    text.chars().take(32).collect::<String>(),
+                    utf16,
+                    lengths,
+                    total,
+                    if total == utf16 {
+                        "\x1b[32m← matches\x1b[0m"
+                    } else {
+                        "\x1b[33m← does not match\x1b[0m"
+                    }
+                );
+            }
+        }
+    }
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which
