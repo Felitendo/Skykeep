@@ -18,6 +18,9 @@ pub struct ContactMethod {
 pub struct Contact {
     pub guid: String,
     pub first_name: Option<String>,
+    /// Apple keeps one, and four people in a real address book have one.
+    #[serde(default)]
+    pub middle_name: Option<String>,
     pub last_name: Option<String>,
     pub company: Option<String>,
     pub is_company: bool,
@@ -35,11 +38,15 @@ impl Contact {
     /// the first method rather than at an empty string.
     #[must_use]
     pub fn display_name(&self) -> String {
-        let full = [self.first_name.as_deref(), self.last_name.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let full = [
+            self.first_name.as_deref(),
+            self.middle_name.as_deref(),
+            self.last_name.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
         if !full.trim().is_empty() {
             return full;
         }
@@ -79,11 +86,12 @@ impl Library {
         let tx = self.conn.transaction()?;
         {
             let mut upsert = tx.prepare(
-                "INSERT INTO contacts (guid, first_name, last_name, company, is_company,
+                "INSERT INTO contacts (guid, first_name, middle_name, last_name, company, is_company,
                                        sort_name, birthday, notes, etag, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(guid) DO UPDATE SET
-                   first_name = excluded.first_name, last_name = excluded.last_name,
+                   first_name = excluded.first_name, middle_name = excluded.middle_name,
+                   last_name = excluded.last_name,
                    company = excluded.company, is_company = excluded.is_company,
                    sort_name = excluded.sort_name, birthday = excluded.birthday,
                    notes = excluded.notes, etag = excluded.etag,
@@ -100,6 +108,7 @@ impl Library {
                 upsert.execute(params![
                     c.guid,
                     c.first_name,
+                    c.middle_name,
                     c.last_name,
                     c.company,
                     i64::from(c.is_company),
@@ -149,11 +158,12 @@ impl Library {
             .map(|s| format!("%{}%", s.to_lowercase()));
 
         let mut stmt = self.conn.prepare(
-            "SELECT c.guid, c.first_name, c.last_name, c.company, c.is_company,
+            "SELECT c.guid, c.first_name, c.middle_name, c.last_name, c.company, c.is_company,
                     c.birthday, c.notes, c.etag
              FROM contacts c
              WHERE ?1 IS NULL
-                OR lower(coalesce(c.first_name, '') || ' ' || coalesce(c.last_name, '')
+                OR lower(coalesce(c.first_name, '') || ' ' || coalesce(c.middle_name, '')
+                         || ' ' || coalesce(c.last_name, '')
                          || ' ' || coalesce(c.company, '')) LIKE ?1
                 OR EXISTS (SELECT 1 FROM contact_methods m
                            WHERE m.contact_guid = c.guid AND lower(m.value) LIKE ?1)
@@ -163,12 +173,13 @@ impl Library {
             Ok(Contact {
                 guid: row.get(0)?,
                 first_name: row.get(1)?,
-                last_name: row.get(2)?,
-                company: row.get(3)?,
-                is_company: row.get::<_, i64>(4)? != 0,
-                birthday: row.get(5)?,
-                notes: row.get(6)?,
-                etag: row.get(7)?,
+                middle_name: row.get(2)?,
+                last_name: row.get(3)?,
+                company: row.get(4)?,
+                is_company: row.get::<_, i64>(5)? != 0,
+                birthday: row.get(6)?,
+                notes: row.get(7)?,
+                etag: row.get(8)?,
                 methods: Vec::new(),
             })
         })?;
@@ -200,6 +211,7 @@ mod tests {
         Contact {
             guid: guid.into(),
             first_name: first.map(ToString::to_string),
+            middle_name: None,
             last_name: last.map(ToString::to_string),
             company: None,
             is_company: false,

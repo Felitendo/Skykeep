@@ -1255,6 +1255,20 @@ textarea.note-text:disabled {
 
 .contact-methods dt { color: var(--text-2); font-size: var(--t-11); padding-top: 2px; }
 .contact-methods dd { margin: 0; font-size: var(--t-15); overflow-wrap: anywhere; }
+
+/* A postal address is several lines and reads as several lines. */
+.contact-address { white-space: pre-line; }
+
+/* A detail this app can show but not safely write: present, plainly not editable. */
+.contact-method-fixed {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: start;
+  font-size: var(--t-13);
+  color: var(--text-2);
+  padding: 4px 0;
+}
 .contact-methods a { color: var(--gold); text-decoration: none; }
 .contact-methods a:hover { text-decoration: underline; }
 

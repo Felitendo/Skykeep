@@ -37,15 +37,86 @@ fn methods_from(v: &Value, key: &str, kind: &str) -> Vec<ContactMethod> {
         .unwrap_or_default()
 }
 
+/// Apple's postal address: a structured object, not a string.
+///
+/// Flattened into the lines a person would write on an envelope, in the order they would
+/// write them. Reading it as a string — which is what every other method array holds —
+/// simply skipped it, so the one contact with an address showed none.
+fn address_from(entry: &Value) -> Option<String> {
+    let field = entry.get("field")?;
+    if let Some(text) = field.as_str() {
+        return Some(text.trim().to_string()).filter(|s| !s.is_empty());
+    }
+
+    let part = |key: &str| string(field, key);
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(street) = part("street") {
+        lines.extend(street.lines().map(str::trim).map(ToString::to_string));
+    }
+    // City, state and postcode share a line, as they do on an envelope.
+    let locality: Vec<String> = ["city", "state", "postalCode"]
+        .iter()
+        .filter_map(|k| part(k))
+        .collect();
+    if !locality.is_empty() {
+        lines.push(locality.join(" "));
+    }
+    if let Some(country) = part("country") {
+        lines.push(country);
+    }
+
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 fn contact_from(v: &Value) -> Option<Contact> {
     let guid = string(v, "contactId")?;
     let mut methods = methods_from(v, "phones", "phone");
     methods.extend(methods_from(v, "emailAddresses", "email"));
     methods.extend(methods_from(v, "urls", "url"));
 
+    // A postal address nests its parts rather than holding a string.
+    methods.extend(
+        v.get("streetAddresses")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some(ContactMethod {
+                            kind: "address".into(),
+                            label: string(entry, "label"),
+                            value: address_from(entry)?,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
+
+    // A profile carries both an encoded handle and the readable one a person typed. The
+    // readable one is the point; `x-apple:%2B91%2090000` is not an answer to "who is this".
+    methods.extend(
+        v.get("profiles")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some(ContactMethod {
+                            kind: "profile".into(),
+                            label: string(entry, "label"),
+                            value: string(entry, "user").or_else(|| string(entry, "field"))?,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
+
     Some(Contact {
         guid,
         first_name: string(v, "firstName"),
+        middle_name: string(v, "middleName"),
         last_name: string(v, "lastName"),
         company: string(v, "companyName"),
         is_company: v.get("isCompany").and_then(Value::as_bool).unwrap_or(false),
@@ -429,6 +500,7 @@ mod write_tests {
         Contact {
             guid: "C1".into(),
             first_name: Some("Ada".into()),
+            middle_name: None,
             last_name: Some("Lovelace".into()),
             company: None,
             is_company: false,
@@ -655,5 +727,108 @@ mod write_tests {
         .await
         .unwrap_err();
         assert!(matches!(err, Error::Conflict), "got {err:?}");
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A postal address nests its parts rather than holding a string, so reading it the way
+    /// every other method array is read skipped it entirely — the one contact with an
+    /// address showed none.
+    #[test]
+    fn a_postal_address_reads_as_the_lines_it_would_be_written_on() {
+        let contacts = parse(&json!({
+            "contacts": [{
+                "contactId": "C1",
+                "firstName": "Asha",
+                "streetAddresses": [{
+                    "label": "HOME",
+                    "field": {
+                        "street": "12 Example Street\nSpringfield",
+                        "city": "Springfield",
+                        "state": "ST",
+                        "postalCode": "123456",
+                        "country": "India"
+                    }
+                }]
+            }]
+        }));
+        let address = contacts[0]
+            .methods
+            .iter()
+            .find(|m| m.kind == "address")
+            .expect("the address is read");
+        assert_eq!(
+            address.value,
+            "12 Example Street\nSpringfield\nSpringfield ST 123456\nIndia"
+        );
+        assert_eq!(address.label.as_deref(), Some("HOME"));
+    }
+
+    /// Town, county and postcode belong on one line; a missing part must not leave a gap.
+    #[test]
+    fn a_partial_address_leaves_no_holes() {
+        let contacts = parse(&json!({
+            "contacts": [{
+                "contactId": "C1",
+                "streetAddresses": [{ "field": { "city": "Springfield", "country": "India" } }]
+            }]
+        }));
+        assert_eq!(contacts[0].methods[0].value, "Springfield\nIndia");
+    }
+
+    /// A profile carries an encoded handle and the readable one a person typed. Showing
+    /// `x-apple:%2B91...` answers nothing.
+    #[test]
+    fn a_profile_shows_what_a_person_typed_not_the_encoding() {
+        let contacts = parse(&json!({
+            "contacts": [{
+                "contactId": "C1",
+                "profiles": [{
+                    "field": "x-apple:+91%2090000%2000003",
+                    "user": "+91 90000 00003"
+                }]
+            }]
+        }));
+        assert_eq!(contacts[0].methods[0].kind, "profile");
+        assert_eq!(contacts[0].methods[0].value, "+91 90000 00003");
+    }
+
+    /// Apple keeps a middle name, and a person with one is not shown under a name that is
+    /// only nearly theirs.
+    #[test]
+    fn a_middle_name_is_part_of_the_name() {
+        let contacts = parse(&json!({
+            "contacts": [{
+                "contactId": "C1",
+                "firstName": "Asha",
+                "middleName": "Devi",
+                "lastName": "Rao"
+            }]
+        }));
+        assert_eq!(contacts[0].display_name(), "Asha Devi Rao");
+    }
+
+    /// An address that really is a plain string still reads.
+    #[test]
+    fn an_address_given_as_a_string_still_reads() {
+        let contacts = parse(&json!({
+            "contacts": [{
+                "contactId": "C1",
+                "streetAddresses": [{ "field": "12 Somewhere Lane" }]
+            }]
+        }));
+        assert_eq!(contacts[0].methods[0].value, "12 Somewhere Lane");
+    }
+
+    #[test]
+    fn an_empty_address_is_left_out_rather_than_shown_blank() {
+        let contacts = parse(&json!({
+            "contacts": [{ "contactId": "C1", "streetAddresses": [{ "field": {} }] }]
+        }));
+        assert!(contacts[0].methods.is_empty());
     }
 }

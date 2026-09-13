@@ -233,6 +233,7 @@ export type ContactMethod = { kind: string; label: string | null; value: string 
 export type Contact = {
   guid: string;
   firstName: string | null;
+  middleName: string | null;
   lastName: string | null;
   company: string | null;
   isCompany: boolean;
@@ -244,7 +245,7 @@ export type Contact = {
 
 /** What to show, whichever name fields a contact happens to have. */
 export function displayName(c: Contact): string {
-  const full = [c.firstName, c.lastName].filter(Boolean).join(" ").trim();
+  const full = [c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ").trim();
   if (full) return full;
   if (c.company?.trim()) return c.company;
   return c.methods[0]?.value ?? "No Name";

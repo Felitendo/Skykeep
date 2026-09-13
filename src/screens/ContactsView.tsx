@@ -19,6 +19,7 @@ const KINDS = [
 const blank = (): Contact => ({
   guid: "",
   firstName: null,
+  middleName: null,
   lastName: null,
   company: null,
   isCompany: false,
@@ -33,7 +34,13 @@ const KIND_LABEL: Record<string, string> = {
   email: "email",
   url: "link",
   address: "address",
+  profile: "profile",
 };
+
+/** What this app can safely write back. Apple stores an address as a structured thing and a
+ *  profile as an encoded handle; editing either as one line here would mangle it, so they
+ *  are shown and left alone rather than half-supported. */
+const EDITABLE_KINDS = new Set(["phone", "email", "url"]);
 
 /** Initials for the avatar, from whichever name fields exist. */
 function initials(contact: Contact): string {
@@ -227,7 +234,16 @@ export function ContactsView() {
             </div>
 
             <ul className="contact-method-rows">
-              {draft.methods.map((m, index) => (
+              {draft.methods.map((m, index) =>
+                !EDITABLE_KINDS.has(m.kind) ? (
+                  // Shown so it is not a surprise that it exists, but not offered for
+                  // editing — this app cannot write a structured address back safely.
+                  <li key={index} className="contact-method-fixed">
+                    <span>{KIND_LABEL[m.kind] ?? m.kind}</span>
+                    <span className="contact-address">{m.value}</span>
+                    <span className="badge">edited on an Apple device</span>
+                  </li>
+                ) : (
                 <li key={index}>
                   <Picker
                     label={`Kind of detail ${index + 1}`}
@@ -264,7 +280,8 @@ export function ContactsView() {
                     ✕
                   </button>
                 </li>
-              ))}
+                ),
+              )}
             </ul>
 
             <button
@@ -328,6 +345,9 @@ export function ContactsView() {
                       <a href={`mailto:${m.value}`}>{m.value}</a>
                     ) : m.kind === "phone" ? (
                       <a href={`tel:${m.value}`}>{m.value}</a>
+                    ) : m.kind === "address" ? (
+                      // A postal address is several lines and stays that way.
+                      <span className="contact-address">{m.value}</span>
                     ) : (
                       m.value
                     )}

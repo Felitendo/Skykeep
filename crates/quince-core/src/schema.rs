@@ -206,4 +206,11 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE reminders ADD COLUMN parent_guid TEXT;
     CREATE INDEX reminders_by_parent ON reminders (parent_guid);
     "#,
+    // 12 — a contact's middle name.
+    //
+    // Apple keeps one and four people in a real address book have one; without it they were
+    // shown under a name that was not quite theirs.
+    r#"
+    ALTER TABLE contacts ADD COLUMN middle_name TEXT;
+    "#,
 ];

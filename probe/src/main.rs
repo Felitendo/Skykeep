@@ -1754,6 +1754,7 @@ async fn main() -> Result<()> {
                     let draft = quince_core::contacts::Contact {
                         guid: String::new(),
                         first_name: Some("Quince".into()),
+                        middle_name: None,
                         last_name: Some("Write Test".into()),
                         company: None,
                         is_company: false,
