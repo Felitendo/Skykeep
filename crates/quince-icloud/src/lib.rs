@@ -24,6 +24,8 @@ pub enum Error {
     Conflict,
     #[error(transparent)]
     Storage(#[from] quince_core::Error),
+    #[error("couldn't write the file: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -2145,70 +2145,102 @@ async fn main() -> Result<()> {
     // folder each need their own shape, so find out what the service actually accepts
     // before writing any of it. --write-test also proves create + rename + delete live.
     println!("\n\x1b[1m── Drive: docws capability probe ──\x1b[0m");
+    println!("  drivews = {:?}", session.service_url("drivews"));
+    println!("  docws   = {:?}", session.service_url("docws"));
     if let Some(root) = session.service_url("drivews") {
         let params = client.service_params();
         let http = client.http().clone();
 
-        // Downloading a file: does asking for one folder's contents also carry a download
-        // URL, or does that need a separate request?
-        let details = http
-            .post(format!(
-                "{}/retrieveItemDetailsInFolders",
-                root.trim_end_matches('/')
-            ))
-            .query(&params)
-            .json(&serde_json::json!([{
-                "drivewsid": "FOLDER::com.apple.CloudDocs::root",
-                "partialData": false,
-            }]))
-            .send()
+        // A real file, from the local library rather than an empty root — read-only.
+        if let Ok(mut library) = quince_core::Library::open(&dir) {
+            // Sync a couple of levels so there is something real to test against, whether
+            // or not this probe's own library has ever browsed Drive before.
+            let _ = quince_icloud::drive::sync_folder(
+                &http,
+                &root,
+                params.clone(),
+                &mut library,
+                "FOLDER::com.apple.CloudDocs::root",
+            )
             .await;
-        match details {
-            Err(e) => println!("  root listing failed: {e}"),
-            Ok(response) => {
-                let text = response.text().await.unwrap_or_default();
-                match serde_json::from_str::<serde_json::Value>(&text) {
-                    Err(e) => println!("  not JSON: {e}"),
-                    Ok(body) => {
-                        let first_file = body
-                            .pointer("/0/items")
-                            .and_then(|v| v.as_array())
-                            .and_then(|items| {
-                                items.iter().find(|i| {
-                                    i.get("type").and_then(|t| t.as_str()) == Some("FILE")
-                                })
-                            })
-                            .cloned();
-                        match &first_file {
-                            None => println!("  no plain file at the root to test with"),
-                            Some(file) => {
-                                println!(
-                                    "  one file's every key: {}",
-                                    file.as_object()
-                                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
-                                        .unwrap_or_default()
-                                );
-                                if let Some(id) = file.get("docwsid").and_then(|v| v.as_str()) {
-                                    let dl = http
-                                        .get(format!(
-                                            "{}/ws/com.apple.CloudDocs/download/by_id",
-                                            root.trim_end_matches('/')
-                                        ))
-                                        .query(&params)
-                                        .query(&[("document_id", id)])
-                                        .send()
-                                        .await;
-                                    match dl {
-                                        Err(e) => println!("  download request failed: {e}"),
-                                        Ok(r) => {
-                                            let status = r.status();
-                                            let text = r.text().await.unwrap_or_default();
+            let root_children = library
+                .drive_children("FOLDER::com.apple.CloudDocs::root")
+                .unwrap_or_default();
+            if let Some(sub) = root_children.iter().find(|i| i.kind == "FOLDER") {
+                let _ = quince_icloud::drive::sync_folder(
+                    &http,
+                    &root,
+                    params.clone(),
+                    &mut library,
+                    &sub.drivewsid,
+                )
+                .await;
+            }
+            let file = root_children
+                .iter()
+                .find(|i| i.kind == "FILE")
+                .cloned()
+                .or_else(|| {
+                    // The root's own files did not have to include one; look one level
+                    // into the first folder if the root came up empty.
+                    root_children
+                        .iter()
+                        .find(|i| i.kind == "FOLDER")
+                        .and_then(|f| library.drive_children(&f.drivewsid).ok())
+                        .and_then(|items| items.into_iter().find(|i| i.kind == "FILE"))
+                });
+
+            match file {
+                None => println!("  no file synced yet to test with"),
+                Some(file) => {
+                    println!(
+                        "  testing against: {} ({} bytes)",
+                        file.name,
+                        file.size.unwrap_or(0)
+                    );
+                    let docwsid = file
+                        .drivewsid
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(&file.drivewsid);
+
+                    // Downloads are served from the `docws` host, not `drivews`.
+                    if let Some(docws_root) = session.service_url("docws") {
+                        let dl = http
+                            .get(format!(
+                                "{}/ws/com.apple.CloudDocs/download/by_id",
+                                docws_root.trim_end_matches('/')
+                            ))
+                            .query(&[("document_id", docwsid)])
+                            .send()
+                            .await;
+                        match dl {
+                            Err(e) => println!("  by_id request failed: {e}"),
+                            Ok(r) => {
+                                let text = r.text().await.unwrap_or_default();
+                                let url = serde_json::from_str::<serde_json::Value>(&text)
+                                    .ok()
+                                    .and_then(|v| {
+                                        v.pointer("/data_token/url")
+                                            .and_then(|u| u.as_str())
+                                            .map(ToString::to_string)
+                                    });
+                                match url {
+                                    None => println!("  no data_token.url in the reply"),
+                                    Some(url) => match http.get(&url).send().await {
+                                        Err(e) => println!("  fetching the bytes failed: {e}"),
+                                        Ok(bytes_response) => {
+                                            let status = bytes_response.status();
+                                            let bytes =
+                                                bytes_response.bytes().await.unwrap_or_default();
+                                            let matches_reported_size =
+                                                file.size.is_none_or(|s| s as usize == bytes.len());
                                             println!(
-                                                "  download by_id -> {status}: {}",
-                                                text.chars().take(200).collect::<String>()
+                                                "  \x1b[32mPASS\x1b[0m fetched {} byte(s), status {status}, matches reported size: {matches_reported_size}",
+                                                bytes.len()
                                             );
                                         }
-                                    }
+                                    },
                                 }
                             }
                         }
@@ -2216,97 +2248,101 @@ async fn main() -> Result<()> {
                 }
             }
         }
+    }
 
-        if std::env::args().any(|a| a == "--write-test") {
-            // Create a folder, read it back from Apple, rename it, delete it.
-            let name = "Quince write test — safe to delete";
-            let create = http
-                .post(format!("{}/createFolders", root.trim_end_matches('/')))
-                .query(&params)
-                .json(&serde_json::json!({
-                    "destinationDrivewsId": "FOLDER::com.apple.CloudDocs::root",
-                    "folders": [{ "name": name, "clientId": uuid::Uuid::new_v4().to_string() }],
-                }))
-                .send()
-                .await;
-            match create {
-                Err(e) => println!("  \x1b[31mFAIL\x1b[0m createFolders: {e}"),
-                Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.unwrap_or_default();
-                    println!("  createFolders -> {status}");
-                    match serde_json::from_str::<serde_json::Value>(&text) {
-                        Err(e) => {
-                            println!("    not JSON: {e}\n    {}", &text[..300.min(text.len())])
-                        }
-                        Ok(body) => {
-                            println!(
-                                "    {}",
-                                serde_json::to_string_pretty(&body)
-                                    .unwrap_or_default()
-                                    .lines()
-                                    .take(20)
-                                    .collect::<Vec<_>>()
-                                    .join("\n    ")
-                            );
-                            if let Some(new_id) = body
-                                .pointer("/folders/0/drivewsid")
-                                .and_then(|v| v.as_str())
+    // ---- does the real Drive backend work end to end? ------------------------------
+    // Not the raw HTTP calls above — the actual quince_icloud::drive functions the app
+    // uses. Create a folder, download a real file into it (proving the docws host and the
+    // data_token redirect), rename, delete. Runs with --write-test.
+    if std::env::args().any(|a| a == "--write-test") {
+        println!("\n\x1b[1m── Drive: the real backend, end to end ──\x1b[0m");
+        if let (Some(drivews), Some(docws)) =
+            (session.service_url("drivews"), session.service_url("docws"))
+        {
+            let params = client.service_params();
+            let http = client.http().clone();
+
+            match quince_icloud::drive::create_folder(
+                &http,
+                &drivews,
+                params.clone(),
+                quince_core::drive::ROOT,
+                "Quince backend test — safe to delete",
+            )
+            .await
+            {
+                Err(e) => println!("  \x1b[31mFAIL\x1b[0m create_folder: {e}"),
+                Ok(folder) => {
+                    println!("  \x1b[32mPASS\x1b[0m created {}", folder.drivewsid);
+
+                    match quince_icloud::drive::rename(
+                        &http,
+                        &drivews,
+                        params.clone(),
+                        &folder,
+                        "Quince backend test renamed",
+                    )
+                    .await
+                    {
+                        Ok(()) => println!("  \x1b[32mPASS\x1b[0m renamed"),
+                        Err(e) => println!("  \x1b[31mFAIL\x1b[0m rename: {e}"),
+                    }
+
+                    // A real download, through the actual function the app calls — proves
+                    // the docws host, the data_token redirect, and the bytes landing on
+                    // disk all still work together.
+                    if let Ok(mut library) = quince_core::Library::open(&dir) {
+                        let _ = quince_icloud::drive::sync_folder(
+                            &http,
+                            &drivews,
+                            params.clone(),
+                            &mut library,
+                            quince_core::drive::ROOT,
+                        )
+                        .await;
+                        let root_children = library
+                            .drive_children(quince_core::drive::ROOT)
+                            .unwrap_or_default();
+                        println!(
+                            "  root has {} item(s): {:?}",
+                            root_children.len(),
+                            root_children
+                                .iter()
+                                .map(|i| (&i.name, &i.kind))
+                                .collect::<Vec<_>>()
+                        );
+                        if let Some(file) = root_children.into_iter().find(|i| i.kind == "FILE") {
+                            let destination = std::env::temp_dir()
+                                .join(format!("quince-backend-test-{}", uuid::Uuid::new_v4()));
+                            match quince_icloud::drive::download_to(
+                                &http,
+                                &docws,
+                                params.clone(),
+                                &file,
+                                &destination,
+                            )
+                            .await
                             {
-                                println!("  \x1b[32mPASS\x1b[0m created {new_id}");
-
-                                let rename = http
-                                    .post(format!("{}/renameItems", root.trim_end_matches('/')))
-                                    .query(&params)
-                                    .json(&serde_json::json!({
-                                        "items": [{
-                                            "drivewsid": new_id,
-                                            "name": "Quince renamed — safe to delete",
-                                            "etag": body.pointer("/folders/0/etag"),
-                                        }]
-                                    }))
-                                    .send()
-                                    .await;
-                                match rename {
-                                    Err(e) => println!("  \x1b[31mFAIL\x1b[0m renameItems: {e}"),
-                                    Ok(r) => println!(
-                                        "  renameItems -> {}: {}",
-                                        r.status(),
-                                        r.text()
-                                            .await
-                                            .unwrap_or_default()
-                                            .chars()
-                                            .take(200)
-                                            .collect::<String>()
-                                    ),
-                                }
-
-                                let delete = http
-                                    .post(format!(
-                                        "{}/moveItemsToTrash",
-                                        root.trim_end_matches('/')
-                                    ))
-                                    .query(&params)
-                                    .json(&serde_json::json!({
-                                        "items": [{
-                                            "drivewsid": new_id,
-                                            "etag": body.pointer("/folders/0/etag"),
-                                        }]
-                                    }))
-                                    .send()
-                                    .await;
-                                match delete {
-                                    Err(e) => println!(
-                                        "  \x1b[31mFAIL\x1b[0m moveItemsToTrash: {e}\n  \x1b[33m{new_id} is still there\x1b[0m"
-                                    ),
-                                    Ok(r) => println!(
-                                        "  moveItemsToTrash -> {}: {}",
-                                        r.status(),
-                                        r.text().await.unwrap_or_default().chars().take(200).collect::<String>()
-                                    ),
+                                Err(e) => println!("  \x1b[31mFAIL\x1b[0m download_to: {e}"),
+                                Ok(()) => {
+                                    let bytes =
+                                        std::fs::metadata(&destination).map(|m| m.len()).ok();
+                                    println!(
+                                        "  \x1b[32mPASS\x1b[0m downloaded {} to disk: {:?} byte(s)",
+                                        file.name, bytes
+                                    );
+                                    std::fs::remove_file(&destination).ok();
                                 }
                             }
                         }
+                    }
+
+                    match quince_icloud::drive::delete(&http, &drivews, params, &folder).await {
+                        Ok(()) => println!("  \x1b[32mPASS\x1b[0m deleted; nothing left behind"),
+                        Err(e) => println!(
+                            "  \x1b[31mFAIL\x1b[0m delete: {e}\n  \x1b[33m{} is still there\x1b[0m",
+                            folder.drivewsid
+                        ),
                     }
                 }
             }

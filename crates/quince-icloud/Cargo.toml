@@ -15,6 +15,8 @@ jiff = "0.2.37"
 base64 = "0.22"
 flate2 = "1"
 uuid = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

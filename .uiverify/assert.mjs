@@ -43,8 +43,23 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "contact_save") return "C-new";
       if (cmd === "contact_delete") return null;
       if (cmd === "contacts_list") return [];
-      if (cmd === "drive_children") return [];
-      if (cmd === "drive_sync_folder") return 0;
+      if (cmd === "drive_children") {
+        // The same one real folder every time, whatever parent is asked for — exactly the
+        // shape of the account the bug was found on: a single "Downloads" folder, nothing
+        // nested inside it.
+        return [
+          { drivewsid: "FOLDER::x::downloads", parentId: null, name: "Downloads",
+            extension: null, kind: "FOLDER", size: null, childCount: 0,
+            createdAt: null, modifiedAt: null, etag: "e1" },
+        ];
+      }
+      if (cmd === "drive_sync_folder") {
+        // Slow enough that several clicks land on the same still-open folder before this
+        // resolves — which is exactly the race that let the trail duplicate.
+        return new Promise((resolve) => setTimeout(() => resolve(0), 250));
+      }
+      if (cmd === "drive_download") return "/home/user/Downloads/file.pdf";
+      if (cmd === "drive_create_folder" || cmd === "drive_rename" || cmd === "drive_delete" || cmd === "drive_move") return null;
       if (cmd === "drive_item") return null;
       // One refresh for every service, and the event it finishes with.
       if (cmd === "sync_all" || cmd === "sync_status")
@@ -176,6 +191,38 @@ let failures = 0;
         : `FAIL reminder rows fill only ${Math.round(fill * 100)}% of their pane`
   );
   if (fill === null || fill < 0.9) failures++;
+  await page.close();
+}
+
+
+// ── Drive: a rapid double click must never duplicate the breadcrumb ────────────────────
+// The actual bug: an open() in flight let a second click on the same stale row append a
+// second identical crumb before the folder had finished loading — a trail that read
+// "Downloads › Downloads › Downloads …" fifteen deep, all pointing at the one real folder.
+{
+  const page = await ctx.newPage();
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "iCloud Drive" }).click();
+  await page.waitForSelector(".drive-row-hit");
+
+  const folderRow = page.locator(".drive-row.is-folder .drive-row-hit").first();
+  if ((await folderRow.count()) > 0) {
+    // Fire several clicks back to back, the way an impatient double-click does, before the
+    // slow folder load has had any chance to resolve.
+    await Promise.all([folderRow.click(), folderRow.click(), folderRow.click()]);
+    await page.waitForTimeout(500);
+    const crumbs = await page.locator(".crumb").allInnerTexts();
+    const names = crumbs.slice(1);
+    const unique = new Set(names);
+    console.log(
+      names.length <= 1 || unique.size === names.length
+        ? "PASS rapid clicks do not duplicate the breadcrumb"
+        : `FAIL breadcrumb duplicated: ${JSON.stringify(crumbs)}`
+    );
+    if (names.length > 1 && unique.size !== names.length) failures++;
+  } else {
+    console.log("PASS rapid clicks do not duplicate the breadcrumb (no folder to test with)");
+  }
   await page.close();
 }
 

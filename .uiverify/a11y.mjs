@@ -50,6 +50,8 @@ function installStub({ screen, services, twoFactor }) {
         case "contacts_sync": return 0;
         case "drive_children": return [];
         case "drive_sync_folder": return 0;
+        case "drive_download": return "/home/user/Downloads/file.pdf";
+        case "drive_create_folder": case "drive_rename": case "drive_delete": case "drive_move": return null;
         case "drive_item": return null;
         // One refresh covers every service, so there is one command to stub rather than
         // a pair per screen.

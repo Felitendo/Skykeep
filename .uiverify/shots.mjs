@@ -149,6 +149,8 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "contacts_list": return !contactsFixture ? [] : contactList;
         case "drive_children": return !driveFixture ? [] : driveItems;
         case "drive_sync_folder": return driveItems.length;
+        case "drive_download": return "/home/user/Downloads/file.pdf";
+        case "drive_create_folder": case "drive_rename": case "drive_delete": case "drive_move": return null;
         case "drive_item": return null;
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;

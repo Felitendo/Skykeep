@@ -93,6 +93,320 @@ pub async fn sync_folder(
     Ok(items.len())
 }
 
+/// Bare docwsid: `FILE::com.apple.CloudDocs::<uuid>` carries it after the last `::`.
+fn docwsid_of(drivewsid: &str) -> &str {
+    drivewsid.rsplit("::").next().unwrap_or(drivewsid)
+}
+
+/// Where to fetch a file's bytes from — a signed, time-limited URL Apple hands out per
+/// request.
+///
+/// Downloads are served from the `docws` host, not `drivews`: a different subdomain from
+/// everything else in this module, measured against the real service rather than assumed.
+pub async fn download_url(
+    http: &reqwest::Client,
+    docws_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+) -> Result<String> {
+    let url = format!(
+        "{}/ws/com.apple.CloudDocs/download/by_id",
+        docws_root.trim_end_matches('/')
+    );
+    let mut query = params;
+    query.push((
+        "document_id".into(),
+        docwsid_of(&item.drivewsid).to_string(),
+    ));
+
+    let response = http.get(url).query(&query).send().await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "couldn't prepare a download ({status}): {}",
+            text.chars().take(160).collect::<String>()
+        )));
+    }
+
+    let body: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("download reply was not JSON: {e}")))?;
+    body.pointer("/data_token/url")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| Error::Protocol("Apple's reply carried no download URL".into()))
+}
+
+/// Download a file's bytes to `destination`, streaming rather than holding the whole file
+/// in memory — Drive is exactly where a large file is likely.
+pub async fn download_to(
+    http: &reqwest::Client,
+    docws_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    destination: &std::path::Path,
+) -> Result<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let url = download_url(http, docws_root, params, item).await?;
+    let response = http.get(&url).send().await?;
+    if !response.status().is_success() {
+        return Err(Error::Protocol(format!(
+            "the download itself failed ({})",
+            response.status()
+        )));
+    }
+
+    if let Some(parent) = destination.parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+    let mut file = tokio::fs::File::create(destination).await?;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        file.write_all(&chunk?).await?;
+    }
+    file.flush().await?;
+    Ok(())
+}
+
+/// Create a folder inside `parent_id`. Returns the item Apple stored.
+pub async fn create_folder(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    parent_id: &str,
+    name: &str,
+) -> Result<DriveItem> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::Protocol("a folder needs a name".into()));
+    }
+
+    let url = format!("{}/createFolders", root.trim_end_matches('/'));
+    let body = json!({
+        "destinationDrivewsId": parent_id,
+        "folders": [{ "name": name, "clientId": uuid::Uuid::new_v4().to_string() }],
+    });
+
+    let response = http.post(url).query(&params).json(&body).send().await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "Drive refused the folder ({status}): {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+
+    let body: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
+    body.pointer("/folders/0")
+        .and_then(item_from)
+        .ok_or_else(|| Error::Protocol("Apple created the folder but didn't describe it".into()))
+}
+
+/// The parent's own listing, straight from Apple — for finding an item's *current* etag
+/// and for confirming afterward that a write actually landed.
+///
+/// `retrieveItemDetailsInFolders` is the only place Drive's web service will hand out an
+/// etag, so this is called before a write (to get one that has not gone stale) and after
+/// one (to confirm the change is what Apple now has, not just what it answered 200 to).
+async fn folder_listing(
+    http: &reqwest::Client,
+    root: &str,
+    params: &[(String, String)],
+    folder_id: &str,
+) -> Result<Vec<DriveItem>> {
+    let url = format!(
+        "{}/retrieveItemDetailsInFolders",
+        root.trim_end_matches('/')
+    );
+    let body = json!([{ "drivewsid": folder_id, "partialData": false }]);
+    let response = http.post(url).query(params).json(&body).send().await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "Drive returned {status}: {}",
+            text.chars().take(160).collect::<String>()
+        )));
+    }
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
+    Ok(parse_folder(&parsed))
+}
+
+/// The parent a write on `item` should be verified against: its own folder if it has one,
+/// the Drive root otherwise.
+fn parent_of(item: &DriveItem) -> &str {
+    item.parent_id
+        .as_deref()
+        .unwrap_or(quince_core::drive::ROOT)
+}
+
+/// Rename a file or folder in place.
+///
+/// The etag on `item` may already be stale by the time this runs — nothing enforces that a
+/// caller re-synced first — and CloudKit-style services answer a stale etag by silently
+/// keeping the old version while still returning 200. So this fetches the etag Apple
+/// currently holds immediately before writing, and afterward re-reads the parent to confirm
+/// the name actually changed rather than trusting the HTTP status alone.
+pub async fn rename(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    name: &str,
+) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::Protocol("a name can't be empty".into()));
+    }
+
+    let parent = parent_of(item);
+    let current = folder_listing(http, root, &params, parent).await?;
+    let etag = current
+        .iter()
+        .find(|i| i.drivewsid == item.drivewsid)
+        .and_then(|i| i.etag.clone())
+        .or_else(|| item.etag.clone());
+
+    let url = format!("{}/renameItems", root.trim_end_matches('/'));
+    let body = json!({
+        "items": [{ "drivewsid": item.drivewsid, "name": name, "etag": etag }],
+    });
+
+    let response = http.post(url).query(&params).json(&body).send().await?;
+    let status = response.status();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(Error::Protocol(format!(
+            "Drive refused the rename ({status}): {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+
+    let after = folder_listing(http, root, &params, parent).await?;
+    match after.iter().find(|i| i.drivewsid == item.drivewsid) {
+        Some(found) if found.name == name => Ok(()),
+        Some(found) => Err(Error::Protocol(format!(
+            "Apple answered success but the name is still {:?}, not {name:?}",
+            found.name
+        ))),
+        None => Err(Error::Protocol(
+            "Apple answered success but the item is no longer where it should be".into(),
+        )),
+    }
+}
+
+/// Move an item to Recently Deleted. Apple keeps it there for a time before it is really
+/// gone, the same as a Mac's trash.
+///
+/// Same discipline as [`rename`]: a stale etag is refreshed before the write, and the
+/// parent is re-read afterward to confirm the item is genuinely gone from it rather than
+/// trusting a 200 that turned out, once, to have silently done nothing.
+pub async fn delete(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+) -> Result<()> {
+    let parent = parent_of(item);
+    let current = folder_listing(http, root, &params, parent).await?;
+    let etag = current
+        .iter()
+        .find(|i| i.drivewsid == item.drivewsid)
+        .and_then(|i| i.etag.clone())
+        .or_else(|| item.etag.clone());
+
+    let url = format!("{}/moveItemsToTrash", root.trim_end_matches('/'));
+    let body = json!({
+        "items": [{ "drivewsid": item.drivewsid, "etag": etag }],
+    });
+
+    let response = http.post(url).query(&params).json(&body).send().await?;
+    let status = response.status();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(Error::Protocol(format!(
+            "Drive refused the delete ({status}): {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+
+    let after = folder_listing(http, root, &params, parent).await?;
+    if after.iter().any(|i| i.drivewsid == item.drivewsid) {
+        return Err(Error::Protocol(
+            "Apple answered success but the item is still in the folder".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Move an item into a different folder.
+///
+/// Verified the same way: a fresh etag before the write, and the destination re-read
+/// afterward to confirm the item actually arrived there.
+pub async fn move_to(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    destination_id: &str,
+) -> Result<()> {
+    let parent = parent_of(item);
+    let current = folder_listing(http, root, &params, parent).await?;
+    let etag = current
+        .iter()
+        .find(|i| i.drivewsid == item.drivewsid)
+        .and_then(|i| i.etag.clone())
+        .or_else(|| item.etag.clone());
+
+    let url = format!("{}/moveItems", root.trim_end_matches('/'));
+    let body = json!({
+        "items": [{ "drivewsid": item.drivewsid, "etag": etag }],
+        "destinationDrivewsId": destination_id,
+    });
+
+    let response = http.post(url).query(&params).json(&body).send().await?;
+    let status = response.status();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(Error::Protocol(format!(
+            "Drive refused the move ({status}): {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+
+    let arrived = folder_listing(http, root, &params, destination_id).await?;
+    if !arrived.iter().any(|i| i.drivewsid == item.drivewsid) {
+        return Err(Error::Protocol(
+            "Apple answered success but the item never arrived at the destination".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +494,440 @@ mod tests {
         let children = library.drive_children(quince_core::drive::ROOT).unwrap();
         assert_eq!(children.len(), 3);
         assert_eq!(children[0].name, "Downloads", "folders sort first");
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    fn file() -> DriveItem {
+        DriveItem {
+            drivewsid: "FILE::com.apple.CloudDocs::ABC-123".into(),
+            parent_id: Some("FOLDER::com.apple.CloudDocs::root".into()),
+            name: "report".into(),
+            extension: Some("pdf".into()),
+            kind: "FILE".into(),
+            size: Some(12),
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: Some("e1".into()),
+        }
+    }
+
+    async fn sent(server: &MockServer, matching: &str) -> Value {
+        let request = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.url.path().ends_with(matching))
+            .unwrap_or_else(|| panic!("no request to {matching}"));
+        serde_json::from_slice(&request.body).unwrap()
+    }
+
+    #[test]
+    fn a_bare_docwsid_is_the_last_segment() {
+        assert_eq!(docwsid_of("FILE::com.apple.CloudDocs::ABC-123"), "ABC-123");
+        assert_eq!(docwsid_of("no-separator"), "no-separator");
+    }
+
+    #[tokio::test]
+    async fn a_download_url_comes_from_the_docws_host_not_drivews() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data_token": { "url": "https://cvws.icloud-content.com/x" }
+            })))
+            .mount(&server)
+            .await;
+
+        let url = download_url(&reqwest::Client::new(), &server.uri(), vec![], &file())
+            .await
+            .unwrap();
+        assert_eq!(url, "https://cvws.icloud-content.com/x");
+
+        let request: Request = server.received_requests().await.unwrap().remove(0);
+        let query: std::collections::HashMap<_, _> = request.url.query_pairs().collect();
+        assert_eq!(
+            query["document_id"], "ABC-123",
+            "the bare id, not the full drivewsid"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_with_no_url_is_a_clear_error_not_a_panic() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        assert!(
+            download_url(&reqwest::Client::new(), &server.uri(), vec![], &file())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_folder_name_is_refused_before_anything_is_sent() {
+        let server = MockServer::start().await;
+        assert!(create_folder(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "FOLDER::com.apple.CloudDocs::root",
+            "   ",
+        )
+        .await
+        .is_err());
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_created_folder_is_returned_as_a_real_item() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/createFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "folders": [{
+                    "drivewsid": "FOLDER::com.apple.CloudDocs::NEW",
+                    "parentId": "FOLDER::com.apple.CloudDocs::root",
+                    "name": "Scans",
+                    "type": "FOLDER",
+                    "etag": "e9"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let created = create_folder(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "FOLDER::com.apple.CloudDocs::root",
+            "Scans",
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.name, "Scans");
+        assert_eq!(created.kind, "FOLDER");
+
+        let body = sent(&server, "/createFolders").await;
+        assert_eq!(
+            body["destinationDrivewsId"],
+            "FOLDER::com.apple.CloudDocs::root"
+        );
+        assert_eq!(body["folders"][0]["name"], "Scans");
+    }
+
+    /// A response shaped like a real `retrieveItemDetailsInFolders` reply, holding `item`
+    /// (possibly under a different, current etag) as the sole child of its folder.
+    fn listing_of(folder_id: &str, item: &DriveItem, etag: &str) -> serde_json::Value {
+        serde_json::json!([{
+            "drivewsid": folder_id,
+            "items": [{
+                "drivewsid": item.drivewsid,
+                "parentId": folder_id,
+                "name": item.name,
+                "extension": item.extension,
+                "type": item.kind,
+                "etag": etag,
+            }]
+        }])
+    }
+
+    fn empty_listing_of(folder_id: &str) -> serde_json::Value {
+        serde_json::json!([{ "drivewsid": folder_id, "items": [] }])
+    }
+
+    #[tokio::test]
+    async fn renaming_uses_the_etag_apple_currently_holds_not_a_stale_one() {
+        let server = MockServer::start().await;
+        // The caller's copy says "e1"; Apple has moved on to "e2" since — a rename sent
+        // with "e1" is exactly the write that used to silently do nothing.
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::root",
+                &file(),
+                "e2",
+            )))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/renameItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+        // The confirming re-read after the write: the rename really landed.
+        let mut renamed = file();
+        renamed.name = "final report".into();
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::root",
+                &renamed,
+                "e3",
+            )))
+            .mount(&server)
+            .await;
+
+        rename(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            "final report",
+        )
+        .await
+        .unwrap();
+
+        let body = sent(&server, "/renameItems").await;
+        assert_eq!(body["items"][0]["name"], "final report");
+        assert_eq!(
+            body["items"][0]["etag"], "e2",
+            "the fresh etag, not the stale e1"
+        );
+    }
+
+    /// The whole point of this rewrite: a 200 that did not actually change anything must
+    /// surface as a failure, not as success.
+    #[tokio::test]
+    async fn a_rename_that_silently_did_nothing_is_reported_as_a_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::root",
+                &file(),
+                "e1",
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/renameItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let err = rename(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            "final report",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("still"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn deleting_moves_to_trash_rather_than_destroying() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::root",
+                &file(),
+                "e1",
+            )))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/moveItemsToTrash"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+        // Confirmed gone: the parent no longer lists it.
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(empty_listing_of("FOLDER::com.apple.CloudDocs::root")),
+            )
+            .mount(&server)
+            .await;
+
+        delete(&reqwest::Client::new(), &server.uri(), vec![], &file())
+            .await
+            .unwrap();
+
+        let body = sent(&server, "/moveItemsToTrash").await;
+        assert_eq!(
+            body["items"][0]["drivewsid"],
+            "FILE::com.apple.CloudDocs::ABC-123"
+        );
+    }
+
+    /// This is the bug measured against the real account: `moveItemsToTrash` answered 200
+    /// while the item was still sitting in the folder, because the etag sent was stale.
+    #[tokio::test]
+    async fn a_delete_that_left_the_item_in_place_is_reported_as_a_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::root",
+                &file(),
+                "e1",
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/moveItemsToTrash"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let err = delete(&reqwest::Client::new(), &server.uri(), vec![], &file())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("still in the folder"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn moving_names_the_destination_folder() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::root",
+                &file(),
+                "e1",
+            )))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/moveItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+        // Confirmed arrived: the destination now lists it.
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::DEST",
+                &file(),
+                "e2",
+            )))
+            .mount(&server)
+            .await;
+
+        move_to(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            "FOLDER::com.apple.CloudDocs::DEST",
+        )
+        .await
+        .unwrap();
+
+        let body = sent(&server, "/moveItems").await;
+        assert_eq!(
+            body["destinationDrivewsId"],
+            "FOLDER::com.apple.CloudDocs::DEST"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_move_that_never_arrived_is_reported_as_a_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty_listing_of("x")))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/moveItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+
+        let err = move_to(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            "FOLDER::com.apple.CloudDocs::DEST",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("never arrived"), "{err}");
+    }
+
+    /// A 450 is Apple asking for a fresh sign-in — the same rule every write path in this
+    /// app follows, so it must not be reported as a plain protocol error.
+    #[tokio::test]
+    async fn a_450_anywhere_means_reauth_not_a_generic_failure() {
+        let server = MockServer::start().await;
+        Mock::given(path_regex(r".*"))
+            .respond_with(ResponseTemplate::new(450))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            rename(&reqwest::Client::new(), &server.uri(), vec![], &file(), "x").await,
+            Err(Error::ReauthRequired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn downloading_to_disk_writes_the_exact_bytes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data_token": { "url": format!("{}/bytes", server.uri()) }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bytes"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello drive".to_vec()))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir();
+        let destination = dir.join("report.pdf");
+        download_to(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            &destination,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"hello drive");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn tempdir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("quince-drive-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

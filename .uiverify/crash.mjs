@@ -22,6 +22,8 @@ await ctx.addInitScript(() => {
         case "calendar_sync": return { calendars: 0, events: 0 };
         case "reminders_sync": case "notes_sync": return [0, 0];
         case "contacts_sync": case "drive_sync_folder": return 0;
+        case "drive_download": return "/home/user/Downloads/file.pdf";
+        case "drive_create_folder": case "drive_rename": case "drive_delete": case "drive_move": return null;
         // One refresh covers every service, so there is one command to stub rather than
         // a pair per screen.
         case "sync_all":

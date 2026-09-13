@@ -101,6 +101,15 @@ export const api = {
   driveSyncFolder: (folderId: string) => invoke<number>("drive_sync_folder", { folderId }),
   driveChildren: (folderId: string) => invoke<DriveItem[]>("drive_children", { folderId }),
   driveItem: (drivewsid: string) => invoke<DriveItem | null>("drive_item", { drivewsid }),
+  /** Saves to Downloads; returns the path it landed at. */
+  driveDownload: (drivewsid: string) => invoke<string>("drive_download", { drivewsid }),
+  driveCreateFolder: (parentId: string, name: string) =>
+    invoke<void>("drive_create_folder", { parentId, name }),
+  driveRename: (drivewsid: string, name: string) =>
+    invoke<void>("drive_rename", { drivewsid, name }),
+  driveDelete: (drivewsid: string) => invoke<void>("drive_delete", { drivewsid }),
+  driveMove: (drivewsid: string, destinationId: string) =>
+    invoke<void>("drive_move", { drivewsid, destinationId }),
 };
 
 /** Tauri rejects with a plain string from our commands; keep it readable either way. */

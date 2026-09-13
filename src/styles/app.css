@@ -1282,12 +1282,28 @@ textarea.note-text:disabled {
 
 .drive-rows { list-style: none; margin: 8px 0 0; padding: 0; overflow-y: auto; min-height: 0; }
 
+/* A row is the clickable hit area plus a strip of actions that only earn their space on
+   hover — the same shape reminders and lists already use, so Drive reads as one app rather
+   than a bolted-on browser. */
 .drive-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border-bottom: 1px solid var(--separator);
+  border-radius: var(--r-field);
+}
+
+.drive-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.drive-row.is-busy { opacity: 0.6; }
+
+.drive-row-hit {
   display: grid;
   grid-template-columns: 40px 1fr 90px 110px;
   align-items: center;
   gap: 12px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   background: none;
   color: var(--text);
@@ -1295,14 +1311,51 @@ textarea.note-text:disabled {
   font-size: var(--t-13);
   text-align: left;
   padding: 8px 10px;
-  border-radius: var(--r-field);
-  border-bottom: 1px solid var(--separator);
-  cursor: default;
+  cursor: pointer;
 }
 
-.drive-row.is-folder { cursor: pointer; }
-.drive-row.is-folder:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.drive-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+.drive-row-hit:disabled { cursor: default; }
+.drive-row-hit:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+
+.drive-row-actions {
+  display: flex;
+  gap: 1px;
+  padding-right: 6px;
+  opacity: 0;
+}
+
+.drive-row:hover .drive-row-actions,
+.drive-row-actions:focus-within { opacity: 1; }
+
+/* Renaming in place, and creating a folder, share the same field treatment. */
+.drive-rename-input,
+.drive-row-new input {
+  flex: 1;
+  font: inherit;
+  font-size: var(--t-13);
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--gold);
+  border-radius: var(--r-field);
+  padding: 4px 8px;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--gold-ring);
+}
+
+.drive-row-new {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--separator);
+}
+
+.drive-saved {
+  margin: 6px 0 0;
+  font-size: var(--t-11);
+  color: var(--gold-strong);
+  animation: rem-moved-in 240ms var(--ease-spring) both;
+}
 
 .drive-badge {
   display: grid;

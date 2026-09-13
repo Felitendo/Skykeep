@@ -881,6 +881,183 @@ async fn drive_item(drivewsid: String, data: State<'_, Data>) -> UiResult<Option
     library.drive_item(&drivewsid).map_err(|e| e.to_string())
 }
 
+/// Everything a Drive write needs from the session, with the auth lock released first.
+async fn drive_context(
+    auth: &State<'_, Auth>,
+) -> Result<(reqwest::Client, String, Vec<(String, String)>), String> {
+    let client = auth.client.lock().await;
+    let root = client
+        .session()
+        .service_url("drivews")
+        .ok_or("Apple hasn't offered iCloud Drive for this account.")?;
+    Ok((client.http().clone(), root, client.service_params()))
+}
+
+/// Re-read one folder after a write, so what is on screen is what Apple stored.
+async fn resync_drive_folder(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    data: &State<'_, Data>,
+    folder_id: &str,
+) -> Result<(), String> {
+    let mut library = data.0.lock().await;
+    quince_icloud::drive::sync_folder(http, root, params, &mut library, folder_id)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Save a file's bytes to the user's Downloads folder.
+///
+/// Apple's own name is kept, with a number appended rather than silently overwriting
+/// something already there — the same rule a browser follows. Returns the path saved to.
+#[tauri::command]
+async fn drive_download(
+    drivewsid: String,
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    let item = {
+        let library = data.0.lock().await;
+        library
+            .drive_item(&drivewsid)
+            .map_err(|e| e.to_string())?
+            .ok_or("That item is no longer in the local library.")?
+    };
+    if item.is_container() {
+        return Err("That's a folder, not a file.".into());
+    }
+
+    let (http, root, params) = {
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("docws")
+            .ok_or("Apple hasn't offered downloads for this account.")?;
+        (client.http().clone(), root, client.service_params())
+    };
+
+    let downloads = app
+        .path()
+        .download_dir()
+        .map_err(|_| "Couldn't find your Downloads folder.".to_string())?;
+    let name = item.display_name();
+    let (stem, ext) = name
+        .rsplit_once('.')
+        .map_or((name.as_str(), ""), |(s, e)| (s, e));
+    let mut destination = downloads.join(&name);
+    let mut suffix = 1;
+    while destination.exists() {
+        destination = downloads.join(if ext.is_empty() {
+            format!("{stem} {suffix}")
+        } else {
+            format!("{stem} {suffix}.{ext}")
+        });
+        suffix += 1;
+    }
+
+    quince_icloud::drive::download_to(&http, &root, params, &item, &destination)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(destination.to_string_lossy().into_owned())
+}
+
+/// Create a folder, and reflect it locally without waiting for the next full sync.
+#[tauri::command]
+async fn drive_create_folder(
+    parent_id: String,
+    name: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = drive_context(&auth).await?;
+    quince_icloud::drive::create_folder(&http, &root, params.clone(), &parent_id, &name)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_drive_folder(&http, &root, params, &data, &parent_id).await
+}
+
+#[tauri::command]
+async fn drive_rename(
+    drivewsid: String,
+    name: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let item = {
+        let library = data.0.lock().await;
+        library
+            .drive_item(&drivewsid)
+            .map_err(|e| e.to_string())?
+            .ok_or("That item is no longer in the local library.")?
+    };
+    let (http, root, params) = drive_context(&auth).await?;
+    quince_icloud::drive::rename(&http, &root, params.clone(), &item, &name)
+        .await
+        .map_err(|e| e.to_string())?;
+    let parent = item
+        .parent_id
+        .as_deref()
+        .unwrap_or(quince_core::drive::ROOT);
+    resync_drive_folder(&http, &root, params, &data, parent).await
+}
+
+#[tauri::command]
+async fn drive_delete(
+    drivewsid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let item = {
+        let library = data.0.lock().await;
+        library
+            .drive_item(&drivewsid)
+            .map_err(|e| e.to_string())?
+            .ok_or("That item is no longer in the local library.")?
+    };
+    let (http, root, params) = drive_context(&auth).await?;
+    quince_icloud::drive::delete(&http, &root, params.clone(), &item)
+        .await
+        .map_err(|e| e.to_string())?;
+    let parent = item
+        .parent_id
+        .as_deref()
+        .unwrap_or(quince_core::drive::ROOT);
+    resync_drive_folder(&http, &root, params, &data, parent).await
+}
+
+/// Move an item into a different folder, refreshing both the old and new location.
+#[tauri::command]
+async fn drive_move(
+    drivewsid: String,
+    destination_id: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let item = {
+        let library = data.0.lock().await;
+        library
+            .drive_item(&drivewsid)
+            .map_err(|e| e.to_string())?
+            .ok_or("That item is no longer in the local library.")?
+    };
+    let (http, root, params) = drive_context(&auth).await?;
+    quince_icloud::drive::move_to(&http, &root, params.clone(), &item, &destination_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let old_parent = item
+        .parent_id
+        .as_deref()
+        .unwrap_or(quince_core::drive::ROOT);
+    resync_drive_folder(&http, &root, params.clone(), &data, old_parent).await?;
+    if old_parent != destination_id {
+        resync_drive_folder(&http, &root, params, &data, &destination_id).await?;
+    }
+    Ok(())
+}
+
 /// The event a finished refresh emits, so every open screen re-reads at once.
 const SYNCED: &str = "quince://synced";
 
@@ -988,6 +1165,11 @@ fn main() {
             contact_delete,
             drive_sync_folder,
             drive_children,
+            drive_download,
+            drive_create_folder,
+            drive_rename,
+            drive_delete,
+            drive_move,
             drive_item,
             reminder_set_done,
             reminder_set_repeat,
