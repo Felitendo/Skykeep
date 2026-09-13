@@ -49,6 +49,10 @@ export const api = {
   noteFolders: () => invoke<NoteFolder[]>("note_folders"),
   notesIn: (folderGuid: string | null) => invoke<Note[]>("notes_in", { folderGuid }),
   notesLastSynced: () => invoke<number | null>("notes_last_synced"),
+
+  contactsSync: () => invoke<number>("contacts_sync"),
+  contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
+  contactsLastSynced: () => invoke<number | null>("contacts_last_synced"),
 };
 
 /** Tauri rejects with a plain string from our commands; keep it readable either way. */
@@ -114,6 +118,28 @@ export type Note = {
   modifiedAt: number | null;
   etag: string | null;
 };
+
+export type ContactMethod = { kind: string; label: string | null; value: string };
+
+export type Contact = {
+  guid: string;
+  firstName: string | null;
+  lastName: string | null;
+  company: string | null;
+  isCompany: boolean;
+  birthday: string | null;
+  notes: string | null;
+  etag: string | null;
+  methods: ContactMethod[];
+};
+
+/** What to show, whichever name fields a contact happens to have. */
+export function displayName(c: Contact): string {
+  const full = [c.firstName, c.lastName].filter(Boolean).join(" ").trim();
+  if (full) return full;
+  if (c.company?.trim()) return c.company;
+  return c.methods[0]?.value ?? "No Name";
+}
 
 export function messageOf(e: unknown): string {
   if (typeof e === "string") return e;

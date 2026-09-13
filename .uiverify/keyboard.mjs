@@ -36,6 +36,9 @@ function installStub({ screen, services, twoFactor }) {
         case "notes_in": return [];
         case "notes_last_synced": return Math.floor(Date.now() / 1000);
         case "notes_sync": return [0, 0];
+        case "contacts_list": return [];
+        case "contacts_last_synced": return Math.floor(Date.now() / 1000);
+        case "contacts_sync": return 0;
         default: return null;
       }
     },

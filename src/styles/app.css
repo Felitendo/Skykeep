@@ -797,3 +797,107 @@
 .notes-folder-picker select:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
 
 .content:has(.notes) { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---- contacts -------------------------------------------------------------------
+   Apple Contacts: a searchable list, then the person. */
+
+.contacts {
+  display: grid;
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.contacts-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-right: 1px solid var(--separator);
+  padding: 0 14px 0 0;
+}
+
+.contacts-list .cal-bar { flex-direction: column; align-items: flex-start; gap: 4px; margin-bottom: 8px; }
+.contacts-list .cal-nav h1 { font-size: var(--t-17); }
+
+.contacts-search {
+  width: 100%;
+  font: inherit;
+  font-size: var(--t-13);
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--field-edge);
+  border-radius: var(--r-field);
+  padding: 5px 9px;
+  margin-bottom: 8px;
+  outline: none;
+}
+
+.contacts-search:focus { border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-ring); }
+.contacts-search::placeholder { color: var(--text-3); }
+
+.contact-rows { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+
+.contact-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: left;
+  padding: 6px 9px;
+  border-radius: var(--r-field);
+  cursor: pointer;
+}
+
+.contact-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.contact-row[aria-current="true"] { background: var(--gold-tint); }
+.contact-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+.contact-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  color: var(--text-2);
+  font-size: var(--t-11);
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.avatar.large {
+  width: 68px;
+  height: 68px;
+  font-size: var(--t-22);
+  margin-bottom: 12px;
+}
+
+.contact-detail { overflow-y: auto; min-height: 0; padding: 4px 32px 40px; }
+.contact-detail h2 { margin: 0 0 2px; font-size: var(--t-22); font-weight: 600; letter-spacing: -0.021em; }
+.contact-company { margin: 0 0 18px; color: var(--text-2); font-size: var(--t-13); }
+
+.contact-methods { margin: 18px 0 0; max-width: 46ch; }
+
+.contact-methods > div {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--separator);
+}
+
+.contact-methods dt { color: var(--text-2); font-size: var(--t-11); padding-top: 2px; }
+.contact-methods dd { margin: 0; font-size: var(--t-15); overflow-wrap: anywhere; }
+.contact-methods a { color: var(--gold); text-decoration: none; }
+.contact-methods a:hover { text-decoration: underline; }
+
+.contact-notes { margin-top: 20px; max-width: 60ch; color: var(--text-2); white-space: pre-wrap; }
+
+.content:has(.contacts) { display: flex; flex-direction: column; overflow: hidden; }

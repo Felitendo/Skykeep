@@ -115,4 +115,33 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX notes_by_folder ON notes (folder_guid, pinned DESC, modified_at DESC);
     CREATE INDEX notes_by_modified ON notes (modified_at DESC);
     "#,
+    // 5 — contacts, with their phone numbers and addresses normalised alongside.
+    r#"
+    CREATE TABLE contacts (
+        guid        TEXT PRIMARY KEY,
+        first_name  TEXT,
+        last_name   TEXT,
+        company     TEXT,
+        is_company  INTEGER NOT NULL DEFAULT 0,
+        -- What to sort and search on, so neither depends on which name fields exist.
+        sort_name   TEXT NOT NULL,
+        birthday    TEXT,
+        notes       TEXT,
+        etag        TEXT,
+        updated_at  INTEGER NOT NULL
+    ) STRICT;
+
+    CREATE INDEX contacts_by_name ON contacts (sort_name);
+
+    -- Phones, emails and the rest share a shape, so they share a table.
+    CREATE TABLE contact_methods (
+        contact_guid TEXT NOT NULL REFERENCES contacts(guid) ON DELETE CASCADE,
+        kind         TEXT NOT NULL,
+        label        TEXT,
+        value        TEXT NOT NULL,
+        position     INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+
+    CREATE INDEX contact_methods_by_contact ON contact_methods (contact_guid, kind, position);
+    "#,
 ];

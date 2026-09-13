@@ -6,6 +6,7 @@
 pub mod calendar;
 pub mod ckdocument;
 pub mod cloudkit;
+pub mod contacts;
 pub mod notes;
 pub mod reminders;
 pub mod sync;

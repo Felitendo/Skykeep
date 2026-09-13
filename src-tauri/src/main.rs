@@ -3,6 +3,7 @@
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use quince_core::calendar::{Calendar, Event};
+use quince_core::contacts::Contact;
 use quince_core::notes::{Note, NoteFolder};
 use quince_core::reminders::{Reminder, ReminderList};
 use quince_core::Library;
@@ -413,6 +414,38 @@ async fn notes_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
     library.last_synced("notes").map_err(|e| e.to_string())
 }
 
+/// Refresh the address book. Contacts still come from the legacy endpoint, not CloudKit.
+#[tauri::command]
+async fn contacts_sync(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<usize> {
+    let (http, root, params) = {
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("contacts")
+            .ok_or("Apple hasn't offered a contacts service for this account.")?;
+        (client.http().clone(), root, client.service_params())
+    };
+    let mut library = data.0.lock().await;
+    quince_icloud::contacts::sync(&http, &root, params, &mut library)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The address book, optionally filtered by name or by any stored number or address.
+#[tauri::command]
+async fn contacts_list(search: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Contact>> {
+    let library = data.0.lock().await;
+    library
+        .contacts(search.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn contacts_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
+    let library = data.0.lock().await;
+    library.last_synced("contacts").map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -454,6 +487,9 @@ fn main() {
             note_folders,
             notes_in,
             notes_last_synced,
+            contacts_sync,
+            contacts_list,
+            contacts_last_synced,
             reminder_set_done,
         ])
         .run(tauri::generate_context!())

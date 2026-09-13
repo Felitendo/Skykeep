@@ -19,7 +19,7 @@ const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservi
    value it needs must arrive through the single argument. */
 /* Fixture events, so the agenda's rendering is verified without inventing rows in anyone's
    real library. Times are unix seconds relative to now. */
-function installStub({ screen, services, twoFactor, calendarFixture, notesFixture }) {
+function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture }) {
   const HOUR = 3600, DAY = 86400;
   const base = Math.floor(Date.now() / 1000 / DAY) * DAY + 9 * HOUR;
   const events = !calendarFixture ? [] : [
@@ -63,6 +63,22 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
       body: "These sources outline the fundamental principles and methodologies of **Software Testing Methodologies (CSEN3311)**, emphasizing its evolution from simple debugging to a structured, process-oriented discipline. The material details the **Software Testing Life Cycle (STLC)**, covering essential phases from initial planning and test design to execution and post-implementation review.",
       locked: false, pinned: false, createdAt: null, modifiedAt: 1787800000, etag: null },
   ];
+  const contactList = !contactsFixture ? [] : [
+    { guid: "c1", firstName: "Zoya", lastName: "Ahuja", company: null, isCompany: false,
+      birthday: null, notes: null, etag: null,
+      methods: [{ kind: "phone", label: "mobile", value: "+91 90000 00001" },
+                { kind: "email", label: "home", value: "zoya@example.com" }] },
+    { guid: "c2", firstName: "Amma", lastName: null, company: null, isCompany: false,
+      birthday: null, notes: null, etag: null,
+      methods: [{ kind: "phone", label: null, value: "+91 98765 43210" }] },
+    { guid: "c3", firstName: null, lastName: null, company: "Northfield University",
+      isCompany: true, birthday: null, notes: null, etag: null,
+      methods: [{ kind: "phone", label: "work", value: "+91 891 284 0000" },
+                { kind: "url", label: null, value: "northfield.example" }] },
+    { guid: "c4", firstName: null, lastName: null, company: null, isCompany: false,
+      birthday: null, notes: null, etag: null,
+      methods: [{ kind: "phone", label: null, value: "+91 90000 11111" }] },
+  ];
   const calendars = [
     { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true },
     { guid: "home", title: "Home", colour: "#0088ff", ctag: null, sortOrder: 1, enabled: true },
@@ -94,6 +110,9 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "notes_in": return !notesFixture ? [] : noteList;
         case "notes_last_synced": return Math.floor(Date.now() / 1000);
         case "notes_sync": return [0, 0];
+        case "contacts_list": return !contactsFixture ? [] : contactList;
+        case "contacts_last_synced": return Math.floor(Date.now() / 1000) - 300;
+        case "contacts_sync": return contactList.length;
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;
         case "auth_send_sms":       return null;
@@ -147,18 +166,25 @@ const shots = [
       await p.waitForSelector(".note-rows .note-row");
       await p.click('.note-row:has-text("These sources")');
     } },
+  { name: "11-contacts", screen: "library", theme: "dark", contactsFixture: true,
+    viewport: { width: 1100, height: 820 },
+    act: async (p) => {
+      await p.click('.nav-item:has-text("Contacts")');
+      await p.waitForSelector(".contact-rows .contact-row");
+      await p.click('.contact-row:has-text("Zoya")');
+    } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];
 
 const browser = await chromium.launch();
-for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false, notesFixture = false, viewport } of shots) {
+for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false, notesFixture = false, contactsFixture = false, viewport } of shots) {
   const ctx = await browser.newContext({
     viewport: viewport ?? { width: 1040, height: 720 },
     deviceScaleFactor: 2,
     colorScheme: theme,
   });
-  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture, notesFixture });
+  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture, notesFixture, contactsFixture });
   const page = await ctx.newPage();
   const errors = [];
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));

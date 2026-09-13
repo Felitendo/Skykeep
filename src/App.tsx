@@ -10,6 +10,7 @@ type Phase = "checking" | "signin" | "code" | "library";
 const BACKGROUND_SYNCS = [
   { lastSynced: api.remindersLastSynced, sync: api.remindersSync },
   { lastSynced: api.notesLastSynced, sync: api.notesSync },
+  { lastSynced: api.contactsLastSynced, sync: api.contactsSync },
 ];
 
 export default function App() {

@@ -25,6 +25,9 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "notes_in") return [];
       if (cmd === "notes_last_synced") return Math.floor(Date.now() / 1000);
       if (cmd === "notes_sync") return [0, 0];
+      if (cmd === "contacts_list") return [];
+      if (cmd === "contacts_last_synced") return Math.floor(Date.now() / 1000);
+      if (cmd === "contacts_sync") return 0;
       return null;
     },
   };

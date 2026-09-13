@@ -708,6 +708,62 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- what a contact record looks like ---------------------------------------
+    println!("\n\x1b[1m── Contacts: shape ──\x1b[0m");
+    if let Some(root) = session.service_url("contacts") {
+        let mut q = client.service_params();
+        q.push(("clientVersion".into(), "2.1".into()));
+        q.push(("locale".into(), "en_US".into()));
+        q.push(("order".into(), "last,first".into()));
+        if let Ok(r) = client
+            .http()
+            .get(format!("{}/co/startup", root.trim_end_matches('/')))
+            .query(&q)
+            .send()
+            .await
+        {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            let v: serde_json::Value =
+                serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+            let contacts = v.get("contacts").and_then(|c| c.as_array());
+            println!("  {status}: {} contact(s)", contacts.map_or(0, Vec::len));
+            if let Some(first) = contacts.and_then(|c| c.first()) {
+                if let Some(obj) = first.as_object() {
+                    let mut keys: Vec<String> = obj
+                        .iter()
+                        .map(|(k, val)| {
+                            let kind = match val {
+                                serde_json::Value::Array(a) => format!("array[{}]", a.len()),
+                                serde_json::Value::String(_) => "string".into(),
+                                serde_json::Value::Bool(_) => "bool".into(),
+                                serde_json::Value::Number(_) => "number".into(),
+                                serde_json::Value::Object(_) => "object".into(),
+                                serde_json::Value::Null => "null".into(),
+                            };
+                            format!("{k}:{kind}")
+                        })
+                        .collect();
+                    keys.sort();
+                    println!("    fields: {}", keys.join(", "));
+                }
+                // Show the shape of the nested arrays, which is where phones and emails live.
+                for key in ["phones", "emailAddresses", "urls", "streetAddresses"] {
+                    if let Some(entry) = first
+                        .get(key)
+                        .and_then(|a| a.as_array())
+                        .and_then(|a| a.first())
+                    {
+                        println!(
+                            "    {key}[0]: {}",
+                            serde_json::to_string(entry).unwrap_or_default()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which
