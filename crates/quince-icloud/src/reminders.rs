@@ -395,14 +395,28 @@ fn reminder_from_record(record: &Value) -> Option<Reminder> {
     let guid = field::record_name(record)?;
     let list_guid = field::reference(record, "List")?;
 
-    let completed = field::flag(record, "Completed");
+    // A recurring reminder is a single record that Apple advances: ticking today's
+    // occurrence sets Completed and moves DueDate to the next one. So a recurring record
+    // whose due date is still ahead represents work that is NOT done — which is how Apple
+    // Reminders shows it. Reading the flag literally hid every daily task.
+    let recurring = record
+        .pointer("/fields/RecurrenceRuleIDs/value")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| !ids.is_empty());
+    let due_at = field::timestamp_seconds(record, "DueDate");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let next_occurrence_pending = recurring && due_at.is_some_and(|due| due > now);
+
+    let completed = field::flag(record, "Completed") && !next_occurrence_pending;
     Some(Reminder {
         guid,
         list_guid,
         // A reminder with no readable title is still a reminder; showing it beats hiding it.
         title: field::document_text(record, "TitleDocument").unwrap_or_else(|| "Untitled".into()),
         notes: field::document_text(record, "NotesDocument"),
-        due_at: field::timestamp_seconds(record, "DueDate"),
+        due_at,
         // CloudKit stores completion as a flag; the closest instant it also gives us is the
         // last modification, which is when the tick happened.
         completed_at: completed
@@ -849,5 +863,75 @@ mod incremental_tests {
             .await
             .unwrap();
         assert!(library.reminders_in("List/a", true).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod recurrence_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+    }
+
+    fn record(completed: bool, recurring: bool, due_offset_secs: i64) -> Value {
+        let due_ms = (now() + due_offset_secs) * 1000;
+        json!({
+            "recordName": "Reminder/1",
+            "recordType": "Reminder",
+            "fields": {
+                "Completed": { "type": "NUMBER_INT64", "value": i64::from(completed) },
+                "DueDate": { "type": "TIMESTAMP", "value": due_ms },
+                "List": { "type": "REFERENCE", "value": { "recordName": "List/a" } },
+                "RecurrenceRuleIDs": if recurring {
+                    json!({ "type": "STRING_LIST", "value": ["rule-1"] })
+                } else {
+                    json!({ "type": "EMPTY_LIST", "value": [] })
+                },
+                "LastModifiedDate": { "type": "TIMESTAMP", "value": now() * 1000 }
+            }
+        })
+    }
+
+    /// The bug this fixes: a daily task ticked this morning carries Completed=1 while its
+    /// due date has already moved to tomorrow. Reading the flag literally made a list of
+    /// 102 recurring reminders render as "All done here".
+    #[test]
+    fn a_recurring_reminder_due_ahead_is_outstanding() {
+        let r = reminder_from_record(&record(true, true, 3600)).unwrap();
+        assert!(!r.is_done(), "the next occurrence is work still to do");
+    }
+
+    #[test]
+    fn a_recurring_reminder_already_past_stays_done() {
+        let r = reminder_from_record(&record(true, true, -3600)).unwrap();
+        assert!(
+            r.is_done(),
+            "a past occurrence that was ticked is genuinely finished"
+        );
+    }
+
+    /// A one-off must keep behaving exactly as before.
+    #[test]
+    fn a_one_off_reminder_follows_its_flag() {
+        assert!(reminder_from_record(&record(true, false, 3600))
+            .unwrap()
+            .is_done());
+        assert!(!reminder_from_record(&record(false, false, -3600))
+            .unwrap()
+            .is_done());
+    }
+
+    #[test]
+    fn the_due_date_is_carried_through() {
+        let r = reminder_from_record(&record(false, false, 7200)).unwrap();
+        let due = r.due_at.expect("a due date should be stored");
+        assert!(
+            (due - (now() + 7200)).abs() <= 2,
+            "due date must survive the round trip"
+        );
     }
 }

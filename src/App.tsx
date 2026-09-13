@@ -6,6 +6,11 @@ import { api } from "./lib/ipc";
 
 type Phase = "checking" | "signin" | "code" | "library";
 
+/** Services worth having ready before anyone asks for them. */
+const BACKGROUND_SYNCS = [
+  { lastSynced: api.remindersLastSynced, sync: api.remindersSync },
+];
+
 export default function App() {
   const [phase, setPhase] = useState<Phase>("checking");
 
@@ -36,6 +41,27 @@ export default function App() {
     await api.signOut().catch(() => {});
     setPhase("signin");
   }
+
+  // Once signed in, fill the local library in the background. Waiting until someone opens a
+  // screen means a first click costs a full sync; doing it up front means every screen is
+  // instant when they get there.
+  useEffect(() => {
+    if (phase !== "library") return;
+    let cancelled = false;
+    (async () => {
+      for (const service of BACKGROUND_SYNCS) {
+        if (cancelled) return;
+        try {
+          if ((await service.lastSynced()) === null) await service.sync();
+        } catch {
+          // A service that fails to fill stays empty; its own screen reports why.
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [phase]);
 
   if (phase === "library")
     return (
