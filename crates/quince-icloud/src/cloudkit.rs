@@ -332,8 +332,25 @@ impl ZoneClient<'_> {
             "recordType": record_type,
             "fields": changes,
         });
-        if let Some(tag) = change_tag {
-            record["recordChangeTag"] = Value::String(tag.to_string());
+
+        // CloudKit rejects an update with no change tag outright — not as a conflict, as a
+        // malformed request. The local copy legitimately may not have one yet: a record
+        // created a moment ago has a name before it has a tag. Fetching the current tag is
+        // what makes a write on a just-created record work instead of failing at 400.
+        let tag = match change_tag {
+            Some(tag) => Some(tag.to_string()),
+            None => self
+                .lookup_record(zone, record_name)
+                .await?
+                .and_then(|fresh| {
+                    fresh
+                        .get("recordChangeTag")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                }),
+        };
+        if let Some(tag) = tag {
+            record["recordChangeTag"] = Value::String(tag);
         }
 
         match self
@@ -649,6 +666,77 @@ mod conflict_tests {
             retried["operations"][0]["record"]["recordChangeTag"], "fresh-tag",
             "the retry must carry the tag we just read, not the stale one"
         );
+    }
+
+    /// CloudKit rejects an update with no change tag as a malformed request, not as a
+    /// conflict — so there is nothing to recover from afterwards. The local copy genuinely
+    /// may not have one: a record created a moment ago has a name before it has a tag, and
+    /// setting a priority on a reminder you just added hits exactly that.
+    #[tokio::test]
+    async fn a_write_without_a_local_tag_fetches_one_first() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "Reminder/1", "recordChangeTag": "current" }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "Reminder/1" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        client
+            .update_record("Reminders", "Reminder/1", "Reminder", None, json!({}))
+            .await
+            .expect("a missing tag should be fetched, not fatal");
+
+        let requests = server.received_requests().await.unwrap();
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/modify"))
+            .expect("a modify was sent");
+        let body: Value = serde_json::from_slice(&modify.body).unwrap();
+        assert_eq!(
+            body["operations"][0]["record"]["recordChangeTag"], "current",
+            "the write must carry the tag Apple currently holds"
+        );
+    }
+
+    /// A tag we already hold is used as-is: fetching one on every write would double the
+    /// number of requests every edit costs.
+    #[tokio::test]
+    async fn a_known_tag_is_used_without_a_lookup() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "Reminder/1" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        client
+            .update_record(
+                "Reminders",
+                "Reminder/1",
+                "Reminder",
+                Some("known"),
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "one request, not a lookup and a write");
     }
 
     /// If the record is gone, say so plainly rather than retrying forever.

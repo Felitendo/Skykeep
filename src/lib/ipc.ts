@@ -156,6 +156,10 @@ export type ReminderEdit = {
   dueAt?: number | null;
   flagged?: boolean;
   completed?: boolean;
+  /** Apple's scale: 0 none, 1 high, 5 medium, 9 low. */
+  priority?: number;
+  /** Move the reminder to another list. */
+  listGuid?: string;
 };
 
 export type Reminder = {

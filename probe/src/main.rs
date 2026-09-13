@@ -1305,6 +1305,124 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- do priority and moving actually work? -----------------------------------
+    // Create a reminder, set its priority, move it to another list, read each back from
+    // Apple, then delete it. Only ever touches the reminder it made. Runs with --write-test.
+    if std::env::args().any(|a| a == "--write-test") {
+        println!("\n\x1b[1m── Reminders: priority and moving ──\x1b[0m");
+        if let Some(ck) = session.service_url("ckdatabasews") {
+            let params = client.service_params();
+            let http = client.http().clone();
+            let lists = quince_core::Library::open(&dir)
+                .ok()
+                .and_then(|l| l.reminder_lists().ok())
+                .unwrap_or_default();
+
+            if lists.len() < 2 {
+                println!(
+                    "  need two lists to test a move; this account has {}",
+                    lists.len()
+                );
+            } else {
+                let (from, to) = (&lists[0], &lists[1]);
+                match quince_icloud::reminders::create_cloudkit(
+                    &http,
+                    &ck,
+                    params.clone(),
+                    &from.guid,
+                    "Quince write test — safe to delete",
+                )
+                .await
+                {
+                    Err(e) => println!("  \x1b[31mFAIL\x1b[0m create: {e}"),
+                    Ok(guid) => {
+                        println!("  \x1b[32mPASS\x1b[0m created in {}", from.title);
+                        let zc = quince_icloud::cloudkit::ZoneClient::new(
+                            client.http(),
+                            &ck,
+                            "com.apple.reminders",
+                            client.service_params(),
+                        );
+                        let reminder = quince_core::reminders::Reminder {
+                            guid: guid.clone(),
+                            list_guid: from.guid.clone(),
+                            title: "Quince write test — safe to delete".into(),
+                            notes: None,
+                            due_at: None,
+                            completed_at: None,
+                            priority: 0,
+                            flagged: false,
+                            recur_frequency: None,
+                            recur_interval: None,
+                            etag: None,
+                            raw: None,
+                        };
+
+                        let edit = quince_icloud::reminders::ReminderEdit {
+                            priority: Some(1),
+                            list_guid: Some(to.guid.clone()),
+                            ..Default::default()
+                        };
+                        match quince_icloud::reminders::edit_cloudkit(
+                            &http,
+                            &ck,
+                            params.clone(),
+                            &reminder,
+                            &edit,
+                        )
+                        .await
+                        {
+                            Err(e) => println!("  \x1b[31mFAIL\x1b[0m edit: {e}"),
+                            Ok(()) => match zc.lookup_record("Reminders", &guid).await {
+                                Ok(Some(rec)) => {
+                                    let priority =
+                                        quince_icloud::cloudkit::field::int(&rec, "Priority");
+                                    let list =
+                                        quince_icloud::cloudkit::field::reference(&rec, "List");
+                                    let moved = list.as_deref() == Some(to.guid.as_str());
+                                    println!(
+                                        "  {} priority is {:?} (asked for high = 1)",
+                                        if priority == Some(1) {
+                                            "\x1b[32mPASS\x1b[0m"
+                                        } else {
+                                            "\x1b[31mFAIL\x1b[0m"
+                                        },
+                                        priority
+                                    );
+                                    println!(
+                                        "  {} list is now {}",
+                                        if moved {
+                                            "\x1b[32mPASS\x1b[0m"
+                                        } else {
+                                            "\x1b[31mFAIL\x1b[0m"
+                                        },
+                                        if moved {
+                                            to.title.clone()
+                                        } else {
+                                            format!("{list:?}")
+                                        }
+                                    );
+                                }
+                                _ => println!("  \x1b[31mFAIL\x1b[0m the reminder vanished"),
+                            },
+                        }
+
+                        match quince_icloud::reminders::delete_cloudkit(
+                            &http, &ck, params, &reminder,
+                        )
+                        .await
+                        {
+                            Ok(()) => println!("  \x1b[32mPASS\x1b[0m deleted; nothing left behind"),
+                            Err(e) => println!(
+                                "  \x1b[31mFAIL\x1b[0m delete: {e}\n  \x1b[33mtest reminder {guid} is still there\x1b[0m"
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

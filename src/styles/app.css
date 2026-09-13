@@ -680,6 +680,8 @@
 .tick-fill { width: 10px; height: 10px; border-radius: var(--r-pill); }
 
 .rem-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rem-title-row { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+.rem-title-row .rem-title-edit { flex: 1; min-width: 0; }
 .rem-title { font-size: var(--t-13); }
 .rem-notes {
   font-size: var(--t-11);
@@ -1216,6 +1218,7 @@ textarea.note-text:disabled {
 .rem-detail label > span { font-size: var(--t-11); color: var(--text-2); padding-top: 5px; }
 
 .rem-detail input,
+.rem-detail select,
 .rem-detail textarea {
   font: inherit;
   font-size: var(--t-13);
@@ -1229,7 +1232,19 @@ textarea.note-text:disabled {
 }
 
 .rem-detail input:focus,
+.rem-detail select:focus,
 .rem-detail textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-ring); }
+
+/* Apple marks priority before the title, in its accent, and lets the marks pile up so
+   urgency is legible at a glance rather than needing to be read. */
+.rem-priority {
+  flex: none;
+  align-self: baseline;
+  color: var(--gold-strong);
+  font-size: var(--t-13);
+  font-weight: 650;
+  letter-spacing: -0.5px;
+}
 
 /* Overdue is the one thing in this list that should catch the eye. */
 .rem-due.overdue { color: var(--danger); }

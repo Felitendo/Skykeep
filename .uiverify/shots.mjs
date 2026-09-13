@@ -38,7 +38,7 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
   ];
   const dueReminders = !calendarFixture ? [] : [
     { guid: "r1", listGuid: "daily", title: "Water the plants", notes: null,
-      dueAt: base + DAY + 8 * HOUR, completedAt: null, priority: 0, etag: null },
+      dueAt: base + DAY + 8 * HOUR, completedAt: null, priority: 1, etag: null },
     { guid: "r2", listGuid: "health", title: "Evening run", notes: null,
       dueAt: base + 6 * HOUR, completedAt: null, priority: 0, etag: null },
     { guid: "r3", listGuid: "daily", title: "Plan tomorrow", notes: null,

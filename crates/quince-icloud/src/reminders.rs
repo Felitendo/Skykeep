@@ -865,6 +865,10 @@ pub struct ReminderEdit {
     pub due_at: Option<Option<i64>>,
     pub flagged: Option<bool>,
     pub completed: Option<bool>,
+    /// Apple's scale, shared with EventKit: 0 none, 1 high, 5 medium, 9 low.
+    pub priority: Option<i64>,
+    /// Move to another list.
+    pub list_guid: Option<String>,
 }
 
 impl ReminderEdit {
@@ -874,6 +878,8 @@ impl ReminderEdit {
             && self.due_at.is_none()
             && self.flagged.is_none()
             && self.completed.is_none()
+            && self.priority.is_none()
+            && self.list_guid.is_none()
     }
 }
 
@@ -931,6 +937,26 @@ pub async fn edit_cloudkit(
                 None => serde_json::json!({ "type": "TIMESTAMP", "value": null }),
             },
         );
+    }
+
+    if let Some(priority) = edit.priority {
+        // Anything off Apple's scale would render as an unknown marker on a phone rather
+        // than being ignored, so it is clamped rather than passed through.
+        let level = match priority {
+            1..=3 => 1,
+            4..=6 => 5,
+            7..=9 => 9,
+            _ => 0,
+        };
+        fields.insert(
+            "Priority".into(),
+            serde_json::json!({ "type": "NUMBER_INT64", "value": level }),
+        );
+    }
+
+    if let Some(list_guid) = &edit.list_guid {
+        let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
+        fields.insert("List".into(), client.reference_to(ZONE, list_guid));
     }
 
     if let Some(flagged) = edit.flagged {
@@ -1684,9 +1710,15 @@ mod list_write_tests {
         server
     }
 
+    /// The write, not whatever lookup preceded it: an update with no local change tag
+    /// fetches the current one first, which is a request of its own.
     async fn sent(server: &MockServer) -> Value {
         let requests = server.received_requests().await.unwrap();
-        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["operations"][0].clone()
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/modify"))
+            .expect("a modify was sent");
+        serde_json::from_slice::<Value>(&modify.body).unwrap()["operations"][0].clone()
     }
 
     /// A list's name is a plain string, unlike a reminder's title — writing it as a document
@@ -2044,5 +2076,148 @@ mod recurring_tick_tests {
         let mut r = repeating(0, 1, 0);
         r.due_at = None;
         assert!(r.next_occurrence().is_none());
+    }
+}
+
+#[cfg(test)]
+mod priority_and_move_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn accepting() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Reminder/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn plain() -> Reminder {
+        Reminder {
+            guid: "Reminder/1".into(),
+            list_guid: "List/a".into(),
+            title: "Renew passport".into(),
+            notes: None,
+            due_at: None,
+            completed_at: None,
+            priority: 0,
+            flagged: false,
+            recur_frequency: None,
+            recur_interval: None,
+            etag: Some("tag".into()),
+            raw: None,
+        }
+    }
+
+    async fn fields(server: &MockServer) -> Value {
+        let requests = server.received_requests().await.unwrap();
+        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["operations"][0]["record"]
+            ["fields"]
+            .clone()
+    }
+
+    async fn write(edit: ReminderEdit) -> Value {
+        let server = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &plain(),
+            &edit,
+        )
+        .await
+        .unwrap();
+        fields(&server).await
+    }
+
+    /// Apple's scale is 1 high, 5 medium, 9 low — the same one EventKit uses. Sending a
+    /// number off it would show as an unknown marker on a phone.
+    #[tokio::test]
+    async fn priority_lands_on_apples_own_scale() {
+        for (asked, stored) in [(1, 1), (2, 1), (5, 5), (6, 5), (9, 9), (7, 9), (0, 0)] {
+            let sent = write(ReminderEdit {
+                priority: Some(asked),
+                ..ReminderEdit::default()
+            })
+            .await;
+            assert_eq!(
+                sent["Priority"]["value"], stored,
+                "asking for {asked} should store {stored}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_out_of_range_priority_becomes_none_rather_than_nonsense() {
+        let sent = write(ReminderEdit {
+            priority: Some(42),
+            ..ReminderEdit::default()
+        })
+        .await;
+        assert_eq!(sent["Priority"]["value"], 0);
+    }
+
+    #[tokio::test]
+    async fn moving_rewrites_the_list_reference() {
+        let sent = write(ReminderEdit {
+            list_guid: Some("List/b".into()),
+            ..ReminderEdit::default()
+        })
+        .await;
+        assert_eq!(sent["List"]["type"], "REFERENCE");
+        assert_eq!(sent["List"]["value"]["recordName"], "List/b");
+    }
+
+    /// One request, so a move and a priority change cannot half-apply.
+    #[tokio::test]
+    async fn several_changes_go_in_one_write() {
+        let server = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &plain(),
+            &ReminderEdit {
+                title: Some("Renew passport urgently".into()),
+                priority: Some(1),
+                list_guid: Some("List/b".into()),
+                ..ReminderEdit::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a single request"
+        );
+        let sent = fields(&server).await;
+        assert_eq!(sent["Priority"]["value"], 1);
+        assert_eq!(sent["List"]["value"]["recordName"], "List/b");
+        assert!(sent.get("TitleDocument").is_some());
+    }
+
+    /// An edit that asks for nothing must not reach Apple at all.
+    #[tokio::test]
+    async fn an_empty_edit_sends_nothing() {
+        let server = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &plain(),
+            &ReminderEdit::default(),
+        )
+        .await
+        .unwrap();
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

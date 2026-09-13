@@ -19,7 +19,9 @@ const SMART: { kind: SmartList; title: string }[] = [
 /** End of today in the viewer's own timezone — the interface knows it, the backend doesn't. */
 function endOfToday(): number {
   const d = new Date();
-  return Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() / 1000);
+  return Math.floor(
+    new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() / 1000,
+  );
 }
 
 function dueLabel(seconds: number): { text: string; overdue: boolean } {
@@ -27,15 +29,37 @@ function dueLabel(seconds: number): { text: string; overdue: boolean } {
   const now = new Date();
   const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const days = Math.floor((due.getTime() - midnight.getTime()) / 86_400_000);
-  const time = due.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  if (days < 0) return { text: due.toLocaleDateString(undefined, { day: "numeric", month: "short" }), overdue: true };
-  if (days === 0) return { text: `Today ${time}`, overdue: due.getTime() < now.getTime() };
+  const time = due.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  if (days < 0)
+    return {
+      text: due.toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+      }),
+      overdue: true,
+    };
+  if (days === 0)
+    return { text: `Today ${time}`, overdue: due.getTime() < now.getTime() };
   if (days === 1) return { text: `Tomorrow ${time}`, overdue: false };
   return {
     text: due.toLocaleDateString(undefined, { day: "numeric", month: "short" }),
     overdue: false,
   };
 }
+
+/** Apple's scale, and the marks its own app puts before a title. */
+const PRIORITIES = [
+  { value: 0, label: "None", mark: "" },
+  { value: 1, label: "High", mark: "!!!" },
+  { value: 5, label: "Medium", mark: "!!" },
+  { value: 9, label: "Low", mark: "!" },
+] as const;
+
+const priorityMark = (priority: number) =>
+  PRIORITIES.find((p) => p.value === priority)?.mark ?? "";
 
 const REPEAT_UNITS = ["day", "week", "month", "year"] as const;
 
@@ -56,11 +80,15 @@ function toInputValue(seconds: number | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-type Selection = { type: "smart"; kind: SmartList } | { type: "list"; guid: string };
+type Selection =
+  { type: "smart"; kind: SmartList } | { type: "list"; guid: string };
 
 export function RemindersView() {
   const [lists, setLists] = useState<ReminderList[]>([]);
-  const [selection, setSelection] = useState<Selection>({ type: "smart", kind: "today" });
+  const [selection, setSelection] = useState<Selection>({
+    type: "smart",
+    kind: "today",
+  });
   const [items, setItems] = useState<Reminder[]>([]);
   const [showDone, setShowDone] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -74,7 +102,9 @@ export function RemindersView() {
   const [error, setError] = useState<string | null>(null);
   const { revision } = useSync();
   /** A repeating reminder that was just ticked forward, and where it landed. */
-  const [moved, setMoved] = useState<{ guid: string; text: string } | null>(null);
+  const [moved, setMoved] = useState<{ guid: string; text: string } | null>(
+    null,
+  );
 
   const inList = selection.type === "list";
   const listGuid = inList ? selection.guid : null;
@@ -123,7 +153,10 @@ export function RemindersView() {
 
   /** Every write goes through here: to Apple first, then re-read, so nothing on screen is a guess. */
   const write = useCallback(
-    async (reminder: Reminder, run: () => Promise<void>): Promise<Reminder[] | null> => {
+    async (
+      reminder: Reminder,
+      run: () => Promise<void>,
+    ): Promise<Reminder[] | null> => {
       setBusyGuid(reminder.guid);
       setError(null);
       try {
@@ -136,7 +169,7 @@ export function RemindersView() {
         setBusyGuid(null);
       }
     },
-    [readItems]
+    [readItems],
   );
 
   /**
@@ -146,7 +179,9 @@ export function RemindersView() {
    */
   const toggle = async (r: Reminder) => {
     const wasOpen = !r.completedAt;
-    const fresh = await write(r, () => api.reminderSetDone(r.guid, r.listGuid, wasOpen));
+    const fresh = await write(r, () =>
+      api.reminderSetDone(r.guid, r.listGuid, wasOpen),
+    );
     if (!fresh || !wasOpen || repeatLabel(r) === null) return;
     const after = fresh.find((x) => x.guid === r.guid);
     if (after && after.dueAt !== null && after.dueAt !== r.dueAt) {
@@ -154,20 +189,33 @@ export function RemindersView() {
     }
   };
   const flag = (r: Reminder) =>
-    write(r, () => api.reminderEdit(r.guid, r.listGuid, { flagged: !r.flagged }));
-  const remove = (r: Reminder) => write(r, () => api.reminderDelete(r.guid, r.listGuid));
+    write(r, () =>
+      api.reminderEdit(r.guid, r.listGuid, { flagged: !r.flagged }),
+    );
+  const remove = (r: Reminder) =>
+    write(r, () => api.reminderDelete(r.guid, r.listGuid));
   const rename = (r: Reminder, title: string) =>
     title.trim() && title.trim() !== r.title
-      ? write(r, () => api.reminderEdit(r.guid, r.listGuid, { title: title.trim() }))
+      ? write(r, () =>
+          api.reminderEdit(r.guid, r.listGuid, { title: title.trim() }),
+        )
       : Promise.resolve();
   const setDue = (r: Reminder, value: string) =>
     write(r, () =>
       api.reminderEdit(r.guid, r.listGuid, {
         dueAt: value ? Math.floor(new Date(value).getTime() / 1000) : null,
-      })
+      }),
     );
   const setNotes = (r: Reminder, notes: string) =>
-    write(r, () => api.reminderEdit(r.guid, r.listGuid, { notes: notes.trim() || null }));
+    write(r, () =>
+      api.reminderEdit(r.guid, r.listGuid, { notes: notes.trim() || null }),
+    );
+  const setPriority = (r: Reminder, priority: number) =>
+    write(r, () => api.reminderEdit(r.guid, r.listGuid, { priority }));
+  const moveToList = (r: Reminder, listGuid: string) =>
+    listGuid === r.listGuid
+      ? Promise.resolve(null)
+      : write(r, () => api.reminderEdit(r.guid, r.listGuid, { listGuid }));
 
   /** List writes go to Apple first, then the whole set is re-read. */
   const listWrite = useCallback(
@@ -184,7 +232,7 @@ export function RemindersView() {
         setSyncing(false);
       }
     },
-    [readLists, readItems]
+    [readLists, readItems],
   );
 
   async function createList(e: React.FormEvent) {
@@ -215,12 +263,13 @@ export function RemindersView() {
   }
 
   const heading = inList
-    ? lists.find((l) => l.guid === listGuid)?.title ?? "Reminders"
-    : SMART.find((s) => s.kind === (selection as { kind: SmartList }).kind)?.title ?? "Reminders";
+    ? (lists.find((l) => l.guid === listGuid)?.title ?? "Reminders")
+    : (SMART.find((s) => s.kind === (selection as { kind: SmartList }).kind)
+        ?.title ?? "Reminders");
   const outstanding = items.filter((r) => !r.completedAt).length;
   const colour = useMemo(
     () => lists.find((l) => l.guid === listGuid)?.colour || "var(--gold)",
-    [lists, listGuid]
+    [lists, listGuid],
   );
 
   return (
@@ -230,7 +279,9 @@ export function RemindersView() {
           <button
             key={s.kind}
             className="rem-list"
-            aria-current={selection.type === "smart" && selection.kind === s.kind}
+            aria-current={
+              selection.type === "smart" && selection.kind === s.kind
+            }
             onClick={() => setSelection({ type: "smart", kind: s.kind })}
           >
             <span className="rem-list-name">{s.title}</span>
@@ -250,7 +301,9 @@ export function RemindersView() {
                   const title = e.target.value.trim();
                   setRenaming(null);
                   if (title && title !== list.title) {
-                    void listWrite(() => api.reminderListRename(list.guid, title));
+                    void listWrite(() =>
+                      api.reminderListRename(list.guid, title),
+                    );
                   }
                 }}
                 onKeyDown={(e) => {
@@ -266,10 +319,15 @@ export function RemindersView() {
                 <button
                   className="rem-list"
                   aria-current={listGuid === list.guid}
-                  onClick={() => setSelection({ type: "list", guid: list.guid })}
+                  onClick={() =>
+                    setSelection({ type: "list", guid: list.guid })
+                  }
                   onDoubleClick={() => setRenaming(list.guid)}
                 >
-                  <span className="dot" style={{ background: list.colour || "var(--gold)" }} />
+                  <span
+                    className="dot"
+                    style={{ background: list.colour || "var(--gold)" }}
+                  />
                   <span className="rem-list-name">{list.title}</span>
                 </button>
                 <button
@@ -284,7 +342,11 @@ export function RemindersView() {
                   aria-label={`Delete ${list.title}`}
                   onClick={() => {
                     // Deleting a list takes its reminders, so ask before doing it.
-                    if (window.confirm(`Delete "${list.title}" and everything in it?`)) {
+                    if (
+                      window.confirm(
+                        `Delete "${list.title}" and everything in it?`,
+                      )
+                    ) {
                       void listWrite(() => api.reminderListDelete(list.guid));
                     }
                   }}
@@ -331,7 +393,11 @@ export function RemindersView() {
           </div>
         </header>
 
-        {error && <p className="error" role="alert">{error}</p>}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
 
         {inList && (
           <form className="rem-add" onSubmit={add}>
@@ -348,12 +414,16 @@ export function RemindersView() {
 
         <ul className="rem-list-items">
           {items.map((reminder) => {
-            const due = reminder.dueAt === null ? null : dueLabel(reminder.dueAt);
+            const due =
+              reminder.dueAt === null ? null : dueLabel(reminder.dueAt);
             const isOpen = openGuid === reminder.guid;
             const repeat = repeatLabel(reminder);
             const justMoved = moved?.guid === reminder.guid ? moved.text : null;
             return (
-              <li key={reminder.guid} className={reminder.completedAt ? "is-done" : undefined}>
+              <li
+                key={reminder.guid}
+                className={reminder.completedAt ? "is-done" : undefined}
+              >
                 <button
                   className="tick"
                   role="checkbox"
@@ -364,26 +434,43 @@ export function RemindersView() {
                   style={{ borderColor: colour }}
                 >
                   {reminder.completedAt && (
-                    <span className="tick-fill" style={{ background: colour }} />
+                    <span
+                      className="tick-fill"
+                      style={{ background: colour }}
+                    />
                   )}
                 </button>
 
                 <div className="rem-text">
-                  <input
-                    className="rem-title-edit"
-                    defaultValue={reminder.title}
-                    key={`${reminder.guid}-${reminder.title}`}
-                    aria-label={`Rename ${reminder.title}`}
-                    disabled={busyGuid === reminder.guid}
-                    onBlur={(e) => void rename(reminder, e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") e.currentTarget.blur();
-                      if (e.key === "Escape") {
-                        e.currentTarget.value = reminder.title;
-                        e.currentTarget.blur();
-                      }
-                    }}
-                  />
+                  <div className="rem-title-row">
+                    {priorityMark(reminder.priority) && (
+                      <span
+                        className="rem-priority"
+                        role="img"
+                        aria-label={`${
+                          PRIORITIES.find((p) => p.value === reminder.priority)
+                            ?.label
+                        } priority`}
+                      >
+                        {priorityMark(reminder.priority)}
+                      </span>
+                    )}
+                    <input
+                      className="rem-title-edit"
+                      defaultValue={reminder.title}
+                      key={`${reminder.guid}-${reminder.title}`}
+                      aria-label={`Rename ${reminder.title}`}
+                      disabled={busyGuid === reminder.guid}
+                      onBlur={(e) => void rename(reminder, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                        if (e.key === "Escape") {
+                          e.currentTarget.value = reminder.title;
+                          e.currentTarget.blur();
+                        }
+                      }}
+                    />
+                  </div>
                   {reminder.notes && !isOpen && (
                     <span className="rem-notes">{reminder.notes}</span>
                   )}
@@ -404,11 +491,45 @@ export function RemindersView() {
                         </p>
                       )}
                       <label>
+                        <span>Priority</span>
+                        <select
+                          value={reminder.priority}
+                          disabled={busyGuid === reminder.guid}
+                          onChange={(e) =>
+                            void setPriority(reminder, Number(e.target.value))
+                          }
+                        >
+                          {PRIORITIES.map((p) => (
+                            <option key={p.value} value={p.value}>
+                              {p.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>List</span>
+                        <select
+                          value={reminder.listGuid}
+                          disabled={busyGuid === reminder.guid}
+                          onChange={(e) =>
+                            void moveToList(reminder, e.target.value)
+                          }
+                        >
+                          {lists.map((l) => (
+                            <option key={l.guid} value={l.guid}>
+                              {l.title}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
                         <span>Notes</span>
                         <textarea
                           defaultValue={reminder.notes ?? ""}
                           rows={2}
-                          onBlur={(e) => void setNotes(reminder, e.target.value)}
+                          onBlur={(e) =>
+                            void setNotes(reminder, e.target.value)
+                          }
                         />
                       </label>
                     </div>
@@ -423,12 +544,19 @@ export function RemindersView() {
                   ) : (
                     <>
                       {repeat && (
-                        <span className="rem-repeat" role="img" aria-label={repeat} title={repeat}>
+                        <span
+                          className="rem-repeat"
+                          role="img"
+                          aria-label={repeat}
+                          title={repeat}
+                        >
                           ↻
                         </span>
                       )}
                       {due && (
-                        <span className={`rem-due${due.overdue ? " overdue" : ""}`}>
+                        <span
+                          className={`rem-due${due.overdue ? " overdue" : ""}`}
+                        >
                           {due.text}
                         </span>
                       )}
@@ -436,7 +564,11 @@ export function RemindersView() {
                   )}
                   <button
                     className={`rem-flag${reminder.flagged ? " on" : ""}`}
-                    aria-label={reminder.flagged ? `Unflag ${reminder.title}` : `Flag ${reminder.title}`}
+                    aria-label={
+                      reminder.flagged
+                        ? `Unflag ${reminder.title}`
+                        : `Flag ${reminder.title}`
+                    }
                     aria-pressed={reminder.flagged}
                     disabled={busyGuid === reminder.guid}
                     onClick={() => flag(reminder)}
@@ -445,7 +577,11 @@ export function RemindersView() {
                   </button>
                   <button
                     className="rem-more"
-                    aria-label={isOpen ? `Close details for ${reminder.title}` : `Details for ${reminder.title}`}
+                    aria-label={
+                      isOpen
+                        ? `Close details for ${reminder.title}`
+                        : `Details for ${reminder.title}`
+                    }
                     aria-expanded={isOpen}
                     onClick={() => setOpenGuid(isOpen ? null : reminder.guid)}
                   >
@@ -467,7 +603,11 @@ export function RemindersView() {
 
         {loaded && items.length === 0 && !error && (
           <p className="cal-empty">
-            {inList ? (showDone ? "Nothing in this list." : "All done here.") : "Nothing here."}
+            {inList
+              ? showDone
+                ? "Nothing in this list."
+                : "All done here."
+              : "Nothing here."}
           </p>
         )}
       </section>
