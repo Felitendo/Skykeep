@@ -170,4 +170,13 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE reminders ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX reminders_flagged ON reminders (flagged, completed_at);
     "#,
+    // 8 — recurrence, so completing a repeating reminder can advance it.
+    //
+    // Ticking a repeating reminder does not mean "set completed" — Apple already holds it
+    // completed while the record points at the next occurrence. It means "move to the one
+    // after", which needs the rule.
+    r#"
+    ALTER TABLE reminders ADD COLUMN recur_frequency INTEGER;
+    ALTER TABLE reminders ADD COLUMN recur_interval INTEGER;
+    "#,
 ];

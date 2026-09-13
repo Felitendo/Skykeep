@@ -125,6 +125,9 @@ export type Reminder = {
   completedAt: number | null;
   priority: number;
   flagged: boolean;
+  /** Apple's repeat frequency: 0 daily, 1 weekly, 2 monthly, 3 yearly. null if it never repeats. */
+  recurFrequency: number | null;
+  recurInterval: number | null;
   etag: string | null;
 };
 

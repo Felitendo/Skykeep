@@ -936,49 +936,54 @@ async fn main() -> Result<()> {
         }
     }
 
-    // ---- how does Apple order a reminder list? ----------------------------------
-    println!("\n\x1b[1m── Reminder list ordering ──\x1b[0m");
-    if let Some(ck) = session.service_url("ckdatabasews") {
-        let zc = quince_icloud::cloudkit::ZoneClient::new(
-            client.http(),
-            &ck,
-            "com.apple.reminders",
-            client.service_params(),
-        );
-        if let Ok((records, _)) = zc.all_records("Reminders", None).await {
-            for rec in records
-                .iter()
-                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("List"))
-                .take(3)
-            {
-                let name = quince_icloud::cloudkit::field::string(rec, "Name")
-                    .unwrap_or_else(|| "?".into());
-                let style = rec.pointer("/fields/SortingStyle/value");
-                let ids = rec
-                    .pointer("/fields/ReminderIDs/value")
-                    .and_then(|v| v.as_array());
-                println!(
-                    "  {name:<16} SortingStyle={:<6} ReminderIDs={}",
-                    style.map_or("none".into(), std::string::ToString::to_string),
-                    ids.map_or("none".to_string(), |a| format!("[{} ids]", a.len()))
-                );
-                if let Some(list) = ids {
-                    for id in list.iter().take(2) {
-                        println!("      {}", id.as_str().unwrap_or("?"));
+    // ---- ticking a repeating reminder -------------------------------------------
+    // A repeating reminder is never "done" — ticking it rolls the due date to the next
+    // occurrence. This prints, for every repeating reminder on the account, exactly what
+    // the app would write if you ticked it now. Read-only: nothing is sent to Apple.
+    println!("\n\x1b[1m── Repeating reminders: what ticking would write ──\x1b[0m");
+    match quince_core::Library::open(&dir) {
+        Err(e) => println!("  \x1b[31mcouldn't open the local library:\x1b[0m {e}"),
+        Ok(library) => {
+            let day = |secs: i64| -> String {
+                jiff::Timestamp::from_second(secs)
+                    .map(|t| {
+                        t.to_zoned(jiff::tz::TimeZone::system())
+                            .strftime("%a %d %b %Y %H:%M")
+                            .to_string()
+                    })
+                    .unwrap_or_else(|_| secs.to_string())
+            };
+            let mut seen = 0usize;
+            for list in library.reminder_lists().unwrap_or_default() {
+                for r in library.reminders_in(&list.guid, true).unwrap_or_default() {
+                    if !r.repeats() {
+                        continue;
+                    }
+                    seen += 1;
+                    let freq = match r.recur_frequency {
+                        Some(0) => "daily",
+                        Some(1) => "weekly",
+                        Some(2) => "monthly",
+                        Some(3) => "yearly",
+                        _ => "?",
+                    };
+                    println!(
+                        "  \x1b[1m{}\x1b[0m  ({list}, every {n} {freq})",
+                        r.title,
+                        list = list.title,
+                        n = r.recur_interval.unwrap_or(1),
+                    );
+                    println!("    due now  {}", r.due_at.map_or("none".into(), day));
+                    match r.next_occurrence() {
+                        Some(next) => println!("    tick →   {}", day(next)),
+                        None => {
+                            println!("    tick →   \x1b[33mno next occurrence computable\x1b[0m")
+                        }
                     }
                 }
             }
-            // And the sort hint record, whatever it carries.
-            for rec in records
-                .iter()
-                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("ManualSortHint"))
-            {
-                let fields: Vec<String> = rec
-                    .get("fields")
-                    .and_then(|f| f.as_object())
-                    .map(|o| o.keys().cloned().collect())
-                    .unwrap_or_default();
-                println!("  ManualSortHint fields: {}", fields.join(", "));
+            if seen == 0 {
+                println!("  (no repeating reminders on this account)");
             }
         }
     }

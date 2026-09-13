@@ -28,6 +28,12 @@ pub struct Reminder {
     pub priority: i64,
     #[serde(default)]
     pub flagged: bool,
+    /// Apple's repeat frequency: 0 daily, 1 weekly, 2 monthly, 3 yearly. `None` if it does
+    /// not repeat.
+    #[serde(default)]
+    pub recur_frequency: Option<i64>,
+    #[serde(default)]
+    pub recur_interval: Option<i64>,
     pub etag: Option<String>,
     /// Apple's original JSON for this reminder, kept verbatim so a write can echo every
     /// field back rather than only the ones we model.
@@ -50,7 +56,66 @@ impl Reminder {
     pub fn is_done(&self) -> bool {
         self.completed_at.is_some()
     }
+
+    /// True when this repeats, so completing it advances rather than closes it.
+    #[must_use]
+    pub fn repeats(&self) -> bool {
+        self.recur_frequency.is_some()
+    }
+
+    /// The next occurrence this reminder is due, given that today's was just ticked off.
+    ///
+    /// Apple's frequency is 0 daily, 1 weekly, 2 monthly, 3 yearly. Months and years are
+    /// added as calendar units rather than fixed spans, so a monthly reminder on the 31st
+    /// lands where a person expects rather than drifting.
+    #[must_use]
+    pub fn next_occurrence(&self) -> Option<i64> {
+        self.next_occurrence_after(now())
+    }
+
+    /// The first occurrence strictly after `after`.
+    ///
+    /// It always advances at least one interval, then keeps advancing while the result is
+    /// still in the past: tick a daily reminder you skipped for a week and it lands on
+    /// tomorrow, not on the morning after the one you missed — which would leave it
+    /// overdue and looking as though the tick did nothing.
+    ///
+    /// The arithmetic runs in UTC. Apple stores the due date as an absolute instant, so a
+    /// daily repeat means exactly twenty-four hours later regardless of where the machine
+    /// running this happens to be.
+    #[must_use]
+    pub fn next_occurrence_after(&self, after: i64) -> Option<i64> {
+        let due = self.due_at?;
+        let frequency = self.recur_frequency?;
+        // An interval outside this range is not a schedule anyone keeps, and unbounded
+        // values are how a span constructor is made to fail.
+        let interval = self.recur_interval.unwrap_or(1).clamp(1, 1_000);
+
+        let span = match frequency {
+            0 => jiff::Span::new().days(interval),
+            1 => jiff::Span::new().weeks(interval),
+            2 => jiff::Span::new().months(interval),
+            3 => jiff::Span::new().years(interval),
+            _ => return None,
+        };
+        let mut zoned = jiff::Timestamp::from_second(due)
+            .ok()?
+            .to_zoned(jiff::tz::TimeZone::UTC);
+
+        // The cap stops a daily reminder abandoned a decade ago from spinning; eleven
+        // years of daily steps is far past any real backlog.
+        for _ in 0..MAX_RECURRENCE_STEPS {
+            zoned = zoned.checked_add(span).ok()?;
+            if zoned.timestamp().as_second() > after {
+                break;
+            }
+        }
+        Some(zoned.timestamp().as_second())
+    }
 }
+
+/// How far `next_occurrence_after` will walk forward before giving up.
+const MAX_RECURRENCE_STEPS: usize = 4_000;
 
 fn now() -> i64 {
     std::time::SystemTime::now()
@@ -121,7 +186,7 @@ impl Library {
     pub fn reminders_due_between(&self, from: i64, to: i64) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
-                    r.priority, r.flagged, r.etag, r.raw
+                    r.priority, r.flagged, r.recur_frequency, r.recur_interval, r.etag, r.raw
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.due_at IS NOT NULL
@@ -138,8 +203,10 @@ impl Library {
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
                 flagged: row.get::<_, i64>(7)? != 0,
-                etag: row.get(8)?,
-                raw: row.get(9)?,
+                recur_frequency: row.get(8)?,
+                recur_interval: row.get(9)?,
+                etag: row.get(10)?,
+                raw: row.get(11)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -165,7 +232,7 @@ impl Library {
         };
         let sql = format!(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
-                    r.priority, r.flagged, r.etag, r.raw
+                    r.priority, r.flagged, r.recur_frequency, r.recur_interval, r.etag, r.raw
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND {clause}
@@ -182,8 +249,10 @@ impl Library {
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
                 flagged: row.get::<_, i64>(7)? != 0,
-                etag: row.get(8)?,
-                raw: row.get(9)?,
+                recur_frequency: row.get(8)?,
+                recur_interval: row.get(9)?,
+                etag: row.get(10)?,
+                raw: row.get(11)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -246,13 +315,16 @@ impl Library {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminders (guid, list_guid, title, notes, due_at, completed_at,
-                                        priority, flagged, etag, raw, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                        priority, flagged, recur_frequency, recur_interval,
+                                        etag, raw, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(guid) DO UPDATE SET
                    list_guid = excluded.list_guid, title = excluded.title,
                    notes = excluded.notes, due_at = excluded.due_at,
                    completed_at = excluded.completed_at, priority = excluded.priority,
                    flagged = excluded.flagged,
+                   recur_frequency = excluded.recur_frequency,
+                   recur_interval = excluded.recur_interval,
                    etag = excluded.etag, raw = excluded.raw,
                    updated_at = excluded.updated_at",
             )?;
@@ -267,6 +339,8 @@ impl Library {
                     r.completed_at,
                     r.priority,
                     i64::from(r.flagged),
+                    r.recur_frequency,
+                    r.recur_interval,
                     r.etag,
                     r.raw,
                     stamp
@@ -302,7 +376,7 @@ impl Library {
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
-                    etag, raw
+                    recur_frequency, recur_interval, etag, raw
              FROM reminders
              WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)
              ORDER BY completed_at IS NOT NULL,
@@ -320,8 +394,10 @@ impl Library {
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
                 flagged: row.get::<_, i64>(7)? != 0,
-                etag: row.get(8)?,
-                raw: row.get(9)?,
+                recur_frequency: row.get(8)?,
+                recur_interval: row.get(9)?,
+                etag: row.get(10)?,
+                raw: row.get(11)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -353,6 +429,8 @@ mod tests {
             completed_at: done,
             priority: 0,
             flagged: false,
+            recur_frequency: None,
+            recur_interval: None,
             etag: None,
             raw: None,
         }
@@ -537,6 +615,8 @@ mod smart_tests {
             completed_at: done,
             priority: 0,
             flagged,
+            recur_frequency: None,
+            recur_interval: None,
             etag: None,
             raw: None,
         }

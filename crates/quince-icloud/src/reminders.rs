@@ -50,6 +50,8 @@ fn reminder_from(v: &Value) -> Option<Reminder> {
         // The legacy endpoint does not carry a flag; CloudKit does, and that is the path
         // this account actually uses.
         flagged: v.get("flagged").and_then(Value::as_bool).unwrap_or(false),
+        recur_frequency: None,
+        recur_interval: None,
         etag: string(v, "etag"),
         // Keep Apple's payload verbatim: a write echoes the whole task back, and
         // reconstructing one from parsed columns would drop fields we do not model.
@@ -428,6 +430,9 @@ fn reminder_from_record(record: &Value) -> Option<Reminder> {
             .or(if completed { Some(0) } else { None }),
         priority: field::int(record, "Priority").unwrap_or(0),
         flagged: field::flag(record, "Flagged"),
+        // Filled in from the RecurrenceRule records, which arrive separately.
+        recur_frequency: None,
+        recur_interval: None,
         etag: record
             .get("recordChangeTag")
             .and_then(Value::as_str)
@@ -456,6 +461,60 @@ fn list_from_record(record: &Value) -> Option<ReminderList> {
     })
 }
 
+/// The order lists appear in on the user's other devices.
+///
+/// Apple keeps this in a ManualSortHint record whose payload is JSON, despite the field
+/// being named "AsBytes": `topLevelElementIDs` is the list order, and
+/// `secondaryLevelElementIDsByTopLevelElementID` would carry the order of reminders inside
+/// each list where one has been set by hand.
+fn list_order_from(record: &Value) -> Vec<String> {
+    let Some(encoded) = field::string(
+        record,
+        "HintDataIncludingRemindersInPrimaryAccountOnlyAsBytes",
+    )
+    .or_else(|| field::string(record, "HintDataExcludingRemindersInLocalAccountAsBytes")) else {
+        return Vec::new();
+    };
+
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    let Ok(bytes) = B64.decode(encoded.trim()) else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|v| {
+            v.get("topLevelElementIDs")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().map(ToString::to_string))
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
+}
+
+/// Apply that order to the lists.
+///
+/// The hint carries bare UUIDs while a list's record name is `List/<uuid>`, so they are
+/// matched on the suffix. Anything the hint does not mention keeps its place after the rest
+/// rather than jumping to the front.
+fn apply_list_order(lists: &mut [ReminderList], order: &[String]) {
+    if order.is_empty() {
+        return;
+    }
+    let position = |guid: &str| {
+        let uuid = guid.rsplit('/').next().unwrap_or(guid);
+        order
+            .iter()
+            .position(|id| id.eq_ignore_ascii_case(uuid))
+            .map_or(i64::from(u32::MAX), |i| i64::try_from(i).unwrap_or(0))
+    };
+    for list in lists.iter_mut() {
+        list.sort_order = position(&list.guid);
+    }
+}
+
 /// Read reminders from CloudKit into the local library.
 ///
 /// Pass the previous `since` token to fetch only what changed. That distinction matters for
@@ -479,6 +538,9 @@ pub async fn sync_cloudkit(
     let mut reminders: Vec<Reminder> = Vec::new();
     let mut gone_reminders: Vec<String> = Vec::new();
     let mut gone_lists: Vec<String> = Vec::new();
+    let mut list_order: Vec<String> = Vec::new();
+    // A RecurrenceRule is its own record pointing back at the reminder it governs.
+    let mut rules: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
 
     for record in &records {
         let Some(kind) = field::record_type(record) else {
@@ -513,6 +575,22 @@ pub async fn sync_cloudkit(
                     lists.extend(list_from_record(record));
                 }
             }
+            "RecurrenceRule" => {
+                if !removed {
+                    if let Some(target) = field::reference(record, "Reminder") {
+                        let frequency = field::int(record, "Frequency").unwrap_or(0);
+                        let interval = field::int(record, "Interval").unwrap_or(1);
+                        rules.insert(target, (frequency, interval));
+                    }
+                }
+            }
+            // Carries the order the lists appear in on the user's other devices.
+            "ManualSortHint" => {
+                let order = list_order_from(record);
+                if !order.is_empty() {
+                    list_order = order;
+                }
+            }
             _ => {}
         }
     }
@@ -538,6 +616,17 @@ pub async fn sync_cloudkit(
             });
         }
     }
+
+    // Attach each rule to the reminder it governs, so completing one can advance it.
+    for reminder in &mut reminders {
+        if let Some((frequency, interval)) = rules.get(&reminder.guid) {
+            reminder.recur_frequency = Some(*frequency);
+            reminder.recur_interval = Some(*interval);
+        }
+    }
+
+    // Match the order the phone shows before storing.
+    apply_list_order(&mut lists, &list_order);
 
     if incremental {
         library.merge_reminder_lists(&lists)?;
@@ -934,15 +1023,35 @@ pub async fn set_completed_cloudkit(
     done: bool,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+
+    // A repeating reminder is already held completed while its record points at the next
+    // occurrence, so writing Completed again changes nothing and the tick appears to do
+    // nothing. Ticking one means moving to the occurrence after this one.
+    let fields = if done && reminder.repeats() {
+        let Some(next) = reminder.next_occurrence() else {
+            return Err(Error::Protocol(
+                "this repeats, but its schedule could not be read".into(),
+            ));
+        };
+        serde_json::json!({
+            "Completed": { "value": 1, "type": "NUMBER_INT64" },
+            "DueDate": { "value": next.saturating_mul(1000), "type": "TIMESTAMP" },
+            "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
+        })
+    } else {
+        serde_json::json!({
+            "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" },
+            "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
+        })
+    };
+
     client
         .update_record(
             ZONE,
             &reminder.guid,
             "Reminder",
             reminder.etag.as_deref(),
-            serde_json::json!({
-                "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" }
-            }),
+            fields,
         )
         .await?;
     Ok(())
@@ -1296,6 +1405,8 @@ mod write_tests {
             completed_at: None,
             priority: 0,
             flagged: false,
+            recur_frequency: None,
+            recur_interval: None,
             etag: Some("tag-3".into()),
             raw: None,
         };
@@ -1347,6 +1458,8 @@ mod edit_tests {
             completed_at: None,
             priority: 0,
             flagged: false,
+            recur_frequency: None,
+            recur_interval: None,
             etag: Some("tag-1".into()),
             raw: None,
         }
@@ -1602,5 +1715,295 @@ mod list_write_tests {
                 .is_err()
         );
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn hint(ids: &[&str]) -> Value {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        let payload = json!({
+            "topLevelElementIDs": ids,
+            "secondaryLevelElementIDsByTopLevelElementID": {},
+        });
+        json!({
+            "recordName": "ManualSortHint/1",
+            "recordType": "ManualSortHint",
+            "fields": {
+                "HintDataIncludingRemindersInPrimaryAccountOnlyAsBytes": {
+                    "type": "BYTES",
+                    "value": B64.encode(serde_json::to_vec(&payload).unwrap()),
+                }
+            }
+        })
+    }
+
+    fn list(guid: &str) -> ReminderList {
+        ReminderList {
+            guid: guid.into(),
+            title: guid.into(),
+            colour: None,
+            ctag: None,
+            sort_order: 0,
+            enabled: true,
+        }
+    }
+
+    /// The field is named AsBytes but holds JSON, which is what makes this readable at all.
+    #[test]
+    fn the_hint_payload_is_json_despite_its_name() {
+        let order = list_order_from(&hint(&["AAA", "BBB"]));
+        assert_eq!(order, vec!["AAA", "BBB"]);
+    }
+
+    /// The hint carries bare UUIDs; a list's record name is List/<uuid>.
+    #[test]
+    fn lists_take_the_order_the_phone_shows() {
+        let mut lists = vec![list("List/CCC"), list("List/AAA"), list("List/BBB")];
+        apply_list_order(&mut lists, &["AAA".into(), "BBB".into(), "CCC".into()]);
+        lists.sort_by_key(|l| l.sort_order);
+        let order: Vec<&str> = lists.iter().map(|l| l.guid.as_str()).collect();
+        assert_eq!(order, vec!["List/AAA", "List/BBB", "List/CCC"]);
+    }
+
+    /// A list the hint does not mention must not jump to the front.
+    #[test]
+    fn unmentioned_lists_sort_after_the_rest() {
+        let mut lists = vec![list("List/NEW"), list("List/AAA")];
+        apply_list_order(&mut lists, &["AAA".into()]);
+        assert!(
+            lists
+                .iter()
+                .find(|l| l.guid == "List/NEW")
+                .unwrap()
+                .sort_order
+                > lists
+                    .iter()
+                    .find(|l| l.guid == "List/AAA")
+                    .unwrap()
+                    .sort_order
+        );
+    }
+
+    #[test]
+    fn matching_ignores_case() {
+        let mut lists = vec![list("List/abc")];
+        apply_list_order(&mut lists, &["ABC".into()]);
+        assert_eq!(lists[0].sort_order, 0);
+    }
+
+    /// No hint, or an unreadable one, must leave the lists as they were.
+    #[test]
+    fn an_absent_or_broken_hint_changes_nothing() {
+        let mut lists = vec![list("List/AAA")];
+        lists[0].sort_order = 7;
+        apply_list_order(&mut lists, &[]);
+        assert_eq!(lists[0].sort_order, 7);
+
+        let broken = json!({
+            "recordName": "ManualSortHint/1", "recordType": "ManualSortHint",
+            "fields": { "HintDataIncludingRemindersInPrimaryAccountOnlyAsBytes":
+                        { "type": "BYTES", "value": "!!not base64!!" } }
+        });
+        assert!(list_order_from(&broken).is_empty());
+        assert!(list_order_from(&json!({ "recordName": "x", "fields": {} })).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod recurring_tick_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn accepting() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Reminder/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// 2100-01-01T00:00:00Z. Far enough ahead that one step forward is always the
+    /// answer, so these tests measure the arithmetic and not today's date.
+    const FUTURE: i64 = 4_102_444_800;
+
+    fn repeating(frequency: i64, interval: i64, due: i64) -> Reminder {
+        Reminder {
+            guid: "Reminder/1".into(),
+            list_guid: "List/a".into(),
+            title: "Water the plants".into(),
+            notes: None,
+            due_at: Some(due),
+            completed_at: None,
+            priority: 0,
+            flagged: false,
+            recur_frequency: Some(frequency),
+            recur_interval: Some(interval),
+            etag: Some("tag".into()),
+            raw: None,
+        }
+    }
+
+    async fn fields(server: &MockServer) -> Value {
+        let requests = server.received_requests().await.unwrap();
+        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["operations"][0]["record"]
+            ["fields"]
+            .clone()
+    }
+
+    /// The bug this fixes: Apple already holds a repeating reminder completed while its
+    /// record points at the next occurrence, so writing Completed again changed nothing and
+    /// the tick appeared to do nothing at all.
+    #[tokio::test]
+    async fn ticking_a_daily_reminder_moves_it_to_tomorrow() {
+        let server = accepting().await;
+        let due = FUTURE;
+        set_completed_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &repeating(0, 1, due),
+            true,
+        )
+        .await
+        .unwrap();
+
+        let sent = fields(&server).await;
+        assert_eq!(sent["Completed"]["value"], 1);
+        assert_eq!(
+            sent["DueDate"]["value"],
+            (due + 86_400) * 1000,
+            "a daily reminder must advance exactly one day"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_interval_is_respected() {
+        let server = accepting().await;
+        let due = FUTURE;
+        set_completed_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &repeating(1, 2, due),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fields(&server).await["DueDate"]["value"],
+            (due + 14 * 86_400) * 1000,
+            "every two weeks means fourteen days"
+        );
+    }
+
+    /// Un-ticking must not move the date; it just reopens the occurrence.
+    #[tokio::test]
+    async fn un_ticking_leaves_the_schedule_alone() {
+        let server = accepting().await;
+        set_completed_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &repeating(0, 1, FUTURE),
+            false,
+        )
+        .await
+        .unwrap();
+        let sent = fields(&server).await;
+        assert_eq!(sent["Completed"]["value"], 0);
+        assert!(
+            sent.get("DueDate").is_none(),
+            "un-ticking must not reschedule"
+        );
+    }
+
+    /// A one-off keeps behaving exactly as before.
+    #[tokio::test]
+    async fn a_one_off_just_completes() {
+        let server = accepting().await;
+        let mut once = repeating(0, 1, FUTURE);
+        once.recur_frequency = None;
+        once.recur_interval = None;
+        set_completed_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &once, true)
+            .await
+            .unwrap();
+        let sent = fields(&server).await;
+        assert_eq!(sent["Completed"]["value"], 1);
+        assert!(sent.get("DueDate").is_none());
+    }
+
+    /// Months are calendar units, not 30-day blocks.
+    #[test]
+    fn monthly_and_yearly_advance_by_calendar() {
+        // 2026-01-31T12:00:00Z
+        let jan31 = 1_769_860_800;
+        let monthly = repeating(2, 1, jan31).next_occurrence_after(jan31).unwrap();
+        let as_date = jiff::Timestamp::from_second(monthly)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .strftime("%Y-%m-%d")
+            .to_string();
+        assert!(
+            as_date.starts_with("2026-02"),
+            "a month later, not 30 days: {as_date}"
+        );
+
+        let yearly = repeating(3, 1, jan31).next_occurrence_after(jan31).unwrap();
+        assert!(yearly > monthly);
+    }
+
+    /// Skip a daily reminder for a week and tick it: it must land on the next occurrence
+    /// that has not happened yet. Advancing a single interval would leave it six days
+    /// overdue, which reads on screen as the tick having done nothing.
+    #[test]
+    fn ticking_an_overdue_repeat_catches_up_to_the_next_real_occurrence() {
+        let week_ago = FUTURE - 7 * 86_400;
+        let next = repeating(0, 1, week_ago)
+            .next_occurrence_after(FUTURE)
+            .unwrap();
+        assert_eq!(next, FUTURE + 86_400, "the first occurrence still ahead");
+    }
+
+    /// The catch-up lands on the schedule, never merely on "now plus one".
+    #[test]
+    fn catching_up_stays_on_the_original_cadence() {
+        // Due on a Monday, repeating every two weeks, ticked five weeks later.
+        let start = FUTURE;
+        let next = repeating(1, 2, start)
+            .next_occurrence_after(start + 5 * 7 * 86_400)
+            .unwrap();
+        assert_eq!(
+            next,
+            start + 6 * 7 * 86_400,
+            "six weeks on is the next multiple of the fortnight"
+        );
+    }
+
+    /// A reminder abandoned years ago must still answer, not spin.
+    #[test]
+    fn a_long_abandoned_daily_reminder_still_resolves() {
+        let ten_years = 3_653 * 86_400;
+        let next = repeating(0, 1, FUTURE - ten_years)
+            .next_occurrence_after(FUTURE)
+            .unwrap();
+        assert_eq!(next, FUTURE + 86_400);
+    }
+
+    #[test]
+    fn a_reminder_with_no_due_date_has_no_next_occurrence() {
+        let mut r = repeating(0, 1, 0);
+        r.due_at = None;
+        assert!(r.next_occurrence().is_none());
     }
 }

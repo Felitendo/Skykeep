@@ -3173,6 +3173,7 @@ dependencies = [
 name = "quince-core"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "rusqlite",
  "serde",
  "tempfile",
@@ -3201,6 +3202,7 @@ name = "quince-probe"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "jiff",
  "quince-auth",
  "quince-core",
  "quince-icloud",

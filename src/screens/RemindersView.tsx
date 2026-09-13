@@ -36,6 +36,17 @@ function dueLabel(seconds: number): { text: string; overdue: boolean } {
   };
 }
 
+const REPEAT_UNITS = ["day", "week", "month", "year"] as const;
+
+/** "Every day", "Every 2 weeks" — or null when this happens only once. */
+function repeatLabel(r: Reminder): string | null {
+  if (r.recurFrequency === null || r.recurFrequency === undefined) return null;
+  const unit = REPEAT_UNITS[r.recurFrequency];
+  if (!unit) return "Repeats";
+  const every = r.recurInterval ?? 1;
+  return every > 1 ? `Every ${every} ${unit}s` : `Every ${unit}`;
+}
+
 /** `YYYY-MM-DDTHH:mm` for a datetime-local input, in local time. */
 function toInputValue(seconds: number | null): string {
   if (seconds === null) return "";
@@ -70,6 +81,8 @@ export function RemindersView() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** A repeating reminder that was just ticked forward, and where it landed. */
+  const [moved, setMoved] = useState<{ guid: string; text: string } | null>(null);
 
   const inList = selection.type === "list";
   const listGuid = inList ? selection.guid : null;
@@ -84,12 +97,14 @@ export function RemindersView() {
     setLoaded(true);
   }, []);
 
-  const readItems = useCallback(async () => {
+  const readItems = useCallback(async (): Promise<Reminder[]> => {
     const found =
       selection.type === "smart"
         ? await api.remindersSmart(selection.kind, endOfToday())
         : await api.remindersIn(selection.guid, showDone);
-    setItems(Array.isArray(found) ? found : []);
+    const fresh = Array.isArray(found) ? found : [];
+    setItems(fresh);
+    return fresh;
   }, [selection, showDone]);
 
   const refreshRef = useRef<null | (() => Promise<void>)>(null);
@@ -132,16 +147,23 @@ export function RemindersView() {
     readItems().catch((e) => setError(messageOf(e)));
   }, [readItems]);
 
+  useEffect(() => {
+    if (!moved) return undefined;
+    const timer = window.setTimeout(() => setMoved(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [moved]);
+
   /** Every write goes through here: to Apple first, then re-read, so nothing on screen is a guess. */
   const write = useCallback(
-    async (reminder: Reminder, run: () => Promise<void>) => {
+    async (reminder: Reminder, run: () => Promise<void>): Promise<Reminder[] | null> => {
       setBusyGuid(reminder.guid);
       setError(null);
       try {
         await run();
-        await readItems();
+        return await readItems();
       } catch (e) {
         setError(messageOf(e));
+        return null;
       } finally {
         setBusyGuid(null);
       }
@@ -149,8 +171,20 @@ export function RemindersView() {
     [readItems]
   );
 
-  const toggle = (r: Reminder) =>
-    write(r, () => api.reminderSetDone(r.guid, r.listGuid, !r.completedAt));
+  /**
+   * Ticking a repeating reminder never closes it — Apple rolls it to the next occurrence.
+   * The row therefore comes back unticked with a later date, which looks exactly like
+   * nothing happened, so the new date is called out for a moment.
+   */
+  const toggle = async (r: Reminder) => {
+    const wasOpen = !r.completedAt;
+    const fresh = await write(r, () => api.reminderSetDone(r.guid, r.listGuid, wasOpen));
+    if (!fresh || !wasOpen || repeatLabel(r) === null) return;
+    const after = fresh.find((x) => x.guid === r.guid);
+    if (after && after.dueAt !== null && after.dueAt !== r.dueAt) {
+      setMoved({ guid: r.guid, text: dueLabel(after.dueAt).text });
+    }
+  };
   const flag = (r: Reminder) =>
     write(r, () => api.reminderEdit(r.guid, r.listGuid, { flagged: !r.flagged }));
   const remove = (r: Reminder) => write(r, () => api.reminderDelete(r.guid, r.listGuid));
@@ -352,6 +386,8 @@ export function RemindersView() {
           {items.map((reminder) => {
             const due = reminder.dueAt === null ? null : dueLabel(reminder.dueAt);
             const isOpen = openGuid === reminder.guid;
+            const repeat = repeatLabel(reminder);
+            const justMoved = moved?.guid === reminder.guid ? moved.text : null;
             return (
               <li key={reminder.guid} className={reminder.completedAt ? "is-done" : undefined}>
                 <button
@@ -398,6 +434,11 @@ export function RemindersView() {
                           onBlur={(e) => void setDue(reminder, e.target.value)}
                         />
                       </label>
+                      {repeat && (
+                        <p className="rem-repeat-note">
+                          {repeat}. Ticking it moves it to the next one.
+                        </p>
+                      )}
                       <label>
                         <span>Notes</span>
                         <textarea
@@ -411,8 +452,23 @@ export function RemindersView() {
                 </div>
 
                 <span className="rem-trailing">
-                  {due && (
-                    <span className={`rem-due${due.overdue ? " overdue" : ""}`}>{due.text}</span>
+                  {justMoved ? (
+                    <span className="rem-moved" role="status">
+                      Moved to {justMoved}
+                    </span>
+                  ) : (
+                    <>
+                      {repeat && (
+                        <span className="rem-repeat" role="img" aria-label={repeat} title={repeat}>
+                          ↻
+                        </span>
+                      )}
+                      {due && (
+                        <span className={`rem-due${due.overdue ? " overdue" : ""}`}>
+                          {due.text}
+                        </span>
+                      )}
+                    </>
                   )}
                   <button
                     className={`rem-flag${reminder.flagged ? " on" : ""}`}

@@ -1050,6 +1050,33 @@
 /* Overdue is the one thing in this list that should catch the eye. */
 .rem-due.overdue { color: var(--danger); }
 
+/* A repeat never completes, it moves. The glyph says so at a glance; the confirmation
+   says where it went, because otherwise the row simply reappears and reads as a no-op. */
+.rem-repeat {
+  font-size: var(--t-11);
+  color: var(--text-3);
+  line-height: 1;
+}
+
+.rem-moved {
+  font-size: var(--t-11);
+  font-weight: 590;
+  color: var(--gold-strong);
+  white-space: nowrap;
+  animation: rem-moved-in 240ms var(--ease-spring) both;
+}
+
+@keyframes rem-moved-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.rem-repeat-note {
+  margin: 0;
+  font-size: var(--t-11);
+  color: var(--text-3);
+}
+
 .rem-flag,
 .rem-more {
   border: 0;
