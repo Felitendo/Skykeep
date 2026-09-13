@@ -665,12 +665,17 @@ async fn main() -> Result<()> {
                         if kind == "Note" {
                             println!("      text={:?}", decode("TextDataEncrypted"));
                         }
-                        // The title does not decode at the reminders path, so emit the raw
-                        // payload once and let the structure be read directly.
-                        if let Some(raw) =
-                            quince_icloud::cloudkit::field::string(r, "TitleEncrypted")
+                        // Emit any body that will not decode, so its shape can be read
+                        // directly rather than guessed at.
+                        if kind == "Note"
+                            && quince_icloud::cloudkit::field::document_text(r, "TextDataEncrypted")
+                                .is_none()
                         {
-                            println!("      TITLE_B64 {raw}");
+                            if let Some(raw) =
+                                quince_icloud::cloudkit::field::string(r, "TextDataEncrypted")
+                            {
+                                println!("      BODY_B64 {raw}");
+                            }
                         }
                     }
 

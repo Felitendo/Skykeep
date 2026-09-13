@@ -101,18 +101,42 @@ fn field_at<'a>(bytes: &'a [u8], path: &[u64]) -> Option<&'a [u8]> {
     None
 }
 
-/// Ungzip a CloudKit document payload, refusing anything implausibly large.
+/// Decompress a CloudKit document payload.
+///
+/// Apple uses more than one wrapper. Most payloads are gzip, but some are raw zlib and some
+/// are not compressed at all — a note body arriving as zlib decoded to nothing for as long as
+/// only gzip was handled, which looked like an empty note rather than a decoder gap.
 fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
-    // Not gzip: some payloads are stored plainly.
-    if compressed.len() < 3 || compressed[0] != 0x1f || compressed[1] != 0x8b {
+    if compressed.len() < 2 {
         return Some(compressed.to_vec());
     }
-    let mut out = Vec::new();
-    flate2::read::GzDecoder::new(compressed)
-        .take(MAX_DECOMPRESSED)
-        .read_to_end(&mut out)
-        .ok()?;
-    Some(out)
+
+    let read_all = |mut reader: Box<dyn Read>| -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).ok()?;
+        Some(out)
+    };
+
+    // gzip
+    if compressed[0] == 0x1f && compressed[1] == 0x8b {
+        return read_all(Box::new(
+            flate2::read::GzDecoder::new(compressed).take(MAX_DECOMPRESSED),
+        ));
+    }
+
+    // zlib: low nibble of the first byte is the method (8 = deflate), and the two-byte
+    // header is a multiple of 31.
+    let header = u16::from(compressed[0]) << 8 | u16::from(compressed[1]);
+    if compressed[0] & 0x0f == 8 && header % 31 == 0 {
+        if let Some(out) = read_all(Box::new(
+            flate2::read::ZlibDecoder::new(compressed).take(MAX_DECOMPRESSED),
+        )) {
+            return Some(out);
+        }
+    }
+
+    // Not compressed: titles and folder names arrive as bare bytes.
+    Some(compressed.to_vec())
 }
 
 /// The readable text of a CloudKit document field, or `None` if there is none to find.
@@ -273,6 +297,43 @@ mod tests {
             let payload = gzipped(&document(text));
             assert_eq!(text_from_bytes(&payload).as_deref(), Some(text));
         }
+    }
+
+    fn zlib(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// Apple compresses some payloads with zlib rather than gzip. Handling only gzip made
+    /// those notes render as empty, which reads as data loss rather than a decoder gap.
+    #[test]
+    fn reads_a_zlib_document_as_well_as_gzip() {
+        let text = "🔴 UNIT 2: STATIC & DYNAMIC SOFTWARE TESTING";
+        assert_eq!(
+            text_from_bytes(&zlib(&document(text))).as_deref(),
+            Some(text)
+        );
+        assert_eq!(
+            text_from_bytes(&gzipped(&document(text))).as_deref(),
+            Some(text)
+        );
+    }
+
+    #[test]
+    fn reads_zlib_wrapped_bare_text() {
+        assert_eq!(
+            text_from_bytes(&zlib(b"Recently Deleted")).as_deref(),
+            Some("Recently Deleted")
+        );
+    }
+
+    /// Bytes that merely start with 0x78 must not be mistaken for zlib.
+    #[test]
+    fn a_leading_0x78_that_is_not_zlib_still_reads_as_text() {
+        // 'x' is 0x78, and "xy" fails the header checksum, so it must fall through to text.
+        assert_eq!(text_from_bytes(b"xy note").as_deref(), Some("xy note"));
     }
 
     #[test]
