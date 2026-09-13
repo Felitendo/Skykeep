@@ -142,6 +142,32 @@ fn event_from(v: &Value) -> Result<Option<Event>> {
     }))
 }
 
+/// `YYYY-MM-DD` for the day an instant falls on, in the event's own timezone.
+fn day_of(seconds: i64, timezone: Option<&str>) -> String {
+    let zone = timezone
+        .and_then(|name| TimeZone::get(name).ok())
+        .unwrap_or(TimeZone::UTC);
+    jiff::Timestamp::from_second(seconds)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(zone)
+        .strftime("%Y-%m-%d")
+        .to_string()
+}
+
+/// What the web client tells the service it already has.
+///
+/// Sending the collection's ctag is how Apple decides whether to answer with the whole
+/// calendar or just the change, which is the difference between a quick write and refetching
+/// the month on every save.
+fn client_state(calendar_guid: &str, ctag: Option<&str>) -> Value {
+    serde_json::json!({
+        "Collection": [{ "guid": calendar_guid, "ctag": ctag }],
+        "fullState": false,
+        "userTime": 0,
+        "alarmRange": 60,
+    })
+}
+
 /// Everything one calendar refresh yields.
 #[derive(Debug, Default)]
 pub struct Snapshot {
@@ -199,6 +225,127 @@ impl<'a> CalendarClient<'a> {
     pub async fn events(&self, from: &str, to: &str, tz: &str) -> Result<Snapshot> {
         let body = self.get("/ca/events", from, to, tz).await?;
         Ok(parse_snapshot(&body))
+    }
+
+    /// Create an event, or replace one that already exists.
+    ///
+    /// Apple's calendar service takes the whole event on every write rather than a patch, so
+    /// an edit sends the event as it should end up. `guid` addresses it; a fresh one is a
+    /// create and an existing one is an update.
+    ///
+    /// The window in the query is not decoration: Apple answers with the events in it, and
+    /// sending the day the event falls on is what makes the response carry the event back so
+    /// a caller can confirm what was stored rather than assume.
+    pub async fn put_event(&self, event: &Event, ctag: Option<&str>) -> Result<Snapshot> {
+        let day = day_of(event.starts_at, event.timezone.as_deref());
+        let body = serde_json::json!({
+            "Event": self.event_body(event),
+            "ClientState": client_state(&event.calendar_guid, ctag),
+        });
+        let path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
+        let answer = self
+            .post(&path, &body, &day, &day, event.timezone.as_deref(), None)
+            .await?;
+        Ok(parse_snapshot(&answer))
+    }
+
+    /// Remove an event.
+    ///
+    /// `etag` is what stops a delete from landing on a version of the event someone changed
+    /// on another device in the meantime.
+    pub async fn delete_event(&self, event: &Event, ctag: Option<&str>) -> Result<()> {
+        let day = day_of(event.starts_at, event.timezone.as_deref());
+        let body = serde_json::json!({
+            "Event": { "guid": event.guid, "pGuid": event.calendar_guid, "etag": event.etag },
+            "ClientState": client_state(&event.calendar_guid, ctag),
+        });
+        let path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
+        self.post(
+            &path,
+            &body,
+            &day,
+            &day,
+            event.timezone.as_deref(),
+            Some("DELETE"),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Apple's event object, in the shape its own web client sends.
+    ///
+    /// Every field is filled rather than left out: the service rejects a partial event, and
+    /// an omitted `duration` or `tz` comes back as a rejection that says nothing useful.
+    fn event_body(&self, event: &Event) -> Value {
+        let zone = event.timezone.as_deref();
+        let minutes = ((event.ends_at - event.starts_at) / 60).max(0);
+        serde_json::json!({
+            "guid": event.guid,
+            "pGuid": event.calendar_guid,
+            "title": event.title,
+            "location": event.location.clone().unwrap_or_default(),
+            "description": event.notes.clone().unwrap_or_default(),
+            "url": event.url,
+            "startDate": format_apple_date(event.starts_at, zone),
+            "endDate": format_apple_date(event.ends_at, zone),
+            "localStartDate": format_apple_date(event.starts_at, zone),
+            "localEndDate": format_apple_date(event.ends_at, zone),
+            "duration": minutes,
+            "allDay": event.all_day,
+            "tz": zone,
+            "etag": event.etag,
+            "icon": 0,
+            "recurrence": Value::Null,
+            "changeRecurring": Value::Null,
+            "alarms": [],
+            "invitees": [],
+            "hasAttachments": false,
+            "isJunk": false,
+            "readOnly": false,
+            "extendedDetailsAreIncluded": true,
+        })
+    }
+
+    async fn post(
+        &self,
+        path: &str,
+        body: &Value,
+        from: &str,
+        to: &str,
+        tz: Option<&str>,
+        method_override: Option<&str>,
+    ) -> Result<Value> {
+        let mut query = self.params.clone();
+        query.push(("clientVersion".into(), "5.1".into()));
+        query.push(("requestID".into(), "4".into()));
+        query.push(("startDate".into(), from.into()));
+        query.push(("endDate".into(), to.into()));
+        query.push(("lang".into(), "en-us".into()));
+        query.push(("usertz".into(), tz.unwrap_or("UTC").into()));
+        if let Some(method) = method_override {
+            query.push(("methodOverride".into(), method.into()));
+        }
+
+        let response = self
+            .http
+            .post(format!("{}{path}", self.root))
+            .query(&query)
+            .json(body)
+            .send()
+            .await?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+
+        if status.as_u16() == 450 {
+            return Err(Error::ReauthRequired);
+        }
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "{path} returned {status}: {}",
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+        Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
     async fn get(&self, path: &str, from: &str, to: &str, tz: &str) -> Result<Value> {
@@ -414,5 +561,164 @@ mod tests {
     fn an_empty_body_is_an_empty_snapshot() {
         let snap = parse_snapshot(&json!({}));
         assert!(snap.calendars.is_empty() && snap.events.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    fn event() -> Event {
+        Event {
+            guid: "E-1".into(),
+            calendar_guid: "work".into(),
+            title: "Dentist".into(),
+            location: Some("Gachibowli".into()),
+            // 2026-09-14T09:30:00+05:30
+            starts_at: 1_789_358_400,
+            ends_at: 1_789_362_000,
+            all_day: false,
+            timezone: Some("Asia/Kolkata".into()),
+            url: None,
+            notes: None,
+            etag: None,
+        }
+    }
+
+    async fn server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Event": [{
+                    "guid": "E-1",
+                    "pGuid": "work",
+                    "title": "Dentist",
+                    "tz": "Asia/Kolkata",
+                    "startDate": [20260914, 2026, 9, 14, 9, 30, 570],
+                    "endDate": [20260914, 2026, 9, 14, 10, 30, 630],
+                    "etag": "stored"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn request(server: &MockServer) -> Request {
+        server.received_requests().await.unwrap().remove(0)
+    }
+
+    #[tokio::test]
+    async fn a_write_addresses_the_event_by_calendar_and_guid() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        client.put_event(&event(), Some("ctag-1")).await.unwrap();
+        assert_eq!(request(&server).await.url.path(), "/ca/events/work/E-1");
+    }
+
+    /// Apple answers with the events in the window it was given, so sending the event's own
+    /// day is what makes the reply carry the stored event back.
+    #[tokio::test]
+    async fn the_window_is_the_day_the_event_falls_on_locally() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        client.put_event(&event(), None).await.unwrap();
+
+        let sent = request(&server).await;
+        let query: std::collections::HashMap<_, _> = sent.url.query_pairs().collect();
+        // 04:00 UTC on the 14th is 09:30 on the 14th in Kolkata — the local day is what counts.
+        assert_eq!(query["startDate"], "2026-09-14");
+        assert_eq!(query["endDate"], "2026-09-14");
+        assert_eq!(query["usertz"], "Asia/Kolkata");
+    }
+
+    #[tokio::test]
+    async fn the_whole_event_is_sent_in_apples_own_shape() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        client.put_event(&event(), Some("ctag-1")).await.unwrap();
+
+        let sent = request(&server).await;
+        let body: Value = serde_json::from_slice(&sent.body).unwrap();
+        let e = &body["Event"];
+        assert_eq!(e["title"], "Dentist");
+        assert_eq!(e["location"], "Gachibowli");
+        assert_eq!(e["duration"], 60, "duration is minutes, not seconds");
+        assert_eq!(e["tz"], "Asia/Kolkata");
+        // The date is Apple's component array in the event's own zone, not a timestamp.
+        assert_eq!(
+            e["startDate"],
+            serde_json::json!([20260914, 2026, 9, 14, 9, 30, 570])
+        );
+        assert_eq!(body["ClientState"]["Collection"][0]["ctag"], "ctag-1");
+    }
+
+    /// What comes back is what gets stored — never what was sent.
+    #[tokio::test]
+    async fn the_stored_event_is_read_from_apples_reply() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        let answer = client.put_event(&event(), None).await.unwrap();
+        assert_eq!(answer.events.len(), 1);
+        assert_eq!(answer.events[0].etag.as_deref(), Some("stored"));
+    }
+
+    #[tokio::test]
+    async fn deleting_says_so_in_the_query_and_carries_the_etag() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        let mut gone = event();
+        gone.etag = Some("v3".into());
+        client.delete_event(&gone, None).await.unwrap();
+
+        let sent = request(&server).await;
+        let query: std::collections::HashMap<_, _> = sent.url.query_pairs().collect();
+        assert_eq!(query["methodOverride"], "DELETE");
+        let body: Value = serde_json::from_slice(&sent.body).unwrap();
+        assert_eq!(
+            body["Event"]["etag"], "v3",
+            "a delete must not race another device"
+        );
+    }
+
+    /// An all-day event has no meaningful duration, and a negative one is nonsense.
+    #[tokio::test]
+    async fn a_zero_length_event_reports_zero_minutes() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        let mut instant = event();
+        instant.ends_at = instant.starts_at;
+        client.put_event(&instant, None).await.unwrap();
+
+        let body: Value = serde_json::from_slice(&request(&server).await.body).unwrap();
+        assert_eq!(body["Event"]["duration"], 0);
+    }
+
+    #[tokio::test]
+    async fn a_rejection_reads_as_a_sentence() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad event"))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        let message = client
+            .put_event(&event(), None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("400"), "{message}");
+        assert!(message.contains("bad event"), "{message}");
     }
 }

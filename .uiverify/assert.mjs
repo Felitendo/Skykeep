@@ -11,6 +11,8 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "account_services") return services;
       if (cmd === "calendar_events") return [];
       if (cmd === "calendar_list") return [];
+      if (cmd === "event_save") return "E-new";
+      if (cmd === "event_delete") return null;
       if (cmd === "calendar_sync") return { calendars: 0, events: 0 };
       if (cmd === "reminder_lists") return [];
       if (cmd === "reminders_in") return [];

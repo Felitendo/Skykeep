@@ -34,6 +34,55 @@ const clockTime = (seconds: number) =>
     .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     .replace(":00", "");
 
+/** `YYYY-MM-DDTHH:mm` for a datetime-local input, in local time. */
+const toInputValue = (seconds: number) => {
+  const d = new Date(seconds * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+/** An event being written. A guid means it already exists at Apple. */
+type EventDraft = {
+  guid: string | null;
+  calendarGuid: string;
+  title: string;
+  location: string;
+  startsAt: number;
+  endsAt: number;
+  allDay: boolean;
+  notes: string;
+};
+
+/** A new event on `day`, at the next whole hour, running an hour — Apple's own default. */
+function blankEvent(day: Date, calendarGuid: string): EventDraft {
+  const now = new Date();
+  const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), now.getHours() + 1, 0, 0);
+  const startsAt = Math.floor(at.getTime() / 1000);
+  return {
+    guid: null,
+    calendarGuid,
+    title: "",
+    location: "",
+    startsAt,
+    endsAt: startsAt + 3600,
+    allDay: false,
+    notes: "",
+  };
+}
+
+function draftFrom(event: CalendarEvent): EventDraft {
+  return {
+    guid: event.guid,
+    calendarGuid: event.calendarGuid,
+    title: event.title,
+    location: event.location ?? "",
+    startsAt: event.startsAt,
+    endsAt: event.endsAt,
+    allDay: event.allDay,
+    notes: event.notes ?? "",
+  };
+}
+
 /** The 42 days a month grid shows: the weeks containing the first and last of the month. */
 function gridDays(anchor: Date): Date[] {
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
@@ -57,6 +106,11 @@ export function CalendarView() {
   /** A month outside the window the shared refresh keeps warm is being fetched. */
   const [fetchingMonth, setFetchingMonth] = useState(false);
   const { revision } = useSync();
+  /** The day whose contents the inspector shows. Defaults to today.  */
+  const [selected, setSelected] = useState<Date>(() => new Date(today));
+  /** The event being written, or null when the inspector is just listing. */
+  const [draft, setDraft] = useState<EventDraft | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const days = useMemo(() => gridDays(anchor), [anchor]);
   const range = useMemo(
@@ -178,6 +232,82 @@ export function CalendarView() {
     return map;
   }, [events, dueReminders]);
 
+  const dayEntries = byDay.get(selected.toDateString()) ?? [];
+
+  // A month grid moves with the arrow keys, a week at a time vertically — the same shape
+  // as a spreadsheet, and what a screen reader announces a grid as being.
+  const selectedCell = useRef<HTMLButtonElement | null>(null);
+
+  const onGridKey = (e: React.KeyboardEvent, day: Date) => {
+    const step = (days: number) => {
+      e.preventDefault();
+      const to = new Date(day.getFullYear(), day.getMonth(), day.getDate() + days);
+      setSelected(to);
+      setDraft(null);
+      // Stepping off the month follows the selection there rather than stranding it.
+      if (to.getMonth() !== anchor.getMonth() || to.getFullYear() !== anchor.getFullYear()) {
+        setAnchor(new Date(to.getFullYear(), to.getMonth(), 1));
+      }
+    };
+    if (e.key === "ArrowRight") step(1);
+    else if (e.key === "ArrowLeft") step(-1);
+    else if (e.key === "ArrowDown") step(7);
+    else if (e.key === "ArrowUp") step(-7);
+    else if (e.key === "Home") step(-day.getDay());
+    else if (e.key === "End") step(6 - day.getDay());
+  };
+
+  // Keep focus with the selection when the arrows move it, but never steal it otherwise.
+  const hadFocus = useRef(false);
+  useEffect(() => {
+    if (hadFocus.current) selectedCell.current?.focus();
+  }, [selected]);
+
+  /** Every write goes to Apple first, then the library is re-read. */
+  const write = useCallback(
+    async (run: () => Promise<void>) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await run();
+        await read();
+        return true;
+      } catch (e) {
+        setError(messageOf(e));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [read]
+  );
+
+  const saveDraft = useCallback(async () => {
+    if (!draft) return;
+    const ok = await write(async () => {
+      await api.eventSave({
+        guid: draft.guid,
+        calendarGuid: draft.calendarGuid,
+        title: draft.title,
+        location: draft.location || null,
+        startsAt: draft.startsAt,
+        endsAt: draft.endsAt,
+        allDay: draft.allDay,
+        timezone: ZONE,
+        notes: draft.notes || null,
+        url: null,
+      });
+    });
+    if (ok) setDraft(null);
+  }, [draft, write]);
+
+  const removeEvent = useCallback(
+    async (guid: string) => {
+      if (await write(() => api.eventDelete(guid))) setDraft(null);
+    },
+    [write]
+  );
+
   const shift = (months: number) =>
     setAnchor((a) => new Date(a.getFullYear(), a.getMonth() + months, 1));
 
@@ -210,7 +340,17 @@ export function CalendarView() {
         ))}
       </div>
 
-      <div className="cal-grid" role="grid" aria-label={`${monthLabel} calendar`}>
+      <div
+        className="cal-grid"
+        role="grid"
+        aria-label={`${monthLabel} calendar`}
+        onFocus={() => {
+          hadFocus.current = true;
+        }}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) hadFocus.current = false;
+        }}
+      >
         {/* A grid's cells must sit inside rows, or screen readers cannot navigate it by
             week. The rows use display:contents so the visual layout is unchanged. */}
         {[0, 1, 2, 3, 4, 5].map((week) => (
@@ -224,16 +364,31 @@ export function CalendarView() {
                 day: "numeric",
                 month: "long",
               });
+              const isSelected = sameDay(day, selected);
               return (
                 <div
                   key={day.toISOString()}
-                  className={`cal-day${outside ? " outside" : ""}`}
+                  className={`cal-day${outside ? " outside" : ""}${isSelected ? " is-selected" : ""}`}
                   role="gridcell"
-                  aria-label={
-                    items.length ? `${label}, ${items.length} event(s)` : label
-                  }
                   aria-current={isToday ? "date" : undefined}
                 >
+                  <button
+                    type="button"
+                    className="cal-day-hit"
+                    ref={(el) => {
+                      if (isSelected) selectedCell.current = el;
+                    }}
+                    // One tab stop for the whole month, as a grid should have; the arrows
+                    // move within it.
+                    tabIndex={isSelected ? 0 : -1}
+                    aria-label={items.length ? `${label}, ${items.length} item(s)` : label}
+                    aria-pressed={isSelected}
+                    onClick={() => {
+                      setSelected(day);
+                      setDraft(null);
+                    }}
+                    onKeyDown={(e) => onGridKey(e, day)}
+                  >
                   <span className={`daynum${isToday ? " is-today" : ""}`}>
                     {day.getDate()}
                   </span>
@@ -288,12 +443,170 @@ export function CalendarView() {
                       <span className="chip more">{items.length - 3} more</span>
                     )}
                   </div>
+                  </button>
                 </div>
               );
             })}
           </div>
         ))}
       </div>
+
+      <section
+        className="cal-day-panel"
+        aria-label={`${selected.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}`}
+      >
+        <header className="cal-day-head">
+          <h2>
+            {selected.toLocaleDateString(undefined, {
+              weekday: "long",
+              day: "numeric",
+              month: "long",
+            })}
+          </h2>
+          <button
+            className="quiet"
+            disabled={busy || calendars.length === 0}
+            onClick={() => setDraft(blankEvent(selected, calendars[0]?.guid ?? ""))}
+          >
+            New event
+          </button>
+        </header>
+
+        {draft ? (
+          <form
+            className="cal-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveDraft();
+            }}
+          >
+            <label>
+              <span>Title</span>
+              <input
+                value={draft.title}
+                autoFocus
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                placeholder="New event"
+              />
+            </label>
+            <label>
+              <span>Calendar</span>
+              <select
+                value={draft.calendarGuid}
+                onChange={(e) => setDraft({ ...draft, calendarGuid: e.target.value })}
+              >
+                {calendars.map((c) => (
+                  <option key={c.guid} value={c.guid}>
+                    {c.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Starts</span>
+              <input
+                type="datetime-local"
+                value={toInputValue(draft.startsAt)}
+                onChange={(e) => {
+                  const startsAt = Math.floor(new Date(e.target.value).getTime() / 1000);
+                  if (Number.isNaN(startsAt)) return;
+                  // Dragging the start carries the end with it, keeping the length, which
+                  // is what every calendar does and what nobody wants to redo by hand.
+                  const length = Math.max(draft.endsAt - draft.startsAt, 0);
+                  setDraft({ ...draft, startsAt, endsAt: startsAt + length });
+                }}
+              />
+            </label>
+            <label>
+              <span>Ends</span>
+              <input
+                type="datetime-local"
+                value={toInputValue(draft.endsAt)}
+                onChange={(e) => {
+                  const endsAt = Math.floor(new Date(e.target.value).getTime() / 1000);
+                  if (!Number.isNaN(endsAt)) setDraft({ ...draft, endsAt });
+                }}
+              />
+            </label>
+            <label className="cal-check">
+              <input
+                type="checkbox"
+                checked={draft.allDay}
+                onChange={(e) => setDraft({ ...draft, allDay: e.target.checked })}
+              />
+              <span>All day</span>
+            </label>
+            <label>
+              <span>Location</span>
+              <input
+                value={draft.location}
+                onChange={(e) => setDraft({ ...draft, location: e.target.value })}
+              />
+            </label>
+            <label>
+              <span>Notes</span>
+              <textarea
+                rows={2}
+                value={draft.notes}
+                onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
+              />
+            </label>
+
+            <div className="cal-form-actions">
+              <button type="submit" className="primary" disabled={busy || !draft.title.trim()}>
+                {busy ? "Saving…" : draft.guid ? "Save" : "Add event"}
+              </button>
+              <button type="button" className="quiet" onClick={() => setDraft(null)}>
+                Cancel
+              </button>
+              {draft.guid && (
+                <button
+                  type="button"
+                  className="quiet danger"
+                  disabled={busy}
+                  onClick={() => void removeEvent(draft.guid as string)}
+                >
+                  Delete
+                </button>
+              )}
+            </div>
+          </form>
+        ) : dayEntries.length === 0 ? (
+          <p className="cal-empty">Nothing on this day.</p>
+        ) : (
+          <ul className="cal-day-list">
+            {dayEntries.map((entry) =>
+              entry.kind === "event" ? (
+                <li key={`e${entry.event.guid}`}>
+                  <button className="cal-day-item" onClick={() => setDraft(draftFrom(entry.event))}>
+                    <span
+                      className="chip-dot"
+                      style={{ background: colours.get(entry.event.calendarGuid) || "var(--gold)" }}
+                    />
+                    <span className="cal-day-when">
+                      {entry.event.allDay ? "All day" : clockTime(entry.event.startsAt)}
+                    </span>
+                    <span className="cal-day-title">{entry.event.title}</span>
+                  </button>
+                </li>
+              ) : (
+                <li key={`r${entry.reminder.guid}`}>
+                  {/* A reminder belongs to Reminders; the calendar shows it, and sends you
+                      there to change it. */}
+                  <span className="cal-day-item is-reminder">
+                    <span className="chip-ring" />
+                    <span className="cal-day-when">
+                      {clockTime(entry.reminder.dueAt ?? 0)}
+                    </span>
+                    <span className="cal-day-title">{entry.reminder.title}</span>
+                    <span className="badge">Reminder</span>
+                  </span>
+                </li>
+              )
+            )}
+          </ul>
+        )}
+      </section>
 
       {loaded && events.length === 0 && dueReminders.length === 0 && !error && (
         <p className="cal-empty">

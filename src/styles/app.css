@@ -505,15 +505,45 @@
 
 .cal-day {
   background: var(--bg);
-  padding: 4px 5px 5px;
   min-width: 0;
   overflow: hidden;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  position: relative;
 }
 
+/* The whole cell is the target. A day is a thing you point at, not a small number in the
+   corner of one. */
+.cal-day-hit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 5px 5px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.cal-day-hit:hover { background: color-mix(in srgb, var(--bg) 90%, var(--text) 7%); }
+
+.cal-day-hit:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+
+/* Selection is a ring, not a fill: the chips inside still have to be legible. */
+.cal-day.is-selected { box-shadow: inset 0 0 0 2px var(--gold-ring); }
+
 .cal-day.outside { background: color-mix(in srgb, var(--bg) 88%, var(--text) 4%); }
+.cal-day.outside .cal-day-hit:hover {
+  background: color-mix(in srgb, var(--bg) 82%, var(--text) 9%);
+}
 .cal-day.outside .daynum { color: var(--text-3); }
 
 .daynum {
@@ -1295,4 +1325,125 @@ textarea.note-text:disabled {
   padding: 5px 8px;
   outline: none;
   box-shadow: 0 0 0 3px var(--gold-ring);
+}
+
+/* The day inspector: what is on the selected day, and the one place events are written.
+   Apple puts this beside the month; at this width it reads better beneath it, where it can
+   use the full measure for a form. */
+.cal-day-panel {
+  margin-top: 10px;
+  padding: 10px 12px 12px;
+  background: var(--sheet);
+  border-radius: var(--r-plateau);
+  box-shadow: 0 0 0 0.5px var(--glass-edge);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.cal-day-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cal-day-head h2 {
+  margin: 0;
+  font-size: var(--t-13);
+  font-weight: 600;
+}
+
+.cal-day-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cal-day-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 7px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--t-13);
+  color: inherit;
+  text-align: left;
+  border-radius: var(--r-field);
+  cursor: pointer;
+}
+
+button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var(--text) 7%); }
+.cal-day-item.is-reminder { cursor: default; }
+
+.cal-day-when {
+  flex: none;
+  min-width: 5.5em;
+  color: var(--text-2);
+  font-size: var(--t-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-day-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Two columns of fields, so a date and its time sit together rather than stacking into a
+   tall form that pushes the actions off the panel. */
+.cal-form {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+}
+
+.cal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: var(--t-11);
+  color: var(--text-2);
+  min-width: 0;
+}
+
+.cal-form input,
+.cal-form select,
+.cal-form textarea {
+  font: inherit;
+  font-size: var(--t-13);
+  color: var(--text);
+  padding: 5px 7px;
+  border-radius: var(--r-field);
+  border: 0.5px solid var(--field-edge);
+  background: var(--field);
+  box-shadow: var(--shadow-field);
+  min-width: 0;
+}
+
+.cal-form textarea { resize: vertical; }
+
+.cal-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+
+.cal-check input { flex: none; }
+
+.cal-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
 }

@@ -24,6 +24,8 @@ function installStub({ screen, services, twoFactor }) {
         case "calendar_events": return [];
         case "calendar_list": return [];
         case "calendar_last_synced": return Math.floor(Date.now() / 1000);
+        case "event_save": return "E-new";
+        case "event_delete": return null;
         case "calendar_sync": return { calendars: 0, events: 0 };
         case "reminder_lists": return [];
         case "reminders_in": return [];

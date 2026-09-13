@@ -182,6 +182,44 @@ impl Library {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// One event by its guid, if the library still holds it.
+    pub fn event(&self, guid: &str) -> Result<Option<Event>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, calendar_guid, title, location, starts_at, ends_at, all_day,
+                    timezone, url, notes, etag
+             FROM events WHERE guid = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![guid], |row| {
+            Ok(Event {
+                guid: row.get(0)?,
+                calendar_guid: row.get(1)?,
+                title: row.get(2)?,
+                location: row.get(3)?,
+                starts_at: row.get(4)?,
+                ends_at: row.get(5)?,
+                all_day: row.get::<_, i64>(6)? != 0,
+                timezone: row.get(7)?,
+                url: row.get(8)?,
+                notes: row.get(9)?,
+                etag: row.get(10)?,
+            })
+        })?;
+        rows.next().transpose().map_err(Into::into)
+    }
+
+    /// Drop events Apple no longer has.
+    pub fn forget_events(&mut self, guids: &[String]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("DELETE FROM events WHERE guid = ?1")?;
+            for guid in guids {
+                stmt.execute(params![guid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Record that a service synced successfully.
     pub fn mark_synced(&self, service: &str, token: Option<&str>) -> Result<()> {
         self.conn.execute(

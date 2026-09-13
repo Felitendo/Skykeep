@@ -23,6 +23,8 @@ function installStub({ screen, services, twoFactor }) {
         case "calendar_events": return [];
         case "calendar_list": return [];
         case "calendar_last_synced": return Math.floor(Date.now() / 1000);
+        case "event_save": return "E-new";
+        case "event_delete": return null;
         case "calendar_sync": return { calendars: 0, events: 0 };
         case "reminder_lists": return [];
         case "reminders_in": return [];
@@ -155,6 +157,30 @@ const focused = (page) =>
   await page.keyboard.press("Home");
   const home = await focused(page);
   check("Home/End jump to the ends", end !== home, `End=${end} Home=${home}`);
+  await ctx.close();
+}
+
+// --- calendar: the month is a grid, so one tab stop and arrows move within it ---
+{
+  const { ctx, page } = await open("library");
+  await page.getByRole("button", { name: "Calendar" }).click();
+  await page.waitForSelector(".cal-grid");
+
+  const stops = await page.evaluate(
+    () => document.querySelectorAll('.cal-grid button[tabindex="0"]').length
+  );
+  check("month grid is ONE tab stop, not forty-two", stops === 1, `${stops} tabbable`);
+
+  const day = () => page.locator(".cal-day-panel h2").innerText();
+  const before = await day();
+  await page.locator('.cal-grid button[tabindex="0"]').focus();
+  await page.keyboard.press("ArrowDown");
+  const down = await day();
+  check("ArrowDown moves a week down the month", before !== down, `${before} → ${down}`);
+
+  await page.keyboard.press("ArrowRight");
+  const right = await day();
+  check("ArrowRight moves a day along", down !== right, `${down} → ${right}`);
   await ctx.close();
 }
 

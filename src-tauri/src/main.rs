@@ -236,6 +236,104 @@ async fn calendar_sync(
         .map_err(|e| e.to_string())
 }
 
+/// What the interface sends to create or change an event.
+///
+/// The guid is what decides which it is: absent means a new event, present means saving
+/// changes to one Apple already has.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventDraft {
+    guid: Option<String>,
+    calendar_guid: String,
+    title: String,
+    location: Option<String>,
+    starts_at: i64,
+    ends_at: i64,
+    all_day: bool,
+    timezone: Option<String>,
+    notes: Option<String>,
+    url: Option<String>,
+}
+
+/// Everything an event write needs from the session, with the auth lock released first.
+async fn calendar_context(
+    auth: &State<'_, Auth>,
+) -> Result<(reqwest::Client, String, Vec<(String, String)>), String> {
+    let client = auth.client.lock().await;
+    let root = client
+        .session()
+        .service_url("calendar")
+        .ok_or("Apple hasn't offered a calendar service for this account.")?;
+    Ok((client.http().clone(), root, client.service_params()))
+}
+
+/// Create an event, or save changes to one.
+///
+/// Apple takes the whole event on every write, so an edit sends the event as it should end
+/// up rather than a patch. What comes back from Apple is what gets stored.
+#[tauri::command]
+async fn event_save(
+    draft: EventDraft,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    let title = draft.title.trim();
+    if title.is_empty() {
+        return Err("An event needs a title.".into());
+    }
+    if draft.ends_at < draft.starts_at {
+        return Err("An event can't end before it starts.".into());
+    }
+    let (http, root, params) = calendar_context(&auth).await?;
+
+    // Apple's guids are uppercase UUIDs; a new event needs one before it can be addressed.
+    let guid = draft
+        .guid
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string().to_uppercase());
+    let existing = {
+        let library = data.0.lock().await;
+        library.event(&guid).map_err(|e| e.to_string())?
+    };
+
+    let event = Event {
+        guid: guid.clone(),
+        calendar_guid: draft.calendar_guid,
+        title: title.to_string(),
+        location: draft.location.filter(|s| !s.trim().is_empty()),
+        starts_at: draft.starts_at,
+        ends_at: draft.ends_at,
+        all_day: draft.all_day,
+        timezone: draft.timezone,
+        url: draft.url.filter(|s| !s.trim().is_empty()),
+        notes: draft.notes.filter(|s| !s.trim().is_empty()),
+        // Apple rejects a write whose etag is not the version it holds, which is what stops
+        // this from landing on top of a change made on a phone.
+        etag: existing.and_then(|e| e.etag),
+    };
+
+    let mut library = data.0.lock().await;
+    quince_icloud::sync::put_event(&http, &root, params, &mut library, &event)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(guid)
+}
+
+#[tauri::command]
+async fn event_delete(guid: String, auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<()> {
+    let (http, root, params) = calendar_context(&auth).await?;
+    let event = {
+        let library = data.0.lock().await;
+        library
+            .event(&guid)
+            .map_err(|e| e.to_string())?
+            .ok_or("That event is no longer in the local library.")?
+    };
+    let mut library = data.0.lock().await;
+    quince_icloud::sync::delete_event(&http, &root, params, &mut library, &event)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Events overlapping `[from, to]`, as unix seconds. Read straight from the library.
 #[tauri::command]
 async fn calendar_events(from: i64, to: i64, data: State<'_, Data>) -> UiResult<Vec<Event>> {
@@ -711,6 +809,8 @@ fn main() {
             sync_status,
             calendar_sync,
             calendar_events,
+            event_save,
+            event_delete,
             calendar_list,
             reminder_lists,
             reminders_in,

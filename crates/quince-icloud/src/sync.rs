@@ -101,6 +101,62 @@ pub async fn fetch_calendar(
     Ok(Snapshot { calendars, events })
 }
 
+/// Create an event, or save changes to one, and store what Apple answers with.
+///
+/// Apple takes the whole event on every write, so an edit is the event as it should end up
+/// rather than a patch. The response carries the stored version back, which is what goes
+/// into the library — never the version that was sent.
+pub async fn put_event(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    library: &mut Library,
+    event: &quince_core::calendar::Event,
+) -> Result<()> {
+    let client = CalendarClient::new(http, root, params);
+    let ctag = library
+        .calendars()?
+        .into_iter()
+        .find(|c| c.guid == event.calendar_guid)
+        .and_then(|c| c.ctag);
+
+    let answer = client.put_event(event, ctag.as_deref()).await?;
+    // Apple echoes the stored event back. If it did not, the local copy is what we sent,
+    // which is still better than showing nothing until the next refresh.
+    let stored: Vec<_> = if answer.events.is_empty() {
+        vec![event.clone()]
+    } else {
+        answer.events
+    };
+    let known: std::collections::HashSet<String> =
+        library.calendars()?.into_iter().map(|c| c.guid).collect();
+    let storable: Vec<_> = stored
+        .into_iter()
+        .filter(|e| known.contains(&e.calendar_guid))
+        .collect();
+    library.put_events(&storable)?;
+    Ok(())
+}
+
+/// Remove an event, locally as well as at Apple.
+pub async fn delete_event(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    library: &mut Library,
+    event: &quince_core::calendar::Event,
+) -> Result<()> {
+    let client = CalendarClient::new(http, root, params);
+    let ctag = library
+        .calendars()?
+        .into_iter()
+        .find(|c| c.guid == event.calendar_guid)
+        .and_then(|c| c.ctag);
+    client.delete_event(event, ctag.as_deref()).await?;
+    library.forget_events(std::slice::from_ref(&event.guid))?;
+    Ok(())
+}
+
 /// Store a fetched window. Touches no network.
 pub fn apply_calendar(library: &mut Library, snapshot: Snapshot) -> Result<SyncSummary> {
     library.put_calendars(&snapshot.calendars)?;

@@ -52,6 +52,8 @@ export const api = {
   signOut: () => invoke<void>("auth_sign_out"),
   services: () => invoke<string[]>("account_services"),
 
+  eventSave: (draft: EventWrite) => invoke<string>("event_save", { draft }),
+  eventDelete: (guid: string) => invoke<void>("event_delete", { guid }),
   calendarSync: (from: string, to: string, timezone: string) =>
     invoke<SyncSummary>("calendar_sync", { from, to, timezone }),
   calendarEvents: (from: number, to: number) =>
@@ -103,6 +105,20 @@ export type Calendar = {
   ctag: string | null;
   sortOrder: number;
   enabled: boolean;
+};
+
+/** What the app sends to create or change an event. A guid means it already exists. */
+export type EventWrite = {
+  guid: string | null;
+  calendarGuid: string;
+  title: string;
+  location: string | null;
+  startsAt: number;
+  endsAt: number;
+  allDay: boolean;
+  timezone: string | null;
+  notes: string | null;
+  url: string | null;
 };
 
 export type CalendarEvent = {
