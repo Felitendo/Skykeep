@@ -347,6 +347,53 @@ fn adjust_run_lengths(lengths: &[u64], from: u64, removed: u64, inserted: u64) -
     adjusted
 }
 
+/// Make a set of run lengths add up to the text they describe, disturbing as little as
+/// possible.
+///
+/// Runs that are already right are left alone; the shortfall or excess is taken at the end,
+/// where unstyled trailing text sits. Flattening to a single run would also make the
+/// arithmetic work, and would throw away every heading and list in the note to do it.
+fn reconcile_run_lengths(mut lengths: Vec<u64>, wanted: u64) -> Vec<u64> {
+    let total: u64 = lengths.iter().sum();
+    if total == wanted {
+        return lengths;
+    }
+    if lengths.is_empty() {
+        return if wanted == 0 {
+            Vec::new()
+        } else {
+            vec![wanted]
+        };
+    }
+
+    if total < wanted {
+        // The text runs past what the runs cover; the tail is unstyled.
+        if let Some(last) = lengths.last_mut() {
+            *last += wanted - total;
+        }
+        return lengths;
+    }
+
+    // The runs claim more than there is. Give back from the end.
+    let mut excess = total - wanted;
+    while excess > 0 {
+        let Some(last) = lengths.last_mut() else {
+            break;
+        };
+        let given = (*last).min(excess);
+        *last -= given;
+        excess -= given;
+        if *last == 0 {
+            lengths.pop();
+        }
+    }
+    lengths.retain(|&n| n > 0);
+    if lengths.is_empty() && wanted > 0 {
+        lengths.push(wanted);
+    }
+    lengths
+}
+
 /// Replace a varint field's value, copying every other field through untouched.
 fn set_varint_field(message: &[u8], tag: u64, value: u64) -> Option<Vec<u8>> {
     let mut reader = Reader::new(message);
@@ -398,42 +445,30 @@ fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> 
         }
     }
 
-    let lengths: Vec<u64> = runs
-        .iter()
-        .map(|run| {
-            let mut inner = Reader::new(run);
-            while !inner.done() {
-                let Some(key) = inner.varint() else { break };
-                if key >> 3 == 1 && key & 7 == WIRE_VARINT {
-                    return inner.varint().unwrap_or(0);
-                }
-                if inner.skip(key & 7).is_none() {
-                    break;
-                }
-            }
-            0
-        })
-        .collect();
+    let lengths: Vec<u64> = runs.iter().map(|run| run_length(run)).collect();
 
-    let adjusted = adjust_run_lengths(&lengths, from, removed, inserted);
     let wanted = utf16_len(new_text);
+    // Apply the edit, then make sure the result still adds up. A note whose runs were
+    // already wrong before this edit — one of ours, written before any of this was
+    // understood — is put right here rather than left broken, and reconciling at the tail
+    // keeps every styled run it had. Flattening would also make the arithmetic work, and
+    // would throw away every heading in the note to do it.
+    let adjusted = reconcile_run_lengths(
+        adjust_run_lengths(&lengths, from, removed, inserted),
+        wanted,
+    );
 
-    // The runs have to add up to the text, or Apple has styling pointing at units that are
-    // not there. If the arithmetic did not come out — or there were no runs to begin with —
-    // one run covering everything is correct, just unstyled.
-    let rebuilt_runs: Vec<Vec<u8>> =
-        if adjusted.iter().sum::<u64>() == wanted && !adjusted.is_empty() {
-            let mut kept = Vec::with_capacity(adjusted.len());
-            let mut source = runs.iter();
-            for length in &adjusted {
-                // Runs are consumed in order; a dropped one takes its styling with it.
-                let template = source.next().cloned().unwrap_or_default();
-                kept.push(set_varint_field(&template, 1, *length)?);
-            }
-            kept
-        } else {
-            vec![varint_field(1, wanted)]
-        };
+    let mut rebuilt_runs: Vec<Vec<u8>> = Vec::with_capacity(adjusted.len());
+    let mut source = runs.iter();
+    for length in &adjusted {
+        // Runs are consumed in order, so each keeps its own styling; a dropped one takes
+        // its styling with it, which is what dropping it means.
+        let template = source.next().cloned().unwrap_or_default();
+        rebuilt_runs.push(set_varint_field(&template, 1, *length)?);
+    }
+    if rebuilt_runs.is_empty() && wanted > 0 {
+        rebuilt_runs.push(varint_field(1, wanted));
+    }
 
     // Now the note itself: the text replaced, the runs replaced, everything else copied.
     let mut out = Vec::with_capacity(note.len() + new_text.len());
@@ -517,6 +552,40 @@ pub fn replace_text(original: &[u8], text: &str) -> Option<Vec<u8>> {
     rewrite(&plain, &TEXT_PATH[..2], &rebuilt_note)
 }
 
+/// Put a document's attribute runs back in step with the text it already holds, without
+/// touching a single byte of that text.
+///
+/// For repairing what this app's own earlier writes damaged: notes left with no runs at
+/// all, or with lengths that no longer add up. Going through [`replace_text`] would mean
+/// reading the text out and writing it back, and reading it out trims surrounding
+/// whitespace — so a repair would quietly edit the note it was meant to be fixing. This
+/// hands the existing text bytes straight back instead.
+///
+/// Returns `None` when the runs are already right, so a caller can tell repair from no-op.
+#[must_use]
+pub fn repair_runs(original: &[u8]) -> Option<Vec<u8>> {
+    let plain = inflate(original)?;
+    let text = field_at(&plain, TEXT_PATH)?;
+    let text = std::str::from_utf8(text).ok()?;
+
+    let covered: u64 = debug_attribute_lengths(original).iter().sum();
+    if covered == utf16_len(text) {
+        return None;
+    }
+
+    let note = field_at(&plain, &TEXT_PATH[..2])?;
+    // Same text in and out, so only the run lengths can move.
+    let rebuilt = rebuild_note(note, text, text)?;
+    rewrite(&plain, &TEXT_PATH[..2], &rebuilt)
+}
+
+/// [`repair_runs`] over the base64 a CloudKit field carries.
+#[must_use]
+pub fn repair_runs_in_base64(original: &str) -> Option<String> {
+    let raw = B64.decode(original.trim()).ok()?;
+    Some(B64.encode(gzip(&repair_runs(&raw)?)))
+}
+
 /// Whether [`replace_text`] would accept this document, without building the result.
 ///
 /// Answers "can this note be edited?" at sync time, so the interface can say so before
@@ -589,6 +658,27 @@ pub fn debug_inflate(value: &str) -> Option<Vec<u8>> {
     inflate(&B64.decode(value.trim()).ok()?)
 }
 
+/// The length an attribute run declares, or 0 if it declares none.
+///
+/// Scans for the field rather than assuming it comes first: protobuf does not promise an
+/// order, and a run with styling written ahead of its length is still a run. Reading only
+/// the first field silently dropped such runs, which made healthy notes measure short.
+fn run_length(run: &[u8]) -> u64 {
+    let mut reader = Reader::new(run);
+    while !reader.done() {
+        let Some(key) = reader.varint() else { break };
+        let (field, wire) = (key >> 3, key & 7);
+        if field == 1 && wire == WIRE_VARINT {
+            return reader.varint().unwrap_or(0);
+        }
+        if reader.skip(wire).is_none() {
+            break;
+        }
+    }
+    // An omitted length is protobuf's default, which is zero — not "skip this run".
+    0
+}
+
 /// The `length` of every attribute run inside a note document.
 ///
 /// Apple's note is `NoteStoreProto{2: Document{3: Note}}`, and the Note carries its text at
@@ -617,15 +707,7 @@ pub fn debug_attribute_lengths(bytes: &[u8]) -> Vec<u64> {
                 break;
             };
             let Some(run) = reader.take(n) else { break };
-            // The run's first field is its length.
-            let mut inner = Reader::new(run);
-            if let Some(inner_key) = inner.varint() {
-                if inner_key >> 3 == 1 && inner_key & 7 == WIRE_VARINT {
-                    if let Some(length) = inner.varint() {
-                        lengths.push(length);
-                    }
-                }
-            }
+            lengths.push(run_length(run));
         } else if reader.skip(wire).is_none() {
             break;
         }
@@ -1088,6 +1170,88 @@ mod rewrite_tests {
     fn a_run_left_covering_nothing_is_dropped() {
         // Remove the whole middle run.
         assert_eq!(adjust_run_lengths(&[10, 10, 10], 10, 10, 0), vec![10, 10]);
+    }
+
+    /// Repairing a note whose runs were already wrong must not cost it its formatting.
+    #[test]
+    fn reconciling_takes_the_difference_at_the_end() {
+        // Short by 169, as one real note on the account was: 16612 covered, 16781 there.
+        assert_eq!(
+            reconcile_run_lengths(vec![10, 20, 16_582], 16_781),
+            vec![10, 20, 16_751],
+            "the shortfall is added to the trailing run, not spread over the styled ones"
+        );
+        // Over by 29, as another was: 167 claimed over 138 of text.
+        assert_eq!(
+            reconcile_run_lengths(vec![100, 37, 30], 138),
+            vec![100, 37, 1],
+            "the excess is given back from the end"
+        );
+        // Over by enough to swallow whole trailing runs.
+        assert_eq!(reconcile_run_lengths(vec![10, 20, 30], 10), vec![10]);
+        // Already right: untouched.
+        assert_eq!(reconcile_run_lengths(vec![10, 20], 30), vec![10, 20]);
+        // Nothing at all to work with.
+        assert_eq!(reconcile_run_lengths(Vec::new(), 42), vec![42]);
+        assert_eq!(reconcile_run_lengths(Vec::new(), 0), Vec::<u64>::new());
+    }
+
+    /// Repair must not touch the text, including whitespace a reader would trim off. This
+    /// is the guarantee that makes it safe to run over someone's real notes.
+    #[test]
+    fn repairing_leaves_the_text_byte_for_byte() {
+        // Text with whitespace at both ends, which reading it back would have trimmed.
+        let text = "\n  a note with padding around it  \n";
+        let mut note = length_delimited(2, text.as_bytes());
+        note.extend(length_delimited(5, &varint(1, 9_999))); // a nonsense length
+        let mut inner = varint(1, 0);
+        inner.extend(length_delimited(3, &note));
+        let mut broken = varint(1, 0);
+        broken.extend(length_delimited(2, &inner));
+
+        let repaired = repair_runs(&broken).expect("it needed repair");
+        assert_eq!(
+            field_at(&repaired, TEXT_PATH),
+            Some(text.as_bytes()),
+            "the text must come through untouched, padding and all"
+        );
+        assert_eq!(
+            debug_attribute_lengths(&repaired).iter().sum::<u64>(),
+            text.encode_utf16().count() as u64
+        );
+    }
+
+    /// A note that is already correct is left completely alone, so a repair pass can tell
+    /// what it actually changed.
+    #[test]
+    fn repairing_a_healthy_note_is_a_no_op() {
+        assert!(
+            repair_runs(&document("already fine")).is_none(),
+            "nothing to do, and it says so"
+        );
+    }
+
+    /// A note that arrived with no runs — one of ours, written before any of this was
+    /// understood — is repaired simply by saving it again.
+    #[test]
+    fn a_note_with_no_runs_is_repaired_by_an_edit() {
+        // A document with text but no attribute run at all, as our own writes produced.
+        let mut note = length_delimited(2, b"some text that was never covered");
+        note.extend(length_delimited(4, &length_delimited(1, &[0xAB; 4])));
+        let mut inner = varint(1, 0);
+        inner.extend(length_delimited(3, &note));
+        let mut broken = varint(1, 0);
+        broken.extend(length_delimited(2, &inner));
+
+        assert_eq!(debug_attribute_lengths(&broken), Vec::<u64>::new());
+
+        let text = text_from_bytes(&broken).unwrap();
+        let repaired = replace_text(&broken, &text).unwrap();
+        assert_eq!(
+            debug_attribute_lengths(&repaired).iter().sum::<u64>(),
+            text.encode_utf16().count() as u64,
+            "saving it unchanged is enough to put it right"
+        );
     }
 
     #[test]
