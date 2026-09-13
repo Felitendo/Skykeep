@@ -4,17 +4,19 @@ import {
   messageOf,
   type Reminder,
   type ReminderList,
+  type ReminderCounts,
   type SmartList,
 } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
 /** Apple's built-in views, which is how most people enter Reminders. */
-const SMART: { kind: SmartList; title: string }[] = [
-  { kind: "today", title: "Today" },
-  { kind: "scheduled", title: "Scheduled" },
-  { kind: "flagged", title: "Flagged" },
-  { kind: "all", title: "All" },
+/** Apple's built-in views, in Apple's order, each with the glyph and colour its app uses. */
+const SMART: { kind: SmartList; title: string; glyph: string; colour: string }[] = [
+  { kind: "today", title: "Today", glyph: "\u2600", colour: "#0a84ff" },
+  { kind: "scheduled", title: "Scheduled", glyph: "\ud83d\udcc5", colour: "#ff453a" },
+  { kind: "all", title: "All", glyph: "\u2261", colour: "#8e8e93" },
+  { kind: "flagged", title: "Flagged", glyph: "\u2691", colour: "#ff9f0a" },
 ];
 
 /** End of today in the viewer's own timezone — the interface knows it, the backend doesn't. */
@@ -120,6 +122,8 @@ export function RemindersView() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { revision } = useSync();
+  /** What each sidebar entry is holding. Apple puts a number on every one. */
+  const [counts, setCounts] = useState<ReminderCounts | null>(null);
   /** A repeating reminder that was just ticked forward, and where it landed. */
   const [moved, setMoved] = useState<{ guid: string; text: string } | null>(
     null,
@@ -129,8 +133,12 @@ export function RemindersView() {
   const listGuid = inList ? selection.guid : null;
 
   const readLists = useCallback(async () => {
-    const found = await api.reminderLists();
+    const [found, tally] = await Promise.all([
+      api.reminderLists(),
+      api.reminderCounts(endOfToday()),
+    ]);
     setLists(Array.isArray(found) ? found : []);
+    setCounts(tally);
     setLoaded(true);
   }, []);
 
@@ -299,18 +307,29 @@ export function RemindersView() {
   return (
     <div className="rem">
       <aside className="rem-lists" aria-label="Reminder lists">
-        {SMART.map((s) => (
-          <button
-            key={s.kind}
-            className="rem-list"
-            aria-current={
-              selection.type === "smart" && selection.kind === s.kind
-            }
-            onClick={() => setSelection({ type: "smart", kind: s.kind })}
-          >
-            <span className="rem-list-name">{s.title}</span>
-          </button>
-        ))}
+        {/* Apple's own arrangement: the four built-in views as a grid of tiles, each
+            with its glyph and its count, above the lists you made yourself. */}
+        <div className="rem-smart-grid">
+          {SMART.map((smart) => (
+            <button
+              key={smart.kind}
+              className="rem-smart"
+              aria-current={
+                selection.type === "smart" && selection.kind === smart.kind
+              }
+              aria-label={`${smart.title}, ${counts?.[smart.kind] ?? 0} reminders`}
+              onClick={() => setSelection({ type: "smart", kind: smart.kind })}
+            >
+              <span className="rem-smart-top">
+                <span className="rem-smart-glyph" style={{ background: smart.colour }}>
+                  {smart.glyph}
+                </span>
+                <span className="rem-smart-count">{counts?.[smart.kind] ?? 0}</span>
+              </span>
+              <span className="rem-smart-name">{smart.title}</span>
+            </button>
+          ))}
+        </div>
 
         <p className="rem-lists-heading">My Lists</p>
         {lists.map((list) => (
@@ -353,6 +372,9 @@ export function RemindersView() {
                     style={{ background: list.colour || "var(--gold)" }}
                   />
                   <span className="rem-list-name">{list.title}</span>
+                  <span className="rem-list-count">
+                    {counts?.lists.find(([guid]) => guid === list.guid)?.[1] ?? 0}
+                  </span>
                 </button>
                 <button
                   className="rem-list-action"

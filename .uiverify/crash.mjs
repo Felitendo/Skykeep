@@ -14,6 +14,7 @@ await ctx.addInitScript(() => {
         case "calendar_events": case "calendar_list": case "reminders_due_between": return [];
         case "calendar_last_synced": case "reminders_last_synced": case "notes_last_synced":
         case "contacts_last_synced": return Math.floor(Date.now() / 1000);
+        case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
         case "reminder_lists": case "reminders_in": case "reminders_smart":
         case "note_folders": case "notes_in": case "contacts_list": case "drive_children": return [];
         case "event_save": return "E-new";

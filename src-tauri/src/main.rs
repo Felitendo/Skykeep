@@ -347,6 +347,16 @@ async fn calendar_list(data: State<'_, Data>) -> UiResult<Vec<Calendar>> {
     library.calendars().map_err(|e| e.to_string())
 }
 
+/// What every entry in the Reminders sidebar is holding.
+#[tauri::command]
+async fn reminder_counts(
+    until: i64,
+    data: State<'_, Data>,
+) -> UiResult<quince_core::reminders::ReminderCounts> {
+    let library = data.0.lock().await;
+    library.reminder_counts(until).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn reminder_lists(data: State<'_, Data>) -> UiResult<Vec<ReminderList>> {
     let library = data.0.lock().await;
@@ -868,6 +878,7 @@ fn main() {
             event_delete,
             calendar_list,
             reminder_lists,
+            reminder_counts,
             reminders_in,
             reminders_due_between,
             reminder_create,

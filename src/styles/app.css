@@ -634,7 +634,81 @@
 .rem-list:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .rem-list[aria-current="true"] { background: var(--gold-tint); font-weight: 550; }
 .rem-list:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
-.rem-list-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rem-list-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Apple puts the number on every entry, and it is what makes a sidebar worth glancing at.
+   Tabular figures so the column does not jitter as counts change. */
+.rem-list-count {
+  flex: none;
+  font-size: var(--t-11);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── The built-in views, arranged the way Reminders arranges them ───────────────────────
+   Four tiles above the lists you made: a filled glyph in the view's own colour, the count
+   large on the right, the name beneath. Two across, because that is what fits a sidebar. */
+.rem-smart-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.rem-smart {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  border: 0;
+  padding: 7px 9px 8px;
+  border-radius: var(--r-plateau);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms var(--ease);
+}
+
+.rem-smart:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.rem-smart[aria-current="true"] { background: var(--gold-tint); box-shadow: inset 0 0 0 1px var(--gold-ring); }
+.rem-smart:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+
+.rem-smart-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.rem-smart-glyph {
+  flex: none;
+  width: 19px;
+  height: 19px;
+  border-radius: var(--r-pill);
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  line-height: 1;
+  color: #fff;
+}
+
+.rem-smart-count {
+  font-size: var(--t-17);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+}
+
+.rem-smart-name {
+  font-size: var(--t-11);
+  font-weight: 550;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .rem-items { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 

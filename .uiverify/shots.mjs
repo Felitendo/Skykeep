@@ -128,6 +128,7 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "event_save": return "E-new";
         case "event_delete": return null;
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
+        case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
         case "reminder_lists": return !remindersFixture ? [] : reminderLists;
         case "reminders_in": return !remindersFixture ? [] : reminderItems;
         case "reminders_due_between": return calendarFixture ? dueReminders : [];

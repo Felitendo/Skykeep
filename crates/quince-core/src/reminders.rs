@@ -41,6 +41,18 @@ pub struct Reminder {
     pub raw: Option<String>,
 }
 
+/// What every entry in the sidebar is holding.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderCounts {
+    pub today: usize,
+    pub scheduled: usize,
+    pub flagged: usize,
+    pub all: usize,
+    /// Outstanding reminders per list, keyed by list guid.
+    pub lists: Vec<(String, usize)>,
+}
+
 /// Apple's built-in views over every list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -217,6 +229,55 @@ impl Library {
     /// These are the entry points people actually use: what is due today, everything with a
     /// date, and whatever has been flagged. They are queries rather than stored lists, which
     /// is what lets them stay correct as the clock moves.
+    /// How many reminders each smart list and each list is holding.
+    ///
+    /// Apple puts a count on every entry in the sidebar, and it is the number that makes
+    /// the sidebar worth looking at. Counting in SQL rather than by fetching each list and
+    /// measuring it is the difference between one cheap query and a dozen full reads.
+    pub fn reminder_counts(&self, until: i64) -> Result<ReminderCounts> {
+        // The same conditions the smart lists themselves use, so a tile can never disagree
+        // with what opening it shows.
+        let one = |clause: &str, args: &[i64]| -> Result<usize> {
+            let sql = format!(
+                "SELECT COUNT(*) FROM reminders r
+                 JOIN reminder_lists l ON l.guid = r.list_guid
+                 WHERE l.enabled = 1 AND {clause}"
+            );
+            let count: i64 = self.conn.query_row(
+                &sql,
+                rusqlite::params_from_iter(args.iter().copied()),
+                |row| row.get(0),
+            )?;
+            Ok(usize::try_from(count).unwrap_or(0))
+        };
+
+        let mut stmt = self.conn.prepare(
+            "SELECT l.guid, COUNT(r.guid)
+             FROM reminder_lists l
+             LEFT JOIN reminders r ON r.list_guid = l.guid AND r.completed_at IS NULL
+             GROUP BY l.guid",
+        )?;
+        let lists = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|(guid, n)| (guid, usize::try_from(n).unwrap_or(0)))
+            .collect();
+
+        Ok(ReminderCounts {
+            today: one(
+                "r.completed_at IS NULL AND r.due_at IS NOT NULL AND r.due_at < ?1",
+                &[until],
+            )?,
+            scheduled: one("r.completed_at IS NULL AND r.due_at IS NOT NULL", &[])?,
+            flagged: one("r.completed_at IS NULL AND r.flagged = 1", &[])?,
+            all: one("r.completed_at IS NULL", &[])?,
+            lists,
+        })
+    }
+
     pub fn reminders_smart(&self, kind: SmartList, until: i64) -> Result<Vec<Reminder>> {
         // Only Today is bounded by the clock, so only Today binds a value — binding one
         // regardless is what SQLite rejects as a parameter-count mismatch.
@@ -745,5 +806,116 @@ mod smart_tests {
         lib.put_reminders(&[reminder("a", None, true, None)])
             .unwrap();
         assert!(lib.reminders_in("l1", true).unwrap()[0].flagged);
+    }
+}
+
+#[cfg(test)]
+mod count_tests {
+    use super::*;
+
+    fn library() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[
+            ReminderList {
+                guid: "L1".into(),
+                title: "Daily".into(),
+                colour: None,
+                ctag: None,
+                sort_order: 0,
+                enabled: true,
+            },
+            ReminderList {
+                guid: "L2".into(),
+                title: "Off".into(),
+                colour: None,
+                ctag: None,
+                sort_order: 1,
+                enabled: false,
+            },
+        ])
+        .unwrap();
+        lib
+    }
+
+    fn reminder(guid: &str, list: &str, due: Option<i64>, done: bool, flagged: bool) -> Reminder {
+        Reminder {
+            guid: guid.into(),
+            list_guid: list.into(),
+            title: guid.into(),
+            notes: None,
+            due_at: due,
+            completed_at: done.then_some(1),
+            priority: 0,
+            flagged,
+            recur_frequency: None,
+            recur_interval: None,
+            etag: None,
+            raw: None,
+        }
+    }
+
+    /// A count on a tile that disagrees with what opening it shows is worse than no count,
+    /// so both come from the same conditions. This holds them to it.
+    #[test]
+    fn every_count_matches_what_opening_it_shows() {
+        let mut lib = library();
+        let now = 1_000_000;
+        lib.put_reminders(&[
+            reminder("overdue", "L1", Some(now - 500), false, false),
+            reminder("later", "L1", Some(now + 5_000), false, true),
+            reminder("undated", "L1", None, false, false),
+            reminder("done", "L1", Some(now - 100), true, false),
+        ])
+        .unwrap();
+
+        let counts = lib.reminder_counts(now).unwrap();
+        for (kind, count) in [
+            (SmartList::Today, counts.today),
+            (SmartList::Scheduled, counts.scheduled),
+            (SmartList::Flagged, counts.flagged),
+            (SmartList::All, counts.all),
+        ] {
+            assert_eq!(
+                lib.reminders_smart(kind, now).unwrap().len(),
+                count,
+                "{kind:?} count must equal what the list shows"
+            );
+        }
+        assert_eq!(counts.today, 1, "overdue counts as today");
+        assert_eq!(counts.all, 3, "completed does not count");
+    }
+
+    /// A list nobody has switched on contributes to nothing.
+    #[test]
+    fn a_disabled_list_is_left_out_of_the_smart_counts() {
+        let mut lib = library();
+        lib.put_reminders(&[reminder("hidden", "L2", Some(10), false, true)])
+            .unwrap();
+        let counts = lib.reminder_counts(1_000_000).unwrap();
+        assert_eq!(counts.all, 0);
+        assert_eq!(counts.flagged, 0);
+    }
+
+    /// Every list appears, including the empty ones — a sidebar that hid them would be
+    /// missing rows that are really there.
+    #[test]
+    fn every_list_gets_a_count_even_at_zero() {
+        let mut lib = library();
+        lib.put_reminders(&[reminder("a", "L1", None, false, false)])
+            .unwrap();
+        let counts = lib.reminder_counts(1_000_000).unwrap();
+        let by_guid: std::collections::HashMap<_, _> = counts.lists.into_iter().collect();
+        assert_eq!(by_guid.get("L1"), Some(&1));
+        assert_eq!(by_guid.get("L2"), Some(&0), "an empty list still shows");
+    }
+
+    #[test]
+    fn an_empty_library_counts_zero_rather_than_failing() {
+        let lib = library();
+        let counts = lib.reminder_counts(1_000_000).unwrap();
+        assert_eq!(
+            (counts.today, counts.scheduled, counts.flagged, counts.all),
+            (0, 0, 0, 0)
+        );
     }
 }

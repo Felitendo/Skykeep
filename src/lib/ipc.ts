@@ -60,6 +60,7 @@ export const api = {
     invoke<CalendarEvent[]>("calendar_events", { from, to }),
   calendarList: () => invoke<Calendar[]>("calendar_list"),
 
+  reminderCounts: (until: number) => invoke<ReminderCounts>("reminder_counts", { until }),
   reminderLists: () => invoke<ReminderList[]>("reminder_lists"),
   remindersIn: (listGuid: string, includeDone: boolean) =>
     invoke<Reminder[]>("reminders_in", { listGuid, includeDone }),
@@ -150,6 +151,16 @@ export type ReminderList = {
 };
 
 export type SmartList = "today" | "scheduled" | "flagged" | "all";
+
+/** What every entry in the Reminders sidebar is holding. */
+export type ReminderCounts = {
+  today: number;
+  scheduled: number;
+  flagged: number;
+  all: number;
+  /** [list guid, outstanding count] */
+  lists: [string, number][];
+};
 
 /** How often a reminder comes back. Frequency: 0 daily, 1 weekly, 2 monthly, 3 yearly. */
 export type Repeat = { frequency: number; interval: number };
