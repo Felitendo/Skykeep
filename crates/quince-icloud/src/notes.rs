@@ -126,14 +126,23 @@ pub fn apply_cloudkit(
     let mut locked_notes: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for record in &records {
-        let Some(kind) = field::record_type(record) else {
-            continue;
-        };
         let removed = record
             .get("deleted")
             .and_then(Value::as_bool)
             .unwrap_or(false)
             || field::flag(record, "Deleted");
+
+        let Some(kind) = field::record_type(record) else {
+            // A tombstone has a name and nothing else. Skipping them left notes deleted
+            // elsewhere on screen here, and saving one of those wrote it back to Apple —
+            // which is exactly how a deleted note reappears.
+            if removed {
+                if let Some(name) = field::record_name(record) {
+                    gone.push(name);
+                }
+            }
+            continue;
+        };
 
         match kind.as_str() {
             "Note" => {

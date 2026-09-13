@@ -10,6 +10,20 @@ const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservi
                   "sharedstreams","ubiquity","uploadimagews"];
 
 function installStub({ screen, services, twoFactor }) {
+  // Enough reminders to exercise the controls on a row. The keyboard driver is about
+  // behaviour, so the data only has to be shaped right, not large.
+  const lists = [
+    { guid: "L1", title: "Daily", colour: "#c8912a", ctag: null, sortOrder: 0, enabled: true },
+    { guid: "L2", title: "Study", colour: "#1badf8", ctag: null, sortOrder: 1, enabled: true },
+  ];
+  const items = [
+    { guid: "R1", listGuid: "L1", title: "Water the plants", notes: null, dueAt: null,
+      completedAt: null, priority: 0, flagged: false, recurFrequency: null,
+      recurInterval: null, etag: "t1" },
+    { guid: "R2", listGuid: "L1", title: "Evening run", notes: null, dueAt: null,
+      completedAt: null, priority: 1, flagged: false, recurFrequency: null,
+      recurInterval: null, etag: "t2" },
+  ];
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
     invoke: async (cmd) => {
@@ -26,8 +40,8 @@ function installStub({ screen, services, twoFactor }) {
         case "event_save": return "E-new";
         case "event_delete": return null;
         case "calendar_sync": return { calendars: 0, events: 0 };
-        case "reminder_lists": return [];
-        case "reminders_in": return [];
+        case "reminder_lists": return lists;
+        case "reminders_in": return items;
         case "reminders_due_between": return [];
         case "reminder_create": return null;
         case "reminder_delete": return null;
@@ -35,7 +49,7 @@ function installStub({ screen, services, twoFactor }) {
         case "reminder_edit": return null;
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;
-        case "reminders_smart": return [];
+        case "reminders_smart": return items;
         case "note_folders": return [];
         case "note_save": case "note_delete": case "note_move": return null;
         case "note_create": return "Note/new";
@@ -181,6 +195,53 @@ const focused = (page) =>
   await page.keyboard.press("ArrowRight");
   const right = await day();
   check("ArrowRight moves a day along", down !== right, `${down} → ${right}`);
+  await ctx.close();
+}
+
+// --- the pop-up button: one tab stop, arrows move, Escape leaves it alone ---
+{
+  const { ctx, page } = await open("library");
+  await page.getByRole("button", { name: "Reminders" }).click();
+  await page.waitForSelector(".rem-list-items li");
+
+  // Open a reminder's details, where the pickers live.
+  await page.locator(".rem-more").first().click({ force: true });
+  await page.waitForSelector(".rem-detail .picker-button");
+
+  const picker = page.locator(".rem-detail .picker-button").first();
+  const before = await picker.innerText();
+  await picker.click();
+  await page.waitForSelector(".picker-menu");
+
+  const options = await page.locator(".picker-menu li").count();
+  check("the menu is ours, not the operating system's", options > 1, `${options} options`);
+
+  const tabbable = await page.evaluate(
+    () => document.querySelectorAll('.picker-menu li[tabindex="0"]').length
+  );
+  check("menu is ONE tab stop, not one per option", tabbable === 1, `${tabbable} tabbable`);
+
+  await page.keyboard.press("Escape");
+  const closed = (await page.locator(".picker-menu").count()) === 0;
+  const after = await picker.innerText();
+  check("Escape closes it without changing the value", closed && before === after, `${before} → ${after}`);
+
+  // Arrows move the highlight, Enter takes it. The value on screen still comes from the
+  // library, so this asserts the interaction rather than a stub echoing a choice back.
+  await page.keyboard.press("ArrowDown");
+  await page.waitForSelector(".picker-menu");
+  const first = await page.locator(".picker-menu li.is-active").innerText();
+  await page.keyboard.press("ArrowDown");
+  const second = await page.locator(".picker-menu li.is-active").innerText();
+  check("ArrowDown moves the highlight", first !== second, `${first.trim()} → ${second.trim()}`);
+
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(150);
+  const dismissed = (await page.locator(".picker-menu").count()) === 0;
+  const focusBack = await page.evaluate(
+    () => document.activeElement?.classList.contains("picker-button") ?? false
+  );
+  check("Enter takes the choice and returns focus", dismissed && focusBack);
   await ctx.close();
 }
 

@@ -611,7 +611,26 @@ async fn note_save(
     quince_icloud::notes::edit_cloudkit(&http, &root, params.clone(), &note, &body)
         .await
         .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await
+    resync_notes(&http, &root, params, &data).await?;
+
+    // Apple accepted the body, but its change feed does not always carry our own write back
+    // on the very next pass. Without this the editor re-reads the old text a moment after
+    // saving, which reads as the edit having been lost — and typing on from there would
+    // save the stale version over the good one.
+    let (title, snippet) = quince_icloud::notes::title_and_snippet(&body);
+    let mut library = data.0.lock().await;
+    if let Some(mut stored) = library
+        .notes_in(None)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|n| n.guid == guid)
+    {
+        stored.body = Some(body);
+        stored.title = title;
+        stored.snippet = Some(snippet).filter(|s| !s.is_empty());
+        library.put_notes(&[stored]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Write a new note and return the record name Apple gave it.

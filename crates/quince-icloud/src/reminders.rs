@@ -582,9 +582,6 @@ pub fn apply_cloudkit(
     let mut rules: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
 
     for record in &records {
-        let Some(kind) = field::record_type(record) else {
-            continue; // tombstone with no type; nothing to act on
-        };
         let Some(name) = field::record_name(record) else {
             continue;
         };
@@ -594,6 +591,18 @@ pub fn apply_cloudkit(
             .and_then(Value::as_bool)
             .unwrap_or(false)
             || field::flag(record, "Deleted");
+
+        let Some(kind) = field::record_type(record) else {
+            // A tombstone carries a name and nothing else — no type, no fields. Skipping
+            // them meant anything deleted on a phone stayed on screen here forever, and
+            // saving one of those ghosts wrote it back to Apple. The name is enough: it
+            // says which record is gone, and a name only ever belongs to one thing.
+            if removed {
+                gone_reminders.push(name.clone());
+                gone_lists.push(name);
+            }
+            continue;
+        };
 
         match kind.as_str() {
             "Reminder" => {
@@ -2219,5 +2228,108 @@ mod priority_and_move_tests {
         .await
         .unwrap();
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tombstone_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn library_with(guid: &str) -> quince_core::Library {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        library
+            .put_reminder_lists(&[ReminderList {
+                guid: "List/a".into(),
+                title: "Daily".into(),
+                colour: None,
+                ctag: None,
+                sort_order: 0,
+                enabled: true,
+            }])
+            .unwrap();
+        library
+            .put_reminders(&[Reminder {
+                guid: guid.into(),
+                list_guid: "List/a".into(),
+                title: "Deleted on the phone".into(),
+                notes: None,
+                due_at: None,
+                completed_at: None,
+                priority: 0,
+                flagged: false,
+                recur_frequency: None,
+                recur_interval: None,
+                etag: None,
+                raw: None,
+            }])
+            .unwrap();
+        library
+    }
+
+    fn apply(library: &mut quince_core::Library, records: Vec<Value>) {
+        apply_cloudkit(
+            library,
+            RemindersFetch {
+                records,
+                token: Some("t".into()),
+                incremental: true,
+            },
+        )
+        .unwrap();
+    }
+
+    /// The bug this fixes: a record deleted elsewhere comes back as a tombstone with a name
+    /// and nothing else — no recordType, no fields. Those were skipped, so anything deleted
+    /// on a phone stayed on screen here forever.
+    #[test]
+    fn a_bare_tombstone_removes_the_reminder() {
+        let mut library = library_with("Reminder/1");
+        assert_eq!(library.reminders_in("List/a", true).unwrap().len(), 1);
+
+        apply(
+            &mut library,
+            vec![json!({ "recordName": "Reminder/1", "deleted": true })],
+        );
+        assert!(
+            library.reminders_in("List/a", true).unwrap().is_empty(),
+            "a tombstone must remove the reminder"
+        );
+    }
+
+    /// And a tombstone for a list takes the list with it.
+    #[test]
+    fn a_bare_tombstone_removes_the_list() {
+        let mut library = library_with("Reminder/1");
+        apply(
+            &mut library,
+            vec![json!({ "recordName": "List/a", "deleted": true })],
+        );
+        assert!(library.reminder_lists().unwrap().is_empty());
+    }
+
+    /// A tombstone that is not marked deleted is just a record we cannot read, and guessing
+    /// it away would delete things that still exist.
+    #[test]
+    fn an_untyped_record_that_is_not_deleted_is_left_alone() {
+        let mut library = library_with("Reminder/1");
+        apply(&mut library, vec![json!({ "recordName": "Reminder/1" })]);
+        assert_eq!(
+            library.reminders_in("List/a", true).unwrap().len(),
+            1,
+            "only an explicit deletion may remove anything"
+        );
+    }
+
+    /// A name that matches nothing must not disturb what is there.
+    #[test]
+    fn a_tombstone_for_something_we_never_had_is_harmless() {
+        let mut library = library_with("Reminder/1");
+        apply(
+            &mut library,
+            vec![json!({ "recordName": "Reminder/999", "deleted": true })],
+        );
+        assert_eq!(library.reminders_in("List/a", true).unwrap().len(), 1);
+        assert_eq!(library.reminder_lists().unwrap().len(), 1);
     }
 }

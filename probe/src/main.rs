@@ -1423,6 +1423,61 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- what is in a RecurrenceRule record? --------------------------------------
+    // Setting a repeat means writing one of these and linking it. Measure it first.
+    println!("\n\x1b[1m── RecurrenceRule: every field Apple writes ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.reminders",
+            client.service_params(),
+        );
+        if let Ok((records, _)) = zc.all_records("Reminders", None).await {
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("RecurrenceRule"))
+                .take(2)
+            {
+                println!(
+                    "  {}",
+                    quince_icloud::cloudkit::field::record_name(rec).unwrap_or_default()
+                );
+                if let Some(fields) = rec.get("fields").and_then(|f| f.as_object()) {
+                    for (k, v) in fields {
+                        println!(
+                            "      {k} = {}",
+                            v.to_string().chars().take(120).collect::<String>()
+                        );
+                    }
+                }
+            }
+
+            // And how the reminder points at its rule.
+            for rec in records
+                .iter()
+                .filter(|r| {
+                    r.get("recordType").and_then(|t| t.as_str()) == Some("Reminder")
+                        && r.pointer("/fields/RecurrenceRuleIDs/value")
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|a| !a.is_empty())
+                })
+                .take(2)
+            {
+                println!(
+                    "  reminder {} RecurrenceRuleIDs = {}",
+                    quince_icloud::cloudkit::field::record_name(rec).unwrap_or_default(),
+                    rec.pointer("/fields/RecurrenceRuleIDs")
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_default()
+                        .chars()
+                        .take(200)
+                        .collect::<String>()
+                );
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

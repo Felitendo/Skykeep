@@ -7,6 +7,7 @@ import {
   type SmartList,
 } from "../lib/ipc";
 import { useSync } from "../lib/sync";
+import { Picker } from "../components/Picker";
 
 /** Apple's built-in views, which is how most people enter Reminders. */
 const SMART: { kind: SmartList; title: string }[] = [
@@ -490,38 +491,31 @@ export function RemindersView() {
                           {repeat}. Ticking it moves it to the next one.
                         </p>
                       )}
-                      <label>
+                      {/* A pop-up button is not a labelled field: it names itself, and
+                          wrapping one in a <label> associates a label with nothing. */}
+                      <div className="rem-field">
                         <span>Priority</span>
-                        <select
-                          value={reminder.priority}
+                        <Picker
+                          label={`Priority for ${reminder.title}`}
+                          value={String(reminder.priority)}
                           disabled={busyGuid === reminder.guid}
-                          onChange={(e) =>
-                            void setPriority(reminder, Number(e.target.value))
-                          }
-                        >
-                          {PRIORITIES.map((p) => (
-                            <option key={p.value} value={p.value}>
-                              {p.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
+                          onChange={(v) => void setPriority(reminder, Number(v))}
+                          options={PRIORITIES.map((p) => ({
+                            value: String(p.value),
+                            label: p.label,
+                          }))}
+                        />
+                      </div>
+                      <div className="rem-field">
                         <span>List</span>
-                        <select
+                        <Picker
+                          label={`List for ${reminder.title}`}
                           value={reminder.listGuid}
                           disabled={busyGuid === reminder.guid}
-                          onChange={(e) =>
-                            void moveToList(reminder, e.target.value)
-                          }
-                        >
-                          {lists.map((l) => (
-                            <option key={l.guid} value={l.guid}>
-                              {l.title}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                          onChange={(guid) => void moveToList(reminder, guid)}
+                          options={lists.map((l) => ({ value: l.guid, label: l.title }))}
+                        />
+                      </div>
                       <label>
                         <span>Notes</span>
                         <textarea

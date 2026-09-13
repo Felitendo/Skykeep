@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, messageOf, type Calendar, type CalendarEvent, type Reminder } from "../lib/ipc";
 import { useSync } from "../lib/sync";
+import { Picker } from "../components/Picker";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -489,19 +490,15 @@ export function CalendarView() {
                 placeholder="New event"
               />
             </label>
-            <label>
+            <div className="cal-field">
               <span>Calendar</span>
-              <select
+              <Picker
+                label="Calendar"
                 value={draft.calendarGuid}
-                onChange={(e) => setDraft({ ...draft, calendarGuid: e.target.value })}
-              >
-                {calendars.map((c) => (
-                  <option key={c.guid} value={c.guid}>
-                    {c.title}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={(guid) => setDraft({ ...draft, calendarGuid: guid })}
+                options={calendars.map((c) => ({ value: c.guid, label: c.title }))}
+              />
+            </div>
             <label>
               <span>Starts</span>
               <input
