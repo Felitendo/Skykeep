@@ -151,17 +151,66 @@ export function NotesView() {
   // Leaving the note takes whatever is outstanding with it, before the draft is cleared.
   useEffect(() => () => void flush(), [openGuid, flush]);
 
+  /**
+   * A note nobody has typed into is not a note. Apple discards an empty new one the moment
+   * you look away rather than syncing a "New Note" placeholder to every device, and that
+   * had been the actual bug: pressing New note wrote junk to iCloud immediately, even if
+   * nothing was ever typed.
+   *
+   * So composing happens locally first. It becomes a real, synced note the moment there is
+   * something worth keeping — a pause after typing, or leaving it — and simply evaporates
+   * if you never type at all.
+   */
+  const [composing, setComposing] = useState<{ folderGuid: string | null; body: string } | null>(
+    null
+  );
+
+  const commitComposing = useCallback(async () => {
+    const draft = composing;
+    if (!draft) return;
+    if (!draft.body.trim()) {
+      // Nothing was ever typed. There is nothing to keep, so nothing is sent.
+      setComposing(null);
+      return;
+    }
+    setComposing(null);
+    setBusy(true);
+    setError(null);
+    try {
+      const guid = await api.noteCreate(draft.folderGuid, draft.body);
+      await read();
+      setOpenGuid(guid);
+    } catch (e) {
+      setError(messageOf(e));
+      // The write failed, not the typing — put it back rather than lose it.
+      setComposing(draft);
+    } finally {
+      setBusy(false);
+    }
+  }, [composing, read]);
+
+  // The same pause-then-save rhythm as an existing note, up until there is a real note to
+  // hand it to.
+  useEffect(() => {
+    if (!composing || !composing.body.trim()) return undefined;
+    const timer = window.setTimeout(() => void commitComposing(), 900);
+    return () => window.clearTimeout(timer);
+  }, [composing, commitComposing]);
+
+  /** Finish composing before doing anything that would otherwise abandon it mid-thought. */
+  const selectNote = useCallback(
+    async (guid: string) => {
+      if (composing) await commitComposing();
+      setOpenGuid(guid);
+    },
+    [composing, commitComposing]
+  );
+
   const create = useCallback(async () => {
-    const guid = await api
-      .noteCreate(folder === ALL ? null : folder, "New Note\n")
-      .catch((e) => {
-        setError(messageOf(e));
-        return null;
-      });
-    if (guid === null) return;
-    await read();
-    setOpenGuid(guid);
-  }, [folder, read]);
+    if (composing) await commitComposing();
+    setOpenGuid(null);
+    setComposing({ folderGuid: folder === ALL ? null : folder, body: "" });
+  }, [composing, commitComposing, folder]);
 
   const remove = useCallback(async () => {
     if (!open) return;
@@ -241,7 +290,7 @@ export function NotesView() {
               <button
                 className="note-row"
                 aria-current={openGuid === note.guid}
-                onClick={() => setOpenGuid(note.guid)}
+                onClick={() => void selectNote(note.guid)}
               >
                 <span className="note-row-title">
                   {note.pinned && <span className="pin" aria-label="Pinned">●</span>}
@@ -264,7 +313,19 @@ export function NotesView() {
       </section>
 
       <article className="note-body" aria-label="Note">
-        {open ? (
+        {composing ? (
+          <textarea
+            key="composing"
+            className="note-text"
+            aria-label="New note"
+            autoFocus
+            value={composing.body}
+            onChange={(e) => setComposing((c) => (c ? { ...c, body: e.target.value } : c))}
+            onBlur={() => void commitComposing()}
+            placeholder="New Note"
+            spellCheck
+          />
+        ) : open ? (
           open.locked ? (
             <p className="cal-empty">
               This note is locked. Apple keeps it encrypted, so there is nothing here to

@@ -85,16 +85,14 @@
 /* ---- buttons ----------------------------------------------------------------- */
 
 .primary {
-  margin-top: 18px;
-  width: 100%;
   border: 0;
   border-radius: var(--r-field);
   background: var(--gold);
   color: #fff;
   font: inherit;
-  font-size: var(--t-15);
+  font-size: var(--t-13);
   font-weight: 550;
-  padding: 10px 16px;
+  padding: 5px 14px;
   cursor: pointer;
   transition: background 130ms var(--ease), transform 130ms var(--ease);
 }
@@ -108,20 +106,40 @@
 }
 .primary:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 2px; }
 
+/* A secondary button, in the macOS shape: a hairline-bordered plateau with a quiet fill.
+   It used to be bare coloured text that underlined on hover, which reads as a link — so
+   "New note" and "New contact" looked like footnotes rather than the things you press. */
 .quiet {
-  margin-top: 14px;
-  border: 0;
-  background: none;
-  color: var(--gold);
+  border: 0.5px solid var(--field-edge);
+  background: var(--field);
+  box-shadow: var(--shadow-field);
+  color: var(--text);
   font: inherit;
   font-size: var(--t-13);
   cursor: pointer;
-  padding: 4px 8px;
+  padding: 4px 10px;
   border-radius: var(--r-field);
+  white-space: nowrap;
+  transition: border-color 130ms var(--ease), background 130ms var(--ease);
 }
 
-.quiet:hover { text-decoration: underline; }
-.quiet:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
+.quiet:hover:not(:disabled) {
+  border-color: var(--field-edge-hover);
+  background: color-mix(in srgb, var(--field) 88%, var(--text) 8%);
+}
+
+.quiet:disabled { color: var(--text-3); cursor: default; }
+.quiet:focus-visible { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-ring); }
+
+/* The sign-in screen's button is the one thing on the screen, so it takes the width and
+   the weight. Everywhere else it is one control among several. */
+.shell .primary { margin-top: 18px; width: 100%; font-size: var(--t-15); padding: 10px 16px; }
+
+.quiet.danger { color: var(--danger); }
+.quiet.danger:hover:not(:disabled) { border-color: var(--danger); }
+
+/* The sign-in screen's own buttons sit under a form and need the gap they had. */
+.shell .quiet { margin-top: 14px; }
 
 /* ---- footnotes --------------------------------------------------------------- */
 
@@ -337,10 +355,19 @@
   gap: 4px;
 }
 
+/* A footer link, not a control to press by accident: the one place a bordered button
+   would be heavier than what it does. */
 .sidebar-signout {
   align-self: flex-start;
   font-size: var(--t-11);
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--gold);
+  padding: 4px 8px;
 }
+
+.sidebar-signout:hover:not(:disabled) { background: none; text-decoration: underline; }
 
 .sidebar h2 {
   margin: 6px 8px 10px;
@@ -380,6 +407,18 @@
   color: var(--text-3);
   flex: none;
   opacity: 0.62;
+}
+
+/* The count beside a screen's title, as Reminders shows it: the same size as the heading,
+   in a lighter weight and colour, so it reads as part of the title rather than as a stray
+   digit that wandered in from somewhere. */
+.cal-nav > .badge {
+  font-size: var(--t-22);
+  font-weight: 400;
+  color: var(--text-3);
+  opacity: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.021em;
 }
 
 .nav-item[aria-current="true"] .nav-toggle {
@@ -843,6 +882,15 @@
 }
 
 .rem-add input::placeholder { color: var(--text-3); }
+
+.rem-add-target {
+  flex: none;
+  font-size: var(--t-11);
+  color: var(--text-3);
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
 .rem-add:focus-within { background: color-mix(in srgb, var(--text) 4%, transparent); }
 
 /* A ring outline that is clearly not actionable, so the row reads as a draft. */
@@ -1160,24 +1208,33 @@ textarea.note-text:disabled {
   height: 68px;
   min-width: 68px;
   font-size: var(--t-22);
-  margin-bottom: 12px;
-  align-self: flex-start;
 }
 
 .contact-detail {
   overflow-y: auto;
   min-height: 0;
-  padding: 4px 32px 40px;
+  padding: 8px 40px 40px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  /* One block, left-aligned. Centring the card while the avatar was pinned left is what
+     left a photo alone in the corner and a name floating in the middle of the pane. */
+  align-items: flex-start;
 }
 
-.contact-detail > * { width: 100%; max-width: 46ch; }
-.contact-detail h2 { margin: 0 0 2px; font-size: var(--t-22); font-weight: 600; letter-spacing: -0.021em; }
-.contact-company { margin: 0 0 18px; color: var(--text-2); font-size: var(--t-13); }
+.contact-detail > * { width: 100%; max-width: min(56ch, 100%); }
 
-.contact-methods { margin: 18px 0 0; max-width: 46ch; }
+.contact-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.contact-head-names { min-width: 0; }
+.contact-detail h2 { margin: 0 0 2px; font-size: var(--t-22); font-weight: 600; letter-spacing: -0.021em; }
+.contact-company { margin: 0; color: var(--text-2); font-size: var(--t-13); }
+
+.contact-methods { margin: 0; }
 
 .contact-methods > div {
   display: grid;
@@ -1192,7 +1249,7 @@ textarea.note-text:disabled {
 .contact-methods a { color: var(--gold); text-decoration: none; }
 .contact-methods a:hover { text-decoration: underline; }
 
-.contact-notes { margin-top: 20px; max-width: 60ch; color: var(--text-2); white-space: pre-wrap; }
+.contact-notes { margin-top: 20px; color: var(--text-2); white-space: pre-wrap; }
 
 .content:has(.contacts) { display: flex; flex-direction: column; overflow: hidden; }
 
@@ -1496,11 +1553,14 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
 }
 
 .cal-day-title {
-  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Beside what it labels, not at the far end of the pane. */
+.cal-day-item .badge { margin-left: 4px; }
 
 /* Two columns of fields, so a date and its time sit together rather than stacking into a
    tall form that pushes the actions off the panel. */

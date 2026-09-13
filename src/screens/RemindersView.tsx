@@ -294,15 +294,23 @@ export function RemindersView() {
     setAddingList(false);
   }
 
+  /**
+   * A smart list is a view, not somewhere to keep things — but Apple still lets you add
+   * from Today or All, and quietly files the new reminder in a real list. The first list
+   * is the closest thing this account has to a default one, which is what a smart view
+   * targets.
+   */
+  const targetListGuid = listGuid ?? lists[0]?.guid ?? null;
+  const targetList = lists.find((l) => l.guid === targetListGuid) ?? null;
+
   async function add(e: React.FormEvent) {
     e.preventDefault();
     const title = draft.trim();
-    // Adding needs a real list: a smart list is a view, not somewhere to put things.
-    if (!title || !listGuid) return;
+    if (!title || !targetListGuid) return;
     setSyncing(true);
     setError(null);
     try {
-      await api.reminderCreate(listGuid, title);
+      await api.reminderCreate(targetListGuid, title);
       setDraft("");
       await readItems();
     } catch (err) {
@@ -492,16 +500,27 @@ export function RemindersView() {
           </p>
         )}
 
-        {inList && (
+        {targetListGuid && (
           <form className="rem-add" onSubmit={add}>
             <span className="tick ghost" aria-hidden="true" />
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Add a reminder"
-              aria-label={`Add a reminder to ${heading}`}
+              aria-label={
+                inList
+                  ? `Add a reminder to ${heading}`
+                  : `Add a reminder to ${targetList?.title ?? "a list"}`
+              }
               disabled={syncing}
             />
+            {/* Only said out loud when it isn't obvious — inside a list, of course it goes
+                there. From a smart view, where it lands is worth naming. */}
+            {!inList && targetList && (
+              <span className="rem-add-target" aria-hidden="true">
+                {targetList.title}
+              </span>
+            )}
           </form>
         )}
 

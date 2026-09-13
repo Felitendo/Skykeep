@@ -260,6 +260,16 @@ const shots = [
       await p.waitForSelector(".note-rows .note-row");
       await p.click('.note-row:has-text("These sources")');
     } },
+  { name: "16-contacts-wide", screen: "library", theme: "dark", contactsFixture: true,
+    viewport: { width: 1920, height: 1080 },
+    act: async (p) => {
+      await p.click('.nav-item:has-text("Contacts")');
+      await p.waitForSelector(".contact-rows .contact-row");
+      await p.click('.contact-row:has-text("Zoya")');
+    } },
+  { name: "17-calendar-wide", screen: "library", theme: "dark", calendarFixture: true,
+    viewport: { width: 1920, height: 1080 },
+    act: async (p) => { await p.waitForSelector(".cal-grid"); } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];

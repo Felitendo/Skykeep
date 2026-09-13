@@ -12,6 +12,20 @@ pub struct NoteFolder {
     pub sort_order: i64,
 }
 
+/// Apple's identifier for the folder deleted notes go to.
+///
+/// The record name, not the title: the title is translated, so matching on "Recently
+/// Deleted" would work in English and quietly fail everywhere else.
+pub const TRASH_FOLDER: &str = "TrashFolder-CloudKit";
+
+impl NoteFolder {
+    /// Whether this is where deleted notes wait before they are really gone.
+    #[must_use]
+    pub fn is_trash(&self) -> bool {
+        self.guid == TRASH_FOLDER
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
@@ -161,16 +175,18 @@ impl Library {
 
     /// Notes in a folder, pinned first and then most recently changed — Apple's order.
     ///
-    /// Passing `None` returns every note, which is what an "All Notes" view shows.
+    /// Passing `None` is the "All Notes" view, which in Apple's app means every note that
+    /// has not been deleted. Including the deleted ones put them in both places at once.
     pub fn notes_in(&self, folder_guid: Option<&str>) -> Result<Vec<Note>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, folder_guid, title, snippet, body, locked, pinned,
                     created_at, modified_at, editable, etag
              FROM notes
-             WHERE ?1 IS NULL OR folder_guid = ?1
+             WHERE (?1 IS NULL AND (folder_guid IS NULL OR folder_guid != ?2))
+                OR folder_guid = ?1
              ORDER BY pinned DESC, modified_at DESC, title",
         )?;
-        let rows = stmt.query_map(params![folder_guid], |row| {
+        let rows = stmt.query_map(params![folder_guid, TRASH_FOLDER], |row| {
             Ok(Note {
                 guid: row.get(0)?,
                 folder_guid: row.get(1)?,

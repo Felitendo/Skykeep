@@ -306,9 +306,18 @@ export function ContactsView() {
           </form>
         ) : open ? (
           <>
-            <span className="avatar large" aria-hidden="true">{initials(open)}</span>
-            <h2>{displayName(open)}</h2>
-            {open.company && !open.isCompany && <p className="contact-company">{open.company}</p>}
+            {/* Photo and name together at the top of the card, as Contacts arranges them.
+                The avatar used to be pinned to the pane's left edge while the name was
+                centred somewhere else entirely, so they read as two unrelated things. */}
+            <div className="contact-head">
+              <span className="avatar large" aria-hidden="true">{initials(open)}</span>
+              <div className="contact-head-names">
+                <h2>{displayName(open)}</h2>
+                {open.company && !open.isCompany && (
+                  <p className="contact-company">{open.company}</p>
+                )}
+              </div>
+            </div>
 
             <dl className="contact-methods">
               {open.methods.map((m, i) => (

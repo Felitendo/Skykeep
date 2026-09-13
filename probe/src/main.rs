@@ -2106,6 +2106,40 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- what does a Notes Folder record carry? ------------------------------------
+    // "All Notes" must not include the ones in Recently Deleted, so something has to say
+    // which folder that is — and it cannot be the name, which is translated.
+    println!("\n\x1b[1m── Notes folders: every field ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.notes",
+            client.service_params(),
+        );
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Notes", None).await
+        {
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("Folder"))
+            {
+                println!(
+                    "  {}",
+                    quince_icloud::cloudkit::field::record_name(rec).unwrap_or_default()
+                );
+                if let Some(fields) = rec.get("fields").and_then(|f| f.as_object()) {
+                    for (k, v) in fields {
+                        println!(
+                            "      {k} = {}",
+                            v.to_string().chars().take(110).collect::<String>()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which
