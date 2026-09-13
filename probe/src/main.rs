@@ -582,6 +582,50 @@ async fn main() -> Result<()> {
         println!("  Apple offered no calendar service for this account");
     }
 
+    // ---- Reminders, end to end --------------------------------------------------
+    println!("\n\x1b[1m── Reminders sync (the real path the app uses) ──\x1b[0m");
+    if let Some(root) = session.service_url("reminders") {
+        let params = client.service_params();
+        let http = client.http().clone();
+        match quince_core::Library::open(&dir) {
+            Err(e) => println!("  \x1b[31mcouldn't open the local library:\x1b[0m {e}"),
+            Ok(mut library) => {
+                match quince_icloud::reminders::sync(
+                    &http,
+                    &root,
+                    params,
+                    &mut library,
+                    "Asia/Kolkata",
+                )
+                .await
+                {
+                    Err(e) => println!("  \x1b[31mFAIL\x1b[0m {e}"),
+                    Ok((lists, count)) => {
+                        println!("  \x1b[32mPASS\x1b[0m {lists} list(s), {count} reminder(s)");
+                        for l in library.reminder_lists().unwrap_or_default() {
+                            let items = library.reminders_in(&l.guid, true).unwrap_or_default();
+                            println!(
+                                "    {:<24} {:<9} {} item(s)",
+                                l.title,
+                                l.colour.unwrap_or_else(|| "—".into()),
+                                items.len()
+                            );
+                            for r in items.iter().take(6) {
+                                println!(
+                                    "      [{}] {}",
+                                    if r.is_done() { "x" } else { " " },
+                                    r.title
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        println!("  Apple offered no reminders service for this account");
+    }
+
     // ---- 5. verdict -------------------------------------------------------------
     let passed = results.iter().filter(|r| r.ok).count();
     println!("\n\x1b[1m── Verdict ──\x1b[0m");

@@ -4,6 +4,7 @@
 //! untrusted: a missing field or a malformed date returns an error, never a panic.
 
 pub mod calendar;
+pub mod reminders;
 pub mod sync;
 
 #[derive(Debug, thiserror::Error)]

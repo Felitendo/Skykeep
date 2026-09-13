@@ -19,7 +19,11 @@ hmac = "0.12"
 rand = "0.9"
 reqwest_cookie_store = "0.8"
 cookie_store = { version = "0.21", features = ["serde_json"] }
-keyring = { version = "3", features = ["linux-native"] }
+# `linux-native` selects the KERNEL keyutils backend, which is session-scoped and does not
+# survive a reboot — the trust token would quietly evaporate and the app would ask for a code
+# again, the exact failure this project exists to fix. The Secret Service backend is the
+# persistent one (gnome-keyring / kwallet).
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 thiserror = "2"
 
 [dev-dependencies]

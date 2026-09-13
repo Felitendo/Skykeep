@@ -48,4 +48,33 @@ pub const MIGRATIONS: &[&str] = &[
         last_error     TEXT
     ) STRICT;
     "#,
+    // 2 — reminder lists and reminders.
+    r#"
+    CREATE TABLE reminder_lists (
+        guid       TEXT PRIMARY KEY,
+        title      TEXT NOT NULL,
+        colour     TEXT,
+        ctag       TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        updated_at INTEGER NOT NULL
+    ) STRICT;
+
+    CREATE TABLE reminders (
+        guid         TEXT PRIMARY KEY,
+        list_guid    TEXT NOT NULL REFERENCES reminder_lists(guid) ON DELETE CASCADE,
+        title        TEXT NOT NULL,
+        notes        TEXT,
+        -- Unix seconds, UTC. Null means no due date, which is the common case.
+        due_at       INTEGER,
+        -- Null while outstanding; the completion instant once ticked off.
+        completed_at INTEGER,
+        priority     INTEGER NOT NULL DEFAULT 0,
+        etag         TEXT,
+        updated_at   INTEGER NOT NULL
+    ) STRICT;
+
+    CREATE INDEX reminders_by_list ON reminders (list_guid, completed_at, due_at);
+    CREATE INDEX reminders_by_due ON reminders (due_at);
+    "#,
 ];

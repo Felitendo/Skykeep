@@ -177,9 +177,27 @@ impl Store {
     pub fn save(&self, session: &Session) -> Result<(), crate::Error> {
         let json = serde_json::to_string(session)?;
         match &self.backend {
-            Backend::Keyring => Self::entry()
-                .and_then(|e| e.set_password(&json))
-                .map_err(|e| crate::Error::Keyring(e.to_string())),
+            Backend::Keyring => {
+                Self::entry()
+                    .and_then(|e| e.set_password(&json))
+                    .map_err(|e| crate::Error::Keyring(e.to_string()))?;
+
+                // Storing the trust token is the whole reason sign-in survives a restart, so
+                // prove it landed rather than assume. A keyring that accepts a write and
+                // loses it looks identical to working until the user reopens the app.
+                if session.trust_token.is_some() {
+                    let stored = Self::entry().and_then(|e| e.get_password()).ok();
+                    if stored.as_deref() != Some(json.as_str()) {
+                        return Err(crate::Error::Keyring(
+                            "the system keyring accepted the sign-in but did not keep it. \
+                             Check that a keyring service (gnome-keyring or kwallet) is \
+                             running and unlocked"
+                                .into(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
             Backend::File(path) => Ok(std::fs::write(path, json)?),
         }
     }

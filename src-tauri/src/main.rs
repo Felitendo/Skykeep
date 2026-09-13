@@ -3,6 +3,7 @@
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use quince_core::calendar::{Calendar, Event};
+use quince_core::reminders::{Reminder, ReminderList};
 use quince_core::Library;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -213,6 +214,51 @@ async fn calendar_list(data: State<'_, Data>) -> UiResult<Vec<Calendar>> {
     library.calendars().map_err(|e| e.to_string())
 }
 
+/// Refresh reminders from Apple. Unlike calendar there is no date window, so one call.
+#[tauri::command]
+async fn reminders_sync(
+    timezone: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<(usize, usize)> {
+    let (http, root, params) = {
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("reminders")
+            .ok_or("Apple hasn't offered a reminders service for this account.")?;
+        (client.http().clone(), root, client.service_params())
+    };
+    let mut library = data.0.lock().await;
+    quince_icloud::reminders::sync(&http, &root, params, &mut library, &timezone)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn reminder_lists(data: State<'_, Data>) -> UiResult<Vec<ReminderList>> {
+    let library = data.0.lock().await;
+    library.reminder_lists().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn reminders_in(
+    list_guid: String,
+    include_done: bool,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Reminder>> {
+    let library = data.0.lock().await;
+    library
+        .reminders_in(&list_guid, include_done)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn reminders_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
+    let library = data.0.lock().await;
+    library.last_synced("reminders").map_err(|e| e.to_string())
+}
+
 /// When the calendar last synced, as unix seconds.
 #[tauri::command]
 async fn calendar_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
@@ -250,6 +296,10 @@ fn main() {
             calendar_events,
             calendar_list,
             calendar_last_synced,
+            reminders_sync,
+            reminder_lists,
+            reminders_in,
+            reminders_last_synced,
         ])
         .run(tauri::generate_context!())
         .expect("Quince failed to start");

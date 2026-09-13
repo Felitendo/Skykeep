@@ -14,7 +14,7 @@ use serde_json::Value;
 /// Converting needs the zone, because the same wall-clock reading means different instants in
 /// different places. A missing or unknown zone falls back to UTC rather than failing the whole
 /// sync over one event.
-fn parse_apple_date(raw: &Value, timezone: Option<&str>) -> Result<i64> {
+pub(crate) fn parse_apple_date(raw: &Value, timezone: Option<&str>) -> Result<i64> {
     let parts = raw
         .as_array()
         .ok_or_else(|| Error::Protocol("a date was not an array".into()))?;
