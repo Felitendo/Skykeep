@@ -11,6 +11,10 @@ step() {
   if "$@"; then printf '\033[32mok\033[0m\n'; else printf '\033[31mFAILED\033[0m\n'; fail=1; fi
 }
 
+# The app must serve its own bundle. Pointing it at a dev server made it depend on `npm run
+# dev` being up and healthy, which produced both a connection error and a blank window.
+step "app is standalone" bash -c '! grep -q devUrl src-tauri/tauri.conf.json'
+
 step "rust format"      cargo fmt --all -- --check
 step "rust lint"        cargo clippy --workspace --all-targets -- -D warnings
 step "rust tests"       cargo test --workspace --quiet

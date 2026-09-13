@@ -936,6 +936,53 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- how does Apple order a reminder list? ----------------------------------
+    println!("\n\x1b[1m── Reminder list ordering ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.reminders",
+            client.service_params(),
+        );
+        if let Ok((records, _)) = zc.all_records("Reminders", None).await {
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("List"))
+                .take(3)
+            {
+                let name = quince_icloud::cloudkit::field::string(rec, "Name")
+                    .unwrap_or_else(|| "?".into());
+                let style = rec.pointer("/fields/SortingStyle/value");
+                let ids = rec
+                    .pointer("/fields/ReminderIDs/value")
+                    .and_then(|v| v.as_array());
+                println!(
+                    "  {name:<16} SortingStyle={:<6} ReminderIDs={}",
+                    style.map_or("none".into(), std::string::ToString::to_string),
+                    ids.map_or("none".to_string(), |a| format!("[{} ids]", a.len()))
+                );
+                if let Some(list) = ids {
+                    for id in list.iter().take(2) {
+                        println!("      {}", id.as_str().unwrap_or("?"));
+                    }
+                }
+            }
+            // And the sort hint record, whatever it carries.
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("ManualSortHint"))
+            {
+                let fields: Vec<String> = rec
+                    .get("fields")
+                    .and_then(|f| f.as_object())
+                    .map(|o| o.keys().cloned().collect())
+                    .unwrap_or_default();
+                println!("  ManualSortHint fields: {}", fields.join(", "));
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

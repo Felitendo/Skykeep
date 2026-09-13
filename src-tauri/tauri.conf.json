@@ -5,8 +5,6 @@
   "identifier": "dev.quince.client",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5273",
-    "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
@@ -22,12 +20,20 @@
         "theme": null
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm", "appimage"],
-    "icon": ["icons/icon.png"],
+    "targets": [
+      "deb",
+      "rpm",
+      "appimage"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
     "category": "Utility",
     "shortDescription": "Your iCloud, on this computer",
     "longDescription": "Quince keeps your iCloud calendar, reminders, photos and notes on your own machine, so they open instantly and work offline. Independent project, not affiliated with Apple."
