@@ -5,6 +5,7 @@
 //! it. That is the whole reason the app can be instant and work offline.
 
 pub mod calendar;
+pub mod notes;
 pub mod reminders;
 pub mod schema;
 

@@ -44,6 +44,11 @@ export const api = {
     invoke<void>("reminder_create", { listGuid, title }),
   reminderDelete: (guid: string, listGuid: string) =>
     invoke<void>("reminder_delete", { guid, listGuid }),
+
+  notesSync: () => invoke<[number, number]>("notes_sync"),
+  noteFolders: () => invoke<NoteFolder[]>("note_folders"),
+  notesIn: (folderGuid: string | null) => invoke<Note[]>("notes_in", { folderGuid }),
+  notesLastSynced: () => invoke<number | null>("notes_last_synced"),
 };
 
 /** Tauri rejects with a plain string from our commands; keep it readable either way. */
@@ -91,6 +96,22 @@ export type Reminder = {
   /** null while outstanding */
   completedAt: number | null;
   priority: number;
+  etag: string | null;
+};
+
+export type NoteFolder = { guid: string; title: string; sortOrder: number };
+
+export type Note = {
+  guid: string;
+  folderGuid: string | null;
+  title: string;
+  snippet: string | null;
+  body: string | null;
+  /** Locked by its owner, so Apple holds it encrypted and there is nothing to show. */
+  locked: boolean;
+  pinned: boolean;
+  createdAt: number | null;
+  modifiedAt: number | null;
   etag: string | null;
 };
 

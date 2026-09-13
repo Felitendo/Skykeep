@@ -9,6 +9,7 @@ type Phase = "checking" | "signin" | "code" | "library";
 /** Services worth having ready before anyone asks for them. */
 const BACKGROUND_SYNCS = [
   { lastSynced: api.remindersLastSynced, sync: api.remindersSync },
+  { lastSynced: api.notesLastSynced, sync: api.notesSync },
 ];
 
 export default function App() {

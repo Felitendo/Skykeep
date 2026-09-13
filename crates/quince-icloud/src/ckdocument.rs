@@ -127,8 +127,31 @@ pub fn text_from_base64(value: &str) -> Option<String> {
 #[must_use]
 pub fn text_from_bytes(raw: &[u8]) -> Option<String> {
     let plain = inflate(raw)?;
-    let found = field_at(&plain, TEXT_PATH)?;
-    let text = String::from_utf8(found.to_vec()).ok()?;
+
+    // Reminder titles and note bodies are wrapped in Apple's document protobuf.
+    if let Some(found) = field_at(&plain, TEXT_PATH) {
+        if let Some(text) = usable_text(found) {
+            return Some(text);
+        }
+    }
+
+    // Note and folder titles are not wrapped at all — the payload is the text. Falling back
+    // rather than failing is what lets one decoder serve both.
+    usable_text(&plain)
+}
+
+/// Valid, non-empty UTF-8 with nothing unprintable in it.
+///
+/// The printability check is what stops a protobuf being mistaken for text: raw wire bytes
+/// occasionally decode as UTF-8 but are full of control characters.
+fn usable_text(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return None;
+    }
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
@@ -321,10 +344,40 @@ mod tests {
         assert_eq!(field_at(&plain, TEXT_PATH), Some(&b"Milk"[..]));
     }
 
+    /// Note and folder titles arrive as bare UTF-8 rather than wrapped in the document
+    /// protobuf, so one decoder has to serve both shapes.
+    #[test]
+    fn reads_bare_text_that_was_never_wrapped() {
+        assert_eq!(
+            text_from_bytes(b"Recently Deleted").as_deref(),
+            Some("Recently Deleted")
+        );
+        assert_eq!(text_from_bytes(b"Notes").as_deref(), Some("Notes"));
+        assert_eq!(
+            text_from_bytes(&gzipped(b"Shopping")).as_deref(),
+            Some("Shopping")
+        );
+    }
+
+    /// The wrapped form must still win, or a document would be returned as its raw wire bytes.
+    #[test]
+    fn the_wrapped_form_takes_precedence() {
+        let payload = gzipped(&document("Real title"));
+        assert_eq!(text_from_bytes(&payload).as_deref(), Some("Real title"));
+    }
+
+    /// Binary that happens to be valid UTF-8 must not be mistaken for text.
+    #[test]
+    fn control_characters_mean_it_is_not_text() {
+        assert!(text_from_bytes(&[0x01, 0x02, 0x03]).is_none());
+        assert!(text_from_bytes(&[0x00; 16]).is_none());
+    }
+
     #[test]
     fn a_document_without_the_text_field_is_none() {
-        // Right nesting, wrong final tag.
-        let wrong = field(2, &field(3, &field(9, b"hidden")));
+        // Right nesting, wrong final tag — and binary enough that the plain-text fallback
+        // does not rescue it either.
+        let wrong = field(2, &field(3, &field(9, &[0x01, 0x02, 0x03])));
         assert!(text_from_bytes(&wrong).is_none());
     }
 }

@@ -21,6 +21,10 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "reminder_create") return null;
       if (cmd === "reminder_delete") return null;
       if (cmd === "reminder_set_done") return null;
+      if (cmd === "note_folders") return [];
+      if (cmd === "notes_in") return [];
+      if (cmd === "notes_last_synced") return Math.floor(Date.now() / 1000);
+      if (cmd === "notes_sync") return [0, 0];
       return null;
     },
   };

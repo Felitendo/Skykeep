@@ -85,4 +85,34 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE reminders ADD COLUMN raw TEXT;
     "#,
+    // 4 — notes and their folders.
+    r#"
+    CREATE TABLE note_folders (
+        guid       TEXT PRIMARY KEY,
+        title      TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+    ) STRICT;
+
+    CREATE TABLE notes (
+        guid          TEXT PRIMARY KEY,
+        folder_guid   TEXT REFERENCES note_folders(guid) ON DELETE SET NULL,
+        title         TEXT NOT NULL,
+        -- The first line or so, which Apple sends separately so a list can render without
+        -- decoding every body.
+        snippet       TEXT,
+        body          TEXT,
+        -- A note the owner locked is genuinely encrypted; we can show that it exists and
+        -- nothing more, so say so rather than rendering it blank.
+        locked        INTEGER NOT NULL DEFAULT 0,
+        pinned        INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER,
+        modified_at   INTEGER,
+        etag          TEXT,
+        updated_at    INTEGER NOT NULL
+    ) STRICT;
+
+    CREATE INDEX notes_by_folder ON notes (folder_guid, pinned DESC, modified_at DESC);
+    CREATE INDEX notes_by_modified ON notes (modified_at DESC);
+    "#,
 ];

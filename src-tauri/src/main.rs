@@ -3,6 +3,7 @@
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use quince_core::calendar::{Calendar, Event};
+use quince_core::notes::{Note, NoteFolder};
 use quince_core::reminders::{Reminder, ReminderList};
 use quince_core::Library;
 use serde::Serialize;
@@ -379,6 +380,39 @@ async fn calendar_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
     library.last_synced("calendar").map_err(|e| e.to_string())
 }
 
+/// Refresh notes from Apple's CloudKit zone.
+#[tauri::command]
+async fn notes_sync(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<(usize, usize)> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let mut library = data.0.lock().await;
+    let since = library.sync_token("notes").map_err(|e| e.to_string())?;
+    quince_icloud::notes::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
+        .await
+        .map(|(folders, notes, _)| (folders, notes))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn note_folders(data: State<'_, Data>) -> UiResult<Vec<NoteFolder>> {
+    let library = data.0.lock().await;
+    library.note_folders().map_err(|e| e.to_string())
+}
+
+/// Notes in a folder, or every note when no folder is given.
+#[tauri::command]
+async fn notes_in(folder_guid: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Note>> {
+    let library = data.0.lock().await;
+    library
+        .notes_in(folder_guid.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn notes_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
+    let library = data.0.lock().await;
+    library.last_synced("notes").map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -416,6 +450,10 @@ fn main() {
             reminders_due_between,
             reminder_create,
             reminder_delete,
+            notes_sync,
+            note_folders,
+            notes_in,
+            notes_last_synced,
             reminder_set_done,
         ])
         .run(tauri::generate_context!())

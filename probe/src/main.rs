@@ -609,6 +609,102 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- what Notes records look like -------------------------------------------
+    println!("\n\x1b[1m── Notes: record census and shapes ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        for zone_name in ["Notes", "Metadata"] {
+            let zc = quince_icloud::cloudkit::ZoneClient::new(
+                client.http(),
+                &ck,
+                "com.apple.notes",
+                client.service_params(),
+            );
+            match zc.all_records(zone_name, None).await {
+                Err(e) => println!(
+                    "  {zone_name:<12} error: {}",
+                    e.to_string().chars().take(70).collect::<String>()
+                ),
+                Ok((records, _)) => {
+                    let mut census: std::collections::BTreeMap<String, usize> =
+                        std::collections::BTreeMap::new();
+                    for r in &records {
+                        let k = r
+                            .get("recordType")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("(tombstone)");
+                        *census.entry(k.to_string()).or_default() += 1;
+                    }
+                    let summary: Vec<String> =
+                        census.iter().map(|(k, n)| format!("{k}={n}")).collect();
+                    println!(
+                        "  {zone_name:<12} {} record(s): {}",
+                        records.len(),
+                        summary.join(" ")
+                    );
+
+                    // Does the reminder decoder handle note text too, or is the shape different?
+                    for r in records
+                        .iter()
+                        .filter(|r| {
+                            matches!(
+                                r.get("recordType").and_then(|t| t.as_str()),
+                                Some("Note" | "Folder")
+                            )
+                        })
+                        .take(4)
+                    {
+                        let kind = r.get("recordType").and_then(|t| t.as_str()).unwrap_or("");
+                        let decode = |name: &str| {
+                            quince_icloud::cloudkit::field::document_text(r, name)
+                                .map(|t| {
+                                    t.chars().take(64).collect::<String>().replace('\n', " / ")
+                                })
+                                .unwrap_or_else(|| "<did not decode>".into())
+                        };
+                        println!("    {kind}: title={:?}", decode("TitleEncrypted"));
+                        if kind == "Note" {
+                            println!("      text={:?}", decode("TextDataEncrypted"));
+                        }
+                        // The title does not decode at the reminders path, so emit the raw
+                        // payload once and let the structure be read directly.
+                        if let Some(raw) =
+                            quince_icloud::cloudkit::field::string(r, "TitleEncrypted")
+                        {
+                            println!("      TITLE_B64 {raw}");
+                        }
+                    }
+
+                    // One sample per type, so field names come from reality.
+                    let mut seen: std::collections::BTreeSet<String> =
+                        std::collections::BTreeSet::new();
+                    for r in &records {
+                        let Some(kind) = r.get("recordType").and_then(|t| t.as_str()) else {
+                            continue;
+                        };
+                        if !seen.insert(kind.to_string()) {
+                            continue;
+                        }
+                        let fields: Vec<String> = r
+                            .get("fields")
+                            .and_then(|f| f.as_object())
+                            .map(|o| {
+                                o.iter()
+                                    .map(|(k, v)| {
+                                        format!(
+                                            "{k}:{}",
+                                            v.get("type").and_then(|t| t.as_str()).unwrap_or("?")
+                                        )
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        println!("    {kind}: {}", fields.join(", "));
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

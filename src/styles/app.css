@@ -639,3 +639,75 @@
 .rem-delete:focus-visible { opacity: 1; }
 .rem-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .rem-delete:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
+
+/* ---- notes ----------------------------------------------------------------------
+   Apple Notes: folders, then a list of notes, then the note itself. */
+
+.notes {
+  display: grid;
+  grid-template-columns: 150px 250px 1fr;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+.notes-folders { overflow-y: auto; border-right: 1px solid var(--separator); padding-right: 4px; }
+
+.notes-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--separator);
+  padding-right: 12px;
+}
+
+.note-rows { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+
+.note-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  padding: 8px 9px;
+  border-radius: var(--r-field);
+  cursor: pointer;
+}
+
+.note-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.note-row[aria-current="true"] { background: var(--gold-tint); }
+.note-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+
+.note-row-title {
+  font-size: var(--t-13);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin { color: var(--gold); font-size: 9px; margin-right: 5px; vertical-align: 2px; }
+
+.note-row-meta { display: flex; gap: 8px; font-size: var(--t-11); color: var(--text-2); min-width: 0; }
+.note-row-when { flex: none; }
+.note-row-snippet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.note-body { overflow-y: auto; min-height: 0; padding-right: 6px; }
+.note-body h2 { margin: 0 0 2px; font-size: var(--t-22); font-weight: 600; letter-spacing: -0.02em; }
+.note-when { margin: 0 0 14px; color: var(--text-3); font-size: var(--t-11); }
+
+.note-text {
+  margin: 0;
+  font: inherit;
+  font-size: var(--t-13);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 78ch;
+}
+
+.content:has(.notes) { display: flex; flex-direction: column; overflow: hidden; }
