@@ -626,6 +626,157 @@ async fn main() -> Result<()> {
         println!("  Apple offered no reminders service for this account");
     }
 
+    // ---- CloudKit containers ----------------------------------------------------
+    // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
+    // upgraded to the modern format. The real records live in CloudKit, so find out which
+    // containers this account actually exposes.
+    println!("\n\x1b[1m── CloudKit containers ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let containers = [
+            "com.apple.reminders",
+            "com.apple.notes",
+            "com.apple.photos.cloud",
+            "com.apple.calendar",
+            "com.apple.CloudDocs",
+            "com.apple.shoebox",
+        ];
+        for container in containers {
+            let url = format!("{ck}/database/1/{container}/production/private/zones/list");
+            let mut q = client.service_params();
+            q.push(("ckjsBuildVersion".into(), "17DProjectDev77".into()));
+            q.push(("ckjsVersion".into(), "2.6.1".into()));
+            match client.http().post(&url).query(&q).json(&serde_json::json!({})).send().await {
+                Err(e) => println!("  {container:<26} transport error: {e}"),
+                Ok(r) => {
+                    let status = r.status();
+                    let text = r.text().await.unwrap_or_default();
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                    let zones = parsed.get("zones").and_then(|z| z.as_array());
+                    match zones {
+                        Some(list) if !list.is_empty() => {
+                            let names: Vec<String> = list
+                                .iter()
+                                .filter_map(|z| {
+                                    z.pointer("/zoneID/zoneName")
+                                        .and_then(|n| n.as_str())
+                                        .map(ToString::to_string)
+                                })
+                                .collect();
+                            println!(
+                                "  \x1b[32m{container:<26}\x1b[0m {} zone(s): {}",
+                                list.len(),
+                                names.join(", ")
+                            );
+                        }
+                        _ => println!(
+                            "  {container:<26} {status} {}",
+                            text.chars().take(90).collect::<String>().replace('\n', " ")
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- what a CloudKit reminder actually looks like ---------------------------
+    println!("\n\x1b[1m── CloudKit reminders: record shapes ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        // The Reminder type is not indexable, so records/query is refused. changes/zone
+        // walks the whole zone instead, which is also how incremental sync works.
+        // Omit desiredKeys entirely: an empty array asks Apple for no fields at all.
+        let url = format!("{ck}/database/1/com.apple.reminders/production/private/changes/zone");
+        let mut q = client.service_params();
+        q.push(("ckjsBuildVersion".into(), "17DProjectDev77".into()));
+        q.push(("ckjsVersion".into(), "2.6.1".into()));
+
+        let mut sync_token: Option<String> = None;
+        let mut types: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        let mut samples: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
+
+        for page in 0..12 {
+            let mut zone = serde_json::json!({
+                "zoneID": { "zoneName": "Reminders", "zoneType": "REGULAR_CUSTOM_ZONE" },
+                "maxChanges": 200,
+            });
+            if let Some(token) = &sync_token {
+                zone["syncToken"] = serde_json::Value::String(token.clone());
+            }
+            let body = serde_json::json!({ "zones": [zone] });
+
+            let Ok(r) = client.http().post(&url).query(&q).json(&body).send().await else {
+                println!("  transport error on page {page}");
+                break;
+            };
+            let text = r.text().await.unwrap_or_default();
+            let v: serde_json::Value =
+                serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+            let Some(zone_result) = v.get("zones").and_then(|z| z.as_array()).and_then(|a| a.first())
+            else {
+                println!("  unexpected: {}", text.chars().take(200).collect::<String>());
+                break;
+            };
+
+            let records = zone_result
+                .get("records")
+                .and_then(|r| r.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for rec in &records {
+                let rt = rec.get("recordType").and_then(|t| t.as_str()).unwrap_or("?");
+                *types.entry(rt.to_string()).or_default() += 1;
+                if samples.iter().all(|(t, _, _)| t != rt) {
+                    let fields: Vec<String> = rec
+                        .get("fields")
+                        .and_then(|f| f.as_object())
+                        .map(|o| o.keys().cloned().collect())
+                        .unwrap_or_default();
+                    // Any field that looks like a title tells us where the text lives.
+                    // Dump a whole Reminder so the shape of TitleDocument is visible.
+                    let title = if rt == "Reminder" {
+                        // Only the fields whose encoding is still unknown.
+                        rec.get("fields").and_then(|f| {
+                            let picked = serde_json::json!({
+                                "TitleDocument": f.get("TitleDocument"),
+                                "NotesDocument": f.get("NotesDocument"),
+                                "Priority": f.get("Priority"),
+                                "List": f.get("List"),
+                            });
+                            serde_json::to_string_pretty(&picked)
+                                .ok()
+                                .map(|s| s.chars().take(1600).collect::<String>())
+                        })
+                    } else {
+                        None
+                    };
+                    samples.push((rt.to_string(), fields, title));
+                }
+            }
+
+            sync_token = zone_result
+                .get("syncToken")
+                .and_then(|t| t.as_str())
+                .map(ToString::to_string);
+            if !zone_result.get("moreComing").and_then(|m| m.as_bool()).unwrap_or(false) {
+                break;
+            }
+        }
+
+        let total: usize = types.values().sum();
+        println!("  {total} record(s) across the zone");
+        for (rt, n) in &types {
+            println!("    {rt}: {n}");
+        }
+        for (rt, fields, title) in &samples {
+            if let Some(dump) = title {
+                println!("    --- full {rt} record ---\n{dump}");
+            } else {
+                println!("    {rt} fields: {}", fields.join(", "));
+            }
+        }
+    }
+
     // ---- 5. verdict -------------------------------------------------------------
     let passed = results.iter().filter(|r| r.ok).count();
     println!("\n\x1b[1m── Verdict ──\x1b[0m");
