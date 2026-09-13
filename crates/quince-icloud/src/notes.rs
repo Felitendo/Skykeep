@@ -28,13 +28,6 @@ fn note_from_record(record: &Value) -> Option<Note> {
     let title = field::document_text(record, "TitleEncrypted");
     let body = field::document_text(record, "TextDataEncrypted");
 
-    // A note whose body will not decode while a title will is locked by its owner: Apple
-    // holds those genuinely encrypted. Saying so beats rendering an empty note.
-    let locked = body.is_none()
-        && record
-            .get("fields")
-            .is_some_and(|f| f.get("TextDataEncrypted").is_some());
-
     Some(Note {
         guid,
         folder_guid: field::reference(record, "Folder"),
