@@ -665,16 +665,14 @@ async fn main() -> Result<()> {
                         if kind == "Note" {
                             println!("      text={:?}", decode("TextDataEncrypted"));
                         }
-                        // Emit any body that will not decode, so its shape can be read
-                        // directly rather than guessed at.
-                        if kind == "Note"
-                            && quince_icloud::cloudkit::field::document_text(r, "TextDataEncrypted")
-                                .is_none()
-                        {
+                        // Emit a small body so its attribute runs can be read directly.
+                        if kind == "Note" {
                             if let Some(raw) =
                                 quince_icloud::cloudkit::field::string(r, "TextDataEncrypted")
                             {
-                                println!("      BODY_B64 {raw}");
+                                if raw.len() < 1200 {
+                                    println!("      BODY_B64 {raw}");
+                                }
                             }
                         }
                     }
