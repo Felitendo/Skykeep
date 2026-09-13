@@ -1938,6 +1938,174 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- how does a reminder belong to a section? ----------------------------------
+    // No reminder field names a section, so membership is expressed some other way. Find it
+    // before building anything on a guess.
+    println!("\n\x1b[1m── Reminders: how section membership is expressed ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.reminders",
+            client.service_params(),
+        );
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Reminders", None).await
+        {
+            let sections: std::collections::HashMap<String, String> = records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("ListSection"))
+                .filter(|r| !quince_icloud::cloudkit::field::flag(r, "Deleted"))
+                .filter_map(|r| {
+                    Some((
+                        quince_icloud::cloudkit::field::record_name(r)?,
+                        quince_icloud::cloudkit::field::string(r, "DisplayName")
+                            .unwrap_or_default(),
+                    ))
+                })
+                .collect();
+            println!("  live sections: {sections:?}");
+
+            // Does any reminder point its List reference at a section rather than a list?
+            let mut via_list = 0;
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("Reminder"))
+            {
+                if let Some(target) = quince_icloud::cloudkit::field::reference(rec, "List") {
+                    if sections.contains_key(&target) {
+                        via_list += 1;
+                        if via_list <= 3 {
+                            println!(
+                                "  \x1b[32m{}\x1b[0m has List -> {} ({})",
+                                quince_icloud::cloudkit::field::document_text(rec, "TitleDocument")
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(34)
+                                    .collect::<String>(),
+                                target,
+                                sections[&target]
+                            );
+                        }
+                    }
+                }
+            }
+            println!("  reminders whose List points at a section: {via_list}");
+
+            // And what does the owning List record say about its sections?
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("List"))
+                .filter(|r| {
+                    quince_icloud::cloudkit::field::record_name(r).as_deref()
+                        == Some("List/A233F124-67A7-46EC-9FFB-2908DA86C61D")
+                })
+            {
+                println!("  the list that owns a section:");
+                if let Some(fields) = rec.get("fields").and_then(|f| f.as_object()) {
+                    for (k, v) in fields {
+                        println!(
+                            "      {k} = {}",
+                            v.to_string().chars().take(120).collect::<String>()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- is the section-membership asset readable? ---------------------------------
+    // Membership lives in a CloudKit asset with a checksum beside it, not in a reference.
+    // Whether sections can be shown at all depends on that blob being tractable, so look
+    // before promising anything.
+    println!("\n\x1b[1m── Section membership: what is in the asset ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.reminders",
+            client.service_params(),
+        );
+        if let Ok(quince_icloud::cloudkit::ZoneWalk { records, .. }) =
+            zc.all_records("Reminders", None).await
+        {
+            let asset = records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("List"))
+                .find_map(|r| {
+                    r.pointer("/fields/MembershipsOfRemindersInSectionsAsData/value/downloadURL")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string)
+                });
+
+            match asset {
+                None => println!("  no list on this account carries one"),
+                Some(url) => match client.http().get(&url).send().await {
+                    Err(e) => println!("  \x1b[31mdownload failed:\x1b[0m {e}"),
+                    Ok(response) => {
+                        let status = response.status();
+                        let bytes = response.bytes().await.unwrap_or_default();
+                        println!("  {status}, {} byte(s)", bytes.len());
+                        if bytes.is_empty() {
+                            return Ok(());
+                        }
+                        println!(
+                            "  first bytes: {}",
+                            bytes
+                                .iter()
+                                .take(24)
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        );
+                        // It starts `{"memberships":` — this is plain JSON, not a blob.
+                        match std::str::from_utf8(&bytes)
+                            .ok()
+                            .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+                        {
+                            None => println!("  not readable as JSON"),
+                            Some(parsed) => {
+                                if let Some(obj) = parsed.as_object() {
+                                    println!(
+                                        "  top-level keys: {}",
+                                        obj.keys().cloned().collect::<Vec<_>>().join(", ")
+                                    );
+                                }
+                                // What does ONE membership entry carry? If nothing names a
+                                // section, membership must be expressed somewhere else.
+                                if let Some(first) =
+                                    parsed.pointer("/memberships/0").and_then(|v| v.as_object())
+                                {
+                                    println!(
+                                        "  one membership's keys: {}",
+                                        first.keys().cloned().collect::<Vec<_>>().join(", ")
+                                    );
+                                }
+                                let count = parsed
+                                    .pointer("/memberships")
+                                    .and_then(|v| v.as_array())
+                                    .map_or(0, Vec::len);
+                                println!("  {count} membership(s) in this list's asset");
+                                // Anything that is not the memberships array is the part
+                                // that would say which section.
+                                if let Some(obj) = parsed.as_object() {
+                                    for (k, v) in obj {
+                                        if k != "memberships" {
+                                            println!(
+                                                "  {k} = {}",
+                                                v.to_string().chars().take(300).collect::<String>()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

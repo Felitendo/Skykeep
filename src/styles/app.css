@@ -429,15 +429,20 @@
   margin-bottom: 14px;
 }
 
-.cal-nav { display: flex; align-items: center; gap: 8px; }
+/* Title and its count sit together, as one thing. */
+.cal-nav { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 
 .cal-nav h1 {
-  margin: 0 10px 0 0;
+  margin: 0;
   font-size: var(--t-22);
   font-weight: 600;
   letter-spacing: -0.021em;
-  min-width: 8.5ch;
 }
+
+/* Only the calendar needs a reserved width, and only so the arrows either side of a month
+   name stay put as it changes. Everywhere else it left the count stranded beside a short
+   title with nothing between them. */
+.cal .cal-nav h1 { min-width: 8.5ch; margin-right: 10px; }
 
 .chev {
   width: 26px;
@@ -603,7 +608,9 @@
 
 .rem {
   display: grid;
-  grid-template-columns: 176px 1fr;
+  /* Wide enough for a real list name and its count side by side. At 176px "Quizzes &
+     Exams" was cut to "Quizzes & Ex…" and the four tiles had eighty pixels each. */
+  grid-template-columns: 212px 1fr;
   gap: 20px;
   height: 100%;
   min-height: 0;
@@ -658,10 +665,10 @@
 .rem-smart {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
   border: 0;
-  padding: 7px 9px 8px;
+  padding: 9px 10px 10px;
   border-radius: var(--r-plateau);
   background: color-mix(in srgb, var(--text) 5%, transparent);
   color: var(--text);
@@ -684,18 +691,18 @@
 
 .rem-smart-glyph {
   flex: none;
-  width: 19px;
-  height: 19px;
+  width: 21px;
+  height: 21px;
   border-radius: var(--r-pill);
   display: grid;
   place-items: center;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
   color: #fff;
 }
 
 .rem-smart-count {
-  font-size: var(--t-17);
+  font-size: var(--t-22);
   font-weight: 620;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.3px;
@@ -712,8 +719,9 @@
 
 .rem-items { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 
-/* Rows stay a comfortable width on a large display rather than stretching edge to edge. */
-.rem-items > * { width: 100%; max-width: 78ch; }
+/* Rows run the width of the pane, as they do in Reminders. Capping them left the list
+   stranded in the left third of a wide window with its separators ending in mid-air. */
+.rem-items > * { width: 100%; }
 
 .rem-list-items {
   list-style: none;
@@ -769,6 +777,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The line under a title: when it is due, and whether it comes back. */
+.rem-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .rem-due {
@@ -861,7 +877,9 @@
 
 .notes {
   display: grid;
-  grid-template-columns: 150px 250px 1fr;
+  /* Wide enough for "Recently Deleted", which is the longest name Apple ever puts here and
+     the one that was being cut to "Recently Delet…". */
+  grid-template-columns: 184px minmax(260px, 320px) minmax(0, 1fr);
   gap: 16px;
   height: 100%;
   min-height: 0;
@@ -944,7 +962,7 @@
 .note-body {
   overflow-y: auto;
   min-height: 0;
-  padding: 4px 32px 40px;
+  padding: 4px 40px 40px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -952,7 +970,9 @@
 
 .note-body > * {
   width: 100%;
-  max-width: 66ch;
+  /* A measure that grows with the window instead of stopping dead: comfortable to read on
+     a laptop, and not a ribbon of text on a wide display. */
+  max-width: min(92ch, 100%);
 }
 
 .note-body h2 {
@@ -1011,10 +1031,15 @@ textarea.note-text:disabled {
 .note-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--separator);
 }
+
+/* The date leads, the actions follow it — not flung to the far end of the measure. */
+.note-bar .note-when { margin: 0; margin-right: auto; }
 
 .note-bar-actions {
   display: flex;
@@ -1037,7 +1062,7 @@ textarea.note-text:disabled {
 /* Apple gives Notes three columns; our service sidebar already takes one, so these have to
    earn their width. Folders are few and short, the list carries two lines per row, and the
    body gets everything left over. */
-.notes { grid-template-columns: 132px minmax(240px, 292px) minmax(0, 1fr); gap: 0; }
+.notes { grid-template-columns: 184px minmax(260px, 320px) minmax(0, 1fr); gap: 0; }
 
 /* Hidden while the folder column is visible; the media query below reveals it. Declared
    first so equal specificity resolves in the query's favour. */

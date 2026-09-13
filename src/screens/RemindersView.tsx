@@ -570,6 +570,31 @@ export function RemindersView() {
                     <span className="rem-notes">{reminder.notes}</span>
                   )}
 
+                  {/* Under the title, where Apple puts it. Out at the end of the row it sat
+                      a thousand pixels from the thing it describes on a wide window. */}
+                  {(due || repeat || justMoved) && (
+                    <span className="rem-meta">
+                      {justMoved ? (
+                        <span className="rem-moved" role="status">
+                          Moved to {justMoved}
+                        </span>
+                      ) : (
+                        <>
+                          {due && (
+                            <span className={`rem-due${due.overdue ? " overdue" : ""}`}>
+                              {due.text}
+                            </span>
+                          )}
+                          {repeat && (
+                            <span className="rem-repeat" role="img" aria-label={repeat} title={repeat}>
+                              ↻
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </span>
+                  )}
+
                   {isOpen && (
                     <div className="rem-detail">
                       <label>
@@ -667,31 +692,6 @@ export function RemindersView() {
                 </div>
 
                 <span className="rem-trailing">
-                  {justMoved ? (
-                    <span className="rem-moved" role="status">
-                      Moved to {justMoved}
-                    </span>
-                  ) : (
-                    <>
-                      {repeat && (
-                        <span
-                          className="rem-repeat"
-                          role="img"
-                          aria-label={repeat}
-                          title={repeat}
-                        >
-                          ↻
-                        </span>
-                      )}
-                      {due && (
-                        <span
-                          className={`rem-due${due.overdue ? " overdue" : ""}`}
-                        >
-                          {due.text}
-                        </span>
-                      )}
-                    </>
-                  )}
                   <button
                     className={`rem-flag${reminder.flagged ? " on" : ""}`}
                     aria-label={

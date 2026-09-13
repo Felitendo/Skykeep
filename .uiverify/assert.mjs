@@ -3,6 +3,17 @@ import { chromium } from "playwright";
 const b = await chromium.launch();
 const ctx = await b.newContext({ viewport: { width: 1040, height: 900 } });
 await ctx.addInitScript(({ services }) => {
+  // Enough reminders to measure a real row. The checks below are about layout, so the data
+  // only has to be shaped right.
+  const lists = [
+    { guid: "L1", title: "Quizzes & Exams", colour: "#c8912a", ctag: null, sortOrder: 0, enabled: true },
+    { guid: "L2", title: "Life Goals", colour: "#1badf8", ctag: null, sortOrder: 1, enabled: true },
+  ];
+  const items = [
+    { guid: "R1", listGuid: "L1", title: "Plan tomorrow", notes: null,
+      dueAt: 4102444800, completedAt: null, priority: 0, flagged: false, parentGuid: null,
+      recurFrequency: null, recurInterval: null, etag: "t1" },
+  ];
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
     invoke: async (cmd) => {
@@ -15,15 +26,15 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "event_delete") return null;
       if (cmd === "calendar_sync") return { calendars: 0, events: 0 };
       if (cmd === "reminder_counts") return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
-      if (cmd === "reminder_lists") return [];
-      if (cmd === "reminders_in") return [];
+      if (cmd === "reminder_lists") return lists;
+      if (cmd === "reminders_in") return items;
       if (cmd === "reminders_due_between") return [];
       if (cmd === "reminder_create") return null;
       if (cmd === "reminder_delete") return null;
       if (cmd === "reminder_set_done") return null;
       if (cmd === "reminder_set_repeat") return null;
       if (cmd === "reminder_edit") return null;
-      if (cmd === "reminders_smart") return [];
+      if (cmd === "reminders_smart") return items;
       if (cmd === "reminder_list_create" || cmd === "reminder_list_rename" || cmd === "reminder_list_delete") return null;
       if (cmd === "note_folders") return [];
       if (cmd === "notes_in") return [];
@@ -112,6 +123,59 @@ let failures = 0;
   const months = await page.locator(".cal-mini").count();
   console.log(months === 12 ? "PASS Year shows twelve months" : `FAIL Year showed ${months} months`);
   if (months !== 12) failures++;
+  await page.close();
+}
+
+
+// ── Nothing is truncated, and nothing is stranded, on a real-sized window ──────────────
+// Both of these shipped: "Quizzes & Ex…" and "Recently Delet…" cut off in sidebars that
+// were too narrow, and list rows capped so tightly that on a wide display they sat in the
+// left third with their separators ending in mid-air. A picture would not have caught
+// either; measuring does.
+{
+  const page = await ctx.newPage();
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+
+  const clipped = (selector) =>
+    page.$$eval(selector, (nodes) =>
+      nodes
+        .filter((n) => n.scrollWidth > n.clientWidth + 1)
+        .map((n) => n.textContent?.trim().slice(0, 30))
+    );
+
+  for (const [screen, selector] of [
+    ["Reminders", ".rem-list-name, .rem-smart-name"],
+    ["Notes", ".notes-folders .note-folder, .notes-folders button"],
+  ]) {
+    await page.getByRole("button", { name: screen, exact: true }).click();
+    await page.waitForTimeout(400);
+    const cut = await clipped(selector);
+    console.log(
+      cut.length === 0
+        ? `PASS ${screen} sidebar shows every name in full`
+        : `FAIL ${screen} sidebar truncates: ${JSON.stringify(cut)}`
+    );
+    if (cut.length > 0) failures++;
+  }
+
+  // A list that occupies a sliver of a wide pane reads as broken, whatever it says.
+  await page.getByRole("button", { name: "Reminders", exact: true }).click();
+  await page.waitForTimeout(400);
+  const fill = await page.evaluate(() => {
+    const pane = document.querySelector(".rem-items");
+    const row = document.querySelector(".rem-list-items li, .rem-add");
+    if (!pane || !row) return null;
+    return row.getBoundingClientRect().width / pane.getBoundingClientRect().width;
+  });
+  console.log(
+    fill === null
+      ? "FAIL could not measure the reminders list"
+      : fill >= 0.9
+        ? `PASS reminder rows fill their pane (${Math.round(fill * 100)}%)`
+        : `FAIL reminder rows fill only ${Math.round(fill * 100)}% of their pane`
+  );
+  if (fill === null || fill < 0.9) failures++;
   await page.close();
 }
 

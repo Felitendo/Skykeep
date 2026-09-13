@@ -245,6 +245,21 @@ const shots = [
       await p.waitForTimeout(200);
       await p.click('.rem-more >> nth=0');
     } },
+  // A full-screen window on a large display is where content stranded in a narrow column
+  // becomes obvious, and every shot above is too small to show it.
+  { name: "14-reminders-wide", screen: "library", theme: "dark", remindersFixture: true,
+    viewport: { width: 1920, height: 1080 },
+    act: async (p) => {
+      await p.click('.nav-item:has-text("Reminders")');
+      await p.waitForSelector(".rem-list-items li");
+    } },
+  { name: "15-notes-full", screen: "library", theme: "dark", notesFixture: true,
+    viewport: { width: 1920, height: 1080 },
+    act: async (p) => {
+      await p.click('.nav-item:has-text("Notes")');
+      await p.waitForSelector(".note-rows .note-row");
+      await p.click('.note-row:has-text("These sources")');
+    } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];
