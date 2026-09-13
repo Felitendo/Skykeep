@@ -64,6 +64,24 @@ const priorityMark = (priority: number) =>
 
 const REPEAT_UNITS = ["day", "week", "month", "year"] as const;
 
+/** What Apple's own repeat menu offers. "never" is the absence of a rule, not a rule. */
+const REPEATS = [
+  { key: "never", label: "Never", repeat: null },
+  { key: "0:1", label: "Every day", repeat: { frequency: 0, interval: 1 } },
+  { key: "1:1", label: "Every week", repeat: { frequency: 1, interval: 1 } },
+  { key: "1:2", label: "Every 2 weeks", repeat: { frequency: 1, interval: 2 } },
+  { key: "2:1", label: "Every month", repeat: { frequency: 2, interval: 1 } },
+  { key: "3:1", label: "Every year", repeat: { frequency: 3, interval: 1 } },
+] as const;
+
+/** Which choice a reminder's stored rule corresponds to, or a description of one we don't
+ *  offer — Apple allows schedules this menu deliberately doesn't try to express. */
+function repeatKey(r: Reminder): string {
+  if (r.recurFrequency === null || r.recurFrequency === undefined) return "never";
+  const key = `${r.recurFrequency}:${r.recurInterval ?? 1}`;
+  return REPEATS.some((option) => option.key === key) ? key : "custom";
+}
+
 /** "Every day", "Every 2 weeks" — or null when this happens only once. */
 function repeatLabel(r: Reminder): string | null {
   if (r.recurFrequency === null || r.recurFrequency === undefined) return null;
@@ -211,6 +229,11 @@ export function RemindersView() {
     write(r, () =>
       api.reminderEdit(r.guid, r.listGuid, { notes: notes.trim() || null }),
     );
+  const setRepeat = (r: Reminder, key: string) => {
+    const chosen = REPEATS.find((option) => option.key === key);
+    if (!chosen) return Promise.resolve(null);
+    return write(r, () => api.reminderSetRepeat(r.guid, r.listGuid, chosen.repeat));
+  };
   const setPriority = (r: Reminder, priority: number) =>
     write(r, () => api.reminderEdit(r.guid, r.listGuid, { priority }));
   const moveToList = (r: Reminder, listGuid: string) =>
@@ -486,10 +509,33 @@ export function RemindersView() {
                           onBlur={(e) => void setDue(reminder, e.target.value)}
                         />
                       </label>
-                      {repeat && (
+                      <div className="rem-field">
+                        <span>Repeat</span>
+                        <Picker
+                          label={`Repeat for ${reminder.title}`}
+                          value={repeatKey(reminder)}
+                          disabled={busyGuid === reminder.guid || reminder.dueAt === null}
+                          onChange={(key) => void setRepeat(reminder, key)}
+                          options={
+                            repeatKey(reminder) === "custom"
+                              ? [
+                                  // A schedule this menu doesn't express must still be
+                                  // shown, and choosing anything else would silently
+                                  // replace it.
+                                  { value: "custom", label: repeat ?? "Custom" },
+                                  ...REPEATS.map((o) => ({ value: o.key, label: o.label })),
+                                ]
+                              : REPEATS.map((o) => ({ value: o.key, label: o.label }))
+                          }
+                        />
+                      </div>
+                      {reminder.dueAt === null && (
                         <p className="rem-repeat-note">
-                          {repeat}. Ticking it moves it to the next one.
+                          Give this a date before asking it to repeat.
                         </p>
+                      )}
+                      {repeat && (
+                        <p className="rem-repeat-note">Ticking it moves it to the next one.</p>
                       )}
                       {/* A pop-up button is not a labelled field: it names itself, and
                           wrapping one in a <label> associates a label with nothing. */}

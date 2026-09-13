@@ -1362,6 +1362,98 @@ async fn main() -> Result<()> {
                             raw: None,
                         };
 
+                        // Repeats: set one, read it back, change it, clear it.
+                        let dated = quince_core::reminders::Reminder {
+                            due_at: Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+                                    + 86_400,
+                            ),
+                            ..reminder.clone()
+                        };
+                        let _ = quince_icloud::reminders::edit_cloudkit(
+                            &http,
+                            &ck,
+                            params.clone(),
+                            &dated,
+                            &quince_icloud::reminders::ReminderEdit {
+                                due_at: Some(dated.due_at),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
+
+                        let rule_of = |name: String| {
+                            let zc = &zc;
+                            async move {
+                                let rec =
+                                    zc.lookup_record("Reminders", &name).await.ok().flatten()?;
+                                let ids = rec
+                                    .pointer("/fields/RecurrenceRuleIDs/value")?
+                                    .as_array()?
+                                    .iter()
+                                    .filter_map(|v| v.as_str())
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>();
+                                let id = ids.first()?.clone();
+                                let rule = zc
+                                    .lookup_record("Reminders", &format!("RecurrenceRule/{id}"))
+                                    .await
+                                    .ok()
+                                    .flatten()?;
+                                Some((
+                                    quince_icloud::cloudkit::field::int(&rule, "Frequency")?,
+                                    quince_icloud::cloudkit::field::int(&rule, "Interval")?,
+                                ))
+                            }
+                        };
+
+                        for (freq, every, what) in
+                            [(1_i64, 2_i64, "every 2 weeks"), (0, 1, "every day")]
+                        {
+                            match quince_icloud::reminders::set_recurrence_cloudkit(
+                                &http,
+                                &ck,
+                                params.clone(),
+                                &dated,
+                                Some(quince_icloud::reminders::Repeat {
+                                    frequency: freq,
+                                    interval: every,
+                                }),
+                            )
+                            .await
+                            {
+                                Err(e) => println!("  \x1b[31mFAIL\x1b[0m set {what}: {e}"),
+                                Ok(()) => match rule_of(guid.clone()).await {
+                                    Some((f, i)) if f == freq && i == every => {
+                                        println!("  \x1b[32mPASS\x1b[0m Apple stored {what}");
+                                    }
+                                    other => println!(
+                                        "  \x1b[31mFAIL\x1b[0m asked for {what}, Apple has {other:?}"
+                                    ),
+                                },
+                            }
+                        }
+
+                        match quince_icloud::reminders::set_recurrence_cloudkit(
+                            &http,
+                            &ck,
+                            params.clone(),
+                            &dated,
+                            None,
+                        )
+                        .await
+                        {
+                            Err(e) => println!("  \x1b[31mFAIL\x1b[0m clear repeat: {e}"),
+                            Ok(()) => match rule_of(guid.clone()).await {
+                                None => println!("  \x1b[32mPASS\x1b[0m the repeat is gone"),
+                                Some(found) => println!(
+                                    "  \x1b[31mFAIL\x1b[0m cleared, but Apple still has {found:?}"
+                                ),
+                            },
+                        }
+
                         let edit = quince_icloud::reminders::ReminderEdit {
                             priority: Some(1),
                             list_guid: Some(to.guid.clone()),

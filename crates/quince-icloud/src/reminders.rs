@@ -844,6 +844,113 @@ pub async fn create_cloudkit(
     Ok(record_name)
 }
 
+/// How often a reminder comes back.
+///
+/// Apple's frequency is 0 daily, 1 weekly, 2 monthly, 3 yearly — the same numbering the
+/// stored rule uses, so nothing is translated between here and the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct Repeat {
+    pub frequency: i64,
+    pub interval: i64,
+}
+
+/// Set or clear a reminder's repeat.
+///
+/// A repeat is not a field on the reminder: it is its own record pointing back at the
+/// reminder, with the reminder holding the rule's bare id in a list. So setting one is
+/// three steps, and the order is what keeps it consistent — write the new rule, point the
+/// reminder at it, and only then retire the old ones. Done the other way round there is a
+/// moment where the reminder refers to a rule that no longer exists.
+pub async fn set_recurrence_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder: &Reminder,
+    repeat: Option<Repeat>,
+) -> Result<()> {
+    // Apple will not schedule a repeat with nothing to repeat from, and a reminder that
+    // repeats from no date would simply never come back.
+    if repeat.is_some() && reminder.due_at.is_none() {
+        return Err(Error::Protocol(
+            "give this a date before asking it to repeat".into(),
+        ));
+    }
+
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+
+    // Read what Apple holds rather than what the last sync saw: the rule may have been
+    // changed on a phone since, and the ids to retire are the current ones.
+    let current = client
+        .lookup_record(ZONE, &reminder.guid)
+        .await?
+        .ok_or_else(|| Error::Protocol("Apple no longer has that reminder.".into()))?;
+    let existing: Vec<String> = current
+        .pointer("/fields/RecurrenceRuleIDs/value")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let wanted: Vec<String> = match repeat {
+        None => Vec::new(),
+        Some(repeat) => {
+            if !(0..=3).contains(&repeat.frequency) {
+                return Err(Error::Protocol("that is not a repeat Apple knows".into()));
+            }
+            // The list holds the bare id; the record is named with a prefix. Apple's own
+            // records are written that way, and a mismatch leaves a rule nothing points at.
+            let id = uuid::Uuid::new_v4().to_string().to_uppercase();
+            client
+                .create_record(
+                    ZONE,
+                    &format!("RecurrenceRule/{id}"),
+                    "RecurrenceRule",
+                    serde_json::json!({
+                        "Frequency": { "type": "NUMBER_INT64", "value": repeat.frequency },
+                        "Interval": { "type": "NUMBER_INT64", "value": repeat.interval.clamp(1, 1_000) },
+                        "FirstDayOfTheWeek": { "type": "NUMBER_INT64", "value": 0 },
+                        "OccurrenceCount": { "type": "NUMBER_INT64", "value": 0 },
+                        "Imported": { "type": "NUMBER_INT64", "value": 0 },
+                        "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+                        "Reminder": client.reference_to(ZONE, &reminder.guid),
+                    }),
+                )
+                .await?;
+            vec![id]
+        }
+    };
+
+    let tag = current
+        .get("recordChangeTag")
+        .and_then(Value::as_str)
+        .or(reminder.etag.as_deref());
+
+    client
+        .update_record(
+            ZONE,
+            &reminder.guid,
+            "Reminder",
+            tag,
+            serde_json::json!({
+                "RecurrenceRuleIDs": { "type": "STRING_LIST", "value": wanted },
+                "LastModifiedDate": { "type": "TIMESTAMP", "value": now_millis() },
+            }),
+        )
+        .await?;
+
+    // Only now that nothing points at them. A rule left behind would keep rescheduling the
+    // reminder from a schedule the person just replaced.
+    for old in existing {
+        client
+            .delete_record(ZONE, &format!("RecurrenceRule/{old}"))
+            .await?;
+    }
+    Ok(())
+}
+
 /// Remove a reminder.
 ///
 /// Apple marks removal with a Deleted flag rather than destroying the record, which is what
@@ -2378,5 +2485,231 @@ mod tombstone_tests {
         );
         assert_eq!(library.reminders_in("List/a", true).unwrap().len(), 1);
         assert_eq!(library.reminder_lists().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod recurrence_write_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn dated() -> Reminder {
+        Reminder {
+            guid: "Reminder/1".into(),
+            list_guid: "List/a".into(),
+            title: "Water the plants".into(),
+            notes: None,
+            due_at: Some(4_102_444_800),
+            completed_at: None,
+            priority: 0,
+            flagged: false,
+            recur_frequency: None,
+            recur_interval: None,
+            etag: Some("tag".into()),
+            raw: None,
+        }
+    }
+
+    /// A server that answers a lookup with whatever rule ids the reminder currently has.
+    async fn server(existing: &[&str]) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{
+                    "recordName": "Reminder/1",
+                    "recordType": "Reminder",
+                    "recordChangeTag": "fresh",
+                    "fields": {
+                        "RecurrenceRuleIDs": { "type": "STRING_LIST", "value": existing }
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Reminder/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Every modify, in the order it was sent.
+    async fn operations(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["operations"][0].clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn setting_a_repeat_writes_a_rule_and_links_it() {
+        let server = server(&[]).await;
+        set_recurrence_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &dated(),
+            Some(Repeat {
+                frequency: 1,
+                interval: 2,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let ops = operations(&server).await;
+        assert_eq!(ops.len(), 2, "a rule, then the link");
+
+        let rule = &ops[0];
+        assert_eq!(rule["operationType"], "create");
+        assert_eq!(rule["record"]["recordType"], "RecurrenceRule");
+        assert_eq!(rule["record"]["fields"]["Frequency"]["value"], 1);
+        assert_eq!(rule["record"]["fields"]["Interval"]["value"], 2);
+        assert_eq!(
+            rule["record"]["fields"]["Reminder"]["value"]["recordName"],
+            "Reminder/1"
+        );
+
+        // The reminder holds the bare id; the record is named with a prefix.
+        let link = &ops[1];
+        let id = link["record"]["fields"]["RecurrenceRuleIDs"]["value"][0]
+            .as_str()
+            .unwrap();
+        assert!(
+            !id.starts_with("RecurrenceRule/"),
+            "the list holds a bare id: {id}"
+        );
+        assert_eq!(
+            rule["record"]["recordName"].as_str().unwrap(),
+            format!("RecurrenceRule/{id}"),
+            "the rule written must be the rule pointed at"
+        );
+    }
+
+    /// The order is the whole point: the reminder must never refer to a rule that is gone.
+    #[tokio::test]
+    async fn the_old_rule_is_retired_only_after_the_link_moves() {
+        let server = server(&["OLD-1"]).await;
+        set_recurrence_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &dated(),
+            Some(Repeat {
+                frequency: 0,
+                interval: 1,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let ops = operations(&server).await;
+        assert_eq!(ops.len(), 3);
+        assert_eq!(ops[0]["operationType"], "create", "the new rule first");
+        assert!(
+            ops[1]["record"]["fields"]["RecurrenceRuleIDs"].is_object(),
+            "then the reminder is repointed"
+        );
+        assert_eq!(
+            ops[2]["operationType"], "forceDelete",
+            "then the old rule goes"
+        );
+        assert_eq!(ops[2]["record"]["recordName"], "RecurrenceRule/OLD-1");
+    }
+
+    #[tokio::test]
+    async fn clearing_a_repeat_empties_the_list_and_removes_the_rule() {
+        let server = server(&["OLD-1"]).await;
+        set_recurrence_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &dated(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let ops = operations(&server).await;
+        assert_eq!(ops.len(), 2, "no rule is created when clearing");
+        assert_eq!(
+            ops[0]["record"]["fields"]["RecurrenceRuleIDs"]["value"],
+            json!([])
+        );
+        assert_eq!(ops[1]["record"]["recordName"], "RecurrenceRule/OLD-1");
+    }
+
+    /// A repeat with nothing to repeat from would simply never come back.
+    #[tokio::test]
+    async fn a_repeat_needs_a_date_and_says_so_before_sending_anything() {
+        let server = server(&[]).await;
+        let mut undated = dated();
+        undated.due_at = None;
+        let err = set_recurrence_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &undated,
+            Some(Repeat {
+                frequency: 0,
+                interval: 1,
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("date"), "{err}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_frequency_apple_does_not_know_is_refused() {
+        let server = server(&[]).await;
+        assert!(set_recurrence_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &dated(),
+            Some(Repeat {
+                frequency: 9,
+                interval: 1,
+            }),
+        )
+        .await
+        .is_err());
+        assert!(
+            operations(&server).await.is_empty(),
+            "nothing may be written for a rule Apple would reject"
+        );
+    }
+
+    /// Clearing a repeat on a reminder with no date is legitimate — it is the date that the
+    /// repeat needed, not the removal.
+    #[tokio::test]
+    async fn clearing_works_even_without_a_date() {
+        let server = server(&["OLD-1"]).await;
+        let mut undated = dated();
+        undated.due_at = None;
+        set_recurrence_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &undated,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(operations(&server).await.len(), 2);
     }
 }

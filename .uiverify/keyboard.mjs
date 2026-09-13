@@ -17,10 +17,10 @@ function installStub({ screen, services, twoFactor }) {
     { guid: "L2", title: "Study", colour: "#1badf8", ctag: null, sortOrder: 1, enabled: true },
   ];
   const items = [
-    { guid: "R1", listGuid: "L1", title: "Water the plants", notes: null, dueAt: null,
+    { guid: "R1", listGuid: "L1", title: "Water the plants", notes: null, dueAt: 4102444800,
       completedAt: null, priority: 0, flagged: false, recurFrequency: null,
       recurInterval: null, etag: "t1" },
-    { guid: "R2", listGuid: "L1", title: "Evening run", notes: null, dueAt: null,
+    { guid: "R2", listGuid: "L1", title: "Evening run", notes: null, dueAt: 4102448400,
       completedAt: null, priority: 1, flagged: false, recurFrequency: null,
       recurInterval: null, etag: "t2" },
   ];
@@ -46,6 +46,7 @@ function installStub({ screen, services, twoFactor }) {
         case "reminder_create": return null;
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
+        case "reminder_set_repeat": return null;
         case "reminder_edit": return null;
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;

@@ -1256,6 +1256,8 @@ textarea.note-text:disabled {
 
 .rem-repeat-note {
   margin: 0;
+  /* Aligned with the fields it sits under, not with their labels. */
+  padding-left: 56px;
   font-size: var(--t-11);
   color: var(--text-3);
 }

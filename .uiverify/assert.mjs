@@ -20,6 +20,7 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "reminder_create") return null;
       if (cmd === "reminder_delete") return null;
       if (cmd === "reminder_set_done") return null;
+      if (cmd === "reminder_set_repeat") return null;
       if (cmd === "reminder_edit") return null;
       if (cmd === "reminders_smart") return [];
       if (cmd === "reminder_list_create" || cmd === "reminder_list_rename" || cmd === "reminder_list_delete") return null;

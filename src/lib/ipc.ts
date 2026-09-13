@@ -65,6 +65,8 @@ export const api = {
     invoke<Reminder[]>("reminders_in", { listGuid, includeDone }),
   remindersDueBetween: (from: number, to: number) =>
     invoke<Reminder[]>("reminders_due_between", { from, to }),
+  reminderSetRepeat: (guid: string, listGuid: string, repeat: Repeat | null) =>
+    invoke<void>("reminder_set_repeat", { guid, listGuid, repeat }),
   reminderSetDone: (guid: string, listGuid: string, done: boolean) =>
     invoke<void>("reminder_set_done", { guid, listGuid, done }),
   reminderEdit: (guid: string, listGuid: string, edit: ReminderEdit) =>
@@ -148,6 +150,9 @@ export type ReminderList = {
 };
 
 export type SmartList = "today" | "scheduled" | "flagged" | "all";
+
+/** How often a reminder comes back. Frequency: 0 daily, 1 weekly, 2 monthly, 3 yearly. */
+export type Repeat = { frequency: number; interval: number };
 
 /** Anything omitted is left untouched; `null` clears a field. */
 export type ReminderEdit = {

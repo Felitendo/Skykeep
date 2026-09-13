@@ -33,6 +33,7 @@ function installStub({ screen, services, twoFactor }) {
         case "reminder_create": return null;
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
+        case "reminder_set_repeat": return null;
         case "reminder_edit": return null;
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;

@@ -401,6 +401,42 @@ async fn reminder_set_done(
     Ok(())
 }
 
+/// Set or clear how often a reminder comes back.
+///
+/// Kept apart from the ordinary edit because a repeat is not a field: it is its own record
+/// that has to be written, linked and retired in the right order.
+#[tauri::command]
+async fn reminder_set_repeat(
+    guid: String,
+    list_guid: String,
+    repeat: Option<quince_icloud::reminders::Repeat>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+
+    let reminder = {
+        let library = data.0.lock().await;
+        library
+            .reminders_in(&list_guid, true)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|r| r.guid == guid)
+            .ok_or("That reminder is no longer in the local library.")?
+    };
+
+    quince_icloud::reminders::set_recurrence_cloudkit(
+        &http,
+        &root,
+        params.clone(),
+        &reminder,
+        repeat,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    resync_reminders(&http, &root, params, &data).await
+}
+
 /// Dated reminders inside a window, for the calendar grid.
 #[tauri::command]
 async fn reminders_due_between(
@@ -852,6 +888,7 @@ fn main() {
             drive_children,
             drive_item,
             reminder_set_done,
+            reminder_set_repeat,
         ])
         .run(tauri::generate_context!())
         .expect("Quince failed to start");
