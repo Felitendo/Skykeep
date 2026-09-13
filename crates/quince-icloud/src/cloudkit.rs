@@ -477,7 +477,6 @@ impl ZoneClient<'_> {
         .await
     }
 
-    /// Fetch one record, for reading its current change tag.
     /// Remove a record outright.
     ///
     /// `forceDelete` is CloudKit's delete-regardless-of-change-tag. The alternative is to

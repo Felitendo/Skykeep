@@ -1410,11 +1410,17 @@ textarea.note-text:disabled {
 /* Lines up with the list names beneath it, not with their icons — the heading used to sit
    nineteen pixels to their left, which read as a column that had slipped. 8px of row
    padding, a 16px icon, and the 8px gap between them is where the names begin. */
+/*
+ * Sits on the same left edge as the icons in the rows beneath it, which is where Apple puts a
+ * section heading in a source list. It was inset a further 24px to line up with the row
+ * *labels* instead, leaving it adrift of both the cards above and the icons below.
+ */
 .rem-lists-heading {
-  margin: 16px 8px 6px;
-  padding-left: 24px;
+  margin: 14px 0 4px;
+  padding-left: 8px;
   font-size: var(--t-11);
   font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--text-3);
 }
 

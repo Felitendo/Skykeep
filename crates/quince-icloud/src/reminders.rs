@@ -453,6 +453,13 @@ fn list_from_record(record: &Value) -> Option<ReminderList> {
     if field::flag(record, "Deleted") {
         return None;
     }
+    // A group is a folder of lists, not a list. Apple keeps both as `List` records and tells
+    // them apart with this flag; two of the nine on a real account are groups. Shown as lists
+    // they read as two permanently empty ones, and worse, they can be picked as the place to
+    // file a new reminder — which puts it somewhere the phone will not show it.
+    if field::flag(record, "IsGroup") {
+        return None;
+    }
     let guid = field::record_name(record)?;
     let title = field::string(record, "Name")
         .or_else(|| field::document_text(record, "NameDocument"))
@@ -463,7 +470,16 @@ fn list_from_record(record: &Value) -> Option<ReminderList> {
         title,
         colour: field::string(record, "Color"),
         ctag: None,
-        sort_order: field::int(record, "SortOrder").unwrap_or(0),
+        // Apple's List record carries no sort order — the earlier `SortOrder` here read a
+        // field that has never existed, so every list scored zero and the sidebar came out in
+        // whatever order the database happened to return. That is why a new reminder always
+        // seemed to land in the same arbitrary list.
+        //
+        // The real arrangement lives in the account record's `ListIDsMergeableOrdering`, a
+        // mergeable-ordering structure that also holds which group a list sits under. Until
+        // that is decoded, the order Apple walks the zone in is used: stable between refreshes
+        // and the same on every device, which is the part that was actually broken.
+        sort_order: 0,
         enabled: true,
     })
 }
@@ -506,19 +522,45 @@ fn list_order_from(record: &Value) -> Vec<String> {
 /// The hint carries bare UUIDs while a list's record name is `List/<uuid>`, so they are
 /// matched on the suffix. Anything the hint does not mention keeps its place after the rest
 /// rather than jumping to the front.
+/// Take Apple's own arrangement, but only while it still describes the lists that exist.
+///
+/// The record holding it is written by whichever device last rearranged the sidebar, and it is
+/// not cleaned up when a list goes. On a real account it names eight lists of which seven have
+/// since been deleted — obeying it put every surviving list on the same rank and left the order
+/// to chance, which is exactly what made a new reminder appear to land somewhere arbitrary.
+///
+/// So the question asked of it is whether it still describes the account: most of what it names
+/// should still be there. A list it has not heard of is just a new one and sorts after; a list
+/// of names that are mostly gone is a leftover and is ignored.
 fn apply_list_order(lists: &mut [ReminderList], order: &[String]) {
     if order.is_empty() {
         return;
     }
     let position = |guid: &str| {
         let uuid = guid.rsplit('/').next().unwrap_or(guid);
-        order
-            .iter()
-            .position(|id| id.eq_ignore_ascii_case(uuid))
-            .map_or(i64::from(u32::MAX), |i| i64::try_from(i).unwrap_or(0))
+        order.iter().position(|id| id.eq_ignore_ascii_case(uuid))
     };
+    let still_here = order
+        .iter()
+        .filter(|id| {
+            lists.iter().any(|l| {
+                l.guid
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&l.guid)
+                    .eq_ignore_ascii_case(id)
+            })
+        })
+        .count();
+    if still_here * 2 < order.len() {
+        return;
+    }
     for list in lists.iter_mut() {
-        list.sort_order = position(&list.guid);
+        // A list the arrangement has not heard of sits after the ones it has, keeping the
+        // order it arrived in rather than tying with every other stranger.
+        list.sort_order = position(&list.guid)
+            .and_then(|i| i64::try_from(i).ok())
+            .unwrap_or_else(|| i64::from(u32::MAX) + list.sort_order);
     }
 }
 
@@ -628,8 +670,14 @@ pub fn apply_cloudkit(
             "List" => {
                 if removed {
                     gone_lists.push(name);
-                } else {
-                    lists.extend(list_from_record(record));
+                } else if let Some(mut list) = list_from_record(record) {
+                    // Apple walks the zone in a stable order that is the same on every device,
+                    // and a List record carries no date or rank of its own. Keeping the
+                    // position it arrived in is what stops the sidebar coming out differently
+                    // on every refresh — which is what made a new reminder seem to land in an
+                    // arbitrary list.
+                    list.sort_order = i64::try_from(lists.len()).unwrap_or(0);
+                    lists.push(list);
                 }
             }
             "RecurrenceRule" => {
@@ -2915,5 +2963,93 @@ mod recurrence_write_tests {
         .await
         .unwrap();
         assert_eq!(operations(&server).await.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod list_shape_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn list_record(name: &str, title: &str, group: bool) -> Value {
+        json!({
+            "recordName": name,
+            "recordType": "List",
+            "fields": {
+                "Name": { "type": "STRING", "value": title },
+                "IsGroup": { "type": "NUMBER_INT64", "value": i64::from(group) },
+            }
+        })
+    }
+
+    /// A group is a folder of lists. Two of the nine on a real account are groups, and shown as
+    /// lists they read as permanently empty — and can be chosen as the place to file a reminder,
+    /// which puts it where the phone will not show it.
+    #[test]
+    fn a_group_is_not_offered_as_a_list() {
+        assert!(list_from_record(&list_record("List/A", "Life", true)).is_none());
+        assert_eq!(
+            list_from_record(&list_record("List/B", "GYM", false))
+                .unwrap()
+                .title,
+            "GYM"
+        );
+    }
+
+    /// Apple's List record has never had a SortOrder field; reading one scored every list zero
+    /// and left the sidebar to chance.
+    #[test]
+    fn a_list_does_not_invent_a_rank_from_a_field_apple_does_not_send() {
+        let l = list_from_record(&list_record("List/B", "GYM", false)).unwrap();
+        assert_eq!(
+            l.sort_order, 0,
+            "the rank comes from the walk, not the record"
+        );
+    }
+
+    /// The arrangement on a real account names eight lists of which seven are long gone.
+    /// Obeying it tied every surviving list on the same rank.
+    #[test]
+    fn an_arrangement_that_no_longer_describes_the_account_is_ignored() {
+        let mut lists: Vec<ReminderList> = ["List/A", "List/B", "List/C", "List/D"]
+            .iter()
+            .enumerate()
+            .map(|(i, g)| ReminderList {
+                guid: (*g).into(),
+                title: (*g).into(),
+                colour: None,
+                ctag: None,
+                sort_order: i64::try_from(i).unwrap(),
+                enabled: true,
+            })
+            .collect();
+        let before: Vec<i64> = lists.iter().map(|l| l.sort_order).collect();
+        apply_list_order(
+            &mut lists,
+            &["GONE1".into(), "GONE2".into(), "GONE3".into(), "A".into()],
+        );
+        let after: Vec<i64> = lists.iter().map(|l| l.sort_order).collect();
+        assert_eq!(before, after, "a stale arrangement changes nothing");
+    }
+
+    /// One new list is not a stale arrangement.
+    #[test]
+    fn an_arrangement_missing_only_a_new_list_is_still_obeyed() {
+        let mut lists: Vec<ReminderList> = ["List/A", "List/B", "List/NEW"]
+            .iter()
+            .enumerate()
+            .map(|(i, g)| ReminderList {
+                guid: (*g).into(),
+                title: (*g).into(),
+                colour: None,
+                ctag: None,
+                sort_order: i64::try_from(i).unwrap(),
+                enabled: true,
+            })
+            .collect();
+        apply_list_order(&mut lists, &["B".into(), "A".into()]);
+        lists.sort_by_key(|l| l.sort_order);
+        let order: Vec<&str> = lists.iter().map(|l| l.guid.as_str()).collect();
+        assert_eq!(order, vec!["List/B", "List/A", "List/NEW"]);
     }
 }

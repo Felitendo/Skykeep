@@ -322,7 +322,16 @@ pub async fn create_cloudkit(
     }
 
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let record_name = format!("Note/{}", uuid::Uuid::new_v4().to_string().to_uppercase());
+    // Apple names a note record with a bare uppercase UUID and nothing else. Every note on a
+    // real account is shaped that way; the four that were not are the ones this app made.
+    //
+    // The shape is load-bearing, not cosmetic. Apple derives a second record from it —
+    // `Note_UserSpecific::_<account>/<this name>` — which is where per-person state like
+    // pinning lives, and the server validates that derived name. A record called `Note/<uuid>`
+    // produced `Note_UserSpecific::_<account>/Note/<uuid>`, which Apple rejected outright: it
+    // is why deleting a note written here used to need a forced delete, and why a note made
+    // here was never quite the same kind of thing as a note made on the phone.
+    let record_name = uuid::Uuid::new_v4().to_string().to_uppercase();
     let stamp = now_millis();
     let (title, snippet) = title_and_snippet(body);
 
@@ -802,7 +811,16 @@ mod write_tests {
         )
         .await
         .unwrap();
-        assert!(name.starts_with("Note/"));
+        // Apple names a note with a bare uppercase UUID and nothing else. The shape is
+        // load-bearing: Apple derives `Note_UserSpecific::_<account>/<name>` from it and
+        // validates that, so a name with a prefix in it made a note the phone treated as a
+        // different kind of thing and would not let us delete normally.
+        assert!(
+            !name.contains('/'),
+            "a bare name, the way Apple's are: {name}"
+        );
+        assert_eq!(name.len(), 36, "a UUID: {name}");
+        assert_eq!(name, name.to_uppercase(), "uppercase, the way Apple's are");
 
         let record = sent(&server).await;
         assert_eq!(
