@@ -8,14 +8,18 @@ import path from "node:path";
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.BASE ?? "http://localhost:4173";
 
-const SERVICES = ["account","calendar","ckdatabasews","contacts","drivews","findme",
-                  "mail","reminders","settings","streams","uploadimagews"];
+const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservice",
+                  "cksharews","contacts","contactsweb","developerapi","docws","drivews",
+                  "findme","geows","iwmb","iworkexportws","iworkthumbnailws","keyvalue",
+                  "mail","mcc","mccgateway","mpp","notes","photos","photosupload",
+                  "premiummailsettings","push","reminders","settings","sharedlibrary",
+                  "sharedstreams","ubiquity","uploadimagews"];
 
 /* addInitScript SERIALIZES this function — closures do not cross into the page, so every
    value it needs must arrive through the single argument. */
 /* Fixture events, so the agenda's rendering is verified without inventing rows in anyone's
    real library. Times are unix seconds relative to now. */
-function installStub({ screen, services, twoFactor, calendarFixture }) {
+function installStub({ screen, services, twoFactor, calendarFixture, notesFixture }) {
   const HOUR = 3600, DAY = 86400;
   const base = Math.floor(Date.now() / 1000 / DAY) * DAY + 9 * HOUR;
   const events = !calendarFixture ? [] : [
@@ -39,6 +43,25 @@ function installStub({ screen, services, twoFactor, calendarFixture }) {
       dueAt: base + 6 * HOUR, completedAt: null, priority: 0, etag: null },
     { guid: "r3", listGuid: "daily", title: "Plan tomorrow", notes: null,
       dueAt: base + 13 * HOUR, completedAt: base + 13 * HOUR, priority: 0, etag: null },
+  ];
+  const noteFolders = [
+    { guid: "f1", title: "Notes", sortOrder: 0 },
+    { guid: "f2", title: "Recently Deleted", sortOrder: 1 },
+  ];
+  const noteList = !notesFixture ? [] : [
+    { guid: "n1", folderGuid: "f1", title: "Curtains",
+      snippet: "Bathroom accessories like mirror holder…",
+      body: "Curtains\nBathroom accessories like mirror holder, soap holder, shampoo, clothes hanger\nFan\nwall clock\nBed\nDining table\nTea filter\nKnife\nWashing Machine cover",
+      locked: false, pinned: false, createdAt: null, modifiedAt: 1788500000, etag: null },
+    { guid: "n2", folderGuid: "f1", title: "🔴 UNIT 1: SOFTWARE TESTING METHODOLOGIES",
+      snippet: "📌 SECTION A: 2-MARK HIGH-YIELD…",
+      body: "🔴 UNIT 1: SOFTWARE TESTING METHODOLOGIES\n\n📌 SECTION A: 2-MARK HIGH-YIELD QUESTIONS\n\nSoftware testing is the process of evaluating a system to find whether it satisfies the specified requirements, and to detect the differences between expected and actual results.",
+      locked: false, pinned: true, createdAt: null, modifiedAt: 1787900000, etag: null },
+    { guid: "n3", folderGuid: "f1",
+      title: "These sources outline the fundamental principles and methodologies",
+      snippet: "of **Software Testing Methodologies…",
+      body: "These sources outline the fundamental principles and methodologies of **Software Testing Methodologies (CSEN3311)**, emphasizing its evolution from simple debugging to a structured, process-oriented discipline. The material details the **Software Testing Life Cycle (STLC)**, covering essential phases from initial planning and test design to execution and post-implementation review.",
+      locked: false, pinned: false, createdAt: null, modifiedAt: 1787800000, etag: null },
   ];
   const calendars = [
     { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true },
@@ -67,8 +90,8 @@ function installStub({ screen, services, twoFactor, calendarFixture }) {
         case "reminder_create": return null;
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
-        case "note_folders": return [];
-        case "notes_in": return [];
+        case "note_folders": return !notesFixture ? [] : noteFolders;
+        case "notes_in": return !notesFixture ? [] : noteList;
         case "notes_last_synced": return Math.floor(Date.now() / 1000);
         case "notes_sync": return [0, 0];
         case "auth_two_factor_options": return twoFactor;
@@ -109,18 +132,33 @@ const shots = [
     act: async (p) => { await p.waitForSelector(".cal-grid"); } },
   { name: "08-calendar-dark", screen: "library", theme: "dark", calendarFixture: true,
     act: async (p) => { await p.waitForSelector(".cal-grid"); } },
+  // The window is often half a screen, where four columns do not fit.
+  { name: "09-notes-narrow", screen: "library", theme: "dark", notesFixture: true,
+    viewport: { width: 958, height: 1038 },
+    act: async (p) => {
+      await p.click('.nav-item:has-text("Notes")');
+      await p.waitForSelector(".note-rows .note-row");
+      await p.click('.note-row:has-text("These sources")');
+    } },
+  { name: "10-notes-wide", screen: "library", theme: "dark", notesFixture: true,
+    viewport: { width: 1600, height: 1000 },
+    act: async (p) => {
+      await p.click('.nav-item:has-text("Notes")');
+      await p.waitForSelector(".note-rows .note-row");
+      await p.click('.note-row:has-text("These sources")');
+    } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];
 
 const browser = await chromium.launch();
-for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false } of shots) {
+for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false, notesFixture = false, viewport } of shots) {
   const ctx = await browser.newContext({
-    viewport: { width: 1040, height: 720 },
+    viewport: viewport ?? { width: 1040, height: 720 },
     deviceScaleFactor: 2,
     colorScheme: theme,
   });
-  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture });
+  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture, notesFixture });
   const page = await ctx.newPage();
   const errors = [];
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));

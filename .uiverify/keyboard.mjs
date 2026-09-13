@@ -2,8 +2,12 @@
 // screen-reader user actually experiences.
 import { chromium } from "playwright";
 
-const SERVICES = ["calendar","contacts","reminders","notes","photos","drivews","mail",
-  "findme","sharedlibrary","sharedstreams","account","push","mpp","geows"];
+const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservice",
+                  "cksharews","contacts","contactsweb","developerapi","docws","drivews",
+                  "findme","geows","iwmb","iworkexportws","iworkthumbnailws","keyvalue",
+                  "mail","mcc","mccgateway","mpp","notes","photos","photosupload",
+                  "premiummailsettings","push","reminders","settings","sharedlibrary",
+                  "sharedstreams","ubiquity","uploadimagews"];
 
 function installStub({ screen, services, twoFactor }) {
   window.__TAURI_INTERNALS__ = {

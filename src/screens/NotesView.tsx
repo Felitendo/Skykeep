@@ -25,6 +25,14 @@ function relative(seconds: number | null): string {
   return `${Math.floor(ago / 86_400)} d ago`;
 }
 
+/** True when the body already opens with the title, which is Apple's usual case. */
+function bodyRepeatsTitle(note: Note): boolean {
+  const body = note.body?.trimStart();
+  if (!body) return false;
+  const title = note.title.trim();
+  return title.length > 0 && body.startsWith(title);
+}
+
 export function NotesView() {
   const [folders, setFolders] = useState<NoteFolder[]>([]);
   const [folder, setFolder] = useState<string>(ALL);
@@ -121,14 +129,33 @@ export function NotesView() {
         <header className="cal-bar">
           <div className="cal-nav">
             <h1>{folder === ALL ? "All Notes" : folders.find((f) => f.guid === folder)?.title}</h1>
+            <span className="badge">
+              {notes.length} {notes.length === 1 ? "note" : "notes"}
+            </span>
           </div>
           <div className="cal-actions">
-            <span className="badge">Updated {relative(lastSynced)}</span>
+            <span className="badge">{relative(lastSynced)}</span>
             <button className="quiet" onClick={refresh} disabled={syncing}>
               {syncing ? "Refreshing…" : "Refresh"}
             </button>
           </div>
         </header>
+
+        {/* Shown only when the folder column has folded away. */}
+        <div className="notes-folder-picker">
+          <select
+            value={folder}
+            onChange={(e) => setFolder(e.target.value)}
+            aria-label="Folder"
+          >
+            <option value={ALL}>All Notes</option>
+            {folders.map((f) => (
+              <option key={f.guid} value={f.guid}>
+                {f.title}
+              </option>
+            ))}
+          </select>
+        </div>
 
         {error && <p className="error" role="alert">{error}</p>}
 
@@ -169,7 +196,9 @@ export function NotesView() {
             </p>
           ) : (
             <>
-              <h2>{open.title}</h2>
+              {/* Apple derives a note's title from its first line, so the body already
+                  contains it. Rendering both shows the same sentence twice. */}
+              {!bodyRepeatsTitle(open) && <h2>{open.title}</h2>}
               <p className="note-when">{when(open.modifiedAt)}</p>
               <pre className="note-text">{open.body ?? ""}</pre>
             </>

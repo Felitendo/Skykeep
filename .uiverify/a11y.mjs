@@ -3,11 +3,12 @@
 import { chromium } from "playwright";
 import AxeBuilder from "@axe-core/playwright";
 
-const SERVICES = ["account","archivews","calendar","ckdatabasews","cksharews","contacts",
-  "contactsweb","developerapi","docws","drivews","findme","geows","iwmb","iworkexportws",
-  "iworkthumbnailws","keyvalue","mail","mcc","mccgateway","mpp","notes","photos",
-  "photosupload","premiummailsettings","push","reminders","settings","sharedlibrary",
-  "sharedstreams","ubiquity","uploadimagews"];
+const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservice",
+                  "cksharews","contacts","contactsweb","developerapi","docws","drivews",
+                  "findme","geows","iwmb","iworkexportws","iworkthumbnailws","keyvalue",
+                  "mail","mcc","mccgateway","mpp","notes","photos","photosupload",
+                  "premiummailsettings","push","reminders","settings","sharedlibrary",
+                  "sharedstreams","ubiquity","uploadimagews"];
 
 function installStub({ screen, services, twoFactor }) {
   window.__TAURI_INTERNALS__ = {
