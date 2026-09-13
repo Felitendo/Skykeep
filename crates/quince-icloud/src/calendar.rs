@@ -65,6 +65,23 @@ pub(crate) fn parse_apple_date(raw: &Value, timezone: Option<&str>) -> Result<i6
     Ok(zoned.timestamp().as_second())
 }
 
+/// The inverse of [`parse_apple_date`]: Apple's `[YYYYMMDD, y, m, d, h, min, minsSinceMidnight]`.
+///
+/// Writes must speak the same dialect they read, so this is what a completion timestamp or a
+/// due date looks like going back.
+pub(crate) fn format_apple_date(seconds: i64, timezone: Option<&str>) -> Value {
+    let zone = timezone
+        .and_then(|name| TimeZone::get(name).ok())
+        .unwrap_or(TimeZone::UTC);
+    let zoned = jiff::Timestamp::from_second(seconds)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(zone);
+    let (y, m, d) = (zoned.year(), zoned.month(), zoned.day());
+    let (h, min) = (zoned.hour(), zoned.minute());
+    let packed = i64::from(y) * 10_000 + i64::from(m) * 100 + i64::from(d);
+    serde_json::json!([packed, y, m, d, h, min, i64::from(h) * 60 + i64::from(min)])
+}
+
 fn string(v: &Value, key: &str) -> Option<String> {
     v.get(key)
         .and_then(Value::as_str)
@@ -283,6 +300,41 @@ mod tests {
         ] {
             assert!(parse_apple_date(&bad, None).is_err(), "should reject {bad}");
         }
+    }
+
+    /// A date written back must read back as the same instant, or a completion would land on
+    /// the wrong day.
+    #[test]
+    fn dates_survive_a_round_trip() {
+        for zone in [Some("Asia/Kolkata"), Some("America/New_York"), None] {
+            for seconds in [0_i64, 1_757_000_000, 1_788_888_888] {
+                let encoded = format_apple_date(seconds, zone);
+                let decoded = parse_apple_date(&encoded, zone).unwrap();
+                // Apple's format carries no seconds, so equality is to the minute.
+                assert_eq!(
+                    decoded,
+                    seconds - seconds.rem_euclid(60),
+                    "{seconds} in {zone:?} did not survive"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_encoded_date_has_apples_shape() {
+        let encoded = format_apple_date(1_757_000_000, Some("UTC"));
+        let parts = encoded.as_array().unwrap();
+        assert_eq!(parts.len(), 7);
+        // First element packs the date as YYYYMMDD.
+        let packed = parts[0].as_i64().unwrap();
+        assert_eq!(packed / 10_000, parts[1].as_i64().unwrap(), "year");
+        assert_eq!((packed / 100) % 100, parts[2].as_i64().unwrap(), "month");
+        assert_eq!(packed % 100, parts[3].as_i64().unwrap(), "day");
+        // Last element is minutes since midnight.
+        assert_eq!(
+            parts[6].as_i64().unwrap(),
+            parts[4].as_i64().unwrap() * 60 + parts[5].as_i64().unwrap()
+        );
     }
 
     #[test]

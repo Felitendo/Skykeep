@@ -77,4 +77,12 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX reminders_by_list ON reminders (list_guid, completed_at, due_at);
     CREATE INDEX reminders_by_due ON reminders (due_at);
     "#,
+    // 3 — keep Apple's original payload for each reminder.
+    //
+    // Writes must echo the whole task back. Reconstructing one from parsed columns would
+    // silently drop fields Apple sent but we do not model, which is how a sync corrupts
+    // someone's data. Storing the original makes a write a mutation of what Apple gave us.
+    r#"
+    ALTER TABLE reminders ADD COLUMN raw TEXT;
+    "#,
 ];

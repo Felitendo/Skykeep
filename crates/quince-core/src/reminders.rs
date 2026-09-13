@@ -27,6 +27,10 @@ pub struct Reminder {
     pub completed_at: Option<i64>,
     pub priority: i64,
     pub etag: Option<String>,
+    /// Apple's original JSON for this reminder, kept verbatim so a write can echo every
+    /// field back rather than only the ones we model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
 }
 
 impl Reminder {
@@ -87,13 +91,14 @@ impl Library {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminders (guid, list_guid, title, notes, due_at, completed_at,
-                                        priority, etag, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                                        priority, etag, raw, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(guid) DO UPDATE SET
                    list_guid = excluded.list_guid, title = excluded.title,
                    notes = excluded.notes, due_at = excluded.due_at,
                    completed_at = excluded.completed_at, priority = excluded.priority,
-                   etag = excluded.etag, updated_at = excluded.updated_at",
+                   etag = excluded.etag, raw = excluded.raw,
+                   updated_at = excluded.updated_at",
             )?;
             let stamp = now();
             for r in reminders {
@@ -106,6 +111,7 @@ impl Library {
                     r.completed_at,
                     r.priority,
                     r.etag,
+                    r.raw,
                     stamp
                 ])?;
             }
@@ -138,7 +144,7 @@ impl Library {
     /// is useless.
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
-            "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, etag
+            "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, etag, raw
              FROM reminders
              WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)
              ORDER BY completed_at IS NOT NULL,
@@ -156,6 +162,7 @@ impl Library {
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
                 etag: row.get(7)?,
+                raw: row.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -187,6 +194,7 @@ mod tests {
             completed_at: done,
             priority: 0,
             etag: None,
+            raw: None,
         }
     }
 
@@ -244,6 +252,10 @@ mod tests {
     #[test]
     fn an_existing_library_migrates_to_the_new_schema() {
         let lib = Library::in_memory().unwrap();
-        assert_eq!(lib.schema_version().unwrap(), 2, "migration 2 must apply");
+        assert_eq!(
+            lib.schema_version().unwrap() as usize,
+            crate::schema::MIGRATIONS.len(),
+            "every migration must apply"
+        );
     }
 }

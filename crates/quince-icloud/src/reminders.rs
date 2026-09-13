@@ -48,6 +48,9 @@ fn reminder_from(v: &Value) -> Option<Reminder> {
         completed_at: optional_date(v, "completedDate"),
         priority: v.get("priority").and_then(Value::as_i64).unwrap_or(0),
         etag: string(v, "etag"),
+        // Keep Apple's payload verbatim: a write echoes the whole task back, and
+        // reconstructing one from parsed columns would drop fields we do not model.
+        raw: serde_json::to_string(v).ok(),
     })
 }
 
@@ -151,6 +154,71 @@ pub async fn sync(
     Ok((snapshot.lists.len(), reminders.len()))
 }
 
+/// Mark a reminder done, or put it back.
+///
+/// Apple wants the whole task echoed back, so this mutates the payload it gave us rather
+/// than building a fresh one — anything Apple sent that we do not model survives untouched.
+pub async fn set_completed(
+    http: &reqwest::Client,
+    root: &str,
+    params: &[(String, String)],
+    reminder: &Reminder,
+    done: bool,
+    timezone: &str,
+) -> Result<()> {
+    let raw = reminder.raw.as_deref().ok_or_else(|| {
+        Error::Protocol(
+            "this reminder was stored before Quince kept Apple's original payload; \
+             refresh once and try again"
+                .into(),
+        )
+    })?;
+    let mut task: Value = serde_json::from_str(raw)
+        .map_err(|e| Error::Protocol(format!("stored reminder is unreadable: {e}")))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+
+    task["completedDate"] = if done {
+        crate::calendar::format_apple_date(now, Some(timezone))
+    } else {
+        Value::Null
+    };
+    task["lastModifiedDate"] = crate::calendar::format_apple_date(now, Some(timezone));
+
+    let body = serde_json::json!({
+        "Reminders": task,
+        "ClientState": { "Collections": [] },
+    });
+
+    let mut query: Vec<(String, String)> = params.to_vec();
+    query.push(("clientVersion".into(), "4.0".into()));
+    query.push(("lang".into(), "en-us".into()));
+    query.push(("usertz".into(), timezone.into()));
+    // Apple's web client tunnels PUT through POST.
+    query.push(("methodOverride".into(), "PUT".into()));
+
+    let url = format!(
+        "{}/rd/reminders/{}",
+        root.trim_end_matches('/'),
+        reminder.list_guid
+    );
+    let response = http.post(url).query(&query).json(&body).send().await?;
+    let status = response.status();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(Error::Protocol(format!(
+            "couldn't update that reminder ({status}): {}",
+            text.chars().take(160).collect::<String>()
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +274,90 @@ mod tests {
         let snap = parse_snapshot(&body);
         assert_eq!(snap.reminders.len(), 1);
         assert!(snap.reminders[0].due_at.is_none());
+    }
+
+    /// The stored payload must be Apple's, verbatim, or a write would drop fields.
+    #[test]
+    fn apples_payload_is_kept_verbatim() {
+        let body = json!({ "Reminders": [{
+            "guid": "r1", "pGuid": "l1", "title": "Milk",
+            "someFieldWeDoNotModel": { "nested": [1, 2, 3] }
+        }]});
+        let reminder = &parse_snapshot(&body).reminders[0];
+        let raw: Value = serde_json::from_str(reminder.raw.as_ref().unwrap()).unwrap();
+        assert_eq!(raw["someFieldWeDoNotModel"]["nested"][2], 3);
+    }
+
+    #[tokio::test]
+    async fn completing_mutates_the_original_payload() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rd/reminders/l1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+
+        let body = json!({ "Reminders": [{
+            "guid": "r1", "pGuid": "l1", "title": "Milk", "customField": "keep me"
+        }]});
+        let reminder = parse_snapshot(&body).reminders.remove(0);
+
+        let http = reqwest::Client::new();
+        set_completed(&http, &server.uri(), &[], &reminder, true, "UTC")
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let sent: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(
+            sent["Reminders"]["customField"], "keep me",
+            "unmodelled fields must survive"
+        );
+        assert!(
+            sent["Reminders"]["completedDate"].is_array(),
+            "completion must be a date array"
+        );
+        assert!(requests[0]
+            .url
+            .query()
+            .unwrap()
+            .contains("methodOverride=PUT"));
+    }
+
+    /// Un-ticking must clear the date, not set it to something.
+    #[tokio::test]
+    async fn un_completing_clears_the_date() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rd/reminders/l1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+
+        let body = json!({ "Completed": [{ "guid": "r1", "pGuid": "l1", "title": "Bread",
+            "completedDate": [20260910, 2026, 9, 10, 9, 0, 540] }]});
+        let reminder = parse_snapshot(&body).reminders.remove(0);
+
+        set_completed(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &[],
+            &reminder,
+            false,
+            "UTC",
+        )
+        .await
+        .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let sent: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(sent["Reminders"]["completedDate"].is_null());
     }
 
     #[test]

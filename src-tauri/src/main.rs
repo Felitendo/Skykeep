@@ -253,6 +253,48 @@ async fn reminders_in(
         .map_err(|e| e.to_string())
 }
 
+/// Tick a reminder off, or put it back. Writes to Apple first, then refreshes locally, so
+/// the interface never shows a state Apple has not accepted.
+#[tauri::command]
+async fn reminder_set_done(
+    guid: String,
+    list_guid: String,
+    done: bool,
+    timezone: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = {
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("reminders")
+            .ok_or("Apple hasn't offered a reminders service for this account.")?;
+        (client.http().clone(), root, client.service_params())
+    };
+
+    let reminder = {
+        let library = data.0.lock().await;
+        library
+            .reminders_in(&list_guid, true)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|r| r.guid == guid)
+            .ok_or("That reminder is no longer in the local library.")?
+    };
+
+    quince_icloud::reminders::set_completed(&http, &root, &params, &reminder, done, &timezone)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Re-read from Apple so what we show is what Apple stored, not what we hoped.
+    let mut library = data.0.lock().await;
+    quince_icloud::reminders::sync(&http, &root, params, &mut library, &timezone)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn reminders_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
     let library = data.0.lock().await;
@@ -300,6 +342,7 @@ fn main() {
             reminder_lists,
             reminders_in,
             reminders_last_synced,
+            reminder_set_done,
         ])
         .run(tauri::generate_context!())
         .expect("Quince failed to start");
