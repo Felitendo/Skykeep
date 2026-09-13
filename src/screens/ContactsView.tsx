@@ -3,6 +3,7 @@ import {
   api,
   displayName,
   messageOf,
+  photoSrc,
   type Contact,
   type ContactMethod,
 } from "../lib/ipc";
@@ -16,10 +17,32 @@ const KINDS = [
   { value: "url", label: "link" },
 ] as const;
 
+/**
+ * A contact's picture where there is one, initials where there is not.
+ *
+ * The image is allowed to fail — a photo Apple has moved, or no network yet — and when it
+ * does the initials underneath are what shows, rather than a broken frame.
+ */
+function Avatar({ contact, large }: { contact: Contact; large?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  const src = failed ? null : photoSrc(contact);
+  return (
+    <span className={`avatar${large ? " large" : ""}`} aria-hidden="true">
+      {src ? (
+        <img src={src} alt="" onError={() => setFailed(true)} />
+      ) : (
+        initials(contact)
+      )}
+    </span>
+  );
+}
+
 const blank = (): Contact => ({
   guid: "",
   firstName: null,
   middleName: null,
+  photoUrl: null,
+  photoSignature: null,
   lastName: null,
   company: null,
   isCompany: false,
@@ -185,7 +208,7 @@ export function ContactsView() {
                 aria-current={openGuid === contact.guid}
                 onClick={() => setOpenGuid(contact.guid)}
               >
-                <span className="avatar" aria-hidden="true">{initials(contact)}</span>
+                <Avatar contact={contact} />
                 <span className="contact-row-name">{displayName(contact)}</span>
               </button>
             </li>
@@ -327,7 +350,7 @@ export function ContactsView() {
                 The avatar used to be pinned to the pane's left edge while the name was
                 centred somewhere else entirely, so they read as two unrelated things. */}
             <div className="contact-head">
-              <span className="avatar large" aria-hidden="true">{initials(open)}</span>
+              <Avatar contact={open} large />
               <div className="contact-head-names">
                 <h2>{displayName(open)}</h2>
                 {open.company && !open.isCompany && (

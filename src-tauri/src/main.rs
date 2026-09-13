@@ -78,6 +78,25 @@ async fn cloudkit_context(
     Ok((client.http().clone(), root, client.service_params()))
 }
 
+/// Undo percent-encoding in a path segment. Enough for the ids this scheme carries.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn state_dir(app: &tauri::AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
@@ -1109,8 +1128,169 @@ fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
     });
 }
 
+/// Where a contact's picture is cached on disk, named by the signature Apple gives it so a
+/// changed picture lands at a new path rather than behind a stale one.
+/// The edge of a served avatar.
+///
+/// Drawn at 26px in a list and 68px on a card, so 256 covers both on a display of any density
+/// while staying a few kilobytes rather than the few hundred Apple stores.
+const AVATAR_PX: u32 = 256;
+
+/// What a picture actually is, read from its own first bytes.
+///
+/// Apple serves contact pictures as PNG today and said nothing about keeping to it, and a
+/// cached copy on disk carries no header to consult — so the bytes are asked directly rather
+/// than a type being assumed. An unrecognised one is still handed over: the webview sniffs
+/// too, and the interface already falls back to initials if it cannot draw it.
+fn image_type(bytes: &[u8]) -> &'static str {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        [0xff, 0xd8, 0xff, ..] => "image/jpeg",
+        [b'G', b'I', b'F', b'8', ..] => "image/gif",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => "image/heic",
+        _ => "application/octet-stream",
+    }
+}
+
+fn photo_path(dir: &std::path::Path, guid: &str, signature: &str) -> PathBuf {
+    // The signature is base64 and can hold characters a filename cannot.
+    let safe: String = signature
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let guid_safe: String = guid
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    // No extension: the format is Apple's to choose, and is read back from the bytes.
+    dir.join("photos").join(format!("{guid_safe}-{safe}"))
+}
+
+/// Serve a contact's picture to the interface.
+///
+/// Through a scheme of our own rather than over IPC: the webview loads it the way it loads
+/// any image, into its own cache, so a list of a hundred people does not push a hundred
+/// images through a message channel on every scroll. Fetched from Apple once and kept on
+/// disk after that.
+/// A picture ready to serve, and whether it is safe to let the webview keep it.
+struct Photo {
+    bytes: Vec<u8>,
+    durable: bool,
+}
+
+async fn contact_photo(
+    app: &tauri::AppHandle,
+    guid: &str,
+) -> Result<Photo, Box<dyn std::error::Error + Send + Sync>> {
+    let photo = {
+        let data = app.state::<Data>();
+        let library = data.0.lock().await;
+        library
+            .contact_photo_source(guid)?
+            .ok_or("that contact has no picture")?
+    };
+
+    // A picture shared by the person it belongs to arrives with no signature, and Apple's
+    // own preference on those is that they update themselves. With nothing to tell a cached
+    // copy it has gone stale, none is kept: a stale face is worse than a second fetch.
+    let dir = state_dir(app);
+    let cached = photo
+        .signature
+        .as_deref()
+        .map(|signature| photo_path(&dir, guid, signature));
+    let durable = cached.is_some();
+    if let Some(path) = &cached {
+        if let Ok(bytes) = tokio::fs::read(path).await {
+            return Ok(Photo { bytes, durable });
+        }
+    }
+
+    let (http, params) = {
+        let auth = app.state::<Auth>();
+        let client = auth.client.lock().await;
+        (client.http().clone(), client.service_params())
+    };
+    let response = http.get(&photo.url).query(&params).send().await?;
+    if !response.status().is_success() {
+        return Err(format!("Apple returned {}", response.status()).into());
+    }
+    let bytes = response.bytes().await?.to_vec();
+
+    // Cut to the square its owner chose and sized for a face, off the interface's thread.
+    // Apple stores these whole — one of them is 1696x2528 — and a list of them has to scroll.
+    let crop = photo.crop.as_deref().and_then(quince_media::Crop::parse);
+    let drawn = tokio::task::spawn_blocking(move || quince_media::avatar(&bytes, crop, AVATAR_PX))
+        .await?
+        .map_err(|e| format!("that picture could not be read: {e}"))?;
+
+    if let Some(path) = &cached {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(path, &drawn).await.ok();
+    }
+    Ok(Photo {
+        bytes: drawn,
+        durable,
+    })
+}
+
 fn main() {
     tauri::Builder::default()
+        // Images are served, not messaged. `quince://photo/<contact id>` is loaded by the
+        // webview itself, which is what keeps a scrolling list cheap.
+        .register_asynchronous_uri_scheme_protocol("quince", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            // WebKitGTK reads `quince://photo/<id>` with "photo" as the host, while Tauri's
+            // own helper produces `quince://localhost/photo/<id>`. Accept either, rather than
+            // depending on which one the caller happened to build.
+            let uri = request.uri();
+            let mut path = uri.path().trim_start_matches('/').to_string();
+            if uri.host() == Some("photo") {
+                path = format!("photo/{path}");
+            }
+            tauri::async_runtime::spawn(async move {
+                let Some(guid) = path.strip_prefix("photo/") else {
+                    responder.respond(
+                        tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new())
+                            .unwrap_or_default(),
+                    );
+                    return;
+                };
+                // Percent-encoding: a contact id is a plain UUID, but the scheme should not
+                // assume what a future caller puts here.
+                let guid = percent_decode(guid);
+                match contact_photo(&app, &guid).await {
+                    Ok(Photo { bytes, durable }) => responder.respond(
+                        tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", image_type(&bytes))
+                            // A picture with a signature cannot change without the signature
+                            // changing too, so the webview may hold it. One without can change
+                            // under us, so it is only held long enough to scroll a list.
+                            .header(
+                                "Cache-Control",
+                                if durable {
+                                    "private, max-age=604800"
+                                } else {
+                                    "private, max-age=300"
+                                },
+                            )
+                            .body(bytes)
+                            .unwrap_or_default(),
+                    ),
+                    Err(_) => responder.respond(
+                        tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new())
+                            .unwrap_or_default(),
+                    ),
+                }
+            });
+        })
         .setup(|app| {
             let dir = state_dir(app.handle());
             let client = Arc::new(Mutex::new(Client::new(&dir)?));
@@ -1176,4 +1356,45 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("Quince failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Apple serves contact pictures as PNG, which is not what the first version of this
+    /// assumed. The type is read from the bytes so a change of format is not a broken image.
+    #[test]
+    fn an_image_is_recognised_by_its_own_first_bytes() {
+        assert_eq!(image_type(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"), "image/png");
+        assert_eq!(image_type(b"\xff\xd8\xff\xe0JFIF"), "image/jpeg");
+        assert_eq!(image_type(b"GIF89a"), "image/gif");
+        assert_eq!(image_type(b"RIFF\0\0\0\0WEBPVP8 "), "image/webp");
+        assert_eq!(image_type(b"\0\0\0\x18ftypheic"), "image/heic");
+        assert_eq!(image_type(b"not a picture"), "application/octet-stream");
+        assert_eq!(image_type(b""), "application/octet-stream", "and no panic");
+    }
+
+    /// A signature is base64 and holds `/` and `+`; a filename cannot. Two different pictures
+    /// must still land on two different files.
+    #[test]
+    fn a_cached_picture_is_named_safely_and_uniquely() {
+        let dir = std::path::Path::new("/tmp/quince");
+        let one = photo_path(dir, "A-B/C", "FAhjvQxoOa/G338LIq+u7A==");
+        let two = photo_path(dir, "A-B/C", "ZZhjvQxoOa/G338LIq+u7A==");
+        let name = one.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "a filename Apple's base64 cannot break: {name}"
+        );
+        assert_ne!(one, two, "a new picture must not read the old one's cache");
+    }
+
+    /// The address bar of the interface is not a path: a contact id arrives encoded.
+    #[test]
+    fn a_percent_encoded_id_comes_back_as_itself() {
+        assert_eq!(percent_decode("a%2Fb"), "a/b");
+        assert_eq!(percent_decode("plain-uuid"), "plain-uuid");
+        assert_eq!(percent_decode("%zz"), "%zz", "malformed stays as it was");
+    }
 }

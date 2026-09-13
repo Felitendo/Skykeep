@@ -213,4 +213,23 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE contacts ADD COLUMN middle_name TEXT;
     "#,
+    // 13 — where a contact's photo lives.
+    //
+    // The URL is Apple's; the signature changes when the picture does, which is what tells
+    // a cached copy it has gone stale. The bytes themselves are not kept here: an image
+    // belongs on disk where the webview can load it directly, not in a row that has to
+    // cross an IPC boundary every time a list scrolls.
+    r#"
+    ALTER TABLE contacts ADD COLUMN photo_url TEXT;
+    ALTER TABLE contacts ADD COLUMN photo_signature TEXT;
+    "#,
+    // 14 — the square of a picture its owner chose to show.
+    //
+    // Apple stores the photo whole and records the crop beside it. One picture on a real
+    // account is 1696x2528 with a crop of 1279x1279 at 251,1249 — a portrait whose face sits
+    // near the bottom. Centring it, which is what any viewer does without this, shows a chest.
+    // Kept as `x,y,width,height` because it is only ever read and written together.
+    r#"
+    ALTER TABLE contacts ADD COLUMN photo_crop TEXT;
+    "#,
 ];

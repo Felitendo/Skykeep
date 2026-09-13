@@ -13,6 +13,17 @@ pub struct ContactMethod {
     pub value: String,
 }
 
+/// Everything needed to put one person's picture on screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactPhoto {
+    pub url: String,
+    /// Changes when the picture does, so a cached copy knows it has gone stale. Absent on a
+    /// picture shared by the person it belongs to, which is then never cached to disk.
+    pub signature: Option<String>,
+    /// `x,y,width,height` in the stored picture's own pixels.
+    pub crop: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Contact {
@@ -21,6 +32,15 @@ pub struct Contact {
     /// Apple keeps one, and four people in a real address book have one.
     #[serde(default)]
     pub middle_name: Option<String>,
+    /// Where Apple keeps this person's picture, and the signature that changes when the
+    /// picture does. `None` for the great majority of an address book.
+    #[serde(default)]
+    pub photo_url: Option<String>,
+    #[serde(default)]
+    pub photo_signature: Option<String>,
+    /// The square its owner chose, as `x,y,width,height` in the stored picture's own pixels.
+    #[serde(default)]
+    pub photo_crop: Option<String>,
     pub last_name: Option<String>,
     pub company: Option<String>,
     pub is_company: bool,
@@ -87,11 +107,15 @@ impl Library {
         {
             let mut upsert = tx.prepare(
                 "INSERT INTO contacts (guid, first_name, middle_name, last_name, company, is_company,
-                                       sort_name, birthday, notes, etag, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                       sort_name, birthday, notes, photo_url, photo_signature,
+                                       photo_crop, etag, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                  ON CONFLICT(guid) DO UPDATE SET
                    first_name = excluded.first_name, middle_name = excluded.middle_name,
                    last_name = excluded.last_name,
+                   photo_url = excluded.photo_url,
+                   photo_signature = excluded.photo_signature,
+                   photo_crop = excluded.photo_crop,
                    company = excluded.company, is_company = excluded.is_company,
                    sort_name = excluded.sort_name, birthday = excluded.birthday,
                    notes = excluded.notes, etag = excluded.etag,
@@ -115,6 +139,9 @@ impl Library {
                     c.sort_key(),
                     c.birthday,
                     c.notes,
+                    c.photo_url,
+                    c.photo_signature,
+                    c.photo_crop,
                     c.etag,
                     stamp
                 ])?;
@@ -147,6 +174,31 @@ impl Library {
         Ok(())
     }
 
+    /// Where one person's picture lives, without reading the rest of the address book.
+    ///
+    /// The picture is served per row as a list scrolls, so this stays a single-row lookup
+    /// rather than loading everyone and their phone numbers to answer it.
+    pub fn contact_photo_source(&self, guid: &str) -> Result<Option<ContactPhoto>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT photo_url, photo_signature, photo_crop FROM contacts WHERE guid = ?1",
+        )?;
+        let mut rows = stmt.query(params![guid])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        // The signature and the crop are each absent on real contacts — a picture shared by
+        // the person it belongs to arrives with neither. Only the URL decides whether there
+        // is anything to fetch.
+        let Some(url) = row.get::<_, Option<String>>(0)? else {
+            return Ok(None);
+        };
+        Ok(Some(ContactPhoto {
+            url,
+            signature: row.get(1)?,
+            crop: row.get(2)?,
+        }))
+    }
+
     /// The address book in display order, optionally filtered.
     ///
     /// The filter matches names and any stored method, so searching a phone number finds the
@@ -159,7 +211,7 @@ impl Library {
 
         let mut stmt = self.conn.prepare(
             "SELECT c.guid, c.first_name, c.middle_name, c.last_name, c.company, c.is_company,
-                    c.birthday, c.notes, c.etag
+                    c.birthday, c.notes, c.photo_url, c.photo_signature, c.photo_crop, c.etag
              FROM contacts c
              WHERE ?1 IS NULL
                 OR lower(coalesce(c.first_name, '') || ' ' || coalesce(c.middle_name, '')
@@ -179,7 +231,10 @@ impl Library {
                 is_company: row.get::<_, i64>(5)? != 0,
                 birthday: row.get(6)?,
                 notes: row.get(7)?,
-                etag: row.get(8)?,
+                photo_url: row.get(8)?,
+                photo_signature: row.get(9)?,
+                photo_crop: row.get(10)?,
+                etag: row.get(11)?,
                 methods: Vec::new(),
             })
         })?;
@@ -212,6 +267,9 @@ mod tests {
             guid: guid.into(),
             first_name: first.map(ToString::to_string),
             middle_name: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
             last_name: last.map(ToString::to_string),
             company: None,
             is_company: false,

@@ -12,6 +12,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 quince-auth = { path = "../crates/quince-auth" }
 quince-core = { path = "../crates/quince-core" }
+quince-media = { workspace = true }
 quince-icloud = { path = "../crates/quince-icloud" }
 reqwest.workspace = true
 serde.workspace = true

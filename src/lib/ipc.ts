@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export type Status = { hasStoredSession: boolean; signedIn: boolean };
 export type SignInResult = "complete" | "needs_two_factor";
@@ -235,6 +235,8 @@ export type Contact = {
   firstName: string | null;
   middleName: string | null;
   lastName: string | null;
+  photoUrl: string | null;
+  photoSignature: string | null;
   company: string | null;
   isCompany: boolean;
   birthday: string | null;
@@ -244,6 +246,17 @@ export type Contact = {
 };
 
 /** What to show, whichever name fields a contact happens to have. */
+/**
+ * Where the interface loads a contact's picture from.
+ *
+ * Its own scheme rather than a data URI over IPC: the webview fetches and caches it the way
+ * it does any image, so a list of a hundred people does not push a hundred pictures through
+ * a message channel every time it scrolls.
+ */
+export function photoSrc(c: Contact): string | null {
+  return c.photoUrl ? convertFileSrc(`photo/${c.guid}`, "quince") : null;
+}
+
 export function displayName(c: Contact): string {
   const full = [c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ").trim();
   if (full) return full;

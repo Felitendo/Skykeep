@@ -117,6 +117,17 @@ fn contact_from(v: &Value) -> Option<Contact> {
         guid,
         first_name: string(v, "firstName"),
         middle_name: string(v, "middleName"),
+        // Apple hands out a URL for the picture, a signature that changes with it, and the
+        // square its owner chose. Only the URL is always there.
+        photo_url: v
+            .pointer("/photo/url")
+            .and_then(Value::as_str)
+            .map(photo_url),
+        photo_signature: v
+            .pointer("/photo/signature")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        photo_crop: v.pointer("/photo/crop").and_then(crop),
         last_name: string(v, "lastName"),
         company: string(v, "companyName"),
         is_company: v.get("isCompany").and_then(Value::as_bool).unwrap_or(false),
@@ -128,6 +139,29 @@ fn contact_from(v: &Value) -> Option<Contact> {
 }
 
 #[must_use]
+/// Apple's own address book service appends a vCard property to some picture URLs, leaving
+/// `.../card/<32 hex>X-SHARED-PHOTO-DISPLAY-PREF:ALWAYS_ASK`. That URL answers 404. Four of
+/// seventeen pictures on a real account arrive this way, so the leak is trimmed back to the
+/// card id — which does answer — rather than those people silently having no picture.
+fn photo_url(url: &str) -> String {
+    let Some((base, last)) = url.rsplit_once('/') else {
+        return url.to_string();
+    };
+    let id: String = last.chars().take_while(char::is_ascii_hexdigit).collect();
+    if id.len() == 32 && id.len() < last.len() {
+        format!("{base}/{id}")
+    } else {
+        url.to_string()
+    }
+}
+
+/// The chosen square, flattened to the `x,y,width,height` the library keeps.
+fn crop(value: &Value) -> Option<String> {
+    let at = |key: &str| value.get(key).and_then(Value::as_i64);
+    let (x, y, width, height) = (at("x")?, at("y")?, at("width")?, at("height")?);
+    (width > 0 && height > 0).then(|| format!("{x},{y},{width},{height}"))
+}
+
 pub fn parse(body: &Value) -> Vec<Contact> {
     body.get("contacts")
         .and_then(Value::as_array)
@@ -501,6 +535,9 @@ mod write_tests {
             guid: "C1".into(),
             first_name: Some("Ada".into()),
             middle_name: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
             last_name: Some("Lovelace".into()),
             company: None,
             is_company: false,
@@ -830,5 +867,74 @@ mod shape_tests {
             "contacts": [{ "contactId": "C1", "streetAddresses": [{ "field": {} }] }]
         }));
         assert!(contacts[0].methods.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod photo_tests {
+    use super::*;
+
+    /// Apple's own service sends these; four of seventeen pictures on a real account arrive
+    /// with a vCard property welded onto the card id, and that URL answers 404.
+    #[test]
+    fn a_url_apple_mangled_is_trimmed_back_to_the_card_it_names() {
+        let base = "https://gateway.icloud.com/contacts/1148/ck/card";
+        assert_eq!(
+            photo_url(&format!(
+                "{base}/095356b02d69e2fbebb51c11fee2459dX-SHARED-PHOTO-DISPLAY-PREF:ALWAYS_ASK"
+            )),
+            format!("{base}/095356b02d69e2fbebb51c11fee2459d")
+        );
+        assert_eq!(
+            photo_url(&format!(
+                "{base}/396d3dd0fc24ceeb66305190d44840edX-SHARED-PHOTO-DISPLAY-PREF:AUTOUPDATE"
+            )),
+            format!("{base}/396d3dd0fc24ceeb66305190d44840ed")
+        );
+    }
+
+    /// A URL that is already right must come back untouched, whatever shape it is.
+    #[test]
+    fn a_sound_url_is_left_exactly_as_it_came() {
+        for url in [
+            "https://gateway.icloud.com/contacts/1148/ck/card/5dcf9896c11839d3119214c8a000fe0f",
+            "https://example.invalid/ada.jpg",
+            "https://example.invalid/deadbeef",
+            "no-slash-at-all",
+        ] {
+            assert_eq!(photo_url(url), url, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_crop_is_flattened_and_a_useless_one_is_dropped() {
+        let value = serde_json::json!({"x": 251, "y": 1249, "width": 1279, "height": 1279});
+        assert_eq!(crop(&value).as_deref(), Some("251,1249,1279,1279"));
+        assert_eq!(
+            crop(&serde_json::json!({"x": 0, "y": 0, "width": 0, "height": 9})),
+            None
+        );
+        assert_eq!(crop(&serde_json::json!({"x": 0, "y": 0})), None);
+        assert_eq!(crop(&Value::Null), None);
+    }
+
+    /// The picture fields come off a real payload, not an invented one.
+    #[test]
+    fn a_shared_picture_parses_with_a_usable_url_and_nothing_else() {
+        let body = serde_json::json!({"contacts": [{
+            "contactId": "abc",
+            "firstName": "Atta",
+            "photo": { "url":
+                "https://gateway.icloud.com/contacts/1148/ck/card/095356b02d69e2fbebb51c11fee2459dX-SHARED-PHOTO-DISPLAY-PREF:ALWAYS_ASK" }
+        }]});
+        let parsed = parse(&body);
+        assert_eq!(
+            parsed[0].photo_url.as_deref(),
+            Some(
+                "https://gateway.icloud.com/contacts/1148/ck/card/095356b02d69e2fbebb51c11fee2459d"
+            )
+        );
+        assert_eq!(parsed[0].photo_signature, None);
+        assert_eq!(parsed[0].photo_crop, None);
     }
 }

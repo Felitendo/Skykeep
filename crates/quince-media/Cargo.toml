@@ -1,0 +1,10 @@
+[package]
+name = "quince-media"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Only the formats Apple has been observed to serve. Every extra decoder is compile time and
+# attack surface for no gain.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
