@@ -60,6 +60,20 @@ pub async fn calendar(
     to: &str,
     timezone: &str,
 ) -> Result<SyncSummary> {
+    let snapshot = fetch_calendar(http, root, params, from, to, timezone).await?;
+    apply_calendar(library, snapshot)
+}
+
+/// Ask Apple for a window of the calendar. Touches no local state, so the slow half runs
+/// without holding the library every screen reads from.
+pub async fn fetch_calendar(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    from: &str,
+    to: &str,
+    timezone: &str,
+) -> Result<Snapshot> {
     let client = CalendarClient::new(http, root, params);
     let windows = chunks(parse_date(from)?, parse_date(to)?);
 
@@ -84,8 +98,12 @@ pub async fn calendar(
         }
     }
 
-    library.put_calendars(&calendars)?;
-    let snapshot = Snapshot { calendars, events };
+    Ok(Snapshot { calendars, events })
+}
+
+/// Store a fetched window. Touches no network.
+pub fn apply_calendar(library: &mut Library, snapshot: Snapshot) -> Result<SyncSummary> {
+    library.put_calendars(&snapshot.calendars)?;
 
     // Drop events belonging to calendars Apple did not report: storing them would fail the
     // foreign key, and they are not ours to show.

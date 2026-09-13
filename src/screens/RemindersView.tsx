@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   messageOf,
@@ -6,6 +6,7 @@ import {
   type ReminderList,
   type SmartList,
 } from "../lib/ipc";
+import { useSync } from "../lib/sync";
 
 /** Apple's built-in views, which is how most people enter Reminders. */
 const SMART: { kind: SmartList; title: string }[] = [
@@ -55,15 +56,6 @@ function toInputValue(seconds: number | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function relative(seconds: number | null): string {
-  if (seconds === null) return "never";
-  const ago = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
-  if (ago < 60) return "just now";
-  if (ago < 3600) return `${Math.floor(ago / 60)} min ago`;
-  if (ago < 86_400) return `${Math.floor(ago / 3600)} h ago`;
-  return `${Math.floor(ago / 86_400)} d ago`;
-}
-
 type Selection = { type: "smart"; kind: SmartList } | { type: "list"; guid: string };
 
 export function RemindersView() {
@@ -71,7 +63,6 @@ export function RemindersView() {
   const [selection, setSelection] = useState<Selection>({ type: "smart", kind: "today" });
   const [items, setItems] = useState<Reminder[]>([]);
   const [showDone, setShowDone] = useState(false);
-  const [lastSynced, setLastSynced] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [busyGuid, setBusyGuid] = useState<string | null>(null);
   const [openGuid, setOpenGuid] = useState<string | null>(null);
@@ -81,6 +72,7 @@ export function RemindersView() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { revision } = useSync();
   /** A repeating reminder that was just ticked forward, and where it landed. */
   const [moved, setMoved] = useState<{ guid: string; text: string } | null>(null);
 
@@ -88,12 +80,8 @@ export function RemindersView() {
   const listGuid = inList ? selection.guid : null;
 
   const readLists = useCallback(async () => {
-    const [found, synced] = await Promise.all([
-      api.reminderLists(),
-      api.remindersLastSynced(),
-    ]);
+    const found = await api.reminderLists();
     setLists(Array.isArray(found) ? found : []);
-    setLastSynced(typeof synced === "number" ? synced : null);
     setLoaded(true);
   }, []);
 
@@ -107,45 +95,25 @@ export function RemindersView() {
     return fresh;
   }, [selection, showDone]);
 
-  const refreshRef = useRef<null | (() => Promise<void>)>(null);
-
-  const refresh = useCallback(async () => {
-    setSyncing(true);
-    setError(null);
-    try {
-      await api.remindersSync();
-      await readLists();
-      await readItems();
-    } catch (e) {
-      setError(messageOf(e));
-    } finally {
-      setSyncing(false);
-    }
-  }, [readLists, readItems]);
-  refreshRef.current = refresh;
-
+  // Both reads come from the library. `revision` ticks when the shared refresh finishes —
+  // pressed, or on the timer — so a reminder ticked on the phone appears here without this
+  // screen ever touching the network.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        await readLists();
-        if (cancelled) return;
-        if ((await api.remindersLastSynced()) === null) void refreshRef.current?.();
-      } catch (e) {
-        if (!cancelled) {
-          setError(messageOf(e));
-          setLoaded(true);
-        }
+    readLists().catch((e) => {
+      if (!cancelled) {
+        setError(messageOf(e));
+        setLoaded(true);
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };
-  }, [readLists]);
+  }, [readLists, revision]);
 
   useEffect(() => {
     readItems().catch((e) => setError(messageOf(e)));
-  }, [readItems]);
+  }, [readItems, revision]);
 
   useEffect(() => {
     if (!moved) return undefined;
@@ -360,10 +328,6 @@ export function RemindersView() {
                 {showDone ? "Hide completed" : "Show completed"}
               </button>
             )}
-            <span className="badge">{relative(lastSynced)}</span>
-            <button className="quiet" onClick={refresh} disabled={syncing}>
-              {syncing ? "Refreshing…" : "Refresh"}
-            </button>
           </div>
         </header>
 

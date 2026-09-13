@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, messageOf, type Calendar, type CalendarEvent, type Reminder } from "../lib/ipc";
+import { useSync } from "../lib/sync";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -33,15 +34,6 @@ const clockTime = (seconds: number) =>
     .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     .replace(":00", "");
 
-function relative(seconds: number | null): string {
-  if (seconds === null) return "never";
-  const ago = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
-  if (ago < 60) return "just now";
-  if (ago < 3600) return `${Math.floor(ago / 60)} min ago`;
-  if (ago < 86_400) return `${Math.floor(ago / 3600)} h ago`;
-  return `${Math.floor(ago / 86_400)} d ago`;
-}
-
 /** The 42 days a month grid shows: the weeks containing the first and last of the month. */
 function gridDays(anchor: Date): Date[] {
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
@@ -60,10 +52,11 @@ export function CalendarView() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [dueReminders, setDueReminders] = useState<Reminder[]>([]);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
-  const [lastSynced, setLastSynced] = useState<number | null>(null);
-  const [syncing, setSyncing] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** A month outside the window the shared refresh keeps warm is being fetched. */
+  const [fetchingMonth, setFetchingMonth] = useState(false);
+  const { revision } = useSync();
 
   const days = useMemo(() => gridDays(anchor), [anchor]);
   const range = useMemo(
@@ -77,56 +70,69 @@ export function CalendarView() {
   const read = useCallback(async () => {
     // Apple's Calendar shows reminders beside events, which for most people is most of
     // what fills a month.
-    const [found, cals, synced, due] = await Promise.all([
+    const [found, cals, due] = await Promise.all([
       api.calendarEvents(range.from, range.to),
       api.calendarList(),
-      api.calendarLastSynced(),
       api.remindersDueBetween(range.from, range.to),
     ]);
     setEvents(Array.isArray(found) ? found : []);
     setDueReminders(Array.isArray(due) ? due : []);
     setCalendars(Array.isArray(cals) ? cals : []);
-    setLastSynced(typeof synced === "number" ? synced : null);
     setLoaded(true);
   }, [range]);
 
-  const refreshRef = useRef<null | (() => Promise<void>)>(null);
-
-  const refresh = useCallback(async () => {
-    setSyncing(true);
-    setError(null);
-    try {
-      await api.calendarSync(isoDate(range.from), isoDate(range.to - 1), ZONE);
-      await read();
-    } catch (e) {
-      // The library still holds the last good data, so the grid stays usable.
-      setError(messageOf(e));
-    } finally {
-      setSyncing(false);
-    }
-  }, [range, read]);
-  refreshRef.current = refresh;
-
-  // Read the library first — instant, and works offline — then fetch if nothing is stored.
+  // The grid always paints from the library: instant, and correct offline. `revision` ticks
+  // when the shared refresh finishes, which is the only thing that can change what is there.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        await read();
-        if (cancelled) return;
-        const synced = await api.calendarLastSynced();
-        if (!cancelled && synced === null) void refreshRef.current?.();
-      } catch (e) {
-        if (!cancelled) {
-          setError(messageOf(e));
-          setLoaded(true);
-        }
+    read().catch((e) => {
+      if (!cancelled) {
+        setError(messageOf(e));
+        setLoaded(true);
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };
-  }, [read]);
+  }, [read, revision]);
+
+  // The shared refresh keeps a few months around today warm. Scroll past that and this
+  // fetches the month being looked at, once — clicking through a year must not mean a
+  // dozen round trips for months already fetched.
+  const fetched = useRef(new Set<string>());
+
+  useEffect(() => {
+    const from = isoDate(range.from);
+    const to = isoDate(range.to - 1);
+    const key = `${from}:${to}`;
+    if (fetched.current.has(key)) return undefined;
+
+    let cancelled = false;
+    // A short wait so holding down the arrow scrolls through months without fetching each.
+    const timer = window.setTimeout(() => {
+      fetched.current.add(key);
+      setFetchingMonth(true);
+      api
+        .calendarSync(from, to, ZONE)
+        .then(() => {
+          if (!cancelled) return read();
+          return undefined;
+        })
+        .catch((e) => {
+          // The library still holds the last good data, so the grid stays usable.
+          fetched.current.delete(key);
+          if (!cancelled) setError(messageOf(e));
+        })
+        .finally(() => {
+          if (!cancelled) setFetchingMonth(false);
+        });
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [range, read]);
 
   const colours = useMemo(
     () => new Map(calendars.map((c) => [c.guid, c.colour])),
@@ -192,10 +198,7 @@ export function CalendarView() {
           <button className="chev" onClick={() => shift(1)} aria-label="Next month">›</button>
         </div>
         <div className="cal-actions">
-          <span className="badge">Updated {relative(lastSynced)}</span>
-          <button className="quiet" onClick={refresh} disabled={syncing}>
-            {syncing ? "Refreshing…" : "Refresh"}
-          </button>
+          {fetchingMonth && <span className="badge">Fetching this month…</span>}
         </div>
       </header>
 

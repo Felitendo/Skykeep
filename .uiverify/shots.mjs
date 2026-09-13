@@ -125,13 +125,10 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "account_services": return services;
         case "calendar_events": return events;
         case "calendar_list": return calendars;
-        case "calendar_last_synced": return calendarFixture ? Math.floor(Date.now()/1000) - 120 : null;
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
         case "reminder_lists": return !remindersFixture ? [] : reminderLists;
         case "reminders_in": return !remindersFixture ? [] : reminderItems;
-        case "reminders_last_synced": return Math.floor(Date.now() / 1000);
         case "reminders_due_between": return calendarFixture ? dueReminders : [];
-        case "reminders_sync": return [0, 0];
         case "reminder_create": return null;
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
@@ -141,11 +138,7 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "reminders_smart": return !remindersFixture ? [] : reminderItems.filter(r => !r.completedAt);
         case "note_folders": return !notesFixture ? [] : noteFolders;
         case "notes_in": return !notesFixture ? [] : noteList;
-        case "notes_last_synced": return Math.floor(Date.now() / 1000);
-        case "notes_sync": return [0, 0];
         case "contacts_list": return !contactsFixture ? [] : contactList;
-        case "contacts_last_synced": return Math.floor(Date.now() / 1000) - 300;
-        case "contacts_sync": return contactList.length;
         case "drive_children": return !driveFixture ? [] : driveItems;
         case "drive_sync_folder": return driveItems.length;
         case "drive_item": return null;
@@ -154,6 +147,26 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "auth_send_sms":       return null;
         case "auth_submit_sms_code": return null;
         case "auth_sign_out":    return null;
+        // One refresh covers every service, so there is one command to stub rather than
+        // a pair per screen.
+        case "sync_all":
+        case "sync_status":
+          return {
+            services: [
+              { service: "calendar", label: "Calendar", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 120 },
+              { service: "reminders", label: "Reminders", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 60 },
+              { service: "notes", label: "Notes", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 90 },
+              { service: "contacts", label: "Contacts", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 300 },
+            ],
+            asOf: Math.floor(Date.now() / 1000) - 300,
+            tookMs: 40,
+          };
+        // The event plugin is how a finished refresh reaches the screens. Nothing emits in
+        // a plain browser, so listening is a no-op that hands back an unsubscribe id.
+        case "plugin:event|listen":
+          return 0;
+        case "plugin:event|unlisten":
+          return null;
         default: throw new Error(`unstubbed command: ${cmd}`);
       }
     },

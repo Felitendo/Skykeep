@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, messageOf, type Note, type NoteFolder } from "../lib/ipc";
+import { useSync } from "../lib/sync";
 
 const ALL = "__all__";
 
@@ -16,15 +17,6 @@ const when = (seconds: number | null) => {
     : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 };
 
-function relative(seconds: number | null): string {
-  if (seconds === null) return "never";
-  const ago = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
-  if (ago < 60) return "just now";
-  if (ago < 3600) return `${Math.floor(ago / 60)} min ago`;
-  if (ago < 86_400) return `${Math.floor(ago / 3600)} h ago`;
-  return `${Math.floor(ago / 86_400)} d ago`;
-}
-
 /** True when the body already opens with the title, which is Apple's usual case. */
 function bodyRepeatsTitle(note: Note): boolean {
   const body = note.body?.trimStart();
@@ -38,57 +30,35 @@ export function NotesView() {
   const [folder, setFolder] = useState<string>(ALL);
   const [notes, setNotes] = useState<Note[]>([]);
   const [openGuid, setOpenGuid] = useState<string | null>(null);
-  const [lastSynced, setLastSynced] = useState<number | null>(null);
-  const [syncing, setSyncing] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { revision } = useSync();
 
   const read = useCallback(async () => {
-    const [found, list, synced] = await Promise.all([
+    const [found, list] = await Promise.all([
       api.noteFolders(),
       api.notesIn(folder === ALL ? null : folder),
-      api.notesLastSynced(),
     ]);
     setFolders(Array.isArray(found) ? found : []);
     setNotes(Array.isArray(list) ? list : []);
-    setLastSynced(typeof synced === "number" ? synced : null);
     setLoaded(true);
   }, [folder]);
 
-  const refreshRef = useRef<null | (() => Promise<void>)>(null);
-
-  const refresh = useCallback(async () => {
-    setSyncing(true);
-    setError(null);
-    try {
-      await api.notesSync();
-      await read();
-    } catch (e) {
-      setError(messageOf(e));
-    } finally {
-      setSyncing(false);
-    }
-  }, [read]);
-  refreshRef.current = refresh;
-
+  // Reads the library and nothing else. `revision` ticks when a refresh finishes, whether
+  // someone pressed for it or the timer came round, and that is the screen's whole
+  // relationship with the network.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        await read();
-        if (cancelled) return;
-        if ((await api.notesLastSynced()) === null) void refreshRef.current?.();
-      } catch (e) {
-        if (!cancelled) {
-          setError(messageOf(e));
-          setLoaded(true);
-        }
+    read().catch((e) => {
+      if (!cancelled) {
+        setError(messageOf(e));
+        setLoaded(true);
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };
-  }, [read]);
+  }, [read, revision]);
 
   // Keep a note open across refreshes where possible; fall back to the first.
   useEffect(() => {
@@ -132,12 +102,6 @@ export function NotesView() {
             <span className="badge">
               {notes.length} {notes.length === 1 ? "note" : "notes"}
             </span>
-          </div>
-          <div className="cal-actions">
-            <span className="badge">{relative(lastSynced)}</span>
-            <button className="quiet" onClick={refresh} disabled={syncing}>
-              {syncing ? "Refreshing…" : "Refresh"}
-            </button>
           </div>
         </header>
 

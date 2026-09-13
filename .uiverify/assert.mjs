@@ -11,13 +11,10 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "account_services") return services;
       if (cmd === "calendar_events") return [];
       if (cmd === "calendar_list") return [];
-      if (cmd === "calendar_last_synced") return Math.floor(Date.now() / 1000);
       if (cmd === "calendar_sync") return { calendars: 0, events: 0 };
       if (cmd === "reminder_lists") return [];
       if (cmd === "reminders_in") return [];
-      if (cmd === "reminders_last_synced") return Math.floor(Date.now() / 1000);
       if (cmd === "reminders_due_between") return [];
-      if (cmd === "reminders_sync") return [0, 0];
       if (cmd === "reminder_create") return null;
       if (cmd === "reminder_delete") return null;
       if (cmd === "reminder_set_done") return null;
@@ -26,14 +23,14 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "reminder_list_create" || cmd === "reminder_list_rename" || cmd === "reminder_list_delete") return null;
       if (cmd === "note_folders") return [];
       if (cmd === "notes_in") return [];
-      if (cmd === "notes_last_synced") return Math.floor(Date.now() / 1000);
-      if (cmd === "notes_sync") return [0, 0];
       if (cmd === "contacts_list") return [];
-      if (cmd === "contacts_last_synced") return Math.floor(Date.now() / 1000);
-      if (cmd === "contacts_sync") return 0;
       if (cmd === "drive_children") return [];
       if (cmd === "drive_sync_folder") return 0;
       if (cmd === "drive_item") return null;
+      // One refresh for every service, and the event it finishes with.
+      if (cmd === "sync_all" || cmd === "sync_status")
+        return { services: [], asOf: Math.floor(Date.now() / 1000), tookMs: 0 };
+      if (cmd === "plugin:event|listen") return 0;
       return null;
     },
   };

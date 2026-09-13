@@ -10,7 +10,35 @@ export type TwoFactorOptions = {
   tooManyCodesSent: boolean;
 };
 
+/** How one service's refresh ended. */
+export type SyncOutcome = "ok" | "unavailable" | "failed";
+
+export type ServiceReport = {
+  service: string;
+  label: string;
+  outcome: SyncOutcome;
+  /** What came back, or what went wrong. */
+  detail: string | null;
+  lastSyncedAt: number | null;
+};
+
+/** Everything one refresh pass did. */
+export type Refresh = {
+  services: ServiceReport[];
+  /** The stalest part of the library — the only freshness the window can claim. */
+  asOf: number | null;
+  tookMs: number;
+};
+
+/** Emitted by the backend whenever a refresh finishes, background ones included. */
+export const SYNCED = "quince://synced";
+
 export const api = {
+  /** One refresh for every service. Never rejects for a single service failing. */
+  syncAll: () => invoke<Refresh>("sync_all"),
+  /** What the library already knows about its own freshness, fetching nothing. */
+  syncStatus: () => invoke<Refresh>("sync_status"),
+
   status: () => invoke<Status>("auth_status"),
   resume: () => invoke<boolean>("auth_resume"),
   signIn: (appleId: string, password: string) =>
@@ -29,13 +57,10 @@ export const api = {
   calendarEvents: (from: number, to: number) =>
     invoke<CalendarEvent[]>("calendar_events", { from, to }),
   calendarList: () => invoke<Calendar[]>("calendar_list"),
-  calendarLastSynced: () => invoke<number | null>("calendar_last_synced"),
 
-  remindersSync: () => invoke<[number, number]>("reminders_sync"),
   reminderLists: () => invoke<ReminderList[]>("reminder_lists"),
   remindersIn: (listGuid: string, includeDone: boolean) =>
     invoke<Reminder[]>("reminders_in", { listGuid, includeDone }),
-  remindersLastSynced: () => invoke<number | null>("reminders_last_synced"),
   remindersDueBetween: (from: number, to: number) =>
     invoke<Reminder[]>("reminders_due_between", { from, to }),
   reminderSetDone: (guid: string, listGuid: string, done: boolean) =>
@@ -54,14 +79,10 @@ export const api = {
   reminderDelete: (guid: string, listGuid: string) =>
     invoke<void>("reminder_delete", { guid, listGuid }),
 
-  notesSync: () => invoke<[number, number]>("notes_sync"),
   noteFolders: () => invoke<NoteFolder[]>("note_folders"),
   notesIn: (folderGuid: string | null) => invoke<Note[]>("notes_in", { folderGuid }),
-  notesLastSynced: () => invoke<number | null>("notes_last_synced"),
 
-  contactsSync: () => invoke<number>("contacts_sync"),
   contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
-  contactsLastSynced: () => invoke<number | null>("contacts_last_synced"),
 
   driveSyncFolder: (folderId: string) => invoke<number>("drive_sync_folder", { folderId }),
   driveChildren: (folderId: string) => invoke<DriveItem[]>("drive_children", { folderId }),

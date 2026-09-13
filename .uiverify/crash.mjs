@@ -19,6 +19,26 @@ await ctx.addInitScript(() => {
         case "calendar_sync": return { calendars: 0, events: 0 };
         case "reminders_sync": case "notes_sync": return [0, 0];
         case "contacts_sync": case "drive_sync_folder": return 0;
+        // One refresh covers every service, so there is one command to stub rather than
+        // a pair per screen.
+        case "sync_all":
+        case "sync_status":
+          return {
+            services: [
+              { service: "calendar", label: "Calendar", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 120 },
+              { service: "reminders", label: "Reminders", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 60 },
+              { service: "notes", label: "Notes", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 90 },
+              { service: "contacts", label: "Contacts", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 300 },
+            ],
+            asOf: Math.floor(Date.now() / 1000) - 300,
+            tookMs: 40,
+          };
+        // The event plugin is how a finished refresh reaches the screens. Nothing emits in
+        // a plain browser, so listening is a no-op that hands back an unsubscribe id.
+        case "plugin:event|listen":
+          return 0;
+        case "plugin:event|unlisten":
+          return null;
         default: return null;
       }
     },

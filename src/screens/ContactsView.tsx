@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, displayName, messageOf, type Contact } from "../lib/ipc";
+import { useSync } from "../lib/sync";
 
 const KIND_LABEL: Record<string, string> = {
   phone: "phone",
@@ -21,69 +22,36 @@ function initials(contact: Contact): string {
     .join("");
 }
 
-function relative(seconds: number | null): string {
-  if (seconds === null) return "never";
-  const ago = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
-  if (ago < 60) return "just now";
-  if (ago < 3600) return `${Math.floor(ago / 60)} min ago`;
-  if (ago < 86_400) return `${Math.floor(ago / 3600)} h ago`;
-  return `${Math.floor(ago / 86_400)} d ago`;
-}
-
 export function ContactsView() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [search, setSearch] = useState("");
   const [openGuid, setOpenGuid] = useState<string | null>(null);
-  const [lastSynced, setLastSynced] = useState<number | null>(null);
-  const [syncing, setSyncing] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { revision } = useSync();
 
   const read = useCallback(async (query: string) => {
-    const [found, synced] = await Promise.all([
-      api.contactsList(query.trim() || null),
-      api.contactsLastSynced(),
-    ]);
+    const found = await api.contactsList(query.trim() || null);
     setContacts(Array.isArray(found) ? found : []);
-    setLastSynced(typeof synced === "number" ? synced : null);
     setLoaded(true);
   }, []);
 
-  const refreshRef = useRef<null | (() => Promise<void>)>(null);
-
-  const refresh = useCallback(async () => {
-    setSyncing(true);
-    setError(null);
-    try {
-      await api.contactsSync();
-      await read(search);
-    } catch (e) {
-      setError(messageOf(e));
-    } finally {
-      setSyncing(false);
-    }
-  }, [read, search]);
-  refreshRef.current = refresh;
-
+  // The library is the only thing this screen reads. `revision` ticks whenever a refresh
+  // finishes — pressed or on the timer — so a change made on the phone lands here without
+  // this screen knowing anything about the network.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        await read(search);
-        if (cancelled) return;
-        if ((await api.contactsLastSynced()) === null) void refreshRef.current?.();
-      } catch (e) {
-        if (!cancelled) {
-          setError(messageOf(e));
-          setLoaded(true);
-        }
+    read(search).catch((e) => {
+      if (!cancelled) {
+        setError(messageOf(e));
+        setLoaded(true);
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };
     // Re-reading on every keystroke is the point: the filter runs in SQLite.
-  }, [read, search]);
+  }, [read, search, revision]);
 
   useEffect(() => {
     if (contacts.length === 0) return setOpenGuid(null);
@@ -104,12 +72,6 @@ export function ContactsView() {
           <div className="cal-nav">
             <h1>Contacts</h1>
             <span className="badge">{contacts.length}</span>
-          </div>
-          <div className="cal-actions">
-            <span className="badge">{relative(lastSynced)}</span>
-            <button className="quiet" onClick={refresh} disabled={syncing}>
-              {syncing ? "Refreshing…" : "Refresh"}
-            </button>
           </div>
         </header>
 

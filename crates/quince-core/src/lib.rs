@@ -7,6 +7,7 @@
 pub mod calendar;
 pub mod contacts;
 pub mod drive;
+pub mod health;
 pub mod notes;
 pub mod reminders;
 pub mod schema;

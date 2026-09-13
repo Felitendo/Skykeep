@@ -530,9 +530,48 @@ pub async fn sync_cloudkit(
     library: &mut quince_core::Library,
     since: Option<&str>,
 ) -> Result<(usize, usize, Option<String>)> {
-    let incremental = since.is_some();
+    let fetched = fetch_cloudkit(http, ckdatabasews_root, params, since).await?;
+    apply_cloudkit(library, fetched)
+}
+
+/// One pass over the zone, with nothing stored yet.
+///
+/// Fetching and storing are separate so a caller can do the slow half — thousands of
+/// records over the network — without holding the library open. Everything else in the app
+/// reads that library, and a refresh that locked it would freeze the interface it is meant
+/// to be keeping current.
+pub struct RemindersFetch {
+    records: Vec<Value>,
+    token: Option<String>,
+    incremental: bool,
+}
+
+/// Ask Apple what changed. Touches no local state.
+pub async fn fetch_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    since: Option<&str>,
+) -> Result<RemindersFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let (records, token) = client.all_records(ZONE, since).await?;
+    Ok(RemindersFetch {
+        records,
+        token,
+        incremental: since.is_some(),
+    })
+}
+
+/// Store a fetched pass. Touches no network.
+pub fn apply_cloudkit(
+    library: &mut quince_core::Library,
+    fetched: RemindersFetch,
+) -> Result<(usize, usize, Option<String>)> {
+    let RemindersFetch {
+        records,
+        token,
+        incremental,
+    } = fetched;
 
     let mut lists: Vec<ReminderList> = Vec::new();
     let mut reminders: Vec<Reminder> = Vec::new();

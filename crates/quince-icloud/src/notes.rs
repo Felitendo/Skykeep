@@ -59,8 +59,38 @@ pub async fn sync_cloudkit(
     library: &mut quince_core::Library,
     since: Option<&str>,
 ) -> Result<(usize, usize, Option<String>)> {
+    let fetched = fetch_cloudkit(http, ckdatabasews_root, params, since).await?;
+    apply_cloudkit(library, fetched)
+}
+
+/// One pass over the zone, with nothing stored yet.
+///
+/// Split from storing so a refresh does the slow half without holding the library open —
+/// every screen reads that library, and locking it for the length of a network walk is
+/// what makes an app feel stuck.
+pub struct NotesFetch {
+    records: Vec<Value>,
+    token: Option<String>,
+}
+
+/// Ask Apple what changed. Touches no local state.
+pub async fn fetch_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    since: Option<&str>,
+) -> Result<NotesFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let (records, token) = client.all_records(ZONE, since).await?;
+    Ok(NotesFetch { records, token })
+}
+
+/// Store a fetched pass. Touches no network.
+pub fn apply_cloudkit(
+    library: &mut quince_core::Library,
+    fetched: NotesFetch,
+) -> Result<(usize, usize, Option<String>)> {
+    let NotesFetch { records, token } = fetched;
 
     let mut folders: Vec<NoteFolder> = Vec::new();
     let mut notes: Vec<Note> = Vec::new();

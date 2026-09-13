@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, messageOf } from "../lib/ipc";
+import { SyncProvider } from "../lib/sync";
+import { SyncStatus } from "../components/SyncStatus";
 import { CalendarView } from "./CalendarView";
 import { RemindersView } from "./RemindersView";
 import { NotesView } from "./NotesView";
@@ -44,7 +46,13 @@ const NAMES: Record<string, string> = {
 
 /** Services with a real screen behind them. Opening on one of these beats opening on a
  *  placeholder, so selection prefers them. */
-const BUILT = new Set(["calendar", "reminders", "notes", "contacts", "drivews"]);
+const BUILT = new Set([
+  "calendar",
+  "reminders",
+  "notes",
+  "contacts",
+  "drivews",
+]);
 
 /** What a person actually came for, in the order they'd look for it. */
 const PRIMARY = [
@@ -83,7 +91,7 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
           PRIMARY.find((k) => unique.includes(k) && BUILT.has(k)) ??
             PRIMARY.find((k) => unique.includes(k)) ??
             unique[0] ??
-            null
+            null,
         );
       })
       .catch((e) => setError(messageOf(e)));
@@ -131,57 +139,73 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
   };
 
   return (
-    <div className="library enter-library">
-      <nav className="sidebar" aria-label="Your iCloud">
-        <h2>Your iCloud</h2>
-        {primary.map(item)}
-        {services.length === 0 && !error && <p className="badge">Loading…</p>}
+    <SyncProvider>
+      <div className="library enter-library">
+        <nav className="sidebar" aria-label="Your iCloud">
+          <h2>Your iCloud</h2>
+          {primary.map(item)}
+          {services.length === 0 && !error && <p className="badge">Loading…</p>}
 
-        {rest.length > 0 && (
-          <>
-            <button
-              className="nav-item nav-toggle"
-              aria-expanded={showAll}
-              onClick={() => setShowAll((v) => !v)}
-            >
-              <span>{showAll ? "Hide" : "Show"} {rest.length} more</span>
+          {rest.length > 0 && (
+            <>
+              <button
+                className="nav-item nav-toggle"
+                aria-expanded={showAll}
+                onClick={() => setShowAll((v) => !v)}
+              >
+                <span>
+                  {showAll ? "Hide" : "Show"} {rest.length} more
+                </span>
+              </button>
+              {showAll && rest.map(item)}
+            </>
+          )}
+
+          <div className="sidebar-foot">
+            <SyncStatus />
+            <button className="quiet sidebar-signout" onClick={onSignOut}>
+              Sign out
             </button>
-            {showAll && rest.map(item)}
-          </>
-        )}
-      </nav>
+          </div>
+        </nav>
 
-      <main className="content">
-        {selected === "calendar" ? (
-          <CalendarView />
-        ) : selected === "reminders" ? (
-          <RemindersView />
-        ) : selected === "notes" ? (
-          <NotesView />
-        ) : selected === "contacts" ? (
-          <ContactsView />
-        ) : selected === "drivews" ? (
-          <DriveView />
-        ) : (
-          <>
-        <div className="toolbar">
-          <button className="quiet" onClick={onSignOut}>Sign out</button>
-        </div>
-        <h1>{selected ? (NAMES[selected] ?? selected) : "You're signed in"}</h1>
-        <p>
-          Quince is holding a live session with Apple, and it survived quitting and reopening
-          the app — no password, no code. The list on the left is what Apple reports for your
-          account, nothing invented.
-        </p>
-        <p>
-          Reading this into a local library is what comes next, so it opens instantly and
-          works offline. Until then this screen tells you the truth: the connection works,
-          the data layer isn't built yet.
-        </p>
-        {error && <p className="error" role="alert">{error}</p>}
-          </>
-        )}
-      </main>
-    </div>
+        <main className="content">
+          {selected === "calendar" ? (
+            <CalendarView />
+          ) : selected === "reminders" ? (
+            <RemindersView />
+          ) : selected === "notes" ? (
+            <NotesView />
+          ) : selected === "contacts" ? (
+            <ContactsView />
+          ) : selected === "drivews" ? (
+            <DriveView />
+          ) : (
+            <>
+              <h1>
+                {selected ? (NAMES[selected] ?? selected) : "You're signed in"}
+              </h1>
+              <p>
+                Quince is holding a live session with Apple, and it survived
+                quitting and reopening the app — no password, no code. The list
+                on the left is what Apple reports for your account, nothing
+                invented.
+              </p>
+              <p>
+                Reading this into a local library is what comes next, so it
+                opens instantly and works offline. Until then this screen tells
+                you the truth: the connection works, the data layer isn't built
+                yet.
+              </p>
+              {error && (
+                <p className="error" role="alert">
+                  {error}
+                </p>
+              )}
+            </>
+          )}
+        </main>
+      </div>
+    </SyncProvider>
   );
 }

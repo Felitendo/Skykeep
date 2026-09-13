@@ -239,6 +239,107 @@
   border-radius: var(--r-plateau);
   padding: 12px 9px;
   overflow-y: auto;
+  /* The foot holds the one global control, so the list above it takes the slack rather
+     than the status floating mid-column on a short account. */
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* One statement of freshness for the whole library, and the one control that refreshes it.
+   Quiet by default — it is status, not an action anyone has to take. */
+.sync-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 5px 8px;
+  border-radius: var(--r-field);
+  font: inherit;
+  font-size: var(--t-11);
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+  transition: background 140ms var(--ease);
+}
+
+.sync-row:hover:not(:disabled) { background: rgba(0, 0, 0, 0.05); }
+.sync-row:disabled { cursor: default; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .sync-row:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.07);
+  }
+}
+
+.sync-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: #34c759;
+}
+
+.sync-dot.working { background: var(--gold); }
+.sync-dot.trouble { background: #ff9f0a; }
+
+.sync-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-glyph {
+  flex: none;
+  color: var(--text-3);
+  line-height: 1;
+}
+
+.sync-glyph.spinning { animation: sync-spin 900ms linear infinite; }
+
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
+}
+
+.sync-disclose,
+.sync-trouble {
+  margin: 0;
+  padding: 2px 8px 4px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--t-11);
+  color: var(--danger);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sync-trouble { cursor: default; }
+
+.sync-trouble-list {
+  margin: 0;
+  padding: 0 8px 4px;
+  list-style: none;
+  font-size: var(--t-11);
+  color: var(--text-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-signout {
+  align-self: flex-start;
+  font-size: var(--t-11);
 }
 
 .sidebar h2 {

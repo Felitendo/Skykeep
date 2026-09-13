@@ -1,6 +1,8 @@
 // Quince — desktop shell.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod refresh;
+
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use quince_core::calendar::{Calendar, Event};
 use quince_core::contacts::Contact;
@@ -13,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 struct Auth {
@@ -247,23 +249,6 @@ async fn calendar_list(data: State<'_, Data>) -> UiResult<Vec<Calendar>> {
     library.calendars().map_err(|e| e.to_string())
 }
 
-/// Refresh reminders from Apple.
-///
-/// Reads the CloudKit zone rather than the legacy /rd endpoints: once an account's reminders
-/// have been migrated, those answer with Apple's placeholder instead of the real records.
-#[tauri::command]
-async fn reminders_sync(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<(usize, usize)> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-    let mut library = data.0.lock().await;
-    // Resume from where the last sync got to. A full walk of this zone is thousands of
-    // records; a delta is usually a handful.
-    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
-    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
-        .await
-        .map(|(lists, count, _)| (lists, count))
-        .map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 async fn reminder_lists(data: State<'_, Data>) -> UiResult<Vec<ReminderList>> {
     let library = data.0.lock().await;
@@ -481,31 +466,6 @@ async fn reminder_list_delete(
 }
 
 #[tauri::command]
-async fn reminders_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
-    let library = data.0.lock().await;
-    library.last_synced("reminders").map_err(|e| e.to_string())
-}
-
-/// When the calendar last synced, as unix seconds.
-#[tauri::command]
-async fn calendar_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
-    let library = data.0.lock().await;
-    library.last_synced("calendar").map_err(|e| e.to_string())
-}
-
-/// Refresh notes from Apple's CloudKit zone.
-#[tauri::command]
-async fn notes_sync(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<(usize, usize)> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-    let mut library = data.0.lock().await;
-    let since = library.sync_token("notes").map_err(|e| e.to_string())?;
-    quince_icloud::notes::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
-        .await
-        .map(|(folders, notes, _)| (folders, notes))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 async fn note_folders(data: State<'_, Data>) -> UiResult<Vec<NoteFolder>> {
     let library = data.0.lock().await;
     library.note_folders().map_err(|e| e.to_string())
@@ -520,29 +480,6 @@ async fn notes_in(folder_guid: Option<String>, data: State<'_, Data>) -> UiResul
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn notes_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
-    let library = data.0.lock().await;
-    library.last_synced("notes").map_err(|e| e.to_string())
-}
-
-/// Refresh the address book. Contacts still come from the legacy endpoint, not CloudKit.
-#[tauri::command]
-async fn contacts_sync(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<usize> {
-    let (http, root, params) = {
-        let client = auth.client.lock().await;
-        let root = client
-            .session()
-            .service_url("contacts")
-            .ok_or("Apple hasn't offered a contacts service for this account.")?;
-        (client.http().clone(), root, client.service_params())
-    };
-    let mut library = data.0.lock().await;
-    quince_icloud::contacts::sync(&http, &root, params, &mut library)
-        .await
-        .map_err(|e| e.to_string())
-}
-
 /// The address book, optionally filtered by name or by any stored number or address.
 #[tauri::command]
 async fn contacts_list(search: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Contact>> {
@@ -552,16 +489,6 @@ async fn contacts_list(search: Option<String>, data: State<'_, Data>) -> UiResul
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-async fn contacts_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
-    let library = data.0.lock().await;
-    library.last_synced("contacts").map_err(|e| e.to_string())
-}
-
-/// Fetch one Drive folder's contents from Apple and store them.
-///
-/// Drive is browsed a level at a time, so this takes the folder being opened rather than
-/// mirroring the whole tree.
 #[tauri::command]
 async fn drive_sync_folder(
     folder_id: String,
@@ -597,6 +524,57 @@ async fn drive_item(drivewsid: String, data: State<'_, Data>) -> UiResult<Option
     library.drive_item(&drivewsid).map_err(|e| e.to_string())
 }
 
+/// The event a finished refresh emits, so every open screen re-reads at once.
+const SYNCED: &str = "quince://synced";
+
+/// How often the library refreshes itself.
+///
+/// Short enough that a reminder ticked on the phone is here before it is missed, long
+/// enough to stay far away from anything Apple would call hammering. Nobody ever has to
+/// press refresh; the control exists for impatience, not for correctness.
+const AUTO_SYNC: Duration = Duration::from_secs(5 * 60);
+
+/// Refresh every service at once.
+///
+/// Never fails as a whole: the result says what each service did, so one endpoint being
+/// down leaves the rest current instead of taking the refresh with it.
+#[tauri::command]
+async fn sync_all(
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<refresh::Refresh> {
+    let client = Arc::clone(&auth.client);
+    let result = refresh::all(&client, &data.0).await;
+    // Screens read the library, not the network, so they only need to be told to look again.
+    app.emit(SYNCED, &result).ok();
+    Ok(result)
+}
+
+/// What the library already knows about its own freshness, with nothing fetched.
+#[tauri::command]
+async fn sync_status(data: State<'_, Data>) -> UiResult<refresh::Refresh> {
+    Ok(refresh::status(&data.0).await)
+}
+
+/// Keep the library current on its own.
+///
+/// A pass that fails changes nothing about the schedule — the next one simply tries again.
+fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(AUTO_SYNC).await;
+            let signed_in = { client.lock().await.session().webservices.is_some() };
+            if !signed_in {
+                continue;
+            }
+            let data = app.state::<Data>();
+            let result = refresh::all(&client, &data.0).await;
+            app.emit(SYNCED, &result).ok();
+        }
+    });
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -609,7 +587,8 @@ fn main() {
             // The local library. Opened once at startup so every command shares one
             // connection and the WAL behaves.
             app.manage(Data(Mutex::new(Library::open(&dir)?)));
-            spawn_heartbeat(client);
+            spawn_heartbeat(Arc::clone(&client));
+            spawn_auto_sync(app.handle().clone(), client);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -623,14 +602,13 @@ fn main() {
             auth_submit_sms_code,
             auth_sign_out,
             account_services,
+            sync_all,
+            sync_status,
             calendar_sync,
             calendar_events,
             calendar_list,
-            calendar_last_synced,
-            reminders_sync,
             reminder_lists,
             reminders_in,
-            reminders_last_synced,
             reminders_due_between,
             reminder_create,
             reminder_delete,
@@ -639,13 +617,9 @@ fn main() {
             reminder_list_create,
             reminder_list_rename,
             reminder_list_delete,
-            notes_sync,
             note_folders,
             notes_in,
-            notes_last_synced,
-            contacts_sync,
             contacts_list,
-            contacts_last_synced,
             drive_sync_folder,
             drive_children,
             drive_item,

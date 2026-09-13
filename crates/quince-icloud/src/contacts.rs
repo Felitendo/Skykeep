@@ -71,6 +71,17 @@ pub async fn sync(
     params: Vec<(String, String)>,
     library: &mut quince_core::Library,
 ) -> Result<usize> {
+    let contacts = fetch(http, root, params).await?;
+    apply(library, contacts)
+}
+
+/// Ask Apple for the address book. Touches no local state, so a refresh can do the network
+/// half without holding the library the interface is reading.
+pub async fn fetch(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+) -> Result<Vec<quince_core::contacts::Contact>> {
     let mut query = params;
     query.push(("clientVersion".into(), "2.1".into()));
     query.push(("locale".into(), "en_US".into()));
@@ -93,7 +104,14 @@ pub async fn sync(
 
     let body: Value = serde_json::from_str(&text)
         .map_err(|e| Error::Protocol(format!("/co/startup returned invalid JSON: {e}")))?;
-    let contacts = parse(&body);
+    Ok(parse(&body))
+}
+
+/// Store a fetched address book. Touches no network.
+pub fn apply(
+    library: &mut quince_core::Library,
+    contacts: Vec<quince_core::contacts::Contact>,
+) -> Result<usize> {
     library.put_contacts(&contacts)?;
     library.mark_synced("contacts", None)?;
     Ok(contacts.len())
