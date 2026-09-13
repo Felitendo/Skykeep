@@ -6,7 +6,7 @@ use quince_core::calendar::{Calendar, Event};
 use quince_core::contacts::Contact;
 use quince_core::drive::DriveItem;
 use quince_core::notes::{Note, NoteFolder};
-use quince_core::reminders::{Reminder, ReminderList};
+use quince_core::reminders::{Reminder, ReminderList, SmartList};
 use quince_core::Library;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -369,6 +369,53 @@ async fn reminder_delete(
     Ok(())
 }
 
+/// Apply an edit — title, notes, due date, flag, completion — in one write.
+#[tauri::command]
+async fn reminder_edit(
+    guid: String,
+    list_guid: String,
+    edit: quince_icloud::reminders::ReminderEdit,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+
+    let reminder = {
+        let library = data.0.lock().await;
+        library
+            .reminders_in(&list_guid, true)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|r| r.guid == guid)
+            .ok_or("That reminder is no longer in the local library.")?
+    };
+
+    quince_icloud::reminders::edit_cloudkit(&http, &root, params.clone(), &reminder, &edit)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut library = data.0.lock().await;
+    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
+    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// One of Apple's smart lists. `until` is the end of today in the viewer's own timezone,
+/// which the interface knows and the backend does not.
+#[tauri::command]
+async fn reminders_smart(
+    kind: SmartList,
+    until: i64,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Reminder>> {
+    let library = data.0.lock().await;
+    library
+        .reminders_smart(kind, until)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn reminders_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
     let library = data.0.lock().await;
@@ -523,6 +570,8 @@ fn main() {
             reminders_due_between,
             reminder_create,
             reminder_delete,
+            reminder_edit,
+            reminders_smart,
             notes_sync,
             note_folders,
             notes_in,

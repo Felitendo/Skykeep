@@ -26,11 +26,23 @@ pub struct Reminder {
     /// `None` while outstanding.
     pub completed_at: Option<i64>,
     pub priority: i64,
+    #[serde(default)]
+    pub flagged: bool,
     pub etag: Option<String>,
     /// Apple's original JSON for this reminder, kept verbatim so a write can echo every
     /// field back rather than only the ones we model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
+}
+
+/// Apple's built-in views over every list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmartList {
+    Today,
+    Scheduled,
+    Flagged,
+    All,
 }
 
 impl Reminder {
@@ -109,7 +121,7 @@ impl Library {
     pub fn reminders_due_between(&self, from: i64, to: i64) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
-                    r.priority, r.etag, r.raw
+                    r.priority, r.flagged, r.etag, r.raw
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.due_at IS NOT NULL
@@ -125,8 +137,53 @@ impl Library {
                 due_at: row.get(4)?,
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
-                etag: row.get(7)?,
-                raw: row.get(8)?,
+                flagged: row.get::<_, i64>(7)? != 0,
+                etag: row.get(8)?,
+                raw: row.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// One of Apple's smart lists.
+    ///
+    /// These are the entry points people actually use: what is due today, everything with a
+    /// date, and whatever has been flagged. They are queries rather than stored lists, which
+    /// is what lets them stay correct as the clock moves.
+    pub fn reminders_smart(&self, kind: SmartList, until: i64) -> Result<Vec<Reminder>> {
+        // Only Today is bounded by the clock, so only Today binds a value — binding one
+        // regardless is what SQLite rejects as a parameter-count mismatch.
+        let (clause, args): (&str, Vec<i64>) = match kind {
+            // Overdue counts as today: Apple shows it there rather than hiding it in the past.
+            SmartList::Today => (
+                "r.completed_at IS NULL AND r.due_at IS NOT NULL AND r.due_at < ?1",
+                vec![until],
+            ),
+            SmartList::Scheduled => ("r.completed_at IS NULL AND r.due_at IS NOT NULL", vec![]),
+            SmartList::Flagged => ("r.completed_at IS NULL AND r.flagged = 1", vec![]),
+            SmartList::All => ("r.completed_at IS NULL", vec![]),
+        };
+        let sql = format!(
+            "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
+                    r.priority, r.flagged, r.etag, r.raw
+             FROM reminders r
+             JOIN reminder_lists l ON l.guid = r.list_guid
+             WHERE l.enabled = 1 AND {clause}
+             ORDER BY r.due_at IS NULL, r.due_at, r.priority DESC, r.title"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(args), |row| {
+            Ok(Reminder {
+                guid: row.get(0)?,
+                list_guid: row.get(1)?,
+                title: row.get(2)?,
+                notes: row.get(3)?,
+                due_at: row.get(4)?,
+                completed_at: row.get(5)?,
+                priority: row.get(6)?,
+                flagged: row.get::<_, i64>(7)? != 0,
+                etag: row.get(8)?,
+                raw: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -189,12 +246,13 @@ impl Library {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminders (guid, list_guid, title, notes, due_at, completed_at,
-                                        priority, etag, raw, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                        priority, flagged, etag, raw, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(guid) DO UPDATE SET
                    list_guid = excluded.list_guid, title = excluded.title,
                    notes = excluded.notes, due_at = excluded.due_at,
                    completed_at = excluded.completed_at, priority = excluded.priority,
+                   flagged = excluded.flagged,
                    etag = excluded.etag, raw = excluded.raw,
                    updated_at = excluded.updated_at",
             )?;
@@ -208,6 +266,7 @@ impl Library {
                     r.due_at,
                     r.completed_at,
                     r.priority,
+                    i64::from(r.flagged),
                     r.etag,
                     r.raw,
                     stamp
@@ -242,7 +301,8 @@ impl Library {
     /// is useless.
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
-            "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, etag, raw
+            "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
+                    etag, raw
              FROM reminders
              WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)
              ORDER BY completed_at IS NOT NULL,
@@ -259,8 +319,9 @@ impl Library {
                 due_at: row.get(4)?,
                 completed_at: row.get(5)?,
                 priority: row.get(6)?,
-                etag: row.get(7)?,
-                raw: row.get(8)?,
+                flagged: row.get::<_, i64>(7)? != 0,
+                etag: row.get(8)?,
+                raw: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -291,6 +352,7 @@ mod tests {
             due_at: due,
             completed_at: done,
             priority: 0,
+            flagged: false,
             etag: None,
             raw: None,
         }
@@ -441,5 +503,134 @@ mod tests {
             crate::schema::MIGRATIONS.len(),
             "every migration must apply"
         );
+    }
+}
+
+#[cfg(test)]
+mod smart_tests {
+    use super::*;
+
+    const DAY_START: i64 = 1_757_000_000;
+    const DAY_END: i64 = DAY_START + 86_400;
+
+    fn seeded() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "l1".into(),
+            title: "Daily".into(),
+            colour: None,
+            ctag: None,
+            sort_order: 0,
+            enabled: true,
+        }])
+        .unwrap();
+        lib
+    }
+
+    fn reminder(guid: &str, due: Option<i64>, flagged: bool, done: Option<i64>) -> Reminder {
+        Reminder {
+            guid: guid.into(),
+            list_guid: "l1".into(),
+            title: guid.into(),
+            notes: None,
+            due_at: due,
+            completed_at: done,
+            priority: 0,
+            flagged,
+            etag: None,
+            raw: None,
+        }
+    }
+
+    /// Overdue belongs in Today: Apple shows it there rather than hiding it in the past.
+    #[test]
+    fn today_includes_overdue_and_excludes_the_future() {
+        let mut lib = seeded();
+        lib.put_reminders(&[
+            reminder("overdue", Some(DAY_START - 200_000), false, None),
+            reminder("today", Some(DAY_START + 3600), false, None),
+            reminder("tomorrow", Some(DAY_END + 3600), false, None),
+            reminder("undated", None, false, None),
+            reminder(
+                "done-today",
+                Some(DAY_START + 10),
+                false,
+                Some(DAY_START + 20),
+            ),
+        ])
+        .unwrap();
+
+        let guids: Vec<String> = lib
+            .reminders_smart(SmartList::Today, DAY_END)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.guid)
+            .collect();
+        assert_eq!(guids, vec!["overdue", "today"]);
+    }
+
+    #[test]
+    fn scheduled_is_everything_dated_and_still_open() {
+        let mut lib = seeded();
+        lib.put_reminders(&[
+            reminder("dated", Some(DAY_END + 99_999), false, None),
+            reminder("undated", None, false, None),
+        ])
+        .unwrap();
+        let found = lib.reminders_smart(SmartList::Scheduled, DAY_END).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].guid, "dated");
+    }
+
+    #[test]
+    fn flagged_shows_only_what_is_flagged_and_open() {
+        let mut lib = seeded();
+        lib.put_reminders(&[
+            reminder("flag", None, true, None),
+            reminder("flag-done", None, true, Some(1)),
+            reminder("plain", None, false, None),
+        ])
+        .unwrap();
+        let found = lib.reminders_smart(SmartList::Flagged, DAY_END).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].guid, "flag");
+    }
+
+    /// Hiding a list must hide it from the smart lists too, or the counts disagree.
+    #[test]
+    fn a_disabled_list_is_excluded_everywhere() {
+        let mut lib = seeded();
+        lib.put_reminders(&[reminder("a", Some(DAY_START), true, None)])
+            .unwrap();
+        assert_eq!(
+            lib.reminders_smart(SmartList::All, DAY_END).unwrap().len(),
+            1
+        );
+
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "l1".into(),
+            title: "Daily".into(),
+            colour: None,
+            ctag: None,
+            sort_order: 0,
+            enabled: false,
+        }])
+        .unwrap();
+        for kind in [
+            SmartList::Today,
+            SmartList::Scheduled,
+            SmartList::Flagged,
+            SmartList::All,
+        ] {
+            assert!(lib.reminders_smart(kind, DAY_END).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn flagging_round_trips_through_storage() {
+        let mut lib = seeded();
+        lib.put_reminders(&[reminder("a", None, true, None)])
+            .unwrap();
+        assert!(lib.reminders_in("l1", true).unwrap()[0].flagged);
     }
 }

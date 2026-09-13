@@ -120,6 +120,8 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "reminder_create": return null;
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
+        case "reminder_edit": return null;
+        case "reminders_smart": return [];
         case "note_folders": return !notesFixture ? [] : noteFolders;
         case "notes_in": return !notesFixture ? [] : noteList;
         case "notes_last_synced": return Math.floor(Date.now() / 1000);

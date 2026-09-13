@@ -165,4 +165,9 @@ pub const MIGRATIONS: &[&str] = &[
     -- Browsing is always "what is inside this folder", ordered folders first.
     CREATE INDEX drive_by_parent ON drive_items (parent_id, kind, name);
     "#,
+    // 7 — flagging, which Apple surfaces as one of its smart lists.
+    r#"
+    ALTER TABLE reminders ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX reminders_flagged ON reminders (flagged, completed_at);
+    "#,
 ];

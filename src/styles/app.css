@@ -967,3 +967,89 @@
 .drive-meta { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
 
 .content:has(.drive) { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---- reminders: smart lists, inline editing, flags ------------------------------ */
+
+.rem-lists-heading {
+  margin: 14px 8px 4px;
+  font-size: var(--t-11);
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+/* The title is editable in place, so it must read as text until it is focused. */
+.rem-title-edit {
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--t-13);
+  padding: 1px 3px;
+  margin-left: -3px;
+  border-radius: 4px;
+  width: 100%;
+  outline: none;
+}
+
+.rem-title-edit:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.rem-title-edit:focus { background: var(--field); box-shadow: 0 0 0 2px var(--gold-ring); }
+.is-done .rem-title-edit { color: var(--text-3); text-decoration: line-through; }
+
+.rem-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 2px;
+  padding: 8px 9px;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 4.5%, transparent);
+}
+
+.rem-detail label { display: grid; grid-template-columns: 48px 1fr; gap: 8px; align-items: start; }
+.rem-detail label > span { font-size: var(--t-11); color: var(--text-2); padding-top: 5px; }
+
+.rem-detail input,
+.rem-detail textarea {
+  font: inherit;
+  font-size: var(--t-13);
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--field-edge);
+  border-radius: var(--r-field);
+  padding: 4px 7px;
+  outline: none;
+  resize: vertical;
+}
+
+.rem-detail input:focus,
+.rem-detail textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-ring); }
+
+/* Overdue is the one thing in this list that should catch the eye. */
+.rem-due.overdue { color: var(--danger); }
+
+.rem-flag,
+.rem-more {
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  font-size: var(--t-13);
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: var(--r-field);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.rem-flag.on { opacity: 1; color: var(--gold); }
+
+.rem-list-items li:hover .rem-flag,
+.rem-list-items li:hover .rem-more,
+.rem-flag:focus-visible,
+.rem-more:focus-visible { opacity: 1; }
+
+.rem-flag:hover, .rem-more:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.rem-flag:focus-visible, .rem-more:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
+
+/* A row holding an open detail panel needs the controls at the top, not centred. */
+.rem-list-items li { align-items: start; }
+.rem-trailing { padding-top: 2px; }

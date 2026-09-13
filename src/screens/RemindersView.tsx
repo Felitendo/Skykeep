@@ -1,16 +1,48 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, messageOf, type Reminder, type ReminderList } from "../lib/ipc";
+import {
+  api,
+  messageOf,
+  type Reminder,
+  type ReminderList,
+  type SmartList,
+} from "../lib/ipc";
 
-const dueLabel = (seconds: number) => {
+/** Apple's built-in views, which is how most people enter Reminders. */
+const SMART: { kind: SmartList; title: string }[] = [
+  { kind: "today", title: "Today" },
+  { kind: "scheduled", title: "Scheduled" },
+  { kind: "flagged", title: "Flagged" },
+  { kind: "all", title: "All" },
+];
+
+/** End of today in the viewer's own timezone — the interface knows it, the backend doesn't. */
+function endOfToday(): number {
+  const d = new Date();
+  return Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() / 1000);
+}
+
+function dueLabel(seconds: number): { text: string; overdue: boolean } {
   const due = new Date(seconds * 1000);
-  const today = new Date();
-  const sameDay =
-    due.getFullYear() === today.getFullYear() &&
-    due.getMonth() === today.getMonth() &&
-    due.getDate() === today.getDate();
-  if (sameDay) return `Today ${due.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
-  return due.toLocaleDateString(undefined, { day: "numeric", month: "short" });
-};
+  const now = new Date();
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.floor((due.getTime() - midnight.getTime()) / 86_400_000);
+  const time = due.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (days < 0) return { text: due.toLocaleDateString(undefined, { day: "numeric", month: "short" }), overdue: true };
+  if (days === 0) return { text: `Today ${time}`, overdue: due.getTime() < now.getTime() };
+  if (days === 1) return { text: `Tomorrow ${time}`, overdue: false };
+  return {
+    text: due.toLocaleDateString(undefined, { day: "numeric", month: "short" }),
+    overdue: false,
+  };
+}
+
+/** `YYYY-MM-DDTHH:mm` for a datetime-local input, in local time. */
+function toInputValue(seconds: number | null): string {
+  if (seconds === null) return "";
+  const d = new Date(seconds * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 function relative(seconds: number | null): string {
   if (seconds === null) return "never";
@@ -21,46 +53,41 @@ function relative(seconds: number | null): string {
   return `${Math.floor(ago / 86_400)} d ago`;
 }
 
+type Selection = { type: "smart"; kind: SmartList } | { type: "list"; guid: string };
+
 export function RemindersView() {
   const [lists, setLists] = useState<ReminderList[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection>({ type: "smart", kind: "today" });
   const [items, setItems] = useState<Reminder[]>([]);
   const [showDone, setShowDone] = useState(false);
   const [lastSynced, setLastSynced] = useState<number | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [busyGuid, setBusyGuid] = useState<string | null>(null);
+  const [openGuid, setOpenGuid] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  const [adding, setAdding] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const inList = selection.type === "list";
+  const listGuid = inList ? selection.guid : null;
 
   const readLists = useCallback(async () => {
     const [found, synced] = await Promise.all([
       api.reminderLists(),
       api.remindersLastSynced(),
     ]);
-    const safe = Array.isArray(found) ? found : [];
-    setLists(safe);
+    setLists(Array.isArray(found) ? found : []);
     setLastSynced(typeof synced === "number" ? synced : null);
-    // Prefer a list with something outstanding: opening on an empty one looks broken.
-    if (safe.length > 0) {
-      const counts = await Promise.all(
-        safe.map(async (l) => [l.guid, (await api.remindersIn(l.guid, false)).length] as const)
-      );
-      setSelected((current) => {
-        if (current) return current;
-        const busiest = counts.reduce((a, b) => (b[1] > a[1] ? b : a));
-        return busiest[1] > 0 ? busiest[0] : safe[0].guid;
-      });
-    }
     setLoaded(true);
   }, []);
 
   const readItems = useCallback(async () => {
-    if (!selected) return setItems([]);
-    const found = await api.remindersIn(selected, showDone);
+    const found =
+      selection.type === "smart"
+        ? await api.remindersSmart(selection.kind, endOfToday())
+        : await api.remindersIn(selection.guid, showDone);
     setItems(Array.isArray(found) ? found : []);
-  }, [selected, showDone]);
+  }, [selection, showDone]);
 
   const refreshRef = useRef<null | (() => Promise<void>)>(null);
 
@@ -72,7 +99,6 @@ export function RemindersView() {
       await readLists();
       await readItems();
     } catch (e) {
-      // The library still holds the last good data, so the list stays usable.
       setError(messageOf(e));
     } finally {
       setSyncing(false);
@@ -80,15 +106,13 @@ export function RemindersView() {
   }, [readLists, readItems]);
   refreshRef.current = refresh;
 
-  // Render from the library first, then fetch if nothing is stored yet.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         await readLists();
         if (cancelled) return;
-        const synced = await api.remindersLastSynced();
-        if (!cancelled && synced === null) void refreshRef.current?.();
+        if ((await api.remindersLastSynced()) === null) void refreshRef.current?.();
       } catch (e) {
         if (!cancelled) {
           setError(messageOf(e));
@@ -105,65 +129,89 @@ export function RemindersView() {
     readItems().catch((e) => setError(messageOf(e)));
   }, [readItems]);
 
-  async function toggle(reminder: Reminder) {
-    setBusyGuid(reminder.guid);
-    setError(null);
-    try {
-      // Writes to Apple, then re-reads — so what's on screen is what Apple stored.
-      await api.reminderSetDone(reminder.guid, reminder.listGuid, !reminder.completedAt);
-      await readItems();
-    } catch (e) {
-      setError(messageOf(e));
-    } finally {
-      setBusyGuid(null);
-    }
-  }
+  /** Every write goes through here: to Apple first, then re-read, so nothing on screen is a guess. */
+  const write = useCallback(
+    async (reminder: Reminder, run: () => Promise<void>) => {
+      setBusyGuid(reminder.guid);
+      setError(null);
+      try {
+        await run();
+        await readItems();
+      } catch (e) {
+        setError(messageOf(e));
+      } finally {
+        setBusyGuid(null);
+      }
+    },
+    [readItems]
+  );
+
+  const toggle = (r: Reminder) =>
+    write(r, () => api.reminderSetDone(r.guid, r.listGuid, !r.completedAt));
+  const flag = (r: Reminder) =>
+    write(r, () => api.reminderEdit(r.guid, r.listGuid, { flagged: !r.flagged }));
+  const remove = (r: Reminder) => write(r, () => api.reminderDelete(r.guid, r.listGuid));
+  const rename = (r: Reminder, title: string) =>
+    title.trim() && title.trim() !== r.title
+      ? write(r, () => api.reminderEdit(r.guid, r.listGuid, { title: title.trim() }))
+      : Promise.resolve();
+  const setDue = (r: Reminder, value: string) =>
+    write(r, () =>
+      api.reminderEdit(r.guid, r.listGuid, {
+        dueAt: value ? Math.floor(new Date(value).getTime() / 1000) : null,
+      })
+    );
+  const setNotes = (r: Reminder, notes: string) =>
+    write(r, () => api.reminderEdit(r.guid, r.listGuid, { notes: notes.trim() || null }));
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
     const title = draft.trim();
-    if (!title || !selected || adding) return;
-    setAdding(true);
+    // Adding needs a real list: a smart list is a view, not somewhere to put things.
+    if (!title || !listGuid) return;
+    setSyncing(true);
     setError(null);
     try {
-      await api.reminderCreate(selected, title);
+      await api.reminderCreate(listGuid, title);
       setDraft("");
       await readItems();
     } catch (err) {
       setError(messageOf(err));
     } finally {
-      setAdding(false);
+      setSyncing(false);
     }
   }
 
-  async function remove(reminder: Reminder) {
-    setBusyGuid(reminder.guid);
-    setError(null);
-    try {
-      await api.reminderDelete(reminder.guid, reminder.listGuid);
-      await readItems();
-    } catch (err) {
-      setError(messageOf(err));
-    } finally {
-      setBusyGuid(null);
-    }
-  }
-
-  const current = useMemo(
-    () => lists.find((l) => l.guid === selected) ?? null,
-    [lists, selected]
-  );
+  const heading = inList
+    ? lists.find((l) => l.guid === listGuid)?.title ?? "Reminders"
+    : SMART.find((s) => s.kind === (selection as { kind: SmartList }).kind)?.title ?? "Reminders";
   const outstanding = items.filter((r) => !r.completedAt).length;
+  const colour = useMemo(
+    () => lists.find((l) => l.guid === listGuid)?.colour || "var(--gold)",
+    [lists, listGuid]
+  );
 
   return (
     <div className="rem">
       <aside className="rem-lists" aria-label="Reminder lists">
+        {SMART.map((s) => (
+          <button
+            key={s.kind}
+            className="rem-list"
+            aria-current={selection.type === "smart" && selection.kind === s.kind}
+            onClick={() => setSelection({ type: "smart", kind: s.kind })}
+          >
+            <span className="rem-list-name">{s.title}</span>
+          </button>
+        ))}
+
+        <p className="rem-lists-heading">My Lists</p>
         {lists.map((list) => (
           <button
             key={list.guid}
             className="rem-list"
-            aria-current={selected === list.guid}
-            onClick={() => setSelected(list.guid)}
+            aria-current={listGuid === list.guid}
+            onClick={() => setSelection({ type: "list", guid: list.guid })}
           >
             <span className="dot" style={{ background: list.colour || "var(--gold)" }} />
             <span className="rem-list-name">{list.title}</span>
@@ -175,14 +223,16 @@ export function RemindersView() {
       <section className="rem-items">
         <header className="cal-bar">
           <div className="cal-nav">
-            <h1>{current?.title ?? "Reminders"}</h1>
-            {outstanding > 0 && <span className="badge">{outstanding} left</span>}
+            <h1>{heading}</h1>
+            {outstanding > 0 && <span className="badge">{outstanding}</span>}
           </div>
           <div className="cal-actions">
-            <button className="quiet" onClick={() => setShowDone((v) => !v)}>
-              {showDone ? "Hide completed" : "Show completed"}
-            </button>
-            <span className="badge">Updated {relative(lastSynced)}</span>
+            {inList && (
+              <button className="quiet" onClick={() => setShowDone((v) => !v)}>
+                {showDone ? "Hide completed" : "Show completed"}
+              </button>
+            )}
+            <span className="badge">{relative(lastSynced)}</span>
             <button className="quiet" onClick={refresh} disabled={syncing}>
               {syncing ? "Refreshing…" : "Refresh"}
             </button>
@@ -191,60 +241,119 @@ export function RemindersView() {
 
         {error && <p className="error" role="alert">{error}</p>}
 
-        {selected && (
+        {inList && (
           <form className="rem-add" onSubmit={add}>
             <span className="tick ghost" aria-hidden="true" />
             <input
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(e) => setDraft(e.target.value)}
               placeholder="Add a reminder"
-              aria-label={`Add a reminder to ${current?.title ?? "this list"}`}
-              disabled={adding}
+              aria-label={`Add a reminder to ${heading}`}
+              disabled={syncing}
             />
           </form>
         )}
 
         <ul className="rem-list-items">
-          {items.map((reminder) => (
-            <li key={reminder.guid} className={reminder.completedAt ? "is-done" : undefined}>
-              <button
-                className="tick"
-                role="checkbox"
-                aria-checked={Boolean(reminder.completedAt)}
-                aria-label={reminder.title}
-                disabled={busyGuid === reminder.guid}
-                onClick={() => toggle(reminder)}
-                style={{ borderColor: current?.colour || "var(--gold)" }}
-              >
-                {reminder.completedAt && (
-                  <span
-                    className="tick-fill"
-                    style={{ background: current?.colour || "var(--gold)" }}
-                  />
-                )}
-              </button>
-              <div className="rem-text">
-                <span className="rem-title">{reminder.title}</span>
-                {reminder.notes && <span className="rem-notes">{reminder.notes}</span>}
-              </div>
-              <span className="rem-trailing">
-                {reminder.dueAt && <span className="rem-due">{dueLabel(reminder.dueAt)}</span>}
+          {items.map((reminder) => {
+            const due = reminder.dueAt === null ? null : dueLabel(reminder.dueAt);
+            const isOpen = openGuid === reminder.guid;
+            return (
+              <li key={reminder.guid} className={reminder.completedAt ? "is-done" : undefined}>
                 <button
-                  className="rem-delete"
-                  aria-label={`Delete ${reminder.title}`}
+                  className="tick"
+                  role="checkbox"
+                  aria-checked={Boolean(reminder.completedAt)}
+                  aria-label={reminder.title}
                   disabled={busyGuid === reminder.guid}
-                  onClick={() => remove(reminder)}
+                  onClick={() => toggle(reminder)}
+                  style={{ borderColor: colour }}
                 >
-                  ×
+                  {reminder.completedAt && (
+                    <span className="tick-fill" style={{ background: colour }} />
+                  )}
                 </button>
-              </span>
-            </li>
-          ))}
+
+                <div className="rem-text">
+                  <input
+                    className="rem-title-edit"
+                    defaultValue={reminder.title}
+                    key={`${reminder.guid}-${reminder.title}`}
+                    aria-label={`Rename ${reminder.title}`}
+                    disabled={busyGuid === reminder.guid}
+                    onBlur={(e) => void rename(reminder, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") e.currentTarget.blur();
+                      if (e.key === "Escape") {
+                        e.currentTarget.value = reminder.title;
+                        e.currentTarget.blur();
+                      }
+                    }}
+                  />
+                  {reminder.notes && !isOpen && (
+                    <span className="rem-notes">{reminder.notes}</span>
+                  )}
+
+                  {isOpen && (
+                    <div className="rem-detail">
+                      <label>
+                        <span>Due</span>
+                        <input
+                          type="datetime-local"
+                          defaultValue={toInputValue(reminder.dueAt)}
+                          onBlur={(e) => void setDue(reminder, e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        <span>Notes</span>
+                        <textarea
+                          defaultValue={reminder.notes ?? ""}
+                          rows={2}
+                          onBlur={(e) => void setNotes(reminder, e.target.value)}
+                        />
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                <span className="rem-trailing">
+                  {due && (
+                    <span className={`rem-due${due.overdue ? " overdue" : ""}`}>{due.text}</span>
+                  )}
+                  <button
+                    className={`rem-flag${reminder.flagged ? " on" : ""}`}
+                    aria-label={reminder.flagged ? `Unflag ${reminder.title}` : `Flag ${reminder.title}`}
+                    aria-pressed={reminder.flagged}
+                    disabled={busyGuid === reminder.guid}
+                    onClick={() => flag(reminder)}
+                  >
+                    ⚑
+                  </button>
+                  <button
+                    className="rem-more"
+                    aria-label={isOpen ? `Close details for ${reminder.title}` : `Details for ${reminder.title}`}
+                    aria-expanded={isOpen}
+                    onClick={() => setOpenGuid(isOpen ? null : reminder.guid)}
+                  >
+                    ⋯
+                  </button>
+                  <button
+                    className="rem-delete"
+                    aria-label={`Delete ${reminder.title}`}
+                    disabled={busyGuid === reminder.guid}
+                    onClick={() => remove(reminder)}
+                  >
+                    ×
+                  </button>
+                </span>
+              </li>
+            );
+          })}
         </ul>
 
         {loaded && items.length === 0 && !error && (
           <p className="cal-empty">
-            {showDone ? "Nothing in this list." : "All done here."}
+            {inList ? (showDone ? "Nothing in this list." : "All done here.") : "Nothing here."}
           </p>
         )}
       </section>

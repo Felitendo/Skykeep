@@ -40,6 +40,10 @@ export const api = {
     invoke<Reminder[]>("reminders_due_between", { from, to }),
   reminderSetDone: (guid: string, listGuid: string, done: boolean) =>
     invoke<void>("reminder_set_done", { guid, listGuid, done }),
+  reminderEdit: (guid: string, listGuid: string, edit: ReminderEdit) =>
+    invoke<void>("reminder_edit", { guid, listGuid, edit }),
+  remindersSmart: (kind: SmartList, until: number) =>
+    invoke<Reminder[]>("reminders_smart", { kind, until }),
   reminderCreate: (listGuid: string, title: string) =>
     invoke<void>("reminder_create", { listGuid, title }),
   reminderDelete: (guid: string, listGuid: string) =>
@@ -95,6 +99,17 @@ export type ReminderList = {
   enabled: boolean;
 };
 
+export type SmartList = "today" | "scheduled" | "flagged" | "all";
+
+/** Anything omitted is left untouched; `null` clears a field. */
+export type ReminderEdit = {
+  title?: string;
+  notes?: string | null;
+  dueAt?: number | null;
+  flagged?: boolean;
+  completed?: boolean;
+};
+
 export type Reminder = {
   guid: string;
   listGuid: string;
@@ -104,6 +119,7 @@ export type Reminder = {
   /** null while outstanding */
   completedAt: number | null;
   priority: number;
+  flagged: boolean;
   etag: string | null;
 };
 

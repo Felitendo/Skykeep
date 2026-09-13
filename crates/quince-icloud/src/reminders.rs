@@ -47,6 +47,9 @@ fn reminder_from(v: &Value) -> Option<Reminder> {
         due_at: optional_date(v, "dueDate"),
         completed_at: optional_date(v, "completedDate"),
         priority: v.get("priority").and_then(Value::as_i64).unwrap_or(0),
+        // The legacy endpoint does not carry a flag; CloudKit does, and that is the path
+        // this account actually uses.
+        flagged: v.get("flagged").and_then(Value::as_bool).unwrap_or(false),
         etag: string(v, "etag"),
         // Keep Apple's payload verbatim: a write echoes the whole task back, and
         // reconstructing one from parsed columns would drop fields we do not model.
@@ -424,6 +427,7 @@ fn reminder_from_record(record: &Value) -> Option<Reminder> {
             .flatten()
             .or(if completed { Some(0) } else { None }),
         priority: field::int(record, "Priority").unwrap_or(0),
+        flagged: field::flag(record, "Flagged"),
         etag: record
             .get("recordChangeTag")
             .and_then(Value::as_str)
@@ -715,6 +719,119 @@ pub async fn delete_cloudkit(
                 "Deleted": { "type": "NUMBER_INT64", "value": 1 },
                 "LastModifiedDate": { "type": "TIMESTAMP", "value": now_millis() },
             }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// What to change about a reminder. Anything left `None` is untouched.
+///
+/// Written as one request so a title and a due date set together cannot half-apply.
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderEdit {
+    pub title: Option<String>,
+    /// `Some(None)` clears the notes; `None` leaves them alone.
+    pub notes: Option<Option<String>>,
+    /// Unix seconds. `Some(None)` clears the due date.
+    pub due_at: Option<Option<i64>>,
+    pub flagged: Option<bool>,
+    pub completed: Option<bool>,
+}
+
+impl ReminderEdit {
+    fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.notes.is_none()
+            && self.due_at.is_none()
+            && self.flagged.is_none()
+            && self.completed.is_none()
+    }
+}
+
+/// Apply an edit to a reminder.
+///
+/// Sends only the fields that changed, guarded by the record's change tag, so a reminder
+/// edited on the phone since we read it is refused rather than overwritten.
+pub async fn edit_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder: &Reminder,
+    edit: &ReminderEdit,
+) -> Result<()> {
+    if edit.is_empty() {
+        return Ok(());
+    }
+
+    let mut fields = serde_json::Map::new();
+
+    if let Some(title) = &edit.title {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(Error::Protocol("a reminder needs a title".into()));
+        }
+        fields.insert(
+            "TitleDocument".into(),
+            serde_json::json!({
+                "type": "ENCRYPTED_BYTES",
+                "value": crate::ckdocument::text_to_base64(title),
+            }),
+        );
+    }
+
+    if let Some(notes) = &edit.notes {
+        // Clearing writes an empty document rather than removing the field: Apple's clients
+        // expect it to exist.
+        let text = notes.as_deref().unwrap_or("");
+        fields.insert(
+            "NotesDocument".into(),
+            serde_json::json!({
+                "type": "ENCRYPTED_BYTES",
+                "value": crate::ckdocument::text_to_base64(text),
+            }),
+        );
+    }
+
+    if let Some(due) = &edit.due_at {
+        fields.insert(
+            "DueDate".into(),
+            match due {
+                Some(seconds) => serde_json::json!({
+                    "type": "TIMESTAMP", "value": seconds.saturating_mul(1000)
+                }),
+                None => serde_json::json!({ "type": "TIMESTAMP", "value": null }),
+            },
+        );
+    }
+
+    if let Some(flagged) = edit.flagged {
+        fields.insert(
+            "Flagged".into(),
+            serde_json::json!({ "type": "NUMBER_INT64", "value": i64::from(flagged) }),
+        );
+    }
+
+    if let Some(completed) = edit.completed {
+        fields.insert(
+            "Completed".into(),
+            serde_json::json!({ "type": "NUMBER_INT64", "value": i64::from(completed) }),
+        );
+    }
+
+    fields.insert(
+        "LastModifiedDate".into(),
+        serde_json::json!({ "type": "TIMESTAMP", "value": now_millis() }),
+    );
+
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            &reminder.guid,
+            "Reminder",
+            reminder.etag.as_deref(),
+            Value::Object(fields),
         )
         .await?;
     Ok(())
@@ -1093,6 +1210,7 @@ mod write_tests {
             due_at: None,
             completed_at: None,
             priority: 0,
+            flagged: false,
             etag: Some("tag-3".into()),
             raw: None,
         };
@@ -1111,5 +1229,200 @@ mod write_tests {
             sent["operations"][0]["record"]["recordChangeTag"], "tag-3",
             "the change tag guards against clobbering a newer edit"
         );
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn accepting() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Reminder/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn reminder() -> Reminder {
+        Reminder {
+            guid: "Reminder/1".into(),
+            list_guid: "List/a".into(),
+            title: "Old".into(),
+            notes: None,
+            due_at: None,
+            completed_at: None,
+            priority: 0,
+            flagged: false,
+            etag: Some("tag-1".into()),
+            raw: None,
+        }
+    }
+
+    async fn sent(server: &MockServer) -> Value {
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        body["operations"][0]["record"]["fields"].clone()
+    }
+
+    #[tokio::test]
+    async fn a_new_title_is_written_so_it_reads_back() {
+        let server = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                title: Some("🥛 Buy oat milk".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let fields = sent(&server).await;
+        let encoded = fields["TitleDocument"]["value"].as_str().unwrap();
+        assert_eq!(
+            crate::ckdocument::text_from_base64(encoded).as_deref(),
+            Some("🥛 Buy oat milk")
+        );
+        assert!(
+            fields.get("DueDate").is_none(),
+            "untouched fields must not be sent"
+        );
+    }
+
+    /// Seconds in, milliseconds out — a due date landing on the wrong day is worse than none.
+    #[tokio::test]
+    async fn a_due_date_is_written_in_milliseconds_and_can_be_cleared() {
+        let server = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                due_at: Some(Some(1_757_000_000)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sent(&server).await["DueDate"]["value"],
+            1_757_000_000_000_i64
+        );
+
+        let clearing = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &clearing.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                due_at: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(sent(&clearing).await["DueDate"]["value"].is_null());
+    }
+
+    #[tokio::test]
+    async fn notes_can_be_set_and_cleared() {
+        let server = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                notes: Some(Some("bring a bag".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let encoded = sent(&server).await["NotesDocument"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            crate::ckdocument::text_from_base64(&encoded).as_deref(),
+            Some("bring a bag")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_title_is_refused_before_anything_is_sent() {
+        let server = accepting().await;
+        assert!(edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                title: Some("   ".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .is_err());
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// An edit that changes nothing should not cost a request.
+    #[tokio::test]
+    async fn an_empty_edit_does_nothing() {
+        let server = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit::default(),
+        )
+        .await
+        .unwrap();
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn several_changes_travel_in_one_request() {
+        let server = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                title: Some("Renamed".into()),
+                due_at: Some(Some(1_757_000_000)),
+                flagged: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "one write, not three"
+        );
+        let fields = sent(&server).await;
+        assert!(fields.get("TitleDocument").is_some());
+        assert_eq!(fields["DueDate"]["value"], 1_757_000_000_000_i64);
+        assert_eq!(fields["Flagged"]["value"], 1);
     }
 }
