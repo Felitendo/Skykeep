@@ -18,6 +18,8 @@ pub enum Error {
     Protocol(String),
     #[error("this needs a fresh sign-in")]
     ReauthRequired,
+    #[error("this changed on another device first — refresh and try again")]
+    Conflict,
     #[error(transparent)]
     Storage(#[from] quince_core::Error),
 }

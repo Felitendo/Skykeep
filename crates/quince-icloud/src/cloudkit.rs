@@ -336,8 +336,35 @@ impl ZoneClient<'_> {
             record["recordChangeTag"] = Value::String(tag.to_string());
         }
 
-        self.modify(zone, json!({ "operationType": "update", "record": record }))
+        match self
+            .modify(
+                zone,
+                json!({ "operationType": "update", "record": record.clone() }),
+            )
             .await
+        {
+            Err(Error::Conflict) => {
+                // The record moved since we read it — usually the phone changed it, sometimes
+                // our own previous write advanced the tag. Read the current tag and try once
+                // more, rather than handing the user an error we can resolve ourselves.
+                let Some(fresh) = self.lookup_record(zone, record_name).await? else {
+                    return Err(Error::Protocol(
+                        "that record no longer exists in iCloud".into(),
+                    ));
+                };
+                let Some(tag) = fresh.get("recordChangeTag").and_then(Value::as_str) else {
+                    return Err(Error::Conflict);
+                };
+                let mut retried = record;
+                retried["recordChangeTag"] = Value::String(tag.to_string());
+                self.modify(
+                    zone,
+                    json!({ "operationType": "update", "record": retried }),
+                )
+                .await
+            }
+            other => other,
+        }
     }
 
     /// Send one operation to `records/modify` and surface what came back.
@@ -380,11 +407,14 @@ impl ZoneClient<'_> {
                 .pointer("/records/0/serverErrorCode")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            return Err(Error::Protocol(if code == "CONFLICT" {
-                "this changed on another device first — refresh and try again".to_string()
+            // Apple signals a stale change tag as CONFLICT, and sometimes as an "oplock"
+            // message with a different code; both mean the same thing.
+            let stale = code == "CONFLICT" || reason.to_ascii_lowercase().contains("oplock");
+            return Err(if stale {
+                Error::Conflict
             } else {
-                format!("CloudKit refused the change: {reason}")
-            }));
+                Error::Protocol(format!("CloudKit refused the change: {reason}"))
+            });
         }
         Ok(parsed)
     }
@@ -414,6 +444,36 @@ impl ZoneClient<'_> {
             }),
         )
         .await
+    }
+
+    /// Fetch one record, for reading its current change tag.
+    pub async fn lookup_record(&self, zone: &str, record_name: &str) -> Result<Option<Value>> {
+        let url = format!(
+            "{}/database/1/{}/production/private/records/lookup",
+            self.base, self.container
+        );
+        let body = json!({
+            "records": [{ "recordName": record_name }],
+            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+        });
+        let response = self
+            .http
+            .post(url)
+            .query(&self.query())
+            .json(&body)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let parsed: Value =
+            serde_json::from_str(&response.text().await.unwrap_or_default()).unwrap_or(Value::Null);
+        Ok(parsed
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|r| r.first())
+            .filter(|r| r.get("recordChangeTag").is_some())
+            .cloned())
     }
 
     /// A reference field pointing at another record in the same zone.
@@ -474,23 +534,135 @@ mod modify_tests {
         assert_eq!(sent["zoneID"]["zoneName"], "Reminders");
     }
 
-    /// CloudKit reports a conflict inside a 200, so a success status is not success.
+    /// A refusal that is not a stale tag must surface Apple's own words, and must not be
+    /// retried — retrying a quota or permission error just asks twice for the same refusal.
     #[tokio::test]
-    async fn a_conflict_inside_a_200_is_an_error() {
+    async fn a_refusal_that_is_not_a_conflict_is_reported_verbatim() {
         let server = server_returning(json!({
-            "records": [{ "reason": "change tag mismatch", "serverErrorCode": "CONFLICT" }]
+            "records": [{ "reason": "quota exceeded", "serverErrorCode": "QUOTA_EXCEEDED" }]
         }))
         .await;
         let http = reqwest::Client::new();
         let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
 
         let err = client
-            .update_record("Reminders", "Reminder/1", "Reminder", None, json!({}))
+            .update_record(
+                "Reminders",
+                "Reminder/1",
+                "Reminder",
+                Some("tag"),
+                json!({}),
+            )
             .await
             .unwrap_err();
-        assert!(
-            err.to_string().contains("another device"),
-            "a conflict should tell the user what to do: {err}"
+        assert!(err.to_string().contains("quota exceeded"), "got: {err}");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "a non-conflict refusal must not be retried"
         );
+    }
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A stale change tag is recoverable: read the current one and try again. Handing the
+    /// user "client oplock error" for something we can resolve is not acceptable.
+    #[tokio::test]
+    async fn a_stale_change_tag_is_retried_with_a_fresh_one() {
+        let server = MockServer::start().await;
+
+        // First modify: rejected as stale.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "reason": "client oplock error updating record",
+                              "serverErrorCode": "ATOMIC_ERROR" }]
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        // The lookup that supplies the current tag.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "Reminder/1", "recordChangeTag": "fresh-tag" }]
+            })))
+            .mount(&server)
+            .await;
+
+        // Second modify: accepted.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "Reminder/1", "recordChangeTag": "fresh-tag" }]
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        client
+            .update_record(
+                "Reminders",
+                "Reminder/1",
+                "Reminder",
+                Some("stale"),
+                json!({}),
+            )
+            .await
+            .expect("a stale tag should be recovered, not surfaced");
+
+        let requests = server.received_requests().await.unwrap();
+        let modifies: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path().ends_with("/modify"))
+            .collect();
+        assert_eq!(modifies.len(), 2, "it should retry exactly once");
+
+        let retried: Value = serde_json::from_slice(&modifies[1].body).unwrap();
+        assert_eq!(
+            retried["operations"][0]["record"]["recordChangeTag"], "fresh-tag",
+            "the retry must carry the tag we just read, not the stale one"
+        );
+    }
+
+    /// If the record is gone, say so plainly rather than retrying forever.
+    #[tokio::test]
+    async fn a_vanished_record_is_reported_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "reason": "client oplock error", "serverErrorCode": "ATOMIC_ERROR" }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "records": [] })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        let err = client
+            .update_record(
+                "Reminders",
+                "Reminder/1",
+                "Reminder",
+                Some("stale"),
+                json!({}),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no longer exists"), "got: {err}");
     }
 }

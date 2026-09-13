@@ -41,7 +41,10 @@ fn note_from_record(record: &Value) -> Option<Note> {
         title: title.unwrap_or_else(|| "Untitled".into()),
         snippet: field::document_text(record, "SnippetEncrypted"),
         body,
-        locked,
+        // Set from the PasswordProtectedNote records below. Inferring it from a body that
+        // failed to decode would label our own parsing failures as "locked", which is a
+        // claim we would not be able to stand behind.
+        locked: false,
         pinned: false, // carried on the per-user record, applied below
         created_at: field::timestamp_seconds(record, "CreationDate"),
         modified_at: field::timestamp_seconds(record, "ModificationDate"),
@@ -72,6 +75,8 @@ pub async fn sync_cloudkit(
     // Deletion and pinning live on the per-user record, keyed by a reference to the note.
     let mut deleted_notes: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut pinned_notes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Apple names this record type outright, so locking is something we read rather than guess.
+    let mut locked_notes: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for record in &records {
         let Some(kind) = field::record_type(record) else {
@@ -98,6 +103,9 @@ pub async fn sync_cloudkit(
             // Per-user state. The note it refers to is what matters, not this record's name.
             "Note_UserSpecific" | "PasswordProtectedNote_UserSpecific" => {
                 if let Some(target) = field::reference(record, "Note") {
+                    if kind == "PasswordProtectedNote_UserSpecific" {
+                        locked_notes.insert(target.clone());
+                    }
                     if removed {
                         deleted_notes.insert(target);
                     } else if field::flag(record, "IsPinned") {
@@ -115,6 +123,7 @@ pub async fn sync_cloudkit(
     gone.extend(deleted_notes);
     for note in &mut notes {
         note.pinned = pinned_notes.contains(&note.guid);
+        note.locked = locked_notes.contains(&note.guid);
     }
 
     // A note may reference a folder that this page did not carry; keeping the reference
@@ -280,13 +289,18 @@ mod tests {
         assert!(library.notes_in(None).unwrap()[0].pinned);
     }
 
-    /// A locked note is genuinely encrypted; it should appear, marked, not vanish.
+    /// Locking is read from Apple's own record type, not inferred from a body that failed
+    /// to decode — otherwise our parsing failures would reach the user as "locked", a claim
+    /// we could not stand behind.
     #[tokio::test]
-    async fn a_locked_note_is_kept_and_flagged() {
+    async fn locking_comes_from_apples_own_record() {
         let server = serve(json!({ "zones": [{
             "records": [
                 folder_record("Folder/f1", "Notes"),
-                note_record("Note/n1", "Private", None, "Folder/f1"),
+                note_record("Note/n1", "Private", Some("x"), "Folder/f1"),
+                { "recordName": "PPN/1", "recordType": "PasswordProtectedNote_UserSpecific",
+                  "fields": { "Note": { "type": "REFERENCE",
+                                        "value": { "recordName": "Note/n1" } } } }
             ],
             "syncToken": "t1", "moreComing": false }] }))
         .await;
@@ -305,6 +319,35 @@ mod tests {
         assert_eq!(stored.len(), 1, "a locked note still exists");
         assert!(stored[0].locked);
         assert_eq!(stored[0].title, "Private", "its title is not secret");
+    }
+
+    /// A body that simply would not decode must NOT be reported as locked.
+    #[tokio::test]
+    async fn an_undecodable_body_is_not_called_locked() {
+        let server = serve(json!({ "zones": [{
+            "records": [
+                folder_record("Folder/f1", "Notes"),
+                note_record("Note/n1", "Odd one", None, "Folder/f1"),
+            ],
+            "syncToken": "t1", "moreComing": false }] }))
+        .await;
+
+        let mut library = Library::in_memory().unwrap();
+        sync_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &mut library,
+            None,
+        )
+        .await
+        .unwrap();
+        let stored = library.notes_in(None).unwrap();
+        assert!(
+            !stored[0].locked,
+            "we must not claim Apple locked something it did not"
+        );
+        assert!(stored[0].body.is_none());
     }
 
     /// A note pointing at a folder we have never seen must not break the foreign key.
