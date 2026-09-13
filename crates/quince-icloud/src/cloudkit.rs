@@ -11,8 +11,11 @@
 use crate::{Error, Result};
 use serde_json::{json, Value};
 
-/// Records fetched in one request. Apple's own client uses a few hundred.
-const PAGE_SIZE: u64 = 200;
+/// Records fetched in one request.
+///
+/// A real account's zone runs to thousands — mostly tombstones — so a small page turns one
+/// refresh into dozens of round trips.
+const PAGE_SIZE: u64 = 500;
 
 /// A ceiling on paging, so a server that always says `moreComing` cannot spin forever.
 const MAX_PAGES: usize = 200;
@@ -305,6 +308,146 @@ mod tests {
             field::timestamp_seconds(&rec, "CreationDate"),
             Some(1_753_808_338),
             "milliseconds must become seconds"
+        );
+    }
+}
+
+impl ZoneClient<'_> {
+    /// Update one record in the zone.
+    ///
+    /// `changes` are merged into the record's existing fields, so only what actually changed
+    /// is sent. The change tag is CloudKit's optimistic-concurrency check: if the record
+    /// moved since we read it, Apple refuses rather than silently overwriting whatever the
+    /// phone did.
+    pub async fn update_record(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        change_tag: Option<&str>,
+        changes: Value,
+    ) -> Result<Value> {
+        let mut record = json!({
+            "recordName": record_name,
+            "recordType": record_type,
+            "fields": changes,
+        });
+        if let Some(tag) = change_tag {
+            record["recordChangeTag"] = Value::String(tag.to_string());
+        }
+
+        let body = json!({
+            "operations": [{
+                "operationType": "update",
+                "record": record,
+            }],
+            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+        });
+
+        let url = format!(
+            "{}/database/1/{}/production/private/records/modify",
+            self.base, self.container
+        );
+        let response = self
+            .http
+            .post(url)
+            .query(&self.query())
+            .json(&body)
+            .send()
+            .await?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+
+        if status.as_u16() == 450 {
+            return Err(Error::ReauthRequired);
+        }
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "CloudKit refused the change ({status}): {}",
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+
+        let parsed: Value = serde_json::from_str(&text)
+            .map_err(|e| Error::Protocol(format!("CloudKit returned invalid JSON: {e}")))?;
+
+        // A 200 can still carry a per-record failure, which is how a conflict arrives.
+        if let Some(reason) = parsed.pointer("/records/0/reason").and_then(Value::as_str) {
+            let code = parsed
+                .pointer("/records/0/serverErrorCode")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            return Err(Error::Protocol(if code == "CONFLICT" {
+                "this changed on another device first — refresh and try again".to_string()
+            } else {
+                format!("CloudKit refused the change: {reason}")
+            }));
+        }
+        Ok(parsed)
+    }
+}
+
+#[cfg(test)]
+mod modify_tests {
+    use super::*;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn server_returning(body: Value) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn an_update_sends_only_what_changed_with_its_change_tag() {
+        let server = server_returning(json!({ "records": [{ "recordName": "Reminder/1" }] })).await;
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+
+        client
+            .update_record(
+                "Reminders",
+                "Reminder/1",
+                "Reminder",
+                Some("tag-7"),
+                json!({ "Completed": { "value": 1, "type": "NUMBER_INT64" } }),
+            )
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let sent: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(sent["operations"][0]["operationType"], "update");
+        assert_eq!(sent["operations"][0]["record"]["recordChangeTag"], "tag-7");
+        assert_eq!(
+            sent["operations"][0]["record"]["fields"]["Completed"]["value"],
+            1
+        );
+        assert_eq!(sent["zoneID"]["zoneName"], "Reminders");
+    }
+
+    /// CloudKit reports a conflict inside a 200, so a success status is not success.
+    #[tokio::test]
+    async fn a_conflict_inside_a_200_is_an_error() {
+        let server = server_returning(json!({
+            "records": [{ "reason": "change tag mismatch", "serverErrorCode": "CONFLICT" }]
+        }))
+        .await;
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+
+        let err = client
+            .update_record("Reminders", "Reminder/1", "Reminder", None, json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("another device"),
+            "a conflict should tell the user what to do: {err}"
         );
     }
 }

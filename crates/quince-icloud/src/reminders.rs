@@ -457,8 +457,11 @@ pub async fn sync_cloudkit(
     for record in &records {
         match field::record_type(record).as_deref() {
             Some("Reminder") => reminders.extend(reminder_from_record(record)),
-            // Apple has used more than one name for the container of a list over the years.
-            Some("List" | "ListSection" | "SmartList") => lists.extend(list_from_record(record)),
+            // Only List records are the lists people made. ListSection is a heading inside
+            // one, and SmartList is a built-in filter — Today, Scheduled, Flagged — which
+            // carries a SmartListType instead of a Name and appeared as phantom entries
+            // called "Reminders" that held nothing.
+            Some("List") => lists.extend(list_from_record(record)),
             _ => {}
         }
     }
@@ -575,5 +578,71 @@ mod cloudkit_tests {
         record["fields"]["TitleDocument"]["value"] = json!("!!!not base64!!!");
         let r = reminder_from_record(&record).unwrap();
         assert_eq!(r.title, "Untitled", "showing it beats hiding it");
+    }
+}
+
+/// Tick a CloudKit reminder off, or put it back.
+///
+/// Sends only the fields that change, guarded by the record's change tag, so a reminder
+/// edited on the phone since we read it is refused rather than overwritten.
+pub async fn set_completed_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder: &Reminder,
+    done: bool,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            &reminder.guid,
+            "Reminder",
+            reminder.etag.as_deref(),
+            serde_json::json!({
+                "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" }
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod list_kind_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn record(name: &str, kind: &str, title: Option<&str>) -> Value {
+        let mut fields = serde_json::Map::new();
+        if let Some(t) = title {
+            fields.insert("Name".into(), json!({ "type": "STRING", "value": t }));
+        }
+        json!({ "recordName": name, "recordType": kind, "fields": fields })
+    }
+
+    /// Only records of type List are lists. A ListSection is a heading inside one, and a
+    /// SmartList is a built-in filter carrying SmartListType rather than a Name — mapping
+    /// either produced phantom entries called "Reminders" that held nothing.
+    #[test]
+    fn only_list_records_become_lists() {
+        let zone = vec![
+            record("List/a", "List", Some("GYM")),
+            record("ListSection/b", "ListSection", None),
+            record("SmartList/c", "SmartList", None),
+        ];
+        let kept: Vec<_> = zone
+            .iter()
+            .filter(|r| field::record_type(r).as_deref() == Some("List"))
+            .filter_map(list_from_record)
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].title, "GYM");
+    }
+
+    #[test]
+    fn a_real_list_keeps_its_name() {
+        let l = list_from_record(&record("List/abc", "List", Some("GYM"))).unwrap();
+        assert_eq!(l.title, "GYM");
+        assert_eq!(l.guid, "List/abc");
     }
 }

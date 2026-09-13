@@ -51,6 +51,10 @@ function installStub({ screen, services, twoFactor, calendarFixture }) {
         case "calendar_list": return calendars;
         case "calendar_last_synced": return calendarFixture ? Math.floor(Date.now()/1000) - 120 : null;
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
+        case "reminder_lists": return [];
+        case "reminders_in": return [];
+        case "reminders_last_synced": return Math.floor(Date.now() / 1000);
+        case "reminders_sync": return [0, 0];
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;
         case "auth_send_sms":       return null;

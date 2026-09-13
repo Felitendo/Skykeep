@@ -628,6 +628,58 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- where do List records live? --------------------------------------------
+    // Reminders reference List/<uuid>, but the Reminders zone returns none. Census every
+    // zone in the container rather than guess.
+    println!("\n\x1b[1m── Hunting the List records ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        for zone_name in ["Reminders", "RemindersMigration", "_defaultZone"] {
+            let zc = quince_icloud::cloudkit::ZoneClient::new(
+                client.http(),
+                &ck,
+                "com.apple.reminders",
+                client.service_params(),
+            );
+            match zc.all_records(zone_name, None).await {
+                Err(e) => println!(
+                    "  {zone_name:<20} error: {}",
+                    e.to_string().chars().take(70).collect::<String>()
+                ),
+                Ok((records, _)) => {
+                    let mut census: std::collections::BTreeMap<String, usize> =
+                        std::collections::BTreeMap::new();
+                    for rec in &records {
+                        let kind = rec
+                            .get("recordType")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("(tombstone)");
+                        *census.entry(kind.to_string()).or_default() += 1;
+                    }
+                    let summary: Vec<String> =
+                        census.iter().map(|(k, n)| format!("{k}={n}")).collect();
+                    println!(
+                        "  {zone_name:<20} {} record(s): {}",
+                        records.len(),
+                        summary.join(" ")
+                    );
+
+                    // Show any List record's fields, wherever it turns up.
+                    for rec in &records {
+                        if rec.get("recordType").and_then(|t| t.as_str()) == Some("List") {
+                            let fields: Vec<String> = rec
+                                .get("fields")
+                                .and_then(|f| f.as_object())
+                                .map(|o| o.keys().cloned().collect())
+                                .unwrap_or_default();
+                            println!("    List fields: {}", fields.join(", "));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

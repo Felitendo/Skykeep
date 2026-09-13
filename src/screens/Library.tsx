@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, messageOf } from "../lib/ipc";
 import { CalendarView } from "./CalendarView";
+import { RemindersView } from "./RemindersView";
 
 const NAMES: Record<string, string> = {
   photos: "Photos",
@@ -40,7 +41,7 @@ const NAMES: Record<string, string> = {
 
 /** Services with a real screen behind them. Opening on one of these beats opening on a
  *  placeholder, so selection prefers them. */
-const BUILT = new Set(["calendar"]);
+const BUILT = new Set(["calendar", "reminders"]);
 
 /** What a person actually came for, in the order they'd look for it. */
 const PRIMARY = [
@@ -150,6 +151,8 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
       <main className="content">
         {selected === "calendar" ? (
           <CalendarView />
+        ) : selected === "reminders" ? (
+          <RemindersView />
         ) : (
           <>
         <div className="toolbar">

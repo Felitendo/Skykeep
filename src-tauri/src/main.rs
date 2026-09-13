@@ -43,6 +43,19 @@ struct Data(Mutex<Library>);
 /// Errors cross to the UI as plain sentences a person can act on.
 type UiResult<T> = Result<T, String>;
 
+/// The HTTP client, CloudKit root and query parameters, with the auth lock released before
+/// any network work so a slow sync cannot block the heartbeat or a sign-out.
+async fn cloudkit_context(
+    auth: &State<'_, Auth>,
+) -> Result<(reqwest::Client, String, Vec<(String, String)>), String> {
+    let client = auth.client.lock().await;
+    let root = client
+        .session()
+        .service_url("ckdatabasews")
+        .ok_or("Apple hasn't offered CloudKit for this account.")?;
+    Ok((client.http().clone(), root, client.service_params()))
+}
+
 fn state_dir(app: &tauri::AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
@@ -214,24 +227,17 @@ async fn calendar_list(data: State<'_, Data>) -> UiResult<Vec<Calendar>> {
     library.calendars().map_err(|e| e.to_string())
 }
 
-/// Refresh reminders from Apple. Unlike calendar there is no date window, so one call.
+/// Refresh reminders from Apple.
+///
+/// Reads the CloudKit zone rather than the legacy /rd endpoints: once an account's reminders
+/// have been migrated, those answer with Apple's placeholder instead of the real records.
 #[tauri::command]
-async fn reminders_sync(
-    timezone: String,
-    auth: State<'_, Auth>,
-    data: State<'_, Data>,
-) -> UiResult<(usize, usize)> {
-    let (http, root, params) = {
-        let client = auth.client.lock().await;
-        let root = client
-            .session()
-            .service_url("reminders")
-            .ok_or("Apple hasn't offered a reminders service for this account.")?;
-        (client.http().clone(), root, client.service_params())
-    };
+async fn reminders_sync(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<(usize, usize)> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
     let mut library = data.0.lock().await;
-    quince_icloud::reminders::sync(&http, &root, params, &mut library, &timezone)
+    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, None)
         .await
+        .map(|(lists, count, _)| (lists, count))
         .map_err(|e| e.to_string())
 }
 
@@ -253,25 +259,19 @@ async fn reminders_in(
         .map_err(|e| e.to_string())
 }
 
-/// Tick a reminder off, or put it back. Writes to Apple first, then refreshes locally, so
-/// the interface never shows a state Apple has not accepted.
+/// Tick a reminder off, or put it back.
+///
+/// Writes to Apple first and only then refreshes locally, so the interface never shows a
+/// state Apple has not accepted.
 #[tauri::command]
 async fn reminder_set_done(
     guid: String,
     list_guid: String,
     done: bool,
-    timezone: String,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
-    let (http, root, params) = {
-        let client = auth.client.lock().await;
-        let root = client
-            .session()
-            .service_url("reminders")
-            .ok_or("Apple hasn't offered a reminders service for this account.")?;
-        (client.http().clone(), root, client.service_params())
-    };
+    let (http, root, params) = cloudkit_context(&auth).await?;
 
     let reminder = {
         let library = data.0.lock().await;
@@ -283,13 +283,12 @@ async fn reminder_set_done(
             .ok_or("That reminder is no longer in the local library.")?
     };
 
-    quince_icloud::reminders::set_completed(&http, &root, &params, &reminder, done, &timezone)
+    quince_icloud::reminders::set_completed_cloudkit(&http, &root, params.clone(), &reminder, done)
         .await
         .map_err(|e| e.to_string())?;
 
-    // Re-read from Apple so what we show is what Apple stored, not what we hoped.
     let mut library = data.0.lock().await;
-    quince_icloud::reminders::sync(&http, &root, params, &mut library, &timezone)
+    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, None)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

@@ -30,6 +30,14 @@ export const api = {
     invoke<CalendarEvent[]>("calendar_events", { from, to }),
   calendarList: () => invoke<Calendar[]>("calendar_list"),
   calendarLastSynced: () => invoke<number | null>("calendar_last_synced"),
+
+  remindersSync: () => invoke<[number, number]>("reminders_sync"),
+  reminderLists: () => invoke<ReminderList[]>("reminder_lists"),
+  remindersIn: (listGuid: string, includeDone: boolean) =>
+    invoke<Reminder[]>("reminders_in", { listGuid, includeDone }),
+  remindersLastSynced: () => invoke<number | null>("reminders_last_synced"),
+  reminderSetDone: (guid: string, listGuid: string, done: boolean) =>
+    invoke<void>("reminder_set_done", { guid, listGuid, done }),
 };
 
 /** Tauri rejects with a plain string from our commands; keep it readable either way. */
@@ -58,6 +66,27 @@ export type CalendarEvent = {
 };
 
 export type SyncSummary = { calendars: number; events: number };
+
+export type ReminderList = {
+  guid: string;
+  title: string;
+  colour: string | null;
+  ctag: string | null;
+  sortOrder: number;
+  enabled: boolean;
+};
+
+export type Reminder = {
+  guid: string;
+  listGuid: string;
+  title: string;
+  notes: string | null;
+  dueAt: number | null;
+  /** null while outstanding */
+  completedAt: number | null;
+  priority: number;
+  etag: string | null;
+};
 
 export function messageOf(e: unknown): string {
   if (typeof e === "string") return e;

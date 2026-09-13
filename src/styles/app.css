@@ -466,3 +466,103 @@
 
 /* The content pane holds the grid, so it must not scroll independently. */
 .content:has(.cal) { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---- reminders ------------------------------------------------------------------
+   Apple Reminders: lists on the left, items on the right, a ring that fills when ticked. */
+
+.rem {
+  display: grid;
+  grid-template-columns: 176px 1fr;
+  gap: 20px;
+  height: 100%;
+  min-height: 0;
+}
+
+.rem-lists {
+  overflow-y: auto;
+  padding-right: 4px;
+  border-right: 1px solid var(--separator);
+}
+
+.rem-list {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--r-field);
+  cursor: pointer;
+}
+
+.rem-list:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.rem-list[aria-current="true"] { background: var(--gold-tint); font-weight: 550; }
+.rem-list:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+.rem-list-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rem-items { display: flex; flex-direction: column; min-height: 0; }
+
+.rem-list-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.rem-list-items li {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: start;
+  gap: 10px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--separator);
+}
+
+.rem-list-items li:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+
+/* Apple's ring: an outline that fills with the list's colour when ticked. */
+.tick {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border: 1.5px solid var(--field-edge);
+  border-radius: var(--r-pill);
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.tick:disabled { opacity: 0.5; cursor: progress; }
+.tick:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 2px; }
+.tick-fill { width: 10px; height: 10px; border-radius: var(--r-pill); }
+
+.rem-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rem-title { font-size: var(--t-13); }
+.rem-notes {
+  font-size: var(--t-11);
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rem-due {
+  font-size: var(--t-11);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.is-done .rem-title { color: var(--text-3); text-decoration: line-through; }
+.is-done .rem-notes { color: var(--text-3); }
+
+.content:has(.rem) { display: flex; flex-direction: column; overflow: hidden; }
