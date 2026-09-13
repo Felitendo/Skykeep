@@ -182,6 +182,10 @@ const focused = (page) =>
   await page.getByRole("button", { name: "Calendar" }).click();
   await page.waitForSelector(".cal-grid");
 
+  // Calendar opens on the month, which is the view the grid checks below belong to.
+  const scope = await page.locator('.segment[aria-pressed="true"]').innerText();
+  check("Calendar opens on the month", scope === "Month", scope);
+
   const stops = await page.evaluate(
     () => document.querySelectorAll('.cal-grid button[tabindex="0"]').length
   );

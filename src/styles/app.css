@@ -1619,3 +1619,249 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
 }
 
 .picker-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Scope control ──────────────────────────────────────────────────────────────────────
+   Calendar's Day / Week / Month / Year, as a segmented control: one recessed track with a
+   raised cap over the active segment, which is the macOS shape. */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.segment {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--t-11);
+  font-weight: 510;
+  color: var(--text-2);
+  padding: 3px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 140ms var(--ease), color 140ms var(--ease);
+}
+
+.segment:hover { color: var(--text); }
+
+.segment[aria-pressed="true"] {
+  background: var(--sheet);
+  color: var(--text);
+  font-weight: 590;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14), 0 0 0 0.5px var(--glass-edge);
+}
+
+.segment:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
+
+/* ── Day and week ───────────────────────────────────────────────────────────────────────
+   An hour grid: a gutter of times down the left, a column per day, all-day events in their
+   own row above the hours. Events are placed on the grid's tracks rather than by pixel, so
+   they stay put when the window changes size. */
+.cal-hours-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-plateau);
+  background: var(--bg);
+}
+
+.cal-hours {
+  display: grid;
+  grid-template-columns: 52px repeat(7, minmax(0, 1fr));
+  grid-auto-rows: 44px;
+  /* The head and the all-day row size to their contents; the hours are fixed. */
+  grid-template-rows: auto auto;
+  position: relative;
+}
+
+.cal-hours.is-day { grid-template-columns: 52px minmax(0, 1fr); }
+
+.cal-hours-corner,
+.cal-allday-label {
+  position: sticky;
+  left: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--separator);
+}
+
+.cal-allday-label {
+  font-size: var(--t-11);
+  color: var(--text-3);
+  padding: 4px 6px;
+  text-align: right;
+  border-bottom: 1px solid var(--separator);
+}
+
+.cal-col-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 4px 5px;
+  border: 0;
+  border-left: 1px solid var(--separator);
+  background: var(--bg);
+  font: inherit;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.cal-col-weekday { font-size: var(--t-11); text-transform: uppercase; letter-spacing: 0.4px; }
+
+.cal-col-daynum {
+  font-size: var(--t-17);
+  font-weight: 590;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
+  height: 26px;
+  line-height: 26px;
+  border-radius: var(--r-pill);
+  text-align: center;
+}
+
+.cal-col-head.is-today .cal-col-daynum { background: var(--gold); color: #fff; }
+.cal-col-head.is-selected { box-shadow: inset 0 -2px 0 var(--gold); }
+.cal-col-head:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+
+.cal-allday {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 22px;
+  padding: 2px 3px;
+  border-left: 1px solid var(--separator);
+  border-bottom: 1px solid var(--separator);
+}
+
+.cal-hour-label {
+  position: sticky;
+  left: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--separator);
+  font-size: var(--t-11);
+  color: var(--text-3);
+  text-align: right;
+  padding: 0 6px;
+  /* Sits against the line it names, as a ruler does. */
+  transform: translateY(-7px);
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-hour-cell {
+  border: 0;
+  border-left: 1px solid var(--separator);
+  border-top: 1px solid var(--separator);
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.cal-hour-cell:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.cal-hour-cell:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+
+.cal-timed {
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+  align-self: start;
+  z-index: 2;
+  margin-inline: 3px;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  border-radius: 5px;
+  background: var(--sheet);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16), 0 0 0 0.5px var(--glass-edge);
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.cal-timed-bar { flex: none; width: 3px; border-radius: var(--r-pill); }
+
+.cal-timed-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+  padding-top: 1px;
+}
+
+.cal-timed-title {
+  font-size: var(--t-11);
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-timed-when { font-size: var(--t-11); color: var(--text-2); }
+
+/* ── Year ───────────────────────────────────────────────────────────────────────────────
+   Twelve months at a glance, each one clickable. A day with something on it is marked, so
+   the year reads as a heat map of where the work is. */
+.cal-year {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 14px;
+  padding: 4px 2px;
+}
+
+.cal-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  padding: 6px;
+  border-radius: var(--r-plateau);
+  cursor: pointer;
+}
+
+.cal-mini:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.cal-mini:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+
+.cal-mini-name {
+  font-size: var(--t-13);
+  font-weight: 600;
+  color: var(--gold-strong);
+}
+
+.cal-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px 0;
+}
+
+.cal-mini-weekday {
+  font-size: 9px;
+  color: var(--text-3);
+  text-align: center;
+  padding-bottom: 2px;
+}
+
+.cal-mini-day {
+  font-size: var(--t-11);
+  text-align: center;
+  line-height: 18px;
+  border-radius: var(--r-pill);
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-mini-day.outside { color: transparent; }
+.cal-mini-day.is-today { background: var(--gold); color: #fff; font-weight: 600; }
+.cal-mini-day.has-items { font-weight: 620; color: var(--gold-strong); }
+.cal-mini-day.is-today.has-items { color: #fff; }

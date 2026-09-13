@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, messageOf, type Calendar, type CalendarEvent, type Reminder } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
@@ -84,6 +84,68 @@ function draftFrom(event: CalendarEvent): EventDraft {
   };
 }
 
+/** The rows of a day or week grid. Apple shows the full twenty-four. */
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+
+/** How tall one hour is in the day and week grids. */
+const HOUR_HEIGHT = 44;
+
+/**
+ * Where a timed event sits on the hour grid.
+ *
+ * The grid has a header row, an all-day row and then one row per hour, so an event is
+ * placed against the grid's own tracks rather than by measuring pixels — that way it stays
+ * put when the window resizes.
+ */
+function placement(
+  event: CalendarEvent,
+  day: Date,
+  column: number
+): React.CSSProperties {
+  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime() / 1000;
+  const from = Math.max(event.startsAt, dayStart);
+  const to = Math.min(event.endsAt, dayStart + 86_400);
+  const minutesIn = (from - dayStart) / 60;
+  // A zero-length event still has to be readable, so nothing is thinner than a quarter hour.
+  const minutesLong = Math.max((to - from) / 60, 15);
+  return {
+    gridColumn: column + 2,
+    // Rows: 1 is the column head, 2 is all-day, so hour zero starts at 3.
+    gridRow: "3 / -1",
+    marginTop: `${(minutesIn / 60) * HOUR_HEIGHT}px`,
+    height: `${(minutesLong / 60) * HOUR_HEIGHT}px`,
+  };
+}
+
+/** Apple's four scopes, in Apple's order. */
+const VIEWS = [
+  { key: "day", label: "Day" },
+  { key: "week", label: "Week" },
+  { key: "month", label: "Month" },
+  { key: "year", label: "Year" },
+] as const;
+
+type View = (typeof VIEWS)[number]["key"];
+
+const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+/** The Sunday on or before `d`, which is where Apple starts a week. */
+const startOfWeek = (d: Date) => {
+  const start = midnight(d);
+  start.setDate(start.getDate() - start.getDay());
+  return start;
+};
+
+/** Move a date by one unit of `view`. */
+function step(from: Date, view: View, by: number): Date {
+  const d = new Date(from);
+  if (view === "day") d.setDate(d.getDate() + by);
+  else if (view === "week") d.setDate(d.getDate() + by * 7);
+  else if (view === "month") d.setMonth(d.getMonth() + by);
+  else d.setFullYear(d.getFullYear() + by);
+  return d;
+}
+
 /** The 42 days a month grid shows: the weeks containing the first and last of the month. */
 function gridDays(anchor: Date): Date[] {
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
@@ -109,18 +171,41 @@ export function CalendarView() {
   const { revision } = useSync();
   /** The day whose contents the inspector shows. Defaults to today.  */
   const [selected, setSelected] = useState<Date>(() => new Date(today));
+  /** Day, week, month or year — the scope everything else follows. */
+  const [view, setView] = useState<View>("month");
   /** The event being written, or null when the inspector is just listing. */
   const [draft, setDraft] = useState<EventDraft | null>(null);
   const [busy, setBusy] = useState(false);
 
   const days = useMemo(() => gridDays(anchor), [anchor]);
-  const range = useMemo(
-    () => ({
-      from: startOfDay(days[0]),
-      to: startOfDay(days[41]) + 86_400,
-    }),
-    [days]
-  );
+
+  /** The seven days of the week `anchor` falls in. */
+  const weekDays = useMemo(() => {
+    const start = startOfWeek(anchor);
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      return d;
+    });
+  }, [anchor]);
+
+  // Each view asks Apple for exactly what it shows, so a day view does not fetch a month
+  // and a year view does not fetch it twelve times over.
+  const range = useMemo(() => {
+    if (view === "day") {
+      return { from: startOfDay(anchor), to: startOfDay(anchor) + 86_400 };
+    }
+    if (view === "week") {
+      return { from: startOfDay(weekDays[0]), to: startOfDay(weekDays[6]) + 86_400 };
+    }
+    if (view === "year") {
+      return {
+        from: startOfDay(new Date(anchor.getFullYear(), 0, 1)),
+        to: startOfDay(new Date(anchor.getFullYear(), 11, 31)) + 86_400,
+      };
+    }
+    return { from: startOfDay(days[0]), to: startOfDay(days[41]) + 86_400 };
+  }, [view, anchor, days, weekDays]);
 
   const read = useCallback(async () => {
     // Apple's Calendar shows reminders beside events, which for most people is most of
@@ -309,10 +394,40 @@ export function CalendarView() {
     [write]
   );
 
-  const shift = (months: number) =>
-    setAnchor((a) => new Date(a.getFullYear(), a.getMonth() + months, 1));
+  // The arrows move by whatever is on screen: a day in Day, a week in Week, and so on.
+  const shift = (by: number) =>
+    setAnchor((a) => {
+      const to = step(a, view, by);
+      // In Day and Week the thing being looked at is also the thing selected.
+      if (view === "day" || view === "week") setSelected(to);
+      return to;
+    });
 
-  const monthLabel = anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  /** What the title says, which is different in every view — as it is in Calendar. */
+  const title = useMemo(() => {
+    if (view === "day") {
+      return anchor.toLocaleDateString(undefined, {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      });
+    }
+    if (view === "week") {
+      const [first, last] = [weekDays[0], weekDays[6]];
+      const sameMonth = first.getMonth() === last.getMonth();
+      const left = first.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+      const right = last.toLocaleDateString(
+        undefined,
+        sameMonth ? { day: "numeric" } : { day: "numeric", month: "short" }
+      );
+      return `${left} – ${right} ${last.getFullYear()}`;
+    }
+    if (view === "year") return String(anchor.getFullYear());
+    return anchor.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  }, [view, anchor, weekDays]);
+
+  const monthLabel = title;
 
   return (
     <div className="cal">
@@ -329,12 +444,33 @@ export function CalendarView() {
           <button className="chev" onClick={() => shift(1)} aria-label="Next month">›</button>
         </div>
         <div className="cal-actions">
-          {fetchingMonth && <span className="badge">Fetching this month…</span>}
+          {fetchingMonth && <span className="badge">Fetching…</span>}
+          {/* Calendar's own scope control, in Calendar's own order. */}
+          <div className="segmented" role="group" aria-label="Calendar view">
+            {VIEWS.map((v) => (
+              <button
+                key={v.key}
+                type="button"
+                className="segment"
+                aria-pressed={view === v.key}
+                onClick={() => {
+                  setView(v.key);
+                  setDraft(null);
+                  // Switching scope keeps you where you were looking.
+                  if (v.key === "day" || v.key === "week") setAnchor(new Date(selected));
+                }}
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
       {error && <p className="error" role="alert">{error}</p>}
 
+      {view === "month" && (
+        <>
       <div className="cal-weekdays" aria-hidden="true">
         {weekdayNames().map((name) => (
           <span key={name}>{name}</span>
@@ -451,6 +587,184 @@ export function CalendarView() {
           </div>
         ))}
       </div>
+
+        </>
+      )}
+
+      {view === "year" && (
+        <div className="cal-year" role="grid" aria-label={`${anchor.getFullYear()} calendar`}>
+          {Array.from({ length: 12 }, (_, month) => {
+            const first = new Date(anchor.getFullYear(), month, 1);
+            const cells = gridDays(first);
+            return (
+              <button
+                key={month}
+                type="button"
+                className="cal-mini"
+                aria-label={first.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+                onClick={() => {
+                  setAnchor(first);
+                  setView("month");
+                }}
+              >
+                <span className="cal-mini-name">
+                  {first.toLocaleDateString(undefined, { month: "long" })}
+                </span>
+                <span className="cal-mini-grid" aria-hidden="true">
+                  {weekdayNames().map((name) => (
+                    <span className="cal-mini-weekday" key={name}>
+                      {name.slice(0, 1)}
+                    </span>
+                  ))}
+                  {cells.map((day) => {
+                    const outside = day.getMonth() !== month;
+                    const busyDay = (byDay.get(day.toDateString()) ?? []).length > 0;
+                    return (
+                      <span
+                        key={day.toISOString()}
+                        className={`cal-mini-day${outside ? " outside" : ""}${
+                          sameDay(day, today) ? " is-today" : ""
+                        }${busyDay && !outside ? " has-items" : ""}`}
+                      >
+                        {day.getDate()}
+                      </span>
+                    );
+                  })}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {(view === "day" || view === "week") && (
+        <div className="cal-hours-wrap">
+          <div
+            className={`cal-hours${view === "day" ? " is-day" : ""}`}
+            role="grid"
+            aria-label={`${title} schedule`}
+          >
+            <span className="cal-hours-corner" aria-hidden="true" />
+            {(view === "day" ? [anchor] : weekDays).map((day) => (
+              <button
+                key={`head-${day.toISOString()}`}
+                type="button"
+                className={`cal-col-head${sameDay(day, today) ? " is-today" : ""}${
+                  sameDay(day, selected) ? " is-selected" : ""
+                }`}
+                onClick={() => {
+                  setSelected(day);
+                  setDraft(null);
+                }}
+              >
+                <span className="cal-col-weekday">
+                  {day.toLocaleDateString(undefined, { weekday: "short" })}
+                </span>
+                <span className="cal-col-daynum">{day.getDate()}</span>
+              </button>
+            ))}
+
+            {/* All-day events sit above the hours, as they do in Calendar. */}
+            <span className="cal-allday-label" aria-hidden="true">
+              all-day
+            </span>
+            {(view === "day" ? [anchor] : weekDays).map((day) => (
+              <div className="cal-allday" key={`allday-${day.toISOString()}`}>
+                {(byDay.get(day.toDateString()) ?? [])
+                  .filter((e) => e.kind === "event" && e.event.allDay)
+                  .map((entry) =>
+                    entry.kind === "event" ? (
+                      <button
+                        key={entry.event.guid}
+                        type="button"
+                        className="chip all-day"
+                        style={{
+                          background: colours.get(entry.event.calendarGuid) || "var(--gold)",
+                        }}
+                        onClick={() => {
+                          setSelected(day);
+                          setDraft(draftFrom(entry.event));
+                        }}
+                      >
+                        <span className="chip-title">{entry.event.title}</span>
+                      </button>
+                    ) : null
+                  )}
+              </div>
+            ))}
+
+            {HOURS.map((hour) => (
+              <Fragment key={hour}>
+                <span className="cal-hour-label">
+                  {hour === 0
+                    ? ""
+                    : new Date(2024, 0, 1, hour).toLocaleTimeString(undefined, {
+                        hour: "numeric",
+                      })}
+                </span>
+                {(view === "day" ? [anchor] : weekDays).map((day) => (
+                  <button
+                    key={`${day.toISOString()}-${hour}`}
+                    type="button"
+                    className="cal-hour-cell"
+                    aria-label={`${day.toLocaleDateString(undefined, {
+                      weekday: "long",
+                      day: "numeric",
+                      month: "long",
+                    })} at ${hour}:00`}
+                    onClick={() => {
+                      setSelected(day);
+                      const at = new Date(
+                        day.getFullYear(),
+                        day.getMonth(),
+                        day.getDate(),
+                        hour
+                      );
+                      const startsAt = Math.floor(at.getTime() / 1000);
+                      setDraft({
+                        ...blankEvent(day, calendars[0]?.guid ?? ""),
+                        startsAt,
+                        endsAt: startsAt + 3600,
+                      });
+                    }}
+                  />
+                ))}
+              </Fragment>
+            ))}
+
+            {/* Timed events, laid over the hour grid where they actually fall. */}
+            {(view === "day" ? [anchor] : weekDays).map((day, column) =>
+              (byDay.get(day.toDateString()) ?? [])
+                .filter((e) => e.kind === "event" && !e.event.allDay)
+                .map((entry) =>
+                  entry.kind === "event" ? (
+                    <button
+                      key={`timed-${entry.event.guid}-${column}`}
+                      type="button"
+                      className="cal-timed"
+                      style={placement(entry.event, day, column)}
+                      onClick={() => {
+                        setSelected(day);
+                        setDraft(draftFrom(entry.event));
+                      }}
+                    >
+                      <span
+                        className="cal-timed-bar"
+                        style={{
+                          background: colours.get(entry.event.calendarGuid) || "var(--gold)",
+                        }}
+                      />
+                      <span className="cal-timed-text">
+                        <span className="cal-timed-title">{entry.event.title}</span>
+                        <span className="cal-timed-when">{clockTime(entry.event.startsAt)}</span>
+                      </span>
+                    </button>
+                  ) : null
+                )
+            )}
+          </div>
+        </div>
+      )}
 
       <section
         className="cal-day-panel"

@@ -69,5 +69,49 @@ const collapsed = toggle?.includes("Show") && count === 11;
 const selectsBuilt = selected?.trim() === "Calendar";
 console.log(collapsed ? "PASS collapsed by default" : "FAIL not collapsed by default");
 console.log(selectsBuilt ? "PASS opens on a built screen" : `FAIL opened on ${selected}`);
+
+// ── Calendar's four scopes each render their own view ─────────────────────────────────
+// A scope that only changed a label would pass a screenshot; this checks it changed the view.
+let failures = 0;
+{
+  const page = await ctx.newPage();
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Calendar" }).click();
+  await page.waitForSelector(".cal-grid");
+
+  const scopes = [
+    ["Day", ".cal-hours.is-day"],
+    ["Week", ".cal-hours"],
+    ["Year", ".cal-year"],
+    ["Month", ".cal-grid"],
+  ];
+  for (const [label, selector] of scopes) {
+    await page.getByRole("button", { name: label, exact: true }).click();
+    await page.waitForSelector(selector, { timeout: 4000 });
+    const shown = await page.locator(selector).count();
+    console.log(shown > 0 ? `PASS ${label} renders ${selector}` : `FAIL ${label} did not render ${selector}`);
+    if (shown === 0) failures++;
+  }
+
+  // Week shows seven day columns; Day shows one. A label change alone would not.
+  await page.getByRole("button", { name: "Week", exact: true }).click();
+  await page.waitForSelector(".cal-hours");
+  const week = await page.locator(".cal-col-head").count();
+  console.log(week === 7 ? "PASS Week shows seven days" : `FAIL Week showed ${week} columns`);
+  if (week !== 7) failures++;
+
+  await page.getByRole("button", { name: "Day", exact: true }).click();
+  const day = await page.locator(".cal-col-head").count();
+  console.log(day === 1 ? "PASS Day shows one" : `FAIL Day showed ${day} columns`);
+  if (day !== 1) failures++;
+
+  await page.getByRole("button", { name: "Year", exact: true }).click();
+  await page.waitForSelector(".cal-year");
+  const months = await page.locator(".cal-mini").count();
+  console.log(months === 12 ? "PASS Year shows twelve months" : `FAIL Year showed ${months} months`);
+  if (months !== 12) failures++;
+  await page.close();
+}
+
 await b.close();
-process.exitCode = collapsed && selectsBuilt ? 0 : 1;
+process.exitCode = collapsed && selectsBuilt && failures === 0 ? 0 : 1;
