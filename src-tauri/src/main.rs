@@ -465,6 +465,111 @@ async fn reminder_list_delete(
     resync_reminders(&http, &root, params, &data).await
 }
 
+/// Re-read notes after a write, so what is on screen is what Apple stored.
+async fn resync_notes(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    data: &State<'_, Data>,
+) -> Result<(), String> {
+    let mut library = data.0.lock().await;
+    let since = library.sync_token("notes").map_err(|e| e.to_string())?;
+    quince_icloud::notes::sync_cloudkit(http, root, params, &mut library, since.as_deref())
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// One note, by record name. `None` once Apple no longer has it.
+async fn note_by_guid(data: &State<'_, Data>, guid: &str) -> Result<Note, String> {
+    let library = data.0.lock().await;
+    library
+        .notes_in(None)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|n| n.guid == guid)
+        .ok_or_else(|| "That note is no longer in the local library.".into())
+}
+
+/// Save a note's body.
+///
+/// Writes to Apple first and re-reads after, so the editor never shows a version Apple has
+/// not accepted. A note whose document cannot be rewritten safely is refused with the
+/// reason rather than flattened.
+#[tauri::command]
+async fn note_save(
+    guid: String,
+    body: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let note = note_by_guid(&data, &guid).await?;
+    if !note.editable {
+        return Err(
+            "This note holds formatting Quince can't rewrite safely, so it stays read-only.".into(),
+        );
+    }
+    quince_icloud::notes::edit_cloudkit(&http, &root, params.clone(), &note, &body)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await
+}
+
+/// Write a new note and return the record name Apple gave it.
+#[tauri::command]
+async fn note_create(
+    folder_guid: Option<String>,
+    body: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let guid = quince_icloud::notes::create_cloudkit(
+        &http,
+        &root,
+        params.clone(),
+        folder_guid.as_deref(),
+        &body,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await?;
+    Ok(guid)
+}
+
+#[tauri::command]
+async fn note_delete(guid: String, auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let note = note_by_guid(&data, &guid).await?;
+    quince_icloud::notes::delete_cloudkit(&http, &root, params.clone(), &note)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await
+}
+
+/// Move a note into a folder, or out of every folder when `folder_guid` is absent.
+#[tauri::command]
+async fn note_move(
+    guid: String,
+    folder_guid: Option<String>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let note = note_by_guid(&data, &guid).await?;
+    quince_icloud::notes::move_cloudkit(
+        &http,
+        &root,
+        params.clone(),
+        &note,
+        folder_guid.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await
+}
+
 #[tauri::command]
 async fn note_folders(data: State<'_, Data>) -> UiResult<Vec<NoteFolder>> {
     let library = data.0.lock().await;
@@ -618,6 +723,10 @@ fn main() {
             reminder_list_rename,
             reminder_list_delete,
             note_folders,
+            note_save,
+            note_create,
+            note_delete,
+            note_move,
             notes_in,
             contacts_list,
             drive_sync_folder,

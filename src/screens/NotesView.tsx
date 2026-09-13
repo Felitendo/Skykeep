@@ -33,6 +33,10 @@ export function NotesView() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { revision } = useSync();
+  /** The body being typed, held apart from the note until it is saved. */
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const read = useCallback(async () => {
     const [found, list] = await Promise.all([
@@ -60,6 +64,28 @@ export function NotesView() {
     };
   }, [read, revision]);
 
+  /**
+   * Every write goes to Apple first and the library is re-read after, so nothing on screen
+   * is a guess about what was stored.
+   */
+  const write = useCallback(
+    async (run: () => Promise<void>) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await run();
+        await read();
+        return true;
+      } catch (e) {
+        setError(messageOf(e));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [read]
+  );
+
   // Keep a note open across refreshes where possible; fall back to the first.
   useEffect(() => {
     if (notes.length === 0) return setOpenGuid(null);
@@ -72,6 +98,56 @@ export function NotesView() {
     () => notes.find((n) => n.guid === openGuid) ?? null,
     [notes, openGuid]
   );
+
+  // A different note means a different draft. Switching away from unsaved typing would
+  // otherwise carry it into the next note and save it over that one.
+  useEffect(() => {
+    setDraft(null);
+    setSaved(false);
+  }, [openGuid]);
+
+  const dirty = draft !== null && open !== null && draft !== (open.body ?? "");
+
+  const save = useCallback(async () => {
+    if (!open || draft === null || !dirty) return;
+    const body = draft;
+    if (await write(() => api.noteSave(open.guid, body))) {
+      setDraft(null);
+      setSaved(true);
+    }
+  }, [open, draft, dirty, write]);
+
+  const create = useCallback(async () => {
+    const guid = await api
+      .noteCreate(folder === ALL ? null : folder, "New Note\n")
+      .catch((e) => {
+        setError(messageOf(e));
+        return null;
+      });
+    if (guid === null) return;
+    await read();
+    setOpenGuid(guid);
+  }, [folder, read]);
+
+  const remove = useCallback(async () => {
+    if (!open) return;
+    await write(() => api.noteDelete(open.guid));
+  }, [open, write]);
+
+  const moveTo = useCallback(
+    async (guid: string) => {
+      if (!open) return;
+      await write(() => api.noteMove(open.guid, guid === ALL ? null : guid));
+    },
+    [open, write]
+  );
+
+  // A save confirmation is a moment, not a state.
+  useEffect(() => {
+    if (!saved) return undefined;
+    const timer = window.setTimeout(() => setSaved(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [saved]);
 
   return (
     <div className="notes">
@@ -102,6 +178,11 @@ export function NotesView() {
             <span className="badge">
               {notes.length} {notes.length === 1 ? "note" : "notes"}
             </span>
+          </div>
+          <div className="cal-actions">
+            <button className="quiet" onClick={() => void create()} disabled={busy}>
+              New note
+            </button>
           </div>
         </header>
 
@@ -163,8 +244,62 @@ export function NotesView() {
               {/* Apple derives a note's title from its first line, so the body already
                   contains it. Rendering both shows the same sentence twice. */}
               {!bodyRepeatsTitle(open) && <h2>{open.title}</h2>}
-              <p className="note-when">{when(open.modifiedAt)}</p>
-              <pre className="note-text">{open.body ?? ""}</pre>
+
+              <div className="note-bar">
+                <p className="note-when">
+                  {saved ? "Saved" : dirty ? "Unsaved changes" : when(open.modifiedAt)}
+                </p>
+                <div className="note-bar-actions">
+                  <select
+                    value={open.folderGuid ?? ALL}
+                    onChange={(e) => void moveTo(e.target.value)}
+                    disabled={busy}
+                    aria-label={`Folder for ${open.title}`}
+                  >
+                    <option value={ALL}>No folder</option>
+                    {folders.map((f) => (
+                      <option key={f.guid} value={f.guid}>
+                        {f.title}
+                      </option>
+                    ))}
+                  </select>
+                  {open.editable && (
+                    <button className="quiet" onClick={() => void save()} disabled={!dirty || busy}>
+                      {busy ? "Saving…" : "Save"}
+                    </button>
+                  )}
+                  <button className="quiet danger" onClick={() => void remove()} disabled={busy}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+
+              {open.editable ? (
+                <textarea
+                  className="note-text"
+                  aria-label={`Body of ${open.title}`}
+                  value={draft ?? open.body ?? ""}
+                  disabled={busy}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Apple's own shortcut, and the one a keyboard user reaches for.
+                    if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                      e.preventDefault();
+                      void save();
+                    }
+                  }}
+                  onBlur={() => void save()}
+                  spellCheck
+                />
+              ) : (
+                <>
+                  <pre className="note-text">{open.body ?? ""}</pre>
+                  <p className="note-readonly">
+                    This note holds formatting Quince can't rewrite without losing it, so it
+                    stays read-only here. Editing it on an Apple device is safe.
+                  </p>
+                </>
+              )}
             </>
           )
         ) : (

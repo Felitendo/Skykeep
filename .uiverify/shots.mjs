@@ -52,16 +52,16 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
     { guid: "n1", folderGuid: "f1", title: "Curtains",
       snippet: "Bathroom accessories like mirror holder…",
       body: "Curtains\nBathroom accessories like mirror holder, soap holder, shampoo, clothes hanger\nFan\nwall clock\nBed\nDining table\nTea filter\nKnife\nWashing Machine cover",
-      locked: false, pinned: false, createdAt: null, modifiedAt: 1788500000, etag: null },
+      locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1788500000, etag: null },
     { guid: "n2", folderGuid: "f1", title: "🔴 UNIT 1: SOFTWARE TESTING METHODOLOGIES",
       snippet: "📌 SECTION A: 2-MARK HIGH-YIELD…",
       body: "🔴 UNIT 1: SOFTWARE TESTING METHODOLOGIES\n\n📌 SECTION A: 2-MARK HIGH-YIELD QUESTIONS\n\nSoftware testing is the process of evaluating a system to find whether it satisfies the specified requirements, and to detect the differences between expected and actual results.",
-      locked: false, pinned: true, createdAt: null, modifiedAt: 1787900000, etag: null },
+      locked: false, editable: true, pinned: true, createdAt: null, modifiedAt: 1787900000, etag: null },
     { guid: "n3", folderGuid: "f1",
       title: "These sources outline the fundamental principles and methodologies",
       snippet: "of **Software Testing Methodologies…",
       body: "These sources outline the fundamental principles and methodologies of **Software Testing Methodologies (CSEN3311)**, emphasizing its evolution from simple debugging to a structured, process-oriented discipline. The material details the **Software Testing Life Cycle (STLC)**, covering essential phases from initial planning and test design to execution and post-implementation review.",
-      locked: false, pinned: false, createdAt: null, modifiedAt: 1787800000, etag: null },
+      locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1787800000, etag: null },
   ];
   const contactList = !contactsFixture ? [] : [
     { guid: "c1", firstName: "Zoya", lastName: "Ahuja", company: null, isCompany: false,
@@ -137,6 +137,8 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
           return null;
         case "reminders_smart": return !remindersFixture ? [] : reminderItems.filter(r => !r.completedAt);
         case "note_folders": return !notesFixture ? [] : noteFolders;
+        case "note_save": case "note_delete": case "note_move": return null;
+        case "note_create": return "Note/new";
         case "notes_in": return !notesFixture ? [] : noteList;
         case "contacts_list": return !contactsFixture ? [] : contactList;
         case "drive_children": return !driveFixture ? [] : driveItems;

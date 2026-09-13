@@ -988,6 +988,58 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- can a note be saved without damaging it? -------------------------------
+    // Editing a note means rewriting Apple's document while keeping the version vectors,
+    // folder links and merge state around the text. This checks, for every real note on the
+    // account, whether putting the text back exactly as it came out reproduces the original
+    // bytes. Where it does, a save is safe. Read-only — nothing is sent to Apple.
+    println!("\n\x1b[1m── Notes: is every note safe to edit? ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.notes",
+            client.service_params(),
+        );
+        if let Ok((records, _)) = zc.all_records("Notes", None).await {
+            let (mut safe, mut refused) = (0, 0);
+            for rec in records
+                .iter()
+                .filter(|r| r.get("recordType").and_then(|t| t.as_str()) == Some("Note"))
+            {
+                let Some(encoded) = rec
+                    .pointer("/fields/TextDataEncrypted/value")
+                    .and_then(|v| v.as_str())
+                else {
+                    continue;
+                };
+                let title = quince_icloud::cloudkit::field::document_text(rec, "TitleEncrypted")
+                    .unwrap_or_else(|| "(untitled)".into());
+                let title: String = title.chars().take(44).collect();
+                let Some(raw) = quince_icloud::ckdocument::debug_inflate(encoded) else {
+                    println!("  \x1b[33mSKIP\x1b[0m {title:<46} could not decompress");
+                    refused += 1;
+                    continue;
+                };
+                let text = quince_icloud::ckdocument::text_from_bytes(&raw).unwrap_or_default();
+                match quince_icloud::ckdocument::replace_text(&raw, &text) {
+                    Some(rebuilt) if rebuilt == raw => {
+                        println!(
+                            "  \x1b[32mSAFE\x1b[0m {title:<46} {} byte(s) reproduced exactly",
+                            raw.len()
+                        );
+                        safe += 1;
+                    }
+                    _ => {
+                        println!("  \x1b[33mREAD-ONLY\x1b[0m {title:<41} shape not reproducible");
+                        refused += 1;
+                    }
+                }
+            }
+            println!("\n  {safe} note(s) editable, {refused} left read-only");
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

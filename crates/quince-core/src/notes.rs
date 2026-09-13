@@ -25,7 +25,19 @@ pub struct Note {
     pub pinned: bool,
     pub created_at: Option<i64>,
     pub modified_at: Option<i64>,
+    /// Whether saving an edit would preserve the note.
+    ///
+    /// Apple's document carries version vectors and merge state around the text. Where that
+    /// document can be reproduced byte for byte, an edit is a safe surgical swap; where it
+    /// cannot, writing would flatten everything else in it, so the note stays read-only and
+    /// the interface says why.
+    #[serde(default = "yes")]
+    pub editable: bool,
     pub etag: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn now() -> i64 {
@@ -59,13 +71,14 @@ impl Library {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO notes (guid, folder_guid, title, snippet, body, locked, pinned,
-                                    created_at, modified_at, etag, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                    created_at, modified_at, editable, etag, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT(guid) DO UPDATE SET
                    folder_guid = excluded.folder_guid, title = excluded.title,
                    snippet = excluded.snippet, body = excluded.body,
                    locked = excluded.locked, pinned = excluded.pinned,
                    created_at = excluded.created_at, modified_at = excluded.modified_at,
+                   editable = excluded.editable,
                    etag = excluded.etag, updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -80,6 +93,7 @@ impl Library {
                     i64::from(n.pinned),
                     n.created_at,
                     n.modified_at,
+                    i64::from(n.editable),
                     n.etag,
                     stamp
                 ])?;
@@ -121,7 +135,7 @@ impl Library {
     pub fn notes_in(&self, folder_guid: Option<&str>) -> Result<Vec<Note>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, folder_guid, title, snippet, body, locked, pinned,
-                    created_at, modified_at, etag
+                    created_at, modified_at, editable, etag
              FROM notes
              WHERE ?1 IS NULL OR folder_guid = ?1
              ORDER BY pinned DESC, modified_at DESC, title",
@@ -137,7 +151,8 @@ impl Library {
                 pinned: row.get::<_, i64>(6)? != 0,
                 created_at: row.get(7)?,
                 modified_at: row.get(8)?,
-                etag: row.get(9)?,
+                editable: row.get::<_, i64>(9)? != 0,
+                etag: row.get(10)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -167,6 +182,7 @@ mod tests {
             pinned,
             created_at: Some(1),
             modified_at: Some(modified),
+            editable: true,
             etag: None,
         }
     }

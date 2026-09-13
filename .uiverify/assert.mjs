@@ -23,6 +23,8 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "reminder_list_create" || cmd === "reminder_list_rename" || cmd === "reminder_list_delete") return null;
       if (cmd === "note_folders") return [];
       if (cmd === "notes_in") return [];
+      if (cmd === "note_save" || cmd === "note_delete" || cmd === "note_move") return null;
+      if (cmd === "note_create") return "Note/new";
       if (cmd === "contacts_list") return [];
       if (cmd === "drive_children") return [];
       if (cmd === "drive_sync_folder") return 0;

@@ -875,6 +875,59 @@
   max-width: 68ch;
 }
 
+/* The editor is the same surface as the reader, with no border and no field chrome: typing
+   in a note should feel like writing on the page, which is how Apple's own editor reads. */
+textarea.note-text {
+  width: 100%;
+  flex: 1;
+  min-height: 40vh;
+  resize: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+}
+
+textarea.note-text:focus {
+  outline: none;
+}
+
+textarea.note-text:disabled {
+  color: var(--text-2);
+}
+
+.note-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.note-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.note-bar-actions select {
+  font-size: var(--t-11);
+  padding: 3px 6px;
+  border-radius: var(--r-field);
+  border: 0.5px solid var(--field-edge);
+  background: var(--field);
+  color: var(--text);
+}
+
+.quiet.danger { color: var(--danger); }
+
+.note-readonly {
+  margin: 14px 0 0;
+  max-width: 68ch;
+  font-size: var(--t-11);
+  color: var(--text-3);
+}
+
 
 /* Apple gives Notes three columns; our service sidebar already takes one, so these have to
    earn their width. Folders are few and short, the list carries two lines per row, and the

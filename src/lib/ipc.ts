@@ -81,6 +81,12 @@ export const api = {
 
   noteFolders: () => invoke<NoteFolder[]>("note_folders"),
   notesIn: (folderGuid: string | null) => invoke<Note[]>("notes_in", { folderGuid }),
+  noteSave: (guid: string, body: string) => invoke<void>("note_save", { guid, body }),
+  noteCreate: (folderGuid: string | null, body: string) =>
+    invoke<string>("note_create", { folderGuid, body }),
+  noteDelete: (guid: string) => invoke<void>("note_delete", { guid }),
+  noteMove: (guid: string, folderGuid: string | null) =>
+    invoke<void>("note_move", { guid, folderGuid }),
 
   contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
 
@@ -162,6 +168,8 @@ export type Note = {
   body: string | null;
   /** Locked by its owner, so Apple holds it encrypted and there is nothing to show. */
   locked: boolean;
+  /** False when Apple's document can't be rewritten without losing what surrounds the text. */
+  editable: boolean;
   pinned: boolean;
   createdAt: number | null;
   modifiedAt: number | null;

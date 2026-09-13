@@ -179,4 +179,13 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE reminders ADD COLUMN recur_frequency INTEGER;
     ALTER TABLE reminders ADD COLUMN recur_interval INTEGER;
     "#,
+    // 9 — whether a note can be saved without damage.
+    //
+    // A note body is Apple's document protobuf: text surrounded by version vectors, folder
+    // links and merge state. Saving means rewriting that document in place. Where the
+    // document cannot be reproduced byte for byte, this app will not write it, and the
+    // interface has to be able to say so before someone starts typing rather than after.
+    r#"
+    ALTER TABLE notes ADD COLUMN editable INTEGER NOT NULL DEFAULT 1;
+    "#,
 ];

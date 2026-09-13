@@ -8,7 +8,7 @@
 //! folder names are bare UTF-8. One decoder handles both.
 
 use crate::cloudkit::{field, ZoneClient};
-use crate::Result;
+use crate::{Error, Result};
 use quince_core::notes::{Note, NoteFolder};
 use serde_json::Value;
 
@@ -23,10 +23,33 @@ fn folder_from_record(record: &Value) -> Option<NoteFolder> {
     })
 }
 
+/// Whether this note's document can be rewritten without losing anything.
+///
+/// Apple's body is not only text: version vectors, folder links and per-device merge state
+/// sit around it. The test is exact — take the text out, put the same text back, and the
+/// bytes must come back identical. When they do, an edit is a surgical swap and everything
+/// else survives. When they do not, there is something in this document the code does not
+/// model, and saving would flatten it, so the note stays read-only.
+fn can_rewrite(record: &Value) -> bool {
+    let Some(encoded) = record
+        .pointer("/fields/TextDataEncrypted/value")
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    // Compares the compressed payload's own bytes, not a decoded string: the check has to
+    // cover whatever whitespace the note really ends with, which reading it as text would
+    // quietly trim away.
+    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim())
+        .ok()
+        .is_some_and(|raw| crate::ckdocument::is_rewritable(&raw))
+}
+
 fn note_from_record(record: &Value) -> Option<Note> {
     let guid = field::record_name(record)?;
     let title = field::document_text(record, "TitleEncrypted");
     let body = field::document_text(record, "TextDataEncrypted");
+    let editable = body.is_some() && can_rewrite(record);
 
     Some(Note {
         guid,
@@ -41,6 +64,7 @@ fn note_from_record(record: &Value) -> Option<Note> {
         pinned: false, // carried on the per-user record, applied below
         created_at: field::timestamp_seconds(record, "CreationDate"),
         modified_at: field::timestamp_seconds(record, "ModificationDate"),
+        editable,
         etag: record
             .get("recordChangeTag")
             .and_then(Value::as_str)
@@ -172,6 +196,194 @@ pub fn apply_cloudkit(
     }
     library.mark_synced("notes", token.as_deref())?;
     Ok((folders.len(), notes.len(), token))
+}
+
+/// Milliseconds since the epoch, which is how CloudKit writes timestamps.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Apple's own rule for a note's title and its preview: the first line is the title, and
+/// what follows it is the snippet.
+///
+/// Deriving both here rather than asking the interface for them is what keeps a note saved
+/// from this app looking, in the list on a phone, exactly like one typed on the phone.
+#[must_use]
+pub fn title_and_snippet(body: &str) -> (String, String) {
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let title = lines.next().unwrap_or_default().to_string();
+    let snippet = lines.next().unwrap_or_default().to_string();
+    (title, snippet)
+}
+
+/// Save a new body onto an existing note.
+///
+/// The document is rewritten in place against whatever Apple currently holds, not against
+/// the local copy: the note may have moved on since the last sync, and the version vectors
+/// and merge state inside it belong to that newer version. Refuses outright rather than
+/// writing a document it cannot reproduce, because the failure mode of guessing here is
+/// losing the note's history.
+pub async fn edit_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    note: &Note,
+    body: &str,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+
+    let current = client
+        .lookup_record(ZONE, &note.guid)
+        .await?
+        .ok_or_else(|| Error::Protocol("Apple no longer has that note.".into()))?;
+
+    let encoded = current
+        .pointer("/fields/TextDataEncrypted/value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Protocol("That note has no body Apple will let us read.".into()))?;
+
+    let rewritten = crate::ckdocument::replace_text_in_base64(encoded, body).ok_or_else(|| {
+        Error::Protocol(
+            "This note holds formatting Quince can't rewrite safely, so it was left unchanged."
+                .into(),
+        )
+    })?;
+
+    let (title, snippet) = title_and_snippet(body);
+    let tag = current
+        .get("recordChangeTag")
+        .and_then(Value::as_str)
+        .or(note.etag.as_deref());
+
+    client
+        .update_record(
+            ZONE,
+            &note.guid,
+            "Note",
+            tag,
+            serde_json::json!({
+                "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": rewritten },
+                "TitleEncrypted": {
+                    "type": "ENCRYPTED_BYTES",
+                    "value": crate::ckdocument::bare_text_to_base64(&title),
+                },
+                "SnippetEncrypted": {
+                    "type": "ENCRYPTED_BYTES",
+                    "value": crate::ckdocument::bare_text_to_base64(&snippet),
+                },
+                "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Write a new note, optionally into a folder.
+///
+/// Returns the record name Apple will know it by, so the caller can open it without waiting
+/// for the next sync.
+pub async fn create_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    folder_guid: Option<&str>,
+    body: &str,
+) -> Result<String> {
+    if body.trim().is_empty() {
+        return Err(Error::Protocol("a note needs something in it".into()));
+    }
+
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let record_name = format!("Note/{}", uuid::Uuid::new_v4().to_string().to_uppercase());
+    let stamp = now_millis();
+    let (title, snippet) = title_and_snippet(body);
+
+    let mut fields = serde_json::json!({
+        "TextDataEncrypted": {
+            "type": "ENCRYPTED_BYTES",
+            "value": crate::ckdocument::text_to_base64(body),
+        },
+        "TitleEncrypted": {
+            "type": "ENCRYPTED_BYTES",
+            "value": crate::ckdocument::bare_text_to_base64(&title),
+        },
+        "SnippetEncrypted": {
+            "type": "ENCRYPTED_BYTES",
+            "value": crate::ckdocument::bare_text_to_base64(&snippet),
+        },
+        "CreationDate": { "type": "TIMESTAMP", "value": stamp },
+        "ModificationDate": { "type": "TIMESTAMP", "value": stamp },
+    });
+    if let Some(folder) = folder_guid {
+        fields["Folder"] = client.reference_to(ZONE, folder);
+    }
+
+    client
+        .create_record(ZONE, &record_name, "Note", fields)
+        .await?;
+    Ok(record_name)
+}
+
+/// Move a note into a folder, or out of every folder.
+pub async fn move_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    note: &Note,
+    folder_guid: Option<&str>,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let folder = match folder_guid {
+        Some(guid) => client.reference_to(ZONE, guid),
+        // CloudKit clears a reference by writing an explicit null, not by omitting it.
+        None => Value::Null,
+    };
+    client
+        .update_record(
+            ZONE,
+            &note.guid,
+            "Note",
+            note.etag.as_deref(),
+            serde_json::json!({
+                "Folder": folder,
+                "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Delete a note.
+///
+/// Apple keeps the `Note` record and marks the per-user record deleted instead, which is
+/// how a note disappears from every device while its history stays recoverable. Writing the
+/// flag on the note itself would be a different, harsher thing.
+pub async fn delete_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    note: &Note,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let record_name = format!(
+        "Note_UserSpecific/{}",
+        uuid::Uuid::new_v4().to_string().to_uppercase()
+    );
+    client
+        .create_record(
+            ZONE,
+            &record_name,
+            "Note_UserSpecific",
+            serde_json::json!({
+                "Note": client.reference_to(ZONE, &note.guid),
+                "Deleted": { "type": "NUMBER_INT64", "value": 1 },
+                "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+            }),
+        )
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -394,5 +606,249 @@ mod tests {
         let stored = library.notes_in(None).unwrap();
         assert_eq!(stored.len(), 1);
         assert!(stored[0].folder_guid.is_none());
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn note(guid: &str) -> Note {
+        Note {
+            guid: guid.into(),
+            folder_guid: Some("Folder/a".into()),
+            title: "Curtains".into(),
+            snippet: None,
+            body: Some("Curtains\nmeasure the bay window".into()),
+            locked: false,
+            pinned: false,
+            created_at: None,
+            modified_at: None,
+            editable: true,
+            etag: Some("tag".into()),
+        }
+    }
+
+    /// A document shaped like the real ones: text surrounded by Apple's merge state.
+    fn document(text: &str) -> String {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        use std::io::Write;
+        fn framed(tag: u8, payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![(tag << 3) | 2];
+            let mut len = payload.len();
+            loop {
+                let mut byte = (len & 0x7F) as u8;
+                len >>= 7;
+                if len != 0 {
+                    byte |= 0x80;
+                }
+                out.push(byte);
+                if len == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(payload);
+            out
+        }
+        // Version-vector siblings alongside the text, which a save must not disturb.
+        let mut note = framed(2, text.as_bytes());
+        note.extend(framed(3, &[0x08, 0x01, 0x10, 0x83, 0x8d, 0x02]));
+        let proto = framed(2, &framed(3, &note));
+
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&proto).unwrap();
+        B64.encode(gz.finish().unwrap())
+    }
+
+    async fn server(existing: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{
+                    "recordName": "Note/1",
+                    "recordType": "Note",
+                    "recordChangeTag": "fresh",
+                    "fields": {
+                        "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": document(existing) }
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Note/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn sent(server: &MockServer) -> Value {
+        let requests = server.received_requests().await.unwrap();
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/modify"))
+            .expect("a modify was sent");
+        serde_json::from_slice::<Value>(&modify.body).unwrap()["operations"][0]["record"].clone()
+    }
+
+    #[tokio::test]
+    async fn an_edit_rewrites_the_body_in_place() {
+        let server = server("Curtains\nmeasure the bay window").await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            "Curtains\nmeasure the bay window\norder the rail",
+        )
+        .await
+        .unwrap();
+
+        let record = sent(&server).await;
+        let written = record["fields"]["TextDataEncrypted"]["value"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            crate::ckdocument::text_from_base64(written).as_deref(),
+            Some("Curtains\nmeasure the bay window\norder the rail")
+        );
+        // The version vector alongside the text has to have come through the save.
+        let raw = crate::ckdocument::debug_inflate(written).unwrap();
+        assert!(
+            crate::ckdocument::debug_tree(&raw, 6)
+                .iter()
+                .any(|line| line.contains("3: message")),
+            "Apple's merge state must survive an edit"
+        );
+    }
+
+    /// The change tag comes from what Apple holds now, not from the local copy, so an edit
+    /// applies to the current version rather than racing a change made on a phone.
+    #[tokio::test]
+    async fn an_edit_uses_the_change_tag_apple_just_gave_us() {
+        let server = server("before").await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            "after",
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&server).await["recordChangeTag"], "fresh");
+    }
+
+    /// Apple's list shows the first line as the title and the next as the preview.
+    #[test]
+    fn the_first_line_is_the_title() {
+        assert_eq!(
+            title_and_snippet("Shopping\n\nmilk and bread\neggs"),
+            ("Shopping".into(), "milk and bread".into())
+        );
+        assert_eq!(
+            title_and_snippet("  just one line  "),
+            ("just one line".into(), String::new())
+        );
+        assert_eq!(title_and_snippet(""), (String::new(), String::new()));
+    }
+
+    #[tokio::test]
+    async fn an_empty_note_is_refused_before_anything_is_sent() {
+        let server = server("x").await;
+        let outcome = create_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            None,
+            "   \n  ",
+        )
+        .await;
+        assert!(outcome.is_err());
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "nothing should reach Apple"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_note_carries_its_folder_and_a_readable_body() {
+        let server = server("x").await;
+        let name = create_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            Some("Folder/a"),
+            "Packing\npassport",
+        )
+        .await
+        .unwrap();
+        assert!(name.starts_with("Note/"));
+
+        let record = sent(&server).await;
+        assert_eq!(
+            record["fields"]["Folder"]["value"]["recordName"],
+            "Folder/a"
+        );
+        assert_eq!(
+            crate::ckdocument::text_from_base64(
+                record["fields"]["TextDataEncrypted"]["value"]
+                    .as_str()
+                    .unwrap()
+            )
+            .as_deref(),
+            Some("Packing\npassport")
+        );
+        // The title Apple shows in its list is bare text, not a wrapped document.
+        assert_eq!(
+            crate::ckdocument::text_from_base64(
+                record["fields"]["TitleEncrypted"]["value"]
+                    .as_str()
+                    .unwrap()
+            )
+            .as_deref(),
+            Some("Packing")
+        );
+    }
+
+    /// Deleting writes the per-user record Apple uses, leaving the note itself intact.
+    #[tokio::test]
+    async fn deleting_marks_the_per_user_record() {
+        let server = server("x").await;
+        delete_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+        )
+        .await
+        .unwrap();
+        let record = sent(&server).await;
+        assert_eq!(record["recordType"], "Note_UserSpecific");
+        assert_eq!(record["fields"]["Deleted"]["value"], 1);
+        assert_eq!(record["fields"]["Note"]["value"]["recordName"], "Note/1");
+    }
+
+    #[tokio::test]
+    async fn moving_out_of_every_folder_clears_the_reference() {
+        let server = server("x").await;
+        move_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&server).await["fields"]["Folder"], Value::Null);
     }
 }

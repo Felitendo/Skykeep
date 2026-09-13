@@ -190,6 +190,16 @@ pub fn text_to_base64(text: &str) -> String {
     B64.encode(gzip(&document_bytes(text)))
 }
 
+/// Encode text the way Apple stores a note's title and snippet: gzipped UTF-8, with no
+/// document wrapper around it.
+///
+/// The decoder already falls back to this shape on the way in; writing the wrapped form
+/// here instead would put protobuf framing into the title a phone displays.
+#[must_use]
+pub fn bare_text_to_base64(text: &str) -> String {
+    B64.encode(gzip(text.as_bytes()))
+}
+
 /// A length-delimited protobuf field: `(tag << 3) | 2`, then the length, then the payload.
 fn length_delimited(tag: u64, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 4);
@@ -228,6 +238,198 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     // Writing to an in-memory buffer cannot fail.
     let _ = encoder.write_all(bytes);
     encoder.finish().unwrap_or_default()
+}
+
+/// Rewrite the text inside an existing document, leaving every other field exactly as it
+/// was.
+///
+/// A note body is not just its text. Around it Apple keeps version vectors, folder links
+/// and per-device merge state, and the earlier encoder — which builds the smallest document
+/// Apple will read — would have replaced all of it with a bare string. Saving an edit that
+/// way silently throws away everything the note knew about itself.
+///
+/// So this edits in place: walk the message, swap the one field that holds the text, copy
+/// every other byte through untouched.
+///
+/// Returns `None` when the document is not one this understands well enough to rewrite,
+/// which is the point. A note whose shape cannot be reproduced exactly is left alone rather
+/// than flattened, and the interface says so instead of pretending the save worked.
+#[must_use]
+pub fn replace_text(original: &[u8], text: &str) -> Option<Vec<u8>> {
+    let plain = inflate(original)?;
+    let current = field_at(&plain, TEXT_PATH)?;
+
+    // The proof, before anything is written: putting the text back exactly as it came out
+    // has to reproduce the original byte for byte. If it does, every other field survived
+    // the walk, and swapping the text is safe. If it does not, this document has something
+    // in it this code does not model, and it is not ours to rewrite.
+    if rewrite(&plain, TEXT_PATH, current)? != plain {
+        return None;
+    }
+
+    rewrite(&plain, TEXT_PATH, text.as_bytes())
+}
+
+/// Whether [`replace_text`] would accept this document, without building the result.
+///
+/// Answers "can this note be edited?" at sync time, so the interface can say so before
+/// someone starts typing rather than after they press save.
+#[must_use]
+pub fn is_rewritable(original: &[u8]) -> bool {
+    let Some(plain) = inflate(original) else {
+        return false;
+    };
+    let Some(current) = field_at(&plain, TEXT_PATH) else {
+        return false;
+    };
+    rewrite(&plain, TEXT_PATH, current).is_some_and(|rebuilt| rebuilt == plain)
+}
+
+/// [`replace_text`] over the base64 a CloudKit field carries, gzipped on the way back.
+#[must_use]
+pub fn replace_text_in_base64(original: &str, text: &str) -> Option<String> {
+    let raw = B64.decode(original.trim()).ok()?;
+    Some(B64.encode(gzip(&replace_text(&raw, text)?)))
+}
+
+/// Copy a message through, replacing the length-delimited field at `path` with `payload`.
+///
+/// Every field that is not on the path is copied as raw bytes, so nothing is re-encoded and
+/// nothing can be lost in translation.
+fn rewrite(message: &[u8], path: &[u64], payload: &[u8]) -> Option<Vec<u8>> {
+    let (&wanted, rest) = path.split_first()?;
+    let mut reader = Reader::new(message);
+    let mut out = Vec::with_capacity(message.len() + payload.len());
+    let mut replaced = false;
+
+    while !reader.done() {
+        let start = reader.at;
+        let key = reader.varint()?;
+        let (field, wire) = (key >> 3, key & 7);
+
+        if field == wanted && wire == WIRE_LEN && !replaced {
+            let n = usize::try_from(reader.varint()?).ok()?;
+            let chunk = reader.take(n)?;
+            let inner = if rest.is_empty() {
+                payload.to_vec()
+            } else {
+                // A sibling with the same tag that does not contain the path is a different
+                // part of the document, so copy it and keep looking.
+                match rewrite(chunk, rest, payload) {
+                    Some(done) => done,
+                    None => {
+                        out.extend_from_slice(message.get(start..reader.at)?);
+                        continue;
+                    }
+                }
+            };
+            out.extend_from_slice(&length_delimited(field, &inner));
+            replaced = true;
+        } else {
+            reader.skip(wire)?;
+            out.extend_from_slice(message.get(start..reader.at)?);
+        }
+    }
+
+    replaced.then_some(out)
+}
+
+/// Decompress a base64 document payload without interpreting it.
+///
+/// For measuring what Apple actually sends before writing anything back.
+#[must_use]
+pub fn debug_inflate(value: &str) -> Option<Vec<u8>> {
+    inflate(&B64.decode(value.trim()).ok()?)
+}
+
+/// A readable outline of a protobuf message: one line per field, nested.
+///
+/// Rewriting a note body means preserving every field that is not the text, so the shape
+/// has to be known rather than assumed. This is how it gets looked at.
+#[must_use]
+pub fn debug_tree(bytes: &[u8], depth_limit: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    walk(bytes, 1, depth_limit, &mut lines);
+    lines
+}
+
+fn walk(bytes: &[u8], depth: usize, limit: usize, out: &mut Vec<String>) {
+    let pad = "  ".repeat(depth + 1);
+    let mut reader = Reader::new(bytes);
+    while !reader.done() {
+        let Some(key) = reader.varint() else { return };
+        let (field, wire) = (key >> 3, key & 7);
+        match wire {
+            WIRE_VARINT => {
+                let Some(value) = reader.varint() else { return };
+                out.push(format!("{pad}{field}: varint {value}"));
+            }
+            WIRE_LEN => {
+                let Some(len) = reader.varint().and_then(|n| usize::try_from(n).ok()) else {
+                    return;
+                };
+                let Some(chunk) = reader.take(len) else {
+                    return;
+                };
+                match std::str::from_utf8(chunk) {
+                    // Printable UTF-8 of any length is text, and text is what a writer has
+                    // to be able to find.
+                    Ok(text) if usable_text(chunk).is_some() => out.push(format!(
+                        "{pad}{field}: text {len}B {:?}",
+                        text.chars().take(48).collect::<String>()
+                    )),
+                    _ if depth < limit && looks_like_message(chunk) => {
+                        out.push(format!("{pad}{field}: message {len}B"));
+                        walk(chunk, depth + 1, limit, out);
+                    }
+                    // Short opaque fields are shown as hex: at this size the bytes are the
+                    // evidence, and a length alone says nothing.
+                    _ if len <= 16 => out.push(format!(
+                        "{pad}{field}: bytes {len}B {}",
+                        chunk
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )),
+                    _ => out.push(format!("{pad}{field}: bytes {len}B")),
+                }
+            }
+            WIRE_64BIT => {
+                if reader.take(8).is_none() {
+                    return;
+                }
+                out.push(format!("{pad}{field}: fixed64"));
+            }
+            WIRE_32BIT => {
+                if reader.take(4).is_none() {
+                    return;
+                }
+                out.push(format!("{pad}{field}: fixed32"));
+            }
+            _ => return,
+        }
+    }
+}
+
+/// Whether a chunk parses cleanly as a protobuf message all the way to its end.
+///
+/// Length-delimited bytes are ambiguous on the wire: a nested message and an opaque blob
+/// look identical until you try to read one. Parsing to the exact end is the test.
+fn looks_like_message(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut reader = Reader::new(bytes);
+    while !reader.done() {
+        let Some(key) = reader.varint() else {
+            return false;
+        };
+        if key >> 3 == 0 || reader.skip(key & 7).is_none() {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -440,5 +642,150 @@ mod tests {
         // does not rescue it either.
         let wrong = field(2, &field(3, &field(9, &[0x01, 0x02, 0x03])));
         assert!(text_from_bytes(&wrong).is_none());
+    }
+}
+
+#[cfg(test)]
+mod rewrite_tests {
+    use super::*;
+
+    fn varint(tag: u64, value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_varint(tag << 3, &mut out);
+        write_varint(value, &mut out);
+        out
+    }
+
+    /// The shape a real note body has: the text at 2 -> 3 -> 2, with version-vector
+    /// messages and stray scalars around it that a save must not disturb.
+    fn document(text: &str) -> Vec<u8> {
+        let mut note = Vec::new();
+        note.extend(length_delimited(2, text.as_bytes()));
+        // Two of Apple's merge records, which carry no length describing the text.
+        for index in 1..=2u64 {
+            let mut run = Vec::new();
+            run.extend(length_delimited(
+                1,
+                &[varint(1, 1), varint(2, 144_927)].concat(),
+            ));
+            run.extend(varint(2, 34_947));
+            run.extend(varint(5, index));
+            note.extend(length_delimited(3, &run));
+        }
+        note.extend(length_delimited(4, &length_delimited(1, &[0xAB; 28])));
+
+        let mut inner = Vec::new();
+        inner.extend(varint(1, 0));
+        inner.extend(varint(2, 0));
+        inner.extend(length_delimited(3, &note));
+
+        let mut doc = varint(1, 0);
+        doc.extend(length_delimited(2, &inner));
+        doc
+    }
+
+    #[test]
+    fn the_text_is_swapped_and_nothing_else_moves() {
+        let before = document("the original body");
+        let after = replace_text(&before, "a longer body than the one it replaced").unwrap();
+
+        assert_eq!(
+            text_from_bytes(&after).as_deref(),
+            Some("a longer body than the one it replaced")
+        );
+        // Everything that is not the text is still there, byte for byte.
+        assert_eq!(
+            replace_text(&after, "the original body").unwrap(),
+            before,
+            "putting the old text back must give the original document"
+        );
+    }
+
+    /// The whole point of rewriting in place rather than re-encoding. An edit of the same
+    /// length must leave the document byte-identical apart from the text itself, which is
+    /// the strongest statement available that nothing else was touched.
+    #[test]
+    fn a_same_length_edit_changes_only_the_text() {
+        let before = document("first");
+        let after = replace_text(&before, "FIRST").unwrap();
+        assert_eq!(before.len(), after.len());
+
+        let differing: Vec<usize> = before
+            .iter()
+            .zip(&after)
+            .enumerate()
+            .filter_map(|(i, (a, b))| (a != b).then_some(i))
+            .collect();
+        assert_eq!(differing.len(), 5, "only the five text bytes moved");
+    }
+
+    /// And when the length does change, the only fields that change are the lengths on the
+    /// path to the text. The version vectors keep their exact values.
+    #[test]
+    fn the_version_vectors_survive_a_save() {
+        let before = document("first");
+        let after = replace_text(&before, "second").unwrap();
+        // Sizes shift on the path by construction; the fields and their values must not.
+        let shape = |bytes: &[u8]| {
+            debug_tree(bytes, 6)
+                .into_iter()
+                .filter(|line| !line.contains("text "))
+                .map(|line| {
+                    line.split_whitespace()
+                        .filter(|token| !token.ends_with('B'))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shape(&after),
+            shape(&before),
+            "every field but the text must survive unchanged"
+        );
+    }
+
+    #[test]
+    fn an_empty_body_is_a_legitimate_edit() {
+        let after = replace_text(&document("something"), "").unwrap();
+        assert_eq!(field_at(&after, TEXT_PATH), Some(&[][..]));
+    }
+
+    /// Growing and shrinking both rewrite the enclosing lengths, which is where a naive
+    /// splice corrupts the message.
+    #[test]
+    fn lengths_are_rewritten_in_both_directions() {
+        for (from, to) in [
+            ("short", &"x".repeat(5_000)[..]),
+            (&"y".repeat(5_000), "tiny"),
+        ] {
+            let after = replace_text(&document(from), to).unwrap();
+            assert_eq!(text_from_bytes(&after).as_deref(), Some(to));
+            assert!(looks_like_message(&after), "still a valid message");
+        }
+    }
+
+    /// A document without the path is not ours to rewrite, and saying so is the safe answer.
+    #[test]
+    fn a_document_we_do_not_recognise_is_refused() {
+        assert!(replace_text(&varint(1, 0), "anything").is_none());
+        assert!(replace_text(&[0xFF, 0xFF, 0xFF], "anything").is_none());
+        assert!(replace_text(&[], "anything").is_none());
+    }
+
+    /// Real payloads arrive compressed, and a save has to survive the round trip.
+    #[test]
+    fn a_gzipped_document_round_trips() {
+        let encoded = B64.encode(gzip(&document("before")));
+        let saved = replace_text_in_base64(&encoded, "after").unwrap();
+        assert_eq!(text_from_base64(&saved).as_deref(), Some("after"));
+    }
+
+    /// Unicode is measured in bytes on the wire, not characters.
+    #[test]
+    fn emoji_and_accents_survive() {
+        let text = "🔴 UNIT 2 — Prüfung · 测试\nsecond line";
+        let after = replace_text(&document("x"), text).unwrap();
+        assert_eq!(text_from_bytes(&after).as_deref(), Some(text));
     }
 }
