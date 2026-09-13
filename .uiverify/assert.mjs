@@ -28,6 +28,9 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "contacts_list") return [];
       if (cmd === "contacts_last_synced") return Math.floor(Date.now() / 1000);
       if (cmd === "contacts_sync") return 0;
+      if (cmd === "drive_children") return [];
+      if (cmd === "drive_sync_folder") return 0;
+      if (cmd === "drive_item") return null;
       return null;
     },
   };

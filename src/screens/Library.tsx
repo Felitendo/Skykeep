@@ -4,6 +4,7 @@ import { CalendarView } from "./CalendarView";
 import { RemindersView } from "./RemindersView";
 import { NotesView } from "./NotesView";
 import { ContactsView } from "./ContactsView";
+import { DriveView } from "./DriveView";
 
 const NAMES: Record<string, string> = {
   photos: "Photos",
@@ -43,7 +44,7 @@ const NAMES: Record<string, string> = {
 
 /** Services with a real screen behind them. Opening on one of these beats opening on a
  *  placeholder, so selection prefers them. */
-const BUILT = new Set(["calendar", "reminders", "notes", "contacts"]);
+const BUILT = new Set(["calendar", "reminders", "notes", "contacts", "drivews"]);
 
 /** What a person actually came for, in the order they'd look for it. */
 const PRIMARY = [
@@ -159,6 +160,8 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
           <NotesView />
         ) : selected === "contacts" ? (
           <ContactsView />
+        ) : selected === "drivews" ? (
+          <DriveView />
         ) : (
           <>
         <div className="toolbar">

@@ -53,6 +53,10 @@ export const api = {
   contactsSync: () => invoke<number>("contacts_sync"),
   contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
   contactsLastSynced: () => invoke<number | null>("contacts_last_synced"),
+
+  driveSyncFolder: (folderId: string) => invoke<number>("drive_sync_folder", { folderId }),
+  driveChildren: (folderId: string) => invoke<DriveItem[]>("drive_children", { folderId }),
+  driveItem: (drivewsid: string) => invoke<DriveItem | null>("drive_item", { drivewsid }),
 };
 
 /** Tauri rejects with a plain string from our commands; keep it readable either way. */
@@ -140,6 +144,28 @@ export function displayName(c: Contact): string {
   if (c.company?.trim()) return c.company;
   return c.methods[0]?.value ?? "No Name";
 }
+
+export type DriveItem = {
+  drivewsid: string;
+  parentId: string | null;
+  name: string;
+  extension: string | null;
+  /** FOLDER, APP_LIBRARY or FILE. */
+  kind: string;
+  size: number | null;
+  childCount: number | null;
+  createdAt: number | null;
+  modifiedAt: number | null;
+  etag: string | null;
+};
+
+export const DRIVE_ROOT = "FOLDER::com.apple.CloudDocs::root";
+
+export const isContainer = (item: DriveItem) =>
+  item.kind === "FOLDER" || item.kind === "APP_LIBRARY";
+
+export const driveName = (item: DriveItem) =>
+  item.extension && !isContainer(item) ? `${item.name}.${item.extension}` : item.name;
 
 export function messageOf(e: unknown): string {
   if (typeof e === "string") return e;

@@ -19,7 +19,7 @@ const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservi
    value it needs must arrive through the single argument. */
 /* Fixture events, so the agenda's rendering is verified without inventing rows in anyone's
    real library. Times are unix seconds relative to now. */
-function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture }) {
+function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture }) {
   const HOUR = 3600, DAY = 86400;
   const base = Math.floor(Date.now() / 1000 / DAY) * DAY + 9 * HOUR;
   const events = !calendarFixture ? [] : [
@@ -79,6 +79,20 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
       birthday: null, notes: null, etag: null,
       methods: [{ kind: "phone", label: null, value: "+91 90000 11111" }] },
   ];
+  const driveItems = !driveFixture ? [] : [
+    { drivewsid: "FOLDER::a", parentId: null, name: "Downloads", extension: null,
+      kind: "FOLDER", size: null, childCount: 3, createdAt: 1785000000,
+      modifiedAt: 1788000000, etag: null },
+    { drivewsid: "APPLIB::b", parentId: null, name: "Keynote", extension: null,
+      kind: "APP_LIBRARY", size: null, childCount: null, createdAt: 1780000000,
+      modifiedAt: null, etag: null },
+    { drivewsid: "APPLIB::c", parentId: null, name: "Shortcuts", extension: null,
+      kind: "APP_LIBRARY", size: null, childCount: null, createdAt: 1780000000,
+      modifiedAt: null, etag: null },
+    { drivewsid: "FILE::d", parentId: null, name: "Semester Plan", extension: "pdf",
+      kind: "FILE", size: 2411724, childCount: null, createdAt: 1787000000,
+      modifiedAt: 1788600000, etag: null },
+  ];
   const calendars = [
     { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true },
     { guid: "home", title: "Home", colour: "#0088ff", ctag: null, sortOrder: 1, enabled: true },
@@ -113,6 +127,9 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "contacts_list": return !contactsFixture ? [] : contactList;
         case "contacts_last_synced": return Math.floor(Date.now() / 1000) - 300;
         case "contacts_sync": return contactList.length;
+        case "drive_children": return !driveFixture ? [] : driveItems;
+        case "drive_sync_folder": return driveItems.length;
+        case "drive_item": return null;
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;
         case "auth_send_sms":       return null;
@@ -173,18 +190,24 @@ const shots = [
       await p.waitForSelector(".contact-rows .contact-row");
       await p.click('.contact-row:has-text("Zoya")');
     } },
+  { name: "12-drive", screen: "library", theme: "dark", driveFixture: true,
+    viewport: { width: 1100, height: 760 },
+    act: async (p) => {
+      await p.click('.nav-item:has-text("iCloud Drive")');
+      await p.waitForSelector(".drive-rows .drive-row");
+    } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];
 
 const browser = await chromium.launch();
-for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false, notesFixture = false, contactsFixture = false, viewport } of shots) {
+for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false, notesFixture = false, contactsFixture = false, driveFixture = false, viewport } of shots) {
   const ctx = await browser.newContext({
     viewport: viewport ?? { width: 1040, height: 720 },
     deviceScaleFactor: 2,
     colorScheme: theme,
   });
-  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture, notesFixture, contactsFixture });
+  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture });
   const page = await ctx.newPage();
   const errors = [];
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));

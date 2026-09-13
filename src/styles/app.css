@@ -901,3 +901,69 @@
 .contact-notes { margin-top: 20px; max-width: 60ch; color: var(--text-2); white-space: pre-wrap; }
 
 .content:has(.contacts) { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---- iCloud Drive ---------------------------------------------------------------
+   A file browser: a path you can walk back along, then rows of what is here. */
+
+.drive { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+.crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; }
+
+.crumb {
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-15);
+  padding: 2px 5px;
+  border-radius: var(--r-field);
+  cursor: pointer;
+}
+
+.crumb:hover { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
+.crumb[aria-current="true"] { color: var(--text); font-weight: 600; }
+.crumb:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: 1px; }
+.crumb-sep { color: var(--text-3); padding: 0 1px; }
+
+.drive-rows { list-style: none; margin: 8px 0 0; padding: 0; overflow-y: auto; min-height: 0; }
+
+.drive-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 90px 110px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--r-field);
+  border-bottom: 1px solid var(--separator);
+  cursor: default;
+}
+
+.drive-row.is-folder { cursor: pointer; }
+.drive-row.is-folder:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.drive-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+
+.drive-badge {
+  display: grid;
+  place-items: center;
+  height: 22px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text-2);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.drive-badge.folder { background: var(--gold-tint); color: var(--gold-strong); font-size: var(--t-13); }
+
+.drive-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-meta { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
+
+.content:has(.drive) { display: flex; flex-direction: column; overflow: hidden; }

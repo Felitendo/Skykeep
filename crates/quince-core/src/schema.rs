@@ -144,4 +144,25 @@ pub const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX contact_methods_by_contact ON contact_methods (contact_guid, kind, position);
     "#,
+    // 6 — iCloud Drive, stored as the tree Apple exposes.
+    r#"
+    CREATE TABLE drive_items (
+        -- Apple's own identifier, which encodes the kind and zone: FOLDER::com.apple.CloudDocs::root
+        drivewsid   TEXT PRIMARY KEY,
+        parent_id   TEXT,
+        name        TEXT NOT NULL,
+        extension   TEXT,
+        -- FOLDER, APP_LIBRARY or FILE.
+        kind        TEXT NOT NULL,
+        size        INTEGER,
+        child_count INTEGER,
+        created_at  INTEGER,
+        modified_at INTEGER,
+        etag        TEXT,
+        updated_at  INTEGER NOT NULL
+    ) STRICT;
+
+    -- Browsing is always "what is inside this folder", ordered folders first.
+    CREATE INDEX drive_by_parent ON drive_items (parent_id, kind, name);
+    "#,
 ];

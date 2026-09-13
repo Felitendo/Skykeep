@@ -764,6 +764,178 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- Photos: which query actually returns assets? ---------------------------
+    // changes/zone returns only CPLLibraryInfo, so assets must come from records/query —
+    // which for photos is allowed, unlike the reminders types.
+    println!("\n\x1b[1m── Photos: finding the assets ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let url =
+            format!("{ck}/database/1/com.apple.photos.cloud/production/private/records/query");
+        let mut q = client.service_params();
+        q.push(("ckjsBuildVersion".into(), "17DProjectDev77".into()));
+        q.push(("ckjsVersion".into(), "2.6.1".into()));
+        q.push(("remapEnums".into(), "True".into()));
+
+        // The smart-album queries Apple's own web client uses, plus the plain record types.
+        let attempts: [(&str, serde_json::Value); 4] = [
+            (
+                "index count",
+                serde_json::json!({
+                    "query": {
+                        "recordType": "HyperionIndexCountLookup",
+                        "filterBy": [{
+                            "fieldName": "indexCountID",
+                            "comparator": "IN",
+                            "fieldValue": { "type": "STRING_LIST",
+                                            "value": ["CPLAssetByAssetDateWithoutHiddenOrDeleted"] }
+                        }]
+                    },
+                    "zoneID": { "zoneName": "PrimarySync" },
+                }),
+            ),
+            (
+                "assets by date",
+                serde_json::json!({
+                    "query": {
+                        "recordType": "CPLAssetAndMasterByAssetDateWithoutHiddenOrDeleted",
+                        "filterBy": [
+                            { "fieldName": "startRank", "comparator": "EQUALS",
+                              "fieldValue": { "type": "INT64", "value": 0 } },
+                            { "fieldName": "direction", "comparator": "EQUALS",
+                              "fieldValue": { "type": "STRING", "value": "ASCENDING" } }
+                        ]
+                    },
+                    "resultsLimit": 4,
+                    "zoneID": { "zoneName": "PrimarySync" },
+                }),
+            ),
+            (
+                "CPLAsset",
+                serde_json::json!({
+                    "query": { "recordType": "CPLAsset" },
+                    "resultsLimit": 3,
+                    "zoneID": { "zoneName": "PrimarySync" },
+                }),
+            ),
+            (
+                "CPLMaster",
+                serde_json::json!({
+                    "query": { "recordType": "CPLMaster" },
+                    "resultsLimit": 3,
+                    "zoneID": { "zoneName": "PrimarySync" },
+                }),
+            ),
+        ];
+
+        for (label, body) in attempts {
+            match client.http().post(&url).query(&q).json(&body).send().await {
+                Err(e) => println!("  {label:<18} transport: {e}"),
+                Ok(r) => {
+                    let status = r.status();
+                    let text = r.text().await.unwrap_or_default();
+                    let v: serde_json::Value =
+                        serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                    match v.get("records").and_then(|r| r.as_array()) {
+                        Some(records) => {
+                            println!(
+                                "  \x1b[32m{label:<18}\x1b[0m {status}  {} record(s)",
+                                records.len()
+                            );
+                            for rec in records.iter().take(2) {
+                                let rt = rec
+                                    .get("recordType")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("?");
+                                // An index count carries the library size, which is the
+                                // difference between "no photos" and "wrong query".
+                                if let Some(count) = rec.pointer("/fields/itemCount/value") {
+                                    println!("      {rt}: itemCount = {count}");
+                                    continue;
+                                }
+                                let mut fields: Vec<String> = rec
+                                    .get("fields")
+                                    .and_then(|f| f.as_object())
+                                    .map(|o| o.keys().cloned().collect())
+                                    .unwrap_or_default();
+                                fields.sort();
+                                println!(
+                                    "      {rt}: {}",
+                                    fields.join(", ").chars().take(300).collect::<String>()
+                                );
+                            }
+                        }
+                        None => println!(
+                            "  {label:<18} {status}  {}",
+                            text.chars()
+                                .take(120)
+                                .collect::<String>()
+                                .replace('\n', " ")
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- what Drive items look like ---------------------------------------------
+    println!("\n\x1b[1m── iCloud Drive: shape ──\x1b[0m");
+    if let Some(root) = session.service_url("drivews") {
+        let mut q = client.service_params();
+        let body = serde_json::json!([{
+            "drivewsid": "FOLDER::com.apple.CloudDocs::root",
+            "partialData": false,
+        }]);
+        q.push(("clientVersion".into(), "2.1".into()));
+        match client
+            .http()
+            .post(format!(
+                "{}/retrieveItemDetailsInFolders",
+                root.trim_end_matches('/')
+            ))
+            .query(&q)
+            .json(&body)
+            .send()
+            .await
+        {
+            Err(e) => println!("  transport: {e}"),
+            Ok(r) => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                let v: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                let folders = v.as_array().map(Vec::as_slice).unwrap_or(&[]);
+                println!("  {status}: {} folder(s)", folders.len());
+                for folder in folders.iter().take(1) {
+                    let items = folder
+                        .get("items")
+                        .and_then(|i| i.as_array())
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    println!("    items: {}", items.len());
+                    for item in items.iter().take(4) {
+                        let mut keys: Vec<String> = item
+                            .as_object()
+                            .map(|o| o.keys().cloned().collect())
+                            .unwrap_or_default();
+                        keys.sort();
+                        let kind = item.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+                        let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                        let ext = item.get("extension").and_then(|e| e.as_str()).unwrap_or("");
+                        let size = item
+                            .get("size")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(-1);
+                        println!(
+                            "      [{kind}] {name}{}{ext}  size={size}",
+                            if ext.is_empty() { "" } else { "." }
+                        );
+                        println!("        fields: {}", keys.join(", "));
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

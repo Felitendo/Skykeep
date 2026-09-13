@@ -40,6 +40,9 @@ function installStub({ screen, services, twoFactor }) {
         case "contacts_list": return [];
         case "contacts_last_synced": return Math.floor(Date.now() / 1000);
         case "contacts_sync": return 0;
+        case "drive_children": return [];
+        case "drive_sync_folder": return 0;
+        case "drive_item": return null;
         default: return null;
       }
     },

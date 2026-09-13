@@ -4,6 +4,7 @@
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use quince_core::calendar::{Calendar, Event};
 use quince_core::contacts::Contact;
+use quince_core::drive::DriveItem;
 use quince_core::notes::{Note, NoteFolder};
 use quince_core::reminders::{Reminder, ReminderList};
 use quince_core::Library;
@@ -446,6 +447,45 @@ async fn contacts_last_synced(data: State<'_, Data>) -> UiResult<Option<i64>> {
     library.last_synced("contacts").map_err(|e| e.to_string())
 }
 
+/// Fetch one Drive folder's contents from Apple and store them.
+///
+/// Drive is browsed a level at a time, so this takes the folder being opened rather than
+/// mirroring the whole tree.
+#[tauri::command]
+async fn drive_sync_folder(
+    folder_id: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<usize> {
+    let (http, root, params) = {
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("drivews")
+            .ok_or("Apple hasn't offered iCloud Drive for this account.")?;
+        (client.http().clone(), root, client.service_params())
+    };
+    let mut library = data.0.lock().await;
+    quince_icloud::drive::sync_folder(&http, &root, params, &mut library, &folder_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn drive_children(folder_id: String, data: State<'_, Data>) -> UiResult<Vec<DriveItem>> {
+    let library = data.0.lock().await;
+    library
+        .drive_children(&folder_id)
+        .map_err(|e| e.to_string())
+}
+
+/// One item, for building the breadcrumb trail back to the root.
+#[tauri::command]
+async fn drive_item(drivewsid: String, data: State<'_, Data>) -> UiResult<Option<DriveItem>> {
+    let library = data.0.lock().await;
+    library.drive_item(&drivewsid).map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -490,6 +530,9 @@ fn main() {
             contacts_sync,
             contacts_list,
             contacts_last_synced,
+            drive_sync_folder,
+            drive_children,
+            drive_item,
             reminder_set_done,
         ])
         .run(tauri::generate_context!())
