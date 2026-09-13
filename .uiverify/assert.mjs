@@ -29,6 +29,8 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "notes_in") return [];
       if (cmd === "note_save" || cmd === "note_delete" || cmd === "note_move") return null;
       if (cmd === "note_create") return "Note/new";
+      if (cmd === "contact_save") return "C-new";
+      if (cmd === "contact_delete") return null;
       if (cmd === "contacts_list") return [];
       if (cmd === "drive_children") return [];
       if (cmd === "drive_sync_folder") return 0;

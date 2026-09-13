@@ -1,6 +1,32 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, displayName, messageOf, type Contact } from "../lib/ipc";
+import {
+  api,
+  displayName,
+  messageOf,
+  type Contact,
+  type ContactMethod,
+} from "../lib/ipc";
 import { useSync } from "../lib/sync";
+import { Picker } from "../components/Picker";
+
+/** The kinds of detail a card can hold, in the order Apple lists them. */
+const KINDS = [
+  { value: "phone", label: "phone" },
+  { value: "email", label: "email" },
+  { value: "url", label: "link" },
+] as const;
+
+const blank = (): Contact => ({
+  guid: "",
+  firstName: null,
+  lastName: null,
+  company: null,
+  isCompany: false,
+  birthday: null,
+  notes: null,
+  etag: null,
+  methods: [],
+});
 
 const KIND_LABEL: Record<string, string> = {
   phone: "phone",
@@ -29,6 +55,9 @@ export function ContactsView() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { revision } = useSync();
+  /** The card being written, or null while simply looking. */
+  const [draft, setDraft] = useState<Contact | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const read = useCallback(async (query: string) => {
     const found = await api.contactsList(query.trim() || null);
@@ -60,6 +89,56 @@ export function ContactsView() {
     );
   }, [contacts]);
 
+  /** Every write goes to Apple first, then the library is re-read. */
+  const write = useCallback(
+    async (run: () => Promise<void>) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await run();
+        await read(search);
+        return true;
+      } catch (e) {
+        setError(messageOf(e));
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [read, search]
+  );
+
+  const saveDraft = useCallback(async () => {
+    if (!draft) return;
+    const saving = draft;
+    let guid = saving.guid;
+    const ok = await write(async () => {
+      guid = await api.contactSave(saving);
+    });
+    if (ok) {
+      setDraft(null);
+      setOpenGuid(guid);
+    }
+  }, [draft, write]);
+
+  const removeContact = useCallback(
+    async (guid: string) => {
+      if (await write(() => api.contactDelete(guid))) setDraft(null);
+    },
+    [write]
+  );
+
+  /** Editing a method in the draft, by position. */
+  const editMethod = (index: number, patch: Partial<ContactMethod>) =>
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            methods: d.methods.map((m, i) => (i === index ? { ...m, ...patch } : m)),
+          }
+        : d
+    );
+
   const open = useMemo(
     () => contacts.find((c) => c.guid === openGuid) ?? null,
     [contacts, openGuid]
@@ -72,6 +151,11 @@ export function ContactsView() {
           <div className="cal-nav">
             <h1>Contacts</h1>
             <span className="badge">{contacts.length}</span>
+          </div>
+          <div className="cal-actions">
+            <button className="quiet" disabled={busy} onClick={() => setDraft(blank())}>
+              New contact
+            </button>
           </div>
         </header>
 
@@ -107,7 +191,120 @@ export function ContactsView() {
       </section>
 
       <article className="contact-detail" aria-label="Contact">
-        {open ? (
+        {draft ? (
+          <form
+            className="contact-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveDraft();
+            }}
+          >
+            <h2>{draft.guid ? "Edit contact" : "New contact"}</h2>
+
+            <div className="contact-names">
+              <label>
+                <span>First</span>
+                <input
+                  value={draft.firstName ?? ""}
+                  autoFocus
+                  onChange={(e) => setDraft({ ...draft, firstName: e.target.value || null })}
+                />
+              </label>
+              <label>
+                <span>Last</span>
+                <input
+                  value={draft.lastName ?? ""}
+                  onChange={(e) => setDraft({ ...draft, lastName: e.target.value || null })}
+                />
+              </label>
+              <label>
+                <span>Company</span>
+                <input
+                  value={draft.company ?? ""}
+                  onChange={(e) => setDraft({ ...draft, company: e.target.value || null })}
+                />
+              </label>
+            </div>
+
+            <ul className="contact-method-rows">
+              {draft.methods.map((m, index) => (
+                <li key={index}>
+                  <Picker
+                    label={`Kind of detail ${index + 1}`}
+                    className="contact-kind"
+                    value={m.kind}
+                    onChange={(kind) => editMethod(index, { kind })}
+                    options={KINDS.map((k) => ({ value: k.value, label: k.label }))}
+                  />
+                  <input
+                    className="contact-method-label"
+                    value={m.label ?? ""}
+                    placeholder="label"
+                    aria-label={`Label for detail ${index + 1}`}
+                    onChange={(e) => editMethod(index, { label: e.target.value || null })}
+                  />
+                  <input
+                    className="contact-method-value"
+                    value={m.value}
+                    placeholder={m.kind === "email" ? "name@example.com" : "+1 555 0100"}
+                    aria-label={`Value for detail ${index + 1}`}
+                    onChange={(e) => editMethod(index, { value: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    className="quiet danger"
+                    aria-label={`Remove detail ${index + 1}`}
+                    onClick={() =>
+                      setDraft({
+                        ...draft,
+                        methods: draft.methods.filter((_, i) => i !== index),
+                      })
+                    }
+                  >
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            <button
+              type="button"
+              className="quiet"
+              onClick={() =>
+                setDraft({
+                  ...draft,
+                  methods: [...draft.methods, { kind: "phone", label: null, value: "" }],
+                })
+              }
+            >
+              Add phone, email or link
+            </button>
+
+            <label className="contact-notes-field">
+              <span>Notes</span>
+              <textarea
+                rows={3}
+                value={draft.notes ?? ""}
+                onChange={(e) => setDraft({ ...draft, notes: e.target.value || null })}
+              />
+            </label>
+
+            <div className="cal-form-actions">
+              <button
+                type="submit"
+                className="primary"
+                disabled={
+                  busy || !(draft.firstName || draft.lastName || draft.company)
+                }
+              >
+                {busy ? "Saving…" : draft.guid ? "Save" : "Add contact"}
+              </button>
+              <button type="button" className="quiet" onClick={() => setDraft(null)}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : open ? (
           <>
             <span className="avatar large" aria-hidden="true">{initials(open)}</span>
             <h2>{displayName(open)}</h2>
@@ -134,6 +331,24 @@ export function ContactsView() {
               <p className="cal-empty">No phone numbers or addresses saved.</p>
             )}
             {open.notes && <p className="contact-notes">{open.notes}</p>}
+
+            <div className="cal-form-actions">
+              <button className="quiet" disabled={busy} onClick={() => setDraft({ ...open })}>
+                Edit
+              </button>
+              <button
+                className="quiet danger"
+                disabled={busy}
+                onClick={() => {
+                  // Deleting a person is not something to discover by accident.
+                  if (window.confirm(`Delete ${displayName(open)}?`)) {
+                    void removeContact(open.guid);
+                  }
+                }}
+              >
+                Delete
+              </button>
+            </div>
           </>
         ) : (
           loaded && <p className="cal-empty">Select a contact.</p>

@@ -93,6 +93,9 @@ export const api = {
   noteMove: (guid: string, folderGuid: string | null) =>
     invoke<void>("note_move", { guid, folderGuid }),
 
+  /** Create when the guid is empty, otherwise save changes. Returns Apple's id for it. */
+  contactSave: (contact: Contact) => invoke<string>("contact_save", { contact }),
+  contactDelete: (guid: string) => invoke<void>("contact_delete", { guid }),
   contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
 
   driveSyncFolder: (folderId: string) => invoke<number>("drive_sync_folder", { folderId }),

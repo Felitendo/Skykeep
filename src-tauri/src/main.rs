@@ -748,6 +748,95 @@ async fn notes_in(folder_guid: Option<String>, data: State<'_, Data>) -> UiResul
         .map_err(|e| e.to_string())
 }
 
+/// Everything a contacts write needs from the session, with the auth lock released first.
+async fn contacts_context(
+    auth: &State<'_, Auth>,
+) -> Result<(reqwest::Client, String, Vec<(String, String)>), String> {
+    let client = auth.client.lock().await;
+    let root = client
+        .session()
+        .service_url("contacts")
+        .ok_or("Apple hasn't offered a contacts service for this account.")?;
+    Ok((client.http().clone(), root, client.service_params()))
+}
+
+/// Re-read the address book after a write, so what is on screen is what Apple stored.
+async fn resync_contacts(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    data: &State<'_, Data>,
+) -> Result<(), String> {
+    let people = quince_icloud::contacts::fetch(http, root, params)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut library = data.0.lock().await;
+    quince_icloud::contacts::apply(&mut library, people)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Create a contact, or save changes to one. Returns the id Apple knows it by.
+///
+/// An edit starts from Apple's own card, so everything this app does not model — a photo,
+/// related names, social profiles — is written back untouched rather than dropped.
+#[tauri::command]
+async fn contact_save(
+    contact: Contact,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    let (http, root, params) = contacts_context(&auth).await?;
+    let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let guid = if contact.guid.is_empty() {
+        quince_icloud::contacts::create(&http, &root, params.clone(), &tokens, &contact)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        let card = quince_icloud::contacts::card(&http, &root, params.clone(), &contact.guid)
+            .await
+            .map_err(|e| e.to_string())?;
+        quince_icloud::contacts::update(
+            &http,
+            &root,
+            params.clone(),
+            &tokens,
+            &contact,
+            card.as_ref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        contact.guid.clone()
+    };
+
+    resync_contacts(&http, &root, params, &data).await?;
+    Ok(guid)
+}
+
+#[tauri::command]
+async fn contact_delete(
+    guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = contacts_context(&auth).await?;
+    let (people, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let contact = people
+        .into_iter()
+        .find(|c| c.guid == guid)
+        .ok_or("Apple no longer has that contact.")?;
+
+    quince_icloud::contacts::delete(&http, &root, params.clone(), &tokens, &contact)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_contacts(&http, &root, params, &data).await
+}
+
 /// The address book, optionally filtered by name or by any stored number or address.
 #[tauri::command]
 async fn contacts_list(search: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Contact>> {
@@ -895,6 +984,8 @@ fn main() {
             note_move,
             notes_in,
             contacts_list,
+            contact_save,
+            contact_delete,
             drive_sync_folder,
             drive_children,
             drive_item,

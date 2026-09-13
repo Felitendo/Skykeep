@@ -64,6 +64,238 @@ pub fn parse(body: &Value) -> Vec<Contact> {
         .unwrap_or_default()
 }
 
+/// The tokens Apple hands out at startup, which every write has to carry.
+///
+/// `syncToken` is how the service knows which version of the address book a change is based
+/// on; `prefToken` carries the sort order the account is set to. Writing without them is
+/// refused.
+#[derive(Debug, Clone)]
+pub struct Tokens {
+    pub sync: String,
+    pub pref: String,
+}
+
+/// Read the address book along with the tokens a write will need.
+///
+/// The tokens come from the same response as the contacts, so asking for both at once is
+/// one request rather than two, and the tokens are guaranteed to match the data.
+pub async fn fetch_with_tokens(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+) -> Result<(Vec<Contact>, Tokens)> {
+    let body = startup(http, root, params).await?;
+    let token = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .ok_or_else(|| Error::Protocol(format!("/co/startup carried no {key}")))
+    };
+    Ok((
+        parse(&body),
+        Tokens {
+            sync: token("syncToken")?,
+            pref: token("prefToken")?,
+        },
+    ))
+}
+
+/// Apple's card, built from ours.
+///
+/// Every field Apple sends back is sent again on a write, including the ones this app does
+/// not model — a card written with only the fields we understand would quietly drop
+/// everything else about the person.
+fn card_from(contact: &Contact, existing: Option<&Value>) -> Value {
+    let mut card = existing.cloned().unwrap_or_else(|| serde_json::json!({}));
+    let object = card.as_object_mut().expect("a card is an object");
+
+    object.insert("contactId".into(), Value::String(contact.guid.clone()));
+    object.insert("isCompany".into(), Value::Bool(contact.is_company));
+    for (key, value) in [
+        ("firstName", &contact.first_name),
+        ("lastName", &contact.last_name),
+        ("companyName", &contact.company),
+        ("birthday", &contact.birthday),
+        ("notes", &contact.notes),
+    ] {
+        match value {
+            Some(text) if !text.trim().is_empty() => {
+                object.insert(key.into(), Value::String(text.trim().to_string()));
+            }
+            // Clearing a field means sending it empty; removing the key would leave what
+            // Apple already has.
+            _ => {
+                object.insert(key.into(), Value::String(String::new()));
+            }
+        }
+    }
+
+    let of_kind = |kind: &str| -> Value {
+        Value::Array(
+            contact
+                .methods
+                .iter()
+                .filter(|m| m.kind == kind && !m.value.trim().is_empty())
+                .map(|m| {
+                    let mut entry = serde_json::Map::new();
+                    entry.insert("field".into(), Value::String(m.value.trim().to_string()));
+                    if let Some(label) = &m.label {
+                        entry.insert("label".into(), Value::String(label.clone()));
+                    }
+                    Value::Object(entry)
+                })
+                .collect(),
+        )
+    };
+    object.insert("phones".into(), of_kind("phone"));
+    object.insert("emailAddresses".into(), of_kind("email"));
+    object.insert("urls".into(), of_kind("url"));
+
+    if let Some(etag) = &contact.etag {
+        object.insert("etag".into(), Value::String(etag.clone()));
+    }
+    card
+}
+
+async fn write(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    method: reqwest::Method,
+    card: Value,
+) -> Result<Value> {
+    let mut query = params;
+    query.push(("clientVersion".into(), "2.1".into()));
+    query.push(("locale".into(), "en_US".into()));
+    query.push(("order".into(), "last,first".into()));
+    query.push(("prefToken".into(), tokens.pref.clone()));
+    query.push(("syncToken".into(), tokens.sync.clone()));
+
+    let url = format!("{}/co/contacts/card", root.trim_end_matches('/'));
+    let response = http
+        .request(method, url)
+        .query(&query)
+        .json(&serde_json::json!({ "contacts": [card] }))
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    // Apple answers a stale syncToken with a conflict rather than an error, and the fix is
+    // to read the address book again — saying so beats a status code.
+    if status.as_u16() == 412 || status.as_u16() == 409 {
+        return Err(Error::Conflict);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "contacts returned {status}: {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+/// Create a contact, and return the id Apple will know it by.
+pub async fn create(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    contact: &Contact,
+) -> Result<String> {
+    if contact.first_name.is_none() && contact.last_name.is_none() && contact.company.is_none() {
+        return Err(Error::Protocol("a contact needs a name".into()));
+    }
+    // Apple's own client mints the id rather than asking the service for one.
+    let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+    let mut fresh = contact.clone();
+    fresh.guid.clone_from(&guid);
+    fresh.etag = None;
+
+    write(
+        http,
+        root,
+        params,
+        tokens,
+        reqwest::Method::POST,
+        card_from(&fresh, None),
+    )
+    .await?;
+    Ok(guid)
+}
+
+/// Save changes to a contact.
+///
+/// `existing` is Apple's own card for this person, so fields this app does not model are
+/// written back untouched instead of being dropped.
+pub async fn update(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    contact: &Contact,
+    existing: Option<&Value>,
+) -> Result<()> {
+    write(
+        http,
+        root,
+        params,
+        tokens,
+        reqwest::Method::PUT,
+        card_from(contact, existing),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Remove a contact.
+pub async fn delete(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    contact: &Contact,
+) -> Result<()> {
+    let mut query = params;
+    query.push(("method".into(), "DELETE".into()));
+    write(
+        http,
+        root,
+        query,
+        tokens,
+        reqwest::Method::POST,
+        serde_json::json!({
+            "contactId": contact.guid,
+            "etag": contact.etag,
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Apple's card for one person, as it currently stands.
+pub async fn card(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    guid: &str,
+) -> Result<Option<Value>> {
+    let body = startup(http, root, params).await?;
+    Ok(body
+        .get("contacts")
+        .and_then(Value::as_array)
+        .and_then(|cards| {
+            cards
+                .iter()
+                .find(|c| c.get("contactId").and_then(Value::as_str) == Some(guid))
+                .cloned()
+        }))
+}
+
 /// Fetch the address book and reconcile it into the library.
 pub async fn sync(
     http: &reqwest::Client,
@@ -82,6 +314,16 @@ pub async fn fetch(
     root: &str,
     params: Vec<(String, String)>,
 ) -> Result<Vec<quince_core::contacts::Contact>> {
+    Ok(parse(&startup(http, root, params).await?))
+}
+
+/// The whole of `/co/startup`: the address book, the tokens, and everything else Apple
+/// sends with it.
+async fn startup(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+) -> Result<Value> {
     let mut query = params;
     query.push(("clientVersion".into(), "2.1".into()));
     query.push(("locale".into(), "en_US".into()));
@@ -102,9 +344,8 @@ pub async fn fetch(
         )));
     }
 
-    let body: Value = serde_json::from_str(&text)
-        .map_err(|e| Error::Protocol(format!("/co/startup returned invalid JSON: {e}")))?;
-    Ok(parse(&body))
+    serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("/co/startup returned invalid JSON: {e}")))
 }
 
 /// Store a fetched address book. Touches no network.
@@ -174,5 +415,245 @@ mod tests {
     #[test]
     fn an_empty_body_is_an_empty_address_book() {
         assert!(parse(&json!({})).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    fn person() -> Contact {
+        Contact {
+            guid: "C1".into(),
+            first_name: Some("Ada".into()),
+            last_name: Some("Lovelace".into()),
+            company: None,
+            is_company: false,
+            birthday: None,
+            notes: None,
+            etag: Some("v1".into()),
+            methods: vec![
+                ContactMethod {
+                    kind: "phone".into(),
+                    label: Some("mobile".into()),
+                    value: "+441234567890".into(),
+                },
+                ContactMethod {
+                    kind: "email".into(),
+                    label: None,
+                    value: "ada@example.com".into(),
+                },
+            ],
+        }
+    }
+
+    fn tokens() -> Tokens {
+        Tokens {
+            sync: "SYNC".into(),
+            pref: "PREF".into(),
+        }
+    }
+
+    async fn server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(path_regex(r".*/co/contacts/card$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "contacts": [] })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn sent(server: &MockServer) -> (Request, Value) {
+        let request = server.received_requests().await.unwrap().remove(0);
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        (request, body["contacts"][0].clone())
+    }
+
+    /// The one that matters. Apple's card carries fields this app does not model — related
+    /// names, social profiles, a photo. Writing only what we understand would drop all of
+    /// it, so an edit starts from Apple's own card and changes what it means to change.
+    #[tokio::test]
+    async fn an_edit_keeps_the_fields_this_app_does_not_model() {
+        let server = server().await;
+        let apples = json!({
+            "contactId": "C1",
+            "firstName": "Ada",
+            "photo": { "url": "https://example.invalid/ada.jpg" },
+            "relatedNames": [{ "label": "sister", "field": "Anne" }],
+            "etag": "v1"
+        });
+        update(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &person(),
+            Some(&apples),
+        )
+        .await
+        .unwrap();
+
+        let (_, card) = sent(&server).await;
+        assert_eq!(
+            card["photo"]["url"], "https://example.invalid/ada.jpg",
+            "a photo must survive an edit"
+        );
+        assert_eq!(card["relatedNames"][0]["field"], "Anne");
+        assert_eq!(card["lastName"], "Lovelace", "and the change still lands");
+    }
+
+    /// Every write carries the tokens Apple handed out, or the service refuses it.
+    #[tokio::test]
+    async fn the_tokens_go_with_every_write() {
+        let server = server().await;
+        update(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &person(),
+            None,
+        )
+        .await
+        .unwrap();
+        let (request, _) = sent(&server).await;
+        let query: std::collections::HashMap<_, _> = request.url.query_pairs().collect();
+        assert_eq!(query["syncToken"], "SYNC");
+        assert_eq!(query["prefToken"], "PREF");
+    }
+
+    /// Apple groups methods by kind, each as `field` with an optional `label`.
+    #[tokio::test]
+    async fn methods_are_grouped_the_way_apple_groups_them() {
+        let server = server().await;
+        update(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &person(),
+            None,
+        )
+        .await
+        .unwrap();
+        let (_, card) = sent(&server).await;
+        assert_eq!(card["phones"][0]["field"], "+441234567890");
+        assert_eq!(card["phones"][0]["label"], "mobile");
+        assert_eq!(card["emailAddresses"][0]["field"], "ada@example.com");
+        assert!(
+            card["emailAddresses"][0].get("label").is_none(),
+            "no label means no label, not an empty one"
+        );
+        assert_eq!(card["urls"], json!([]));
+    }
+
+    /// Clearing a field means sending it empty. Leaving the key out would leave whatever
+    /// Apple already has, so the change would appear to do nothing.
+    #[tokio::test]
+    async fn clearing_a_field_sends_it_empty_rather_than_omitting_it() {
+        let server = server().await;
+        let mut cleared = person();
+        cleared.company = None;
+        cleared.notes = None;
+        update(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &cleared,
+            Some(&json!({ "companyName": "Old Co", "notes": "old note" })),
+        )
+        .await
+        .unwrap();
+        let (_, card) = sent(&server).await;
+        assert_eq!(card["companyName"], "");
+        assert_eq!(card["notes"], "");
+    }
+
+    #[tokio::test]
+    async fn a_contact_with_no_name_at_all_is_refused_before_anything_is_sent() {
+        let server = server().await;
+        let nameless = Contact {
+            first_name: None,
+            last_name: None,
+            company: None,
+            ..person()
+        };
+        assert!(create(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &nameless
+        )
+        .await
+        .is_err());
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// A create gets a fresh id and no etag: an etag would claim to be replacing something.
+    #[tokio::test]
+    async fn a_create_mints_its_own_id() {
+        let server = server().await;
+        let guid = create(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &person(),
+        )
+        .await
+        .unwrap();
+        assert_ne!(guid, "C1", "the id is minted, not carried over");
+
+        let (request, card) = sent(&server).await;
+        assert_eq!(request.method, reqwest::Method::POST);
+        assert_eq!(card["contactId"], guid);
+        assert!(card.get("etag").is_none(), "nothing to replace yet");
+    }
+
+    #[tokio::test]
+    async fn deleting_says_so_and_carries_the_etag() {
+        let server = server().await;
+        delete(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &person(),
+        )
+        .await
+        .unwrap();
+        let (request, card) = sent(&server).await;
+        let query: std::collections::HashMap<_, _> = request.url.query_pairs().collect();
+        assert_eq!(query["method"], "DELETE");
+        assert_eq!(card["contactId"], "C1");
+        assert_eq!(card["etag"], "v1", "a delete must not race another device");
+    }
+
+    /// A stale sync token is recoverable by re-reading, so it is named as a conflict rather
+    /// than surfaced as an HTTP status nobody can act on.
+    #[tokio::test]
+    async fn a_stale_sync_token_reads_as_a_conflict() {
+        let server = MockServer::start().await;
+        Mock::given(path_regex(r".*/co/contacts/card$"))
+            .and(method("PUT"))
+            .respond_with(ResponseTemplate::new(412))
+            .mount(&server)
+            .await;
+        let err = update(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &person(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::Conflict), "got {err:?}");
     }
 }

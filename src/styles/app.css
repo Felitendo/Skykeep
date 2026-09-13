@@ -1865,3 +1865,72 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
 .cal-mini-day.is-today { background: var(--gold); color: #fff; font-weight: 600; }
 .cal-mini-day.has-items { font-weight: 620; color: var(--gold-strong); }
 .cal-mini-day.is-today.has-items { color: #fff; }
+
+/* ── Editing a contact ──────────────────────────────────────────────────────────────────
+   The card and the editor are the same surface: the same measure, the same rhythm, so
+   pressing Edit changes what you can do rather than where you are. */
+.contact-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 460px;
+}
+
+.contact-form h2 { margin: 0; font-size: var(--t-17); }
+
+.contact-names {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px 10px;
+}
+
+.contact-form label,
+.contact-notes-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: var(--t-11);
+  color: var(--text-2);
+  min-width: 0;
+}
+
+.contact-form input,
+.contact-form textarea {
+  font: inherit;
+  font-size: var(--t-13);
+  color: var(--text);
+  background: var(--field);
+  border: 0.5px solid var(--field-edge);
+  border-radius: var(--r-field);
+  box-shadow: var(--shadow-field);
+  padding: 5px 7px;
+  min-width: 0;
+  outline: none;
+}
+
+.contact-form input:focus,
+.contact-form textarea:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px var(--gold-ring);
+}
+
+.contact-form textarea { resize: vertical; }
+
+.contact-method-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Kind, label, value, remove — the shape of one line of a card. */
+.contact-method-rows li {
+  display: grid;
+  grid-template-columns: 96px 88px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.contact-kind { width: 100%; }

@@ -1576,6 +1576,209 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- what does the contacts service actually hand back? -----------------------
+    // Writing a contact needs the sync and preference tokens Apple hands out at startup,
+    // and the exact shape of a card. Measure both before writing anything.
+    println!("\n\x1b[1m── Contacts: tokens and card shape ──\x1b[0m");
+    if let Some(root) = session.service_url("contacts") {
+        let mut query = client.service_params();
+        query.push(("clientVersion".into(), "2.1".into()));
+        query.push(("locale".into(), "en_US".into()));
+        query.push(("order".into(), "last,first".into()));
+
+        match client
+            .http()
+            .get(format!("{}/co/startup", root.trim_end_matches('/')))
+            .query(&query)
+            .send()
+            .await
+        {
+            Err(e) => println!("  request failed: {e}"),
+            Ok(response) => {
+                let text = response.text().await.unwrap_or_default();
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Err(e) => println!("  not JSON: {e}"),
+                    Ok(body) => {
+                        if let Some(obj) = body.as_object() {
+                            let mut keys: Vec<&String> = obj.keys().collect();
+                            keys.sort();
+                            println!(
+                                "  top-level keys: {}",
+                                keys.iter()
+                                    .map(|k| k.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                            for token in ["syncToken", "prefToken", "collectionSyncToken"] {
+                                if let Some(v) = obj.get(token).and_then(|v| v.as_str()) {
+                                    println!("  {token} = {v}");
+                                }
+                            }
+                        }
+                        // One whole card, so a write can echo every field back rather than
+                        // only the ones this app happens to model.
+                        if let Some(card) = body
+                            .get("contacts")
+                            .and_then(|c| c.as_array())
+                            .and_then(|c| c.first())
+                        {
+                            println!("  one card, every key:");
+                            if let Some(obj) = card.as_object() {
+                                for (k, v) in obj {
+                                    println!(
+                                        "      {k} = {}",
+                                        v.to_string().chars().take(90).collect::<String>()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- does writing a contact actually work? ------------------------------------
+    // Create one obviously-named contact, read it back from Apple, change it, read it back
+    // again, then delete it. Only ever touches the contact it made. Runs with --write-test.
+    if std::env::args().any(|a| a == "--write-test") {
+        println!("\n\x1b[1m── Contacts write round trip ──\x1b[0m");
+        if let Some(root) = session.service_url("contacts") {
+            let http = client.http().clone();
+            let params = client.service_params();
+
+            let find = |guid: String| {
+                let http = http.clone();
+                let root = root.clone();
+                let params = params.clone();
+                async move {
+                    quince_icloud::contacts::fetch(&http, &root, params)
+                        .await
+                        .ok()
+                        .and_then(|all| all.into_iter().find(|c| c.guid == guid))
+                }
+            };
+
+            match quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone()).await {
+                Err(e) => println!("  \x1b[31mFAIL\x1b[0m tokens: {e}"),
+                Ok((_, tokens)) => {
+                    let draft = quince_core::contacts::Contact {
+                        guid: String::new(),
+                        first_name: Some("Quince".into()),
+                        last_name: Some("Write Test".into()),
+                        company: None,
+                        is_company: false,
+                        birthday: None,
+                        notes: Some("safe to delete".into()),
+                        etag: None,
+                        methods: vec![quince_core::contacts::ContactMethod {
+                            kind: "phone".into(),
+                            label: Some("mobile".into()),
+                            value: "+10000000000".into(),
+                        }],
+                    };
+
+                    match quince_icloud::contacts::create(
+                        &http,
+                        &root,
+                        params.clone(),
+                        &tokens,
+                        &draft,
+                    )
+                    .await
+                    {
+                        Err(e) => println!("  \x1b[31mFAIL\x1b[0m create: {e}"),
+                        Ok(guid) => {
+                            println!("  \x1b[32mPASS\x1b[0m Apple accepted the create ({guid})");
+                            let stored = find(guid.clone()).await;
+                            match &stored {
+                                Some(c) if c.last_name.as_deref() == Some("Write Test") => {
+                                    println!(
+                                        "  \x1b[32mPASS\x1b[0m Apple really has it, with {} method(s)",
+                                        c.methods.len()
+                                    );
+                                }
+                                other => println!("  \x1b[31mFAIL\x1b[0m read back as {other:?}"),
+                            }
+
+                            if let Some(mut stored) = stored {
+                                // Editing needs the current tokens and Apple's own card, so
+                                // fields this app does not model survive the write.
+                                let refreshed = quince_icloud::contacts::fetch_with_tokens(
+                                    &http,
+                                    &root,
+                                    params.clone(),
+                                )
+                                .await
+                                .map(|(_, t)| t);
+                                let card = quince_icloud::contacts::card(
+                                    &http,
+                                    &root,
+                                    params.clone(),
+                                    &guid,
+                                )
+                                .await
+                                .ok()
+                                .flatten();
+
+                                stored.company = Some("Quince".into());
+                                match refreshed {
+                                    Err(e) => println!("  \x1b[31mFAIL\x1b[0m refresh tokens: {e}"),
+                                    Ok(tokens) => match quince_icloud::contacts::update(
+                                        &http,
+                                        &root,
+                                        params.clone(),
+                                        &tokens,
+                                        &stored,
+                                        card.as_ref(),
+                                    )
+                                    .await
+                                    {
+                                        Err(e) => println!("  \x1b[31mFAIL\x1b[0m update: {e}"),
+                                        Ok(()) => match find(guid.clone()).await {
+                                            Some(c) if c.company.as_deref() == Some("Quince") => {
+                                                println!("  \x1b[32mPASS\x1b[0m the edit is what Apple now holds");
+                                            }
+                                            other => println!(
+                                                "  \x1b[31mFAIL\x1b[0m edit not stored: {:?}",
+                                                other.map(|c| c.company)
+                                            ),
+                                        },
+                                    },
+                                }
+
+                                let latest = find(guid.clone()).await;
+                                let tokens = quince_icloud::contacts::fetch_with_tokens(
+                                    &http,
+                                    &root,
+                                    params.clone(),
+                                )
+                                .await
+                                .map(|(_, t)| t);
+                                match (latest, tokens) {
+                                    (Some(c), Ok(tokens)) => match quince_icloud::contacts::delete(
+                                        &http, &root, params.clone(), &tokens, &c,
+                                    )
+                                    .await
+                                    {
+                                        Err(e) => println!(
+                                            "  \x1b[31mFAIL\x1b[0m delete: {e}\n  \x1b[33mthe test contact {guid} is still there\x1b[0m"
+                                        ),
+                                        Ok(()) => match find(guid.clone()).await {
+                                            None => println!("  \x1b[32mPASS\x1b[0m gone from Apple; nothing left behind"),
+                                            Some(_) => println!("  \x1b[31mFAIL\x1b[0m delete accepted but it is still there"),
+                                        },
+                                    },
+                                    _ => println!("  \x1b[33mcould not re-read before deleting\x1b[0m"),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

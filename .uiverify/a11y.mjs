@@ -43,6 +43,8 @@ function installStub({ screen, services, twoFactor }) {
         case "note_save": case "note_delete": case "note_move": return null;
         case "note_create": return "Note/new";
         case "notes_in": return [];
+        case "contact_save": return "C-new";
+        case "contact_delete": return null;
         case "contacts_list": return [];
         case "contacts_last_synced": return Math.floor(Date.now() / 1000);
         case "contacts_sync": return 0;

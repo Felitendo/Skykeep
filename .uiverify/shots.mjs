@@ -144,6 +144,8 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "note_save": case "note_delete": case "note_move": return null;
         case "note_create": return "Note/new";
         case "notes_in": return !notesFixture ? [] : noteList;
+        case "contact_save": return "C-new";
+        case "contact_delete": return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;
         case "drive_children": return !driveFixture ? [] : driveItems;
         case "drive_sync_folder": return driveItems.length;
