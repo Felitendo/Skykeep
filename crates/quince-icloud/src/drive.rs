@@ -379,9 +379,15 @@ pub async fn move_to(
         .and_then(|i| i.etag.clone())
         .or_else(|| item.etag.clone());
 
+    // Unlike rename and delete, moveItems 400s outright without a clientId on the item —
+    // measured against the real service, not documented anywhere.
     let url = format!("{}/moveItems", root.trim_end_matches('/'));
     let body = json!({
-        "items": [{ "drivewsid": item.drivewsid, "etag": etag }],
+        "items": [{
+            "drivewsid": item.drivewsid,
+            "etag": etag,
+            "clientId": uuid::Uuid::new_v4().to_string(),
+        }],
         "destinationDrivewsId": destination_id,
     });
 
@@ -847,6 +853,14 @@ mod write_tests {
         assert_eq!(
             body["destinationDrivewsId"],
             "FOLDER::com.apple.CloudDocs::DEST"
+        );
+        // Measured against the real service: moveItems 400s outright with no clientId on
+        // the item, unlike rename or delete, which need none.
+        assert!(
+            body["items"][0]["clientId"]
+                .as_str()
+                .is_some_and(|c| !c.is_empty()),
+            "moveItems requires a clientId per item"
         );
     }
 

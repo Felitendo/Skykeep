@@ -2081,3 +2081,67 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
 }
 
 .contact-kind { width: 100%; }
+
+/* ── Modal sheet ────────────────────────────────────────────────────────────────────────
+   The Move dialog is the app's first modal, so this is the shape everything after it will
+   share: a dimmed veil behind a raised sheet, in the macOS sheet's proportions rather than
+   a full-screen dialog. */
+.modal-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.32);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  animation: modal-veil-in 160ms var(--ease) both;
+}
+
+@keyframes modal-veil-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-sheet {
+  width: min(440px, 92vw);
+  max-height: min(560px, 84vh);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 22px;
+  background: var(--sheet);
+  border-radius: var(--r-window);
+  box-shadow: var(--shadow-sheet), 0 0 0 0.5px var(--glass-edge);
+  animation: modal-sheet-in 220ms var(--ease-spring) both;
+}
+
+@keyframes modal-sheet-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+.modal-sheet h2 {
+  margin: 0;
+  font-size: var(--t-17);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.move-sheet-list {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-plateau);
+}
+
+.move-sheet-row {
+  grid-template-columns: 28px 1fr;
+  padding: 7px 9px;
+}

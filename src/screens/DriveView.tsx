@@ -53,6 +53,8 @@ export function DriveView() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  /** The item a Move dialog is open for, if any. */
+  const [moving, setMoving] = useState<DriveItem | null>(null);
 
   const here = trail[trail.length - 1];
 
@@ -156,6 +158,23 @@ export function DriveView() {
       setError(null);
       try {
         await api.driveDelete(item.drivewsid);
+        await refresh();
+      } catch (e) {
+        setError(messageOf(e));
+      } finally {
+        setBusyGuid(null);
+      }
+    },
+    [refresh]
+  );
+
+  const move = useCallback(
+    async (item: DriveItem, destinationId: string) => {
+      setMoving(null);
+      setBusyGuid(item.drivewsid);
+      setError(null);
+      try {
+        await api.driveMove(item.drivewsid, destinationId);
         await refresh();
       } catch (e) {
         setError(messageOf(e));
@@ -309,6 +328,14 @@ export function DriveView() {
                   <span className="drive-row-actions">
                     <button
                       className="rem-list-action"
+                      aria-label={`Move ${driveName(item)}`}
+                      disabled={busy}
+                      onClick={() => setMoving(item)}
+                    >
+                      ⇥
+                    </button>
+                    <button
+                      className="rem-list-action"
                       aria-label={`Rename ${driveName(item)}`}
                       disabled={busy}
                       onClick={() => setRenaming(item.drivewsid)}
@@ -334,6 +361,155 @@ export function DriveView() {
       {loaded && items.length === 0 && !creatingFolder && !error && (
         <p className="cal-empty">This folder is empty.</p>
       )}
+
+      {moving && (
+        <MoveDialog
+          item={moving}
+          startingIn={here.id}
+          onCancel={() => setMoving(null)}
+          onMove={(destinationId) => void move(moving, destinationId)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Where to move something — a small folder browser of its own, in the same shape Files'
+ * own Move sheet takes: breadcrumbs, folders only, a Move button that names where it will
+ * land. You cannot navigate into the item being moved, which is what stops the one obvious
+ * way to move something inside itself.
+ */
+function MoveDialog({
+  item,
+  startingIn,
+  onCancel,
+  onMove,
+}: {
+  item: DriveItem;
+  startingIn: string;
+  onCancel: () => void;
+  onMove: (destinationId: string) => void;
+}) {
+  const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
+  const [folders, setFolders] = useState<DriveItem[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const here = trail[trail.length - 1];
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        await api.driveSyncFolder(here.id);
+        const fresh = await api.driveChildren(here.id);
+        if (!cancelled) {
+          setFolders(
+            (Array.isArray(fresh) ? fresh : []).filter(
+              (i) => isContainer(i) && i.drivewsid !== item.drivewsid
+            )
+          );
+        }
+      } catch {
+        if (!cancelled) setFolders([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [here.id, item.drivewsid]);
+
+  const alreadyHere = here.id === startingIn;
+
+  // A sheet is modal: Escape leaves it exactly as Cancel would, and it must not be possible
+  // to tab out into the page still open underneath.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  // JSX autoFocus loses a real race: the click that opened this dialog also gives the
+  // trigger button native focus, and that lands after React's own autoFocus handling —
+  // so a keyboard user who opened this with Enter stayed on the row behind it, in a dialog
+  // that was visually in front but not where their next Tab or Escape would act. Moving
+  // focus explicitly, one tick later, wins the race properly.
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    const id = window.setTimeout(() => cancelRef.current?.focus(), 0);
+    return () => window.clearTimeout(id);
+  }, []);
+
+  return (
+    <div className="modal-veil" onClick={onCancel}>
+      <div
+        className="modal-sheet move-sheet"
+        role="dialog"
+        aria-label={`Move ${driveName(item)}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2>Move “{driveName(item)}”</h2>
+
+        <nav className="crumbs" aria-label="Destination folder">
+          {trail.map((crumb, i) => (
+            <span key={crumb.id}>
+              {i > 0 && (
+                <span className="crumb-sep" aria-hidden="true">
+                  ›
+                </span>
+              )}
+              <button
+                className="crumb"
+                aria-current={i === trail.length - 1}
+                onClick={() => setTrail((t) => t.slice(0, i + 1))}
+              >
+                {crumb.name}
+              </button>
+            </span>
+          ))}
+        </nav>
+
+        <ul className="move-sheet-list">
+          {loading && <li className="cal-empty">Loading…</li>}
+          {!loading && folders.length === 0 && (
+            <li className="cal-empty">No folders here.</li>
+          )}
+          {!loading &&
+            folders.map((folder) => (
+              <li key={folder.drivewsid}>
+                <button
+                  className="drive-row-hit move-sheet-row"
+                  onClick={() =>
+                    setTrail((t) => [...t, { id: folder.drivewsid, name: driveName(folder) }])
+                  }
+                >
+                  <span className="drive-badge folder" aria-hidden="true">
+                    ▸
+                  </span>
+                  <span className="drive-name">{driveName(folder)}</span>
+                </button>
+              </li>
+            ))}
+        </ul>
+
+        <div className="cal-form-actions">
+          <button
+            className="primary"
+            disabled={alreadyHere}
+            onClick={() => onMove(here.id)}
+          >
+            Move here
+          </button>
+          <button className="quiet" ref={cancelRef} onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

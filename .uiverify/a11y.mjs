@@ -10,7 +10,7 @@ const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservi
                   "premiummailsettings","push","reminders","settings","sharedlibrary",
                   "sharedstreams","ubiquity","uploadimagews"];
 
-function installStub({ screen, services, twoFactor }) {
+function installStub({ screen, services, twoFactor, driveItems = [] }) {
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
     invoke: async (cmd) => {
@@ -48,7 +48,7 @@ function installStub({ screen, services, twoFactor }) {
         case "contacts_list": return [];
         case "contacts_last_synced": return Math.floor(Date.now() / 1000);
         case "contacts_sync": return 0;
-        case "drive_children": return [];
+        case "drive_children": return driveItems;
         case "drive_sync_folder": return 0;
         case "drive_download": return "/home/user/Downloads/file.pdf";
         case "drive_create_folder": case "drive_rename": case "drive_delete": case "drive_move": return null;
@@ -93,18 +93,34 @@ const screens = [
       await p.waitForSelector(".sidebar .nav-item");
       await p.click(".nav-toggle"); // audit the expanded state too
     } },
+  { name: "drive-move", screen: "library", driveItems: [
+      { drivewsid: "FOLDER::a", parentId: null, name: "Downloads", extension: null,
+        kind: "FOLDER", size: null, childCount: 3, createdAt: 1785000000,
+        modifiedAt: 1788000000, etag: null },
+    ], act: async (p) => {
+      await p.click('.nav-item:has-text("iCloud Drive")');
+      await p.waitForSelector(".drive-row-hit");
+      await p.hover(".drive-row.is-folder");
+      await p.click('.drive-row.is-folder .rem-list-action[aria-label^="Move"]');
+      await p.waitForSelector(".modal-sheet");
+    } },
 ];
 
 const browser = await chromium.launch();
 let total = 0;
 
 for (const theme of ["light", "dark"]) {
-  for (const { name, screen, act } of screens) {
+  for (const { name, screen, act, driveItems } of screens) {
     const ctx = await browser.newContext({
       viewport: { width: 1040, height: 800 },
       colorScheme: theme,
     });
-    await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor: TWO_FACTOR });
+    await ctx.addInitScript(installStub, {
+      screen,
+      services: SERVICES,
+      twoFactor: TWO_FACTOR,
+      driveItems: driveItems ?? [],
+    });
     const page = await ctx.newPage();
     await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
     if (act) await act(page);

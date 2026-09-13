@@ -61,7 +61,11 @@ function installStub({ screen, services, twoFactor }) {
         case "contacts_list": return [];
         case "contacts_last_synced": return Math.floor(Date.now() / 1000);
         case "contacts_sync": return 0;
-        case "drive_children": return [];
+        case "drive_children": return [
+          { drivewsid: "FOLDER::a", parentId: null, name: "Downloads", extension: null,
+            kind: "FOLDER", size: null, childCount: 3, createdAt: 1785000000,
+            modifiedAt: 1788000000, etag: null },
+        ];
         case "drive_sync_folder": return 0;
         case "drive_download": return "/home/user/Downloads/file.pdf";
         case "drive_create_folder": case "drive_rename": case "drive_delete": case "drive_move": return null;
@@ -252,6 +256,32 @@ const focused = (page) =>
     () => document.activeElement?.classList.contains("picker-button") ?? false
   );
   check("Enter takes the choice and returns focus", dismissed && focusBack);
+  await ctx.close();
+}
+
+// --- Drive's Move dialog: Escape closes it, focus starts inside it ---
+{
+  const { ctx, page } = await open("library");
+  await page.click('.nav-item:has-text("iCloud Drive")');
+  await page.waitForSelector(".drive-row-hit");
+  await page.hover(".drive-row.is-folder");
+  await page.click('.drive-row.is-folder .rem-list-action[aria-label^="Move"]');
+  await page.waitForSelector(".modal-sheet");
+
+  // The focus move is deliberately a tick after mount (it has to win a race against the
+  // browser's own "focus the button that was clicked" behavior), so the test waits for the
+  // eventual state rather than asserting the instant after the dialog appears.
+  const startsInside = await page
+    .waitForFunction(() => document.activeElement?.closest(".modal-sheet") !== null, {
+      timeout: 1000,
+    })
+    .then(() => true)
+    .catch(() => false);
+  check("Move dialog starts with focus inside it", startsInside);
+
+  await page.keyboard.press("Escape");
+  const closed = (await page.locator(".modal-sheet").count()) === 0;
+  check("Escape closes the Move dialog", closed);
   await ctx.close();
 }
 

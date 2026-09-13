@@ -272,6 +272,14 @@ const shots = [
   { name: "17-calendar-wide", screen: "library", theme: "dark", calendarFixture: true,
     viewport: { width: 1920, height: 1080 },
     act: async (p) => { await p.waitForSelector(".cal-grid"); } },
+  { name: "18-drive-move", screen: "library", theme: "dark", driveFixture: true,
+    act: async (p) => {
+      await p.click('.nav-item:has-text("iCloud Drive")');
+      await p.waitForSelector(".drive-row-hit");
+      await p.hover(".drive-row.is-folder");
+      await p.click('.drive-row.is-folder .rem-list-action[aria-label^="Move"]');
+      await p.waitForSelector(".modal-sheet");
+    } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];
