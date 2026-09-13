@@ -19,7 +19,7 @@ const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservi
    value it needs must arrive through the single argument. */
 /* Fixture events, so the agenda's rendering is verified without inventing rows in anyone's
    real library. Times are unix seconds relative to now. */
-function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture }) {
+function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture, remindersFixture }) {
   const HOUR = 3600, DAY = 86400;
   const base = Math.floor(Date.now() / 1000 / DAY) * DAY + 9 * HOUR;
   const events = !calendarFixture ? [] : [
@@ -93,6 +93,21 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
       kind: "FILE", size: 2411724, childCount: null, createdAt: 1787000000,
       modifiedAt: 1788600000, etag: null },
   ];
+  const reminderLists = !remindersFixture ? [] : [
+    { guid: "l1", title: "Daily", colour: "#63da38", ctag: null, sortOrder: 0, enabled: true },
+    { guid: "l2", title: "GYM", colour: "#cc73e1", ctag: null, sortOrder: 1, enabled: true },
+    { guid: "l3", title: "Life Goals", colour: "#1badf8", ctag: null, sortOrder: 2, enabled: true },
+  ];
+  const reminderItems = !remindersFixture ? [] : [
+    { guid: "r1", listGuid: "l1", title: "Plan tomorrow", notes: null,
+      dueAt: base - 2 * HOUR, completedAt: null, priority: 0, flagged: false, etag: null },
+    { guid: "r2", listGuid: "l1", title: "Pick up the parcel", notes: null,
+      dueAt: base + DAY + 7 * HOUR, completedAt: null, priority: 0, flagged: true, etag: null },
+    { guid: "r3", listGuid: "l2", title: "Evening run", notes: "Legs today",
+      dueAt: base + 6 * HOUR, completedAt: null, priority: 0, flagged: false, etag: null },
+    { guid: "r4", listGuid: "l1", title: "Water the plants", notes: null,
+      dueAt: base - DAY, completedAt: base - DAY, priority: 0, flagged: false, etag: null },
+  ];
   const calendars = [
     { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true },
     { guid: "home", title: "Home", colour: "#0088ff", ctag: null, sortOrder: 1, enabled: true },
@@ -112,8 +127,8 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "calendar_list": return calendars;
         case "calendar_last_synced": return calendarFixture ? Math.floor(Date.now()/1000) - 120 : null;
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
-        case "reminder_lists": return [];
-        case "reminders_in": return [];
+        case "reminder_lists": return !remindersFixture ? [] : reminderLists;
+        case "reminders_in": return !remindersFixture ? [] : reminderItems;
         case "reminders_last_synced": return Math.floor(Date.now() / 1000);
         case "reminders_due_between": return calendarFixture ? dueReminders : [];
         case "reminders_sync": return [0, 0];
@@ -121,7 +136,7 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
         case "reminder_edit": return null;
-        case "reminders_smart": return [];
+        case "reminders_smart": return !remindersFixture ? [] : reminderItems.filter(r => !r.completedAt);
         case "note_folders": return !notesFixture ? [] : noteFolders;
         case "notes_in": return !notesFixture ? [] : noteList;
         case "notes_last_synced": return Math.floor(Date.now() / 1000);
@@ -198,18 +213,27 @@ const shots = [
       await p.click('.nav-item:has-text("iCloud Drive")');
       await p.waitForSelector(".drive-rows .drive-row");
     } },
+  { name: "13-reminders", screen: "library", theme: "dark", remindersFixture: true,
+    viewport: { width: 1100, height: 760 },
+    act: async (p) => {
+      await p.click('.nav-item:has-text("Reminders")');
+      await p.waitForSelector(".rem-list-items li");
+      await p.click('.rem-list:has-text("Daily")');
+      await p.waitForTimeout(200);
+      await p.click('.rem-more >> nth=0');
+    } },
   { name: "04-library", screen: "library", theme: "light" },
   { name: "05-library-dark", screen: "library", theme: "dark" },
 ];
 
 const browser = await chromium.launch();
-for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false, notesFixture = false, contactsFixture = false, driveFixture = false, viewport } of shots) {
+for (const { name, screen, theme, act, twoFactor = PUSHED, calendarFixture = false, notesFixture = false, contactsFixture = false, driveFixture = false, remindersFixture = false, viewport } of shots) {
   const ctx = await browser.newContext({
     viewport: viewport ?? { width: 1040, height: 720 },
     deviceScaleFactor: 2,
     colorScheme: theme,
   });
-  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture });
+  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture, remindersFixture });
   const page = await ctx.newPage();
   const errors = [];
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
