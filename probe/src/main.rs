@@ -2140,6 +2140,179 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- what does Drive's docws protocol actually support? ------------------------
+    // Only reading has been measured. Renaming, deleting, moving, downloading and making a
+    // folder each need their own shape, so find out what the service actually accepts
+    // before writing any of it. --write-test also proves create + rename + delete live.
+    println!("\n\x1b[1m── Drive: docws capability probe ──\x1b[0m");
+    if let Some(root) = session.service_url("drivews") {
+        let params = client.service_params();
+        let http = client.http().clone();
+
+        // Downloading a file: does asking for one folder's contents also carry a download
+        // URL, or does that need a separate request?
+        let details = http
+            .post(format!(
+                "{}/retrieveItemDetailsInFolders",
+                root.trim_end_matches('/')
+            ))
+            .query(&params)
+            .json(&serde_json::json!([{
+                "drivewsid": "FOLDER::com.apple.CloudDocs::root",
+                "partialData": false,
+            }]))
+            .send()
+            .await;
+        match details {
+            Err(e) => println!("  root listing failed: {e}"),
+            Ok(response) => {
+                let text = response.text().await.unwrap_or_default();
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Err(e) => println!("  not JSON: {e}"),
+                    Ok(body) => {
+                        let first_file = body
+                            .pointer("/0/items")
+                            .and_then(|v| v.as_array())
+                            .and_then(|items| {
+                                items.iter().find(|i| {
+                                    i.get("type").and_then(|t| t.as_str()) == Some("FILE")
+                                })
+                            })
+                            .cloned();
+                        match &first_file {
+                            None => println!("  no plain file at the root to test with"),
+                            Some(file) => {
+                                println!(
+                                    "  one file's every key: {}",
+                                    file.as_object()
+                                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                                        .unwrap_or_default()
+                                );
+                                if let Some(id) = file.get("docwsid").and_then(|v| v.as_str()) {
+                                    let dl = http
+                                        .get(format!(
+                                            "{}/ws/com.apple.CloudDocs/download/by_id",
+                                            root.trim_end_matches('/')
+                                        ))
+                                        .query(&params)
+                                        .query(&[("document_id", id)])
+                                        .send()
+                                        .await;
+                                    match dl {
+                                        Err(e) => println!("  download request failed: {e}"),
+                                        Ok(r) => {
+                                            let status = r.status();
+                                            let text = r.text().await.unwrap_or_default();
+                                            println!(
+                                                "  download by_id -> {status}: {}",
+                                                text.chars().take(200).collect::<String>()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if std::env::args().any(|a| a == "--write-test") {
+            // Create a folder, read it back from Apple, rename it, delete it.
+            let name = "Quince write test — safe to delete";
+            let create = http
+                .post(format!("{}/createFolders", root.trim_end_matches('/')))
+                .query(&params)
+                .json(&serde_json::json!({
+                    "destinationDrivewsId": "FOLDER::com.apple.CloudDocs::root",
+                    "folders": [{ "name": name, "clientId": uuid::Uuid::new_v4().to_string() }],
+                }))
+                .send()
+                .await;
+            match create {
+                Err(e) => println!("  \x1b[31mFAIL\x1b[0m createFolders: {e}"),
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    println!("  createFolders -> {status}");
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Err(e) => {
+                            println!("    not JSON: {e}\n    {}", &text[..300.min(text.len())])
+                        }
+                        Ok(body) => {
+                            println!(
+                                "    {}",
+                                serde_json::to_string_pretty(&body)
+                                    .unwrap_or_default()
+                                    .lines()
+                                    .take(20)
+                                    .collect::<Vec<_>>()
+                                    .join("\n    ")
+                            );
+                            if let Some(new_id) = body
+                                .pointer("/folders/0/drivewsid")
+                                .and_then(|v| v.as_str())
+                            {
+                                println!("  \x1b[32mPASS\x1b[0m created {new_id}");
+
+                                let rename = http
+                                    .post(format!("{}/renameItems", root.trim_end_matches('/')))
+                                    .query(&params)
+                                    .json(&serde_json::json!({
+                                        "items": [{
+                                            "drivewsid": new_id,
+                                            "name": "Quince renamed — safe to delete",
+                                            "etag": body.pointer("/folders/0/etag"),
+                                        }]
+                                    }))
+                                    .send()
+                                    .await;
+                                match rename {
+                                    Err(e) => println!("  \x1b[31mFAIL\x1b[0m renameItems: {e}"),
+                                    Ok(r) => println!(
+                                        "  renameItems -> {}: {}",
+                                        r.status(),
+                                        r.text()
+                                            .await
+                                            .unwrap_or_default()
+                                            .chars()
+                                            .take(200)
+                                            .collect::<String>()
+                                    ),
+                                }
+
+                                let delete = http
+                                    .post(format!(
+                                        "{}/moveItemsToTrash",
+                                        root.trim_end_matches('/')
+                                    ))
+                                    .query(&params)
+                                    .json(&serde_json::json!({
+                                        "items": [{
+                                            "drivewsid": new_id,
+                                            "etag": body.pointer("/folders/0/etag"),
+                                        }]
+                                    }))
+                                    .send()
+                                    .await;
+                                match delete {
+                                    Err(e) => println!(
+                                        "  \x1b[31mFAIL\x1b[0m moveItemsToTrash: {e}\n  \x1b[33m{new_id} is still there\x1b[0m"
+                                    ),
+                                    Ok(r) => println!(
+                                        "  moveItemsToTrash -> {}: {}",
+                                        r.status(),
+                                        r.text().await.unwrap_or_default().chars().take(200).collect::<String>()
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

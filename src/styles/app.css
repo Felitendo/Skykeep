@@ -864,7 +864,10 @@
 /* Adding a reminder sits where the next row would, the way Apple's does. */
 .rem-add {
   display: grid;
-  grid-template-columns: 18px 1fr;
+  /* A third column only when the target tag is present; an empty third track when it is
+     not costs nothing. Fixed to 18px 1fr before, the tag had nowhere to go but the row
+     below, which wrapped "To-Do" onto two lines of its own. */
+  grid-template-columns: 18px 1fr auto;
   align-items: center;
   gap: 10px;
   padding: 7px 8px;
@@ -884,7 +887,7 @@
 .rem-add input::placeholder { color: var(--text-3); }
 
 .rem-add-target {
-  flex: none;
+  white-space: nowrap;
   font-size: var(--t-11);
   color: var(--text-3);
   padding: 2px 7px;
