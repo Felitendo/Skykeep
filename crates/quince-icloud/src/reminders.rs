@@ -440,7 +440,12 @@ fn list_from_record(record: &Value) -> Option<ReminderList> {
 
 /// Read reminders from CloudKit into the local library.
 ///
-/// Returns the number of lists and reminders stored, plus the sync token to resume from.
+/// Pass the previous `since` token to fetch only what changed. That distinction matters for
+/// more than speed: an incremental response contains only changes, so absence means
+/// "unchanged", not "deleted" — treating it otherwise would empty the library on the first
+/// incremental refresh.
+///
+/// Returns the number of lists and reminders written, plus the token to resume from.
 pub async fn sync_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -448,28 +453,63 @@ pub async fn sync_cloudkit(
     library: &mut quince_core::Library,
     since: Option<&str>,
 ) -> Result<(usize, usize, Option<String>)> {
+    let incremental = since.is_some();
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let (records, token) = client.all_records(ZONE, since).await?;
 
     let mut lists: Vec<ReminderList> = Vec::new();
     let mut reminders: Vec<Reminder> = Vec::new();
+    let mut gone_reminders: Vec<String> = Vec::new();
+    let mut gone_lists: Vec<String> = Vec::new();
 
     for record in &records {
-        match field::record_type(record).as_deref() {
-            Some("Reminder") => reminders.extend(reminder_from_record(record)),
+        let Some(kind) = field::record_type(record) else {
+            continue; // tombstone with no type; nothing to act on
+        };
+        let Some(name) = field::record_name(record) else {
+            continue;
+        };
+        // CloudKit reports a removal either as a top-level flag or a Deleted field.
+        let removed = record
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || field::flag(record, "Deleted");
+
+        match kind.as_str() {
+            "Reminder" => {
+                if removed {
+                    gone_reminders.push(name);
+                } else {
+                    reminders.extend(reminder_from_record(record));
+                }
+            }
             // Only List records are the lists people made. ListSection is a heading inside
             // one, and SmartList is a built-in filter — Today, Scheduled, Flagged — which
             // carries a SmartListType instead of a Name and appeared as phantom entries
             // called "Reminders" that held nothing.
-            Some("List") => lists.extend(list_from_record(record)),
+            "List" => {
+                if removed {
+                    gone_lists.push(name);
+                } else {
+                    lists.extend(list_from_record(record));
+                }
+            }
             _ => {}
         }
     }
 
     // Every list a reminder points at must exist, or storing it fails the foreign key.
-    // Apple does not always return the list record in the same page as its reminders.
+    // On an incremental pass the list is usually already stored, so check before inventing.
+    let known_locally: std::collections::HashSet<String> = library
+        .reminder_lists()?
+        .into_iter()
+        .map(|l| l.guid)
+        .collect();
     for reminder in &reminders {
-        if !lists.iter().any(|l| l.guid == reminder.list_guid) {
+        let missing = !lists.iter().any(|l| l.guid == reminder.list_guid)
+            && !known_locally.contains(&reminder.list_guid);
+        if missing {
             lists.push(ReminderList {
                 guid: reminder.list_guid.clone(),
                 title: "Reminders".into(),
@@ -481,8 +521,15 @@ pub async fn sync_cloudkit(
         }
     }
 
-    library.put_reminder_lists(&lists)?;
+    if incremental {
+        library.merge_reminder_lists(&lists)?;
+    } else {
+        library.put_reminder_lists(&lists)?;
+    }
     library.put_reminders(&reminders)?;
+    if !gone_reminders.is_empty() || !gone_lists.is_empty() {
+        library.forget_reminders(&gone_reminders, &gone_lists)?;
+    }
     library.mark_synced("reminders", token.as_deref())?;
     Ok((lists.len(), reminders.len(), token))
 }
@@ -644,5 +691,163 @@ mod list_kind_tests {
         let l = list_from_record(&record("List/abc", "List", Some("GYM"))).unwrap();
         assert_eq!(l.title, "GYM");
         assert_eq!(l.guid, "List/abc");
+    }
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+    use quince_core::Library;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn doc(text: &str) -> String {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        use std::io::Write;
+        fn f(tag: u8, payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![(tag << 3) | 2];
+            let mut len = payload.len();
+            loop {
+                let mut b = (len & 0x7F) as u8;
+                len >>= 7;
+                if len != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if len == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(payload);
+            out
+        }
+        let proto = f(2, &f(3, &f(2, text.as_bytes())));
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&proto).unwrap();
+        B64.encode(gz.finish().unwrap())
+    }
+
+    fn reminder(name: &str, title: &str) -> Value {
+        json!({
+            "recordName": name, "recordType": "Reminder",
+            "fields": {
+                "TitleDocument": { "type": "ENCRYPTED_BYTES", "value": doc(title) },
+                "List": { "type": "REFERENCE", "value": { "recordName": "List/a" } }
+            }
+        })
+    }
+
+    fn list(name: &str, title: &str) -> Value {
+        json!({
+            "recordName": name, "recordType": "List",
+            "fields": { "Name": { "type": "STRING", "value": title } }
+        })
+    }
+
+    async fn serve(body: Value) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// The bug worth guarding: an incremental response mentions one changed record, and
+    /// everything else must survive. Replacing on a delta would empty the library.
+    #[tokio::test]
+    async fn an_incremental_sync_keeps_what_it_did_not_mention() {
+        let http = reqwest::Client::new();
+        let mut library = Library::in_memory().unwrap();
+
+        let full = serve(json!({ "zones": [{
+            "records": [list("List/a", "GYM"), reminder("Reminder/1", "Squats"),
+                        reminder("Reminder/2", "Deadlifts")],
+            "syncToken": "t1", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(&http, &full.uri(), vec![], &mut library, None)
+            .await
+            .unwrap();
+        assert_eq!(library.reminders_in("List/a", true).unwrap().len(), 2);
+
+        // A delta carrying only one changed reminder, and no list at all.
+        let delta = serve(json!({ "zones": [{
+            "records": [reminder("Reminder/1", "Squats (heavier)")],
+            "syncToken": "t2", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(&http, &delta.uri(), vec![], &mut library, Some("t1"))
+            .await
+            .unwrap();
+
+        let after = library.reminders_in("List/a", true).unwrap();
+        assert_eq!(
+            after.len(),
+            2,
+            "the unmentioned reminder must survive a delta"
+        );
+        assert_eq!(
+            library.reminder_lists().unwrap().len(),
+            1,
+            "and so must the list, which the delta never mentioned"
+        );
+        assert!(
+            after.iter().any(|r| r.title == "Squats (heavier)"),
+            "the changed one should be updated"
+        );
+    }
+
+    /// A full sync still drops what Apple stopped reporting.
+    #[tokio::test]
+    async fn a_full_sync_still_removes_vanished_lists() {
+        let http = reqwest::Client::new();
+        let mut library = Library::in_memory().unwrap();
+
+        let first = serve(json!({ "zones": [{
+            "records": [list("List/a", "GYM"), list("List/b", "Study")],
+            "syncToken": "t1", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(&http, &first.uri(), vec![], &mut library, None)
+            .await
+            .unwrap();
+        assert_eq!(library.reminder_lists().unwrap().len(), 2);
+
+        let second = serve(json!({ "zones": [{
+            "records": [list("List/a", "GYM")], "syncToken": "t2", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(&http, &second.uri(), vec![], &mut library, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            library.reminder_lists().unwrap().len(),
+            1,
+            "a full pass is authoritative"
+        );
+    }
+
+    /// A reminder deleted on the phone must disappear here.
+    #[tokio::test]
+    async fn a_deleted_reminder_is_removed() {
+        let http = reqwest::Client::new();
+        let mut library = Library::in_memory().unwrap();
+
+        let first = serve(json!({ "zones": [{
+            "records": [list("List/a", "GYM"), reminder("Reminder/1", "Squats")],
+            "syncToken": "t1", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(&http, &first.uri(), vec![], &mut library, None)
+            .await
+            .unwrap();
+        assert_eq!(library.reminders_in("List/a", true).unwrap().len(), 1);
+
+        let delta = serve(json!({ "zones": [{
+            "records": [{ "recordName": "Reminder/1", "recordType": "Reminder", "deleted": true }],
+            "syncToken": "t2", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(&http, &delta.uri(), vec![], &mut library, Some("t1"))
+            .await
+            .unwrap();
+        assert!(library.reminders_in("List/a", true).unwrap().is_empty());
     }
 }

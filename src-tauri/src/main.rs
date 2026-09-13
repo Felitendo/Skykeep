@@ -235,7 +235,10 @@ async fn calendar_list(data: State<'_, Data>) -> UiResult<Vec<Calendar>> {
 async fn reminders_sync(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<(usize, usize)> {
     let (http, root, params) = cloudkit_context(&auth).await?;
     let mut library = data.0.lock().await;
-    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, None)
+    // Resume from where the last sync got to. A full walk of this zone is thousands of
+    // records; a delta is usually a handful.
+    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
+    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
         .await
         .map(|(lists, count, _)| (lists, count))
         .map_err(|e| e.to_string())
@@ -288,7 +291,8 @@ async fn reminder_set_done(
         .map_err(|e| e.to_string())?;
 
     let mut library = data.0.lock().await;
-    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, None)
+    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
+    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

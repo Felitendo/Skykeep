@@ -502,38 +502,6 @@ async fn main() -> Result<()> {
         // than against an assumption about the shape.
         // Scan month by month with the exact parameters the client uses, so "no events"
         // is a measurement rather than an assumption.
-        println!("  \x1b[1mmonth-by-month scan\x1b[0m");
-        let months = [
-            ("2026-01-01", "2026-01-31"),
-            ("2026-03-01", "2026-03-31"),
-            ("2026-05-01", "2026-05-31"),
-            ("2026-07-01", "2026-07-31"),
-            ("2026-08-01", "2026-08-31"),
-            ("2026-09-01", "2026-09-30"),
-            ("2026-10-01", "2026-10-31"),
-            ("2026-12-01", "2026-12-31"),
-            ("2027-01-01", "2027-01-31"),
-        ];
-        let scan_client =
-            quince_icloud::calendar::CalendarClient::new(&http, &root, params.clone());
-        let mut total = 0usize;
-        for (a, b) in months {
-            let via_startup = scan_client.startup(a, b, zone).await;
-            let via_events = scan_client.events(a, b, zone).await;
-            let s_count = via_startup.as_ref().map(|s| s.events.len()).unwrap_or(0);
-            let e_count = via_events.as_ref().map(|s| s.events.len()).unwrap_or(0);
-            total += s_count.max(e_count);
-            println!(
-                "    {a}  startup={s_count:<4} events={e_count:<4}{}",
-                if via_startup.is_err() || via_events.is_err() {
-                    "  (an endpoint errored)"
-                } else {
-                    ""
-                }
-            );
-        }
-        println!("  total events seen across the scan: {total}");
-
         let (window_start, window_end) = ("2026-06-01", "2027-03-31");
 
         match quince_core::Library::open(&dir) {
@@ -592,15 +560,28 @@ async fn main() -> Result<()> {
         match quince_core::Library::open(&dir) {
             Err(e) => println!("  \x1b[31mcouldn't open the local library:\x1b[0m {e}"),
             Ok(mut library) => {
-                match quince_icloud::reminders::sync_cloudkit(
+                // Resume from the stored token, so this measures what a real refresh costs
+                // rather than repeating a cold walk every time.
+                let since = library.sync_token("reminders").ok().flatten();
+                let started = std::time::Instant::now();
+                println!(
+                    "  {} sync…",
+                    if since.is_some() {
+                        "incremental"
+                    } else {
+                        "first (full)"
+                    }
+                );
+                let outcome = quince_icloud::reminders::sync_cloudkit(
                     &http,
                     &ck,
                     params,
                     &mut library,
-                    None,
+                    since.as_deref(),
                 )
-                .await
-                {
+                .await;
+                println!("  took {:.1}s", started.elapsed().as_secs_f64());
+                match outcome {
                     Err(e) => println!("  \x1b[31mFAIL\x1b[0m {e}"),
                     Ok((lists, count, token)) => {
                         println!(
@@ -621,58 +602,6 @@ async fn main() -> Result<()> {
                                     .unwrap_or_default();
                                 println!("      [{mark}] {}{note}", r.title);
                             }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ---- where do List records live? --------------------------------------------
-    // Reminders reference List/<uuid>, but the Reminders zone returns none. Census every
-    // zone in the container rather than guess.
-    println!("\n\x1b[1m── Hunting the List records ──\x1b[0m");
-    if let Some(ck) = session.service_url("ckdatabasews") {
-        for zone_name in ["Reminders", "RemindersMigration", "_defaultZone"] {
-            let zc = quince_icloud::cloudkit::ZoneClient::new(
-                client.http(),
-                &ck,
-                "com.apple.reminders",
-                client.service_params(),
-            );
-            match zc.all_records(zone_name, None).await {
-                Err(e) => println!(
-                    "  {zone_name:<20} error: {}",
-                    e.to_string().chars().take(70).collect::<String>()
-                ),
-                Ok((records, _)) => {
-                    let mut census: std::collections::BTreeMap<String, usize> =
-                        std::collections::BTreeMap::new();
-                    for rec in &records {
-                        let kind = rec
-                            .get("recordType")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("(tombstone)");
-                        *census.entry(kind.to_string()).or_default() += 1;
-                    }
-                    let summary: Vec<String> =
-                        census.iter().map(|(k, n)| format!("{k}={n}")).collect();
-                    println!(
-                        "  {zone_name:<20} {} record(s): {}",
-                        records.len(),
-                        summary.join(" ")
-                    );
-
-                    // Show any List record's fields, wherever it turns up.
-                    for rec in &records {
-                        if rec.get("recordType").and_then(|t| t.as_str()) == Some("List") {
-                            let fields: Vec<String> = rec
-                                .get("fields")
-                                .and_then(|f| f.as_object())
-                                .map(|o| o.keys().cloned().collect())
-                                .unwrap_or_default();
-                            println!("    List fields: {}", fields.join(", "));
-                            break;
                         }
                     }
                 }
@@ -736,117 +665,6 @@ async fn main() -> Result<()> {
                         ),
                     }
                 }
-            }
-        }
-    }
-
-    // ---- what a CloudKit reminder actually looks like ---------------------------
-    println!("\n\x1b[1m── CloudKit reminders: record shapes ──\x1b[0m");
-    if let Some(ck) = session.service_url("ckdatabasews") {
-        // The Reminder type is not indexable, so records/query is refused. changes/zone
-        // walks the whole zone instead, which is also how incremental sync works.
-        // Omit desiredKeys entirely: an empty array asks Apple for no fields at all.
-        let url = format!("{ck}/database/1/com.apple.reminders/production/private/changes/zone");
-        let mut q = client.service_params();
-        q.push(("ckjsBuildVersion".into(), "17DProjectDev77".into()));
-        q.push(("ckjsVersion".into(), "2.6.1".into()));
-
-        let mut sync_token: Option<String> = None;
-        let mut types: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        let mut samples: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
-
-        for page in 0..12 {
-            let mut zone = serde_json::json!({
-                "zoneID": { "zoneName": "Reminders", "zoneType": "REGULAR_CUSTOM_ZONE" },
-                "maxChanges": 200,
-            });
-            if let Some(token) = &sync_token {
-                zone["syncToken"] = serde_json::Value::String(token.clone());
-            }
-            let body = serde_json::json!({ "zones": [zone] });
-
-            let Ok(r) = client.http().post(&url).query(&q).json(&body).send().await else {
-                println!("  transport error on page {page}");
-                break;
-            };
-            let text = r.text().await.unwrap_or_default();
-            let v: serde_json::Value =
-                serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-            let Some(zone_result) = v
-                .get("zones")
-                .and_then(|z| z.as_array())
-                .and_then(|a| a.first())
-            else {
-                println!(
-                    "  unexpected: {}",
-                    text.chars().take(200).collect::<String>()
-                );
-                break;
-            };
-
-            let records = zone_result
-                .get("records")
-                .and_then(|r| r.as_array())
-                .cloned()
-                .unwrap_or_default();
-            for rec in &records {
-                let rt = rec
-                    .get("recordType")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("?");
-                *types.entry(rt.to_string()).or_default() += 1;
-                if samples.iter().all(|(t, _, _)| t != rt) {
-                    let fields: Vec<String> = rec
-                        .get("fields")
-                        .and_then(|f| f.as_object())
-                        .map(|o| o.keys().cloned().collect())
-                        .unwrap_or_default();
-                    // Any field that looks like a title tells us where the text lives.
-                    // Dump a whole Reminder so the shape of TitleDocument is visible.
-                    let title = if rt == "Reminder" {
-                        // Only the fields whose encoding is still unknown.
-                        rec.get("fields").and_then(|f| {
-                            let picked = serde_json::json!({
-                                "TitleDocument": f.get("TitleDocument"),
-                                "NotesDocument": f.get("NotesDocument"),
-                                "Priority": f.get("Priority"),
-                                "List": f.get("List"),
-                            });
-                            serde_json::to_string_pretty(&picked)
-                                .ok()
-                                .map(|s| s.chars().take(1600).collect::<String>())
-                        })
-                    } else {
-                        None
-                    };
-                    samples.push((rt.to_string(), fields, title));
-                }
-            }
-
-            sync_token = zone_result
-                .get("syncToken")
-                .and_then(|t| t.as_str())
-                .map(ToString::to_string);
-            if !zone_result
-                .get("moreComing")
-                .and_then(|m| m.as_bool())
-                .unwrap_or(false)
-            {
-                break;
-            }
-        }
-
-        let total: usize = types.values().sum();
-        println!("  {total} record(s) across the zone");
-        for (rt, n) in &types {
-            println!("    {rt}: {n}");
-        }
-        for (rt, fields, title) in &samples {
-            if let Some(dump) = title {
-                println!("    --- full {rt} record ---\n{dump}");
-            } else {
-                println!("    {rt} fields: {}", fields.join(", "));
             }
         }
     }

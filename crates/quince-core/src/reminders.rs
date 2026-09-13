@@ -47,6 +47,74 @@ fn now() -> i64 {
 }
 
 impl Library {
+    /// Upsert lists without removing anything.
+    ///
+    /// An incremental sync returns only what changed, so absence means "unchanged", not
+    /// "deleted". Using the replacing variant there would wipe the whole library on the
+    /// first incremental refresh.
+    pub fn merge_reminder_lists(&mut self, lists: &[ReminderList]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(guid) DO UPDATE SET
+                   title = excluded.title, colour = excluded.colour, ctag = excluded.ctag,
+                   sort_order = excluded.sort_order, enabled = excluded.enabled,
+                   updated_at = excluded.updated_at",
+            )?;
+            let stamp = now();
+            for l in lists {
+                stmt.execute(params![
+                    l.guid,
+                    l.title,
+                    l.colour,
+                    l.ctag,
+                    l.sort_order,
+                    i64::from(l.enabled),
+                    stamp
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove reminders and lists the server reports as gone.
+    pub fn forget_reminders(
+        &mut self,
+        reminder_guids: &[String],
+        list_guids: &[String],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut drop_reminder = tx.prepare("DELETE FROM reminders WHERE guid = ?1")?;
+            for guid in reminder_guids {
+                drop_reminder.execute(params![guid])?;
+            }
+            // Removing a list takes its reminders with it, by foreign key.
+            let mut drop_list = tx.prepare("DELETE FROM reminder_lists WHERE guid = ?1")?;
+            for guid in list_guids {
+                drop_list.execute(params![guid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Where a service's last sync got to, for resuming.
+    pub fn sync_token(&self, service: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT token FROM sync_state WHERE service = ?1",
+                params![service],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten())
+    }
+
     /// Replace the set of lists, dropping any Apple no longer reports.
     pub fn put_reminder_lists(&mut self, lists: &[ReminderList]) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -226,6 +294,59 @@ mod tests {
             all.last().unwrap().guid,
             "done",
             "completed items sink to the bottom"
+        );
+    }
+
+    /// The bug this guards: an incremental sync returns only what changed, so treating
+    /// absence as deletion would wipe everything already stored.
+    #[test]
+    fn merging_does_not_remove_what_was_not_mentioned() {
+        let mut lib = seeded();
+        lib.put_reminders(&[reminder("r1", None, None)]).unwrap();
+
+        // A later sync mentions a different list entirely.
+        lib.merge_reminder_lists(&[list("l2")]).unwrap();
+
+        assert_eq!(
+            lib.reminder_lists().unwrap().len(),
+            2,
+            "the original list must survive"
+        );
+        assert_eq!(
+            lib.reminders_in("l1", true).unwrap().len(),
+            1,
+            "and so must its reminders"
+        );
+    }
+
+    #[test]
+    fn forgetting_removes_only_what_was_named() {
+        let mut lib = seeded();
+        lib.put_reminder_lists(&[list("l1"), list("l2")]).unwrap();
+        lib.put_reminders(&[reminder("r1", None, None), reminder("r2", None, None)])
+            .unwrap();
+
+        lib.forget_reminders(&["r1".to_string()], &[]).unwrap();
+        let left = lib.reminders_in("l1", true).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].guid, "r2");
+
+        lib.forget_reminders(&[], &["l1".to_string()]).unwrap();
+        assert!(
+            lib.reminders_in("l1", true).unwrap().is_empty(),
+            "its reminders go too"
+        );
+        assert_eq!(lib.reminder_lists().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_sync_token_round_trips() {
+        let lib = seeded();
+        assert!(lib.sync_token("reminders").unwrap().is_none());
+        lib.mark_synced("reminders", Some("token-abc")).unwrap();
+        assert_eq!(
+            lib.sync_token("reminders").unwrap().as_deref(),
+            Some("token-abc")
         );
     }
 
