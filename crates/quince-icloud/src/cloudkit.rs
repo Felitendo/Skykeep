@@ -447,6 +447,23 @@ impl ZoneClient<'_> {
     }
 
     /// Fetch one record, for reading its current change tag.
+    /// Remove a record outright.
+    ///
+    /// `forceDelete` is CloudKit's delete-regardless-of-change-tag. The alternative is to
+    /// pass the tag and have Apple refuse if it moved, which is right when a person is
+    /// editing and wrong when they have said to delete the thing.
+    pub async fn delete_record(&self, zone: &str, record_name: &str) -> Result<()> {
+        self.modify(
+            zone,
+            json!({
+                "operationType": "forceDelete",
+                "record": { "recordName": record_name },
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn lookup_record(&self, zone: &str, record_name: &str) -> Result<Option<Value>> {
         let url = format!(
             "{}/database/1/{}/production/private/records/lookup",

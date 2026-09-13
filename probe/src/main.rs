@@ -1040,6 +1040,271 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ---- does writing an event actually work? -----------------------------------
+    // Apple's calendar write protocol is not documented, so this proves the shape rather
+    // than assuming it: create one obviously-named event, read it back, delete it. Runs
+    // only with --write-test, and cleans up after itself.
+    if std::env::args().any(|a| a == "--write-test") {
+        println!("\n\x1b[1m── Calendar write round trip ──\x1b[0m");
+        if let Some(root) = session.service_url("calendar") {
+            match quince_core::Library::open(&dir) {
+                Err(e) => println!("  \x1b[31mcouldn't open the local library:\x1b[0m {e}"),
+                Ok(mut library) => {
+                    let calendars = library.calendars().unwrap_or_default();
+                    match calendars.first() {
+                        None => println!("  no calendar to write to"),
+                        Some(calendar) => {
+                            // Tomorrow, so the test event never lands in a window
+                            // someone is looking at right now.
+                            let starts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+                                + 86_400;
+                            let event = quince_core::calendar::Event {
+                                guid: uuid::Uuid::new_v4().to_string().to_uppercase(),
+                                calendar_guid: calendar.guid.clone(),
+                                title: "Quince write test — safe to delete".into(),
+                                location: None,
+                                starts_at: starts,
+                                ends_at: starts + 1_800,
+                                all_day: false,
+                                timezone: Some("Asia/Kolkata".into()),
+                                url: None,
+                                notes: None,
+                                etag: None,
+                            };
+                            println!("  writing to \x1b[1m{}\x1b[0m…", calendar.title);
+                            let params = client.service_params();
+                            let http = client.http().clone();
+
+                            match quince_icloud::sync::put_event(
+                                &http,
+                                &root,
+                                params.clone(),
+                                &mut library,
+                                &event,
+                            )
+                            .await
+                            {
+                                Err(e) => println!("  \x1b[31mFAIL\x1b[0m create: {e}"),
+                                Ok(()) => {
+                                    println!("  \x1b[32mPASS\x1b[0m Apple accepted the create");
+
+                                    // The real proof: ask Apple for that day afresh and see
+                                    // whether the event is in what comes back. A write that
+                                    // returns 200 and stores nothing would pass otherwise.
+                                    let day = jiff::Timestamp::from_second(starts)
+                                        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+                                        .to_zoned(jiff::tz::TimeZone::get("Asia/Kolkata").unwrap())
+                                        .strftime("%Y-%m-%d")
+                                        .to_string();
+                                    let found = quince_icloud::sync::fetch_calendar(
+                                        &http,
+                                        &root,
+                                        params.clone(),
+                                        &day,
+                                        &day,
+                                        "Asia/Kolkata",
+                                    )
+                                    .await
+                                    .map(|snap| {
+                                        snap.events.into_iter().find(|e| e.guid == event.guid)
+                                    })
+                                    .unwrap_or(None);
+
+                                    match &found {
+                                        Some(back) => println!(
+                                            "  \x1b[32mPASS\x1b[0m Apple really has it: {:?} etag={:?}",
+                                            back.title, back.etag
+                                        ),
+                                        None => println!(
+                                            "  \x1b[31mFAIL\x1b[0m Apple took the write but does not have the event"
+                                        ),
+                                    }
+                                    let to_delete = found.unwrap_or(event);
+                                    match quince_icloud::sync::delete_event(
+                                        &http, &root, params, &mut library, &to_delete,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => {
+                                            let still_there = quince_icloud::sync::fetch_calendar(
+                                                &http,
+                                                &root,
+                                                client.service_params(),
+                                                &day,
+                                                &day,
+                                                "Asia/Kolkata",
+                                            )
+                                            .await
+                                            .map(|snap| {
+                                                snap.events
+                                                    .iter()
+                                                    .any(|e| e.guid == to_delete.guid)
+                                            })
+                                            .unwrap_or(false);
+                                            if still_there {
+                                                println!(
+                                                    "  \x1b[31mFAIL\x1b[0m Apple took the delete but still has the event"
+                                                );
+                                            } else {
+                                                println!("  \x1b[32mPASS\x1b[0m gone from Apple; nothing left behind");
+                                            }
+                                        }
+                                        Err(e) => println!(
+                                            "  \x1b[31mFAIL\x1b[0m delete: {e}\n  \x1b[33mthe test event is still in {}\x1b[0m",
+                                            calendar.title
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- does writing a note actually work? --------------------------------------
+    // Same discipline as the calendar: create a note, edit it, read both back from Apple,
+    // then delete it. Only ever touches the note it made. Runs with --write-test.
+    if std::env::args().any(|a| a == "--write-test") {
+        println!("\n\x1b[1m── Notes write round trip ──\x1b[0m");
+        if let Some(ck) = session.service_url("ckdatabasews") {
+            let params = client.service_params();
+            let http = client.http().clone();
+            let zc = quince_icloud::cloudkit::ZoneClient::new(
+                client.http(),
+                &ck,
+                "com.apple.notes",
+                client.service_params(),
+            );
+            let body = "Quince write test\nsafe to delete";
+
+            match quince_icloud::notes::create_cloudkit(&http, &ck, params.clone(), None, body)
+                .await
+            {
+                Err(e) => println!("  \x1b[31mFAIL\x1b[0m create: {e}"),
+                Ok(guid) => {
+                    println!("  \x1b[32mPASS\x1b[0m Apple accepted the create ({guid})");
+
+                    let read_back = |name: String| {
+                        let zc = &zc;
+                        async move {
+                            zc.lookup_record("Notes", &name)
+                                .await
+                                .ok()
+                                .flatten()
+                                .and_then(|rec| {
+                                    quince_icloud::cloudkit::field::document_text(
+                                        &rec,
+                                        "TextDataEncrypted",
+                                    )
+                                })
+                        }
+                    };
+
+                    match read_back(guid.clone()).await {
+                        Some(text) if text == body => {
+                            println!("  \x1b[32mPASS\x1b[0m Apple really has it, text matches");
+                        }
+                        Some(text) => println!(
+                            "  \x1b[33mstored, but the text came back as {:?}\x1b[0m",
+                            text.chars().take(50).collect::<String>()
+                        ),
+                        None => {
+                            println!("  \x1b[31mFAIL\x1b[0m Apple took the write but has no note")
+                        }
+                    }
+
+                    // Now the part that matters: an edit must rewrite the document in place.
+                    let edited = "Quince write test\nsafe to delete\nedited by the round trip";
+                    let note = quince_core::notes::Note {
+                        guid: guid.clone(),
+                        folder_guid: None,
+                        title: "Quince write test".into(),
+                        snippet: None,
+                        body: Some(body.into()),
+                        locked: false,
+                        pinned: false,
+                        created_at: None,
+                        modified_at: None,
+                        editable: true,
+                        etag: None,
+                    };
+                    match quince_icloud::notes::edit_cloudkit(
+                        &http,
+                        &ck,
+                        params.clone(),
+                        &note,
+                        edited,
+                    )
+                    .await
+                    {
+                        Err(e) => println!("  \x1b[31mFAIL\x1b[0m edit: {e}"),
+                        Ok(()) => match read_back(guid.clone()).await {
+                            Some(text) if text == edited => {
+                                println!("  \x1b[32mPASS\x1b[0m the edit is what Apple now holds");
+                            }
+                            Some(text) => println!(
+                                "  \x1b[31mFAIL\x1b[0m edit stored the wrong text: {:?}",
+                                text.chars().take(60).collect::<String>()
+                            ),
+                            None => {
+                                println!("  \x1b[31mFAIL\x1b[0m the note vanished after the edit")
+                            }
+                        },
+                    }
+
+                    match quince_icloud::notes::delete_cloudkit(&http, &ck, params, &note).await {
+                        Ok(()) => println!("  \x1b[32mPASS\x1b[0m deleted; nothing left behind"),
+                        Err(e) => println!(
+                            "  \x1b[31mFAIL\x1b[0m delete: {e}\n  \x1b[33mthe test note {guid} is still there\x1b[0m"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- what does a Note_UserSpecific record actually look like? -----------------
+    println!("\n\x1b[1m── Note_UserSpecific: the shape Apple writes ──\x1b[0m");
+    if let Some(ck) = session.service_url("ckdatabasews") {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            client.http(),
+            &ck,
+            "com.apple.notes",
+            client.service_params(),
+        );
+        if let Ok((records, _)) = zc.all_records("Notes", None).await {
+            for rec in records
+                .iter()
+                .filter(|r| {
+                    r.get("recordType")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| t.contains("UserSpecific"))
+                })
+                .take(3)
+            {
+                println!(
+                    "  {} {}",
+                    rec.get("recordType")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("?"),
+                    quince_icloud::cloudkit::field::record_name(rec).unwrap_or_default()
+                );
+                if let Some(fields) = rec.get("fields").and_then(|f| f.as_object()) {
+                    for (k, v) in fields {
+                        println!(
+                            "      {k} = {}",
+                            v.to_string().chars().take(110).collect::<String>()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ---- CloudKit containers ----------------------------------------------------
     // Apple's legacy /rd and /ca endpoints answer with a placeholder once data has been
     // upgraded to the modern format. The real records live in CloudKit, so find out which

@@ -357,9 +357,10 @@ pub async fn move_cloudkit(
 
 /// Delete a note.
 ///
-/// Apple keeps the `Note` record and marks the per-user record deleted instead, which is
-/// how a note disappears from every device while its history stays recoverable. Writing the
-/// flag on the note itself would be a different, harsher thing.
+/// Apple's own clients mark a per-user record instead, but that record's name is built from
+/// the account id in a shape CloudKit validates strictly, and inventing one is refused. A
+/// direct delete of the note record is what this can do correctly, and it is what the
+/// person asked for: the note goes, on every device.
 pub async fn delete_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -367,23 +368,7 @@ pub async fn delete_cloudkit(
     note: &Note,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let record_name = format!(
-        "Note_UserSpecific/{}",
-        uuid::Uuid::new_v4().to_string().to_uppercase()
-    );
-    client
-        .create_record(
-            ZONE,
-            &record_name,
-            "Note_UserSpecific",
-            serde_json::json!({
-                "Note": client.reference_to(ZONE, &note.guid),
-                "Deleted": { "type": "NUMBER_INT64", "value": 1 },
-                "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
-            }),
-        )
-        .await?;
-    Ok(())
+    client.delete_record(ZONE, &note.guid).await
 }
 
 #[cfg(test)]
@@ -819,9 +804,11 @@ mod write_tests {
         );
     }
 
-    /// Deleting writes the per-user record Apple uses, leaving the note itself intact.
+    /// Apple validates a per-user record's name against a shape built from the account id,
+    /// and refused an invented one outright — measured against the real service, not
+    /// assumed. Deleting the note record is what this can do correctly.
     #[tokio::test]
-    async fn deleting_marks_the_per_user_record() {
+    async fn deleting_removes_the_note_record() {
         let server = server("x").await;
         delete_cloudkit(
             &reqwest::Client::new(),
@@ -831,10 +818,11 @@ mod write_tests {
         )
         .await
         .unwrap();
-        let record = sent(&server).await;
-        assert_eq!(record["recordType"], "Note_UserSpecific");
-        assert_eq!(record["fields"]["Deleted"]["value"], 1);
-        assert_eq!(record["fields"]["Note"]["value"]["recordName"], "Note/1");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["operations"][0]["operationType"], "forceDelete");
+        assert_eq!(body["operations"][0]["record"]["recordName"], "Note/1");
     }
 
     #[tokio::test]
