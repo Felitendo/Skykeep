@@ -625,7 +625,7 @@ mod list_kind_tests {
     /// either produced phantom entries called "Reminders" that held nothing.
     #[test]
     fn only_list_records_become_lists() {
-        let zone = vec![
+        let zone = [
             record("List/a", "List", Some("GYM")),
             record("ListSection/b", "ListSection", None),
             record("SmartList/c", "SmartList", None),
