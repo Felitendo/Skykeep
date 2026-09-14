@@ -226,6 +226,12 @@ fn write_varint(mut value: u64, out: &mut Vec<u8>) {
 /// Which field of the note holds an attribute run.
 const ATTRIBUTE_RUN: u64 = 5;
 
+/// Records inside the note saying which writer produced which stretch of text.
+///
+/// Measured against the text that was there when they were written, so an edit makes them
+/// false. See the comment where they are dropped.
+const PROVENANCE: u64 = 3;
+
 /// A protobuf varint field: `(tag << 3) | 0`, then the value.
 fn varint_field(tag: u64, value: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(8);
@@ -670,6 +676,69 @@ pub fn add_merge_records_for_test(original: &str) -> String {
     with.extend(length_delimited(4, &varint_field(1, 1)));
     let rebuilt = rewrite(&plain, &TEXT_PATH[..2], &with).unwrap_or(plain);
     B64.encode(gzip(&rebuilt))
+}
+
+/// What a document says about the note it belongs to: whether it names a writer, and whether
+/// it still carries a record of which stretch of text came from where.
+#[doc(hidden)]
+#[must_use]
+pub fn debug_note_fields(original: &str) -> (bool, bool) {
+    let Ok(raw) = B64.decode(original.trim()) else {
+        return (false, false);
+    };
+    let Some(plain) = inflate(&raw) else {
+        return (false, false);
+    };
+    let Some(note) = field_at(&plain, &TEXT_PATH[..2]) else {
+        return (false, false);
+    };
+    let (mut history, mut writer) = (false, false);
+    let mut reader = Reader::new(note);
+    while !reader.done() {
+        let Some(key) = reader.varint() else { break };
+        match key >> 3 {
+            PROVENANCE => history = true,
+            4 => writer = true,
+            _ => {}
+        }
+        if reader.skip(key & 7).is_none() {
+            break;
+        }
+    }
+    (writer, history)
+}
+
+/// A document borrowed from another note, with that note's history taken out.
+///
+/// The records at [`PROVENANCE`] say which writer produced which stretch of text, and their
+/// lengths are measured against the text that was there. Carried onto a different note they
+/// describe something that is not in it, and Apple's reader believes them: a fifteen-character
+/// note carrying a longer note's records came out on a phone as the same word four times over,
+/// with gaps where the arithmetic ran off the end.
+///
+/// The writer itself — the record at field 4 — is not history and does travel. A phone stamps
+/// every note it makes with the same writer, so that much is true of a new note as well.
+///
+/// Returns `None` when the document cannot be read, so a caller keeps whatever it had.
+#[must_use]
+pub fn without_history(original: &str) -> Option<String> {
+    let raw = B64.decode(original.trim()).ok()?;
+    let plain = inflate(&raw)?;
+    let note = field_at(&plain, &TEXT_PATH[..2])?;
+
+    let mut kept = Vec::with_capacity(note.len());
+    let mut reader = Reader::new(note);
+    while !reader.done() {
+        let start = reader.at;
+        let key = reader.varint()?;
+        let (field, wire) = (key >> 3, key & 7);
+        reader.skip(wire)?;
+        if field != PROVENANCE {
+            kept.extend_from_slice(note.get(start..reader.at)?);
+        }
+    }
+
+    Some(B64.encode(gzip(&rewrite(&plain, &TEXT_PATH[..2], &kept)?)))
 }
 
 /// Whether a document carries the merge records Apple's own reader needs.

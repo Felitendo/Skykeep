@@ -430,7 +430,11 @@ pub async fn create_cloudkit(
 fn document_like_apples(template: Option<&str>, body: &str) -> String {
     template
         .filter(|document| crate::ckdocument::has_merge_records(document))
-        .and_then(|document| crate::ckdocument::replace_text_in_base64(document, body))
+        // The borrowed note's history goes; the writer stays. Carrying another note's record
+        // of which stretch of text came from where made a phone show a short note as the same
+        // word repeated, with gaps where the arithmetic ran off the end of it.
+        .and_then(crate::ckdocument::without_history)
+        .and_then(|document| crate::ckdocument::replace_text_in_base64(&document, body))
         .unwrap_or_else(|| crate::ckdocument::text_to_base64(body))
 }
 
@@ -1045,18 +1049,37 @@ mod template_tests {
         crate::ckdocument::add_merge_records_for_test(&built)
     }
 
+    /// A new note keeps the writer from the note it was shaped by, and none of its history.
+    ///
+    /// The history is lengths measured against text that is not in this note. Carried over, a
+    /// fifteen-character note came out on a phone as the same word four times with gaps in
+    /// between — worse than the blank it was meant to fix.
     #[test]
-    fn a_new_note_takes_the_shape_of_one_apple_wrote() {
+    fn a_new_note_takes_the_writer_but_not_the_other_notes_history() {
         let template = apples_shape("Something Apple wrote");
+        assert_eq!(
+            crate::ckdocument::debug_note_fields(&template),
+            (true, true),
+            "the fixture has both, or this proves nothing"
+        );
+
         let made = document_like_apples(Some(&template), "Something written here");
         assert_eq!(
             crate::ckdocument::text_from_base64(&made).as_deref(),
             Some("Something written here")
         );
-        assert!(
-            crate::ckdocument::has_merge_records(&made),
-            "which is what makes a phone show it"
-        );
+        let (writer, history) = crate::ckdocument::debug_note_fields(&made);
+        assert!(writer, "the writer travels");
+        assert!(!history, "the other note's history does not");
+    }
+
+    /// A note's own history is its own, and an edit leaves it alone.
+    #[test]
+    fn editing_a_note_keeps_the_notes_own_history() {
+        let mine = apples_shape("What I wrote before");
+        let edited =
+            crate::ckdocument::replace_text_in_base64(&mine, "What I wrote after").unwrap();
+        assert_eq!(crate::ckdocument::debug_note_fields(&edited), (true, true));
     }
 
     /// A new account has no note to learn from. Building from nothing is the only option, and
