@@ -22,6 +22,10 @@ pub enum Error {
     ReauthRequired,
     #[error("this changed on another device first — refresh and try again")]
     Conflict,
+    /// CloudKit would not read the cursor we held. Handled where the walk happens by starting
+    /// over, so this should never reach a person.
+    #[error("iCloud no longer recognises where we had got to")]
+    StaleCursor,
     #[error(transparent)]
     Storage(#[from] quince_core::Error),
     #[error("couldn't write the file: {0}")]

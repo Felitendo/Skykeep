@@ -34,6 +34,40 @@ pub struct Page {
     pub more_coming: bool,
 }
 
+/// Why a zone came back with nothing, when it did.
+///
+/// CloudKit answers all of these with HTTP 200 and puts the trouble inside the zone's own
+/// result, so a status check alone says everything went fine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZoneTrouble {
+    /// The account has no such zone. A new Apple ID that has never opened Notes has no Notes
+    /// zone at all — which is an empty library, not a failure.
+    Missing,
+    /// The cursor was refused. CloudKit expires them, and a client that has been closed for a
+    /// while comes back holding one Apple no longer knows. The answer is to start over.
+    StaleCursor,
+    /// Something else, which is worth showing to somebody.
+    Other(&'static str),
+}
+
+fn trouble_with(zone_result: &Value) -> Option<ZoneTrouble> {
+    let code = zone_result.get("serverErrorCode").and_then(Value::as_str);
+    let reason = zone_result.get("reason").and_then(Value::as_str);
+    match code {
+        Some("ZONE_NOT_FOUND") => Some(ZoneTrouble::Missing),
+        // Apple says BAD_REQUEST for a cursor it will not read, with the reason naming the
+        // continuation: "Unknown sync continuation type", "Invalid continuation format".
+        Some("BAD_REQUEST")
+            if reason.is_some_and(|r| r.to_lowercase().contains("continuation")) =>
+        {
+            Some(ZoneTrouble::StaleCursor)
+        }
+        // A reason with no code at all still means the zone was refused.
+        Some(_) | None if reason.is_some() => Some(ZoneTrouble::Other("refused")),
+        _ => None,
+    }
+}
+
 impl<'a> ZoneClient<'a> {
     pub fn new(
         http: &'a reqwest::Client,
@@ -62,7 +96,9 @@ impl<'a> ZoneClient<'a> {
             "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
             "maxChanges": PAGE_SIZE,
         });
-        if let Some(token) = sync_token {
+        // An empty string is not a cursor — Apple answers one with a 500. Absent means
+        // "from the beginning", which is what an empty one was trying to say anyway.
+        if let Some(token) = sync_token.map(str::trim).filter(|t| !t.is_empty()) {
             zone_body["syncToken"] = Value::String(token.to_string());
         }
         // Note: no `desiredKeys`. Sending an empty list asks Apple for no fields at all.
@@ -99,10 +135,27 @@ impl<'a> ZoneClient<'a> {
             .and_then(|zones| zones.first())
             .ok_or_else(|| Error::Protocol("CloudKit returned no zone".into()))?;
 
-        if let Some(reason) = zone_result.get("reason").and_then(Value::as_str) {
-            return Err(Error::Protocol(format!(
-                "CloudKit refused zone {zone}: {reason}"
-            )));
+        match trouble_with(zone_result) {
+            // A zone that does not exist is an account that has never used the thing. Reading
+            // it as an empty, finished walk is the truth; raising is not.
+            Some(ZoneTrouble::Missing) => {
+                return Ok(Page {
+                    records: Vec::new(),
+                    sync_token: None,
+                    more_coming: false,
+                })
+            }
+            Some(ZoneTrouble::StaleCursor) => return Err(Error::StaleCursor),
+            Some(ZoneTrouble::Other(_)) => {
+                let reason = zone_result
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("no reason given");
+                return Err(Error::Protocol(format!(
+                    "CloudKit refused zone {zone}: {reason}"
+                )));
+            }
+            None => {}
         }
 
         Ok(Page {
@@ -127,6 +180,17 @@ impl<'a> ZoneClient<'a> {
     /// Returns the records and the final sync token, which a later call can resume from so a
     /// refresh fetches only what changed.
     pub async fn all_records(&self, zone: &str, since: Option<&str>) -> Result<ZoneWalk> {
+        match self.walk(zone, since).await {
+            // CloudKit expires cursors, so an app that has been closed for a while comes back
+            // holding one Apple will not read. Starting over is what it expects a client to
+            // do, and it is invisible to the person: the library is already on disk, and a
+            // full pass replaces it with the same thing plus whatever changed.
+            Err(Error::StaleCursor) if since.is_some() => self.walk(zone, None).await,
+            other => other,
+        }
+    }
+
+    async fn walk(&self, zone: &str, since: Option<&str>) -> Result<ZoneWalk> {
         let mut records = Vec::new();
         let mut token = since.map(ToString::to_string);
         let mut complete = false;
@@ -855,5 +919,144 @@ mod conflict_tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no longer exists"), "got: {err}");
+    }
+}
+
+/// What CloudKit does when something is wrong with a zone or a cursor.
+///
+/// All of it arrives as HTTP 200 with the trouble inside the zone's own result, so a status
+/// check alone says everything went fine. The payloads here are what Apple actually answered
+/// when asked, not what the documentation suggests.
+#[cfg(test)]
+mod trouble_tests {
+    use super::*;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn zone_reply(zone: Value) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({ "zones": [zone] }))
+    }
+
+    fn record(name: &str, kind: &str) -> Value {
+        json!({ "recordName": name, "recordType": kind, "fields": {} })
+    }
+
+    fn client<'a>(http: &'a reqwest::Client, uri: &str, container: &str) -> ZoneClient<'a> {
+        ZoneClient::new(http, uri, container, vec![])
+    }
+
+    /// A brand new Apple ID that has never opened Notes has no Notes zone. That is an empty
+    /// library, not a failure, and it used to surface as a hard error on every refresh.
+    #[tokio::test]
+    async fn a_zone_the_account_has_never_had_reads_as_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "reason": "Zone does not exist",
+                "serverErrorCode": "ZONE_NOT_FOUND"
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let uri = server.uri();
+        let client = client(&http, &uri, "com.apple.notes");
+        let walk = client.all_records("Notes", None).await.unwrap();
+        assert!(walk.records.is_empty());
+        assert!(
+            walk.complete,
+            "an account with no such zone has been read in full, not cut short"
+        );
+    }
+
+    /// CloudKit expires cursors. An app closed for a while comes back holding one Apple will
+    /// not read, and answers BAD_REQUEST with the reason naming the continuation. Starting
+    /// over is what it expects; erroring leaves the person stuck with a token that can never
+    /// come good.
+    #[tokio::test]
+    async fn a_cursor_apple_will_not_read_starts_the_walk_over() {
+        let server = MockServer::start().await;
+        // The stale cursor is refused; a walk with no cursor succeeds.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .and(wiremock::matchers::body_string_contains("stale-cursor"))
+            .respond_with(zone_reply(json!({
+                "reason": "Unknown sync continuation type",
+                "serverErrorCode": "BAD_REQUEST"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "records": [record("Reminder/1", "Reminder")],
+                "syncToken": "fresh",
+                "moreComing": false
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let uri = server.uri();
+        let client = client(&http, &uri, "com.apple.reminders");
+        let walk = match client.all_records("Reminders", Some("stale-cursor")).await {
+            Ok(walk) => walk,
+            Err(e) => panic!("a refused cursor is recovered from, not raised: {e}"),
+        };
+        assert_eq!(walk.records.len(), 1);
+        assert_eq!(walk.token.as_deref(), Some("fresh"));
+        assert!(walk.complete);
+    }
+
+    /// Trouble that is not a missing zone or a bad cursor is still worth telling somebody
+    /// about — it must not be swallowed as an empty library.
+    #[tokio::test]
+    async fn other_trouble_is_still_raised() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "reason": "Quota exceeded",
+                "serverErrorCode": "QUOTA_EXCEEDED"
+            })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let uri = server.uri();
+        let client = client(&http, &uri, "com.apple.reminders");
+        let Err(err) = client.all_records("Reminders", None).await else {
+            panic!("a real refusal is not an empty library");
+        };
+        assert!(err.to_string().contains("Quota exceeded"), "got: {err}");
+    }
+
+    /// An empty string is not a cursor. Apple answers one with a 500, so it must never be
+    /// sent — and absent already means "from the beginning", which is what it was for.
+    #[tokio::test]
+    async fn an_empty_cursor_is_treated_as_no_cursor() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .and(wiremock::matchers::body_string_contains("syncToken"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({ "records": [], "moreComing": false })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let uri = server.uri();
+        let client = client(&http, &uri, "com.apple.reminders");
+        for empty in ["", "   "] {
+            client
+                .all_records("Reminders", Some(empty))
+                .await
+                .unwrap_or_else(|e| panic!("{empty:?} should send no cursor at all: {e}"));
+        }
     }
 }
