@@ -191,6 +191,44 @@ let failures = 0;
         : `FAIL reminder rows fill only ${Math.round(fill * 100)}% of their pane`
   );
   if (fill === null || fill < 0.9) failures++;
+
+  // The "My Lists" heading belongs on the same left edge as the icons in the rows under it,
+  // which is where a source list puts a section header. It sat 24px right of both the cards
+  // above and the icons below, reading as a column that had slipped.
+  const heading = await page.evaluate(() => {
+    const label = document.querySelector(".rem-lists-heading");
+    const card = document.querySelector(".rem-smart");
+    const icon = document.querySelector(".rem-list-glyph");
+    if (!label || !card || !icon) return null;
+    const text = label.getBoundingClientRect().left +
+      parseFloat(getComputedStyle(label).paddingLeft || "0");
+    return {
+      offCard: text - card.getBoundingClientRect().left,
+      offIcon: text - icon.getBoundingClientRect().left,
+      size: parseFloat(getComputedStyle(label).fontSize),
+    };
+  });
+  if (!heading) {
+    console.log("FAIL could not measure the My Lists heading");
+    failures++;
+  } else {
+    const aligned = Math.abs(heading.offIcon) <= 1.5 && heading.offCard <= 10;
+    console.log(
+      aligned
+        ? `PASS "My Lists" sits on the row icons' edge  [${heading.offIcon.toFixed(1)}px off the icons, ${heading.offCard.toFixed(1)}px in from the cards]`
+        : `FAIL "My Lists" is adrift  [${heading.offIcon.toFixed(1)}px off the icons, ${heading.offCard.toFixed(1)}px in from the cards]`
+    );
+    if (!aligned) failures++;
+
+    // A section header, not a title. It reads as one of the list names if it grows.
+    const small = heading.size <= 12;
+    console.log(
+      small
+        ? `PASS "My Lists" reads as a heading, not a title  [${heading.size}px]`
+        : `FAIL "My Lists" is ${heading.size}px, too big for a section heading`
+    );
+    if (!small) failures++;
+  }
   await page.close();
 }
 

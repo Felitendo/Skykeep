@@ -984,6 +984,49 @@ async fn drive_download(
 }
 
 /// Create a folder, and reflect it locally without waiting for the next full sync.
+/// Put files from this machine into a Drive folder.
+///
+/// Paths, never bytes. The interface hands over what the person chose — from the file dialog
+/// or from a drag onto the window — and the file is read here and streamed straight to Apple,
+/// so putting a film in Drive costs no more memory than putting a note in it.
+///
+/// Each file is reported on separately: one that Apple refuses must not take the rest of a
+/// dragged selection down with it.
+#[tauri::command]
+async fn drive_upload(
+    folder_id: String,
+    paths: Vec<String>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Vec<String>> {
+    let (http, root, params) = drive_context(&auth).await?;
+    let docws = {
+        let client = auth.client.lock().await;
+        client
+            .session()
+            .service_url("docws")
+            .ok_or("Apple hasn't offered uploads for this account.")?
+    };
+
+    let mut failed = Vec::new();
+    for path in &paths {
+        let path = std::path::Path::new(path);
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into(),
+        );
+        if let Err(e) =
+            quince_icloud::drive::upload(&http, &docws, &root, params.clone(), &folder_id, path)
+                .await
+        {
+            failed.push(format!("{name}: {e}"));
+        }
+    }
+
+    resync_drive_folder(&http, &root, params, &data, &folder_id).await?;
+    Ok(failed)
+}
+
 #[tauri::command]
 async fn drive_create_folder(
     parent_id: String,
@@ -1238,6 +1281,7 @@ async fn contact_photo(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         // Images are served, not messaged. `quince://photo/<contact id>` is loaded by the
         // webview itself, which is what keeps a scrolling list cheap.
         .register_asynchronous_uri_scheme_protocol("quince", |ctx, request, responder| {
@@ -1346,6 +1390,7 @@ fn main() {
             drive_sync_folder,
             drive_children,
             drive_download,
+            drive_upload,
             drive_create_folder,
             drive_rename,
             drive_delete,

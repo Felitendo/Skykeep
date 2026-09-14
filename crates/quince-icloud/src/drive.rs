@@ -945,3 +945,240 @@ mod write_tests {
         dir
     }
 }
+
+/// A guess at what kind of file this is, from its name.
+///
+/// Apple stores whatever it is told here and hands it back on download, so a wrong guess shows
+/// up later as a file the browser refuses to preview. The list covers what people actually put
+/// in a Drive; anything else is declared as bytes, which is honest rather than wrong.
+fn content_type(name: &str) -> &'static str {
+    let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("heic") => "image/heic",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("txt" | "md" | "log") => "text/plain",
+        Some("csv") => "text/csv",
+        Some("json") => "application/json",
+        Some("html" | "htm") => "text/html",
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("wav") => "audio/wav",
+        Some("mp4" | "m4v") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        Some("zip") => "application/zip",
+        Some("doc") => "application/msword",
+        Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Some("xls") => "application/vnd.ms-excel",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("ppt") => "application/vnd.ms-powerpoint",
+        Some("pptx") => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        Some("pages") => "application/x-iwork-pages-sffpages",
+        Some("numbers") => "application/x-iwork-numbers-sffnumbers",
+        Some("key") => "application/x-iwork-keynote-sffkey",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Where a document is filed, as `update/documents` wants it: the bare id, or `root`.
+fn starting_document_id(folder_id: &str) -> &str {
+    if folder_id == quince_core::drive::ROOT {
+        "root"
+    } else {
+        docwsid_of(folder_id)
+    }
+}
+
+/// Put a file from this machine into a Drive folder.
+///
+/// Three separate calls, because that is how Apple does it and skipping any of them leaves a
+/// half-made file: ask `upload/web` for somewhere to put the bytes, post the bytes to the URL
+/// it hands back, then tell `update/documents` to file the result under a name. Only the third
+/// call makes the file exist; the first two leave nothing visible behind if they fail.
+///
+/// The bytes are streamed off disk rather than read into memory, so putting a film in Drive
+/// costs the same as putting a note in it.
+///
+/// # Errors
+/// When the file cannot be read, when Apple refuses any of the three steps, or when the file
+/// does not afterwards appear in the folder it was meant for.
+pub async fn upload(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: Vec<(String, String)>,
+    folder_id: &str,
+    path: &std::path::Path,
+) -> Result<DriveItem> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::Protocol("that file has no name to give it".into()))?
+        .to_string();
+    let size = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| Error::Protocol(format!("could not read {name}: {e}")))?
+        .len();
+    let docws = docws_root.trim_end_matches('/');
+
+    // 1. Somewhere to put the bytes.
+    let offered: Value = post_json(
+        http,
+        &format!("{docws}/ws/com.apple.CloudDocs/upload/web"),
+        &params,
+        &json!({
+            "filename": name,
+            "type": "FILE",
+            "content_type": content_type(&name),
+            "size": size,
+        }),
+    )
+    .await?;
+    let slot = offered
+        .as_array()
+        .and_then(|a| a.first())
+        .ok_or_else(|| Error::Protocol("Apple offered nowhere to put the file".into()))?;
+    let url = slot
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Protocol("Apple's upload slot carried no address".into()))?;
+    let document_id = slot
+        .get("document_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Protocol("Apple's upload slot carried no document id".into()))?;
+
+    // 2. The bytes themselves, straight off disk.
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| Error::Protocol(format!("could not open {name}: {e}")))?;
+    let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::from(file), size)
+        .file_name(name.clone())
+        .mime_str(content_type(&name))
+        .map_err(|e| Error::Protocol(format!("{name} has a content type Apple refused: {e}")))?;
+    let sent = http
+        .post(url)
+        .multipart(reqwest::multipart::Form::new().part("files", part))
+        .send()
+        .await?;
+    let status = sent.status();
+    let text = sent.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "Apple would not take the file ({status}): {}",
+            text.chars().take(160).collect::<String>()
+        )));
+    }
+    let receipt: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("Apple's upload reply was not JSON: {e}")))?;
+    let single = receipt
+        .get("singleFile")
+        .ok_or_else(|| Error::Protocol("Apple took the bytes but described nothing".into()))?;
+    let of = |key: &str| single.get(key).cloned().unwrap_or(Value::Null);
+
+    // 3. File it under a name. Until this, the bytes belong to nothing.
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+    )
+    .unwrap_or(0);
+    post_json(
+        http,
+        &format!("{docws}/ws/com.apple.CloudDocs/update/documents"),
+        &params,
+        &json!({
+            // Apple renames rather than overwrites when the name is taken, which is what a
+            // file manager does and what a person expects.
+            "allow_conflict": true,
+            "btime": now,
+            "mtime": now,
+            "command": "add_file",
+            "create_short_guid": true,
+            "document_id": document_id,
+            "file_flags": { "is_executable": false, "is_hidden": false, "is_writable": true },
+            "path": { "starting_document_id": starting_document_id(folder_id), "path": name },
+            "data": {
+                "receipt": of("receipt"),
+                "reference_signature": of("referenceChecksum"),
+                "signature": of("fileChecksum"),
+                "wrapping_key": of("wrappingKey"),
+                "size": of("size"),
+            },
+        }),
+    )
+    .await?;
+
+    // Apple answers 200 to writes it did not make. The folder is the only witness that counts.
+    let after = folder_listing(http, drivews_root, &params, folder_id).await?;
+    let stem = name.rsplit_once('.').map_or(name.as_str(), |(s, _)| s);
+    after
+        .into_iter()
+        .find(|i| i.name == name || i.name == stem)
+        .ok_or_else(|| {
+            Error::Protocol(format!(
+                "Apple accepted {name} but the folder does not hold it"
+            ))
+        })
+}
+
+/// A JSON POST to Drive that fails loudly rather than returning something unusable.
+async fn post_json(
+    http: &reqwest::Client,
+    url: &str,
+    params: &[(String, String)],
+    body: &Value,
+) -> Result<Value> {
+    let response = http
+        .post(url)
+        .query(params)
+        .header("Referer", "https://www.icloud.com/")
+        .json(body)
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "Drive returned {status}: {}",
+            text.chars().take(160).collect::<String>()
+        )));
+    }
+    serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    #[test]
+    fn a_file_is_declared_as_what_it_is() {
+        assert_eq!(content_type("holiday.JPG"), "image/jpeg");
+        assert_eq!(content_type("notes.md"), "text/plain");
+        assert_eq!(
+            content_type("budget.numbers"),
+            "application/x-iwork-numbers-sffnumbers"
+        );
+        assert_eq!(content_type("archive.tar.gz"), "application/octet-stream");
+        assert_eq!(content_type("noextension"), "application/octet-stream");
+        assert_eq!(content_type(""), "application/octet-stream");
+    }
+
+    /// The root has a name of its own in the listing and a different one in a document path.
+    #[test]
+    fn the_root_is_called_root_when_filing_a_document() {
+        assert_eq!(starting_document_id(quince_core::drive::ROOT), "root");
+        assert_eq!(
+            starting_document_id("FOLDER::com.apple.CloudDocs::7B3F-ABCD"),
+            "7B3F-ABCD"
+        );
+    }
+}

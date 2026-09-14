@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   api,
   driveName,
@@ -7,6 +9,7 @@ import {
   DRIVE_ROOT,
   type DriveItem,
 } from "../lib/ipc";
+import { ActionGlyph, FileGlyph } from "../components/FileGlyph";
 
 const KB = 1024;
 
@@ -32,13 +35,6 @@ const modified = (seconds: number | null) =>
         year: "numeric",
       });
 
-/** A folder glyph for containers, and the extension for files. */
-function badge(item: DriveItem): string {
-  if (item.kind === "APP_LIBRARY") return "APP";
-  if (item.kind === "FOLDER") return "▸";
-  return (item.extension || "file").toUpperCase().slice(0, 4);
-}
-
 type Crumb = { id: string; name: string };
 
 export function DriveView() {
@@ -55,6 +51,9 @@ export function DriveView() {
   const [newFolderName, setNewFolderName] = useState("");
   /** The item a Move dialog is open for, if any. */
   const [moving, setMoving] = useState<DriveItem | null>(null);
+  const [uploading, setUploading] = useState(false);
+  /** True while files are held over the window, so the drop target can say so. */
+  const [dropping, setDropping] = useState(false);
 
   const here = trail[trail.length - 1];
 
@@ -185,6 +184,87 @@ export function DriveView() {
     [refresh]
   );
 
+  /**
+   * Send files from this machine to the folder currently open.
+   *
+   * Only the paths cross into the backend; the bytes are read and streamed there, which is
+   * what lets a large file go up without the interface holding it in memory.
+   *
+   * One file Apple refuses must not look like all of them failing, so each is reported by
+   * name and the rest still land.
+   */
+  const upload = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return;
+      setUploading(true);
+      setError(null);
+      try {
+        const failed = await api.driveUpload(here.id, paths);
+        await refresh();
+        if (failed.length > 0) {
+          setError(
+            failed.length === paths.length
+              ? failed.join("\n")
+              : `${failed.length} of ${paths.length} did not go up — ${failed.join("; ")}`
+          );
+        } else {
+          setSavedTo(
+            paths.length === 1
+              ? `Uploaded ${paths[0].split("/").pop()}`
+              : `Uploaded ${paths.length} files`
+          );
+        }
+      } catch (e) {
+        setError(messageOf(e));
+      } finally {
+        setUploading(false);
+      }
+    },
+    [here.id, refresh]
+  );
+
+  const chooseAndUpload = useCallback(async () => {
+    try {
+      const chosen = await openFileDialog({ multiple: true, title: "Upload to iCloud Drive" });
+      if (!chosen) return;
+      await upload(Array.isArray(chosen) ? chosen : [chosen]);
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  }, [upload]);
+
+  // Dropping files on the window uploads them to the folder that is open. Tauri hands over
+  // paths rather than contents, so a drop costs nothing until the file is actually read.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    // Outside the app shell — a browser running the interface on its own, as the checks do —
+    // there is no webview to ask, and asking throws where it stands. Uploading by button
+    // still works, so this is a capability that may be missing, not a failure.
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (event.payload.type === "over") setDropping(true);
+          else if (event.payload.type === "leave") setDropping(false);
+          else if (event.payload.type === "drop") {
+            setDropping(false);
+            void upload(event.payload.paths);
+          }
+        })
+        .then((unlisten) => {
+          if (cancelled) unlisten();
+          else stop = unlisten;
+        })
+        .catch(() => {});
+    } catch {
+      // No drag and drop here.
+    }
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [upload]);
+
   const createFolder = useCallback(async () => {
     const name = newFolderName.trim();
     setCreatingFolder(false);
@@ -200,7 +280,7 @@ export function DriveView() {
   }, [newFolderName, here.id, refresh]);
 
   return (
-    <div className="drive">
+    <div className={`drive${dropping ? " is-dropping" : ""}`}>
       <header className="cal-bar">
         <nav className="crumbs" aria-label="Folder path">
           {trail.map((crumb, i) => (
@@ -222,14 +302,20 @@ export function DriveView() {
         </nav>
         <div className="cal-actions">
           <button
-            className="quiet"
+            className="quiet with-glyph"
             onClick={() => setCreatingFolder(true)}
             disabled={loading || creatingFolder}
           >
-            New folder
+            <ActionGlyph name="newFolder" />
+            New Folder
           </button>
-          <button className="quiet" onClick={() => void refresh()} disabled={loading}>
-            {loading ? "Refreshing…" : "Refresh"}
+          <button
+            className="primary with-glyph"
+            onClick={() => void chooseAndUpload()}
+            disabled={loading || uploading}
+          >
+            <ActionGlyph name="upload" />
+            {uploading ? "Uploading…" : "Upload"}
           </button>
         </div>
       </header>
@@ -255,8 +341,8 @@ export function DriveView() {
                 void createFolder();
               }}
             >
-              <span className="drive-badge folder" aria-hidden="true">
-                ▸
+              <span className="drive-badge" aria-hidden="true">
+                <FileGlyph kind="FOLDER" extension={null} />
               </span>
               <input
                 autoFocus
@@ -284,8 +370,8 @@ export function DriveView() {
             <li key={item.drivewsid}>
               {renaming === item.drivewsid ? (
                 <div className="drive-row">
-                  <span className={`drive-badge${container ? " folder" : ""}`} aria-hidden="true">
-                    {badge(item)}
+                  <span className="drive-badge" aria-hidden="true">
+                    <FileGlyph kind={item.kind} extension={item.extension} />
                   </span>
                   <input
                     className="drive-rename-input"
@@ -312,8 +398,12 @@ export function DriveView() {
                     onClick={() => (container ? enter(item) : void download(item))}
                     disabled={busy}
                   >
-                    <span className={`drive-badge${container ? " folder" : ""}`} aria-hidden="true">
-                      {busy ? "…" : badge(item)}
+                    <span className="drive-badge" aria-hidden="true">
+                      {busy ? (
+                        <span className="drive-spinner" />
+                      ) : (
+                        <FileGlyph kind={item.kind} extension={item.extension} />
+                      )}
                     </span>
                     <span className="drive-name">{driveName(item)}</span>
                     <span className="drive-meta">
@@ -326,29 +416,43 @@ export function DriveView() {
                     <span className="drive-meta">{modified(item.modifiedAt ?? item.createdAt)}</span>
                   </button>
                   <span className="drive-row-actions">
+                    {!container && (
+                      <button
+                        className="drive-action"
+                        aria-label={`Download ${driveName(item)}`}
+                        title="Download"
+                        disabled={busy}
+                        onClick={() => void download(item)}
+                      >
+                        <ActionGlyph name="download" />
+                      </button>
+                    )}
                     <button
-                      className="rem-list-action"
+                      className="drive-action"
                       aria-label={`Move ${driveName(item)}`}
+                      title="Move to…"
                       disabled={busy}
                       onClick={() => setMoving(item)}
                     >
-                      ⇥
+                      <ActionGlyph name="move" />
                     </button>
                     <button
-                      className="rem-list-action"
+                      className="drive-action"
                       aria-label={`Rename ${driveName(item)}`}
+                      title="Rename"
                       disabled={busy}
                       onClick={() => setRenaming(item.drivewsid)}
                     >
-                      ✎
+                      <ActionGlyph name="rename" />
                     </button>
                     <button
-                      className="rem-list-action danger"
+                      className="drive-action danger"
                       aria-label={`Delete ${driveName(item)}`}
+                      title="Delete"
                       disabled={busy}
                       onClick={() => void remove(item)}
                     >
-                      ✕
+                      <ActionGlyph name="delete" />
                     </button>
                   </span>
                 </div>
@@ -488,8 +592,8 @@ function MoveDialog({
                     setTrail((t) => [...t, { id: folder.drivewsid, name: driveName(folder) }])
                   }
                 >
-                  <span className="drive-badge folder" aria-hidden="true">
-                    ▸
+                  <span className="drive-badge" aria-hidden="true">
+                    <FileGlyph kind="FOLDER" extension={null} />
                   </span>
                   <span className="drive-name">{driveName(folder)}</span>
                 </button>

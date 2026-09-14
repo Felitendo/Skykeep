@@ -103,6 +103,15 @@ export const api = {
   driveItem: (drivewsid: string) => invoke<DriveItem | null>("drive_item", { drivewsid }),
   /** Saves to Downloads; returns the path it landed at. */
   driveDownload: (drivewsid: string) => invoke<string>("drive_download", { drivewsid }),
+  /**
+   * Put files from this machine into a Drive folder. Paths only — the bytes are read and
+   * streamed in the backend, never carried through a message.
+   *
+   * Resolves with the files that did not go up, one line each, so a single refusal does not
+   * read as the whole upload failing.
+   */
+  driveUpload: (folderId: string, paths: string[]) =>
+    invoke<string[]>("drive_upload", { folderId, paths }),
   driveCreateFolder: (parentId: string, name: string) =>
     invoke<void>("drive_create_folder", { parentId, name }),
   driveRename: (drivewsid: string, name: string) =>

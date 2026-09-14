@@ -277,7 +277,7 @@ const shots = [
       await p.click('.nav-item:has-text("iCloud Drive")');
       await p.waitForSelector(".drive-row-hit");
       await p.hover(".drive-row.is-folder");
-      await p.click('.drive-row.is-folder .rem-list-action[aria-label^="Move"]');
+      await p.click('.drive-row.is-folder .drive-action[aria-label^="Move"]');
       await p.waitForSelector(".modal-sheet");
     } },
   { name: "04-library", screen: "library", theme: "light" },
