@@ -170,14 +170,34 @@ impl Library {
     pub fn note_body(&self, guid: &str) -> Result<Option<String>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT body FROM notes WHERE guid = ?1")?;
+            .prepare("SELECT body, title, snippet FROM notes WHERE guid = ?1")?;
         let mut rows = stmt.query(params![guid])?;
-        match rows.next()? {
-            // The note exists but has nothing in it — which is not the same as no such note,
-            // and the difference decides whether an editor may open.
-            Some(row) => Ok(Some(row.get::<_, Option<String>>(0)?.unwrap_or_default())),
-            None => Ok(None),
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let body: Option<String> = row.get(0)?;
+        if body.is_some() {
+            return Ok(body);
         }
+
+        // No body stored. That is either a note with nothing in it, or one whose text could
+        // not be read — and the two must not be confused, because an editor opened over the
+        // second shows an empty box, and the first keystroke saves that emptiness over
+        // whatever was really there. A five-line note became a single letter that way.
+        //
+        // A note with a name or a line of preview has something in it, so no body means it
+        // was not read. Answering "not known" keeps the editor shut.
+        let title: Option<String> = row.get(1)?;
+        let snippet: Option<String> = row.get(2)?;
+        let has_content = [title, snippet]
+            .into_iter()
+            .flatten()
+            .any(|s| !s.trim().is_empty());
+        Ok(if has_content {
+            None
+        } else {
+            Some(String::new())
+        })
     }
 
     pub fn note_folders(&self) -> Result<Vec<NoteFolder>> {
@@ -419,8 +439,10 @@ mod body_tests {
             },
             Note {
                 guid: "N2".into(),
+                // A note with nothing in it has no name either — a name with no body means
+                // the text was not read, which is a different thing and answered differently.
                 folder_guid: Some("F1".into()),
-                title: "Empty one".into(),
+                title: String::new(),
                 snippet: None,
                 body: None,
                 locked: false,
@@ -471,5 +493,62 @@ mod body_tests {
         let lib = stored();
         assert_eq!(lib.note_body("N2").unwrap(), Some(String::new()));
         assert_eq!(lib.note_body("nothing-like-this").unwrap(), None);
+    }
+}
+
+/// Telling an empty note from one whose text could not be read.
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    fn note(guid: &str, title: &str, snippet: Option<&str>, body: Option<&str>) -> Note {
+        Note {
+            guid: guid.into(),
+            folder_guid: None,
+            title: title.into(),
+            snippet: snippet.map(ToString::to_string),
+            body: body.map(ToString::to_string),
+            locked: false,
+            editable: true,
+            pinned: false,
+            created_at: Some(1),
+            modified_at: Some(1),
+            etag: None,
+        }
+    }
+
+    /// The difference decides whether an editor opens. Over a note whose text was not read,
+    /// an empty box is shown and the first keystroke saves that emptiness over whatever was
+    /// really there — which is how a five-line note became a single letter.
+    #[test]
+    fn a_note_whose_text_was_not_read_answers_that_it_is_not_known() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_notes(&[
+            note("EMPTY", "", None, None),
+            note("UNREAD", "Shopping list", Some("Milk"), None),
+            note(
+                "READ",
+                "Shopping list",
+                Some("Milk"),
+                Some("Shopping list\nMilk"),
+            ),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            lib.note_body("EMPTY").unwrap(),
+            Some(String::new()),
+            "a note with nothing in it is empty, and may be typed into"
+        );
+        assert_eq!(
+            lib.note_body("UNREAD").unwrap(),
+            None,
+            "a note with a name but no text was not read, and must not be typed into"
+        );
+        assert_eq!(
+            lib.note_body("READ").unwrap().as_deref(),
+            Some("Shopping list\nMilk")
+        );
+        assert_eq!(lib.note_body("no-such-note").unwrap(), None);
     }
 }

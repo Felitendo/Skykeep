@@ -127,7 +127,13 @@ export function NotesView() {
     api
       .noteBody(openGuid)
       .then((text) => {
-        if (!cancelled && text !== null) setLoadedBody({ guid: openGuid, text });
+        if (cancelled || text === null) return;
+        // Never over what is being typed. A refresh follows every save, and adopting its
+        // answer under someone's cursor is how a half-saved note replaced a whole one.
+        setDraft((typing) => {
+          if (typing === null) setLoadedBody({ guid: openGuid, text });
+          return typing;
+        });
       })
       .catch((e) => {
         if (!cancelled) setError(messageOf(e));
@@ -157,8 +163,14 @@ export function NotesView() {
     if (!next) return;
     pending.current = null;
     if (await write(() => api.noteSave(next.guid, next.body))) {
-      // The draft has served its purpose: the library now holds what was typed.
-      setDraft((current) => (current === next.body ? null : current));
+      // The draft is kept, not cleared. Clearing it handed the box back to whatever the
+      // library last handed over, and a save is followed by a refresh — so for a moment the
+      // box showed text older than what had just been typed, and the next keystroke was
+      // typed onto that and saved over the real note. A note went from five lines to a
+      // single letter that way.
+      //
+      // While someone is in a note, what is on their screen is the note. It is given up only
+      // when they leave it.
       setSaved(true);
     }
   }, [write]);

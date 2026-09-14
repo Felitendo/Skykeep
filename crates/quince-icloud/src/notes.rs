@@ -15,6 +15,15 @@ use serde_json::Value;
 const CONTAINER: &str = "com.apple.notes";
 const ZONE: &str = "Notes";
 
+/// The first folder in a note's `Folders` list, where it has one.
+fn first_folder(record: &Value) -> Option<String> {
+    record
+        .pointer("/fields/Folders/value")?
+        .as_array()?
+        .iter()
+        .find_map(|entry| entry.get("recordName")?.as_str().map(ToString::to_string))
+}
+
 fn folder_from_record(record: &Value) -> Option<NoteFolder> {
     Some(NoteFolder {
         guid: field::record_name(record)?,
@@ -58,7 +67,15 @@ fn note_from_record(record: &Value) -> Option<Note> {
 
     Some(Note {
         guid,
-        folder_guid: field::reference(record, "Folder"),
+        // `Folders` first, `Folder` only if there is no list.
+        //
+        // Apple carries both, and on one note on this account they disagree: Curtains has
+        // Folder pointing at Recently Deleted and Folders naming the real one. The phone
+        // shows it where Folders says, so the list is what counts and the singular is a
+        // leftover. Reading the leftover put a note the owner had taken back out of the
+        // trash straight back into it here — and hid it, because deleted notes are filtered
+        // from every folder view.
+        folder_guid: first_folder(record).or_else(|| field::reference(record, "Folder")),
         title: title.unwrap_or_else(|| "Untitled".into()),
         snippet: field::document_text(record, "SnippetEncrypted"),
         body,
@@ -1158,5 +1175,92 @@ mod title_tests {
     #[test]
     fn a_note_of_blank_lines_has_neither() {
         assert_eq!(title_and_snippet("\n\n\n"), (String::new(), String::new()));
+    }
+}
+
+/// Which folder a note is in, when Apple's two answers disagree.
+#[cfg(test)]
+mod folder_of_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn note_in(folder: Option<&str>, folders: Option<&[&str]>) -> Value {
+        let mut fields = json!({
+            "TextDataEncrypted": {
+                "type": "ENCRYPTED_BYTES",
+                "value": crate::ckdocument::text_to_base64("Curtains\nBathroom accessories"),
+            },
+        });
+        if let Some(one) = folder {
+            fields["Folder"] = json!({
+                "type": "REFERENCE",
+                "value": { "action": "NONE", "recordName": one },
+            });
+        }
+        if let Some(list) = folders {
+            fields["Folders"] = json!({
+                "type": "REFERENCE_LIST",
+                "value": list.iter().map(|n| json!({ "action": "NONE", "recordName": n }))
+                    .collect::<Vec<_>>(),
+            });
+        }
+        json!({ "recordName": "N1", "recordType": "Note", "fields": fields })
+    }
+
+    /// The case this was found on: one note where the two fields disagree. The phone shows it
+    /// where the list says, so the list is what counts. Believing the other one put a note the
+    /// owner had taken back out of the trash straight back into it — and hid it, because
+    /// deleted notes are filtered out of every folder view.
+    #[test]
+    fn the_list_wins_over_the_leftover() {
+        let parsed = note_from_record(&note_in(
+            Some("TrashFolder-CloudKit"),
+            Some(&["DefaultFolder-CloudKit"]),
+        ))
+        .unwrap();
+        assert_eq!(
+            parsed.folder_guid.as_deref(),
+            Some("DefaultFolder-CloudKit")
+        );
+    }
+
+    /// Where they agree, nothing changes.
+    #[test]
+    fn agreement_is_left_alone() {
+        let parsed = note_from_record(&note_in(
+            Some("DefaultFolder-CloudKit"),
+            Some(&["DefaultFolder-CloudKit"]),
+        ))
+        .unwrap();
+        assert_eq!(
+            parsed.folder_guid.as_deref(),
+            Some("DefaultFolder-CloudKit")
+        );
+    }
+
+    /// A note with no list still has to be filed somewhere.
+    #[test]
+    fn without_a_list_the_single_field_is_used() {
+        let parsed = note_from_record(&note_in(Some("TrashFolder-CloudKit"), None)).unwrap();
+        assert_eq!(parsed.folder_guid.as_deref(), Some("TrashFolder-CloudKit"));
+    }
+
+    /// And a note with neither is in no folder rather than in a wrong one.
+    #[test]
+    fn with_neither_it_is_in_no_folder() {
+        assert_eq!(
+            note_from_record(&note_in(None, None)).unwrap().folder_guid,
+            None
+        );
+    }
+
+    /// An empty list is not an answer; the other field still is.
+    #[test]
+    fn an_empty_list_falls_back() {
+        let parsed = note_from_record(&note_in(Some("DefaultFolder-CloudKit"), Some(&[]))).unwrap();
+        assert_eq!(
+            parsed.folder_guid.as_deref(),
+            Some("DefaultFolder-CloudKit")
+        );
     }
 }
