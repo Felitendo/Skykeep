@@ -487,7 +487,15 @@ mod tests {
 
         let stored = library.notes_in(None).unwrap();
         assert_eq!(stored[0].title, "UNIT 1: Testing");
-        assert_eq!(stored[0].body.as_deref(), Some("the body"));
+        // A listed note carries no body — the text is stored, and asked for on its own when
+        // the note is opened. Carrying it here is what made a folder of thousands slow, and
+        // a body that came back short and got saved would take the rest of the note with it.
+        assert_eq!(stored[0].body, None);
+        assert_eq!(
+            library.note_body(&stored[0].guid).unwrap().as_deref(),
+            Some("the body"),
+            "the text arrived and was stored"
+        );
         assert_eq!(library.note_folders().unwrap()[0].title, "Notes");
     }
 

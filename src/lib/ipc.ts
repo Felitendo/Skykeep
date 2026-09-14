@@ -86,6 +86,14 @@ export const api = {
 
   noteFolders: () => invoke<NoteFolder[]>("note_folders"),
   notesIn: (folderGuid: string | null) => invoke<Note[]>("notes_in", { folderGuid }),
+  /**
+   * One note's text, whole. Null when there is no such note any more.
+   *
+   * A listed note carries no body — the list only draws a title and a line of preview, and
+   * carrying every word of every note into the window on each refresh is what makes a folder
+   * of thousands slow.
+   */
+  noteBody: (guid: string) => invoke<string | null>("note_body", { guid }),
   noteSave: (guid: string, body: string) => invoke<void>("note_save", { guid, body }),
   noteCreate: (folderGuid: string | null, body: string) =>
     invoke<string>("note_create", { folderGuid, body }),

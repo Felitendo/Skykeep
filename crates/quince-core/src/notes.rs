@@ -163,6 +163,23 @@ impl Library {
         Ok(())
     }
 
+    /// One note's text, whole.
+    ///
+    /// Fetched for the note being read rather than for every note in the list, which is what
+    /// keeps opening a folder of five thousand cheap.
+    pub fn note_body(&self, guid: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT body FROM notes WHERE guid = ?1")?;
+        let mut rows = stmt.query(params![guid])?;
+        match rows.next()? {
+            // The note exists but has nothing in it — which is not the same as no such note,
+            // and the difference decides whether an editor may open.
+            Some(row) => Ok(Some(row.get::<_, Option<String>>(0)?.unwrap_or_default())),
+            None => Ok(None),
+        }
+    }
+
     pub fn note_folders(&self) -> Result<Vec<NoteFolder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, title, sort_order, parent_guid
@@ -183,9 +200,20 @@ impl Library {
     ///
     /// Passing `None` is the "All Notes" view, which in Apple's app means every note that
     /// has not been deleted. Including the deleted ones put them in both places at once.
+    /// The notes in a folder, without their bodies.
+    ///
+    /// A list of notes shows a title, a line of preview and a date. Carrying every body along
+    /// with that is what the plan calls an unbounded payload: five thousand ordinary notes
+    /// come to nearly ten megabytes, and all of it crosses into the window on every refresh to
+    /// draw text nobody reads. The body of the one note being read is fetched on its own.
+    ///
+    /// The preview is a truncation, so it is put in `snippet` — which is only ever displayed —
+    /// and never in `body`, which is what an editor would save back. A body that came back
+    /// short and got written would take the rest of the note with it.
     pub fn notes_in(&self, folder_guid: Option<&str>) -> Result<Vec<Note>> {
         let mut stmt = self.conn.prepare(
-            "SELECT guid, folder_guid, title, snippet, body, locked, pinned,
+            "SELECT guid, folder_guid, title,
+                    coalesce(snippet, substr(body, 1, 200)), locked, pinned,
                     created_at, modified_at, editable, etag
              FROM notes
              WHERE (?1 IS NULL AND (folder_guid IS NULL OR folder_guid != ?2))
@@ -198,13 +226,14 @@ impl Library {
                 folder_guid: row.get(1)?,
                 title: row.get(2)?,
                 snippet: row.get(3)?,
-                body: row.get(4)?,
-                locked: row.get::<_, i64>(5)? != 0,
-                pinned: row.get::<_, i64>(6)? != 0,
-                created_at: row.get(7)?,
-                modified_at: row.get(8)?,
-                editable: row.get::<_, i64>(9)? != 0,
-                etag: row.get(10)?,
+                // Never a truncation. Absent, so nothing can save a short one back.
+                body: None,
+                locked: row.get::<_, i64>(4)? != 0,
+                pinned: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+                modified_at: row.get(7)?,
+                editable: row.get::<_, i64>(8)? != 0,
+                etag: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -357,5 +386,90 @@ mod tests {
         locked.body = None;
         lib.put_notes(&[locked]).unwrap();
         assert!(lib.notes_in(None).unwrap()[0].locked);
+    }
+}
+
+/// Reading a lot of notes without carrying every word of them.
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+
+    fn stored() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_note_folders(&[NoteFolder {
+            guid: "F1".into(),
+            title: "Notes".into(),
+            sort_order: 0,
+            parent_guid: None,
+        }])
+        .unwrap();
+        lib.put_notes(&[
+            Note {
+                guid: "N1".into(),
+                folder_guid: Some("F1".into()),
+                title: "Long one".into(),
+                snippet: None,
+                body: Some("x".repeat(5_000)),
+                locked: false,
+                editable: true,
+                pinned: false,
+                created_at: Some(1),
+                modified_at: Some(2),
+                etag: None,
+            },
+            Note {
+                guid: "N2".into(),
+                folder_guid: Some("F1".into()),
+                title: "Empty one".into(),
+                snippet: None,
+                body: None,
+                locked: false,
+                editable: true,
+                pinned: false,
+                created_at: Some(1),
+                modified_at: Some(1),
+                etag: None,
+            },
+        ])
+        .unwrap();
+        lib
+    }
+
+    /// The danger this guards: a body that came back short and got saved would take the rest
+    /// of the note with it. The list carries no body at all, so nothing can.
+    #[test]
+    fn a_listed_note_carries_no_body_to_save_back() {
+        for note in stored().notes_in(None).unwrap() {
+            assert_eq!(
+                note.body, None,
+                "{} must not carry a body into a list",
+                note.title
+            );
+        }
+    }
+
+    /// A preview still has to appear, and it is a truncation — so it goes where only display
+    /// reads it.
+    #[test]
+    fn a_note_with_no_snippet_still_previews() {
+        let listed = stored().notes_in(None).unwrap();
+        let long = listed.iter().find(|n| n.guid == "N1").unwrap();
+        assert_eq!(long.snippet.as_deref().map(str::len), Some(200));
+    }
+
+    /// The note being read gets its text whole.
+    #[test]
+    fn the_body_is_fetched_in_full_for_one_note() {
+        let lib = stored();
+        assert_eq!(lib.note_body("N1").unwrap().map(|b| b.len()), Some(5_000));
+    }
+
+    /// A note with nothing in it is not the same as no such note, and the difference decides
+    /// whether an editor may open at all.
+    #[test]
+    fn an_empty_note_and_a_missing_one_are_told_apart() {
+        let lib = stored();
+        assert_eq!(lib.note_body("N2").unwrap(), Some(String::new()));
+        assert_eq!(lib.note_body("nothing-like-this").unwrap(), None);
     }
 }

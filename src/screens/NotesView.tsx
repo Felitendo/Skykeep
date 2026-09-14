@@ -19,11 +19,11 @@ const when = (seconds: number | null) => {
 };
 
 /** True when the body already opens with the title, which is Apple's usual case. */
-function bodyRepeatsTitle(note: Note): boolean {
-  const body = note.body?.trimStart();
-  if (!body) return false;
+function bodyRepeatsTitle(note: Note, body: string | null): boolean {
+  const text = body?.trimStart();
+  if (!text) return false;
   const title = note.title.trim();
-  return title.length > 0 && body.startsWith(title);
+  return title.length > 0 && text.startsWith(title);
 }
 
 export function NotesView() {
@@ -107,7 +107,40 @@ export function NotesView() {
     setSaved(false);
   }, [openGuid]);
 
-  const dirty = draft !== null && open !== null && draft !== (open.body ?? "");
+  /**
+   * The open note's text, fetched on its own.
+   *
+   * A listed note carries no body, so this is the only thing that knows what the note says —
+   * and until it arrives nothing may be edited or saved. An editor showing an empty box over
+   * a note whose text had not loaded yet would write that emptiness back the moment anyone
+   * touched it, which is the worst thing this app could do.
+   *
+   * Kept beside the guid it belongs to, so a slow fetch for one note can never be mistaken
+   * for the body of the next one opened.
+   */
+  const [loadedBody, setLoadedBody] = useState<{ guid: string; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!openGuid) return setLoadedBody(null);
+    let cancelled = false;
+    setLoadedBody((current) => (current?.guid === openGuid ? current : null));
+    api
+      .noteBody(openGuid)
+      .then((text) => {
+        if (!cancelled && text !== null) setLoadedBody({ guid: openGuid, text });
+      })
+      .catch((e) => {
+        if (!cancelled) setError(messageOf(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [openGuid, revision]);
+
+  /** What the open note says, or null while that is still unknown. */
+  const body = open && loadedBody?.guid === open.guid ? loadedBody.text : null;
+
+  const dirty = draft !== null && body !== null && draft !== body;
 
   /**
    * Saving is not something anyone should have to remember.
@@ -131,13 +164,14 @@ export function NotesView() {
   }, [write]);
 
   const type = useCallback(
-    (body: string) => {
-      if (!open) return;
-      setDraft(body);
+    (typed: string) => {
+      // Nothing may be typed into a note whose text has not arrived.
+      if (!open || body === null) return;
+      setDraft(typed);
       setSaved(false);
-      pending.current = body === (open.body ?? "") ? null : { guid: open.guid, body };
+      pending.current = typed === body ? null : { guid: open.guid, body: typed };
     },
-    [open]
+    [open, body]
   );
 
   // A pause in typing is the signal. Long enough not to write on every keystroke, short
@@ -301,7 +335,7 @@ export function NotesView() {
                 <span className="note-row-meta">
                   <span className="note-row-when">{when(note.modifiedAt)}</span>
                   <span className="note-row-snippet">
-                    {note.locked ? "Locked" : note.snippet || note.body?.slice(0, 60) || "No text"}
+                    {note.locked ? "Locked" : note.snippet?.slice(0, 60) || "No text"}
                   </span>
                 </span>
               </button>
@@ -337,7 +371,7 @@ export function NotesView() {
             <>
               {/* Apple derives a note's title from its first line, so the body already
                   contains it. Rendering both shows the same sentence twice. */}
-              {!bodyRepeatsTitle(open) && <h2>{open.title}</h2>}
+              {!bodyRepeatsTitle(open, body) && <h2>{open.title}</h2>}
 
               <div className="note-bar">
                 <p className="note-when">
@@ -360,11 +394,20 @@ export function NotesView() {
                 </div>
               </div>
 
-              {open.editable ? (
+              {/*
+                * Nothing is shown to type into until the note's own text has arrived. An
+                * empty box over a note whose body had not loaded would write that emptiness
+                * back the moment anyone touched it.
+                */}
+              {body === null ? (
+                <p className="note-loading" aria-live="polite">
+                  Opening…
+                </p>
+              ) : open.editable ? (
                 <textarea
                   className="note-text"
                   aria-label={`Body of ${open.title}`}
-                  value={draft ?? open.body ?? ""}
+                  value={draft ?? body}
                   onChange={(e) => type(e.target.value)}
                   onKeyDown={(e) => {
                     // Nothing needs saving by hand, but the reflex deserves an answer.
@@ -378,7 +421,7 @@ export function NotesView() {
                 />
               ) : (
                 <>
-                  <pre className="note-text">{open.body ?? ""}</pre>
+                  <pre className="note-text">{body}</pre>
                   <p className="note-readonly">
                     This note holds formatting Quince can't rewrite without losing it, so it
                     stays read-only here. Editing it on an Apple device is safe.

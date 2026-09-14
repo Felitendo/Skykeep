@@ -677,6 +677,17 @@ async fn note_by_guid(data: &State<'_, Data>, guid: &str) -> Result<Note, String
 /// Writes to Apple first and re-reads after, so the editor never shows a version Apple has
 /// not accepted. A note whose document cannot be rewritten safely is refused with the
 /// reason rather than flattened.
+/// One note's text, whole.
+///
+/// A list of notes carries no bodies — five thousand ordinary ones come to nearly ten
+/// megabytes, and sending that into the window on every refresh to draw text nobody reads is
+/// the unbounded payload the plan rules out. The note being read asks for its own.
+#[tauri::command]
+async fn note_body(guid: String, data: State<'_, Data>) -> UiResult<Option<String>> {
+    let library = data.0.lock().await;
+    library.note_body(&guid).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn note_save(
     guid: String,
@@ -1397,6 +1408,7 @@ fn main() {
             reminder_list_rename,
             reminder_list_delete,
             note_folders,
+            note_body,
             note_save,
             note_create,
             note_delete,

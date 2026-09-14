@@ -2285,3 +2285,11 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
   color: var(--text-2);
   font-size: var(--t-13);
 }
+
+/* Shown while a note's own text is being fetched, in place of anything typeable. */
+.note-loading {
+  margin: 0;
+  padding: 10px 2px;
+  color: var(--text-3);
+  font-size: var(--t-13);
+}
