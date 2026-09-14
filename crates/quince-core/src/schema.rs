@@ -232,4 +232,16 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE contacts ADD COLUMN photo_crop TEXT;
     "#,
+    // 15 — what Apple says about each calendar.
+    //
+    // A subscribed calendar — a holiday feed, a sports fixture list — and a calendar shared
+    // with you for reading only both come back with readOnly set. Offering to put an event in
+    // one produces a refusal that reads as a bug in this app rather than as the truth.
+    //
+    // And Apple names the default calendar outright. Picking the first of the list instead is
+    // the same mistake that put every new reminder in whichever list happened to sort first.
+    r#"
+    ALTER TABLE calendars ADD COLUMN writable INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE calendars ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];

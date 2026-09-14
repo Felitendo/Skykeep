@@ -1,5 +1,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, messageOf, type Calendar, type CalendarEvent, type Reminder } from "../lib/ipc";
+import {
+  api,
+  defaultCalendar,
+  messageOf,
+  type Calendar,
+  type CalendarEvent,
+  type Reminder,
+} from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
@@ -723,7 +730,7 @@ export function CalendarView() {
                       // An account with no calendars has nowhere to put an event. The New
                       // event button already knows that; clicking an empty hour has to know
                       // it too, or it opens a form that cannot be saved.
-                      const target = calendars[0]?.guid;
+                      const target = defaultCalendar(calendars)?.guid;
                       if (!target) return;
                       const startsAt = Math.floor(at.getTime() / 1000);
                       setDraft({
@@ -785,9 +792,9 @@ export function CalendarView() {
           </h2>
           <button
             className="quiet"
-            disabled={busy || calendars.length === 0}
+            disabled={busy || defaultCalendar(calendars) === null}
             onClick={() => {
-              const target = calendars[0]?.guid;
+              const target = defaultCalendar(calendars)?.guid;
               if (target) setDraft(blankEvent(selected, target));
             }}
           >
@@ -818,7 +825,12 @@ export function CalendarView() {
                 label="Calendar"
                 value={draft.calendarGuid}
                 onChange={(guid) => setDraft({ ...draft, calendarGuid: guid })}
-                options={calendars.map((c) => ({ value: c.guid, label: c.title }))}
+                /* A subscribed feed or a calendar shared for reading only cannot take an
+                   event, so it is not offered as somewhere to put one. The one the event is
+                   already in stays listed either way, or moving it would look impossible. */
+                options={calendars
+                  .filter((c) => c.writable || c.guid === draft.calendarGuid)
+                  .map((c) => ({ value: c.guid, label: c.title }))}
               />
             </div>
             <label>

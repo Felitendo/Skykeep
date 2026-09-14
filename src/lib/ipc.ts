@@ -129,7 +129,23 @@ export type Calendar = {
   ctag: string | null;
   sortOrder: number;
   enabled: boolean;
+  /** False for a subscribed feed or a calendar shared for reading only. */
+  writable: boolean;
+  /** The one Apple puts a new event in. */
+  isDefault: boolean;
 };
+
+/**
+ * Where a new event should go.
+ *
+ * Apple names the default calendar outright, so it is asked rather than guessed. Taking the
+ * first of the list is the mistake that put every new reminder in whichever list happened to
+ * sort first — and the first calendar can also be one nothing may be written to.
+ */
+export function defaultCalendar(calendars: Calendar[]): Calendar | null {
+  const writable = calendars.filter((c) => c.writable);
+  return writable.find((c) => c.isDefault) ?? writable[0] ?? null;
+}
 
 /** What the app sends to create or change an event. A guid means it already exists. */
 export type EventWrite = {

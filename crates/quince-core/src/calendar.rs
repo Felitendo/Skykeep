@@ -17,6 +17,17 @@ pub struct Calendar {
     pub ctag: Option<String>,
     pub sort_order: i64,
     pub enabled: bool,
+    /// False for a subscribed feed or a calendar shared for reading only. Nothing may be
+    /// written to one, so nothing should offer to.
+    #[serde(default = "yes")]
+    pub writable: bool,
+    /// The one Apple puts a new event in. Named outright rather than guessed at.
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+const fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,14 +62,17 @@ impl Library {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO calendars (guid, title, colour, ctag, sort_order, enabled, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO calendars (guid, title, colour, ctag, sort_order, enabled,
+                                        writable, is_default, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(guid) DO UPDATE SET
                    title = excluded.title,
                    colour = excluded.colour,
                    ctag = excluded.ctag,
                    sort_order = excluded.sort_order,
                    enabled = excluded.enabled,
+                   writable = excluded.writable,
+                   is_default = excluded.is_default,
                    updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -70,6 +84,8 @@ impl Library {
                     c.ctag,
                     c.sort_order,
                     i64::from(c.enabled),
+                    i64::from(c.writable),
+                    i64::from(c.is_default),
                     stamp
                 ])?;
             }
@@ -135,7 +151,7 @@ impl Library {
 
     pub fn calendars(&self) -> Result<Vec<Calendar>> {
         let mut stmt = self.conn.prepare(
-            "SELECT guid, title, colour, ctag, sort_order, enabled
+            "SELECT guid, title, colour, ctag, sort_order, enabled, writable, is_default
              FROM calendars ORDER BY sort_order, title",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -146,6 +162,8 @@ impl Library {
                 ctag: row.get(3)?,
                 sort_order: row.get(4)?,
                 enabled: row.get::<_, i64>(5)? != 0,
+                writable: row.get::<_, i64>(6)? != 0,
+                is_default: row.get::<_, i64>(7)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -261,6 +279,8 @@ mod tests {
             ctag: Some("ctag-1".into()),
             sort_order: 0,
             enabled: true,
+            writable: true,
+            is_default: false,
         }
     }
 

@@ -108,10 +108,17 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
     { guid: "r4", listGuid: "l1", title: "Water the plants", notes: null,
       dueAt: base - DAY, completedAt: base - DAY, priority: 0, flagged: false, parentGuid: null, etag: null },
   ];
+  // Shaped like a real account rather than a tidy one: the default is not the first, and one
+  // of them is a subscribed feed that nothing may be written to.
   const calendars = [
-    { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true },
-    { guid: "home", title: "Home", colour: "#0088ff", ctag: null, sortOrder: 1, enabled: true },
-    { guid: "personal", title: "Asha", colour: "#1badf8", ctag: null, sortOrder: 2, enabled: true },
+    { guid: "work", title: "Work", colour: "#cc73e1", ctag: null, sortOrder: 0, enabled: true,
+      writable: true, isDefault: false },
+    { guid: "home", title: "Home", colour: "#0088ff", ctag: null, sortOrder: 1, enabled: true,
+      writable: true, isDefault: true },
+    { guid: "personal", title: "Asha", colour: "#1badf8", ctag: null, sortOrder: 2, enabled: true,
+      writable: true, isDefault: false },
+    { guid: "holidays", title: "Holidays in India", colour: "#8e8e93", ctag: null, sortOrder: 3,
+      enabled: true, writable: false, isDefault: false },
   ];
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,

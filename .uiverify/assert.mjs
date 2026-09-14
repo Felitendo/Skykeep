@@ -21,7 +21,15 @@ await ctx.addInitScript(({ services }) => {
       if (cmd === "auth_resume") return true;
       if (cmd === "account_services") return services;
       if (cmd === "calendar_events") return [];
-      if (cmd === "calendar_list") return [];
+      if (cmd === "calendar_list")
+        return [
+          { guid: "work", title: "Work", colour: null, ctag: null, sortOrder: 0, enabled: true,
+            writable: true, isDefault: false },
+          { guid: "home", title: "Home", colour: null, ctag: null, sortOrder: 1, enabled: true,
+            writable: true, isDefault: true },
+          { guid: "holidays", title: "Holidays in India", colour: null, ctag: null, sortOrder: 2,
+            enabled: true, writable: false, isDefault: false },
+        ];
       if (cmd === "event_save") return "E-new";
       if (cmd === "event_delete") return null;
       if (cmd === "calendar_sync") return { calendars: 0, events: 0 };
@@ -261,6 +269,40 @@ let failures = 0;
   } else {
     console.log("PASS rapid clicks do not duplicate the breadcrumb (no folder to test with)");
   }
+  await page.close();
+}
+
+// ── A new event goes where Apple says, not where the list happens to start ────────────
+// Apple names the default calendar outright. Taking the first of the list instead is the same
+// mistake that put every new reminder in whichever list sorted first — and the first calendar
+// can also be a subscribed feed that nothing may be written to.
+{
+  const page = await ctx.newPage();
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Calendar", exact: true }).click();
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "New event" }).click();
+  await page.waitForTimeout(250);
+
+  const chosen = await page.locator(".cal-field .picker-button").first().innerText();
+  const right = chosen.includes("Home");
+  console.log(
+    right
+      ? `PASS a new event starts in the default calendar  [${chosen.split("\n")[0]}]`
+      : `FAIL a new event started in "${chosen.split("\n")[0]}" rather than the default`
+  );
+  if (!right) failures++;
+
+  await page.locator(".cal-field .picker-button").first().click();
+  await page.waitForTimeout(200);
+  const offered = await page.locator('[role="option"], .picker-option').allInnerTexts();
+  const readOnlyOffered = offered.some((o) => o.includes("Holidays"));
+  console.log(
+    readOnlyOffered
+      ? `FAIL a read-only calendar is offered to put an event in  [${offered.join(", ")}]`
+      : `PASS a read-only calendar is not somewhere to put an event  [${offered.join(", ")}]`
+  );
+  if (readOnlyOffered) failures++;
   await page.close();
 }
 

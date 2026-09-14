@@ -90,7 +90,19 @@ fn string(v: &Value, key: &str) -> Option<String> {
 }
 
 /// Turn one entry of Apple's `Collection` array into a calendar.
+///
+/// Not everything in that array is a calendar of events. Apple surfaces reminder lists through
+/// the same endpoint and tells them apart with `supportedType`, so anything that does not hold
+/// events is left out rather than shown as an empty calendar nobody can put anything in.
 fn collection_from(v: &Value) -> Option<Calendar> {
+    // Absent means events — only the other kinds say what they are.
+    let holds_events = v
+        .get("supportedType")
+        .and_then(Value::as_str)
+        .is_none_or(|kind| kind.eq_ignore_ascii_case("Event"));
+    if !holds_events {
+        return None;
+    }
     Some(Calendar {
         guid: string(v, "guid")?,
         title: string(v, "title").unwrap_or_else(|| "Untitled".into()),
@@ -99,6 +111,13 @@ fn collection_from(v: &Value) -> Option<Calendar> {
         sort_order: v.get("order").and_then(Value::as_i64).unwrap_or(0),
         // Apple omits `enabled` for calendars that are on.
         enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        // A subscribed feed, or a calendar shared for reading only. Apple refuses a write to
+        // one, and that refusal reads as a bug here unless nothing offered it in the first
+        // place. Absent means writable, which is the common case.
+        writable: !v.get("readOnly").and_then(Value::as_bool).unwrap_or(false),
+        // Apple names the default outright. Taking the first of the list instead is the same
+        // mistake that put every new reminder in whichever list happened to sort first.
+        is_default: v.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -901,5 +920,89 @@ mod write_tests {
             .to_string();
         assert!(message.contains("400"), "{message}");
         assert!(message.contains("bad event"), "{message}");
+    }
+}
+
+/// Calendars this account does not have, but other people's do.
+///
+/// This account has four calendars, all writable, none subscribed. A subscribed holiday feed,
+/// a calendar shared for reading only, and a reminder list surfaced through the same endpoint
+/// are all ordinary things to have and none of them appear here to be learned from — so they
+/// are checked against the shapes Apple documents in the fields it does send.
+#[cfg(test)]
+mod other_calendars_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_subscribed_or_shared_calendar_is_kept_but_not_written_to() {
+        let feed = collection_from(&json!({
+            "guid": "holidays", "title": "Holidays in India", "readOnly": true,
+            "supportedType": "Event"
+        }))
+        .unwrap();
+        assert!(!feed.writable, "nothing may be put in a feed");
+        assert_eq!(feed.title, "Holidays in India", "but it is still shown");
+    }
+
+    /// Absent means writable — most calendars never say so.
+    #[test]
+    fn a_calendar_that_says_nothing_is_writable() {
+        let plain = collection_from(&json!({ "guid": "c1", "title": "Work" })).unwrap();
+        assert!(plain.writable);
+        assert!(!plain.is_default);
+        assert!(plain.enabled);
+    }
+
+    /// Apple names the default outright, and it is not always the first.
+    #[test]
+    fn the_default_is_the_one_apple_says_it_is() {
+        let collections = json!([
+            { "guid": "a", "title": "Work", "order": 0 },
+            { "guid": "b", "title": "Home", "order": 1, "isDefault": true },
+        ]);
+        let parsed: Vec<Calendar> = collections
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(collection_from)
+            .collect();
+        assert_eq!(parsed.iter().filter(|c| c.is_default).count(), 1);
+        assert_eq!(parsed.iter().find(|c| c.is_default).unwrap().guid, "b");
+    }
+
+    /// Apple surfaces reminder lists through the calendar endpoint. Shown as calendars they
+    /// are empty ones nobody can put an event in.
+    #[test]
+    fn a_collection_that_does_not_hold_events_is_not_a_calendar() {
+        assert!(collection_from(&json!({
+            "guid": "r1", "title": "Groceries", "supportedType": "Reminder"
+        }))
+        .is_none());
+        assert!(collection_from(&json!({
+            "guid": "c1", "title": "Work", "supportedType": "Event"
+        }))
+        .is_some());
+        assert!(
+            collection_from(&json!({ "guid": "c2", "title": "Work" })).is_some(),
+            "saying nothing means events"
+        );
+    }
+
+    /// An account with nothing but a subscribed feed has nowhere to put an event, and the
+    /// interface has to be able to tell.
+    #[test]
+    fn an_account_of_only_feeds_offers_nowhere_to_write() {
+        let parsed: Vec<Calendar> = json!([
+            { "guid": "a", "title": "Holidays", "readOnly": true },
+            { "guid": "b", "title": "Fixtures", "readOnly": true },
+        ])
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(collection_from)
+        .collect();
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed.iter().all(|c| !c.writable));
     }
 }
