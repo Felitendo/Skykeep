@@ -266,6 +266,15 @@ impl<'a> CalendarClient<'a> {
                 "an event has to go in a calendar, and this account has none yet".into(),
             ));
         }
+        // The event's own id is the other half of the path. Empty, it builds
+        // `/ca/events/<calendar>/` — a different request, which Apple answers with a bare 400
+        // and no reason. A new event is given an id before it is sent, so reaching here
+        // without one is a mistake worth naming rather than a network error to puzzle over.
+        if event.guid.trim().is_empty() {
+            return Err(Error::Protocol(
+                "that event has no identifier, so there is nothing to save it as".into(),
+            ));
+        }
         let day = day_of(event.starts_at, event.timezone.as_deref());
         // What Apple already has, if this event exists. An event carries far more than this
         // app models — its alerts, its guests, its attachments, its link to the series it
@@ -291,6 +300,11 @@ impl<'a> CalendarClient<'a> {
     pub async fn delete_event(&self, event: &Event, ctag: Option<&str>) -> Result<()> {
         if event.calendar_guid.trim().is_empty() {
             return Err(Error::Protocol("that event names no calendar".into()));
+        }
+        if event.guid.trim().is_empty() {
+            return Err(Error::Protocol(
+                "that event has no identifier, so there is nothing to delete".into(),
+            ));
         }
         let day = day_of(event.starts_at, event.timezone.as_deref());
         let body = serde_json::json!({
@@ -1099,5 +1113,60 @@ mod daylight_tests {
     fn an_unknown_zone_falls_back_instead_of_failing_the_sync() {
         assert!(parse_apple_date(&apple(2026, 6, 10, 9, 0), Some("Mars/Olympus_Mons")).is_ok());
         assert!(parse_apple_date(&apple(2026, 6, 10, 9, 0), None).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::*;
+
+    fn event(calendar: &str, guid: &str) -> quince_core::calendar::Event {
+        quince_core::calendar::Event {
+            guid: guid.into(),
+            calendar_guid: calendar.into(),
+            title: "Standup".into(),
+            location: None,
+            starts_at: 1_789_000_000,
+            ends_at: 1_789_003_600,
+            all_day: false,
+            timezone: Some("UTC".into()),
+            url: None,
+            notes: None,
+            etag: None,
+        }
+    }
+
+    /// Both halves of the path are ids, and an empty one does not fail loudly — it builds a
+    /// different address, which Apple answers with a bare 400 and no reason at all.
+    #[tokio::test]
+    async fn an_event_with_no_identifier_is_refused_before_anything_is_sent() {
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, "http://127.0.0.1:1", vec![]);
+        for (calendar, guid, expect) in [
+            ("CAL", "", "no identifier"),
+            ("CAL", "   ", "no identifier"),
+            ("", "EVENT", "has none yet"),
+        ] {
+            let err = client
+                .put_event(&event(calendar, guid), None)
+                .await
+                .expect_err("nothing addressable, so nothing to send");
+            assert!(
+                err.to_string().contains(expect),
+                "wanted {expect:?}, got: {err}"
+            );
+        }
+    }
+
+    /// Deleting has the same two halves.
+    #[tokio::test]
+    async fn deleting_an_event_with_no_identifier_is_refused_too() {
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, "http://127.0.0.1:1", vec![]);
+        let err = client
+            .delete_event(&event("CAL", ""), None)
+            .await
+            .expect_err("nothing addressable");
+        assert!(err.to_string().contains("no identifier"), "got: {err}");
     }
 }
