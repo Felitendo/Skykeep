@@ -262,9 +262,18 @@ fn now_millis() -> i64 {
 /// from this app looking, in the list on a phone, exactly like one typed on the phone.
 #[must_use]
 pub fn title_and_snippet(body: &str) -> (String, String) {
-    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
-    let title = lines.next().unwrap_or_default().to_string();
-    let snippet = lines.next().unwrap_or_default().to_string();
+    // The first line exactly as written, blank or not, and the next line that says something.
+    //
+    // Skipping the blank ones meant a note that opens with an empty line was titled here and
+    // untitled on the phone, which takes the first line as it finds it. Two apps disagreeing
+    // about what a note is called is worse than an untitled note.
+    let mut lines = body.lines();
+    let title = lines.next().unwrap_or_default().trim().to_string();
+    let snippet = lines
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_string();
     (title, snippet)
 }
 
@@ -1115,5 +1124,39 @@ mod template_tests {
                 Some("Still fine")
             );
         }
+    }
+}
+
+/// What a note is called, and what shows under the name.
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    /// A phone takes the first line as it finds it. Skipping blank ones meant a note that
+    /// opens with an empty line read as titled here and untitled there — two apps disagreeing
+    /// about what the same note is called.
+    #[test]
+    fn the_title_is_the_first_line_even_when_it_is_empty() {
+        assert_eq!(title_and_snippet("\nhello").0, "");
+        assert_eq!(title_and_snippet("\n\n\nhello").0, "");
+        assert_eq!(title_and_snippet("hello\nworld").0, "hello");
+        assert_eq!(title_and_snippet("  hello  \nworld").0, "hello");
+    }
+
+    /// The line under it is the next one that says something, so a note separated by a blank
+    /// line still previews.
+    #[test]
+    fn the_preview_is_the_next_line_with_something_on_it() {
+        assert_eq!(title_and_snippet("Shopping\n\n\nMilk").1, "Milk");
+        assert_eq!(title_and_snippet("Shopping\nMilk").1, "Milk");
+        assert_eq!(title_and_snippet("Shopping").1, "");
+        assert_eq!(title_and_snippet("").1, "");
+    }
+
+    /// A note of nothing but blank lines has no name and nothing to preview, which is what it
+    /// is rather than an error.
+    #[test]
+    fn a_note_of_blank_lines_has_neither() {
+        assert_eq!(title_and_snippet("\n\n\n"), (String::new(), String::new()));
     }
 }

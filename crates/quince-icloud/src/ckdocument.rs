@@ -176,8 +176,13 @@ fn usable_text(bytes: &[u8]) -> Option<String> {
     {
         return None;
     }
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    // Trimmed to decide whether this is text at all, never to decide what the text is.
+    // Handing back the trimmed version lost every blank line a note opened or ended with —
+    // and worse, an edit then wrote the shortened version back, so opening a note in this
+    // window and typing one character deleted the spacing above it for good. It also made a
+    // note whose first line is blank look titled here and untitled on the phone, because the
+    // phone takes the first line exactly as it finds it.
+    (!text.trim().is_empty()).then(|| text.to_string())
 }
 
 /// Write `text` back in the shape Apple reads: protobuf at field path 2 → 3 → 2, gzipped,
@@ -1184,7 +1189,7 @@ mod tests {
             let encoded = text_to_base64(text);
             assert_eq!(
                 text_from_base64(&encoded).as_deref(),
-                Some(text.trim()),
+                Some(text),
                 "round trip failed for {text:?}"
             );
         }
@@ -1738,5 +1743,61 @@ mod merge_record_tests {
             Some("Entirely new words")
         );
         assert!(has_merge_records(&swapped));
+    }
+}
+
+/// Text comes back as it was written, including the parts that look like nothing.
+#[cfg(test)]
+mod whitespace_tests {
+    use super::*;
+
+    /// A note that opens with blank lines keeps them. Handing back a trimmed version was not
+    /// only wrong on screen — the next edit wrote the shortened text back, so opening such a
+    /// note here and typing one character deleted the spacing above it for good.
+    #[test]
+    fn blank_lines_a_note_opens_or_ends_with_survive() {
+        for text in [
+            "\n\n\nhello",
+            "hello\n\n\n",
+            "\n\n\nhello\n\n",
+            "   indented",
+            "trailing spaces   ",
+        ] {
+            assert_eq!(
+                text_from_base64(&text_to_base64(text)).as_deref(),
+                Some(text),
+                "{text:?} did not survive"
+            );
+        }
+    }
+
+    /// And an edit to such a note only changes what was edited.
+    #[test]
+    fn editing_a_note_that_opens_with_blank_lines_keeps_them() {
+        let original = text_to_base64("\n\n\nhello");
+        let edited = replace_text_in_base64(&original, "\n\n\nhello there").unwrap();
+        assert_eq!(
+            text_from_base64(&edited).as_deref(),
+            Some("\n\n\nhello there")
+        );
+    }
+
+    /// Nothing at all is still nothing — the emptiness test is what the trim was for, and it
+    /// still does that job.
+    #[test]
+    fn whitespace_alone_is_still_not_text() {
+        assert_eq!(usable_text(b""), None);
+        assert_eq!(usable_text(b"   "), None);
+        assert_eq!(usable_text(b"\n\n\n"), None);
+        assert_eq!(usable_text(b"\t \n"), None);
+    }
+
+    /// The run has to measure the whole text, blank lines included, or the phone renders
+    /// against a length that is short.
+    #[test]
+    fn the_run_covers_the_blank_lines_too() {
+        let encoded = text_to_base64("\n\n\nhello");
+        let raw = B64.decode(encoded).unwrap();
+        assert_eq!(debug_attribute_lengths(&raw), vec![8]);
     }
 }
