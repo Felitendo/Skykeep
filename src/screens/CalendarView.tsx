@@ -16,6 +16,17 @@ const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const startOfDay = (d: Date) =>
   Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000);
 
+/**
+ * Local midnight the morning after, as unix seconds.
+ *
+ * Not midnight plus 86,400. On the two days a year a clock moves, a day is twenty-three hours
+ * or twenty-five, so adding a fixed day lands an hour either side of midnight and takes an
+ * extra evening's events into the view or leaves one out. Asking the calendar for the next
+ * date is right wherever the viewer is.
+ */
+const startOfNextDay = (d: Date) =>
+  Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() / 1000);
+
 const isoDate = (seconds: number) => {
   const d = new Date(seconds * 1000);
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -109,9 +120,10 @@ function placement(
   day: Date,
   column: number
 ): React.CSSProperties {
-  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime() / 1000;
+  const dayStart = startOfDay(day);
+  const dayEnd = startOfNextDay(day);
   const from = Math.max(event.startsAt, dayStart);
-  const to = Math.min(event.endsAt, dayStart + 86_400);
+  const to = Math.min(event.endsAt, dayEnd);
   const minutesIn = (from - dayStart) / 60;
   // A zero-length event still has to be readable, so nothing is thinner than a quarter hour.
   const minutesLong = Math.max((to - from) / 60, 15);
@@ -200,18 +212,18 @@ export function CalendarView() {
   // and a year view does not fetch it twelve times over.
   const range = useMemo(() => {
     if (view === "day") {
-      return { from: startOfDay(anchor), to: startOfDay(anchor) + 86_400 };
+      return { from: startOfDay(anchor), to: startOfNextDay(anchor) };
     }
     if (view === "week") {
-      return { from: startOfDay(weekDays[0]), to: startOfDay(weekDays[6]) + 86_400 };
+      return { from: startOfDay(weekDays[0]), to: startOfNextDay(weekDays[6]) };
     }
     if (view === "year") {
       return {
         from: startOfDay(new Date(anchor.getFullYear(), 0, 1)),
-        to: startOfDay(new Date(anchor.getFullYear(), 11, 31)) + 86_400,
+        to: startOfNextDay(new Date(anchor.getFullYear(), 11, 31)),
       };
     }
-    return { from: startOfDay(days[0]), to: startOfDay(days[41]) + 86_400 };
+    return { from: startOfDay(days[0]), to: startOfNextDay(days[41]) };
   }, [view, anchor, days, weekDays]);
 
   const read = useCallback(async () => {

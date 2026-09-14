@@ -3264,6 +3264,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "flate2",
  "jiff",
  "quince-auth",
  "quince-core",

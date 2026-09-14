@@ -29,11 +29,22 @@ function endOfToday(): number {
   );
 }
 
+/**
+ * How many days apart two moments are, counted on a calendar rather than in milliseconds.
+ *
+ * Dividing by 86,400,000 is wrong on the two days a year a clock moves: a day is then
+ * twenty-three hours or twenty-five, and something due tomorrow evening comes out as today.
+ * Counting dates is right wherever the viewer is, including the places that never change.
+ */
+function daysApart(from: Date, to: Date): number {
+  const noon = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12).getTime();
+  return Math.round((noon(to) - noon(from)) / 86_400_000);
+}
+
 function dueLabel(seconds: number): { text: string; overdue: boolean } {
   const due = new Date(seconds * 1000);
   const now = new Date();
-  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const days = Math.floor((due.getTime() - midnight.getTime()) / 86_400_000);
+  const days = daysApart(now, due);
   const time = due.toLocaleTimeString(undefined, {
     hour: "numeric",
     minute: "2-digit",

@@ -14,6 +14,7 @@ rpassword = "7"
 jiff = "0.2.37"
 base64 = "0.22"
 uuid.workspace = true
+flate2 = "1"
 quince-auth = { path = "../crates/quince-auth" }
 quince-core = { path = "../crates/quince-core" }
 quince-icloud = { path = "../crates/quince-icloud" }

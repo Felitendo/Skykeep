@@ -242,13 +242,23 @@ fn utf16_len(text: &str) -> u64 {
     text.encode_utf16().count() as u64
 }
 
-/// The document Apple accepts: the text nested at [`TEXT_PATH`], with an attribute run
-/// covering it.
+/// The document Apple accepts: version, then a document, then a note holding the text and an
+/// attribute run covering it.
 ///
-/// The run is the part that was missing. Apple's clients map styling onto the text through
-/// these runs, and a note or reminder written without one arrives with nothing to render —
-/// which is exactly how everything created from here showed up blank on the phone. A bare
-/// `{ length }` is a complete run; Apple writes exactly that for unstyled text.
+/// Two things had to be right and only one of them was.
+///
+/// The attribute run is how Apple's clients map styling onto text, and something written with
+/// no run has nothing to render against. A bare `{ length }` is a complete run, which is what
+/// Apple writes for unstyled text.
+///
+/// The version fields are the other half, and they were simply missing. Every document the
+/// phone writes opens `08 00` — a version at the top — and its inner document opens `08 00
+/// 10 00` before the note itself. Ours went straight to the note. Our own reader did not mind
+/// and handed the text back perfectly, which is why this survived so long; Apple's reader is
+/// stricter, and a reminder or note created here arrived on the phone with nothing in it.
+///
+/// Checked by laying our bytes beside a reminder the phone wrote: the same fields, in the same
+/// order, differing only in the text.
 fn document_bytes(text: &str) -> Vec<u8> {
     let mut note = length_delimited(TEXT_PATH[2], text.as_bytes());
     note.extend(length_delimited(
@@ -256,11 +266,14 @@ fn document_bytes(text: &str) -> Vec<u8> {
         &varint_field(1, utf16_len(text)),
     ));
 
-    let mut nested = note;
-    for tag in TEXT_PATH[..2].iter().rev() {
-        nested = length_delimited(*tag, &nested);
-    }
-    nested
+    // The note, inside a document that states its versions, inside a store that states its own.
+    let mut document = varint_field(1, 0);
+    document.extend(varint_field(2, 0));
+    document.extend(length_delimited(TEXT_PATH[1], &note));
+
+    let mut store = varint_field(1, 0);
+    store.extend(length_delimited(TEXT_PATH[0], &document));
+    store
 }
 
 fn gzip(bytes: &[u8]) -> Vec<u8> {
