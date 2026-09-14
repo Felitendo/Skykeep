@@ -41,7 +41,14 @@ function daysApart(from: Date, to: Date): number {
   return Math.round((noon(to) - noon(from)) / 86_400_000);
 }
 
-function dueLabel(seconds: number): { text: string; overdue: boolean } {
+/**
+ * When a reminder is due, said the way Apple says it.
+ *
+ * `dated` means the heading above already names the day — under "Tomorrow", Apple writes
+ * "9:30 PM" and not "Tomorrow 9:30 PM". Saying it twice is the sort of thing that makes a
+ * screen read as almost-right.
+ */
+function dueLabel(seconds: number, dated = false): { text: string; overdue: boolean } {
   const due = new Date(seconds * 1000);
   const now = new Date();
   const days = daysApart(now, due);
@@ -49,6 +56,9 @@ function dueLabel(seconds: number): { text: string; overdue: boolean } {
     hour: "numeric",
     minute: "2-digit",
   });
+  if (dated) {
+    return { text: time, overdue: days < 0 || (days === 0 && due.getTime() < now.getTime()) };
+  }
   if (days < 0)
     return {
       text: due.toLocaleDateString(undefined, {
@@ -104,6 +114,18 @@ function repeatLabel(r: Reminder): string | null {
   if (!unit) return "Repeats";
   const every = r.recurInterval ?? 1;
   return every > 1 ? `Every ${every} ${unit}s` : `Every ${unit}`;
+}
+
+/**
+ * The word Apple puts beside the repeat arrow: Daily, Weekly, Monthly, Yearly.
+ *
+ * The arrow alone says something repeats without saying how often, which is the one thing
+ * worth knowing about it at a glance.
+ */
+function repeatWord(r: Reminder): string | null {
+  if (r.recurFrequency === null || r.recurFrequency === undefined) return null;
+  if ((r.recurInterval ?? 1) > 1) return repeatLabel(r);
+  return ["Daily", "Weekly", "Monthly", "Yearly"][r.recurFrequency] ?? "Repeats";
 }
 
 /** `YYYY-MM-DDTHH:mm` for a datetime-local input, in local time. */
@@ -416,11 +438,6 @@ export function RemindersView() {
     }
     return out;
   }, [items]);
-  const colour = useMemo(
-    () => lists.find((l) => l.guid === listGuid)?.colour || "var(--gold)",
-    [lists, listGuid],
-  );
-
   /**
    * The rows arranged the way Apple arranges them.
    *
@@ -443,7 +460,8 @@ export function RemindersView() {
     (selection as { kind: SmartList }).kind !== "flagged";
 
   const sections = useMemo(() => {
-    if (inList) return [{ key: "all", heading: null, colour: null, rows: threaded }];
+    if (inList)
+      return [{ key: "all", heading: null, colour: null, dated: false, rows: threaded }];
 
     const kind = (selection as { kind: SmartList }).kind;
     const now = new Date();
@@ -470,7 +488,9 @@ export function RemindersView() {
       }
       return buckets
         .filter((b) => b.rows.length > 0 || b.heading !== null)
-        .map((b) => ({ ...b, colour: null }));
+        // The buckets are all today, so a row under one needs only its time. The loose rows
+        // above are overdue or undated and still have to say which day they mean.
+        .map((b) => ({ ...b, colour: null, dated: b.heading !== null }));
     }
 
     if (kind === "scheduled") {
@@ -488,7 +508,7 @@ export function RemindersView() {
         }
       }
       const out = overdue.length
-        ? [{ key: "overdue", heading: "Overdue", colour: null, rows: overdue }]
+        ? [{ key: "overdue", heading: "Overdue", colour: null, dated: false, rows: overdue }]
         : [];
       for (const days of [...byDay.keys()].sort((a, b) => a - b)) {
         const when = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
@@ -505,6 +525,7 @@ export function RemindersView() {
                     month: "short",
                   }),
           colour: null,
+          dated: true,
           rows: byDay.get(days) ?? [],
         });
       }
@@ -528,6 +549,8 @@ export function RemindersView() {
         key: guid,
         heading: listOf(guid)?.title ?? "Reminders",
         colour: listOf(guid)?.colour ?? null,
+        // Grouped by list rather than by day, so a row still has to name its day.
+        dated: false,
         rows,
       }));
   }, [threaded, inList, selection, lists]);
@@ -731,7 +754,7 @@ export function RemindersView() {
         <Fragment key={section.key}>
         {section.heading && (
           <h2
-            className="rem-section"
+            className={`rem-section${section.dated ? " quiet" : ""}`}
             style={section.colour ? { color: section.colour } : undefined}
           >
             {section.heading}
@@ -739,8 +762,11 @@ export function RemindersView() {
         )}
         <ul className="rem-list-items">
           {section.rows.map(({ reminder, depth }) => {
+            // The heading already names the day in the views that have one.
             const due =
-              reminder.dueAt === null ? null : dueLabel(reminder.dueAt);
+              reminder.dueAt === null
+                ? null
+                : dueLabel(reminder.dueAt, section.dated);
             const isOpen = openGuid === reminder.guid;
             const repeat = repeatLabel(reminder);
             const justMoved = moved?.guid === reminder.guid ? moved.text : null;
@@ -758,12 +784,19 @@ export function RemindersView() {
                   aria-label={reminder.title}
                   disabled={busyGuid === reminder.guid}
                   onClick={() => toggle(reminder)}
-                  style={{ borderColor: colour }}
                 >
+                  {/* Apple's empty circle is neutral wherever it appears; the colour is the
+                      reminder's own list, and it only shows once the thing is done. Borrowing
+                      the open list's colour painted every circle in a smart view gold, which
+                      said something untrue about where each reminder lived. */}
                   {reminder.completedAt && (
                     <span
                       className="tick-fill"
-                      style={{ background: colour }}
+                      style={{
+                        background:
+                          lists.find((l) => l.guid === reminder.listGuid)?.colour ||
+                          "var(--gold)",
+                      }}
                     />
                   )}
                 </button>
@@ -826,8 +859,12 @@ export function RemindersView() {
                             </span>
                           )}
                           {repeat && (
-                            <span className="rem-repeat" role="img" aria-label={repeat} title={repeat}>
-                              ↻
+                            <span className="rem-repeat" title={repeat}>
+                              <span aria-hidden="true">↻</span>
+                              <span className="rem-repeat-word">
+                                {repeatWord(reminder)}
+                              </span>
+                              <span className="visually-hidden">{repeat}</span>
                             </span>
                           )}
                         </>

@@ -296,6 +296,45 @@ let failures = 0;
   await page.close();
 }
 
+// ── What acts on a reminder stays beside it ───────────────────────────────────────────
+// The separators span the whole pane, so the list does not end in mid-air on a wide window.
+// The controls must not span it too: with the text on one stretching column they were pushed
+// to the far edge, about thirteen hundred pixels from the reminder they act on.
+{
+  const page = await ctx.newPage();
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Reminders", exact: true }).click();
+  await page.waitForTimeout(400);
+
+  // Measured from the start of the row, not from the text element — that one stretches to
+  // fill its column, so the gap after it is always the grid gap and says nothing at all. The
+  // first version of this check passed against the layout it was written to catch.
+  const reach = await page.evaluate(() => {
+    const row = document.querySelector(".rem-list-items li");
+    const actions = row?.querySelector(".rem-trailing");
+    if (!row || !actions) return null;
+    const left = row.getBoundingClientRect().left;
+    return {
+      reach: +(actions.getBoundingClientRect().left - left).toFixed(0),
+      rowWidth: +row.getBoundingClientRect().width.toFixed(0),
+    };
+  });
+  if (!reach) {
+    console.log("FAIL could not measure a reminder row");
+    failures++;
+  } else {
+    const close = reach.reach < 900;
+    console.log(
+      close
+        ? `PASS what acts on a reminder stays beside it  [${reach.reach}px in, row ${reach.rowWidth}px]`
+        : `FAIL the controls sit ${reach.reach}px into a ${reach.rowWidth}px row`
+    );
+    if (!close) failures++;
+  }
+  await page.close();
+}
+
 // ── A new event goes where Apple says, not where the list happens to start ────────────
 // Apple names the default calendar outright. Taking the first of the list instead is the same
 // mistake that put every new reminder in whichever list sorted first — and the first calendar
