@@ -4,6 +4,16 @@ use quince_core::notes::{Note, NoteFolder};
 use quince_core::reminders::{Reminder, ReminderList};
 use std::time::Instant;
 
+fn human(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::env::temp_dir().join(format!("quince-scale-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir)?;
@@ -113,47 +123,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         t.elapsed().as_millis()
     );
 
-    println!("\n--- what the window asks for on every screen ---");
-    let t = Instant::now();
-    let n = lib.contacts(None)?.len();
-    println!(
-        "contacts(None)          {n:>6} rows  {:>7} ms",
-        t.elapsed().as_millis()
-    );
+    println!("\n--- what each screen asks for, and what crosses into the window ---\n");
 
-    let t = Instant::now();
-    let n = lib.contacts(Some("Surname7"))?.len();
-    println!(
-        "contacts(search)        {n:>6} rows  {:>7} ms",
-        t.elapsed().as_millis()
-    );
+    macro_rules! weigh {
+        ($label:expr, $call:expr) => {{
+            let t = Instant::now();
+            let rows = $call;
+            let ms = t.elapsed().as_millis();
+            let bytes = serde_json::to_vec(&rows).map(|v| v.len()).unwrap_or(0);
+            println!(
+                "{:<24} {:>6} rows {:>5} ms   payload {:>9}",
+                $label,
+                rows.len(),
+                ms,
+                human(bytes)
+            );
+            bytes
+        }};
+    }
 
-    let t = Instant::now();
-    let n = lib.notes_in(None)?.len();
-    let bytes: usize = lib
-        .notes_in(None)?
-        .iter()
-        .map(|x| x.body.as_deref().unwrap_or("").len())
-        .sum();
-    println!(
-        "notes_in(None)          {n:>6} rows  {:>7} ms   {} KB of bodies",
-        t.elapsed().as_millis(),
-        bytes / 1024
-    );
+    let mut worst = 0usize;
+    worst = worst.max(weigh!("contacts(None)", lib.contacts(None)?));
+    worst = worst.max(weigh!("contacts(search)", lib.contacts(Some("Surname7"))?));
+    worst = worst.max(weigh!("notes_in(None)", lib.notes_in(None)?));
+    worst = worst.max(weigh!("note_folders()", lib.note_folders()?));
+    worst = worst.max(weigh!(
+        "reminders_in(list)",
+        lib.reminders_in("List/3", true)?
+    ));
+    worst = worst.max(weigh!(
+        "reminders_due_between",
+        lib.reminders_due_between(0, i64::MAX)?
+    ));
+    worst = worst.max(weigh!("reminder_lists()", lib.reminder_lists()?));
+    worst = worst.max(weigh!("calendars()", lib.calendars()?));
 
-    let t = Instant::now();
-    let n = lib.reminders_in("List/3", true)?.len();
-    println!(
-        "reminders_in(one list)  {n:>6} rows  {:>7} ms",
-        t.elapsed().as_millis()
-    );
-
-    let t = Instant::now();
-    let n = lib.reminders_due_between(0, i64::MAX)?.len();
-    println!(
-        "reminders_due_between   {n:>6} rows  {:>7} ms",
-        t.elapsed().as_millis()
-    );
+    println!("\nlargest single payload: {}", human(worst));
 
     std::fs::remove_dir_all(&dir).ok();
     Ok(())

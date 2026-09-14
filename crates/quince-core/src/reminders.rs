@@ -40,7 +40,13 @@ pub struct Reminder {
     pub etag: Option<String>,
     /// Apple's original JSON for this reminder, kept verbatim so a write can echo every
     /// field back rather than only the ones we model.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Never sent to the window. It averages five kilobytes a reminder on a real account,
+    /// against about fourteen bytes of the title and notes anyone actually reads — so a list
+    /// of seven hundred carried three and a half megabytes of it, and twenty thousand would
+    /// have carried ninety. The interface has never looked at a byte of it: writes name a
+    /// reminder by its guid and the record is read back from the library on this side.
+    #[serde(default, skip_serializing)]
     pub raw: Option<String>,
 }
 
@@ -928,6 +934,77 @@ mod count_tests {
         assert_eq!(
             (counts.today, counts.scheduled, counts.flagged, counts.all),
             (0, 0, 0, 0)
+        );
+    }
+}
+
+/// What a screenful of reminders weighs on its way to the window.
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    /// Apple's record for one reminder runs to about five kilobytes. It is kept so a write can
+    /// echo back every field this app does not model, and it is read on this side only — the
+    /// interface names a reminder by its guid and has never looked at a byte of it.
+    ///
+    /// Sending it anyway made a list of seven hundred weigh three and a half megabytes.
+    #[test]
+    fn apples_own_record_never_leaves_this_side() {
+        let apples_record = format!(r#"{{"fields":{{"padding":"{}"}}}}"#, "x".repeat(5_000));
+        let reminder = Reminder {
+            guid: "Reminder/1".into(),
+            list_guid: "List/1".into(),
+            title: "Buy milk".into(),
+            notes: None,
+            due_at: Some(1_789_000_000),
+            completed_at: None,
+            priority: 0,
+            flagged: false,
+            parent_guid: None,
+            recur_frequency: None,
+            recur_interval: None,
+            etag: Some("e1".into()),
+            raw: Some(apples_record),
+        };
+
+        let sent = serde_json::to_string(&reminder).unwrap();
+        assert!(
+            !sent.contains("padding"),
+            "Apple's record must not cross into the window"
+        );
+        assert!(
+            sent.len() < 400,
+            "a reminder should weigh a few hundred bytes, not a few thousand: {}",
+            sent.len()
+        );
+        assert!(sent.contains("Buy milk"), "what a person reads still goes");
+    }
+
+    /// A thousand reminders is an ordinary list on a busy account, and it has to stay small
+    /// enough to cross a message channel without anyone noticing.
+    #[test]
+    fn a_thousand_reminders_stay_under_a_megabyte() {
+        let many: Vec<Reminder> = (0..1_000)
+            .map(|i| Reminder {
+                guid: format!("Reminder/{i}"),
+                list_guid: "List/1".into(),
+                title: format!("Something to do number {i}"),
+                notes: Some("with a note on it".into()),
+                due_at: Some(1_789_000_000 + i),
+                completed_at: None,
+                priority: 0,
+                flagged: false,
+                parent_guid: None,
+                recur_frequency: None,
+                recur_interval: None,
+                etag: Some(format!("e{i}")),
+                raw: Some("y".repeat(5_000)),
+            })
+            .collect();
+        let bytes = serde_json::to_vec(&many).unwrap().len();
+        assert!(
+            bytes < 1_048_576,
+            "a thousand reminders came to {bytes} bytes"
         );
     }
 }
