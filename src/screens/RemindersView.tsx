@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   MOST_AT_ONCE,
@@ -421,6 +421,117 @@ export function RemindersView() {
     [lists, listGuid],
   );
 
+  /**
+   * The rows arranged the way Apple arranges them.
+   *
+   * Every one of Apple's smart lists is grouped, and this app showed each of them as one flat
+   * run of reminders — which is most of why the screen felt unlike the real thing even when
+   * the same reminders were on it. Today breaks by time of day, Scheduled by date, and the
+   * ones that gather from everywhere break by the list each reminder came from.
+   *
+   * A real list is left alone: Apple does not group inside one either.
+   */
+  /**
+   * Whether a row should name the list it came from.
+   *
+   * Apple shows it wherever the grouping does not already say so: in Today and Scheduled,
+   * which gather from everywhere, but not under a list heading where it would repeat.
+   */
+  const showListName =
+    !inList &&
+    (selection as { kind: SmartList }).kind !== "all" &&
+    (selection as { kind: SmartList }).kind !== "flagged";
+
+  const sections = useMemo(() => {
+    if (inList) return [{ key: "all", heading: null, colour: null, rows: threaded }];
+
+    const kind = (selection as { kind: SmartList }).kind;
+    const now = new Date();
+    const listOf = (guid: string) => lists.find((l) => l.guid === guid);
+
+    if (kind === "today") {
+      // Apple's own buckets, and it shows all three whether or not anything is in them.
+      const buckets: { key: string; heading: string | null; rows: typeof threaded }[] = [
+        { key: "loose", heading: null, rows: [] },
+        { key: "morning", heading: "Morning", rows: [] },
+        { key: "afternoon", heading: "Afternoon", rows: [] },
+        { key: "tonight", heading: "Tonight", rows: [] },
+      ];
+      for (const row of threaded) {
+        const due = row.reminder.dueAt;
+        // Anything overdue, or with no time at all, sits above the buckets — which is where
+        // Apple puts it.
+        if (due === null || daysApart(now, new Date(due * 1000)) < 0) {
+          buckets[0].rows.push(row);
+          continue;
+        }
+        const hour = new Date(due * 1000).getHours();
+        buckets[hour < 12 ? 1 : hour < 17 ? 2 : 3].rows.push(row);
+      }
+      return buckets
+        .filter((b) => b.rows.length > 0 || b.heading !== null)
+        .map((b) => ({ ...b, colour: null }));
+    }
+
+    if (kind === "scheduled") {
+      const byDay = new Map<number, typeof threaded>();
+      const overdue: typeof threaded = [];
+      for (const row of threaded) {
+        const due = row.reminder.dueAt;
+        if (due === null) continue;
+        const days = daysApart(now, new Date(due * 1000));
+        if (days < 0) overdue.push(row);
+        else {
+          const bucket = byDay.get(days);
+          if (bucket) bucket.push(row);
+          else byDay.set(days, [row]);
+        }
+      }
+      const out = overdue.length
+        ? [{ key: "overdue", heading: "Overdue", colour: null, rows: overdue }]
+        : [];
+      for (const days of [...byDay.keys()].sort((a, b) => a - b)) {
+        const when = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
+        out.push({
+          key: `d${days}`,
+          heading:
+            days === 0
+              ? "Today"
+              : days === 1
+                ? "Tomorrow"
+                : when.toLocaleDateString(undefined, {
+                    weekday: "short",
+                    day: "numeric",
+                    month: "short",
+                  }),
+          colour: null,
+          rows: byDay.get(days) ?? [],
+        });
+      }
+      return out;
+    }
+
+    // All and Flagged gather from everywhere, so the list each came from is the grouping.
+    const byList = new Map<string, typeof threaded>();
+    for (const row of threaded) {
+      const bucket = byList.get(row.reminder.listGuid);
+      if (bucket) bucket.push(row);
+      else byList.set(row.reminder.listGuid, [row]);
+    }
+    return [...byList.entries()]
+      .sort(
+        ([a], [b]) =>
+          (listOf(a)?.sortOrder ?? 0) - (listOf(b)?.sortOrder ?? 0) ||
+          (listOf(a)?.title ?? "").localeCompare(listOf(b)?.title ?? ""),
+      )
+      .map(([guid, rows]) => ({
+        key: guid,
+        heading: listOf(guid)?.title ?? "Reminders",
+        colour: listOf(guid)?.colour ?? null,
+        rows,
+      }));
+  }, [threaded, inList, selection, lists]);
+
   return (
     <div className="rem">
       <aside className="rem-lists" aria-label="Reminder lists">
@@ -495,6 +606,7 @@ export function RemindersView() {
                     {counts?.lists.find(([guid]) => guid === list.guid)?.[1] ?? 0}
                   </span>
                 </button>
+                <span className="rem-list-actions">
                 <button
                   className="rem-list-action"
                   aria-label={`Rename ${list.title}`}
@@ -518,6 +630,7 @@ export function RemindersView() {
                 >
                   ×
                 </button>
+                </span>
               </>
             )}
           </div>
@@ -614,8 +727,18 @@ export function RemindersView() {
           </p>
         )}
 
+        {sections.map((section) => (
+        <Fragment key={section.key}>
+        {section.heading && (
+          <h2
+            className="rem-section"
+            style={section.colour ? { color: section.colour } : undefined}
+          >
+            {section.heading}
+          </h2>
+        )}
         <ul className="rem-list-items">
-          {threaded.map(({ reminder, depth }) => {
+          {section.rows.map(({ reminder, depth }) => {
             const due =
               reminder.dueAt === null ? null : dueLabel(reminder.dueAt);
             const isOpen = openGuid === reminder.guid;
@@ -689,6 +812,14 @@ export function RemindersView() {
                         </span>
                       ) : (
                         <>
+                          {/* Which list it came from, where the grouping does not already
+                              say so — Apple puts it here, before the time. */}
+                          {showListName && (
+                            <span className="rem-from">
+                              {lists.find((l) => l.guid === reminder.listGuid)?.title ??
+                                "Reminders"}
+                            </span>
+                          )}
                           {due && (
                             <span className={`rem-due${due.overdue ? " overdue" : ""}`}>
                               {due.text}
@@ -839,6 +970,8 @@ export function RemindersView() {
             );
           })}
         </ul>
+        </Fragment>
+        ))}
 
         {loaded && items.length === 0 && !error && (
           <p className="cal-empty">

@@ -1628,8 +1628,23 @@ textarea.note-text:disabled {
 .rem-trailing { padding-top: 2px; }
 
 /* List management sits in the sidebar, with its controls out of the way until hovered. */
-.rem-list-row { display: flex; align-items: center; gap: 1px; }
-.rem-list-row .rem-list { flex: 1; min-width: 0; }
+/*
+ * A list row spans the same width as the cards above it.
+ *
+ * The rename and delete buttons used to sit in the row's flow, which took thirty-seven pixels
+ * off every row and left the column with two different widths — the cards one, the lists
+ * another. They float over the end of the row now, appearing on hover the way they did before,
+ * and the row itself reaches the same edge the cards do.
+ */
+.rem-list-row { position: relative; display: flex; align-items: center; }
+.rem-list-row .rem-list { flex: 1; min-width: 0; padding-right: 54px; }
+
+.rem-list-actions {
+  position: absolute;
+  right: 2px;
+  display: flex;
+  gap: 1px;
+}
 
 .rem-list-action {
   border: 0;
@@ -2303,3 +2318,25 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
   color: var(--text-2);
   font-size: var(--t-11);
 }
+
+/*
+ * The headings Apple puts through its smart lists — Morning, Tomorrow, or the name of the
+ * list a reminder came from. Every one of Apple's smart lists is grouped; showing them as one
+ * flat run is most of why this screen felt unlike the real thing.
+ */
+.rem-section {
+  margin: 14px 0 2px;
+  padding: 0 2px;
+  font-size: var(--t-15);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.rem-section:first-child { margin-top: 2px; }
+
+/* A section with nothing under it still belongs — Apple leaves Tonight showing. */
+.rem-section + .rem-list-items:empty { min-height: 8px; }
+
+/* Which list a reminder came from, beside its time. */
+.rem-from { color: var(--text-2); }

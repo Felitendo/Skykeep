@@ -237,6 +237,30 @@ let failures = 0;
     );
     if (!small) failures++;
   }
+
+  // Everything in the Reminders column reaches the same edge. The rename and delete buttons
+  // used to sit in each row's flow, which took thirty-seven pixels off every list row and left
+  // the column with two widths — the cards one, the lists another.
+  const column = await page.evaluate(() => {
+    const width = (s) => {
+      const el = document.querySelector(s);
+      return el ? +el.getBoundingClientRect().width.toFixed(1) : null;
+    };
+    const cards = [...document.querySelectorAll(".rem-smart")].map(
+      (el) => +el.getBoundingClientRect().width.toFixed(1)
+    );
+    return { grid: width(".rem-smart-grid"), row: width(".rem-list"), cards };
+  });
+  const evenCards = new Set(column.cards).size <= 1;
+  const flush = column.grid !== null && column.row !== null &&
+    Math.abs(column.grid - column.row) <= 1;
+  console.log(
+    evenCards && flush
+      ? `PASS the reminders column is one width  [cards ${column.cards[0]}, grid ${column.grid}, row ${column.row}]`
+      : `FAIL the reminders column is ragged  [cards ${JSON.stringify(column.cards)}, grid ${column.grid}, row ${column.row}]`
+  );
+  if (!evenCards || !flush) failures++;
+
   await page.close();
 }
 
