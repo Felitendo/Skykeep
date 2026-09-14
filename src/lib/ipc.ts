@@ -235,7 +235,47 @@ export type Reminder = {
   etag: string | null;
 };
 
-export type NoteFolder = { guid: string; title: string; sortOrder: number };
+export type NoteFolder = {
+  guid: string;
+  title: string;
+  sortOrder: number;
+  /** The folder this one sits inside, where it sits inside one at all. */
+  parentGuid: string | null;
+};
+
+/**
+ * Folders in the order they are filed, each with how deep it sits.
+ *
+ * Apple Notes nests folders, and flattening them turns somebody's filing into one long list
+ * with every level jumbled together. A folder whose parent has been deleted is shown at the
+ * top rather than dropped — it still holds notes.
+ */
+export function nestFolders(folders: NoteFolder[]): { folder: NoteFolder; depth: number }[] {
+  const byParent = new Map<string | null, NoteFolder[]>();
+  const known = new Set(folders.map((f) => f.guid));
+  for (const f of folders) {
+    const under = f.parentGuid && known.has(f.parentGuid) ? f.parentGuid : null;
+    byParent.set(under, [...(byParent.get(under) ?? []), f]);
+  }
+
+  const out: { folder: NoteFolder; depth: number }[] = [];
+  const seen = new Set<string>();
+  const walk = (parent: string | null, depth: number) => {
+    for (const folder of byParent.get(parent) ?? []) {
+      // A folder cannot be its own ancestor, but nothing about the data guarantees that, and
+      // a cycle here would hang the window rather than show a wrong tree.
+      if (seen.has(folder.guid)) continue;
+      seen.add(folder.guid);
+      out.push({ folder, depth });
+      walk(folder.guid, depth + 1);
+    }
+  };
+  walk(null, 0);
+  for (const folder of folders) {
+    if (!seen.has(folder.guid)) out.push({ folder, depth: 0 });
+  }
+  return out;
+}
 
 export type Note = {
   guid: string;

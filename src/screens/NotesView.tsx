@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, messageOf, type Note, type NoteFolder } from "../lib/ipc";
+import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
@@ -242,12 +242,14 @@ export function NotesView() {
         >
           <span className="rem-list-name">All Notes</span>
         </button>
-        {folders.map((f) => (
+        {nestFolders(folders).map(({ folder: f, depth }) => (
           <button
             key={f.guid}
             className="rem-list"
             aria-current={folder === f.guid}
             onClick={() => setFolder(f.guid)}
+            /* A folder inside another is shown inside it, the way it was filed. */
+            style={depth > 0 ? { paddingLeft: `${8 + depth * 14}px` } : undefined}
           >
             <span className="rem-list-name">{f.title}</span>
           </button>

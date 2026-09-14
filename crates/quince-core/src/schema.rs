@@ -244,4 +244,14 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE calendars ADD COLUMN writable INTEGER NOT NULL DEFAULT 1;
     ALTER TABLE calendars ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 16 — a notes folder can sit inside another one.
+    //
+    // Apple Notes has nested folders and keeps the link on the folder record as
+    // `ParentFolder`. This account has only the two Apple makes for itself, neither of which
+    // is nested, so the field was never seen — but a folder created with one is accepted and
+    // handed straight back, which is how it was confirmed. Flattened, somebody's filing comes
+    // out as one long list with every level jumbled together.
+    r#"
+    ALTER TABLE note_folders ADD COLUMN parent_guid TEXT;
+    "#,
 ];

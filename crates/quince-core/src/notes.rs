@@ -10,6 +10,9 @@ pub struct NoteFolder {
     pub guid: String,
     pub title: String,
     pub sort_order: i64,
+    /// The folder this one sits inside, where it sits inside one at all.
+    #[serde(default)]
+    pub parent_guid: Option<String>,
 }
 
 /// Apple's identifier for the folder deleted notes go to.
@@ -65,15 +68,16 @@ impl Library {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO note_folders (guid, title, sort_order, updated_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO note_folders (guid, title, sort_order, parent_guid, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(guid) DO UPDATE SET
                    title = excluded.title, sort_order = excluded.sort_order,
+                   parent_guid = excluded.parent_guid,
                    updated_at = excluded.updated_at",
             )?;
             let stamp = now();
             for f in folders {
-                stmt.execute(params![f.guid, f.title, f.sort_order, stamp])?;
+                stmt.execute(params![f.guid, f.title, f.sort_order, f.parent_guid, stamp])?;
             }
         }
         tx.commit()?;
@@ -161,13 +165,15 @@ impl Library {
 
     pub fn note_folders(&self) -> Result<Vec<NoteFolder>> {
         let mut stmt = self.conn.prepare(
-            "SELECT guid, title, sort_order FROM note_folders ORDER BY sort_order, title",
+            "SELECT guid, title, sort_order, parent_guid
+             FROM note_folders ORDER BY sort_order, title",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(NoteFolder {
                 guid: row.get(0)?,
                 title: row.get(1)?,
                 sort_order: row.get(2)?,
+                parent_guid: row.get(3)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -214,7 +220,51 @@ mod tests {
             guid: guid.into(),
             title: title.into(),
             sort_order: 0,
+            parent_guid: None,
         }
+    }
+
+    /// Apple Notes nests folders, and the link has to survive a round trip through the
+    /// library or somebody's filing comes back as one flat list.
+    #[test]
+    fn a_folder_remembers_the_one_it_sits_inside() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut inner = folder("f2", "Semester 5");
+        inner.parent_guid = Some("f1".into());
+        lib.put_note_folders(&[folder("f1", "University"), inner])
+            .unwrap();
+
+        let stored = lib.note_folders().unwrap();
+        let nested = stored.iter().find(|f| f.guid == "f2").unwrap();
+        assert_eq!(nested.parent_guid.as_deref(), Some("f1"));
+        assert_eq!(
+            stored.iter().find(|f| f.guid == "f1").unwrap().parent_guid,
+            None,
+            "a top-level folder sits inside nothing"
+        );
+    }
+
+    /// A folder moved out to the top level must not keep its old parent.
+    #[test]
+    fn a_folder_moved_to_the_top_stops_naming_a_parent() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut inner = folder("f2", "Semester 5");
+        inner.parent_guid = Some("f1".into());
+        lib.put_note_folders(&[folder("f1", "University"), inner.clone()])
+            .unwrap();
+
+        inner.parent_guid = None;
+        lib.put_note_folders(&[folder("f1", "University"), inner])
+            .unwrap();
+        assert_eq!(
+            lib.note_folders()
+                .unwrap()
+                .iter()
+                .find(|f| f.guid == "f2")
+                .unwrap()
+                .parent_guid,
+            None
+        );
     }
 
     fn note(guid: &str, folder: Option<&str>, pinned: bool, modified: i64) -> Note {

@@ -20,6 +20,11 @@ fn folder_from_record(record: &Value) -> Option<NoteFolder> {
         guid: field::record_name(record)?,
         title: field::document_text(record, "TitleEncrypted").unwrap_or_else(|| "Notes".into()),
         sort_order: 0,
+        // Apple Notes nests folders and keeps the link here. Neither folder Apple makes for
+        // itself has one, so this account never shows it — but a folder created with one is
+        // accepted and handed straight back, which is how it was confirmed. Without it,
+        // somebody's filing comes out as one long list with every level jumbled together.
+        parent_guid: field::reference(record, "ParentFolder"),
     })
 }
 
@@ -882,5 +887,68 @@ mod write_tests {
         .await
         .unwrap();
         assert_eq!(sent(&server).await["fields"]["Folder"], Value::Null);
+    }
+}
+
+/// Folders other people have, that this account does not.
+///
+/// This account holds only the two Apple makes for itself, neither nested. A folder created
+/// with a `ParentFolder` reference was accepted and handed straight back, which is how the
+/// field was confirmed — these carry that shape.
+#[cfg(test)]
+mod folder_shape_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn folder(name: &str, title: &str, parent: Option<&str>) -> Value {
+        let mut fields = json!({
+            "TitleEncrypted": {
+                "type": "ENCRYPTED_BYTES",
+                "value": crate::ckdocument::bare_text_to_base64(title),
+            },
+        });
+        if let Some(parent) = parent {
+            fields["ParentFolder"] = json!({
+                "type": "REFERENCE",
+                "value": { "action": "VALIDATE", "recordName": parent },
+            });
+        }
+        json!({ "recordName": name, "recordType": "Folder", "fields": fields })
+    }
+
+    #[test]
+    fn a_nested_folder_keeps_the_one_it_sits_in() {
+        let outer = folder_from_record(&folder("F1", "University", None)).unwrap();
+        let inner = folder_from_record(&folder("F2", "Semester 5", Some("F1"))).unwrap();
+        assert_eq!(outer.parent_guid, None);
+        assert_eq!(inner.parent_guid.as_deref(), Some("F1"));
+        assert_eq!(inner.title, "Semester 5");
+    }
+
+    /// The two Apple makes for itself have no parent and must not gain one.
+    #[test]
+    fn apples_own_folders_stay_at_the_top() {
+        for name in ["DefaultFolder-CloudKit", "TrashFolder-CloudKit"] {
+            let parsed = folder_from_record(&json!({
+                "recordName": name,
+                "recordType": "Folder",
+                "fields": {
+                    "MinimumSupportedNotesVersion": { "type": "INT64", "value": 0 },
+                    "TitleEncrypted": { "type": "ENCRYPTED_BYTES", "value": "Tm90ZXM=" },
+                }
+            }))
+            .unwrap();
+            assert_eq!(parsed.parent_guid, None);
+            assert_eq!(parsed.title, "Notes", "plain base64, which Apple also uses");
+        }
+    }
+
+    /// A folder whose parent has been deleted must still appear, at the top rather than
+    /// nowhere — a folder that references nothing is not a folder that does not exist.
+    #[test]
+    fn a_folder_whose_parent_is_gone_is_still_a_folder() {
+        let orphan = folder_from_record(&folder("F3", "Odds and ends", Some("GONE"))).unwrap();
+        assert_eq!(orphan.title, "Odds and ends");
+        assert_eq!(orphan.parent_guid.as_deref(), Some("GONE"));
     }
 }
