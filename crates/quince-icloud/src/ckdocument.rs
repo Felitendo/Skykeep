@@ -407,6 +407,59 @@ fn reconcile_run_lengths(mut lengths: Vec<u64>, wanted: u64) -> Vec<u64> {
     lengths
 }
 
+/// Whether a message carries this field at all.
+fn has_field(message: &[u8], tag: u64) -> bool {
+    let mut reader = Reader::new(message);
+    while !reader.done() {
+        let Some(key) = reader.varint() else {
+            return false;
+        };
+        let (field, wire) = (key >> 3, key & 7);
+        if field == tag {
+            return true;
+        }
+        if reader.skip(wire).is_none() {
+            return false;
+        }
+    }
+    false
+}
+
+/// Put the version fields back where they are missing.
+///
+/// Documents this app wrote before it knew about them went straight to the note: no version at
+/// the top, none on the document inside. Apple's reader is stricter than ours and such a
+/// record arrives on a phone with nothing in it. Rewriting one is the chance to put them back,
+/// so anything written the old way heals the first time it is edited rather than staying
+/// broken for ever.
+///
+/// A version already there is left exactly as it is — this adds, it never overwrites.
+fn ensure_versions(plain: &[u8]) -> Option<Vec<u8>> {
+    let document = field_at(plain, &TEXT_PATH[..1])?;
+
+    let mut fixed_document = document.to_vec();
+    for tag in [2, 1] {
+        if !has_field(&fixed_document, tag) {
+            let mut with = varint_field(tag, 0);
+            with.extend_from_slice(&fixed_document);
+            fixed_document = with;
+        }
+    }
+
+    let mut out = if fixed_document == document {
+        plain.to_vec()
+    } else {
+        rewrite(plain, &TEXT_PATH[..1], &fixed_document)?
+    };
+
+    if !has_field(&out, 1) {
+        let mut with = varint_field(1, 0);
+        with.extend_from_slice(&out);
+        out = with;
+    }
+    Some(out)
+}
+
 /// Replace a varint field's value, copying every other field through untouched.
 fn set_varint_field(message: &[u8], tag: u64, value: u64) -> Option<Vec<u8>> {
     let mut reader = Reader::new(message);
@@ -562,7 +615,9 @@ pub fn replace_text(original: &[u8], text: &str) -> Option<Vec<u8>> {
     let old_text = std::str::from_utf8(current).ok()?;
     let note = field_at(&plain, &TEXT_PATH[..2])?;
     let rebuilt_note = rebuild_note(note, old_text, text)?;
-    rewrite(&plain, &TEXT_PATH[..2], &rebuilt_note)
+    let swapped = rewrite(&plain, &TEXT_PATH[..2], &rebuilt_note)?;
+    // An edit is also the chance to put back versions a document written the old way lacks.
+    ensure_versions(&swapped)
 }
 
 /// Put a document's attribute runs back in step with the text it already holds, without
@@ -582,14 +637,17 @@ pub fn repair_runs(original: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(text).ok()?;
 
     let covered: u64 = debug_attribute_lengths(original).iter().sum();
-    if covered == utf16_len(text) {
+    let runs_right = covered == utf16_len(text);
+    let versioned = ensure_versions(&plain)?;
+    let versions_right = versioned == plain;
+    if runs_right && versions_right {
         return None;
     }
 
-    let note = field_at(&plain, &TEXT_PATH[..2])?;
+    let note = field_at(&versioned, &TEXT_PATH[..2])?;
     // Same text in and out, so only the run lengths can move.
     let rebuilt = rebuild_note(note, text, text)?;
-    rewrite(&plain, &TEXT_PATH[..2], &rebuilt)
+    rewrite(&versioned, &TEXT_PATH[..2], &rebuilt)
 }
 
 /// [`repair_runs`] over the base64 a CloudKit field carries.
@@ -1378,5 +1436,102 @@ mod rewrite_tests {
         let text = "🔴 UNIT 2 — Prüfung · 测试\nsecond line";
         let after = replace_text(&document("x"), text).unwrap();
         assert_eq!(text_from_bytes(&after).as_deref(), Some(text));
+    }
+}
+
+/// Documents written before this app knew Apple's reader wanted a version on them.
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    /// Exactly the shape this app used to write: straight to the note, no version anywhere.
+    /// Our own reader never minded, which is why it survived — the reader that mattered was
+    /// Apple's, and such a record arrived on a phone with nothing in it.
+    fn written_the_old_way(text: &str) -> Vec<u8> {
+        let mut note = length_delimited(TEXT_PATH[2], text.as_bytes());
+        note.extend(length_delimited(
+            ATTRIBUTE_RUN,
+            &varint_field(1, utf16_len(text)),
+        ));
+        let document = length_delimited(TEXT_PATH[1], &note);
+        length_delimited(TEXT_PATH[0], &document)
+    }
+
+    fn shape(plain: &[u8]) -> (Vec<u64>, Vec<u64>) {
+        let tags = |m: &[u8]| {
+            let mut reader = Reader::new(m);
+            let mut out = Vec::new();
+            while !reader.done() {
+                let Some(key) = reader.varint() else { break };
+                out.push(key >> 3);
+                if reader.skip(key & 7).is_none() {
+                    break;
+                }
+            }
+            out
+        };
+        let document = field_at(plain, &TEXT_PATH[..1]).unwrap_or_default();
+        (tags(plain), tags(document))
+    }
+
+    /// What this app writes today is what the phone writes: a version at the top, and two on
+    /// the document inside, before the note.
+    #[test]
+    fn a_new_document_carries_the_versions_apple_writes() {
+        let (top, document) = shape(&document_bytes("Buy milk"));
+        assert_eq!(top, vec![1, 2]);
+        assert_eq!(document, vec![1, 2, 3]);
+    }
+
+    /// And one written the old way is put right the first time it is edited, rather than
+    /// staying broken for as long as it exists.
+    #[test]
+    fn editing_a_document_written_the_old_way_puts_the_versions_back() {
+        let old = written_the_old_way("Buy milk");
+        assert_eq!(
+            shape(&old),
+            (vec![2], vec![3]),
+            "the fixture is the old shape"
+        );
+
+        let edited = replace_text(&gzip(&old), "Buy oat milk").expect("still rewritable");
+        assert_eq!(shape(&edited), (vec![1, 2], vec![1, 2, 3]));
+        assert_eq!(
+            text_from_bytes(&edited).as_deref(),
+            Some("Buy oat milk"),
+            "and the edit itself landed"
+        );
+    }
+
+    /// Repair notices a missing version even where the runs are already right, because the
+    /// text renders from the run and the record is read from the version.
+    #[test]
+    fn repair_puts_the_versions_back_on_its_own() {
+        let old = written_the_old_way("Buy milk");
+        let repaired = repair_runs(&gzip(&old)).expect("a missing version is worth repairing");
+        assert_eq!(shape(&repaired), (vec![1, 2], vec![1, 2, 3]));
+        assert_eq!(text_from_bytes(&repaired).as_deref(), Some("Buy milk"));
+    }
+
+    /// A document that is already right is left alone — repair must be able to say "nothing
+    /// to do" or every sync rewrites every note.
+    #[test]
+    fn a_sound_document_is_not_rewritten() {
+        assert_eq!(repair_runs(&gzip(&document_bytes("Buy milk"))), None);
+    }
+
+    /// A version Apple set to something other than zero is not ours to overwrite.
+    #[test]
+    fn an_existing_version_is_left_exactly_as_it_was() {
+        let mut note = length_delimited(TEXT_PATH[2], b"Buy milk");
+        note.extend(length_delimited(ATTRIBUTE_RUN, &varint_field(1, 8)));
+        let mut document = varint_field(1, 7);
+        document.extend(varint_field(2, 3));
+        document.extend(length_delimited(TEXT_PATH[1], &note));
+        let mut store = varint_field(1, 9);
+        store.extend(length_delimited(TEXT_PATH[0], &document));
+
+        let out = ensure_versions(&store).unwrap();
+        assert_eq!(out, store, "nothing was missing, so nothing changed");
     }
 }

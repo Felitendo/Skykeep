@@ -355,16 +355,29 @@ pub async fn create_cloudkit(
         },
         "CreationDate": { "type": "TIMESTAMP", "value": stamp },
         "ModificationDate": { "type": "TIMESTAMP", "value": stamp },
+        // Every note Apple made carries these four and no note written here ever did. They
+        // are not decoration: a client reading a note with no minimum version has nothing to
+        // decide against, and Apple's own reader is stricter than this one. INT64 rather than
+        // NUMBER_INT64 — the notes zone spells it the short way, and the reminders zone does
+        // not, which is the sort of thing only reading the real records tells you.
+        "MinimumSupportedNotesVersion": { "type": "INT64", "value": 0 },
+        "AttachmentViewType": { "type": "INT64", "value": 0 },
+        "PaperStyleType": { "type": "INT64", "value": 0 },
+        "Deleted": { "type": "INT64", "value": 0 },
     });
     if let Some(folder) = folder_guid {
         fields["Folder"] = client.reference_to(ZONE, folder);
     }
-
     client
         .create_record(ZONE, &record_name, "Note", fields)
         .await?;
     Ok(record_name)
 }
+
+// Tried and rejected: copying `ReplicaIDToUserIDEncrypted` and
+// `ReplicaIDToNotesVersionDataEncrypted` from an existing note. They are identical on every
+// note on an account, so they looked like a registry worth stamping onto a new one — but Apple
+// drops them silently on a write. They are the server's to keep, not a client's to set.
 
 /// Move a note into a folder, or out of every folder.
 pub async fn move_cloudkit(
