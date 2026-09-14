@@ -265,4 +265,17 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE reminders ADD COLUMN timezone TEXT;
     "#,
+    // 18 — somewhere to keep a thing learned from the account.
+    //
+    // The first of these is a note document Apple wrote, kept so a new note can be given the
+    // same shape. It cannot be fetched on demand: notes sit far enough into the zone walk that
+    // the first page of a hundred and thirty-nine records held none of them, and walking the
+    // whole zone to write one note is not a trade worth making. Sync already reads every note,
+    // so sync is where it is noticed.
+    r#"
+    CREATE TABLE app_state (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    "#,
 ];

@@ -657,6 +657,56 @@ pub fn repair_runs_in_base64(original: &str) -> Option<String> {
     Some(B64.encode(gzip(&repair_runs(&raw)?)))
 }
 
+/// Give a document the merge records Apple's notes carry, for tests that need one to copy.
+#[doc(hidden)]
+#[must_use]
+pub fn add_merge_records_for_test(original: &str) -> String {
+    let raw = B64.decode(original.trim()).unwrap_or_default();
+    let plain = inflate(&raw).unwrap_or_default();
+    let note = field_at(&plain, &TEXT_PATH[..2]).unwrap_or_default();
+
+    let mut with = note.to_vec();
+    with.extend(length_delimited(3, &varint_field(5, 1)));
+    with.extend(length_delimited(4, &varint_field(1, 1)));
+    let rebuilt = rewrite(&plain, &TEXT_PATH[..2], &with).unwrap_or(plain);
+    B64.encode(gzip(&rebuilt))
+}
+
+/// Whether a document carries the merge records Apple's own reader needs.
+///
+/// Inside the note message Apple keeps records saying which writer produced which stretch of
+/// text — fields 3 and 4. A document without them reads back here perfectly and shows on a
+/// phone as an empty note, so this is what tells a document worth copying from one that is
+/// not.
+#[must_use]
+pub fn has_merge_records(original: &str) -> bool {
+    let Ok(raw) = B64.decode(original.trim()) else {
+        return false;
+    };
+    let Some(plain) = inflate(&raw) else {
+        return false;
+    };
+    let Some(note) = field_at(&plain, &TEXT_PATH[..2]) else {
+        return false;
+    };
+
+    let mut reader = Reader::new(note);
+    let mut provenance = false;
+    let mut writer = false;
+    while !reader.done() {
+        let Some(key) = reader.varint() else { break };
+        match key >> 3 {
+            3 => provenance = true,
+            4 => writer = true,
+            _ => {}
+        }
+        if reader.skip(key & 7).is_none() {
+            break;
+        }
+    }
+    provenance && writer
+}
+
 /// Whether [`replace_text`] would accept this document, without building the result.
 ///
 /// Answers "can this note be edited?" at sync time, so the interface can say so before
@@ -1533,5 +1583,91 @@ mod version_tests {
 
         let out = ensure_versions(&store).unwrap();
         assert_eq!(out, store, "nothing was missing, so nothing changed");
+    }
+}
+
+/// Telling a document Apple's reader will show from one it will not.
+#[cfg(test)]
+mod merge_record_tests {
+    use super::*;
+
+    /// What this app builds from nothing: text, a run, the versions. It reads back here
+    /// perfectly and a phone shows it as an empty note.
+    #[test]
+    fn a_document_built_from_nothing_has_no_merge_records() {
+        let built = text_to_base64("Buy milk");
+        assert_eq!(text_from_base64(&built).as_deref(), Some("Buy milk"));
+        assert!(
+            !has_merge_records(&built),
+            "which is exactly why a phone showed nothing"
+        );
+    }
+
+    /// The shape Apple writes: records saying which writer produced which stretch of text.
+    #[test]
+    fn a_document_shaped_like_apples_is_recognised() {
+        let mut note = length_delimited(TEXT_PATH[2], b"Buy milk");
+        // One provenance record and one writer, which is the least Apple ever writes.
+        note.extend(length_delimited(3, &varint_field(5, 1)));
+        note.extend(length_delimited(4, &varint_field(1, 1)));
+        note.extend(length_delimited(ATTRIBUTE_RUN, &varint_field(1, 8)));
+
+        let mut document = varint_field(1, 0);
+        document.extend(varint_field(2, 0));
+        document.extend(length_delimited(TEXT_PATH[1], &note));
+        let mut store = varint_field(1, 0);
+        store.extend(length_delimited(TEXT_PATH[0], &document));
+
+        assert!(has_merge_records(&B64.encode(gzip(&store))));
+    }
+
+    /// Both halves are needed — provenance without a writer is not the shape.
+    #[test]
+    fn half_the_shape_is_not_the_shape() {
+        for tag in [3, 4] {
+            let mut note = length_delimited(TEXT_PATH[2], b"Buy milk");
+            note.extend(length_delimited(tag, &varint_field(5, 1)));
+            note.extend(length_delimited(ATTRIBUTE_RUN, &varint_field(1, 8)));
+            let mut document = varint_field(1, 0);
+            document.extend(varint_field(2, 0));
+            document.extend(length_delimited(TEXT_PATH[1], &note));
+            let mut store = varint_field(1, 0);
+            store.extend(length_delimited(TEXT_PATH[0], &document));
+            assert!(
+                !has_merge_records(&B64.encode(gzip(&store))),
+                "field {tag} alone"
+            );
+        }
+    }
+
+    /// Nonsense is not a document worth copying from.
+    #[test]
+    fn rubbish_is_not_mistaken_for_a_document() {
+        assert!(!has_merge_records("not base64 at all !!"));
+        assert!(!has_merge_records(""));
+        assert!(!has_merge_records(&B64.encode(b"hello")));
+    }
+
+    /// The whole point: swapping the text of a document that has them keeps them, which is
+    /// what makes a note written here one a phone will show.
+    #[test]
+    fn swapping_the_text_keeps_what_makes_it_readable() {
+        let mut note = length_delimited(TEXT_PATH[2], b"Old words");
+        note.extend(length_delimited(3, &varint_field(5, 1)));
+        note.extend(length_delimited(4, &varint_field(1, 1)));
+        note.extend(length_delimited(ATTRIBUTE_RUN, &varint_field(1, 9)));
+        let mut document = varint_field(1, 0);
+        document.extend(varint_field(2, 0));
+        document.extend(length_delimited(TEXT_PATH[1], &note));
+        let mut store = varint_field(1, 0);
+        store.extend(length_delimited(TEXT_PATH[0], &document));
+        let apples = B64.encode(gzip(&store));
+
+        let swapped = replace_text_in_base64(&apples, "Entirely new words").unwrap();
+        assert_eq!(
+            text_from_base64(&swapped).as_deref(),
+            Some("Entirely new words")
+        );
+        assert!(has_merge_records(&swapped));
     }
 }

@@ -85,6 +85,30 @@ impl Library {
     }
 }
 
+impl Library {
+    /// Remember something learned from the account, by name.
+    pub fn set_state(&mut self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// What was remembered under that name, if anything.
+    pub fn state(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM app_state WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

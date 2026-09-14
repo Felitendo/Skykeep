@@ -122,6 +122,9 @@ pub async fn fetch_cloudkit(
 }
 
 /// Store a fetched pass. Touches no network.
+/// Where the document a new note is shaped from is kept.
+pub const TEMPLATE_KEY: &str = "notes.document_template";
+
 pub fn apply_cloudkit(
     library: &mut quince_core::Library,
     fetched: NotesFetch,
@@ -133,6 +136,7 @@ pub fn apply_cloudkit(
     } = fetched;
 
     let mut folders: Vec<NoteFolder> = Vec::new();
+    let mut template: Option<String> = None;
     let mut notes: Vec<Note> = Vec::new();
     let mut gone: Vec<String> = Vec::new();
     // Deletion and pinning live on the per-user record, keyed by a reference to the note.
@@ -168,6 +172,18 @@ pub fn apply_cloudkit(
                 if removed {
                     gone.push(name);
                 } else {
+                    // A document Apple wrote is worth keeping the shape of. A note created
+                    // here is built from it, because one built from nothing shows on a phone
+                    // as an empty note. Noticed during sync rather than fetched on demand:
+                    // notes sit far enough into the zone walk that the first page of a hundred
+                    // and thirty-nine records held none of them.
+                    if template.is_none() {
+                        template = record
+                            .pointer("/fields/TextDataEncrypted/value")
+                            .and_then(Value::as_str)
+                            .filter(|d| crate::ckdocument::has_merge_records(d))
+                            .map(ToString::to_string);
+                    }
                     notes.extend(note_from_record(record));
                 }
             }
@@ -224,6 +240,9 @@ pub fn apply_cloudkit(
     if !incremental {
         let keep: Vec<String> = notes.iter().map(|n| n.guid.clone()).collect();
         library.retain_notes(&keep)?;
+    }
+    if let Some(document) = template {
+        library.set_state(TEMPLATE_KEY, &document)?;
     }
     library.mark_synced("notes", token.as_deref())?;
     Ok((folders.len(), notes.len(), token))
@@ -321,6 +340,7 @@ pub async fn create_cloudkit(
     params: Vec<(String, String)>,
     folder_guid: Option<&str>,
     body: &str,
+    template: Option<&str>,
 ) -> Result<String> {
     if body.trim().is_empty() {
         return Err(Error::Protocol("a note needs something in it".into()));
@@ -340,10 +360,13 @@ pub async fn create_cloudkit(
     let stamp = now_millis();
     let (title, snippet) = title_and_snippet(body);
 
+    // A document Apple's own reader will show. See `document_like_apples`.
+    let document = document_like_apples(template, body);
+
     let mut fields = serde_json::json!({
         "TextDataEncrypted": {
             "type": "ENCRYPTED_BYTES",
-            "value": crate::ckdocument::text_to_base64(body),
+            "value": document,
         },
         "TitleEncrypted": {
             "type": "ENCRYPTED_BYTES",
@@ -374,10 +397,42 @@ pub async fn create_cloudkit(
     Ok(record_name)
 }
 
-// Tried and rejected: copying `ReplicaIDToUserIDEncrypted` and
-// `ReplicaIDToNotesVersionDataEncrypted` from an existing note. They are identical on every
-// note on an account, so they looked like a registry worth stamping onto a new one — but Apple
-// drops them silently on a write. They are the server's to keep, not a client's to set.
+/// A note's text in a document Apple's own reader will show.
+///
+/// A document built from nothing — text, one attribute run, the version fields — is read back
+/// here perfectly and shows on a phone as an empty note. Laying one beside a note Apple wrote
+/// says why: inside the note message Apple keeps a handful of merge records, and ours had none.
+///
+/// ```text
+/// Apple's   note [ text, 3,3,3,3,3,3,3, 4, 5 ]
+/// ours      note [ text,                   5 ]
+/// ```
+///
+/// Those records say which writer produced which stretch of text, and field 4 names the writer
+/// with a UUID. Synthesising a plausible-looking set was tried and the phone still showed
+/// nothing; what works is taking a document Apple already wrote and swapping only the text —
+/// the same operation an edit performs, which has always worked.
+///
+/// Copying them is not the sleight of hand it first looks like. Field 4 identifies the writer,
+/// and a phone stamps every note it makes with the same one, so notes sharing a writer is the
+/// normal case rather than a collision. Each note's records are its own and reference nothing
+/// outside it.
+///
+/// An account with no note to learn from — a new one — gets a document built from scratch.
+/// That is the shape that does not render, and there is nothing better to be had until the
+/// account has one note on it; the alternative is refusing to create a note at all.
+///
+/// Tried and rejected along the way: copying `ReplicaIDToUserIDEncrypted` and
+/// `ReplicaIDToNotesVersionDataEncrypted`, which are identical on every note on an account and
+/// so looked like a registry worth stamping onto a new one. Apple drops them silently on a
+/// write. They are the server's to keep, not a client's to set — and notes that lack them
+/// render perfectly, so they were never the reason.
+fn document_like_apples(template: Option<&str>, body: &str) -> String {
+    template
+        .filter(|document| crate::ckdocument::has_merge_records(document))
+        .and_then(|document| crate::ckdocument::replace_text_in_base64(document, body))
+        .unwrap_or_else(|| crate::ckdocument::text_to_base64(body))
+}
 
 /// Move a note into a folder, or out of every folder.
 pub async fn move_cloudkit(
@@ -816,6 +871,7 @@ mod write_tests {
             vec![],
             None,
             "   \n  ",
+            None,
         )
         .await;
         assert!(outcome.is_err());
@@ -834,6 +890,7 @@ mod write_tests {
             vec![],
             Some("Folder/a"),
             "Packing\npassport",
+            None,
         )
         .await
         .unwrap();
@@ -971,5 +1028,69 @@ mod folder_shape_tests {
         let orphan = folder_from_record(&folder("F3", "Odds and ends", Some("GONE"))).unwrap();
         assert_eq!(orphan.title, "Odds and ends");
         assert_eq!(orphan.parent_guid.as_deref(), Some("GONE"));
+    }
+}
+
+/// Shaping a new note like one Apple wrote.
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    /// A document with the merge records a phone needs, to stand in for one Apple wrote.
+    fn apples_shape(text: &str) -> String {
+        let built = crate::ckdocument::text_to_base64(text);
+        // Built documents have no merge records, so this checks the fixture is honest about
+        // what it is rather than quietly testing nothing.
+        assert!(!crate::ckdocument::has_merge_records(&built));
+        crate::ckdocument::add_merge_records_for_test(&built)
+    }
+
+    #[test]
+    fn a_new_note_takes_the_shape_of_one_apple_wrote() {
+        let template = apples_shape("Something Apple wrote");
+        let made = document_like_apples(Some(&template), "Something written here");
+        assert_eq!(
+            crate::ckdocument::text_from_base64(&made).as_deref(),
+            Some("Something written here")
+        );
+        assert!(
+            crate::ckdocument::has_merge_records(&made),
+            "which is what makes a phone show it"
+        );
+    }
+
+    /// A new account has no note to learn from. Building from nothing is the only option, and
+    /// refusing to create a note at all would be worse.
+    #[test]
+    fn with_nothing_to_learn_from_it_still_makes_a_note() {
+        let made = document_like_apples(None, "The first note on this account");
+        assert_eq!(
+            crate::ckdocument::text_from_base64(&made).as_deref(),
+            Some("The first note on this account")
+        );
+    }
+
+    /// A template that is itself the shape that does not render is no use as a template.
+    #[test]
+    fn a_template_without_the_records_is_not_used_as_one() {
+        let useless = crate::ckdocument::text_to_base64("no merge records here");
+        let made = document_like_apples(Some(&useless), "New text");
+        assert_eq!(
+            crate::ckdocument::text_from_base64(&made).as_deref(),
+            Some("New text"),
+            "the note is still made"
+        );
+    }
+
+    /// Rubbish stored as a template must not take a note down with it.
+    #[test]
+    fn rubbish_stored_as_a_template_is_ignored() {
+        for bad in ["", "not base64 !!", "aGVsbG8="] {
+            let made = document_like_apples(Some(bad), "Still fine");
+            assert_eq!(
+                crate::ckdocument::text_from_base64(&made).as_deref(),
+                Some("Still fine")
+            );
+        }
     }
 }

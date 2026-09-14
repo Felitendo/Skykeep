@@ -736,12 +736,21 @@ async fn note_create(
     data: State<'_, Data>,
 ) -> UiResult<String> {
     let (http, root, params) = cloudkit_context(&auth).await?;
+    // The shape of a document Apple wrote, noticed during a sync. A note built without it
+    // reads back here perfectly and shows on a phone as an empty note.
+    let template = {
+        let library = data.0.lock().await;
+        library
+            .state(quince_icloud::notes::TEMPLATE_KEY)
+            .map_err(|e| e.to_string())?
+    };
     let guid = quince_icloud::notes::create_cloudkit(
         &http,
         &root,
         params.clone(),
         folder_guid.as_deref(),
         &body,
+        template.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())?;

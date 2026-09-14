@@ -1183,8 +1183,15 @@ async fn main() -> Result<()> {
             );
             let body = "Quince write test\nsafe to delete";
 
-            match quince_icloud::notes::create_cloudkit(&http, &ck, params.clone(), None, body)
-                .await
+            match quince_icloud::notes::create_cloudkit(
+                &http,
+                &ck,
+                params.clone(),
+                None,
+                body,
+                None,
+            )
+            .await
             {
                 Err(e) => println!("  \x1b[31mFAIL\x1b[0m create: {e}"),
                 Ok(guid) => {
