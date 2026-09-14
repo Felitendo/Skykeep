@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
+  acceptsUploads,
   api,
   driveName,
   isContainer,
@@ -263,7 +264,7 @@ export function DriveView() {
       cancelled = true;
       stop?.();
     };
-  }, [upload]);
+  }, [upload, here.id]);
 
   const createFolder = useCallback(async () => {
     const name = newFolderName.trim();
@@ -309,10 +310,16 @@ export function DriveView() {
             <ActionGlyph name="newFolder" />
             New Folder
           </button>
+          {/* An app's own library takes files from the app, not from here. */}
           <button
             className="primary with-glyph"
             onClick={() => void chooseAndUpload()}
-            disabled={loading || uploading}
+            disabled={loading || uploading || !acceptsUploads(here.id)}
+            title={
+              acceptsUploads(here.id)
+                ? undefined
+                : "This folder belongs to an app, which is the only thing that can add to it"
+            }
           >
             <ActionGlyph name="upload" />
             {uploading ? "Uploading…" : "Upload"}

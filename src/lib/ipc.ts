@@ -308,6 +308,20 @@ export const DRIVE_ROOT = "FOLDER::com.apple.CloudDocs::root";
 export const isContainer = (item: DriveItem) =>
   item.kind === "FOLDER" || item.kind === "APP_LIBRARY";
 
+/** The container an item belongs to: the middle of `<TYPE>::<zone>::<id>`. */
+export const zoneOf = (drivewsid: string): string | null =>
+  drivewsid.split("::")[1] || null;
+
+/**
+ * Whether files from this machine can be put in a folder.
+ *
+ * An app library — Keynote's, Shortcuts', a third party's — belongs to the app that made it,
+ * and Apple files a document by a bare id with no zone beside it. A file meant for one would
+ * land somewhere else entirely, so it is not offered.
+ */
+export const acceptsUploads = (folderId: string): boolean =>
+  (zoneOf(folderId) ?? "com.apple.CloudDocs") === "com.apple.CloudDocs";
+
 export const driveName = (item: DriveItem) =>
   item.extension && !isContainer(item) ? `${item.name}.${item.extension}` : item.name;
 

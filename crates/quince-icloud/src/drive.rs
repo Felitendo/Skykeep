@@ -993,6 +993,22 @@ fn starting_document_id(folder_id: &str) -> &str {
     }
 }
 
+/// The container an item belongs to: the middle of `<TYPE>::<zone>::<id>`.
+///
+/// Most of a Drive is `com.apple.CloudDocs`, but an app library is its own zone — Keynote's
+/// is `com.apple.Keynote`, and a third party's is whatever they registered, such as
+/// `iCloud.dk.simonbs.Scriptable`. Everyone has a few of these whether they use the apps or
+/// not.
+fn zone_of(drivewsid: &str) -> Option<&str> {
+    let mut parts = drivewsid.split("::");
+    let _kind = parts.next()?;
+    let zone = parts.next()?;
+    (!zone.is_empty()).then_some(zone)
+}
+
+/// The one zone a file uploaded from this machine belongs in.
+const DOCUMENTS_ZONE: &str = "com.apple.CloudDocs";
+
 /// Put a file from this machine into a Drive folder.
 ///
 /// Three separate calls, because that is how Apple does it and skipping any of them leaves a
@@ -1016,6 +1032,15 @@ pub async fn upload(
 ) -> Result<DriveItem> {
     if folder_id.trim().is_empty() {
         return Err(Error::Protocol("no folder was named to put this in".into()));
+    }
+    // An app library belongs to the app that made it, and `update/documents` names the folder
+    // by a bare id with no zone beside it — so a file meant for one would be filed by an id
+    // that means something different in the documents zone, or nothing at all. Refusing is the
+    // honest answer; quietly putting someone's file somewhere else is not.
+    if zone_of(folder_id).is_some_and(|zone| zone != DOCUMENTS_ZONE) {
+        return Err(Error::Protocol(
+            "that folder belongs to an app, and only the app can put things in it".into(),
+        ));
     }
     let name = path
         .file_name()
@@ -1175,6 +1200,25 @@ mod upload_tests {
         assert_eq!(content_type(""), "application/octet-stream");
     }
 
+    #[test]
+    fn an_item_names_the_container_it_belongs_to() {
+        assert_eq!(
+            zone_of("FOLDER::com.apple.CloudDocs::root"),
+            Some("com.apple.CloudDocs")
+        );
+        assert_eq!(
+            zone_of("FOLDER::iCloud.dk.simonbs.Scriptable::documents"),
+            Some("iCloud.dk.simonbs.Scriptable"),
+            "a third party's library is a zone like any other"
+        );
+        assert_eq!(
+            zone_of("FOLDER::iCloud.is.workflow.my.workflows::documents"),
+            Some("iCloud.is.workflow.my.workflows")
+        );
+        assert_eq!(zone_of("nonsense"), None);
+        assert_eq!(zone_of("FOLDER::"), None);
+    }
+
     /// The root has a name of its own in the listing and a different one in a document path.
     #[test]
     fn the_root_is_called_root_when_filing_a_document() {
@@ -1183,5 +1227,62 @@ mod upload_tests {
             starting_document_id("FOLDER::com.apple.CloudDocs::7B3F-ABCD"),
             "7B3F-ABCD"
         );
+    }
+}
+
+#[cfg(test)]
+mod app_library_tests {
+    use super::*;
+
+    /// Everyone has app libraries — Keynote, Shortcuts, whatever third-party apps they use —
+    /// and a file meant for one would be filed by a bare id that means something else in the
+    /// documents zone. Refusing beats putting someone's file somewhere they will not find it.
+    #[tokio::test]
+    async fn a_file_is_not_uploaded_into_an_app_library() {
+        let file = std::env::temp_dir().join("quince-zone-test.txt");
+        std::fs::write(&file, b"x").unwrap();
+        for folder in [
+            "FOLDER::com.apple.Keynote::documents",
+            "FOLDER::iCloud.is.workflow.my.workflows::documents",
+            "FOLDER::iCloud.dk.simonbs.Scriptable::documents",
+        ] {
+            let err = upload(
+                &reqwest::Client::new(),
+                "http://127.0.0.1:1",
+                "http://127.0.0.1:1",
+                vec![],
+                folder,
+                &file,
+            )
+            .await
+            .expect_err("an app's own library is not somewhere to put a file");
+            assert!(
+                err.to_string().contains("only the app"),
+                "the reason has to be the zone, not a network failure: {err}"
+            );
+        }
+        std::fs::remove_file(&file).ok();
+    }
+
+    /// The documents zone is everything else, and must still take a file.
+    #[tokio::test]
+    async fn the_ordinary_drive_is_not_refused() {
+        let file = std::env::temp_dir().join("quince-zone-ok.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let err = upload(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            vec![],
+            quince_core::drive::ROOT,
+            &file,
+        )
+        .await
+        .expect_err("nothing is listening, so this fails on the network");
+        assert!(
+            !err.to_string().contains("only the app"),
+            "the documents zone must get as far as trying: {err}"
+        );
+        std::fs::remove_file(&file).ok();
     }
 }
