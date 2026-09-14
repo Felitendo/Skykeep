@@ -4,6 +4,14 @@ use crate::{Library, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+/// The most reminders any one view hands to the window at once.
+///
+/// The plan rules out unbounded payloads crossing into the webview, and "All" on an account
+/// ten years deep is genuinely unbounded. A thousand is far more than fits on a screen and
+/// still weighs only a couple of hundred kilobytes; the true totals are counted separately, so
+/// a view that reaches this can say plainly that it has.
+pub const MOST_AT_ONCE: usize = 1_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReminderList {
@@ -204,18 +212,35 @@ impl Library {
     ///
     /// Apple's Calendar shows reminders alongside events, which is most of what fills a
     /// month for someone who lives in Reminders rather than Calendar.
+    /// Apple's whole record for one reminder, for the write path that echoes it back.
+    ///
+    /// Fetched on its own rather than carried on every listed reminder. It averages five
+    /// kilobytes a row, so reading it for twenty thousand of them to answer a question about
+    /// titles and dates cost about a hundred megabytes of nothing.
+    pub fn reminder_raw(&self, guid: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT raw FROM reminders WHERE guid = ?1")?;
+        let mut rows = stmt.query(params![guid])?;
+        match rows.next()? {
+            Some(row) => Ok(row.get(0)?),
+            None => Ok(None),
+        }
+    }
+
     pub fn reminders_due_between(&self, from: i64, to: i64) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
-                    r.etag, r.raw
+                    r.etag
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.due_at IS NOT NULL
                AND r.due_at >= ?1 AND r.due_at < ?2
-             ORDER BY r.due_at",
+             ORDER BY r.due_at
+             LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![from, to], |row| {
+        let rows = stmt.query_map(params![from, to, MOST_AT_ONCE], |row| {
             Ok(Reminder {
                 guid: row.get(0)?,
                 list_guid: row.get(1)?,
@@ -229,7 +254,7 @@ impl Library {
                 recur_frequency: row.get(9)?,
                 recur_interval: row.get(10)?,
                 etag: row.get(11)?,
-                raw: row.get(12)?,
+                raw: None,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -305,11 +330,12 @@ impl Library {
         let sql = format!(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
-                    r.etag, r.raw
+                    r.etag
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND {clause}
-             ORDER BY r.due_at IS NULL, r.due_at, r.priority DESC, r.title"
+             ORDER BY r.due_at IS NULL, r.due_at, r.priority DESC, r.title
+             LIMIT {MOST_AT_ONCE}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(args), |row| {
@@ -326,7 +352,7 @@ impl Library {
                 recur_frequency: row.get(9)?,
                 recur_interval: row.get(10)?,
                 etag: row.get(11)?,
-                raw: row.get(12)?,
+                raw: None,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -484,31 +510,35 @@ impl Library {
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
-                    parent_guid, recur_frequency, recur_interval, etag, raw
+                    parent_guid, recur_frequency, recur_interval, etag
              FROM reminders
              WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)
              ORDER BY completed_at IS NOT NULL,
                       due_at IS NULL, due_at,
                       priority DESC,
-                      title",
+                      title
+             LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![list_guid, i64::from(include_done)], |row| {
-            Ok(Reminder {
-                guid: row.get(0)?,
-                list_guid: row.get(1)?,
-                title: row.get(2)?,
-                notes: row.get(3)?,
-                due_at: row.get(4)?,
-                completed_at: row.get(5)?,
-                priority: row.get(6)?,
-                flagged: row.get::<_, i64>(7)? != 0,
-                parent_guid: row.get(8)?,
-                recur_frequency: row.get(9)?,
-                recur_interval: row.get(10)?,
-                etag: row.get(11)?,
-                raw: row.get(12)?,
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![list_guid, i64::from(include_done), MOST_AT_ONCE],
+            |row| {
+                Ok(Reminder {
+                    guid: row.get(0)?,
+                    list_guid: row.get(1)?,
+                    title: row.get(2)?,
+                    notes: row.get(3)?,
+                    due_at: row.get(4)?,
+                    completed_at: row.get(5)?,
+                    priority: row.get(6)?,
+                    flagged: row.get::<_, i64>(7)? != 0,
+                    parent_guid: row.get(8)?,
+                    recur_frequency: row.get(9)?,
+                    recur_interval: row.get(10)?,
+                    etag: row.get(11)?,
+                    raw: None,
+                })
+            },
+        )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
@@ -1006,5 +1036,153 @@ mod payload_tests {
             bytes < 1_048_576,
             "a thousand reminders came to {bytes} bytes"
         );
+    }
+}
+
+#[cfg(test)]
+mod raw_column_tests {
+    use super::*;
+
+    fn with_raw(guid: &str) -> Reminder {
+        Reminder {
+            guid: guid.into(),
+            list_guid: "List/1".into(),
+            title: "Buy milk".into(),
+            notes: None,
+            due_at: Some(1_789_000_000),
+            completed_at: None,
+            priority: 0,
+            flagged: false,
+            parent_guid: None,
+            recur_frequency: None,
+            recur_interval: None,
+            etag: Some("e1".into()),
+            raw: Some("z".repeat(5_000)),
+        }
+    }
+
+    fn stored() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "List/1".into(),
+            title: "Daily".into(),
+            colour: None,
+            ctag: None,
+            sort_order: 0,
+            enabled: true,
+        }])
+        .unwrap();
+        lib.put_reminders(&[with_raw("Reminder/1"), with_raw("Reminder/2")])
+            .unwrap();
+        lib
+    }
+
+    /// Apple's record averages five kilobytes a reminder. Reading it for every row to answer a
+    /// question about titles and dates cost about a hundred megabytes on a large account, and
+    /// nothing outside the write path has ever wanted it.
+    #[test]
+    fn a_listed_reminder_does_not_drag_apples_record_along() {
+        let lib = stored();
+        for listed in [
+            lib.reminders_in("List/1", true).unwrap(),
+            lib.reminders_due_between(0, i64::MAX).unwrap(),
+            lib.reminders_smart(SmartList::All, i64::MAX).unwrap(),
+        ] {
+            assert!(!listed.is_empty(), "the fixture has reminders in it");
+            for r in listed {
+                assert_eq!(r.raw, None, "{} carried Apple's record", r.guid);
+            }
+        }
+    }
+
+    /// It is still kept, and still there for the write path that echoes it back.
+    #[test]
+    fn the_record_is_stored_and_can_be_asked_for() {
+        let lib = stored();
+        assert_eq!(
+            lib.reminder_raw("Reminder/1").unwrap().map(|r| r.len()),
+            Some(5_000)
+        );
+        assert_eq!(lib.reminder_raw("nothing-like-this").unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    fn many(n: usize) -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "List/1".into(),
+            title: "Everything".into(),
+            colour: None,
+            ctag: None,
+            sort_order: 0,
+            enabled: true,
+        }])
+        .unwrap();
+        let rows: Vec<Reminder> = (0..n)
+            .map(|i| Reminder {
+                guid: format!("Reminder/{i}"),
+                list_guid: "List/1".into(),
+                title: format!("Task {i}"),
+                notes: None,
+                due_at: Some(1_789_000_000 + i as i64),
+                completed_at: None,
+                priority: 0,
+                flagged: true,
+                parent_guid: None,
+                recur_frequency: None,
+                recur_interval: None,
+                etag: None,
+                raw: None,
+            })
+            .collect();
+        lib.put_reminders(&rows).unwrap();
+        lib
+    }
+
+    /// Ten years of Reminders is genuinely unbounded, and the whole of it crossing into the
+    /// window is what the plan rules out. Every view that can grow without limit is capped.
+    #[test]
+    fn no_view_hands_over_more_than_it_should() {
+        let lib = many(MOST_AT_ONCE + 500);
+        assert_eq!(
+            lib.reminders_in("List/1", true).unwrap().len(),
+            MOST_AT_ONCE
+        );
+        assert_eq!(
+            lib.reminders_due_between(0, i64::MAX).unwrap().len(),
+            MOST_AT_ONCE
+        );
+        assert_eq!(
+            lib.reminders_smart(SmartList::All, i64::MAX).unwrap().len(),
+            MOST_AT_ONCE
+        );
+        assert_eq!(
+            lib.reminders_smart(SmartList::Flagged, i64::MAX)
+                .unwrap()
+                .len(),
+            MOST_AT_ONCE
+        );
+    }
+
+    /// The totals are counted rather than measured off the capped list, so a view that reaches
+    /// the cap can still say how many there really are.
+    #[test]
+    fn the_count_is_the_truth_even_when_the_list_is_not_all_of_it() {
+        let lib = many(MOST_AT_ONCE + 500);
+        let counts = lib.reminder_counts(i64::MAX).unwrap();
+        assert_eq!(counts.all, MOST_AT_ONCE + 500);
+        assert_eq!(counts.flagged, MOST_AT_ONCE + 500);
+    }
+
+    /// An ordinary account is nowhere near the cap and must be unaffected by it.
+    #[test]
+    fn an_ordinary_account_sees_everything() {
+        let lib = many(40);
+        assert_eq!(lib.reminders_in("List/1", true).unwrap().len(), 40);
+        assert_eq!(lib.reminders_due_between(0, i64::MAX).unwrap().len(), 40);
     }
 }

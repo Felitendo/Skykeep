@@ -50,7 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             recur_frequency: None,
             recur_interval: None,
             etag: Some(format!("e{i}")),
-            raw: None,
+            // What Apple actually stores per reminder on a real account: about five KB.
+            raw: Some("z".repeat(5_000)),
         })
         .collect();
     let t = Instant::now();

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
+  MOST_AT_ONCE,
   messageOf,
   type Reminder,
   type ReminderList,
@@ -362,6 +363,21 @@ export function RemindersView() {
   const outstanding = items.filter((r) => !r.completedAt).length;
 
   /**
+   * How many this view actually holds, when that is more than it was handed.
+   *
+   * The counts come from the library rather than from the list on screen, so they stay true
+   * even where the list is only the first thousand of them. Saying nothing would be the
+   * dishonest part — a list that quietly stops is worse than one that says where it stopped.
+   */
+  const heldBack = (() => {
+    if (items.length < MOST_AT_ONCE || !counts) return 0;
+    const total = inList
+      ? (counts.lists.find(([guid]) => guid === listGuid)?.[1] ?? 0)
+      : counts[(selection as { kind: SmartList }).kind];
+    return Math.max(0, total - items.length);
+  })();
+
+  /**
    * Reminders in Apple's order, with each subtask directly beneath its parent.
    *
    * The library returns a flat list sorted by date and priority, which is right for the
@@ -578,6 +594,13 @@ export function RemindersView() {
               />
             )}
           </form>
+        )}
+
+        {heldBack > 0 && (
+          <p className="rem-more" role="status">
+            Showing the first {MOST_AT_ONCE.toLocaleString()} — {heldBack.toLocaleString()} more
+            are in this list.
+          </p>
         )}
 
         <ul className="rem-list-items">

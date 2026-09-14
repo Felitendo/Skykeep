@@ -2293,3 +2293,13 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
   color: var(--text-3);
   font-size: var(--t-13);
 }
+
+/* Said plainly when a view holds more than it was handed, rather than stopping in silence. */
+.rem-more {
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-2);
+  font-size: var(--t-11);
+}

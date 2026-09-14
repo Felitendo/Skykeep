@@ -207,6 +207,15 @@ export type ReminderCounts = {
   lists: [string, number][];
 };
 
+/**
+ * The most reminders any one view is handed at once.
+ *
+ * Kept in step with the same figure in the library. "All" on an account ten years deep is
+ * genuinely unbounded, and the whole of it crossing into this window is what the plan rules
+ * out; the true totals are counted separately, so a view that reaches this can say so.
+ */
+export const MOST_AT_ONCE = 1000;
+
 /** How often a reminder comes back. Frequency: 0 daily, 1 weekly, 2 monthly, 3 yearly. */
 export type Repeat = { frequency: number; interval: number };
 
