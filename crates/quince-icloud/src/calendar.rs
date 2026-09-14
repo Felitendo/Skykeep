@@ -236,7 +236,17 @@ impl<'a> CalendarClient<'a> {
     /// The window in the query is not decoration: Apple answers with the events in it, and
     /// sending the day the event falls on is what makes the response carry the event back so
     /// a caller can confirm what was stored rather than assume.
+    /// Save an event, creating it where it has no guid yet.
+    ///
+    /// The calendar id is a path segment, so an empty one does not fail loudly — it builds
+    /// `/ca/events//<guid>`, which is a different request entirely. An account with no
+    /// calendars is a real account, so it is caught here rather than sent.
     pub async fn put_event(&self, event: &Event, ctag: Option<&str>) -> Result<Snapshot> {
+        if event.calendar_guid.trim().is_empty() {
+            return Err(Error::Protocol(
+                "an event has to go in a calendar, and this account has none yet".into(),
+            ));
+        }
         let day = day_of(event.starts_at, event.timezone.as_deref());
         // What Apple already has, if this event exists. An event carries far more than this
         // app models — its alerts, its guests, its attachments, its link to the series it
@@ -260,6 +270,9 @@ impl<'a> CalendarClient<'a> {
     /// `etag` is what stops a delete from landing on a version of the event someone changed
     /// on another device in the meantime.
     pub async fn delete_event(&self, event: &Event, ctag: Option<&str>) -> Result<()> {
+        if event.calendar_guid.trim().is_empty() {
+            return Err(Error::Protocol("that event names no calendar".into()));
+        }
         let day = day_of(event.starts_at, event.timezone.as_deref());
         let body = serde_json::json!({
             "Event": { "guid": event.guid, "pGuid": event.calendar_guid, "etag": event.etag },

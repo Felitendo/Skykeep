@@ -1014,6 +1014,9 @@ pub async fn upload(
     folder_id: &str,
     path: &std::path::Path,
 ) -> Result<DriveItem> {
+    if folder_id.trim().is_empty() {
+        return Err(Error::Protocol("no folder was named to put this in".into()));
+    }
     let name = path
         .file_name()
         .and_then(|n| n.to_str())

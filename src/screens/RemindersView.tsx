@@ -286,6 +286,16 @@ export function RemindersView() {
     [readLists, readItems],
   );
 
+  /**
+   * The first list on an account that has none.
+   *
+   * Named the way Apple names the one it makes for a new account, so the two accounts end up
+   * looking the same rather than this one carrying a name only this app would have chosen.
+   */
+  async function makeFirstList() {
+    await listWrite(() => api.reminderListCreate("Reminders"));
+  }
+
   async function createList(e: React.FormEvent) {
     e.preventDefault();
     const title = newList.trim();
@@ -525,6 +535,21 @@ export function RemindersView() {
           <p className="error" role="alert">
             {error}
           </p>
+        )}
+
+        {/*
+          * An account with no lists is a real account — a new one, or one whose lists have
+          * all been deleted. A reminder cannot exist outside a list, so rather than the add
+          * field quietly disappearing and leaving nothing to do, this says why and offers
+          * the one thing that helps.
+          */}
+        {lists.length === 0 && loaded && (
+          <div className="rem-nolists">
+            <p className="rem-nolists-line">Reminders live in lists, and there aren’t any yet.</p>
+            <button className="primary" onClick={() => void makeFirstList()} disabled={syncing}>
+              Create a list
+            </button>
+          </div>
         )}
 
         {targetListGuid && (

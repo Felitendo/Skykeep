@@ -869,6 +869,14 @@ pub async fn create_cloudkit(
     if title.is_empty() {
         return Err(Error::Protocol("a reminder needs a title".into()));
     }
+    // An account with no lists is a real account — a new one, or one whose lists were all
+    // deleted. Sending a reference to nothing would have Apple file the reminder somewhere
+    // no device can show it, so it is refused here in words a person can act on.
+    if list_guid.trim().is_empty() {
+        return Err(Error::Protocol(
+            "a reminder has to go in a list, and this account has none yet".into(),
+        ));
+    }
 
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let record_name = format!(
@@ -3051,5 +3059,100 @@ mod list_shape_tests {
         lists.sort_by_key(|l| l.sort_order);
         let order: Vec<&str> = lists.iter().map(|l| l.guid.as_str()).collect();
         assert_eq!(order, vec!["List/B", "List/A", "List/NEW"]);
+    }
+}
+
+/// An account that looks nothing like the one this was built against.
+///
+/// Everything here was measured on one real library with nine lists, three sections and
+/// seven hundred reminders. Someone installing this may have none of that: a new account with
+/// no lists at all, one list and nothing in it, or a set of lists whose names and ids look
+/// nothing like these. These check the shapes that account would produce.
+#[cfg(test)]
+mod other_accounts_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn list_record(name: &str, title: &str, group: bool) -> Value {
+        json!({
+            "recordName": name,
+            "recordType": "List",
+            "fields": {
+                "Name": { "type": "STRING", "value": title },
+                "IsGroup": { "type": "NUMBER_INT64", "value": i64::from(group) },
+            }
+        })
+    }
+
+    /// A brand new account: Apple answers with a zone and nothing in it.
+    #[test]
+    fn an_empty_account_syncs_to_an_empty_library_rather_than_failing() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let stored = apply_cloudkit(
+            &mut lib,
+            RemindersFetch {
+                records: Vec::new(),
+                token: Some("t1".into()),
+                incremental: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(stored.0, 0, "no lists");
+        assert_eq!(stored.1, 0, "no reminders");
+        assert!(lib.reminder_lists().unwrap().is_empty());
+    }
+
+    /// Every list on an account can be a group — someone who files everything in folders and
+    /// has since emptied them. There is then nowhere to put a reminder, and saying so beats
+    /// putting one where no device will show it.
+    #[test]
+    fn an_account_whose_lists_are_all_groups_offers_none_of_them() {
+        let records = [
+            list_record("List/A", "Work", true),
+            list_record("List/B", "Home", true),
+        ];
+        let lists: Vec<ReminderList> = records.iter().filter_map(list_from_record).collect();
+        assert!(lists.is_empty());
+    }
+
+    /// A one-list account must not be reordered into nonsense by an arrangement it predates.
+    #[test]
+    fn a_single_list_account_keeps_its_one_list() {
+        let mut lists = vec![ReminderList {
+            guid: "List/ONLY".into(),
+            title: "Reminders".into(),
+            colour: None,
+            ctag: None,
+            sort_order: 0,
+            enabled: true,
+        }];
+        apply_list_order(&mut lists, &[]);
+        assert_eq!(lists[0].sort_order, 0);
+        apply_list_order(&mut lists, &["SOMETHING-ELSE".into()]);
+        assert_eq!(
+            lists[0].sort_order, 0,
+            "an arrangement about other lists is not ours"
+        );
+    }
+
+    /// Apple's own list names are translated, and a person's are whatever they typed. Nothing
+    /// here may depend on a particular word.
+    #[test]
+    fn a_list_is_recognised_by_its_record_not_by_what_it_is_called() {
+        for title in ["Erinnerungen", "रिमाइंडर", "🌈", "  ", "Assignments"] {
+            let parsed = list_from_record(&list_record("List/X", title, false));
+            assert!(parsed.is_some(), "{title:?} must still be a list");
+        }
+    }
+
+    /// A title Apple sends as empty still needs something to show.
+    #[test]
+    fn a_list_with_no_name_still_has_one() {
+        let bare = json!({
+            "recordName": "List/X",
+            "recordType": "List",
+            "fields": {}
+        });
+        assert_eq!(list_from_record(&bare).unwrap().title, "Reminders");
     }
 }

@@ -264,5 +264,78 @@ let failures = 0;
   await page.close();
 }
 
+// ── An account with nothing in it ─────────────────────────────────────────────────────
+// Everything above was measured against one real library: nine lists, folders, a Drive with
+// things in it. A person installing this may have none of that — a new Apple ID, or one whose
+// lists and notes have all been deleted. Every screen has to be usable, say something true,
+// and never offer a write it cannot carry out.
+{
+  const empty = await b.newContext({ viewport: { width: 1040, height: 900 } });
+  await empty.addInitScript(({ services }) => {
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: (cb) => cb,
+      invoke: async (cmd) => {
+        if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+        if (cmd === "auth_resume") return true;
+        if (cmd === "account_services") return services;
+        if (cmd === "reminder_counts")
+          return { today: 0, scheduled: 0, flagged: 0, all: 0, lists: [] };
+        if (cmd === "sync_all" || cmd === "sync_status")
+          return { services: [], asOf: null, tookMs: 0 };
+        if (cmd === "plugin:event|listen") return 0;
+        // Every list, every folder, every calendar, every row: nothing at all.
+        if (cmd.endsWith("_list") || cmd.endsWith("_lists") || cmd.endsWith("_folders") ||
+            cmd.endsWith("_children") || cmd.endsWith("_events") || cmd.startsWith("reminders_") ||
+            cmd === "notes_in" || cmd === "contacts_list") return [];
+        return null;
+      },
+    };
+  }, { services: ["account","calendar","ckdatabasews","contacts","docws","drivews","notes","reminders"] });
+
+  const page = await empty.newPage();
+  const blew = [];
+  page.on("pageerror", (e) => blew.push(String(e)));
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+
+  for (const [screen, expect] of [
+    ["Reminders", ".rem-nolists"],
+    ["Calendar", ".cal-grid, .cal-month, .cal-empty"],
+    ["Notes", ".cal-empty, .notes-empty"],
+    ["Contacts", ".cal-empty, .contact-empty"],
+    ["iCloud Drive", ".drive-rows"],
+  ]) {
+    await page.getByRole("button", { name: screen, exact: true }).click();
+    await page.waitForTimeout(350);
+    const there = await page.locator(expect).count();
+    console.log(
+      there > 0
+        ? `PASS ${screen} is usable with nothing in the account`
+        : `FAIL ${screen} shows nothing at all with an empty account  [wanted ${expect}]`
+    );
+    if (there === 0) failures++;
+  }
+
+  // Nothing may offer a write it has nowhere to put.
+  await page.getByRole("button", { name: "Calendar", exact: true }).click();
+  await page.waitForTimeout(300);
+  const newEvent = page.getByRole("button", { name: "New event" });
+  const offered = (await newEvent.count()) > 0 && (await newEvent.isEnabled());
+  console.log(
+    offered
+      ? "FAIL New event is offered on an account with no calendars"
+      : "PASS no calendars means no event to create"
+  );
+  if (offered) failures++;
+
+  console.log(
+    blew.length === 0
+      ? "PASS an empty account raises nothing"
+      : `FAIL an empty account threw: ${blew.join(" | ")}`
+  );
+  if (blew.length > 0) failures++;
+  await page.close();
+  await empty.close();
+}
+
 await b.close();
 process.exitCode = collapsed && selectsBuilt && failures === 0 ? 0 : 1;

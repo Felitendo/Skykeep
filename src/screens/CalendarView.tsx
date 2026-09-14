@@ -720,9 +720,14 @@ export function CalendarView() {
                         day.getDate(),
                         hour
                       );
+                      // An account with no calendars has nowhere to put an event. The New
+                      // event button already knows that; clicking an empty hour has to know
+                      // it too, or it opens a form that cannot be saved.
+                      const target = calendars[0]?.guid;
+                      if (!target) return;
                       const startsAt = Math.floor(at.getTime() / 1000);
                       setDraft({
-                        ...blankEvent(day, calendars[0]?.guid ?? ""),
+                        ...blankEvent(day, target),
                         startsAt,
                         endsAt: startsAt + 3600,
                       });
@@ -781,7 +786,10 @@ export function CalendarView() {
           <button
             className="quiet"
             disabled={busy || calendars.length === 0}
-            onClick={() => setDraft(blankEvent(selected, calendars[0]?.guid ?? ""))}
+            onClick={() => {
+              const target = calendars[0]?.guid;
+              if (target) setDraft(blankEvent(selected, target));
+            }}
           >
             New event
           </button>
