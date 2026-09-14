@@ -3156,3 +3156,188 @@ mod other_accounts_tests {
         assert_eq!(list_from_record(&bare).unwrap().title, "Reminders");
     }
 }
+
+/// The date components an alarm is set by, as Apple writes them.
+///
+/// `DateComponentsData` is declared BYTES and holds JSON — the same trick the sort hint uses.
+/// Written out rather than derived from a timestamp at read time because the components carry
+/// a named zone: a reminder set for nine in the morning is for nine in the morning wherever
+/// the person happens to be, which a fixed instant is not.
+fn date_components(at_seconds: i64, timezone: &str) -> Result<String> {
+    let zone = jiff::tz::TimeZone::get(timezone).unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    let moment = jiff::Timestamp::from_second(at_seconds)
+        .map_err(|e| Error::Protocol(format!("that is not a time: {e}")))?
+        .to_zoned(zone.clone());
+    let components = serde_json::json!({
+        "era": 1,
+        "year": moment.year(),
+        "month": moment.month(),
+        "day": moment.day(),
+        "hour": moment.hour(),
+        "minute": moment.minute(),
+        "second": 0,
+        "timeZone": { "identifier": zone.iana_name().unwrap_or("UTC") },
+    });
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    Ok(B64.encode(
+        serde_json::to_vec(&components)
+            .map_err(|e| Error::Protocol(format!("could not write the alarm's date: {e}")))?,
+    ))
+}
+
+/// Give a reminder the alert that makes a phone actually ring.
+///
+/// A due date on its own notifies nobody. Every reminder on a real account that has a time has
+/// exactly one `Alarm`, which points at an `AlarmTrigger` holding the date to fire on — three
+/// records, not one field. Reminders written here had the date and no alarm, so they showed
+/// the right time on a phone and then said nothing when it arrived.
+///
+/// An all-day reminder has no alarm, which is also what the phone does: there is no moment to
+/// ring at. Clearing the date takes the alarm away with it.
+///
+/// # Errors
+/// When Apple refuses any of the three writes, or the reminder cannot be read back.
+pub async fn set_alarm_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder_guid: &str,
+    at_seconds: Option<i64>,
+    timezone: &str,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let current = client.lookup_record(ZONE, reminder_guid).await?;
+    let existing: Vec<String> = current
+        .as_ref()
+        .and_then(|r| r.pointer("/fields/AlarmIDs/value"))
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Whatever was there goes, whether it is being replaced or removed. An alarm left behind
+    // pointing at an old time is worse than none: the phone rings for something that moved.
+    for id in &existing {
+        let alarm = client.lookup_record(ZONE, &format!("Alarm/{id}")).await?;
+        if let Some(trigger) = alarm
+            .as_ref()
+            .and_then(|a| a.pointer("/fields/TriggerID/value"))
+            .and_then(Value::as_str)
+        {
+            client
+                .delete_record(ZONE, &format!("AlarmTrigger/{trigger}"))
+                .await?;
+        }
+        client.delete_record(ZONE, &format!("Alarm/{id}")).await?;
+    }
+
+    let Some(at) = at_seconds else {
+        return client
+            .update_record(
+                ZONE,
+                reminder_guid,
+                "Reminder",
+                None,
+                serde_json::json!({ "AlarmIDs": { "type": "STRING_LIST", "value": [] } }),
+            )
+            .await
+            .map(|_| ());
+    };
+
+    let alarm_id = uuid::Uuid::new_v4().to_string().to_uppercase();
+    let trigger_id = uuid::Uuid::new_v4().to_string().to_uppercase();
+
+    // The alarm first: the trigger points back at it with a reference Apple validates, so it
+    // has to exist by then. The alarm's own TriggerID is a plain string and can name a record
+    // that is still to come.
+    client
+        .create_record(
+            ZONE,
+            &format!("Alarm/{alarm_id}"),
+            "Alarm",
+            serde_json::json!({
+                "AlarmUID": { "type": "STRING", "value": alarm_id },
+                "TriggerID": { "type": "STRING", "value": trigger_id },
+                "Reminder": client.reference_to(ZONE, reminder_guid),
+                "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+                "Imported": { "type": "NUMBER_INT64", "value": 0 },
+            }),
+        )
+        .await?;
+
+    client
+        .create_record(
+            ZONE,
+            &format!("AlarmTrigger/{trigger_id}"),
+            "AlarmTrigger",
+            serde_json::json!({
+                "Alarm": client.reference_to(ZONE, &format!("Alarm/{alarm_id}")),
+                "DateComponentsData": {
+                    "type": "BYTES",
+                    "value": date_components(at, timezone)?,
+                },
+                "Type": { "type": "STRING", "value": "Date" },
+                "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+                "Imported": { "type": "NUMBER_INT64", "value": 0 },
+            }),
+        )
+        .await?;
+
+    client
+        .update_record(
+            ZONE,
+            reminder_guid,
+            "Reminder",
+            None,
+            serde_json::json!({
+                "AlarmIDs": { "type": "STRING_LIST", "value": [alarm_id] },
+            }),
+        )
+        .await
+        .map(|_| ())
+}
+
+#[cfg(test)]
+mod alarm_tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+
+    fn decoded(at: i64, tz: &str) -> Value {
+        serde_json::from_slice(&B64.decode(date_components(at, tz).unwrap()).unwrap()).unwrap()
+    }
+
+    /// Apple's own alarm on this account decodes to exactly this shape.
+    #[test]
+    fn the_components_are_the_local_wall_clock_not_the_instant() {
+        // A whole minute, the way an alarm always lands on one.
+        let at = 1_789_382_400;
+        let india = decoded(at, "Asia/Kolkata");
+        let utc = decoded(at, "UTC");
+        assert_eq!(india["era"], 1);
+        assert_eq!(india["second"], 0);
+        assert_eq!(india["timeZone"]["identifier"], "Asia/Kolkata");
+        assert_eq!(utc["timeZone"]["identifier"], "UTC");
+        assert_ne!(
+            india["hour"], utc["hour"],
+            "the same instant is a different hour in each place, which is the point"
+        );
+    }
+
+    /// Nine in the morning is nine in the morning wherever the person is, so the zone travels
+    /// with the alarm rather than being resolved away.
+    #[test]
+    fn a_named_zone_is_carried_rather_than_flattened() {
+        let v = decoded(1_757_000_000, "America/New_York");
+        assert_eq!(v["timeZone"]["identifier"], "America/New_York");
+    }
+
+    /// A zone this machine has never heard of must not take the alarm down with it.
+    #[test]
+    fn an_unknown_zone_falls_back_rather_than_failing() {
+        assert!(date_components(1_757_000_000, "Mars/Olympus_Mons").is_ok());
+        assert!(date_components(1_757_000_000, "").is_ok());
+    }
+}

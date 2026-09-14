@@ -559,6 +559,24 @@ async fn reminder_edit(
         .await
         .map_err(|e| e.to_string())?;
 
+    // A due date on its own notifies nobody. Every reminder on a real account that has a
+    // time carries an Alarm pointing at an AlarmTrigger, and one written here used to have
+    // the date and no alarm — so a phone showed the right time and then said nothing when it
+    // came. The alert is part of setting a date, not a separate thing to remember.
+    if let Some(due) = edit.due_at {
+        let zone = jiff::tz::TimeZone::system();
+        quince_icloud::reminders::set_alarm_cloudkit(
+            &http,
+            &root,
+            params.clone(),
+            &guid,
+            due,
+            zone.iana_name().unwrap_or("UTC"),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
     let mut library = data.0.lock().await;
     let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
     quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
