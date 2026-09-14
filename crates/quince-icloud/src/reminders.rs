@@ -57,6 +57,7 @@ fn reminder_from(v: &Value) -> Option<Reminder> {
         // Keep Apple's payload verbatim: a write echoes the whole task back, and
         // reconstructing one from parsed columns would drop fields we do not model.
         raw: serde_json::to_string(v).ok(),
+        timezone: None,
     })
 }
 
@@ -445,6 +446,10 @@ fn reminder_from_record(record: &Value) -> Option<Reminder> {
             .and_then(Value::as_str)
             .map(ToString::to_string),
         raw: serde_json::to_string(record).ok(),
+        // Apple keeps a named zone beside the due date, because nine in the morning means
+        // nine in the morning wherever the person is. A repeating reminder stepped without it
+        // moves an hour on each of the two days a year a clock changes.
+        timezone: field::string(record, "TimeZone"),
     })
 }
 
@@ -1702,6 +1707,7 @@ mod write_tests {
             recur_interval: None,
             etag: Some("tag-3".into()),
             raw: None,
+            timezone: None,
         };
         delete_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &reminder)
             .await
@@ -1780,6 +1786,7 @@ mod edit_tests {
             recur_interval: None,
             etag: Some("tag-1".into()),
             raw: None,
+            timezone: None,
         }
     }
 
@@ -2262,6 +2269,7 @@ mod recurring_tick_tests {
             recur_interval: Some(interval),
             etag: Some("tag".into()),
             raw: None,
+            timezone: None,
         }
     }
 
@@ -2459,6 +2467,7 @@ mod priority_and_move_tests {
             recur_interval: None,
             etag: Some("tag".into()),
             raw: None,
+            timezone: None,
         }
     }
 
@@ -2637,6 +2646,7 @@ mod tombstone_tests {
                 recur_interval: None,
                 etag: None,
                 raw: None,
+                timezone: None,
             }])
             .unwrap();
         library
@@ -2769,6 +2779,7 @@ mod recurrence_write_tests {
             recur_interval: None,
             etag: Some("tag".into()),
             raw: None,
+            timezone: None,
         }
     }
 

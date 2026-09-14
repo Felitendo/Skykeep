@@ -1006,3 +1006,98 @@ mod other_calendars_tests {
         assert!(parsed.iter().all(|c| !c.writable));
     }
 }
+
+/// Clocks that move, which this account's never does.
+///
+/// Asia/Kolkata has no daylight saving and never has, so every path through these conversions
+/// had only ever been exercised on a zone with one fixed offset. Most of the world is not like
+/// that, and the two hours a year when a clock jumps are exactly where date code fails: one
+/// local time never happens, and another happens twice.
+#[cfg(test)]
+mod daylight_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn apple(y: i64, m: i64, d: i64, h: i64, min: i64) -> Value {
+        json!([y * 10_000 + m * 100 + d, y, m, d, h, min, h * 60 + min])
+    }
+
+    fn read(raw: &Value, zone: &str) -> i64 {
+        parse_apple_date(raw, Some(zone)).unwrap_or_else(|e| panic!("{zone}: {e}"))
+    }
+
+    /// In New York on 8 March 2026 the clock goes straight from 01:59 to 03:00, so 02:30 is a
+    /// local time that never happens. Apple can still send it — a repeating event lands there,
+    /// or another device wrote it. It has to become some real instant rather than fail a sync.
+    #[test]
+    fn a_local_time_that_never_happens_still_becomes_an_instant() {
+        let at = read(&apple(2026, 3, 8, 2, 30), "America/New_York");
+        let back = jiff::Timestamp::from_second(at)
+            .unwrap()
+            .to_zoned(TimeZone::get("America/New_York").unwrap());
+        assert_eq!(back.date().to_string(), "2026-03-08");
+        assert!(
+            back.hour() == 3 || back.hour() == 1,
+            "it has to land either side of the gap, not inside it: {back}"
+        );
+    }
+
+    /// And on 1 November the clock goes from 01:59 back to 01:00, so 01:30 happens twice.
+    /// Either instant is defensible; silently producing something on another day is not.
+    #[test]
+    fn a_local_time_that_happens_twice_picks_one_and_stays_on_the_day() {
+        let at = read(&apple(2026, 11, 1, 1, 30), "America/New_York");
+        let back = jiff::Timestamp::from_second(at)
+            .unwrap()
+            .to_zoned(TimeZone::get("America/New_York").unwrap());
+        assert_eq!(back.date().to_string(), "2026-11-01");
+        assert_eq!((back.hour(), back.minute()), (1, 30));
+    }
+
+    /// Nine in the morning is nine in the morning on both sides of a clock change. An event
+    /// written on one side and read on the other must not drift an hour.
+    #[test]
+    fn an_ordinary_morning_survives_the_round_trip_on_both_sides_of_a_change() {
+        for zone in [
+            "America/New_York",
+            "Europe/London",
+            "Australia/Sydney",
+            "Australia/Lord_Howe",
+            "Asia/Kolkata",
+            "Pacific/Chatham",
+        ] {
+            for (m, d) in [(1, 15), (3, 20), (7, 4), (11, 15)] {
+                let sent = apple(2026, m, d, 9, 0);
+                let at = read(&sent, zone);
+                let written = format_apple_date(at, Some(zone));
+                assert_eq!(
+                    written, sent,
+                    "{zone} on {m}/{d}: what was read did not come back the same"
+                );
+            }
+        }
+    }
+
+    /// Half-hour and three-quarter-hour offsets are real places, and Lord Howe's clock moves
+    /// by thirty minutes rather than an hour.
+    #[test]
+    fn zones_that_are_not_whole_hours_round_trip_too() {
+        for zone in ["Asia/Kathmandu", "Australia/Eucla", "Australia/Lord_Howe"] {
+            let sent = apple(2026, 6, 10, 14, 45);
+            assert_eq!(
+                format_apple_date(read(&sent, zone), Some(zone)),
+                sent,
+                "{zone}"
+            );
+        }
+    }
+
+    /// A zone this machine has never heard of must keep the event visible rather than fail the
+    /// whole sync — someone's calendar carrying one bad zone is not a reason to show them
+    /// nothing.
+    #[test]
+    fn an_unknown_zone_falls_back_instead_of_failing_the_sync() {
+        assert!(parse_apple_date(&apple(2026, 6, 10, 9, 0), Some("Mars/Olympus_Mons")).is_ok());
+        assert!(parse_apple_date(&apple(2026, 6, 10, 9, 0), None).is_ok());
+    }
+}

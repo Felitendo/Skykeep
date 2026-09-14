@@ -254,4 +254,15 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE note_folders ADD COLUMN parent_guid TEXT;
     "#,
+    // 17 — where a reminder's time is kept.
+    //
+    // Apple records a named zone beside the due date, because nine in the morning means nine
+    // in the morning wherever the person is rather than a fixed instant. Without it a
+    // repeating reminder was stepped in UTC, where a day is always exactly twenty-four hours —
+    // so on the two days a year a clock moves, a daily reminder at nine moved to ten and six
+    // months later back again. This account is in one of the few zones that keeps a single
+    // offset all year, which is why it was never visible here.
+    r#"
+    ALTER TABLE reminders ADD COLUMN timezone TEXT;
+    "#,
 ];

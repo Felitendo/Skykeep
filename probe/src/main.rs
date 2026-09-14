@@ -1361,6 +1361,7 @@ async fn main() -> Result<()> {
                             recur_interval: None,
                             etag: None,
                             raw: None,
+                            timezone: None,
                         };
 
                         // Subtasks: nest one reminder under another, read it back, free it.

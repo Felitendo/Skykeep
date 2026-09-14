@@ -56,6 +56,10 @@ pub struct Reminder {
     /// reminder by its guid and the record is read back from the library on this side.
     #[serde(default, skip_serializing)]
     pub raw: Option<String>,
+    /// The named zone Apple keeps beside the due date. Nine in the morning is nine in the
+    /// morning wherever the person is, and that is not something a timestamp can say.
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// What every entry in the sidebar is holding.
@@ -127,9 +131,16 @@ impl Reminder {
             3 => jiff::Span::new().years(interval),
             _ => return None,
         };
-        let mut zoned = jiff::Timestamp::from_second(due)
-            .ok()?
-            .to_zoned(jiff::tz::TimeZone::UTC);
+        // Stepped in the reminder's own zone, not in UTC. A day in UTC is always exactly
+        // twenty-four hours, so on the two days a year a clock moves, stepping there carried a
+        // nine o'clock reminder to ten and six months later back to nine. In a real zone a day
+        // is whatever that day is, and the hour holds.
+        let zone = self
+            .timezone
+            .as_deref()
+            .and_then(|name| jiff::tz::TimeZone::get(name).ok())
+            .unwrap_or_else(jiff::tz::TimeZone::system);
+        let mut zoned = jiff::Timestamp::from_second(due).ok()?.to_zoned(zone);
 
         // The cap stops a daily reminder abandoned a decade ago from spinning; eleven
         // years of daily steps is far past any real backlog.
@@ -232,7 +243,7 @@ impl Library {
         let mut stmt = self.conn.prepare(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
-                    r.etag
+                    r.etag, r.timezone
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.due_at IS NOT NULL
@@ -255,6 +266,7 @@ impl Library {
                 recur_interval: row.get(10)?,
                 etag: row.get(11)?,
                 raw: None,
+                timezone: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -330,7 +342,7 @@ impl Library {
         let sql = format!(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
-                    r.etag
+                    r.etag, r.timezone
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND {clause}
@@ -353,6 +365,7 @@ impl Library {
                 recur_interval: row.get(10)?,
                 etag: row.get(11)?,
                 raw: None,
+                timezone: row.get(12)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -449,8 +462,8 @@ impl Library {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminders (guid, list_guid, title, notes, due_at, completed_at,
                                         priority, flagged, parent_guid, recur_frequency,
-                                        recur_interval, etag, raw, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                                        recur_interval, etag, raw, timezone, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(guid) DO UPDATE SET
                    list_guid = excluded.list_guid, title = excluded.title,
                    notes = excluded.notes, due_at = excluded.due_at,
@@ -459,6 +472,7 @@ impl Library {
                    recur_frequency = excluded.recur_frequency,
                    recur_interval = excluded.recur_interval,
                    etag = excluded.etag, raw = excluded.raw,
+                   timezone = excluded.timezone,
                    updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -477,6 +491,7 @@ impl Library {
                     r.recur_interval,
                     r.etag,
                     r.raw,
+                    r.timezone,
                     stamp
                 ])?;
             }
@@ -510,7 +525,7 @@ impl Library {
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
-                    parent_guid, recur_frequency, recur_interval, etag
+                    parent_guid, recur_frequency, recur_interval, etag, timezone
              FROM reminders
              WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)
              ORDER BY completed_at IS NOT NULL,
@@ -536,6 +551,7 @@ impl Library {
                     recur_interval: row.get(10)?,
                     etag: row.get(11)?,
                     raw: None,
+                    timezone: row.get(12)?,
                 })
             },
         )?;
@@ -573,6 +589,7 @@ mod tests {
             recur_interval: None,
             etag: None,
             raw: None,
+            timezone: None,
         }
     }
 
@@ -760,6 +777,7 @@ mod smart_tests {
             recur_interval: None,
             etag: None,
             raw: None,
+            timezone: None,
         }
     }
 
@@ -899,6 +917,7 @@ mod count_tests {
             recur_interval: None,
             etag: None,
             raw: None,
+            timezone: None,
         }
     }
 
@@ -995,6 +1014,7 @@ mod payload_tests {
             recur_interval: None,
             etag: Some("e1".into()),
             raw: Some(apples_record),
+            timezone: None,
         };
 
         let sent = serde_json::to_string(&reminder).unwrap();
@@ -1029,6 +1049,7 @@ mod payload_tests {
                 recur_interval: None,
                 etag: Some(format!("e{i}")),
                 raw: Some("y".repeat(5_000)),
+                timezone: None,
             })
             .collect();
         let bytes = serde_json::to_vec(&many).unwrap().len();
@@ -1058,6 +1079,7 @@ mod raw_column_tests {
             recur_interval: None,
             etag: Some("e1".into()),
             raw: Some("z".repeat(5_000)),
+            timezone: None,
         }
     }
 
@@ -1137,6 +1159,7 @@ mod bound_tests {
                 recur_interval: None,
                 etag: None,
                 raw: None,
+                timezone: None,
             })
             .collect();
         lib.put_reminders(&rows).unwrap();
@@ -1184,5 +1207,102 @@ mod bound_tests {
         let lib = many(40);
         assert_eq!(lib.reminders_in("List/1", true).unwrap().len(), 40);
         assert_eq!(lib.reminders_due_between(0, i64::MAX).unwrap().len(), 40);
+    }
+}
+
+/// Repeating reminders where the clock moves.
+#[cfg(test)]
+mod recurrence_daylight_tests {
+    use super::*;
+
+    fn at(zone: &str, y: i16, m: i8, d: i8, h: i8, min: i8) -> i64 {
+        jiff::civil::DateTime::new(y, m, d, h, min, 0, 0)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::get(zone).unwrap())
+            .unwrap()
+            .timestamp()
+            .as_second()
+    }
+
+    fn wall(zone: &str, seconds: i64) -> String {
+        jiff::Timestamp::from_second(seconds)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::get(zone).unwrap())
+            .strftime("%Y-%m-%d %H:%M")
+            .to_string()
+    }
+
+    fn daily(zone: &str, due: i64) -> Reminder {
+        Reminder {
+            guid: "Reminder/1".into(),
+            list_guid: "List/1".into(),
+            title: "Take the tablets".into(),
+            notes: None,
+            due_at: Some(due),
+            completed_at: None,
+            priority: 0,
+            flagged: false,
+            parent_guid: None,
+            recur_frequency: Some(0),
+            recur_interval: Some(1),
+            etag: None,
+            raw: None,
+            timezone: Some(zone.into()),
+        }
+    }
+
+    /// Nine in the morning every day means nine in the morning on the day the clocks go
+    /// forward too. Stepping a whole number of hours instead of a day moves it to ten, and
+    /// back to nine six months later — twice a year, for everyone who does not live somewhere
+    /// that keeps one offset all year. This account's zone is one of the few that does, which
+    /// is why it was never seen.
+    #[test]
+    fn a_daily_reminder_keeps_its_hour_across_a_spring_forward() {
+        let zone = "America/New_York";
+        let before = at(zone, 2026, 3, 7, 9, 0);
+        let next = daily(zone, before)
+            .next_occurrence_after(before)
+            .expect("a daily reminder has a next occurrence");
+        assert_eq!(wall(zone, next), "2026-03-08 09:00");
+    }
+
+    /// And on the day they go back.
+    #[test]
+    fn a_daily_reminder_keeps_its_hour_across_a_fall_back() {
+        let zone = "America/New_York";
+        let before = at(zone, 2026, 10, 31, 9, 0);
+        let next = daily(zone, before).next_occurrence_after(before).unwrap();
+        assert_eq!(wall(zone, next), "2026-11-01 09:00");
+    }
+
+    /// Southern hemisphere, and a zone whose clock moves by half an hour rather than a whole
+    /// one — the case that catches anything reasoning in whole hours.
+    #[test]
+    fn the_hour_holds_in_the_awkward_zones_too() {
+        for (zone, y, m, d) in [
+            ("Australia/Sydney", 2026, 10, 3),
+            ("Australia/Lord_Howe", 2026, 10, 3),
+            ("Europe/London", 2026, 3, 28),
+            ("Pacific/Chatham", 2026, 9, 26),
+        ] {
+            let before = at(zone, y, m, d, 9, 0);
+            let next = daily(zone, before).next_occurrence_after(before).unwrap();
+            assert!(
+                wall(zone, next).ends_with("09:00"),
+                "{zone}: {} became {}",
+                wall(zone, before),
+                wall(zone, next)
+            );
+        }
+    }
+
+    /// A reminder that never said where it was must still advance, in this machine's own zone.
+    #[test]
+    fn a_reminder_with_no_zone_still_advances_a_whole_day() {
+        let mut r = daily("UTC", 1_789_000_000);
+        r.timezone = None;
+        let next = r.next_occurrence_after(1_789_000_000).unwrap();
+        assert!(next > 1_789_000_000);
+        assert!((next - 1_789_000_000 - 86_400).abs() <= 3_600);
     }
 }
