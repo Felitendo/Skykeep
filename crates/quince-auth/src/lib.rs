@@ -451,6 +451,13 @@ impl Client {
     /// The password is never sent to Apple — SRP proves knowledge of it without transmitting
     /// it. Apple retired the old cleartext endpoint; it now answers 503.
     pub async fn sign_in(&mut self, apple_id: &str, password: &str) -> Result<SignInOutcome> {
+        // What this account already owes, from beside the cookies rather than from the
+        // keyring — so a machine with no keyring still remembers, which is where forgetting
+        // would matter most. Per account, so signing in as somebody else inherits nothing.
+        let owed = self.store.cooldown_for(apple_id);
+        self.session.consecutive_failures = owed.consecutive_failures;
+        self.session.retry_after = owed.retry_after;
+
         let outcome = self.sign_in_inner(apple_id, password).await;
         match &outcome {
             // Reaching the two-factor step means the password was accepted: not a failure.
@@ -471,6 +478,15 @@ impl Client {
                 self.session.retry_after = (wait > 0).then(|| unix_now() + wait);
             }
         }
+        // Written on its own and first. `persist` needs the keyring and is allowed to fail;
+        // the wait must be remembered either way, or a machine without a keyring forgets it
+        // every time the window closes and somebody can go on hammering Apple until the
+        // account they are trying to reach is locked.
+        let _ = self.store.save_cooldown(&crate::session::Cooldown {
+            account: Some(crate::session::account_fingerprint(apple_id)),
+            consecutive_failures: self.session.consecutive_failures,
+            retry_after: self.session.retry_after,
+        });
         let _ = self.persist();
         outcome
     }

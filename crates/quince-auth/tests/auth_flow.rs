@@ -555,3 +555,63 @@ async fn resume_rebuilds_a_session_from_tokens_alone() {
         "and the service map must come back with it"
     );
 }
+
+/// A cooldown that a restart forgets is not a cooldown.
+///
+/// It used to live only in the keyring, so on a machine with none — or one that is locked —
+/// closing the window forgot it, and somebody mistyping a password could go on doing it as
+/// fast as they could reopen the app. Hammering sign-in is what gets an account temporarily
+/// locked, and with other people using this it is their account at stake, not ours.
+#[tokio::test]
+async fn a_new_client_still_owes_the_wait_the_old_one_earned() {
+    let server = MockServer::start().await;
+    mount_init(&server, 429).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut client = client_for(&server, dir.path());
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap_err();
+        assert!(client.session().retry_after.is_some());
+    }
+
+    // A second client over the same directory: the app, reopened.
+    let mut again = client_for(&server, dir.path());
+    let err = again
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, quince_auth::Error::CoolingDown { .. }),
+        "reopening the app must not clear the wait, got: {err}"
+    );
+}
+
+/// And the other half: it is owed by the account, not by the machine. Someone signing in with
+/// a different Apple ID inherits nothing.
+#[tokio::test]
+async fn a_different_account_does_not_inherit_the_wait() {
+    let server = MockServer::start().await;
+    mount_init(&server, 429).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut client = client_for(&server, dir.path());
+        client
+            .sign_in("first@example.invalid", "hunter2")
+            .await
+            .unwrap_err();
+    }
+
+    let mut other = client_for(&server, dir.path());
+    let err = other
+        .sign_in("second@example.invalid", "hunter2")
+        .await
+        .unwrap_err();
+    assert!(
+        !matches!(err, quince_auth::Error::CoolingDown { .. }),
+        "a different account must start clean, got: {err}"
+    );
+}

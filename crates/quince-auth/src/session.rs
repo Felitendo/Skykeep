@@ -128,7 +128,41 @@ enum Backend {
 
 pub struct Store {
     cookie_path: PathBuf,
+    cooldown_path: PathBuf,
     backend: Backend,
+}
+
+/// How long to wait before trying to sign in again, kept where the keyring cannot lose it.
+///
+/// This is not secret — it is a count and a timestamp — so it does not belong in the keyring,
+/// and keeping it there made it depend on the keyring working. On a machine with none, or one
+/// that is locked, the cooldown lived only in memory: closing the window forgot it, and
+/// somebody mistyping a password could go on doing it as fast as they could reopen the app.
+/// Hammering sign-in is what gets an account temporarily locked, and it is the person's own
+/// account at stake.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct Cooldown {
+    /// Which account owes the wait, as a hash rather than an address — this file sits in the
+    /// clear beside the cookies and there is no reason for somebody's email to be in it.
+    ///
+    /// Held per account because both things are true at once: signing out to use a different
+    /// Apple ID must not inherit the first one's wait, and signing out must not be the way to
+    /// wipe a wait and carry on hammering the same one.
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    #[serde(default)]
+    pub retry_after: Option<u64>,
+}
+
+/// Which account a wait belongs to, without writing down who they are.
+#[must_use]
+pub fn account_fingerprint(apple_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(apple_id.trim().to_lowercase().as_bytes());
+    format!("{:x}", hasher.finalize())[..32].to_string()
 }
 
 impl Store {
@@ -137,6 +171,7 @@ impl Store {
         std::fs::create_dir_all(state_dir)?;
         Ok(Self {
             cookie_path: state_dir.join("cookies.json"),
+            cooldown_path: state_dir.join("cooldown.json"),
             backend: Backend::Keyring,
         })
     }
@@ -147,12 +182,40 @@ impl Store {
         std::fs::create_dir_all(state_dir)?;
         Ok(Self {
             cookie_path: state_dir.join("cookies.json"),
+            cooldown_path: state_dir.join("cooldown.json"),
             backend: Backend::File(state_dir.join("session.json")),
         })
     }
 
     pub fn cookie_path(&self) -> &Path {
         &self.cookie_path
+    }
+
+    /// What this account owes before the next sign-in attempt. Unreadable, absent, or
+    /// belonging to somebody else is no wait — which is right for a first run and right for
+    /// signing in as a different person.
+    pub fn cooldown_for(&self, apple_id: &str) -> Cooldown {
+        let stored = self.load_cooldown();
+        if stored.account.as_deref() == Some(account_fingerprint(apple_id).as_str()) {
+            stored
+        } else {
+            Cooldown::default()
+        }
+    }
+
+    /// What is owed, whoever owes it.
+    pub fn load_cooldown(&self) -> Cooldown {
+        std::fs::read_to_string(&self.cooldown_path)
+            .ok()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    /// Written on its own, next to the cookies rather than into the keyring, so a machine
+    /// with no keyring still remembers to wait.
+    pub fn save_cooldown(&self, cooldown: &Cooldown) -> std::io::Result<()> {
+        let json = serde_json::to_string(cooldown).unwrap_or_else(|_| "{}".into());
+        std::fs::write(&self.cooldown_path, json)
     }
 
     fn entry() -> Result<keyring::Entry, keyring::Error> {
@@ -222,6 +285,192 @@ impl Store {
         if self.cookie_path.exists() {
             std::fs::remove_file(&self.cookie_path)?;
         }
+        // The cooldown stays. It is owed to Apple, not to the session — clearing it here
+        // would make signing out a way to wipe the wait and start hammering again, which is
+        // exactly what it exists to prevent.
         Ok(())
+    }
+}
+
+/// Remembering to wait, on a machine that cannot keep secrets.
+#[cfg(test)]
+mod cooldown_tests {
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Store::file(dir.path()).expect("a store");
+        (dir, store)
+    }
+
+    /// A first run owes nothing.
+    #[test]
+    fn nothing_stored_is_no_wait() {
+        let (_dir, store) = store();
+        let waiting = store.cooldown_for("someone@example.invalid");
+        assert_eq!(waiting.consecutive_failures, 0);
+        assert_eq!(waiting.retry_after, None);
+    }
+
+    /// The point of keeping it in a file: a cooldown that is forgotten when the window closes
+    /// is no cooldown at all, and it used to live only in the keyring — so a machine with none
+    /// forgot it every time.
+    #[test]
+    fn a_wait_survives_being_read_back_by_something_new() {
+        let (dir, store) = store();
+        store
+            .save_cooldown(&Cooldown {
+                account: Some(account_fingerprint("someone@example.invalid")),
+                consecutive_failures: 4,
+                retry_after: Some(1_789_000_000),
+            })
+            .expect("written");
+
+        let reopened = Store::file(dir.path()).expect("a second store over the same directory");
+        let waiting = reopened.cooldown_for("someone@example.invalid");
+        assert_eq!(waiting.consecutive_failures, 4);
+        assert_eq!(waiting.retry_after, Some(1_789_000_000));
+    }
+
+    /// Signing out must not wipe it, or signing out becomes the way round it.
+    #[test]
+    fn forgetting_the_session_does_not_forget_the_wait() {
+        let (_dir, store) = store();
+        store
+            .save_cooldown(&Cooldown {
+                account: Some(account_fingerprint("someone@example.invalid")),
+                consecutive_failures: 3,
+                retry_after: Some(1_789_000_000),
+            })
+            .expect("written");
+        store.save(&Session::default()).expect("a session");
+
+        store.clear().expect("cleared");
+
+        let waiting = store.cooldown_for("someone@example.invalid");
+        assert_eq!(
+            waiting.retry_after,
+            Some(1_789_000_000),
+            "the wait is owed to Apple, not to the session"
+        );
+    }
+
+    /// Rubbish in the file is not a reason to refuse to sign in for ever.
+    #[test]
+    fn an_unreadable_file_is_read_as_no_wait() {
+        let (dir, store) = store();
+        std::fs::write(dir.path().join("cooldown.json"), "not json at all").expect("written");
+        assert_eq!(
+            store.cooldown_for("someone@example.invalid").retry_after,
+            None
+        );
+    }
+
+    /// The schedule itself: nearly free at first, and a high ceiling, because the penalty for
+    /// hammering is somebody's own account being locked.
+    #[test]
+    fn the_wait_grows_and_stops_growing() {
+        let waits: Vec<u64> = (0..7).map(backoff_seconds).collect();
+        assert_eq!(waits, vec![0, 5, 15, 60, 180, 600, 600]);
+        assert!(
+            waits.windows(2).all(|w| w[1] >= w[0]),
+            "never goes backwards"
+        );
+    }
+}
+
+#[cfg(test)]
+mod per_account_tests {
+    use super::*;
+
+    /// Both things have to be true at once, and they pull in opposite directions: signing out
+    /// to use a different Apple ID must not inherit the first one's wait, and signing out must
+    /// not be the way to wipe a wait and carry on hammering the same one. Holding it per
+    /// account is what satisfies both.
+    #[test]
+    fn a_wait_follows_the_account_and_not_the_session() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Store::file(dir.path()).expect("a store");
+        store
+            .save_cooldown(&Cooldown {
+                account: Some(account_fingerprint("first@example.invalid")),
+                consecutive_failures: 5,
+                retry_after: Some(1_789_000_000),
+            })
+            .expect("written");
+
+        assert_eq!(
+            store.cooldown_for("first@example.invalid").retry_after,
+            Some(1_789_000_000),
+            "the account that earned it still waits"
+        );
+        assert_eq!(
+            store.cooldown_for("second@example.invalid").retry_after,
+            None,
+            "somebody else does not"
+        );
+    }
+
+    /// An address is an address however it was typed.
+    #[test]
+    fn the_same_account_is_recognised_however_it_was_typed() {
+        let one = account_fingerprint("Someone@Example.Invalid");
+        assert_eq!(one, account_fingerprint("someone@example.invalid"));
+        assert_eq!(one, account_fingerprint("  someone@example.invalid  "));
+        assert_ne!(one, account_fingerprint("someone.else@example.invalid"));
+    }
+
+    /// The reason it is a file of its own rather than part of the session.
+    ///
+    /// The session lives in the keyring. On a machine with no keyring service, or one that is
+    /// locked, storing it fails — and the wait went with it, so closing the window forgot it
+    /// and somebody could go on hammering as fast as they could reopen the app. Keeping it
+    /// beside the cookies means losing the secrets does not lose the wait.
+    #[test]
+    fn the_wait_outlives_a_secret_store_that_cannot_keep_anything() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Store::file(dir.path()).expect("a store");
+        store
+            .save_cooldown(&Cooldown {
+                account: Some(account_fingerprint("someone@example.invalid")),
+                consecutive_failures: 4,
+                retry_after: Some(1_789_000_000),
+            })
+            .expect("written");
+        store.save(&Session::default()).expect("a session");
+
+        // Everything the secret store held, gone — as it is on a machine where the keyring
+        // never accepted it in the first place.
+        std::fs::remove_file(dir.path().join("session.json")).expect("removed");
+
+        let reopened = Store::file(dir.path()).expect("a store over the same directory");
+        assert!(
+            reopened.load().trust_token.is_none(),
+            "the secrets really are gone"
+        );
+        assert_eq!(
+            reopened.cooldown_for("someone@example.invalid").retry_after,
+            Some(1_789_000_000),
+            "and the wait is still owed"
+        );
+    }
+
+    /// The file sits in the clear beside the cookies, so it must not say who anybody is.
+    #[test]
+    fn the_file_does_not_hold_an_address() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let store = Store::file(dir.path()).expect("a store");
+        store
+            .save_cooldown(&Cooldown {
+                account: Some(account_fingerprint("someone@example.invalid")),
+                consecutive_failures: 1,
+                retry_after: Some(1),
+            })
+            .expect("written");
+
+        let written = std::fs::read_to_string(dir.path().join("cooldown.json")).expect("read");
+        assert!(!written.contains("someone"), "no local part");
+        assert!(!written.contains("example.invalid"), "no domain");
+        assert!(!written.contains('@'), "nothing that looks like an address");
     }
 }
