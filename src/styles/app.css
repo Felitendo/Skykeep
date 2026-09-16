@@ -2378,3 +2378,56 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
   white-space: nowrap;
   border: 0;
 }
+
+/*
+ * What Quince is, folded away under the sign-in button.
+ *
+ * Shut, it is the one line that was there before. Open, it is the four things somebody ought
+ * to know before typing an Apple ID into software a stranger wrote. A wall of warnings across
+ * the screen is not read, and a page nobody reads discloses nothing.
+ */
+.disclosure {
+  margin-top: 12px;
+  font-size: var(--t-11);
+  color: var(--text-3);
+  text-align: left;
+}
+
+.disclosure > summary {
+  cursor: pointer;
+  list-style: none;
+  text-align: center;
+  padding: 4px;
+  border-radius: var(--r-field);
+}
+
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary::after {
+  content: " ⌄";
+  opacity: 0.7;
+}
+.disclosure[open] > summary::after { content: " ⌃"; }
+.disclosure > summary:hover { color: var(--text-2); }
+.disclosure > summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--gold-ring);
+}
+
+.disclosure-body {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.disclosure-body p { margin: 0 0 8px; line-height: 1.5; }
+.disclosure-body p:last-child { margin-bottom: 0; }
+.disclosure-body strong { color: var(--text-2); font-weight: 600; }
+.disclosure-body code {
+  font-size: 0.95em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}

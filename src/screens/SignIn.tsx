@@ -65,7 +65,40 @@ export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
         Your password never leaves this computer. Quince proves you know it without sending
         it, and keeps the result in your system keyring.
       </p>
-      <p className="disclaimer">An independent project. Not affiliated with Apple.</p>
+      {/*
+        * What somebody is owed before they type an Apple ID into software a stranger wrote.
+        *
+        * Folded away rather than laid across the screen: a wall of warnings is not read, and
+        * a page nobody reads discloses nothing. One line that says the important part, and
+        * the rest a click away for anyone who wants it.
+        */}
+      <details className="disclosure">
+        <summary>An independent project. Not affiliated with Apple.</summary>
+        <div className="disclosure-body">
+          <p>
+            <strong>Unofficial.</strong> Quince reaches iCloud through interfaces Apple has
+            not published. Apple can change them without notice, and when that happens
+            something here will stop working until it is put right.
+          </p>
+          <p>
+            <strong>Your password never leaves this computer.</strong> Quince proves you know
+            it without sending it, and keeps the result in your system keyring. There is no
+            Quince account and no Quince server — there is nowhere else for any of this to go.
+          </p>
+          <p>
+            <strong>What it keeps, and where.</strong> A copy of your calendar, reminders,
+            notes, contacts and the listing of your Drive, in a database under{" "}
+            <code>~/.local/share/dev.quince.client</code>. Signing out removes the session;
+            deleting that folder removes the copy.
+          </p>
+          <p>
+            <strong>What no client can read.</strong> Health, Messages, Keychain, Home, Safari
+            history and Screen Time are encrypted end to end — Apple's own servers hold no key
+            to them, so no app can show them. Quince says they are unavailable rather than
+            quietly leaving them out.
+          </p>
+        </div>
+      </details>
     </form>
   );
 }

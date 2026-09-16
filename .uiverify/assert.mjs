@@ -369,6 +369,50 @@ let failures = 0;
   await page.close();
 }
 
+// ── What somebody is told before they type an Apple ID in ─────────────────────────────
+// Required rather than nice to have: this is software a stranger wrote, reaching iCloud
+// through interfaces Apple has not published. Shut, it must not shout; open, it must say so.
+{
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: (cb) => cb,
+      invoke: async (cmd) => {
+        if (cmd === "auth_status") return { hasStoredSession: false, signedIn: false };
+        if (cmd === "plugin:event|listen") return 0;
+        return null;
+      },
+    };
+  });
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.waitForTimeout(300);
+
+  const shut = await page.locator(".disclosure").innerText();
+  const quiet = shut.length < 120;
+  console.log(
+    quiet
+      ? `PASS the disclosure is one line until asked  [${shut.replace(/\n/g, " ").slice(0, 60)}]`
+      : `FAIL the sign-in screen opens with ${shut.length} characters of disclosure`
+  );
+  if (!quiet) failures++;
+
+  await page.locator(".disclosure > summary").click();
+  await page.waitForTimeout(200);
+  const open = (await page.locator(".disclosure").innerText()).toLowerCase();
+  const says = {
+    "that it is unofficial": /unofficial|not affiliated/.test(open),
+    "that Apple can change it": /without notice|stop working/.test(open),
+    "where the copy is kept": /local\/share|dev\.quince\.client/.test(open),
+    "that the password stays here": /never leaves this computer/.test(open),
+    "what no client can read": /end to end|encrypted end/.test(open),
+  };
+  for (const [what, said] of Object.entries(says)) {
+    console.log(said ? `PASS it says ${what}` : `FAIL it does not say ${what}`);
+    if (!said) failures++;
+  }
+  await page.close();
+}
+
 // ── An account with nothing in it ─────────────────────────────────────────────────────
 // Everything above was measured against one real library: nine lists, folders, a Drive with
 // things in it. A person installing this may have none of that — a new Apple ID, or one whose
