@@ -1,0 +1,15 @@
+# The menu entry, with the names filled in by whatever is building the package — Tauri
+# substitutes these itself, and the Arch PKGBUILD fills them in with sed. One file, so the
+# entry cannot say one thing in a .deb and another in a .pkg.tar.zst.
+[Desktop Entry]
+Type=Application
+Name={{name}}
+GenericName=iCloud Client
+Comment={{comment}}
+Exec={{exec}} %U
+Icon={{icon}}
+Terminal=false
+Categories={{categories}}
+Keywords=iCloud;calendar;reminders;notes;contacts;sync;
+StartupNotify=true
+StartupWMClass={{exec}}

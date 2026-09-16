@@ -34,8 +34,35 @@
     "icon": [
       "icons/icon.png"
     ],
-    "category": "Utility",
+    "category": "Productivity",
     "shortDescription": "Your iCloud, on this computer",
-    "longDescription": "Quince keeps your iCloud calendar, reminders, photos and notes on your own machine, so they open instantly and work offline. Independent project, not affiliated with Apple."
-  }
+    "longDescription": "Quince keeps your iCloud calendar, reminders, photos and notes on your own machine, so they open instantly and work offline. Independent project, not affiliated with Apple.",
+    "licenseFile": "../LICENSE",
+    "homepage": "https://github.com/YashwanthKamireddi/quince",
+    "publisher": "Yashwanth Kamireddi",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libsecret-1-0"
+        ],
+        "desktopTemplate": "../packaging/dev.quince.client.desktop.in",
+        "files": {
+          "/usr/share/metainfo/dev.quince.client.metainfo.xml": "../packaging/dev.quince.client.metainfo.xml"
+        }
+      },
+      "rpm": {
+        "depends": [
+          "libsecret"
+        ],
+        "desktopTemplate": "../packaging/dev.quince.client.desktop.in",
+        "files": {
+          "/usr/share/metainfo/dev.quince.client.metainfo.xml": "../packaging/dev.quince.client.metainfo.xml"
+        }
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
+  },
+  "mainBinaryName": "quince"
 }

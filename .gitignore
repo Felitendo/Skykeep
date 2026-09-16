@@ -6,3 +6,10 @@
 findings.md
 session.json
 cookies.json
+
+# What makepkg leaves behind: the unpacked sources, the staged package tree, and the package
+# itself. Built from the checkout, so none of it belongs in the checkout.
+packaging/arch/src/
+packaging/arch/pkg/
+packaging/arch/*.pkg.tar.zst
+packaging/arch/*.log

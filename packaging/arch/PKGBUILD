@@ -1,0 +1,81 @@
+# Builds Quince from the checkout beside this file, so it can be installed the way any other
+# program on this machine is — `makepkg -si` from here — rather than run out of a build
+# directory. That is the difference between something Yash has and something anyone has.
+#
+# For the AUR this becomes a `source=("git+https://github.com/…")` with a real `pkgver()`;
+# the build and package steps below are already what that version would use.
+
+pkgname=quince
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Your iCloud, on this computer — calendar, reminders, notes, contacts and Drive"
+arch=('x86_64')
+url="https://github.com/YashwanthKamireddi/quince"
+license=('GPL-3.0-only')
+
+# WebKitGTK is what Tauri renders through on Linux, and libsecret is where the session is
+# kept — the app will start without the second but cannot stay signed in.
+# Exactly what the built binary asks for, read off it with ldd rather than guessed: webkit2gtk
+# for the window, gtk3 under it, libsecret for the keyring. There is no tray icon, so there is
+# no libappindicator either.
+depends=('webkit2gtk-4.1' 'gtk3' 'libsecret')
+makedepends=('rust' 'nodejs' 'npm' 'pkgconf')
+
+# makepkg turns link-time optimisation on for everything, which compiles the C and assembly
+# inside ring and libsqlite3-sys to LLVM bitcode. Rust links its own way and cannot see into
+# those archives, so the build failed with several hundred undefined symbols — every SQLite
+# entry point and every one of ring's arithmetic primitives. Rust does its own optimising
+# here; this only declines to have it done twice, in two languages that disagree about how.
+options=('!lto')
+
+source=()
+sha256sums=()
+
+_root="$(cd "$startdir/../.." && pwd)"
+
+build() {
+  cd "$_root"
+
+  # Its own build directory, not the one a developer is using. makepkg builds with its own
+  # CFLAGS and LDFLAGS, and cargo reuses whatever C objects it finds — so sharing a target
+  # directory with an ordinary `cargo build` produced a binary that would not link at all,
+  # with sqlite3 and ring's assembly missing from it.
+  export CARGO_TARGET_DIR="$srcdir/target"
+
+  # makepkg builds in a clean environment, which does not carry a rustup installation. The
+  # `rust` package puts cargo in /usr/bin and needs nothing here; a rustup one lives in the
+  # user's home and would otherwise look simply absent.
+  if ! command -v cargo >/dev/null; then
+    export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+  fi
+  command -v cargo >/dev/null || {
+    echo "cargo not found — install the 'rust' package, or put a rustup one on PATH" >&2
+    return 1
+  }
+
+  npm ci --no-audit --no-fund
+  npm run build
+  cargo build --release --locked -p quince-app
+}
+
+package() {
+  cd "$_root"
+  # Cargo names the binary after its crate; `tauri build` renames it and this does not go
+  # through that, so the rename happens here.
+  install -Dm755 "$srcdir/target/release/quince-app" "$pkgdir/usr/bin/quince"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 packaging/dev.quince.client.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/dev.quince.client.metainfo.xml"
+  # The same entry the .deb and .rpm get, with the names this package uses filled in.
+  sed -e 's/{{name}}/Quince/' \
+      -e 's/{{comment}}/Your iCloud, on this computer/' \
+      -e 's/{{exec}}/quince/g' \
+      -e 's/{{icon}}/dev.quince.client/' \
+      -e 's/{{categories}}/Office;Calendar;ContactManagement;/' \
+      packaging/dev.quince.client.desktop.in \
+    > "$srcdir/dev.quince.client.desktop"
+  install -Dm644 "$srcdir/dev.quince.client.desktop" \
+    "$pkgdir/usr/share/applications/dev.quince.client.desktop"
+  install -Dm644 src-tauri/icons/icon.png \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/dev.quince.client.png"
+}
