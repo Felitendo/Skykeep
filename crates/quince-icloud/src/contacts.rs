@@ -211,8 +211,15 @@ pub async fn fetch_with_tokens(
 /// not model — a card written with only the fields we understand would quietly drop
 /// everything else about the person.
 fn card_from(contact: &Contact, existing: Option<&Value>) -> Value {
-    let mut card = existing.cloned().unwrap_or_else(|| serde_json::json!({}));
-    let object = card.as_object_mut().expect("a card is an object");
+    // Apple's card is the starting point, and Apple is not obliged to send an object; a
+    // write that panicked on network input would take the whole window down with it.
+    let mut card = existing
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let Some(object) = card.as_object_mut() else {
+        return serde_json::json!({});
+    };
 
     object.insert("contactId".into(), Value::String(contact.guid.clone()));
     object.insert("isCompany".into(), Value::Bool(contact.is_company));
@@ -942,5 +949,40 @@ mod photo_tests {
         );
         assert_eq!(parsed[0].photo_signature, None);
         assert_eq!(parsed[0].photo_crop, None);
+    }
+}
+
+#[cfg(test)]
+mod odd_card_tests {
+    use super::*;
+
+    /// Apple's record is the starting point for a write, and nothing obliges it to be an
+    /// object. A panic here would take the whole window down on a single odd reply.
+    #[test]
+    fn a_card_that_is_not_an_object_is_set_aside_rather_than_panicking() {
+        let contact = Contact {
+            guid: "C1".into(),
+            first_name: Some("Ada".into()),
+            middle_name: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
+            last_name: Some("Lovelace".into()),
+            company: None,
+            is_company: false,
+            birthday: None,
+            notes: None,
+            etag: None,
+            methods: vec![],
+        };
+        for odd in [
+            Value::Null,
+            serde_json::json!([1, 2]),
+            serde_json::json!("text"),
+            serde_json::json!(7),
+        ] {
+            let card = card_from(&contact, Some(&odd));
+            assert_eq!(card["firstName"], "Ada", "{odd} still produces the card");
+        }
     }
 }

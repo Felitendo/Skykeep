@@ -380,7 +380,15 @@ impl<'a> CalendarClient<'a> {
                 "extendedDetailsAreIncluded": true,
             })
         });
-        let object = body.as_object_mut().expect("an event is an object");
+        // What Apple sent is the starting point, and Apple is not obliged to send an object.
+        // Anything else is set aside for a fresh one: a write that loses what Apple held is
+        // bad, but one that panics on network input takes the whole window down with it.
+        if !body.is_object() {
+            body = serde_json::json!({});
+        }
+        let Some(object) = body.as_object_mut() else {
+            return serde_json::json!({});
+        };
 
         for (key, value) in [
             ("guid", Value::String(event.guid.clone())),
@@ -1168,5 +1176,39 @@ mod address_tests {
             .await
             .expect_err("nothing addressable");
         assert!(err.to_string().contains("no identifier"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod odd_event_tests {
+    use super::*;
+
+    /// The event Apple sent is where a write starts. If it is not an object, the write must
+    /// still produce one rather than panic on network input.
+    #[test]
+    fn an_event_that_is_not_an_object_is_set_aside_rather_than_panicking() {
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, "http://127.0.0.1:1", vec![]);
+        let event = quince_core::calendar::Event {
+            guid: "E1".into(),
+            calendar_guid: "C1".into(),
+            title: "Standup".into(),
+            location: None,
+            starts_at: 1_789_000_000,
+            ends_at: 1_789_003_600,
+            all_day: false,
+            timezone: Some("UTC".into()),
+            url: None,
+            notes: None,
+            etag: None,
+        };
+        for odd in [
+            Value::Null,
+            serde_json::json!([1]),
+            serde_json::json!("text"),
+        ] {
+            let body = client.event_body(&event, Some(&odd));
+            assert_eq!(body["title"], "Standup", "{odd} still produces the event");
+        }
     }
 }
