@@ -15,3 +15,13 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
 quince-media = { path = "crates/quince-media" }
+
+# Debug builds without the full debug symbols of every dependency. Those symbols were most of
+# a forty-gigabyte target directory — each probe and test is its own binary, and the app alone
+# came to three hundred megabytes a copy — and nobody steps through webkit2gtk in a debugger.
+# Line tables are kept for this project's own code, so a panic still names the line it came from.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
