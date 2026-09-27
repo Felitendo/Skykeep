@@ -272,6 +272,9 @@ async fn write(
 ) -> Result<Value> {
     let mut query = params;
     query.push(("clientVersion".into(), "2.1".into()));
+    // Fixed rather than the machine's own, and deliberately. Asked with en_US, fr_FR and
+    // ja_JP, Apple sent back byte-identical contacts, ordering and section headers — the
+    // parameter changes nothing this app reads, and sorting happens locally anyway.
     query.push(("locale".into(), "en_US".into()));
     query.push(("order".into(), "last,first".into()));
     query.push(("prefToken".into(), tokens.pref.clone()));
@@ -431,6 +434,9 @@ async fn startup(
 ) -> Result<Value> {
     let mut query = params;
     query.push(("clientVersion".into(), "2.1".into()));
+    // Fixed rather than the machine's own, and deliberately. Asked with en_US, fr_FR and
+    // ja_JP, Apple sent back byte-identical contacts, ordering and section headers — the
+    // parameter changes nothing this app reads, and sorting happens locally anyway.
     query.push(("locale".into(), "en_US".into()));
     query.push(("order".into(), "last,first".into()));
 
