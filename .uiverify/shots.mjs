@@ -192,6 +192,9 @@ function installStub({ screen, services, twoFactor, calendarFixture, notesFixtur
 
 const PUSHED = { trustedDeviceCount: 2, phones: [{ id: 1, maskedNumber: "+91 ••••• ••318" }], tooManyCodesSent: false };
 const NOTHING = { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+91 ••••• ••318" }], tooManyCodesSent: false };
+// No device to prompt and no number to text. Rare, and real — an account whose trusted number
+// was removed. Without a screen of its own it offers a code that can never arrive.
+const NOWHERE = { trustedDeviceCount: 0, phones: [], tooManyCodesSent: false };
 
 const shots = [
   { name: "01-signin",  screen: "signin",  theme: "light" },
@@ -205,6 +208,13 @@ const shots = [
       await p.fill('input[aria-label="Digit 1"]', "4");
       await p.fill('input[aria-label="Digit 2"]', "8");
       await p.fill('input[aria-label="Digit 3"]', "1");
+    } },
+  { name: "19-code-nowhere", screen: "code", theme: "light", twoFactor: NOWHERE,
+    act: async (p) => {
+      await p.fill('input[aria-label="Apple ID"]', "you@icloud.com");
+      await p.fill('input[aria-label="Password"]', "••••••••••••");
+      await p.click('button[type="submit"]');
+      await p.waitForSelector(".help", { timeout: 5000 });
     } },
   { name: "06-code-no-device", screen: "code", theme: "light", twoFactor: NOTHING,
     act: async (p) => {

@@ -25,6 +25,14 @@ export function CodeEntry({
 
   // If Apple pushed to nothing, say so immediately rather than letting someone wait.
   const nothingSent = options?.trustedDeviceCount === 0;
+  /**
+   * No device to prompt and no number to text.
+   *
+   * Rare, and real — an account whose trusted number was removed, or one reached from a place
+   * its devices are not. Without saying so the screen offers a code that can never arrive and
+   * no way out of it, which is a dead end with a text box in the middle.
+   */
+  const nowhereToSend = nothingSent && options.phones.length === 0;
   useEffect(() => {
     if (nothingSent) setShowHelp(true);
   }, [nothingSent]);
@@ -65,9 +73,11 @@ export function CodeEntry({
       <p className="lede">
         {options === null
           ? "Apple sent a six-digit code to your trusted devices."
-          : nothingSent
-            ? "No trusted device is available."
-            : `Apple sent a six-digit code to ${options.trustedDeviceCount} of your devices.`}
+          : nowhereToSend
+            ? "Apple has nowhere to send a code for this account."
+            : nothingSent
+              ? "None of your devices are reachable, but a code can still be texted to you."
+              : `Apple sent a six-digit code to ${options.trustedDeviceCount} of your devices.`}
       </p>
 
       <CodeInput value={code} onChange={setCode} onComplete={verify} disabled={busy} />
@@ -90,10 +100,18 @@ export function CodeEntry({
             </p>
           )}
 
-          <p>
-            The code is only created once you tap <strong>Allow</strong> on your iPhone. If no
-            prompt appeared, no code exists yet.
-          </p>
+          {nowhereToSend ? (
+            <p>
+              This account has no trusted device and no trusted phone number, so there is
+              nothing here that can produce a code. Sign in on a device you still have, or add
+              a trusted number at <strong>account.apple.com</strong>, and then come back.
+            </p>
+          ) : (
+            <p>
+              The code is only created once you tap <strong>Allow</strong> on your iPhone. If
+              no prompt appeared, no code exists yet.
+            </p>
+          )}
 
           <div className="help-actions">
             {!nothingSent && (

@@ -369,6 +369,60 @@ let failures = 0;
   await page.close();
 }
 
+// ── An account with nowhere to send a code ────────────────────────────────────────────
+// No trusted device and no trusted number. The screen must not offer a code that can never
+// arrive, and must say what would actually help — otherwise it is a dead end with a text box
+// in the middle of it.
+{
+  for (const [label, twoFactor, wants] of [
+    ["nowhere to send", { trustedDeviceCount: 0, phones: [], tooManyCodesSent: false },
+      { resend: false, text: false, says: /account\.apple\.com/ }],
+    ["no device, but a number", { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+91 •••318" }], tooManyCodesSent: false },
+      { resend: false, text: true, says: /texted/i }],
+    ["devices and a number", { trustedDeviceCount: 2, phones: [{ id: 1, maskedNumber: "+91 •••318" }], tooManyCodesSent: false },
+      { resend: true, text: true, says: /2 of your devices/ }],
+  ]) {
+    const page = await ctx.newPage();
+    await page.addInitScript((tf) => {
+      window.__TAURI_INTERNALS__ = {
+        transformCallback: (cb) => cb,
+        invoke: async (cmd) => {
+          if (cmd === "auth_status") return { hasStoredSession: false, signedIn: false };
+          if (cmd === "auth_sign_in") return "needs_two_factor";
+          if (cmd === "auth_two_factor_options") return tf;
+          if (cmd === "plugin:event|listen") return 0;
+          return null;
+        },
+      };
+    }, twoFactor);
+    await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+    await page.fill('input[aria-label="Apple ID"]', "you@icloud.com");
+    await page.fill('input[aria-label="Password"]', "hunter2hunter2");
+    await page.click('button[type="submit"]');
+    await page.waitForSelector(".code", { timeout: 5000 });
+    // Where no device is reachable the help opens by itself, so there is nothing to click.
+    const opener = page.locator("button", { hasText: /get a code/ });
+    if (await opener.count()) await opener.click();
+    await page.waitForTimeout(250);
+
+    const body = await page.locator(".sheet").innerText();
+    const resend = await page.locator('button:has-text("Send to my devices again")').count();
+    const text = await page.locator('button:has-text("Text ")').count();
+
+    const right =
+      (resend > 0) === wants.resend &&
+      (text > 0) === wants.text &&
+      wants.says.test(body);
+    console.log(
+      right
+        ? `PASS ${label}: offers only what can work`
+        : `FAIL ${label}: resend=${resend} text=${text}, said ${JSON.stringify(body.slice(0, 90))}`
+    );
+    if (!right) failures++;
+    await page.close();
+  }
+}
+
 // ── What somebody is told before they type an Apple ID in ─────────────────────────────
 // Required rather than nice to have: this is software a stranger wrote, reaching iCloud
 // through interfaces Apple has not published. Shut, it must not shout; open, it must say so.
