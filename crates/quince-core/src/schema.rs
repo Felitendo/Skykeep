@@ -278,4 +278,20 @@ pub const MIGRATIONS: &[&str] = &[
       value TEXT NOT NULL
     );
     "#,
+    // 19 — sections inside a reminders list.
+    //
+    // A section is its own record, but which reminder sits in which one is not on the
+    // reminder: it is a file hung off the list, a JSON array of { memberID, groupID } where
+    // groupID is the section. A reminder with no groupID sits outside every section.
+    r#"
+    CREATE TABLE reminder_sections (
+        guid        TEXT PRIMARY KEY,
+        list_guid   TEXT NOT NULL,
+        title       TEXT NOT NULL,
+        created_at  INTEGER,
+        updated_at  INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX reminder_sections_by_list ON reminder_sections (list_guid, created_at);
+    ALTER TABLE reminders ADD COLUMN section_guid TEXT;
+    "#,
 ];

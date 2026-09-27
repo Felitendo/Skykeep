@@ -376,6 +376,18 @@ async fn reminder_counts(
     library.reminder_counts(until).map_err(|e| e.to_string())
 }
 
+/// The headings inside one reminders list, in the order they were made.
+#[tauri::command]
+async fn reminder_sections(
+    list_guid: String,
+    data: State<'_, Data>,
+) -> UiResult<Vec<quince_core::reminders::ReminderSection>> {
+    let library = data.0.lock().await;
+    library
+        .reminder_sections(&list_guid)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn reminder_lists(data: State<'_, Data>) -> UiResult<Vec<ReminderList>> {
     let library = data.0.lock().await;
@@ -1406,6 +1418,7 @@ fn main() {
             event_delete,
             calendar_list,
             reminder_lists,
+            reminder_sections,
             reminder_counts,
             reminders_in,
             reminders_due_between,

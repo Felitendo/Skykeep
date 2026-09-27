@@ -5,6 +5,7 @@ import {
   messageOf,
   type Reminder,
   type ReminderList,
+  type ReminderSection,
   type ReminderCounts,
   type SmartList,
 } from "../lib/ipc";
@@ -159,6 +160,8 @@ export function RemindersView() {
   const { revision } = useSync();
   /** What each sidebar entry is holding. Apple puts a number on every one. */
   const [counts, setCounts] = useState<ReminderCounts | null>(null);
+  /** The headings inside the list that is open, when a real list is open. */
+  const [listSections, setListSections] = useState<ReminderSection[]>([]);
   /** A repeating reminder that was just ticked forward, and where it landed. */
   const [moved, setMoved] = useState<{ guid: string; text: string } | null>(
     null,
@@ -176,6 +179,23 @@ export function RemindersView() {
     setCounts(tally);
     setLoaded(true);
   }, []);
+
+  useEffect(() => {
+    if (selection.type !== "list") return setListSections([]);
+    let cancelled = false;
+    api
+      .reminderSections(selection.guid)
+      .then((found) => {
+        if (!cancelled) setListSections(Array.isArray(found) ? found : []);
+      })
+      .catch(() => {
+        // Without sections the list still shows every reminder, just without headings.
+        if (!cancelled) setListSections([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selection, revision]);
 
   const readItems = useCallback(async (): Promise<Reminder[]> => {
     const found =
@@ -460,8 +480,26 @@ export function RemindersView() {
     (selection as { kind: SmartList }).kind !== "flagged";
 
   const sections = useMemo(() => {
-    if (inList)
-      return [{ key: "all", heading: null, colour: null, dated: false, rows: threaded }];
+    if (inList) {
+      // Inside a real list the grouping is the list's own sections, which is how Apple shows
+      // it: reminders outside any section first with no heading, then each section in the
+      // order it was made. A reminder placed in a section that is not here — one deleted
+      // since — falls back to the loose ones rather than vanishing.
+      const known = new Set(listSections.map((s) => s.guid));
+      const loose = threaded.filter(
+        (row) => !row.reminder.sectionGuid || !known.has(row.reminder.sectionGuid)
+      );
+      return [
+        { key: "loose", heading: null, colour: null, dated: false, rows: loose },
+        ...listSections.map((section) => ({
+          key: section.guid,
+          heading: section.title,
+          colour: null,
+          dated: false,
+          rows: threaded.filter((row) => row.reminder.sectionGuid === section.guid),
+        })),
+      ];
+    }
 
     const kind = (selection as { kind: SmartList }).kind;
     const now = new Date();
@@ -553,7 +591,7 @@ export function RemindersView() {
         dated: false,
         rows,
       }));
-  }, [threaded, inList, selection, lists]);
+  }, [threaded, inList, selection, lists, listSections]);
 
   return (
     <div className="rem">

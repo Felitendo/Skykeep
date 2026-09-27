@@ -4,6 +4,16 @@ use crate::{Library, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+/// A heading inside a reminders list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderSection {
+    pub guid: String,
+    pub list_guid: String,
+    pub title: String,
+    pub created_at: Option<i64>,
+}
+
 /// The most reminders any one view hands to the window at once.
 ///
 /// The plan rules out unbounded payloads crossing into the webview, and "All" on an account
@@ -60,6 +70,10 @@ pub struct Reminder {
     /// morning wherever the person is, and that is not something a timestamp can say.
     #[serde(default)]
     pub timezone: Option<String>,
+    /// The section of its list this reminder sits in, if any. Set from the list's membership
+    /// file, never from the reminder — Apple does not record it on the reminder at all.
+    #[serde(default)]
+    pub section_guid: Option<String>,
 }
 
 /// What every entry in the sidebar is holding.
@@ -223,6 +237,91 @@ impl Library {
     ///
     /// Apple's Calendar shows reminders alongside events, which is most of what fills a
     /// month for someone who lives in Reminders rather than Calendar.
+    /// Store sections as Apple has them now, and drop the ones Apple says are gone.
+    pub fn put_reminder_sections(
+        &mut self,
+        sections: &[ReminderSection],
+        gone: &[String],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut put = tx.prepare(
+                "INSERT INTO reminder_sections (guid, list_guid, title, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(guid) DO UPDATE SET
+                   list_guid = excluded.list_guid, title = excluded.title,
+                   created_at = excluded.created_at, updated_at = excluded.updated_at",
+            )?;
+            let stamp = now();
+            for section in sections {
+                put.execute(params![
+                    section.guid,
+                    section.list_guid,
+                    section.title,
+                    section.created_at,
+                    stamp
+                ])?;
+            }
+            let mut drop = tx.prepare("DELETE FROM reminder_sections WHERE guid = ?1")?;
+            let mut loose =
+                tx.prepare("UPDATE reminders SET section_guid = NULL WHERE section_guid = ?1")?;
+            for guid in gone {
+                drop.execute(params![guid])?;
+                // A deleted section's reminders stay in the list; they just have no heading.
+                loose.execute(params![guid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Which section each reminder in a list sits in, as the list's membership file says.
+    ///
+    /// The file is the whole truth for that list, so a reminder it does not place is set
+    /// outside every section rather than left where it was. A placement naming a section
+    /// this library does not hold — one deleted since — is treated the same way, because
+    /// a heading nobody can see is not somewhere to put anything.
+    pub fn set_reminder_sections(
+        &mut self,
+        list_guid: &str,
+        placed: &[(String, String)],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            tx.execute(
+                "UPDATE reminders SET section_guid = NULL WHERE list_guid = ?1",
+                params![list_guid],
+            )?;
+            let mut set = tx.prepare(
+                "UPDATE reminders SET section_guid = ?2
+                 WHERE guid = ?1 AND list_guid = ?3
+                   AND EXISTS (SELECT 1 FROM reminder_sections WHERE guid = ?2)",
+            )?;
+            for (reminder, section) in placed {
+                set.execute(params![reminder, section, list_guid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A list's sections, in the order they were made.
+    pub fn reminder_sections(&self, list_guid: &str) -> Result<Vec<ReminderSection>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, list_guid, title, created_at FROM reminder_sections
+             WHERE list_guid = ?1 ORDER BY created_at, title",
+        )?;
+        let rows = stmt.query_map(params![list_guid], |row| {
+            Ok(ReminderSection {
+                guid: row.get(0)?,
+                list_guid: row.get(1)?,
+                title: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Apple's whole record for one reminder, for the write path that echoes it back.
     ///
     /// Fetched on its own rather than carried on every listed reminder. It averages five
@@ -243,7 +342,7 @@ impl Library {
         let mut stmt = self.conn.prepare(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
-                    r.etag, r.timezone
+                    r.etag, r.timezone, r.section_guid
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.due_at IS NOT NULL
@@ -267,6 +366,7 @@ impl Library {
                 etag: row.get(11)?,
                 raw: None,
                 timezone: row.get(12)?,
+                section_guid: row.get(13)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -342,7 +442,7 @@ impl Library {
         let sql = format!(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
-                    r.etag, r.timezone
+                    r.etag, r.timezone, r.section_guid
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND {clause}
@@ -366,6 +466,7 @@ impl Library {
                 etag: row.get(11)?,
                 raw: None,
                 timezone: row.get(12)?,
+                section_guid: row.get(13)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -525,7 +626,7 @@ impl Library {
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
-                    parent_guid, recur_frequency, recur_interval, etag, timezone
+                    parent_guid, recur_frequency, recur_interval, etag, timezone, section_guid
              FROM reminders
              WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)
              ORDER BY completed_at IS NOT NULL,
@@ -552,6 +653,7 @@ impl Library {
                     etag: row.get(11)?,
                     raw: None,
                     timezone: row.get(12)?,
+                    section_guid: row.get(13)?,
                 })
             },
         )?;
@@ -590,6 +692,7 @@ mod tests {
             etag: None,
             raw: None,
             timezone: None,
+            section_guid: None,
         }
     }
 
@@ -778,6 +881,7 @@ mod smart_tests {
             etag: None,
             raw: None,
             timezone: None,
+            section_guid: None,
         }
     }
 
@@ -918,6 +1022,7 @@ mod count_tests {
             etag: None,
             raw: None,
             timezone: None,
+            section_guid: None,
         }
     }
 
@@ -1015,6 +1120,7 @@ mod payload_tests {
             etag: Some("e1".into()),
             raw: Some(apples_record),
             timezone: None,
+            section_guid: None,
         };
 
         let sent = serde_json::to_string(&reminder).unwrap();
@@ -1050,6 +1156,7 @@ mod payload_tests {
                 etag: Some(format!("e{i}")),
                 raw: Some("y".repeat(5_000)),
                 timezone: None,
+                section_guid: None,
             })
             .collect();
         let bytes = serde_json::to_vec(&many).unwrap().len();
@@ -1080,6 +1187,7 @@ mod raw_column_tests {
             etag: Some("e1".into()),
             raw: Some("z".repeat(5_000)),
             timezone: None,
+            section_guid: None,
         }
     }
 
@@ -1160,6 +1268,7 @@ mod bound_tests {
                 etag: None,
                 raw: None,
                 timezone: None,
+                section_guid: None,
             })
             .collect();
         lib.put_reminders(&rows).unwrap();
@@ -1248,6 +1357,7 @@ mod recurrence_daylight_tests {
             etag: None,
             raw: None,
             timezone: Some(zone.into()),
+            section_guid: None,
         }
     }
 
@@ -1304,5 +1414,136 @@ mod recurrence_daylight_tests {
         let next = r.next_occurrence_after(1_789_000_000).unwrap();
         assert!(next > 1_789_000_000);
         assert!((next - 1_789_000_000 - 86_400).abs() <= 3_600);
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+
+    fn reminder(guid: &str, list: &str) -> Reminder {
+        Reminder {
+            guid: guid.into(),
+            list_guid: list.into(),
+            title: guid.into(),
+            notes: None,
+            due_at: None,
+            completed_at: None,
+            priority: 0,
+            flagged: false,
+            parent_guid: None,
+            recur_frequency: None,
+            recur_interval: None,
+            etag: None,
+            raw: None,
+            timezone: None,
+            section_guid: None,
+        }
+    }
+
+    fn library() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "List/L".into(),
+            title: "Life Goals".into(),
+            colour: None,
+            ctag: None,
+            sort_order: 0,
+            enabled: true,
+        }])
+        .unwrap();
+        lib.put_reminders(&[
+            reminder("Reminder/A", "List/L"),
+            reminder("Reminder/B", "List/L"),
+            reminder("Reminder/C", "List/L"),
+        ])
+        .unwrap();
+        lib.put_reminder_sections(
+            &[ReminderSection {
+                guid: "ListSection/S".into(),
+                list_guid: "List/L".into(),
+                title: "🌅".into(),
+                created_at: Some(1),
+            }],
+            &[],
+        )
+        .unwrap();
+        lib
+    }
+
+    fn section_of(lib: &Library, guid: &str) -> Option<String> {
+        lib.reminders_in("List/L", true)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.guid == guid)
+            .and_then(|r| r.section_guid)
+    }
+
+    /// The membership file is the whole truth for its list: placed reminders go in, and one
+    /// it no longer places comes back out.
+    #[test]
+    fn the_membership_file_decides_and_is_the_whole_truth() {
+        let mut lib = library();
+        lib.set_reminder_sections(
+            "List/L",
+            &[
+                ("Reminder/A".into(), "ListSection/S".into()),
+                ("Reminder/B".into(), "ListSection/S".into()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            section_of(&lib, "Reminder/A").as_deref(),
+            Some("ListSection/S")
+        );
+        assert_eq!(section_of(&lib, "Reminder/C"), None);
+
+        lib.set_reminder_sections("List/L", &[("Reminder/A".into(), "ListSection/S".into())])
+            .unwrap();
+        assert_eq!(
+            section_of(&lib, "Reminder/B"),
+            None,
+            "moved out on the phone, out here"
+        );
+    }
+
+    /// A sync rewrites reminders wholesale and knows nothing about sections; it must not
+    /// knock them out of the ones they sit in.
+    #[test]
+    fn storing_reminders_again_keeps_their_sections() {
+        let mut lib = library();
+        lib.set_reminder_sections("List/L", &[("Reminder/A".into(), "ListSection/S".into())])
+            .unwrap();
+        lib.put_reminders(&[reminder("Reminder/A", "List/L")])
+            .unwrap();
+        assert_eq!(
+            section_of(&lib, "Reminder/A").as_deref(),
+            Some("ListSection/S")
+        );
+    }
+
+    /// A placement naming a section deleted since is a heading nobody can see.
+    #[test]
+    fn a_placement_in_a_section_that_is_gone_places_nothing() {
+        let mut lib = library();
+        lib.set_reminder_sections(
+            "List/L",
+            &[("Reminder/A".into(), "ListSection/GONE".into())],
+        )
+        .unwrap();
+        assert_eq!(section_of(&lib, "Reminder/A"), None);
+    }
+
+    /// Deleting a section leaves its reminders in the list, without a heading.
+    #[test]
+    fn deleting_a_section_keeps_its_reminders() {
+        let mut lib = library();
+        lib.set_reminder_sections("List/L", &[("Reminder/A".into(), "ListSection/S".into())])
+            .unwrap();
+        lib.put_reminder_sections(&[], &["ListSection/S".into()])
+            .unwrap();
+        assert!(lib.reminder_sections("List/L").unwrap().is_empty());
+        assert_eq!(section_of(&lib, "Reminder/A"), None);
+        assert_eq!(lib.reminders_in("List/L", true).unwrap().len(), 3);
     }
 }

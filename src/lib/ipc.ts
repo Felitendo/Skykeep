@@ -62,6 +62,9 @@ export const api = {
 
   reminderCounts: (until: number) => invoke<ReminderCounts>("reminder_counts", { until }),
   reminderLists: () => invoke<ReminderList[]>("reminder_lists"),
+  /** The headings inside one list, in the order they were made. */
+  reminderSections: (listGuid: string) =>
+    invoke<ReminderSection[]>("reminder_sections", { listGuid }),
   remindersIn: (listGuid: string, includeDone: boolean) =>
     invoke<Reminder[]>("reminders_in", { listGuid, includeDone }),
   remindersDueBetween: (from: number, to: number) =>
@@ -195,6 +198,14 @@ export type ReminderList = {
   enabled: boolean;
 };
 
+/** A heading inside a reminders list. */
+export type ReminderSection = {
+  guid: string;
+  listGuid: string;
+  title: string;
+  createdAt: number | null;
+};
+
 export type SmartList = "today" | "scheduled" | "flagged" | "all";
 
 /** What every entry in the Reminders sidebar is holding. */
@@ -249,6 +260,8 @@ export type Reminder = {
   /** Apple's repeat frequency: 0 daily, 1 weekly, 2 monthly, 3 yearly. null if it never repeats. */
   recurFrequency: number | null;
   recurInterval: number | null;
+  /** The section of its list this sits in, if any. */
+  sectionGuid?: string | null;
   etag: string | null;
 };
 

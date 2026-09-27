@@ -58,6 +58,7 @@ fn reminder_from(v: &Value) -> Option<Reminder> {
         // reconstructing one from parsed columns would drop fields we do not model.
         raw: serde_json::to_string(v).ok(),
         timezone: None,
+        section_guid: None,
     })
 }
 
@@ -450,6 +451,7 @@ fn reminder_from_record(record: &Value) -> Option<Reminder> {
         // nine in the morning wherever the person is. A repeating reminder stepped without it
         // moves an hour on each of the two days a year a clock changes.
         timezone: field::string(record, "TimeZone"),
+        section_guid: None,
     })
 }
 
@@ -598,6 +600,72 @@ pub struct RemindersFetch {
     records: Vec<Value>,
     token: Option<String>,
     incremental: bool,
+    /// Which reminder sits in which section, per list, from each changed list's membership
+    /// file. Only lists that came back in this walk are here; the rest are unchanged.
+    memberships: std::collections::HashMap<String, Vec<(String, String)>>,
+}
+
+/// The placements in a list's membership file, as record names.
+///
+/// The file is JSON, a `memberships` array of `{ memberID, groupID }` where the member is a
+/// reminder and the group a section, both as bare ids. A reminder with no groupID sits
+/// outside every section and is not a placement. Anything unreadable places nothing, which
+/// leaves the reminders in the list without headings rather than losing them.
+#[must_use]
+pub fn memberships_from(bytes: &[u8]) -> Vec<(String, String)> {
+    let Ok(file) = serde_json::from_slice::<Value>(bytes) else {
+        return Vec::new();
+    };
+    file.get("memberships")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|m| {
+                    let member = m.get("memberID")?.as_str()?;
+                    let group = m.get("groupID")?.as_str()?;
+                    Some((format!("Reminder/{member}"), format!("ListSection/{group}")))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Fetch the membership file for every list that came back in a walk.
+///
+/// A file that will not download is skipped rather than failing the sync: the reminders are
+/// still right, and their sections simply stay as they were until the next pass.
+async fn fetch_memberships(
+    http: &reqwest::Client,
+    records: &[Value],
+) -> std::collections::HashMap<String, Vec<(String, String)>> {
+    let mut out = std::collections::HashMap::new();
+    for record in records {
+        if field::record_type(record).as_deref() != Some("List") || field::flag(record, "Deleted") {
+            continue;
+        }
+        let Some(name) = field::record_name(record) else {
+            continue;
+        };
+        let Some(url) = record
+            .pointer("/fields/MembershipsOfRemindersInSectionsAsData/value/downloadURL")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        // The URL is a template; Apple fills the file name in with whatever it is given.
+        let Ok(response) = http.get(url.replace("${f}", "memberships")).send().await else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(bytes) = response.bytes().await else {
+            continue;
+        };
+        out.insert(name, memberships_from(&bytes));
+    }
+    out
 }
 
 /// Ask Apple what changed. Touches no local state.
@@ -609,7 +677,9 @@ pub async fn fetch_cloudkit(
 ) -> Result<RemindersFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let walk = client.all_records(ZONE, since).await?;
+    let memberships = fetch_memberships(http, &walk.records).await;
     Ok(RemindersFetch {
+        memberships,
         records: walk.records,
         token: walk.token,
         // A walk that stopped at its page cap saw only part of the zone, so it cannot be
@@ -627,7 +697,10 @@ pub fn apply_cloudkit(
         records,
         token,
         incremental,
+        memberships,
     } = fetched;
+    let mut sections: Vec<quince_core::reminders::ReminderSection> = Vec::new();
+    let mut gone_sections: Vec<String> = Vec::new();
 
     let mut lists: Vec<ReminderList> = Vec::new();
     let mut reminders: Vec<Reminder> = Vec::new();
@@ -655,6 +728,7 @@ pub fn apply_cloudkit(
             // says which record is gone, and a name only ever belongs to one thing.
             if removed {
                 gone_reminders.push(name.clone());
+                gone_sections.push(name.clone());
                 gone_lists.push(name);
             }
             continue;
@@ -683,6 +757,21 @@ pub fn apply_cloudkit(
                     // arbitrary list.
                     list.sort_order = i64::try_from(lists.len()).unwrap_or(0);
                     lists.push(list);
+                }
+            }
+            // A heading inside a list. Which reminders sit under it is not on this record —
+            // it is in the list's membership file, fetched alongside the walk.
+            "ListSection" => {
+                if removed {
+                    gone_sections.push(name);
+                } else if let Some(list_guid) = field::reference(record, "List") {
+                    sections.push(quince_core::reminders::ReminderSection {
+                        guid: name,
+                        list_guid,
+                        title: field::string(record, "DisplayName")
+                            .unwrap_or_else(|| "Section".into()),
+                        created_at: field::timestamp_seconds(record, "CreationDate"),
+                    });
                 }
             }
             "RecurrenceRule" => {
@@ -746,6 +835,12 @@ pub fn apply_cloudkit(
     library.put_reminders(&reminders)?;
     if !gone_reminders.is_empty() || !gone_lists.is_empty() {
         library.forget_reminders(&gone_reminders, &gone_lists)?;
+    }
+    // Sections before memberships: a placement is only honoured for a section this library
+    // holds, so the section has to be there first.
+    library.put_reminder_sections(&sections, &gone_sections)?;
+    for (list, placed) in &memberships {
+        library.set_reminder_sections(list, placed)?;
     }
     // A full pass saw everything Apple has, so anything else here is gone. An incremental
     // pass saw only changes, where absence means unchanged — pruning there would empty the
@@ -1708,6 +1803,7 @@ mod write_tests {
             etag: Some("tag-3".into()),
             raw: None,
             timezone: None,
+            section_guid: None,
         };
         delete_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &reminder)
             .await
@@ -1787,6 +1883,7 @@ mod edit_tests {
             etag: Some("tag-1".into()),
             raw: None,
             timezone: None,
+            section_guid: None,
         }
     }
 
@@ -2270,6 +2367,7 @@ mod recurring_tick_tests {
             etag: Some("tag".into()),
             raw: None,
             timezone: None,
+            section_guid: None,
         }
     }
 
@@ -2468,6 +2566,7 @@ mod priority_and_move_tests {
             etag: Some("tag".into()),
             raw: None,
             timezone: None,
+            section_guid: None,
         }
     }
 
@@ -2647,6 +2746,7 @@ mod tombstone_tests {
                 etag: None,
                 raw: None,
                 timezone: None,
+                section_guid: None,
             }])
             .unwrap();
         library
@@ -2656,6 +2756,7 @@ mod tombstone_tests {
         apply_cloudkit(
             library,
             RemindersFetch {
+                memberships: std::collections::HashMap::new(),
                 records,
                 token: Some("t".into()),
                 incremental: true,
@@ -2715,6 +2816,7 @@ mod tombstone_tests {
         apply_cloudkit(
             &mut library,
             RemindersFetch {
+                memberships: std::collections::HashMap::new(),
                 records: vec![json!({
                     "recordName": "List/a",
                     "recordType": "List",
@@ -2780,6 +2882,7 @@ mod recurrence_write_tests {
             etag: Some("tag".into()),
             raw: None,
             timezone: None,
+            section_guid: None,
         }
     }
 
@@ -3102,6 +3205,7 @@ mod other_accounts_tests {
         let stored = apply_cloudkit(
             &mut lib,
             RemindersFetch {
+                memberships: std::collections::HashMap::new(),
                 records: Vec::new(),
                 token: Some("t1".into()),
                 incremental: false,
@@ -3350,5 +3454,42 @@ mod alarm_tests {
     fn an_unknown_zone_falls_back_rather_than_failing() {
         assert!(date_components(1_757_000_000, "Mars/Olympus_Mons").is_ok());
         assert!(date_components(1_757_000_000, "").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+
+    /// The shape Apple's membership file actually has, taken from a real list: some entries
+    /// name a section in groupID, some carry no groupID and sit outside every section.
+    #[test]
+    fn placements_are_read_and_the_unplaced_are_left_out() {
+        let file = br#"{"minimumSupportedVersion":20230430,"memberships":[
+            {"memberID":"6B06F5A6","modifiedOn":775500357.6},
+            {"memberID":"D21F787F","modifiedOn":775501474.6,"groupID":"5D09C4F4"},
+            {"groupID":"5D09C4F4","modifiedOn":775501474.6,"memberID":"D2CE1947"}
+        ]}"#;
+        assert_eq!(
+            memberships_from(file),
+            vec![
+                (
+                    "Reminder/D21F787F".to_string(),
+                    "ListSection/5D09C4F4".to_string()
+                ),
+                (
+                    "Reminder/D2CE1947".to_string(),
+                    "ListSection/5D09C4F4".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_places_nothing() {
+        assert!(memberships_from(b"").is_empty());
+        assert!(memberships_from(b"not json").is_empty());
+        assert!(memberships_from(br#"{"memberships":"wrong"}"#).is_empty());
+        assert!(memberships_from(br#"{"other":[]}"#).is_empty());
     }
 }

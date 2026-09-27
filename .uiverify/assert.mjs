@@ -369,6 +369,56 @@ let failures = 0;
   await page.close();
 }
 
+// ── A list shows its own sections ─────────────────────────────────────────────────────
+// Inside a real list, reminders outside any section come first with no heading, then each
+// section under its own heading — how Apple shows it, and how the phone showed "🌅".
+{
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    const r = (guid, title, sectionGuid) => ({ guid, listGuid: "L", title, notes: null, dueAt: null,
+      completedAt: null, priority: 0, flagged: false, parentGuid: null, recurFrequency: null,
+      recurInterval: null, sectionGuid, etag: null });
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: (cb) => cb,
+      invoke: async (cmd) => {
+        if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+        if (cmd === "auth_resume") return true;
+        if (cmd === "account_services") return ["reminders"];
+        if (cmd === "reminder_lists") return [{ guid: "L", title: "Life Goals", colour: "#1badf8", ctag: null, sortOrder: 0, enabled: true }];
+        if (cmd === "reminder_counts") return { today: 0, scheduled: 0, flagged: 0, all: 3, lists: [["L", 3]] };
+        if (cmd === "reminder_sections") return [{ guid: "S", listGuid: "L", title: "Morning Habits", createdAt: 1 }];
+        if (cmd === "reminders_in" || cmd === "reminders_smart")
+          return [r("A", "Loose one", null), r("B", "In the section", "S"), r("C", "In a deleted section", "GONE")];
+        if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
+        if (cmd === "plugin:event|listen") return 0;
+        return [];
+      },
+    };
+  });
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Reminders", exact: true }).click();
+  await page.waitForTimeout(300);
+  await page.locator(".rem-list", { hasText: "Life Goals" }).click();
+  await page.waitForTimeout(400);
+
+  const layout = await page.evaluate(() => {
+    const out = [];
+    for (const el of document.querySelectorAll(".rem-section, .rem-list-items li")) {
+      out.push(el.matches(".rem-section") ? `#${el.textContent.trim()}` : (el.querySelector("input")?.value ?? ""));
+    }
+    return out;
+  });
+  const want = ["Loose one", "In a deleted section", "#Morning Habits", "In the section"];
+  const right = JSON.stringify(layout) === JSON.stringify(want);
+  console.log(
+    right
+      ? "PASS a list shows its sections, loose reminders first"
+      : `FAIL sections laid out as ${JSON.stringify(layout)}`
+  );
+  if (!right) failures++;
+  await page.close();
+}
+
 // ── Coming back to the window brings it up to date ────────────────────────────────────
 // That is the moment somebody looks for a change they just made on their phone, and between
 // background passes the window could be five minutes stale right then. It must refresh on
