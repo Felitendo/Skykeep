@@ -369,6 +369,52 @@ let failures = 0;
   await page.close();
 }
 
+// ── Coming back to the window brings it up to date ────────────────────────────────────
+// That is the moment somebody looks for a change they just made on their phone, and between
+// background passes the window could be five minutes stale right then. It must refresh on
+// return — and not again for every alt-tab, which would only ask Apple the same thing twice.
+{
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    window.__passes = 0;
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: (cb) => cb,
+      invoke: async (cmd) => {
+        if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+        if (cmd === "auth_resume") return true;
+        if (cmd === "account_services") return ["reminders"];
+        if (cmd === "sync_all") { window.__passes++; return { services: [], asOf: 1, tookMs: 0 }; }
+        if (cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
+        if (cmd === "plugin:event|listen") return 0;
+        return [];
+      },
+    };
+  });
+  await page.clock.install();
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.waitForTimeout(300);
+  const onOpen = await page.evaluate(() => window.__passes);
+
+  const bounce = () => page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await bounce();
+  await page.waitForTimeout(100);
+  const tooSoon = (await page.evaluate(() => window.__passes)) - onOpen;
+
+  await page.clock.fastForward(31_000);
+  await bounce();
+  await page.waitForTimeout(200);
+  const later = (await page.evaluate(() => window.__passes)) - onOpen;
+
+  const right = tooSoon === 0 && later === 1;
+  console.log(
+    right
+      ? "PASS coming back refreshes, and alt-tabbing does not hammer"
+      : `FAIL returning: ${tooSoon} pass(es) straight away, ${later} after half a minute`
+  );
+  if (!right) failures++;
+  await page.close();
+}
+
 // ── An account with nowhere to send a code ────────────────────────────────────────────
 // No trusted device and no trusted number. The screen must not offer a code that can never
 // arrive, and must say what would actually help — otherwise it is a dead end with a text box

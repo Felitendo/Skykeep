@@ -34,6 +34,9 @@ type Sync = {
 
 const Context = createContext<Sync | null>(null);
 
+/** The least time between refreshes brought on by coming back to the window. */
+export const RETURN_THROTTLE_MS = 30_000;
+
 export function SyncProvider({ children }: { children: ReactNode }) {
   const [report, setReport] = useState<Refresh | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -84,9 +87,28 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       setRevision((n) => n + 1);
     });
 
+    /*
+     * Coming back to the window is when somebody looks for a change they just made on their
+     * phone. Between the five-minute background passes it could be up to five minutes stale
+     * at exactly that moment, which reads as sync not working at all. So returning to the
+     * window refreshes — but not more than once in half a minute, because switching back and
+     * forth between two windows is not a reason to ask Apple the same question again.
+     */
+    let lastFocusPass = Date.now();
+    const onReturn = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastFocusPass < RETURN_THROTTLE_MS) return;
+      lastFocusPass = Date.now();
+      void refresh();
+    };
+    window.addEventListener("focus", onReturn);
+    document.addEventListener("visibilitychange", onReturn);
+
     return () => {
       cancelled = true;
       void stop.then((off) => off());
+      window.removeEventListener("focus", onReturn);
+      document.removeEventListener("visibilitychange", onReturn);
     };
   }, [refresh]);
 
