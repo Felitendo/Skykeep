@@ -215,7 +215,7 @@ const focused = (page) =>
 // --- the pop-up button: one tab stop, arrows move, Escape leaves it alone ---
 {
   const { ctx, page } = await open("library");
-  await page.getByRole("button", { name: "Reminders" }).click();
+  await page.getByRole("button", { name: "Reminders", exact: true }).click();
   await page.waitForSelector(".rx-rows li");
 
   // Open a reminder's details, where the pickers live.

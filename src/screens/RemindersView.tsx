@@ -23,7 +23,8 @@ const SMART: { kind: SmartList; title: string; glyph: GlyphName; colour: string 
 ];
 
 /** A list's own colour, or Apple's blue for one that has none. */
-const colourOf = (list: ReminderList | undefined | null) => list?.colour || "var(--sys-blue)";
+const colourOf = (list: ReminderList | undefined | null) =>
+  list?.colour && /^#[0-9a-f]{6}$/i.test(list.colour) ? list.colour : "var(--sys-blue)";
 
 /** Groups the viewer has folded shut, remembered on this computer. */
 const FOLDED_KEY = "quince.reminders.folded";

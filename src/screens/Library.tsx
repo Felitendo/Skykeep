@@ -8,110 +8,69 @@ import { NotesView } from "./NotesView";
 import { ContactsView } from "./ContactsView";
 import { DriveView } from "./DriveView";
 
-const NAMES: Record<string, string> = {
-  photos: "Photos",
-  sharedlibrary: "Shared library",
-  sharedstreams: "Shared albums",
-  photosupload: "Photo upload",
-  calendar: "Calendar",
-  contacts: "Contacts",
-  contactsweb: "Contacts (web)",
-  reminders: "Reminders",
-  notes: "Notes",
-  mail: "Mail",
-  premiummailsettings: "Mail settings",
-  drivews: "iCloud Drive",
-  docws: "Documents",
-  ubiquity: "Drive (legacy)",
-  archivews: "Archives",
-  ckdatabasews: "CloudKit data",
-  cksharews: "CloudKit sharing",
-  ckdeviceservice: "CloudKit devices",
-  findme: "Find My",
-  keyvalue: "App data",
-  account: "Account",
-  settings: "Account settings",
-  iwmb: "iWork",
-  iworkexportws: "iWork export",
-  iworkthumbnailws: "iWork previews",
-  uploadimagews: "Image upload",
-  geows: "Location",
-  push: "Push",
-  mpp: "Private Relay",
-  mcc: "Account services",
-  mccgateway: "Account gateway",
-  developerapi: "Developer",
-  schoolwork: "Schoolwork",
-};
-
-/** Services with a real screen behind them. Opening on one of these beats opening on a
- *  placeholder, so selection prefers them. */
-const BUILT = new Set([
-  "calendar",
-  "reminders",
-  "notes",
-  "contacts",
-  "drivews",
-]);
-
-/** What a person actually came for, in the order they'd look for it. */
-const PRIMARY = [
-  "photos",
-  "calendar",
-  "reminders",
-  "notes",
-  "contacts",
-  "drivews",
-  "mail",
-  "findme",
-  "sharedlibrary",
-  "sharedstreams",
+/**
+ * What the sidebar holds: the services with a real screen behind them, most used first.
+ *
+ * Apple advertises thirty-odd services for an account — "CloudKit data", "Push", "Account
+ * gateway" — and they were all listed, behind "Show 23 more", along with Photos, Mail and Find
+ * My, which opened onto a page saying they were not built. None of that is something a person
+ * can use here, so none of it is shown. A service joins this list when it works.
+ */
+const SCREENS: { key: string; name: string }[] = [
+  { key: "reminders", name: "Reminders" },
+  { key: "notes", name: "Notes" },
+  { key: "drivews", name: "iCloud Drive" },
+  { key: "calendar", name: "Calendar" },
+  { key: "contacts", name: "Contacts" },
 ];
+
+/** The screen open last time, so the app reopens where it was left. */
+const LAST_KEY = "quince.library.screen";
 
 export function Library({ onSignOut }: { onSignOut: () => void }) {
   const [services, setServices] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     api
       .services()
       .then((list) => {
-        // Apple advertises several keys that resolve to the same surface; show each once.
-        const seen = new Set<string>();
-        const unique = list.filter((k) => {
-          const label = NAMES[k] ?? k;
-          if (seen.has(label)) return false;
-          seen.add(label);
-          return true;
-        });
-        setServices(unique);
-        setSelected(
-          PRIMARY.find((k) => unique.includes(k) && BUILT.has(k)) ??
-            PRIMARY.find((k) => unique.includes(k)) ??
-            unique[0] ??
-            null,
-        );
+        const offered = SCREENS.map((s) => s.key).filter((k) => list.includes(k));
+        setServices(offered);
+        let last: string | null = null;
+        try {
+          last = window.localStorage.getItem(LAST_KEY);
+        } catch {
+          // Without storage it opens on the first screen, which is fine.
+        }
+        setSelected(last && offered.includes(last) ? last : (offered[0] ?? null));
+        setReady(true);
       })
       .catch((e) => setError(messageOf(e)));
   }, []);
 
-  const primary = PRIMARY.filter((k) => services.includes(k));
-  // Everything else is infrastructure — real, but not something anyone navigates to.
-  const rest = services.filter((k) => !PRIMARY.includes(k));
+  const choose = (key: string) => {
+    setSelected(key);
+    try {
+      window.localStorage.setItem(LAST_KEY, key);
+    } catch {
+      // Remembering is a convenience; choosing still works.
+    }
+  };
 
   // Native sidebars move with the arrow keys and occupy a single tab stop. Without this a
   // keyboard user has to Tab through every row to reach the content.
   const rows = useRef<(HTMLButtonElement | null)[]>([]);
-  const order = showAll ? [...primary, ...rest] : primary;
+  const order = services;
 
   function onKeyDown(e: React.KeyboardEvent, index: number) {
     const move = (to: number) => {
       e.preventDefault();
       const clamped = Math.max(0, Math.min(to, order.length - 1));
       rows.current[clamped]?.focus();
-      setSelected(order[clamped]);
+      choose(order[clamped]);
     };
     if (e.key === "ArrowDown") move(index + 1);
     else if (e.key === "ArrowUp") move(index - 1);
@@ -131,9 +90,9 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
         aria-current={selected === key}
         tabIndex={selected === key ? 0 : -1}
         onKeyDown={(e) => onKeyDown(e, index)}
-        onClick={() => setSelected(key)}
+        onClick={() => choose(key)}
       >
-        <span>{NAMES[key] ?? key}</span>
+        <span>{SCREENS.find((s) => s.key === key)?.name ?? key}</span>
       </button>
     );
   };
@@ -143,22 +102,12 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
       <div className="library enter-library">
         <nav className="sidebar" aria-label="Your iCloud">
           <h2>Your iCloud</h2>
-          {primary.map(item)}
-          {services.length === 0 && !error && <p className="badge">Loading…</p>}
-
-          {rest.length > 0 && (
-            <>
-              <button
-                className="nav-item nav-toggle"
-                aria-expanded={showAll}
-                onClick={() => setShowAll((v) => !v)}
-              >
-                <span>
-                  {showAll ? "Hide" : "Show"} {rest.length} more
-                </span>
-              </button>
-              {showAll && rest.map(item)}
-            </>
+          {services.map(item)}
+          {!ready && !error && <p className="badge">Loading…</p>}
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
           )}
 
           <div className="sidebar-foot">
@@ -181,28 +130,13 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
           ) : selected === "drivews" ? (
             <DriveView />
           ) : (
-            <>
-              <h1>
-                {selected ? (NAMES[selected] ?? selected) : "You're signed in"}
-              </h1>
-              <p>
-                Quince is holding a live session with Apple, and it survived
-                quitting and reopening the app — no password, no code. The list
-                on the left is what Apple reports for your account, nothing
-                invented.
+            ready &&
+            services.length === 0 && (
+              <p className="cal-empty">
+                Apple hasn’t offered Reminders, Notes, iCloud Drive, Calendar or Contacts to
+                this account yet.
               </p>
-              <p>
-                Reading this into a local library is what comes next, so it
-                opens instantly and works offline. Until then this screen tells
-                you the truth: the connection works, the data layer isn't built
-                yet.
-              </p>
-              {error && (
-                <p className="error" role="alert">
-                  {error}
-                </p>
-              )}
-            </>
+            )
           )}
         </main>
       </div>

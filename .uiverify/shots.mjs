@@ -224,9 +224,9 @@ const shots = [
       await p.waitForSelector(".help", { timeout: 5000 });
     } },
   { name: "07-calendar", screen: "library", theme: "light", calendarFixture: true,
-    act: async (p) => { await p.waitForSelector(".cal-grid"); } },
+    act: async (p) => { await p.locator(".nav-item", { hasText: "Calendar" }).click(); await p.waitForSelector(".cal-grid"); } },
   { name: "08-calendar-dark", screen: "library", theme: "dark", calendarFixture: true,
-    act: async (p) => { await p.waitForSelector(".cal-grid"); } },
+    act: async (p) => { await p.locator(".nav-item", { hasText: "Calendar" }).click(); await p.waitForSelector(".cal-grid"); } },
   // The window is often half a screen, where four columns do not fit.
   { name: "09-notes-narrow", screen: "library", theme: "dark", notesFixture: true,
     viewport: { width: 958, height: 1038 },
@@ -288,7 +288,7 @@ const shots = [
     } },
   { name: "17-calendar-wide", screen: "library", theme: "dark", calendarFixture: true,
     viewport: { width: 1920, height: 1080 },
-    act: async (p) => { await p.waitForSelector(".cal-grid"); } },
+    act: async (p) => { await p.locator(".nav-item", { hasText: "Calendar" }).click(); await p.waitForSelector(".cal-grid"); } },
   { name: "18-drive-move", screen: "library", theme: "dark", driveFixture: true,
     act: async (p) => {
       await p.click('.nav-item:has-text("iCloud Drive")');

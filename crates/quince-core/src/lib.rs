@@ -123,6 +123,30 @@ mod tests {
         );
     }
 
+    /// A library from before lists kept their look reads every list again once, or lists no
+    /// one had touched would never get their colour and group. Only Reminders is reset.
+    #[test]
+    fn an_upgraded_library_reads_its_reminders_lists_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = rusqlite::Connection::open(dir.path().join("library.db")).unwrap();
+            for migration in &schema::MIGRATIONS[..21] {
+                conn.execute_batch(migration).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 21).unwrap();
+            conn.execute_batch(
+                "INSERT INTO sync_state (service, token) VALUES ('reminders', 'old'), ('notes', 'kept');",
+            )
+            .unwrap();
+        }
+        let library = Library::open(dir.path()).unwrap();
+        assert_eq!(library.sync_token("reminders").unwrap(), None);
+        assert_eq!(
+            library.sync_token("notes").unwrap().as_deref(),
+            Some("kept")
+        );
+    }
+
     #[test]
     fn opening_twice_does_not_re_run_migrations() {
         let dir = tempfile::tempdir().unwrap();

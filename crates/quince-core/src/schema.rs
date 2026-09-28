@@ -321,4 +321,14 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE reminder_lists ADD COLUMN reminder_order TEXT;
     "#,
+    // 22 — read every reminders list again, once.
+    //
+    // 20 and 21 added what a list looks like and how it orders its reminders, but a library
+    // made before them only ever asks Apple what changed since its last pass — and a list
+    // nobody has touched never changes, so its new columns stayed empty and it kept drawing
+    // as a white dot with its colour stored as raw JSON. Forgetting the position makes the
+    // next pass a whole one, which fills them in.
+    r#"
+    UPDATE sync_state SET token = NULL WHERE service = 'reminders';
+    "#,
 ];

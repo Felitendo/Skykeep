@@ -89,23 +89,19 @@ p.on("pageerror", (e) => errs.push(String(e)));
 await p.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await p.waitForSelector(".sidebar .nav-item");
 
-const toggle = await p.textContent(".nav-toggle");
-const count = await p.locator(".sidebar .nav-item").count();
-const first = await p.textContent(".sidebar .nav-item");
-const selected = await p.textContent('.nav-item[aria-current="true"]');
-
-console.log("toggle label   :", JSON.stringify(toggle?.trim()));
-console.log("nav items      :", count, "(10 primary + 1 toggle expected when collapsed)");
-console.log("first item     :", JSON.stringify(first?.trim()));
-console.log("selected       :", JSON.stringify(selected?.trim()));
+// The sidebar holds what works, most used first. Apple's thirty-odd services — "CloudKit
+// data", "Push", "Account gateway" — and screens that only said they were not built (Photos,
+// Mail, Find My, Shared albums) were all listed; none of them is anything to use here.
+const names = (await p.locator(".sidebar .nav-item").allInnerTexts()).map((t) => t.trim());
+const selected = (await p.textContent('.nav-item[aria-current="true"]'))?.trim();
+console.log("nav items      :", JSON.stringify(names));
 console.log("page errors    :", errs.length ? errs : "none");
-
-const collapsed = toggle?.includes("Show") && count === 11;
-// Opening on a screen that works beats opening on a placeholder, so selection must land on
-// a built service rather than simply the first one listed.
-const selectsBuilt = selected?.trim() === "Calendar";
-console.log(collapsed ? "PASS collapsed by default" : "FAIL not collapsed by default");
-console.log(selectsBuilt ? "PASS opens on a built screen" : `FAIL opened on ${selected}`);
+const collapsed =
+  JSON.stringify(names) ===
+  JSON.stringify(["Reminders", "Notes", "iCloud Drive", "Calendar", "Contacts"]);
+const selectsBuilt = selected === "Reminders";
+console.log(collapsed ? "PASS the sidebar holds only what works, most used first" : `FAIL the sidebar holds ${JSON.stringify(names)}`);
+console.log(selectsBuilt ? "PASS opens on the first screen" : `FAIL opened on ${selected}`);
 
 // ── Calendar's four scopes each render their own view ─────────────────────────────────
 // A scope that only changed a label would pass a screenshot; this checks it changed the view.
@@ -290,7 +286,7 @@ let failures = 0;
 {
   const page = await ctx.newPage();
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "iCloud Drive" }).click();
+  await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
   await page.waitForSelector(".drive-rows");
   await page.getByRole("button", { name: "New Folder" }).click();
   await page.keyboard.type("downloads");
@@ -315,7 +311,7 @@ let failures = 0;
 {
   const page = await ctx.newPage();
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "iCloud Drive" }).click();
+  await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
   await page.waitForSelector(".drive-row-hit");
 
   const folderRow = page.locator(".drive-row.is-folder .drive-row-hit").first();

@@ -91,7 +91,6 @@ const screens = [
     } },
   { name: "library", screen: "library", act: async (p) => {
       await p.waitForSelector(".sidebar .nav-item");
-      await p.click(".nav-toggle"); // audit the expanded state too
     } },
   { name: "drive-move", screen: "library", driveItems: [
       { drivewsid: "FOLDER::a", parentId: null, name: "Downloads", extension: null,

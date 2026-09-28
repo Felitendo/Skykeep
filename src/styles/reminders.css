@@ -126,8 +126,10 @@
   white-space: nowrap;
 }
 
-.rx-tile[aria-current="true"] { background: var(--tile); color: #fff; }
-.rx-tile[aria-current="true"] .rx-tile-glyph { background: #fff; color: var(--tile); }
+/* A shade under the tile's own colour, so white type on it reads at 4.5:1 — the colour
+   Apple's Increase Contrast setting draws these in. */
+.rx-tile[aria-current="true"] { background: color-mix(in srgb, var(--tile) 82%, #000); color: #fff; }
+.rx-tile[aria-current="true"] .rx-tile-glyph { background: #fff; color: color-mix(in srgb, var(--tile) 82%, #000); }
 .rx-tile[aria-current="true"] .rx-tile-name { color: #fff; }
 
 /* On the same left edge as the list badges beneath it, where a source list puts a heading. */
