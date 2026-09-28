@@ -4,6 +4,7 @@ import {
   MOST_AT_ONCE,
   messageOf,
   type Reminder,
+  type ReminderGroup,
   type ReminderList,
   type ReminderSection,
   type ReminderCounts,
@@ -11,16 +12,29 @@ import {
 } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
-import { Glyph, type GlyphName } from "../components/Glyph";
+import { Glyph, emblemGlyph, type GlyphName } from "../components/Glyph";
 
-/** Apple's built-in views, which is how most people enter Reminders. */
-/** Apple's built-in views, in Apple's order, each with the glyph and colour its app uses. */
+/** Apple's built-in views, in Apple's order, each with the glyph and system colour its app uses. */
 const SMART: { kind: SmartList; title: string; glyph: GlyphName; colour: string }[] = [
-  { kind: "today", title: "Today", glyph: "today", colour: "#0a84ff" },
-  { kind: "scheduled", title: "Scheduled", glyph: "scheduled", colour: "#ff453a" },
-  { kind: "all", title: "All", glyph: "all", colour: "#8e8e93" },
-  { kind: "flagged", title: "Flagged", glyph: "flagged", colour: "#ff9f0a" },
+  { kind: "today", title: "Today", glyph: "today", colour: "var(--sys-blue)" },
+  { kind: "scheduled", title: "Scheduled", glyph: "scheduled", colour: "var(--sys-red)" },
+  { kind: "all", title: "All", glyph: "all", colour: "var(--sys-gray)" },
+  { kind: "flagged", title: "Flagged", glyph: "flagged", colour: "var(--sys-orange)" },
 ];
+
+/** A list's own colour, or Apple's blue for one that has none. */
+const colourOf = (list: ReminderList | undefined | null) => list?.colour || "var(--sys-blue)";
+
+/** Groups the viewer has folded shut, remembered on this computer. */
+const FOLDED_KEY = "quince.reminders.folded";
+function readFolded(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(FOLDED_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
 
 /** End of today in the viewer's own timezone — the interface knows it, the backend doesn't. */
 function endOfToday(): number {
@@ -142,6 +156,21 @@ type Selection =
 
 export function RemindersView() {
   const [lists, setLists] = useState<ReminderList[]>([]);
+  const [groups, setGroups] = useState<ReminderGroup[]>([]);
+  const [folded, setFolded] = useState<Set<string>>(readFolded);
+  const toggleFolded = useCallback((guid: string) => {
+    setFolded((was) => {
+      const next = new Set(was);
+      if (next.has(guid)) next.delete(guid);
+      else next.add(guid);
+      try {
+        window.localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
+      } catch {
+        // Without storage the fold still works; it is forgotten on restart.
+      }
+      return next;
+    });
+  }, []);
   const [selection, setSelection] = useState<Selection>({
     type: "smart",
     kind: "today",
@@ -171,11 +200,14 @@ export function RemindersView() {
   const listGuid = inList ? selection.guid : null;
 
   const readLists = useCallback(async () => {
-    const [found, tally] = await Promise.all([
+    const [found, tally, folders] = await Promise.all([
       api.reminderLists(),
       api.reminderCounts(endOfToday()),
+      // An older library without groups is still a working one.
+      api.reminderGroups().catch(() => [] as ReminderGroup[]),
     ]);
     setLists(Array.isArray(found) ? found : []);
+    setGroups(Array.isArray(folders) ? folders : []);
     setCounts(tally);
     setLoaded(true);
   }, []);
@@ -618,115 +650,229 @@ export function RemindersView() {
       }));
   }, [threaded, inList, selection, lists, listSections, searching]);
 
-  return (
-    <div className="rem">
-      <aside className="rem-lists" aria-label="Reminder lists">
-        {/* Apple's own arrangement: the four built-in views as a grid of tiles, each
-            with its glyph and its count, above the lists you made yourself. */}
-        <div className="rem-smart-grid">
-          {SMART.map((smart) => (
+  const countOf = (guid: string) => counts?.lists.find(([g]) => g === guid)?.[1] ?? 0;
+  const openList = inList ? (lists.find((l) => l.guid === listGuid) ?? null) : null;
+  const smartOpen =
+    selection.type === "smart" ? SMART.find((x) => x.kind === selection.kind) : undefined;
+  /** The colour the open view is drawn in: its list's, or its built-in view's. */
+  const accent = searching
+    ? "var(--text)"
+    : openList
+      ? colourOf(openList)
+      : (smartOpen?.colour ?? "var(--sys-blue)");
+
+  /**
+   * The sidebar in Apple's order: a list or group at the top level wherever it was walked,
+   * with a group's lists beneath it. Pinned lists are tiles instead, as on the phone.
+   */
+  const pinned = lists.filter((l) => l.pinned);
+  const topLevel = [
+    ...lists
+      .filter((l) => !l.pinned && !(l.groupGuid && groups.some((g) => g.guid === l.groupGuid)))
+      .map((list) => ({ kind: "list" as const, order: list.sortOrder, list })),
+    ...groups.map((group) => ({ kind: "group" as const, order: group.sortOrder, group })),
+  ].sort((a, b) => a.order - b.order);
+  const inGroup = (guid: string) => lists.filter((l) => !l.pinned && l.groupGuid === guid);
+
+  const listRow = (list: ReminderList, nested: boolean) => (
+    <div className={`rx-list-row${nested ? " nested" : ""}`} key={list.guid}>
+      {renaming === list.guid ? (
+        <input
+          className="rx-rename"
+          defaultValue={list.title}
+          autoFocus
+          aria-label={`Rename ${list.title}`}
+          onBlur={(e) => {
+            const title = e.target.value.trim();
+            setRenaming(null);
+            if (title && title !== list.title) {
+              void listWrite(() => api.reminderListRename(list.guid, title));
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") {
+              e.currentTarget.value = list.title;
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      ) : (
+        <>
+          <button
+            className="rx-list"
+            aria-current={listGuid === list.guid}
+            onClick={() => {
+              setQuery("");
+              setSelection({ type: "list", guid: list.guid });
+            }}
+            onDoubleClick={() => setRenaming(list.guid)}
+          >
+            <span className="rx-badge" style={{ background: colourOf(list) }}>
+              <Glyph name={emblemGlyph(list.emblem)} />
+            </span>
+            <span className="rx-list-name">{list.title}</span>
+            <span className="rx-list-count">{countOf(list.guid)}</span>
+          </button>
+          <span className="rx-list-actions">
             <button
-              key={smart.kind}
-              className="rem-smart"
-              aria-current={
-                selection.type === "smart" && selection.kind === smart.kind
-              }
-              aria-label={`${smart.title}, ${counts?.[smart.kind] ?? 0} reminders`}
-              onClick={() => setSelection({ type: "smart", kind: smart.kind })}
+              className="rx-icon-button"
+              aria-label={`Rename ${list.title}`}
+              title="Rename"
+              onClick={() => setRenaming(list.guid)}
             >
-              <span className="rem-smart-top">
-                <span className="rem-smart-glyph" style={{ background: smart.colour }}>
-                  <Glyph name={smart.glyph} />
-                </span>
-                <span className="rem-smart-count">{counts?.[smart.kind] ?? 0}</span>
-              </span>
-              <span className="rem-smart-name">{smart.title}</span>
+              ✎
             </button>
-          ))}
+            <button
+              className="rx-icon-button danger"
+              aria-label={`Delete ${list.title}`}
+              title="Delete"
+              onClick={() => {
+                // Deleting a list takes its reminders, so ask before doing it.
+                if (window.confirm(`Delete "${list.title}" and everything in it?`)) {
+                  void listWrite(() => api.reminderListDelete(list.guid));
+                }
+              }}
+            >
+              ×
+            </button>
+          </span>
+        </>
+      )}
+    </div>
+  );
+
+  const tile = (
+    key: string,
+    title: string,
+    glyph: GlyphName,
+    colour: string,
+    count: number,
+    current: boolean,
+    choose: () => void,
+  ) => (
+    <button
+      key={key}
+      className="rx-tile"
+      aria-current={current}
+      aria-label={`${title}, ${count} reminders`}
+      style={{ "--tile": colour } as React.CSSProperties}
+      onClick={() => {
+        setQuery("");
+        choose();
+      }}
+    >
+      <span className="rx-tile-glyph">
+        <Glyph name={glyph} />
+      </span>
+      <span className="rx-tile-count">{count}</span>
+      <span className="rx-tile-name">{title}</span>
+    </button>
+  );
+
+  /** Where a reminder typed at the foot of the view is filed, when that is a choice. */
+  const addRow = targetListGuid && !searching && (
+    <form className="rx-add" onSubmit={add}>
+      <span className="rx-tick ghost" aria-hidden="true">
+        <Glyph name="plus" />
+      </span>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="New Reminder"
+        aria-label={
+          inList ? `Add a reminder to ${heading}` : `Add a reminder to ${targetList?.title ?? "a list"}`
+        }
+        disabled={syncing}
+      />
+      {/* From a built-in view, where it lands is a real choice, so it is shown — but only
+          once something is being typed, not as a permanent control on the screen. */}
+      {!inList && targetList && lists.length > 1 && draft.trim() && (
+        <Picker
+          className="rx-add-target"
+          label="List to add to"
+          value={targetListGuid ?? ""}
+          onChange={chooseList}
+          options={lists.map((l) => ({ value: l.guid, label: l.title }))}
+        />
+      )}
+    </form>
+  );
+
+  return (
+    <div className="rx" style={{ "--accent": accent } as React.CSSProperties}>
+      <aside className="rx-side" aria-label="Reminder lists">
+        <label className="rx-search">
+          <Glyph name="search" />
+          <input
+            type="search"
+            placeholder="Search"
+            aria-label="Search reminders"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setQuery("");
+            }}
+          />
+        </label>
+
+        <div className="rx-tiles">
+          {SMART.map((smart) =>
+            tile(
+              smart.kind,
+              smart.title,
+              smart.glyph,
+              smart.colour,
+              counts?.[smart.kind] ?? 0,
+              !searching && selection.type === "smart" && selection.kind === smart.kind,
+              () => setSelection({ type: "smart", kind: smart.kind }),
+            ),
+          )}
+          {pinned.map((list) =>
+            tile(
+              list.guid,
+              list.title,
+              emblemGlyph(list.emblem),
+              colourOf(list),
+              countOf(list.guid),
+              !searching && listGuid === list.guid,
+              () => setSelection({ type: "list", guid: list.guid }),
+            ),
+          )}
         </div>
 
-        <p className="rem-lists-heading">My Lists</p>
-        {lists.map((list) => (
-          <div className="rem-list-row" key={list.guid}>
-            {renaming === list.guid ? (
-              <input
-                className="rem-list-rename"
-                defaultValue={list.title}
-                autoFocus
-                aria-label={`Rename ${list.title}`}
-                onBlur={(e) => {
-                  const title = e.target.value.trim();
-                  setRenaming(null);
-                  if (title && title !== list.title) {
-                    void listWrite(() =>
-                      api.reminderListRename(list.guid, title),
-                    );
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                  if (e.key === "Escape") {
-                    e.currentTarget.value = list.title;
-                    e.currentTarget.blur();
-                  }
-                }}
-              />
+        <p className="rx-side-heading">My Lists</p>
+        <div className="rx-lists">
+          {topLevel.map((entry) =>
+            entry.kind === "list" ? (
+              listRow(entry.list, false)
             ) : (
-              <>
+              <div className="rx-group" key={entry.group.guid}>
                 <button
-                  className="rem-list"
-                  aria-current={listGuid === list.guid}
-                  onClick={() =>
-                    setSelection({ type: "list", guid: list.guid })
-                  }
-                  onDoubleClick={() => setRenaming(list.guid)}
+                  className="rx-group-row"
+                  aria-expanded={!folded.has(entry.group.guid)}
+                  onClick={() => toggleFolded(entry.group.guid)}
                 >
-                  <span
-                    className="rem-list-glyph"
-                    style={{ color: list.colour || "var(--gold)" }}
-                  >
-                    <Glyph name="list" />
+                  <span className="rx-group-glyph">
+                    <Glyph name="folder" />
                   </span>
-                  <span className="rem-list-name">{list.title}</span>
-                  <span className="rem-list-count">
-                    {counts?.lists.find(([guid]) => guid === list.guid)?.[1] ?? 0}
+                  <span className="rx-list-name">{entry.group.title}</span>
+                  <span className="rx-chevron">
+                    <Glyph name="chevron" />
                   </span>
                 </button>
-                <span className="rem-list-actions">
-                <button
-                  className="rem-list-action"
-                  aria-label={`Rename ${list.title}`}
-                  onClick={() => setRenaming(list.guid)}
-                >
-                  ✎
-                </button>
-                <button
-                  className="rem-list-action danger"
-                  aria-label={`Delete ${list.title}`}
-                  onClick={() => {
-                    // Deleting a list takes its reminders, so ask before doing it.
-                    if (
-                      window.confirm(
-                        `Delete "${list.title}" and everything in it?`,
-                      )
-                    ) {
-                      void listWrite(() => api.reminderListDelete(list.guid));
-                    }
-                  }}
-                >
-                  ×
-                </button>
-                </span>
-              </>
-            )}
-          </div>
-        ))}
-        {loaded && lists.length === 0 && <p className="badge">No lists yet</p>}
+                {!folded.has(entry.group.guid) &&
+                  inGroup(entry.group.guid).map((list) => listRow(list, true))}
+              </div>
+            ),
+          )}
+        </div>
+        {loaded && lists.length === 0 && <p className="rx-side-empty">No lists yet</p>}
 
         {addingList ? (
-          <form onSubmit={createList}>
+          <form className="rx-new-list" onSubmit={createList}>
             <input
-              className="rem-list-rename"
+              className="rx-rename"
               value={newList}
               onChange={(e) => setNewList(e.target.value)}
               placeholder="List name"
@@ -736,50 +882,36 @@ export function RemindersView() {
             />
           </form>
         ) : (
-          <button className="rem-list add" onClick={() => setAddingList(true)}>
-            <span className="rem-list-name">Add List</span>
+          <button className="rx-add-list" onClick={() => setAddingList(true)}>
+            <Glyph name="plus" />
+            Add List
           </button>
         )}
       </aside>
 
-      <section className="rem-items">
-        <header className="cal-bar">
-          <div className="cal-nav">
-            <h1>{searching ? "Search" : heading}</h1>
-            {outstanding > 0 && <span className="badge">{outstanding}</span>}
-          </div>
-          <div className="cal-actions">
-            {inList && (
-              <button className="quiet" onClick={() => setShowDone((v) => !v)}>
-                {showDone ? "Hide completed" : "Show completed"}
-              </button>
-            )}
-          </div>
+      <section className="rx-main">
+        <header className="rx-head">
+          <h1>{searching ? `Results for “${query.trim()}”` : heading}</h1>
+          <span className="rx-head-count" aria-label={`${outstanding} to do`}>
+            {outstanding}
+          </span>
         </header>
-        <input
-          className="notes-search"
-          type="search"
-          placeholder="Search"
-          aria-label="Search reminders"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setQuery("");
-          }}
-        />
+        {inList && (
+          <div className="rx-subhead">
+            <button className="rx-link" onClick={() => setShowDone((v) => !v)}>
+              {showDone ? "Hide Completed" : "Show Completed"}
+            </button>
+          </div>
+        )}
 
         {error && (
-          <p className="error" role="alert">
+          <p className="rx-error" role="alert">
             {error}
           </p>
         )}
 
-        {/*
-          * An account with no lists is a real account — a new one, or one whose lists have
-          * all been deleted. A reminder cannot exist outside a list, so rather than the add
-          * field quietly disappearing and leaving nothing to do, this says why and offers
-          * the one thing that helps.
-          */}
+        {/* An account with no lists: a reminder cannot exist outside one, so the one thing
+            that helps is offered instead of an add field with nowhere to go. */}
         {lists.length === 0 && loaded && (
           <div className="rem-nolists">
             <p className="rem-nolists-line">Reminders live in lists, and there aren’t any yet.</p>
@@ -789,308 +921,243 @@ export function RemindersView() {
           </div>
         )}
 
-        {targetListGuid && (
-          <form className="rem-add" onSubmit={add}>
-            <span className="tick ghost" aria-hidden="true" />
-            <input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="Add a reminder"
-              aria-label={
-                inList
-                  ? `Add a reminder to ${heading}`
-                  : `Add a reminder to ${targetList?.title ?? "a list"}`
-              }
-              disabled={syncing}
-            />
-            {/* Inside a list it obviously goes there. From a smart view, where it lands is
-                a real choice, so it is made here rather than decided for you. */}
-            {!inList && targetList && lists.length > 0 && (
-              <Picker
-                className="rem-add-target"
-                label="List to add to"
-                value={targetListGuid ?? ""}
-                onChange={chooseList}
-                options={lists.map((l) => ({ value: l.guid, label: l.title }))}
-              />
-            )}
-          </form>
-        )}
-
         {heldBack > 0 && (
-          <p className="rem-more" role="status">
+          <p className="rx-capped" role="status">
             Showing the first {MOST_AT_ONCE.toLocaleString()} — {heldBack.toLocaleString()} more
             are in this list.
           </p>
         )}
 
         {sections.map((section) => (
-        <Fragment key={section.key}>
-        {section.heading && (
-          <h2
-            className={`rem-section${section.dated ? " quiet" : ""}`}
-            style={section.colour ? { color: section.colour } : undefined}
-          >
-            {section.heading}
-          </h2>
-        )}
-        <ul className="rem-list-items">
-          {section.rows.map(({ reminder, depth }) => {
-            // The heading already names the day in the views that have one.
-            const due =
-              reminder.dueAt === null
-                ? null
-                : dueLabel(reminder.dueAt, section.dated);
-            const isOpen = openGuid === reminder.guid;
-            const repeat = repeatLabel(reminder);
-            const justMoved = moved?.guid === reminder.guid ? moved.text : null;
-            return (
-              <li
-                key={reminder.guid}
-                className={`${reminder.completedAt ? "is-done" : ""}${
-                  depth > 0 ? " is-subtask" : ""
-                }`.trim() || undefined}
+          <Fragment key={section.key}>
+            {section.heading && (
+              <h2
+                className={`rx-section${section.dated ? " is-quiet" : ""}`}
+                style={section.colour ? { color: section.colour } : undefined}
               >
-                <button
-                  className="tick"
-                  role="checkbox"
-                  aria-checked={Boolean(reminder.completedAt)}
-                  aria-label={reminder.title}
-                  disabled={busyGuid === reminder.guid}
-                  onClick={() => toggle(reminder)}
-                >
-                  {/* Apple's empty circle is neutral wherever it appears; the colour is the
-                      reminder's own list, and it only shows once the thing is done. Borrowing
-                      the open list's colour painted every circle in a smart view gold, which
-                      said something untrue about where each reminder lived. */}
-                  {reminder.completedAt && (
-                    <span
-                      className="tick-fill"
-                      style={{
-                        background:
-                          lists.find((l) => l.guid === reminder.listGuid)?.colour ||
-                          "var(--gold)",
-                      }}
-                    />
-                  )}
-                </button>
-
-                <div className="rem-text">
-                  <div className="rem-title-row">
-                    {priorityMark(reminder.priority) && (
-                      <span
-                        className="rem-priority"
-                        role="img"
-                        aria-label={`${
-                          PRIORITIES.find((p) => p.value === reminder.priority)
-                            ?.label
-                        } priority`}
-                      >
-                        {priorityMark(reminder.priority)}
-                      </span>
-                    )}
-                    <input
-                      className="rem-title-edit"
-                      defaultValue={reminder.title}
-                      key={`${reminder.guid}-${reminder.title}`}
-                      aria-label={`Rename ${reminder.title}`}
+                {section.heading}
+              </h2>
+            )}
+            <ul className="rx-rows">
+              {section.rows.map(({ reminder, depth }) => {
+                const due =
+                  reminder.dueAt === null ? null : dueLabel(reminder.dueAt, section.dated);
+                const isOpen = openGuid === reminder.guid;
+                const repeat = repeatLabel(reminder);
+                const justMoved = moved?.guid === reminder.guid ? moved.text : null;
+                const home = lists.find((l) => l.guid === reminder.listGuid);
+                const mark = priorityMark(reminder.priority);
+                return (
+                  <li
+                    key={reminder.guid}
+                    className={`rx-row${reminder.completedAt ? " is-done" : ""}${
+                      depth > 0 ? " is-subtask" : ""
+                    }${isOpen ? " is-open" : ""}`}
+                  >
+                    <button
+                      className="rx-tick"
+                      role="checkbox"
+                      aria-checked={Boolean(reminder.completedAt)}
+                      aria-label={reminder.title}
                       disabled={busyGuid === reminder.guid}
-                      onBlur={(e) => void rename(reminder, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") e.currentTarget.blur();
-                        if (e.key === "Escape") {
-                          e.currentTarget.value = reminder.title;
-                          e.currentTarget.blur();
-                        }
-                      }}
+                      style={{ "--tick": colourOf(home) } as React.CSSProperties}
+                      onClick={() => toggle(reminder)}
                     />
-                  </div>
-                  {reminder.notes && !isOpen && (
-                    <span className="rem-notes">{reminder.notes}</span>
-                  )}
 
-                  {/* Under the title, where Apple puts it. Out at the end of the row it sat
-                      a thousand pixels from the thing it describes on a wide window. */}
-                  {(due || repeat || justMoved) && (
-                    <span className="rem-meta">
-                      {justMoved ? (
-                        <span className="rem-moved" role="status">
-                          Moved to {justMoved}
-                        </span>
-                      ) : (
-                        <>
-                          {/* Which list it came from, where the grouping does not already
-                              say so — Apple puts it here, before the time. */}
-                          {showListName && (
-                            <span className="rem-from">
-                              {lists.find((l) => l.guid === reminder.listGuid)?.title ??
-                                "Reminders"}
-                            </span>
-                          )}
-                          {due && (
-                            <span className={`rem-due${due.overdue ? " overdue" : ""}`}>
-                              {due.text}
-                            </span>
-                          )}
-                          {repeat && (
-                            <span className="rem-repeat" title={repeat}>
-                              <span aria-hidden="true">↻</span>
-                              <span className="rem-repeat-word">
-                                {repeatWord(reminder)}
-                              </span>
-                              <span className="visually-hidden">{repeat}</span>
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </span>
-                  )}
-
-                  {isOpen && (
-                    <div className="rem-detail">
-                      <label>
-                        <span>Due</span>
+                    <div className="rx-text">
+                      <div className="rx-title-row">
+                        {mark && (
+                          <span
+                            className="rx-priority"
+                            role="img"
+                            aria-label={`${
+                              PRIORITIES.find((p) => p.value === reminder.priority)?.label
+                            } priority`}
+                          >
+                            {mark}
+                          </span>
+                        )}
                         <input
-                          type="datetime-local"
-                          defaultValue={toInputValue(reminder.dueAt)}
-                          onBlur={(e) => void setDue(reminder, e.target.value)}
+                          className="rx-title"
+                          defaultValue={reminder.title}
+                          key={`${reminder.guid}-${reminder.title}`}
+                          aria-label={`Rename ${reminder.title}`}
+                          disabled={busyGuid === reminder.guid}
+                          onBlur={(e) => void rename(reminder, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.currentTarget.blur();
+                            if (e.key === "Escape") {
+                              e.currentTarget.value = reminder.title;
+                              e.currentTarget.blur();
+                            }
+                          }}
                         />
-                      </label>
-                      <div className="rem-field">
-                        <span>Nesting</span>
-                        <span className="rem-nesting">
-                          <button
-                            className="quiet"
-                            disabled={busyGuid === reminder.guid || depth > 0}
-                            onClick={() => void indent(reminder)}
-                          >
-                            Make subtask
-                          </button>
-                          <button
-                            className="quiet"
-                            disabled={busyGuid === reminder.guid || depth === 0}
-                            onClick={() => void outdent(reminder)}
-                          >
-                            Move out
-                          </button>
+                      </div>
+                      {reminder.notes && !isOpen && (
+                        <span className="rx-notes">{reminder.notes}</span>
+                      )}
+                      {(due || repeat || justMoved || (showListName && home)) && (
+                        <span className="rx-meta">
+                          {justMoved ? (
+                            <span className="rx-moved" role="status">
+                              Moved to {justMoved}
+                            </span>
+                          ) : (
+                            <>
+                              {showListName && (
+                                <span className="rx-from">{home?.title ?? "Reminders"}</span>
+                              )}
+                              {due && (
+                                <span className={`rx-due${due.overdue ? " overdue" : ""}`}>
+                                  {due.text}
+                                </span>
+                              )}
+                              {repeat && (
+                                <span className="rx-repeat" title={repeat}>
+                                  <span aria-hidden="true">↻</span> {repeatWord(reminder)}
+                                  <span className="visually-hidden">{repeat}</span>
+                                </span>
+                              )}
+                            </>
+                          )}
                         </span>
-                      </div>
-                      <div className="rem-field">
-                        <span>Repeat</span>
-                        <Picker
-                          label={`Repeat for ${reminder.title}`}
-                          value={repeatKey(reminder)}
-                          disabled={busyGuid === reminder.guid || reminder.dueAt === null}
-                          onChange={(key) => void setRepeat(reminder, key)}
-                          options={
-                            repeatKey(reminder) === "custom"
-                              ? [
-                                  // A schedule this menu doesn't express must still be
-                                  // shown, and choosing anything else would silently
-                                  // replace it.
-                                  { value: "custom", label: repeat ?? "Custom" },
-                                  ...REPEATS.map((o) => ({ value: o.key, label: o.label })),
-                                ]
-                              : REPEATS.map((o) => ({ value: o.key, label: o.label }))
-                          }
-                        />
-                      </div>
-                      {reminder.dueAt === null && (
-                        <p className="rem-repeat-note">
-                          Give this a date before asking it to repeat.
-                        </p>
                       )}
-                      {repeat && (
-                        <p className="rem-repeat-note">Ticking it moves it to the next one.</p>
-                      )}
-                      {/* A pop-up button is not a labelled field: it names itself, and
-                          wrapping one in a <label> associates a label with nothing. */}
-                      <div className="rem-field">
-                        <span>Priority</span>
-                        <Picker
-                          label={`Priority for ${reminder.title}`}
-                          value={String(reminder.priority)}
-                          disabled={busyGuid === reminder.guid}
-                          onChange={(v) => void setPriority(reminder, Number(v))}
-                          options={PRIORITIES.map((p) => ({
-                            value: String(p.value),
-                            label: p.label,
-                          }))}
-                        />
-                      </div>
-                      <div className="rem-field">
-                        <span>List</span>
-                        <Picker
-                          label={`List for ${reminder.title}`}
-                          value={reminder.listGuid}
-                          disabled={busyGuid === reminder.guid}
-                          onChange={(guid) => void moveToList(reminder, guid)}
-                          options={lists.map((l) => ({ value: l.guid, label: l.title }))}
-                        />
-                      </div>
-                      <label>
-                        <span>Notes</span>
-                        <textarea
-                          defaultValue={reminder.notes ?? ""}
-                          rows={2}
-                          onBlur={(e) =>
-                            void setNotes(reminder, e.target.value)
-                          }
-                        />
-                      </label>
-                    </div>
-                  )}
-                </div>
 
-                <span className="rem-trailing">
-                  <button
-                    className={`rem-flag${reminder.flagged ? " on" : ""}`}
-                    aria-label={
-                      reminder.flagged
-                        ? `Unflag ${reminder.title}`
-                        : `Flag ${reminder.title}`
-                    }
-                    aria-pressed={reminder.flagged}
-                    disabled={busyGuid === reminder.guid}
-                    onClick={() => flag(reminder)}
-                  >
-                    ⚑
-                  </button>
-                  <button
-                    className="rem-more"
-                    aria-label={
-                      isOpen
-                        ? `Close details for ${reminder.title}`
-                        : `Details for ${reminder.title}`
-                    }
-                    aria-expanded={isOpen}
-                    onClick={() => setOpenGuid(isOpen ? null : reminder.guid)}
-                  >
-                    ⋯
-                  </button>
-                  <button
-                    className="rem-delete"
-                    aria-label={`Delete ${reminder.title}`}
-                    disabled={busyGuid === reminder.guid}
-                    onClick={() => remove(reminder)}
-                  >
-                    ×
-                  </button>
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-        </Fragment>
+                      {isOpen && (
+                        <div className="rx-detail">
+                          <label className="rx-field">
+                            <span>Date</span>
+                            <input
+                              type="datetime-local"
+                              defaultValue={toInputValue(reminder.dueAt)}
+                              onBlur={(e) => void setDue(reminder, e.target.value)}
+                            />
+                          </label>
+                          <div className="rx-field">
+                            <span>Repeat</span>
+                            <Picker
+                              label={`Repeat for ${reminder.title}`}
+                              value={repeatKey(reminder)}
+                              disabled={busyGuid === reminder.guid || reminder.dueAt === null}
+                              onChange={(key) => void setRepeat(reminder, key)}
+                              options={
+                                repeatKey(reminder) === "custom"
+                                  ? [
+                                      // A schedule this menu doesn't express must still be
+                                      // shown, and choosing anything else would replace it.
+                                      { value: "custom", label: repeat ?? "Custom" },
+                                      ...REPEATS.map((o) => ({ value: o.key, label: o.label })),
+                                    ]
+                                  : REPEATS.map((o) => ({ value: o.key, label: o.label }))
+                              }
+                            />
+                          </div>
+                          {reminder.dueAt === null && (
+                            <p className="rx-hint">Give this a date before asking it to repeat.</p>
+                          )}
+                          <div className="rx-field">
+                            <span>Priority</span>
+                            <Picker
+                              label={`Priority for ${reminder.title}`}
+                              value={String(reminder.priority)}
+                              disabled={busyGuid === reminder.guid}
+                              onChange={(v) => void setPriority(reminder, Number(v))}
+                              options={PRIORITIES.map((p) => ({
+                                value: String(p.value),
+                                label: p.label,
+                              }))}
+                            />
+                          </div>
+                          <div className="rx-field">
+                            <span>List</span>
+                            <Picker
+                              label={`List for ${reminder.title}`}
+                              value={reminder.listGuid}
+                              disabled={busyGuid === reminder.guid}
+                              onChange={(guid) => void moveToList(reminder, guid)}
+                              options={lists.map((l) => ({ value: l.guid, label: l.title }))}
+                            />
+                          </div>
+                          <label className="rx-field">
+                            <span>Notes</span>
+                            <textarea
+                              defaultValue={reminder.notes ?? ""}
+                              rows={2}
+                              onBlur={(e) => void setNotes(reminder, e.target.value)}
+                            />
+                          </label>
+                          <div className="rx-detail-actions">
+                            {depth > 0 ? (
+                              <button
+                                className="rx-link"
+                                disabled={busyGuid === reminder.guid}
+                                onClick={() => void outdent(reminder)}
+                              >
+                                Move Out of Subtasks
+                              </button>
+                            ) : (
+                              <button
+                                className="rx-link"
+                                disabled={busyGuid === reminder.guid}
+                                onClick={() => void indent(reminder)}
+                              >
+                                Make Subtask
+                              </button>
+                            )}
+                            <button
+                              className="rx-link danger"
+                              aria-label={`Delete ${reminder.title}`}
+                              disabled={busyGuid === reminder.guid}
+                              onClick={() => remove(reminder)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <span className="rx-trailing">
+                      <button
+                        className="rx-icon-button"
+                        aria-label={
+                          isOpen ? `Close details for ${reminder.title}` : `Details for ${reminder.title}`
+                        }
+                        aria-expanded={isOpen}
+                        onClick={() => setOpenGuid(isOpen ? null : reminder.guid)}
+                      >
+                        <Glyph name="info" />
+                      </button>
+                      <button
+                        className={`rx-icon-button rx-flag${reminder.flagged ? " on" : ""}`}
+                        aria-label={
+                          reminder.flagged ? `Unflag ${reminder.title}` : `Flag ${reminder.title}`
+                        }
+                        aria-pressed={reminder.flagged}
+                        disabled={busyGuid === reminder.guid}
+                        onClick={() => flag(reminder)}
+                      >
+                        <Glyph name="flagged" />
+                      </button>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </Fragment>
         ))}
 
-        {loaded && items.length === 0 && !error && (
-          <p className="cal-empty">
-            {inList
-              ? showDone
-                ? "Nothing in this list."
-                : "All done here."
-              : "Nothing here."}
+        {addRow}
+
+        {loaded && items.length === 0 && !error && lists.length > 0 && (
+          <p className="rx-empty">
+            {searching
+              ? "No reminders match."
+              : inList
+                ? showDone
+                  ? "Nothing in this list."
+                  : "All done here."
+                : "Nothing here."}
           </p>
         )}
       </section>

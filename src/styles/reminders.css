@@ -1,0 +1,515 @@
+/* Reminders, laid out the way macOS Reminders is.
+ *
+ * Everything here is scoped under `.rx`. The screen's old rules were spread through app.css
+ * and collided — one class name meant a button in one place and a notice in another — so
+ * this file is the only place Reminders is styled. */
+
+:root {
+  /* Apple's system colours, which are what its built-in views are drawn in. They shift
+     between light and dark, so they are not the same six hex values in both. */
+  --sys-blue: #007aff;
+  --sys-red: #ff3b30;
+  --sys-gray: #8e8e93;
+  --sys-orange: #ff9500;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sys-blue: #0a84ff;
+    --sys-red: #ff453a;
+    --sys-gray: #98989d;
+    --sys-orange: #ff9f0a;
+  }
+}
+
+.content:has(.rx) { display: flex; flex-direction: column; overflow: hidden; }
+
+.rx {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+}
+
+/* ---- sidebar ---------------------------------------------------------------- */
+
+.rx-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 12px 16px 2px;
+  border-right: 1px solid var(--separator);
+}
+
+.rx-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin-bottom: 10px;
+  padding: 0 8px;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text-3);
+}
+.rx-search svg { width: 13px; height: 13px; flex: none; }
+.rx-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  outline: none;
+}
+.rx-search input::placeholder { color: var(--text-3); }
+.rx-search:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sys-blue) 35%, transparent); }
+
+/* The tiles: glyph top left, count top right, name beneath. Chosen, a tile takes its own
+   colour and everything on it turns white — which is how Apple marks the open one. */
+.rx-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.rx-tile {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  align-items: center;
+  row-gap: 6px;
+  padding: 8px 9px 7px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.rx-tile:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.rx-tile:focus-visible { outline: 3px solid color-mix(in srgb, var(--tile) 45%, transparent); outline-offset: 1px; }
+
+.rx-tile-glyph {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--tile);
+  color: #fff;
+}
+.rx-tile-glyph svg { width: 15px; height: 15px; }
+
+.rx-tile-count {
+  justify-self: end;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.rx-tile-name {
+  grid-column: 1 / -1;
+  color: var(--text-2);
+  font-size: var(--t-13);
+  font-weight: 600;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rx-tile[aria-current="true"] { background: var(--tile); color: #fff; }
+.rx-tile[aria-current="true"] .rx-tile-glyph { background: #fff; color: var(--tile); }
+.rx-tile[aria-current="true"] .rx-tile-name { color: #fff; }
+
+/* On the same left edge as the list badges beneath it, where a source list puts a heading. */
+.rx-side-heading {
+  margin: 0 0 4px;
+  padding: 0 5px;
+  color: var(--text-3);
+  font-size: var(--t-11);
+  font-weight: 600;
+}
+
+.rx-lists { display: flex; flex-direction: column; gap: 1px; }
+
+.rx-list-row { position: relative; display: flex; align-items: center; }
+.rx-list-row.nested { padding-left: 18px; }
+
+.rx-list,
+.rx-group-row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px 0 5px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: left;
+  cursor: default;
+}
+.rx-list:hover,
+.rx-group-row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.rx-list[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
+.rx-list:focus-visible,
+.rx-group-row:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 40%, transparent); outline-offset: -1px; }
+
+.rx-badge {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #fff;
+}
+.rx-badge svg { width: 14px; height: 14px; }
+
+.rx-group-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  color: var(--text-2);
+}
+.rx-group-glyph svg { width: 17px; height: 17px; }
+
+.rx-list-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rx-group-row { width: 100%; }
+.rx-group-row .rx-list-name { font-weight: 600; }
+
+.rx-list-count {
+  min-width: 18px;
+  color: var(--text-3);
+  font-size: var(--t-13);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.rx-chevron { display: grid; place-items: center; color: var(--text-3); transition: transform 180ms var(--ease); }
+.rx-chevron svg { width: 12px; height: 12px; }
+.rx-group-row[aria-expanded="true"] .rx-chevron { transform: rotate(90deg); }
+
+/* Rename and delete wait until a list is pointed at, over where its count sits. */
+.rx-list-actions {
+  position: absolute;
+  right: 4px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+.rx-list-row:hover .rx-list-actions,
+.rx-list-row:focus-within .rx-list-actions { opacity: 1; pointer-events: auto; }
+.rx-list-row:hover .rx-list-count,
+.rx-list-row:focus-within .rx-list-count { visibility: hidden; }
+
+.rx-rename {
+  flex: 1;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--field-edge);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  outline: none;
+}
+.rx-rename:focus { border-color: var(--sys-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sys-blue) 30%, transparent); }
+.rx-new-list { display: flex; margin-top: 4px; }
+
+.rx-add-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding: 10px 8px 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: default;
+}
+.rx-add-list svg { width: 14px; height: 14px; }
+.rx-add-list:hover { color: var(--text); }
+
+.rx-side-empty { margin: 4px 8px; color: var(--text-3); font-size: var(--t-13); }
+
+/* ---- the open view ---------------------------------------------------------- */
+
+.rx-main {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 24px 26px;
+}
+
+/* The view's name in its own colour, its count at the far end of the same line. */
+.rx-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 14px 10px 0;
+  color: var(--accent);
+}
+.rx-head h1 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.rx-head-count { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.15; }
+
+.rx-subhead { display: flex; justify-content: flex-end; padding: 0 14px 6px 0; margin-top: -4px; }
+
+.rx-link {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--sys-blue);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: default;
+}
+.rx-link:hover { text-decoration: underline; }
+.rx-link.danger { color: var(--sys-red); }
+.rx-link:disabled { opacity: 0.5; }
+
+.rx-error { margin: 0 14px 8px 0; color: var(--danger); font-size: var(--t-13); }
+
+.rx-capped {
+  margin: 0 14px 8px 0;
+  padding: 7px 10px;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-2);
+  font-size: var(--t-11);
+}
+
+/* A heading within the view: a list name or a day in its weight, a time of day quieter. */
+.rx-section {
+  margin: 18px 14px 2px 30px;
+  color: var(--text);
+  font-size: var(--t-15);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+/* Not `.quiet`: that is the app's quiet button, and borrowing it drew each time-of-day
+   heading as a button. */
+.rx-section.is-quiet { color: var(--text-2); font-weight: 600; }
+.rx-section:first-of-type { margin-top: 4px; }
+
+.rx-rows { margin: 0; padding: 0; list-style: none; }
+
+/* A row: circle, then the text. The line between rows starts where the text does, as on
+   the phone, and the last row of a group has none. */
+.rx-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: start;
+  padding: 7px 14px 7px 0;
+}
+.rx-row::after {
+  content: "";
+  position: absolute;
+  left: 30px;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--separator);
+}
+.rx-row:last-child::after { display: none; }
+.rx-row.is-subtask { margin-left: 30px; }
+
+.rx-tick {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  padding: 0;
+  border: 1.5px solid color-mix(in srgb, var(--text) 32%, transparent);
+  border-radius: 50%;
+  background: none;
+  cursor: default;
+}
+.rx-tick:hover { border-color: var(--tick); }
+.rx-tick:focus-visible { outline: 3px solid color-mix(in srgb, var(--tick) 40%, transparent); outline-offset: 2px; }
+.rx-tick:disabled { opacity: 0.5; }
+.rx-tick[aria-checked="true"] { border-color: var(--tick); }
+.rx-tick[aria-checked="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 2.5px;
+  border-radius: 50%;
+  background: var(--tick);
+}
+.rx-tick.ghost {
+  display: grid;
+  place-items: center;
+  border-style: dashed;
+  color: var(--text-3);
+}
+.rx-tick.ghost svg { width: 11px; height: 11px; }
+
+.rx-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rx-title-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+
+.rx-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  line-height: 20px;
+  outline: none;
+}
+.rx-title:focus { box-shadow: 0 1px 0 var(--accent); }
+.is-done .rx-title { color: var(--text-3); }
+
+.rx-priority { color: var(--tick, var(--accent)); font-weight: 700; font-size: var(--t-13); }
+
+.rx-notes {
+  color: var(--text-2);
+  font-size: var(--t-11);
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* One size and one colour for everything under the title, so nothing on it competes. */
+.rx-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: var(--t-11);
+  line-height: 1.4;
+}
+.rx-due.overdue { color: var(--sys-red); }
+.rx-repeat { display: inline-flex; gap: 3px; }
+.rx-moved { color: var(--accent); font-weight: 600; }
+
+/* Info and flag wait at the end of the row until it is pointed at. A flag that is set is
+   information, not a control, so it stays. */
+.rx-trailing { display: flex; align-items: center; gap: 2px; padding-top: 1px; }
+.rx-trailing .rx-icon-button { opacity: 0; }
+.rx-row:hover .rx-icon-button,
+.rx-row:focus-within .rx-icon-button,
+.rx-row.is-open .rx-icon-button,
+.rx-icon-button.rx-flag.on { opacity: 1; }
+.rx-icon-button.rx-flag.on { color: var(--sys-orange); }
+
+.rx-icon-button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: default;
+}
+.rx-icon-button svg { width: 15px; height: 15px; }
+.rx-icon-button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.rx-icon-button.danger:hover { color: var(--sys-red); }
+.rx-icon-button:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 40%, transparent); opacity: 1; }
+.rx-icon-button:disabled { opacity: 0.4; }
+
+.rx-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.rx-field {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+.rx-field > span { color: var(--text-2); font-size: var(--t-11); }
+.rx-field input,
+.rx-field textarea {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--field-edge);
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  outline: none;
+  resize: vertical;
+}
+.rx-field input:focus,
+.rx-field textarea:focus { border-color: var(--sys-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sys-blue) 28%, transparent); }
+.rx-hint { margin: -2px 0 0 74px; color: var(--text-3); font-size: var(--t-11); }
+.rx-detail-actions { display: flex; justify-content: space-between; margin-top: 2px; }
+
+/* The last row: where a new reminder is typed. */
+.rx-add {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: center;
+  padding: 8px 14px 8px 0;
+}
+.rx-add input {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  line-height: 20px;
+  outline: none;
+}
+.rx-add input::placeholder { color: var(--text-3); }
+.rx-add-target { max-width: 160px; }
+.rx-add-target .picker-button { font-size: var(--t-11); padding: 3px 8px; }
+
+.rx-empty { margin: 28px 0 0; color: var(--text-3); font-size: var(--t-15); text-align: center; }
+
+@media (max-width: 720px) {
+  .rx { grid-template-columns: 1fr; }
+  .rx-side { border-right: 0; border-bottom: 1px solid var(--separator); max-height: 45vh; padding-right: 2px; }
+  .rx-main { padding-left: 2px; }
+}

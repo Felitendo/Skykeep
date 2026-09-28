@@ -216,13 +216,13 @@ const focused = (page) =>
 {
   const { ctx, page } = await open("library");
   await page.getByRole("button", { name: "Reminders" }).click();
-  await page.waitForSelector(".rem-list-items li");
+  await page.waitForSelector(".rx-rows li");
 
   // Open a reminder's details, where the pickers live.
-  await page.locator(".rem-more").first().click({ force: true });
-  await page.waitForSelector(".rem-detail .picker-button");
+  await page.locator(".rx-trailing .rx-icon-button[aria-expanded]").first().click({ force: true });
+  await page.waitForSelector(".rx-detail .picker-button");
 
-  const picker = page.locator(".rem-detail .picker-button").first();
+  const picker = page.locator(".rx-detail .picker-button").first();
   const before = await picker.innerText();
   await picker.click();
   await page.waitForSelector(".picker-menu");

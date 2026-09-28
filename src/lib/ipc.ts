@@ -62,6 +62,7 @@ export const api = {
 
   reminderCounts: (until: number) => invoke<ReminderCounts>("reminder_counts", { until }),
   reminderLists: () => invoke<ReminderList[]>("reminder_lists"),
+  reminderGroups: () => invoke<ReminderGroup[]>("reminder_groups"),
   /** The headings inside one list, in the order they were made. */
   reminderSections: (listGuid: string) =>
     invoke<ReminderSection[]>("reminder_sections", { listGuid }),
@@ -200,7 +201,18 @@ export type ReminderList = {
   ctag: string | null;
   sortOrder: number;
   enabled: boolean;
+  /** Apple's name for the list's glyph, such as "fitness". */
+  emblem?: string | null;
+  /** The group this list is filed under. */
+  groupGuid?: string | null;
+  /** Shown as a tile beside Today and Scheduled. */
+  pinned?: boolean;
+  /** How the list orders its reminders: "manual", "displayDate_asc", … */
+  sorting?: string | null;
 };
+
+/** A folder of lists in the Reminders sidebar. */
+export type ReminderGroup = { guid: string; title: string; sortOrder: number };
 
 /** A heading inside a reminders list. */
 export type ReminderSection = {

@@ -401,6 +401,15 @@ async fn reminder_lists(data: State<'_, Data>) -> UiResult<Vec<ReminderList>> {
     library.reminder_lists().map_err(|e| e.to_string())
 }
 
+/// The folders lists are filed under.
+#[tauri::command]
+async fn reminder_groups(
+    data: State<'_, Data>,
+) -> UiResult<Vec<quince_core::reminders::ReminderGroup>> {
+    let library = data.0.lock().await;
+    library.reminder_groups().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn reminders_in(
     list_guid: String,
@@ -1457,6 +1466,7 @@ fn main() {
             event_delete,
             calendar_list,
             reminder_lists,
+            reminder_groups,
             reminder_sections,
             reminders_search,
             reminder_counts,

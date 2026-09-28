@@ -259,10 +259,10 @@ const shots = [
     viewport: { width: 1100, height: 760 },
     act: async (p) => {
       await p.click('.nav-item:has-text("Reminders")');
-      await p.waitForSelector(".rem-list-items li");
-      await p.click('.rem-list:has-text("Daily")');
+      await p.waitForSelector(".rx-rows li");
+      await p.click('.rx-list:has-text("Daily")');
       await p.waitForTimeout(200);
-      await p.click('.rem-more >> nth=0');
+      await p.click('.rx-trailing .rx-icon-button[aria-expanded] >> nth=0');
     } },
   // A full-screen window on a large display is where content stranded in a narrow column
   // becomes obvious, and every shot above is too small to show it.
@@ -270,7 +270,7 @@ const shots = [
     viewport: { width: 1920, height: 1080 },
     act: async (p) => {
       await p.click('.nav-item:has-text("Reminders")');
-      await p.waitForSelector(".rem-list-items li");
+      await p.waitForSelector(".rx-rows li");
     } },
   { name: "15-notes-full", screen: "library", theme: "dark", notesFixture: true,
     viewport: { width: 1920, height: 1080 },

@@ -294,4 +294,23 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX reminder_sections_by_list ON reminder_sections (list_guid, created_at);
     ALTER TABLE reminders ADD COLUMN section_guid TEXT;
     "#,
+    // 20 — what a reminders list looks like and where it sits.
+    //
+    // Apple keeps a list's glyph (`BadgeEmblem`), the group it is filed under (`ParentList`),
+    // whether it is pinned beside Today and Scheduled (`PinnedDate`) and how its reminders
+    // are ordered (`SortingStyle`). None of it was read, so every list drew as the same white
+    // dot in one flat column. Groups are folders of lists, kept apart from the lists
+    // themselves so nothing that counts or offers lists can mistake one for a list.
+    r#"
+    ALTER TABLE reminder_lists ADD COLUMN emblem TEXT;
+    ALTER TABLE reminder_lists ADD COLUMN group_guid TEXT;
+    ALTER TABLE reminder_lists ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE reminder_lists ADD COLUMN sorting TEXT;
+    CREATE TABLE reminder_groups (
+        guid        TEXT PRIMARY KEY,
+        title       TEXT NOT NULL,
+        sort_order  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+    ) STRICT;
+    "#,
 ];

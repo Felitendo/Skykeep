@@ -22,15 +22,37 @@ pub struct ReminderSection {
 /// a view that reaches this can say plainly that it has.
 pub const MOST_AT_ONCE: usize = 1_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReminderList {
     pub guid: String,
     pub title: String,
+    /// `#RRGGBB`, whatever form Apple sent it in.
     pub colour: Option<String>,
     pub ctag: Option<String>,
     pub sort_order: i64,
     pub enabled: bool,
+    /// Apple's name for the list's glyph, such as `fitness` or `education1`.
+    #[serde(default)]
+    pub emblem: Option<String>,
+    /// The group this list is filed under, where it is in one.
+    #[serde(default)]
+    pub group_guid: Option<String>,
+    /// Shown as a tile beside Today and Scheduled.
+    #[serde(default)]
+    pub pinned: bool,
+    /// How the list orders its reminders: `manual`, `displayDate_asc`, and so on.
+    #[serde(default)]
+    pub sorting: Option<String>,
+}
+
+/// A folder of lists. It holds no reminders of its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderGroup {
+    pub guid: String,
+    pub title: String,
+    pub sort_order: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -187,11 +209,14 @@ impl Library {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled,
+                                             emblem, group_guid, pinned, sorting, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(guid) DO UPDATE SET
                    title = excluded.title, colour = excluded.colour, ctag = excluded.ctag,
                    sort_order = excluded.sort_order, enabled = excluded.enabled,
+                   emblem = excluded.emblem, group_guid = excluded.group_guid,
+                   pinned = excluded.pinned, sorting = excluded.sorting,
                    updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -203,6 +228,10 @@ impl Library {
                     l.ctag,
                     l.sort_order,
                     i64::from(l.enabled),
+                    l.emblem,
+                    l.group_guid,
+                    i64::from(l.pinned),
+                    l.sorting,
                     stamp
                 ])?;
             }
@@ -490,11 +519,14 @@ impl Library {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled,
+                                             emblem, group_guid, pinned, sorting, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(guid) DO UPDATE SET
                    title = excluded.title, colour = excluded.colour, ctag = excluded.ctag,
                    sort_order = excluded.sort_order, enabled = excluded.enabled,
+                   emblem = excluded.emblem, group_guid = excluded.group_guid,
+                   pinned = excluded.pinned, sorting = excluded.sorting,
                    updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -506,6 +538,10 @@ impl Library {
                     l.ctag,
                     l.sort_order,
                     i64::from(l.enabled),
+                    l.emblem,
+                    l.group_guid,
+                    i64::from(l.pinned),
+                    l.sorting,
                     stamp
                 ])?;
             }
@@ -603,7 +639,8 @@ impl Library {
 
     pub fn reminder_lists(&self) -> Result<Vec<ReminderList>> {
         let mut stmt = self.conn.prepare(
-            "SELECT guid, title, colour, ctag, sort_order, enabled
+            "SELECT guid, title, colour, ctag, sort_order, enabled,
+                    emblem, group_guid, pinned, sorting
              FROM reminder_lists ORDER BY sort_order, title",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -614,6 +651,43 @@ impl Library {
                 ctag: row.get(3)?,
                 sort_order: row.get(4)?,
                 enabled: row.get::<_, i64>(5)? != 0,
+                emblem: row.get(6)?,
+                group_guid: row.get(7)?,
+                pinned: row.get::<_, i64>(8)? != 0,
+                sorting: row.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Replace the folders lists are filed under.
+    pub fn put_reminder_groups(&mut self, groups: &[ReminderGroup]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM reminder_groups", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO reminder_groups (guid, title, sort_order, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            let stamp = now();
+            for g in groups {
+                stmt.execute(params![g.guid, g.title, g.sort_order, stamp])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The folders lists are filed under, in the order they are shown.
+    pub fn reminder_groups(&self) -> Result<Vec<ReminderGroup>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, title, sort_order FROM reminder_groups ORDER BY sort_order, title",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ReminderGroup {
+                guid: row.get(0)?,
+                title: row.get(1)?,
+                sort_order: row.get(2)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -726,6 +800,7 @@ mod tests {
             ctag: None,
             sort_order: 0,
             enabled: true,
+            ..Default::default()
         }
     }
 
@@ -913,6 +988,7 @@ mod smart_tests {
             ctag: None,
             sort_order: 0,
             enabled: true,
+            ..Default::default()
         }])
         .unwrap();
         lib
@@ -1010,6 +1086,7 @@ mod smart_tests {
             ctag: None,
             sort_order: 0,
             enabled: false,
+            ..Default::default()
         }])
         .unwrap();
         for kind in [
@@ -1045,6 +1122,7 @@ mod count_tests {
                 ctag: None,
                 sort_order: 0,
                 enabled: true,
+                ..Default::default()
             },
             ReminderList {
                 guid: "L2".into(),
@@ -1053,6 +1131,7 @@ mod count_tests {
                 ctag: None,
                 sort_order: 1,
                 enabled: false,
+                ..Default::default()
             },
         ])
         .unwrap();
@@ -1253,6 +1332,7 @@ mod raw_column_tests {
             ctag: None,
             sort_order: 0,
             enabled: true,
+            ..Default::default()
         }])
         .unwrap();
         lib.put_reminders(&[with_raw("Reminder/1"), with_raw("Reminder/2")])
@@ -1303,6 +1383,7 @@ mod bound_tests {
             ctag: None,
             sort_order: 0,
             enabled: true,
+            ..Default::default()
         }])
         .unwrap();
         let rows: Vec<Reminder> = (0..n)
@@ -1503,6 +1584,7 @@ mod section_tests {
             ctag: None,
             sort_order: 0,
             enabled: true,
+            ..Default::default()
         }])
         .unwrap();
         lib.put_reminders(&[
@@ -1634,6 +1716,7 @@ mod search_tests {
             ctag: None,
             sort_order: 0,
             enabled: true,
+            ..Default::default()
         }])
         .unwrap();
         lib.put_reminders(&[

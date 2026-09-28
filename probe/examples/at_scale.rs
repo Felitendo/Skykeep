@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ctag: None,
             sort_order: i,
             enabled: true,
+            ..Default::default()
         })
         .collect();
     lib.put_reminder_lists(&lists)?;

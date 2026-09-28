@@ -33,6 +33,7 @@ fn list_from(v: &Value) -> Option<ReminderList> {
         ctag: string(v, "ctag"),
         sort_order: v.get("order").and_then(Value::as_i64).unwrap_or(0),
         enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        ..Default::default()
     })
 }
 
@@ -475,8 +476,12 @@ fn list_from_record(record: &Value) -> Option<ReminderList> {
     Some(ReminderList {
         guid,
         title,
-        colour: field::string(record, "Color"),
+        colour: field::string(record, "Color").and_then(|c| hex_colour(&c)),
         ctag: None,
+        emblem: field::string(record, "BadgeEmblem").filter(|e| !e.trim().is_empty()),
+        group_guid: field::reference(record, "ParentList"),
+        pinned: is_pinned(record),
+        sorting: field::string(record, "SortingStyle"),
         // Apple's List record carries no sort order — the earlier `SortOrder` here read a
         // field that has never existed, so every list scored zero and the sidebar came out in
         // whatever order the database happened to return. That is why a new reminder always
@@ -489,6 +494,64 @@ fn list_from_record(record: &Value) -> Option<ReminderList> {
         sort_order: 0,
         enabled: true,
     })
+}
+
+/// A group record as the folder it is, or `None` for anything else.
+fn group_from_record(record: &Value) -> Option<quince_core::reminders::ReminderGroup> {
+    if field::flag(record, "Deleted") || !field::flag(record, "IsGroup") {
+        return None;
+    }
+    Some(quince_core::reminders::ReminderGroup {
+        guid: field::record_name(record)?,
+        title: field::string(record, "Name")
+            .or_else(|| field::document_text(record, "NameDocument"))
+            .unwrap_or_else(|| "Group".into()),
+        sort_order: 0,
+    })
+}
+
+/// A list's colour as `#RRGGBB`.
+///
+/// CloudKit stores it as JSON — `{"daHexString":"#FFCC00","red":1,…}` — where the older web
+/// service sent the hex alone. Kept as it arrived, the JSON reached the interface as a colour
+/// it could not draw, and every list came out white.
+fn hex_colour(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let is_hex = |h: &str| {
+        h.len() == 7 && h.starts_with('#') && h[1..].chars().all(|c| c.is_ascii_hexdigit())
+    };
+    if is_hex(raw) {
+        return Some(raw.to_ascii_uppercase());
+    }
+    let v: Value = serde_json::from_str(raw).ok()?;
+    if let Some(hex) = v.get("daHexString").and_then(Value::as_str) {
+        if is_hex(hex) {
+            return Some(hex.to_ascii_uppercase());
+        }
+    }
+    // Only components: work the hex out from them.
+    let channel = |name: &str| -> Option<u8> {
+        let c = v.get(name)?.as_f64()?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Some((c.clamp(0.0, 1.0) * 255.0).round() as u8)
+    };
+    Some(format!(
+        "#{:02X}{:02X}{:02X}",
+        channel("red")?,
+        channel("green")?,
+        channel("blue")?
+    ))
+}
+
+/// Whether a list is pinned beside Today and Scheduled.
+///
+/// Unpinning does not clear `PinnedDate`; it sets it to the first day of year one, which as
+/// milliseconds since 1970 is a large negative number. Only a real date means pinned.
+fn is_pinned(record: &Value) -> bool {
+    record
+        .pointer("/fields/PinnedDate/value")
+        .and_then(Value::as_i64)
+        .is_some_and(|ms| ms > 0)
 }
 
 /// The order lists appear in on the user's other devices.
@@ -707,6 +770,7 @@ pub fn apply_cloudkit(
     let mut gone_reminders: Vec<String> = Vec::new();
     let mut gone_lists: Vec<String> = Vec::new();
     let mut list_order: Vec<String> = Vec::new();
+    let mut groups: Vec<quince_core::reminders::ReminderGroup> = Vec::new();
     // A RecurrenceRule is its own record pointing back at the reminder it governs.
     let mut rules: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
 
@@ -749,13 +813,18 @@ pub fn apply_cloudkit(
             "List" => {
                 if removed {
                     gone_lists.push(name);
+                } else if let Some(mut group) = group_from_record(record) {
+                    // One count across groups and lists, so a group sits among the lists
+                    // where Apple walks it rather than in a separate run of its own.
+                    group.sort_order = i64::try_from(lists.len() + groups.len()).unwrap_or(0);
+                    groups.push(group);
                 } else if let Some(mut list) = list_from_record(record) {
                     // Apple walks the zone in a stable order that is the same on every device,
                     // and a List record carries no date or rank of its own. Keeping the
                     // position it arrived in is what stops the sidebar coming out differently
                     // on every refresh — which is what made a new reminder seem to land in an
                     // arbitrary list.
-                    list.sort_order = i64::try_from(lists.len()).unwrap_or(0);
+                    list.sort_order = i64::try_from(lists.len() + groups.len()).unwrap_or(0);
                     lists.push(list);
                 }
             }
@@ -812,6 +881,7 @@ pub fn apply_cloudkit(
                 ctag: None,
                 sort_order: 0,
                 enabled: true,
+                ..Default::default()
             });
         }
     }
@@ -832,6 +902,26 @@ pub fn apply_cloudkit(
     } else {
         library.put_reminder_lists(&lists)?;
     }
+    // Groups: a full pass has every one; an incremental pass only the ones that changed, laid
+    // over what is stored, less any that were deleted.
+    let groups = if incremental {
+        let mut merged = library.reminder_groups()?;
+        for group in groups {
+            match merged.iter_mut().find(|g| g.guid == group.guid) {
+                Some(existing) => existing.title = group.title,
+                None => {
+                    let mut group = group;
+                    group.sort_order = i64::try_from(merged.len()).unwrap_or(0);
+                    merged.push(group);
+                }
+            }
+        }
+        merged.retain(|g| !gone_lists.contains(&g.guid));
+        merged
+    } else {
+        groups
+    };
+    library.put_reminder_groups(&groups)?;
     library.put_reminders(&reminders)?;
     if !gone_reminders.is_empty() || !gone_lists.is_empty() {
         library.forget_reminders(&gone_reminders, &gone_lists)?;
@@ -2263,6 +2353,7 @@ mod order_tests {
             ctag: None,
             sort_order: 0,
             enabled: true,
+            ..Default::default()
         }
     }
 
@@ -2728,6 +2819,7 @@ mod tombstone_tests {
                 ctag: None,
                 sort_order: 0,
                 enabled: true,
+                ..Default::default()
             }])
             .unwrap();
         library
@@ -3104,6 +3196,71 @@ mod list_shape_tests {
         })
     }
 
+    /// What a list record on a real account carries, copied from one.
+    fn gym_record() -> Value {
+        json!({
+            "recordName": "List/B54667C9-8785-4A05-B669-EACC5DA5E2DE",
+            "recordType": "List",
+            "fields": {
+                "Name": { "type": "STRING", "value": "GYM" },
+                "IsGroup": { "type": "NUMBER_INT64", "value": 0 },
+                "BadgeEmblem": { "type": "STRING", "value": "fitness" },
+                "Color": { "type": "STRING", "value": "{\"alpha\":1,\"red\":0,\"colorRGBSpace\":2,\"daHexString\":\"#0088FF\",\"ckSymbolicColorName\":\"blue\",\"green\":0.53333333333333333,\"daSymbolicColorName\":\"blue\",\"blue\":1}" },
+                "ParentList": { "type": "REFERENCE", "value": { "recordName": "List/43A40727-5DAF-4107-B7C9-6B9161592F5D", "action": "VALIDATE" } },
+                "PinnedDate": { "type": "TIMESTAMP", "value": 1781974802494_i64 },
+                "SortingStyle": { "type": "STRING", "value": "displayDate_asc" },
+            }
+        })
+    }
+
+    /// The colour arrives as JSON; stored as it came, every list drew white.
+    #[test]
+    fn a_list_keeps_its_colour_glyph_group_and_order() {
+        let l = list_from_record(&gym_record()).unwrap();
+        assert_eq!(l.colour.as_deref(), Some("#0088FF"));
+        assert_eq!(l.emblem.as_deref(), Some("fitness"));
+        assert_eq!(
+            l.group_guid.as_deref(),
+            Some("List/43A40727-5DAF-4107-B7C9-6B9161592F5D")
+        );
+        assert!(l.pinned);
+        assert_eq!(l.sorting.as_deref(), Some("displayDate_asc"));
+    }
+
+    #[test]
+    fn a_colour_is_read_in_every_form_it_comes_in() {
+        assert_eq!(hex_colour("#ffcc00").as_deref(), Some("#FFCC00"));
+        assert_eq!(
+            hex_colour("{\"daHexString\":\"#5AC8FA\",\"red\":0.35}").as_deref(),
+            Some("#5AC8FA")
+        );
+        // Components alone, the hex worked out from them.
+        assert_eq!(
+            hex_colour("{\"red\":1,\"green\":0.8,\"blue\":0}").as_deref(),
+            Some("#FFCC00")
+        );
+        for rubbish in ["", "blue", "{}", "{\"red\":\"x\"}", "#12345", "#GGGGGG"] {
+            assert_eq!(hex_colour(rubbish), None, "{rubbish:?}");
+        }
+    }
+
+    /// Unpinning leaves a date in year one behind rather than clearing the field.
+    #[test]
+    fn a_list_unpinned_on_the_phone_is_not_pinned() {
+        let mut r = gym_record();
+        r["fields"]["PinnedDate"]["value"] = json!(-62_135_769_600_000_i64);
+        assert!(!list_from_record(&r).unwrap().pinned);
+        r["fields"].as_object_mut().unwrap().remove("PinnedDate");
+        assert!(!list_from_record(&r).unwrap().pinned);
+    }
+
+    #[test]
+    fn a_group_is_kept_as_a_group() {
+        let g = group_from_record(&list_record("List/A", "Life", true)).unwrap();
+        assert_eq!((g.guid.as_str(), g.title.as_str()), ("List/A", "Life"));
+        assert!(group_from_record(&list_record("List/B", "GYM", false)).is_none());
+    }
+
     /// A group is a folder of lists. Two of the nine on a real account are groups, and shown as
     /// lists they read as permanently empty — and can be chosen as the place to file a reminder,
     /// which puts it where the phone will not show it.
@@ -3143,6 +3300,7 @@ mod list_shape_tests {
                 ctag: None,
                 sort_order: i64::try_from(i).unwrap(),
                 enabled: true,
+                ..Default::default()
             })
             .collect();
         let before: Vec<i64> = lists.iter().map(|l| l.sort_order).collect();
@@ -3167,6 +3325,7 @@ mod list_shape_tests {
                 ctag: None,
                 sort_order: i64::try_from(i).unwrap(),
                 enabled: true,
+                ..Default::default()
             })
             .collect();
         apply_list_order(&mut lists, &["B".into(), "A".into()]);
@@ -3240,6 +3399,7 @@ mod other_accounts_tests {
             ctag: None,
             sort_order: 0,
             enabled: true,
+            ..Default::default()
         }];
         apply_list_order(&mut lists, &[]);
         assert_eq!(lists[0].sort_order, 0);

@@ -168,7 +168,7 @@ let failures = 0;
     );
 
   for (const [screen, selector] of [
-    ["Reminders", ".rem-list-name, .rem-smart-name"],
+    ["Reminders", ".rx-list-name, .rx-tile-name"],
     ["Notes", ".notes-folders .note-folder, .notes-folders button"],
   ]) {
     await page.getByRole("button", { name: screen, exact: true }).click();
@@ -186,8 +186,8 @@ let failures = 0;
   await page.getByRole("button", { name: "Reminders", exact: true }).click();
   await page.waitForTimeout(400);
   const fill = await page.evaluate(() => {
-    const pane = document.querySelector(".rem-items");
-    const row = document.querySelector(".rem-list-items li, .rem-add");
+    const pane = document.querySelector(".rx-main");
+    const row = document.querySelector(".rx-rows li, .rx-add");
     if (!pane || !row) return null;
     return row.getBoundingClientRect().width / pane.getBoundingClientRect().width;
   });
@@ -200,13 +200,31 @@ let failures = 0;
   );
   if (fill === null || fill < 0.9) failures++;
 
+  // A heading is text. Today's time-of-day headings borrowed the app's `.quiet` button class
+  // and came out drawn as buttons — a bordered box around "Morning", "Afternoon", "Tonight".
+  const boxed = await page.evaluate(() =>
+    [...document.querySelectorAll(".rx-section")]
+      .filter((h) => {
+        const cs = getComputedStyle(h);
+        return parseFloat(cs.borderTopWidth) > 0 || cs.boxShadow !== "none" ||
+          cs.backgroundColor !== "rgba(0, 0, 0, 0)";
+      })
+      .map((h) => h.textContent)
+  );
+  console.log(
+    boxed.length === 0
+      ? "PASS section headings are text, not boxes"
+      : `FAIL section headings drawn as controls: ${JSON.stringify(boxed)}`
+  );
+  if (boxed.length > 0) failures++;
+
   // The "My Lists" heading belongs on the same left edge as the icons in the rows under it,
   // which is where a source list puts a section header. It sat 24px right of both the cards
   // above and the icons below, reading as a column that had slipped.
   const heading = await page.evaluate(() => {
-    const label = document.querySelector(".rem-lists-heading");
-    const card = document.querySelector(".rem-smart");
-    const icon = document.querySelector(".rem-list-glyph");
+    const label = document.querySelector(".rx-side-heading");
+    const card = document.querySelector(".rx-tile");
+    const icon = document.querySelector(".rx-badge");
     if (!label || !card || !icon) return null;
     const text = label.getBoundingClientRect().left +
       parseFloat(getComputedStyle(label).paddingLeft || "0");
@@ -246,10 +264,10 @@ let failures = 0;
       const el = document.querySelector(s);
       return el ? +el.getBoundingClientRect().width.toFixed(1) : null;
     };
-    const cards = [...document.querySelectorAll(".rem-smart")].map(
+    const cards = [...document.querySelectorAll(".rx-tile")].map(
       (el) => +el.getBoundingClientRect().width.toFixed(1)
     );
-    return { grid: width(".rem-smart-grid"), row: width(".rem-list"), cards };
+    return { grid: width(".rx-tiles"), row: width(".rx-list-row:not(.nested) .rx-list"), cards };
   });
   const evenCards = new Set(column.cards).size <= 1;
   const flush = column.grid !== null && column.row !== null &&
@@ -296,10 +314,12 @@ let failures = 0;
   await page.close();
 }
 
-// ── What acts on a reminder stays beside it ───────────────────────────────────────────
-// The separators span the whole pane, so the list does not end in mid-air on a wide window.
-// The controls must not span it too: with the text on one stretching column they were pushed
-// to the far edge, about thirteen hundred pixels from the reminder they act on.
+// ── A row's controls behave the way Apple's do ─────────────────────────────────────────
+// Apple keeps a row quiet: info and flag wait at the end of it until it is pointed at, and a
+// flag that is set is information, so it always shows. Controls sitting on every row all the
+// time were most of why the screen read as busy; stranded far from their reminder on a wide
+// window, they read as belonging to nothing. Both are checked: hidden at rest, visible on
+// hover, and every row's controls on one edge so the eye finds them in the same place.
 {
   const page = await ctx.newPage();
   await page.setViewportSize({ width: 1920, height: 1080 });
@@ -307,31 +327,37 @@ let failures = 0;
   await page.getByRole("button", { name: "Reminders", exact: true }).click();
   await page.waitForTimeout(400);
 
-  // Measured from the start of the row, not from the text element — that one stretches to
-  // fill its column, so the gap after it is always the grid gap and says nothing at all. The
-  // first version of this check passed against the layout it was written to catch.
-  const reach = await page.evaluate(() => {
-    const row = document.querySelector(".rem-list-items li");
-    const actions = row?.querySelector(".rem-trailing");
-    if (!row || !actions) return null;
-    const left = row.getBoundingClientRect().left;
-    return {
-      reach: +(actions.getBoundingClientRect().left - left).toFixed(0),
-      rowWidth: +row.getBoundingClientRect().width.toFixed(0),
-    };
+  const atRest = await page.evaluate(() => {
+    const row = document.querySelector(".rx-rows li");
+    const info = row?.querySelector(".rx-trailing .rx-icon-button[aria-expanded]");
+    return info ? getComputedStyle(info).opacity : null;
   });
-  if (!reach) {
-    console.log("FAIL could not measure a reminder row");
-    failures++;
-  } else {
-    const close = reach.reach < 900;
-    console.log(
-      close
-        ? `PASS what acts on a reminder stays beside it  [${reach.reach}px in, row ${reach.rowWidth}px]`
-        : `FAIL the controls sit ${reach.reach}px into a ${reach.rowWidth}px row`
-    );
-    if (!close) failures++;
-  }
+  await page.locator(".rx-rows li").first().hover();
+  await page.waitForTimeout(150);
+  const onHover = await page.evaluate(() => {
+    const row = document.querySelector(".rx-rows li");
+    const info = row?.querySelector(".rx-trailing .rx-icon-button[aria-expanded]");
+    return info ? getComputedStyle(info).opacity : null;
+  });
+  const edges = await page.evaluate(() =>
+    [...document.querySelectorAll(".rx-rows li .rx-trailing")].map(
+      (t) => +t.getBoundingClientRect().right.toFixed(0)
+    )
+  );
+  const quiet = atRest === "0" && onHover === "1";
+  console.log(
+    quiet
+      ? "PASS a row's controls wait until it is pointed at"
+      : `FAIL row controls at rest ${atRest}, on hover ${onHover}`
+  );
+  if (!quiet) failures++;
+  const oneEdge = edges.length > 0 && new Set(edges).size === 1;
+  console.log(
+    oneEdge
+      ? `PASS every row's controls sit on one edge  [${edges[0]}px]`
+      : `FAIL row controls are ragged  ${JSON.stringify(edges)}`
+  );
+  if (!oneEdge) failures++;
   await page.close();
 }
 
@@ -441,8 +467,8 @@ let failures = 0;
   await page.fill('input[aria-label="Search reminders"]', "plant");
   await page.waitForTimeout(300);
   const titles = await page.evaluate(() =>
-    [...document.querySelectorAll(".rem-list-items li input")].map((i) => i.value));
-  const heads = await page.locator(".rem-section").allInnerTexts();
+    [...document.querySelectorAll(".rx-rows li input")].map((i) => i.value));
+  const heads = await page.locator(".rx-section").allInnerTexts();
   const right = JSON.stringify(titles) === JSON.stringify(["Water the plants"]) && heads.includes("Daily");
   console.log(
     right
@@ -482,13 +508,13 @@ let failures = 0;
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
   await page.getByRole("button", { name: "Reminders", exact: true }).click();
   await page.waitForTimeout(300);
-  await page.locator(".rem-list", { hasText: "Life Goals" }).click();
+  await page.locator(".rx-list", { hasText: "Life Goals" }).click();
   await page.waitForTimeout(400);
 
   const layout = await page.evaluate(() => {
     const out = [];
-    for (const el of document.querySelectorAll(".rem-section, .rem-list-items li")) {
-      out.push(el.matches(".rem-section") ? `#${el.textContent.trim()}` : (el.querySelector("input")?.value ?? ""));
+    for (const el of document.querySelectorAll(".rx-section, .rx-rows li")) {
+      out.push(el.matches(".rx-section") ? `#${el.textContent.trim()}` : (el.querySelector("input")?.value ?? ""));
     }
     return out;
   });

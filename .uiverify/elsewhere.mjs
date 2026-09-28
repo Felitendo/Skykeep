@@ -87,7 +87,7 @@ for (const place of PLACES) {
   // wrong on the two days a year a clock moves.
   await page.getByRole("button", { name: "Reminders", exact: true }).click();
   await page.waitForTimeout(400);
-  const said = (await page.locator(".rem-list-items").allInnerTexts()).join(" ");
+  const said = (await page.locator(".rx-rows").allInnerTexts()).join(" ");
   const muddled = /Tomorrow evening[\s\S]{0,60}\bToday\b/.test(said);
   console.log(
     muddled
@@ -98,7 +98,7 @@ for (const place of PLACES) {
 
   // A date in a longer language must not spill out of the row that holds it.
   const spilling = await page.evaluate(() =>
-    [...document.querySelectorAll(".rem-list-items li, .rem-list, .crumb, .rem-smart")].filter(
+    [...document.querySelectorAll(".rx-rows li, .rem-list, .rx-list, .crumb, .rx-tile")].filter(
       (el) => el.scrollWidth > el.clientWidth + 2
     ).length
   );
@@ -148,7 +148,7 @@ for (const place of PLACES) {
   // A reminder's title is an editable field, so its text is a value rather than content —
   // reading innerText alone finds the due label and none of the titles.
   const tomorrow = await page.evaluate(() => {
-    for (const row of document.querySelectorAll(".rem-list-items li")) {
+    for (const row of document.querySelectorAll(".rx-rows li")) {
       const title = row.querySelector("input")?.value ?? "";
       if (title.includes("Just after midnight")) return row.innerText;
     }
