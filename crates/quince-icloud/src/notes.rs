@@ -9,7 +9,7 @@
 
 use crate::cloudkit::{field, ZoneClient};
 use crate::{Error, Result};
-use quince_core::notes::{Note, NoteFolder};
+use quince_core::notes::{Note, NoteFolder, TRASH_FOLDER};
 use serde_json::Value;
 
 const CONTAINER: &str = "com.apple.notes";
@@ -473,32 +473,43 @@ pub async fn move_cloudkit(
     folder_guid: Option<&str>,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let folder = match folder_guid {
-        Some(guid) => client.reference_to(ZONE, guid),
-        // CloudKit clears a reference by writing an explicit null, not by omitting it.
-        None => Value::Null,
-    };
     client
         .update_record(
             ZONE,
             &note.guid,
             "Note",
             note.etag.as_deref(),
-            serde_json::json!({
-                "Folder": folder,
-                "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
-            }),
+            filed_in(&client, folder_guid.unwrap_or(DEFAULT_FOLDER)),
         )
         .await?;
     Ok(())
 }
 
-/// Delete a note.
+/// Apple's own "Notes" folder, where a note filed nowhere in particular lives.
+pub const DEFAULT_FOLDER: &str = "DefaultFolder-CloudKit";
+
+/// The fields that put a note in a folder, as the phone writes them.
 ///
-/// Apple's own clients mark a per-user record instead, but that record's name is built from
-/// the account id in a shape CloudKit validates strictly, and inventing one is refused. A
-/// direct delete of the note record is what this can do correctly, and it is what the
-/// person asked for: the note goes, on every device.
+/// The phone reads `Folders`, a list; `Folder` is an older single reference it keeps beside
+/// it. Only `Folder` was written here, so a note moved in this app stayed where it was on the
+/// phone — and a note "deleted" here by moving it would have too. Both are written, with the
+/// date the phone stamps on a move. A note is always in some folder: Apple has no "none".
+fn filed_in(client: &ZoneClient<'_>, folder: &str) -> Value {
+    let reference = client.reference_to(ZONE, folder);
+    serde_json::json!({
+        "Folder": reference,
+        "Folders": { "type": "REFERENCE_LIST", "value": [reference["value"].clone()] },
+        "FoldersModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+        "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+    })
+}
+/// Delete a note the way the phone does.
+///
+/// This used to remove the record outright, which on iCloud is final: no Recently Deleted, no
+/// thirty days, nothing on any device to recover — several notes were lost that way. Measured
+/// on the account, the phone never does that. Deleting files a note in `TrashFolder-CloudKit`
+/// with `Deleted` still 0, and that is Recently Deleted; deleting it again from there sets
+/// `Deleted` to 1 and leaves the record for Apple to clear. Nothing here removes a record.
 pub async fn delete_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -506,9 +517,22 @@ pub async fn delete_cloudkit(
     note: &Note,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    client.delete_record(ZONE, &note.guid).await
+    let fields = if note.folder_guid.as_deref() == Some(TRASH_FOLDER) {
+        // Already in Recently Deleted: this is "Delete Now". Apple marks the record rather
+        // than removing it, and so does this.
+        serde_json::json!({
+            "Deleted": { "type": "INT64", "value": 1 },
+            "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+        })
+    } else {
+        // Delete means Recently Deleted, where it waits thirty days to be recovered.
+        filed_in(&client, TRASH_FOLDER)
+    };
+    client
+        .update_record(ZONE, &note.guid, "Note", note.etag.as_deref(), fields)
+        .await?;
+    Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -932,11 +956,22 @@ mod write_tests {
         );
     }
 
-    /// Apple validates a per-user record's name against a shape built from the account id,
-    /// and refused an invented one outright — measured against the real service, not
-    /// assumed. Deleting the note record is what this can do correctly.
+    /// The operations sent to Apple, every one.
+    async fn operations(server: &MockServer) -> Vec<Value> {
+        let mut out = Vec::new();
+        for r in server.received_requests().await.unwrap() {
+            if let Ok(body) = serde_json::from_slice::<Value>(&r.body) {
+                out.extend(body["operations"].as_array().cloned().unwrap_or_default());
+            }
+        }
+        out
+    }
+
+    /// Delete is Recently Deleted, as on the phone. Removing the record — what this did —
+    /// is final on iCloud: notes deleted here were gone from every device with nothing left
+    /// to recover.
     #[tokio::test]
-    async fn deleting_removes_the_note_record() {
+    async fn deleting_files_the_note_in_recently_deleted() {
         let server = server("x").await;
         delete_cloudkit(
             &reqwest::Client::new(),
@@ -946,15 +981,54 @@ mod write_tests {
         )
         .await
         .unwrap();
-
-        let requests = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-        assert_eq!(body["operations"][0]["operationType"], "forceDelete");
-        assert_eq!(body["operations"][0]["record"]["recordName"], "Note/1");
+        let ops = operations(&server).await;
+        assert!(
+            ops.iter()
+                .all(|op| op["operationType"] != "forceDelete" && op["operationType"] != "delete"),
+            "nothing is ever removed: {ops:?}"
+        );
+        let fields = &ops[0]["record"]["fields"];
+        assert_eq!(fields["Folders"]["value"][0]["recordName"], TRASH_FOLDER);
+        assert_eq!(fields["Folder"]["value"]["recordName"], TRASH_FOLDER);
     }
 
+    /// Deleting again from Recently Deleted marks it, as the phone does; still no removal.
     #[tokio::test]
-    async fn moving_out_of_every_folder_clears_the_reference() {
+    async fn deleting_from_recently_deleted_marks_the_record() {
+        let server = server("x").await;
+        let mut trashed = note("Note/1");
+        trashed.folder_guid = Some(TRASH_FOLDER.into());
+        delete_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &trashed)
+            .await
+            .unwrap();
+        let ops = operations(&server).await;
+        assert!(ops
+            .iter()
+            .all(|op| op["operationType"] != "forceDelete" && op["operationType"] != "delete"));
+        assert_eq!(ops[0]["record"]["fields"]["Deleted"]["value"], 1);
+    }
+
+    /// The phone reads `Folders`; writing only `Folder` left a moved note where it was.
+    #[tokio::test]
+    async fn moving_writes_the_folder_the_phone_reads() {
+        let server = server("x").await;
+        move_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            Some("Folder/a"),
+        )
+        .await
+        .unwrap();
+        let fields = &sent(&server).await["fields"];
+        assert_eq!(fields["Folders"]["value"][0]["recordName"], "Folder/a");
+        assert_eq!(fields["Folder"]["value"]["recordName"], "Folder/a");
+    }
+
+    /// Apple has no "no folder": a note filed nowhere in particular is in Notes.
+    #[tokio::test]
+    async fn filing_nowhere_is_filing_in_notes() {
         let server = server("x").await;
         move_cloudkit(
             &reqwest::Client::new(),
@@ -965,7 +1039,8 @@ mod write_tests {
         )
         .await
         .unwrap();
-        assert_eq!(sent(&server).await["fields"]["Folder"], Value::Null);
+        let fields = &sent(&server).await["fields"];
+        assert_eq!(fields["Folders"]["value"][0]["recordName"], DEFAULT_FOLDER);
     }
 }
 

@@ -1,0 +1,60 @@
+// Recently Deleted behaves as it does on the phone: a deleted note can be recovered, and the
+// only final delete is the one asked about first.
+import { chromium } from "playwright";
+
+const b = await chromium.launch();
+const ctx = await b.newContext({ viewport: { width: 1280, height: 820 } });
+await ctx.addInitScript(() => {
+  window.__deletes = 0;
+  window.__moves = [];
+  const trashed = { guid: "T1", folderGuid: "TrashFolder-CloudKit", title: "Old list", snippet: "eggs",
+    body: null, locked: false, pinned: false, createdAt: 1, modifiedAt: 1, editable: true, etag: "e" };
+  window.__TAURI_INTERNALS__ = {
+    transformCallback: (cb) => cb,
+    invoke: async (cmd, args) => {
+      if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+      if (cmd === "auth_resume") return true;
+      if (cmd === "account_services") return ["notes", "ckdatabasews"];
+      if (cmd === "note_folders")
+        return [{ guid: "TrashFolder-CloudKit", title: "Recently Deleted", sortOrder: 9, parentGuid: null }];
+      if (cmd === "notes_in") return args.folderGuid === "TrashFolder-CloudKit" ? [trashed] : [];
+      if (cmd === "note_body") return "Old list\neggs";
+      if (cmd === "note_delete") { window.__deletes++; return null; }
+      if (cmd === "note_move") { window.__moves.push(args); return null; }
+      if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
+      if (cmd === "plugin:event|listen") return 0;
+      return [];
+    },
+  };
+});
+const page = await ctx.newPage();
+await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.getByRole("button", { name: "Notes", exact: true }).click();
+await page.getByRole("button", { name: "Recently Deleted" }).click();
+await page.waitForTimeout(500);
+
+let failures = 0;
+const ok = (pass, yes, no) => { console.log(pass ? `PASS ${yes}` : `FAIL ${no}`); if (!pass) failures++; };
+
+const offered = await page.locator(".note-bar-actions button").allInnerTexts();
+ok(offered.includes("Recover") && offered.includes("Delete Now"),
+  "a deleted note offers Recover and Delete Now", `it offered ${JSON.stringify(offered)}`);
+
+page.once("dialog", (d) => d.dismiss());
+await page.getByRole("button", { name: "Delete Now" }).click();
+await page.waitForTimeout(300);
+ok(await page.evaluate(() => window.__deletes === 0),
+  "Delete Now does nothing until it is confirmed", "Delete Now deleted without asking");
+
+page.once("dialog", (d) => d.accept());
+await page.getByRole("button", { name: "Delete Now" }).click();
+await page.waitForTimeout(300);
+ok(await page.evaluate(() => window.__deletes === 1), "confirmed, it deletes", "confirmed, nothing happened");
+
+await page.getByRole("button", { name: "Recover" }).click();
+await page.waitForTimeout(300);
+const moves = await page.evaluate(() => window.__moves);
+ok(moves.length === 1 && moves[0].guid === "T1" && !moves[0].folderGuid,
+  "Recover puts it back in Notes", `Recover sent ${JSON.stringify(moves)}`);
+await b.close();
+process.exitCode = failures === 0 ? 0 : 1;

@@ -33,6 +33,7 @@ step "accessibility"    node .uiverify/a11y.mjs
 step "keyboard only"    node .uiverify/keyboard.mjs
 step "somewhere else"   node .uiverify/elsewhere.mjs
 step "writing a note"   node .uiverify/notes-compose.mjs
+step "deleting a note"  node .uiverify/notes-trash.mjs
 step "uploading"        node .uiverify/drive-upload.mjs
 
 printf '\n'

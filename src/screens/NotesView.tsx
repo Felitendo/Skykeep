@@ -26,6 +26,9 @@ function bodyRepeatsTitle(note: Note, body: string | null): boolean {
   return title.length > 0 && text.startsWith(title);
 }
 
+/** Apple's Recently Deleted, by the record name that is the same in every language. */
+const TRASH_FOLDER = "TrashFolder-CloudKit";
+
 export function NotesView() {
   const [folders, setFolders] = useState<NoteFolder[]>([]);
   const [folder, setFolder] = useState<string>(ALL);
@@ -321,9 +324,26 @@ export function NotesView() {
     window.requestAnimationFrame(() => editor.current?.focus());
   }, [commitComposing, flush, folder, setComposing]);
 
+  /**
+   * Delete goes to Recently Deleted, as on the phone; from there, Delete Now is final and is
+   * asked about first, in Apple's words.
+   */
+  const inTrash = open?.folderGuid === TRASH_FOLDER;
   const remove = useCallback(async () => {
     if (!open) return;
+    if (
+      open.folderGuid === TRASH_FOLDER &&
+      !window.confirm("This note will be deleted immediately. You can’t undo this action.")
+    ) {
+      return;
+    }
     await write(() => api.noteDelete(open.guid));
+  }, [open, write]);
+
+  /** Out of Recently Deleted and back into Notes. */
+  const recover = useCallback(async () => {
+    if (!open) return;
+    await write(() => api.noteMove(open.guid, null));
   }, [open, write]);
 
   const moveTo = useCallback(
@@ -466,8 +486,13 @@ export function NotesView() {
                   ...folders.map((f) => ({ value: f.guid, label: f.title })),
                 ]}
               />
+              {inTrash && (
+                <button className="quiet" onClick={() => void recover()} disabled={busy}>
+                  Recover
+                </button>
+              )}
               <button className="quiet danger" onClick={() => void remove()} disabled={busy}>
-                Delete
+                {inTrash ? "Delete Now" : "Delete"}
               </button>
             </div>
           </div>
