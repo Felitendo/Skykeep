@@ -67,7 +67,8 @@ await ctx.addInitScript(({ services }) => {
         return new Promise((resolve) => setTimeout(() => resolve(0), 250));
       }
       if (cmd === "drive_download") return "/home/user/Downloads/file.pdf";
-      if (cmd === "drive_create_folder" || cmd === "drive_rename" || cmd === "drive_delete" || cmd === "drive_move") return null;
+      if (cmd === "drive_create_folder") { window.__folderCreates = (window.__folderCreates ?? 0) + 1; return null; }
+      if (cmd === "drive_rename" || cmd === "drive_delete" || cmd === "drive_move") return null;
       if (cmd === "drive_item") return null;
       // One refresh for every service, and the event it finishes with.
       if (cmd === "sync_all" || cmd === "sync_status")
@@ -282,6 +283,30 @@ let failures = 0;
   await page.close();
 }
 
+
+// ── Drive: a name already in the folder is refused before iCloud is asked ─────────────
+// iCloud declines a second thing of the same name with a bare "UNKNOWN", which read as the
+// folder having been made and then lost. Finder refuses it up front and says why; so does this.
+{
+  const page = await ctx.newPage();
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "iCloud Drive" }).click();
+  await page.waitForSelector(".drive-rows");
+  await page.getByRole("button", { name: "New Folder" }).click();
+  await page.keyboard.type("downloads");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(400);
+  const creates = await page.evaluate(() => window.__folderCreates ?? 0);
+  const said = await page.locator(".drive .error, [role=alert]").allInnerTexts();
+  const refused = creates === 0 && said.some((t) => /already something called/.test(t));
+  console.log(
+    refused
+      ? "PASS a name already in the folder is refused, and says so"
+      : `FAIL a duplicate name sent ${creates} create(s), said ${JSON.stringify(said)}`
+  );
+  if (!refused) failures++;
+  await page.close();
+}
 
 // ── Drive: a rapid double click must never duplicate the breadcrumb ────────────────────
 // The actual bug: an open() in flight let a second click on the same stale row append a

@@ -179,6 +179,27 @@ pub async fn download_to(
     Ok(())
 }
 
+/// What a `createFolders` reply says happened.
+///
+/// Apple answers 200 either way. A folder it made comes back described, with `status: "OK"`;
+/// one it declined comes back as the client id and a status alone — `UNKNOWN` for a name
+/// already used in that folder, which is what a second submit of the same name produced. That
+/// used to surface as "Apple created the folder but didn't describe it", which was false.
+fn created_folder(body: &Value, name: &str) -> Result<DriveItem> {
+    let folder = body
+        .pointer("/folders/0")
+        .ok_or_else(|| Error::Protocol("Drive's answer named no folder at all".into()))?;
+    let status = folder.get("status").and_then(Value::as_str).unwrap_or("OK");
+    if status != "OK" {
+        return Err(Error::Protocol(format!(
+            "iCloud Drive didn't create \u{201c}{name}\u{201d} ({status}). \
+             Something with that name may already be here."
+        )));
+    }
+    item_from(folder)
+        .ok_or_else(|| Error::Protocol("Drive's answer described the folder without an id".into()))
+}
+
 /// Create a folder inside `parent_id`. Returns the item Apple stored.
 pub async fn create_folder(
     http: &reqwest::Client,
@@ -213,9 +234,7 @@ pub async fn create_folder(
 
     let body: Value = serde_json::from_str(&text)
         .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
-    body.pointer("/folders/0")
-        .and_then(item_from)
-        .ok_or_else(|| Error::Protocol("Apple created the folder but didn't describe it".into()))
+    created_folder(&body, name)
 }
 
 /// The parent's own listing, straight from Apple — for finding an item's *current* etag
@@ -416,6 +435,26 @@ pub async fn move_to(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod created_folder_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The two replies Apple gives, both measured: a made folder, and a second create of the
+    /// same name.
+    #[test]
+    fn a_declined_folder_is_reported_as_declined() {
+        let made = json!({ "folders": [{ "drivewsid": "FOLDER::com.apple.CloudDocs::A",
+            "name": "Wallp", "type": "FOLDER", "status": "OK", "etag": "2y8" }] });
+        assert_eq!(created_folder(&made, "Wallp").unwrap().name, "Wallp");
+
+        let declined = json!({ "folders": [{ "clientId": "7222bf20", "status": "UNKNOWN" }] });
+        let message = created_folder(&declined, "Wallp").unwrap_err().to_string();
+        assert!(message.contains("didn't create"), "{message}");
+        assert!(!message.contains("created the folder"), "{message}");
+    }
 }
 
 #[cfg(test)]

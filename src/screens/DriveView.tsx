@@ -266,19 +266,34 @@ export function DriveView() {
     };
   }, [upload, here.id]);
 
+  /**
+   * One folder per name typed. Enter submits, which closes the field, and closing it blurs
+   * the field, which submitted again with the same name still in hand — Apple made the folder
+   * the first time and declined the second, and the refusal was what showed.
+   */
+  const folderPending = useRef(false);
   const createFolder = useCallback(async () => {
+    if (folderPending.current) return;
     const name = newFolderName.trim();
     setCreatingFolder(false);
     setNewFolderName("");
     if (!name) return;
+    // Finder will not put two things of one name in a folder; neither will iCloud.
+    if (items.some((i) => i.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      setError(`There's already something called \u201c${name}\u201d here.`);
+      return;
+    }
+    folderPending.current = true;
     setError(null);
     try {
       await api.driveCreateFolder(here.id, name);
       await refresh();
     } catch (e) {
       setError(messageOf(e));
+    } finally {
+      folderPending.current = false;
     }
-  }, [newFolderName, here.id, refresh]);
+  }, [newFolderName, here.id, refresh, items]);
 
   return (
     <div className={`drive${dropping ? " is-dropping" : ""}`}>
