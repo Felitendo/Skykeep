@@ -313,4 +313,12 @@ pub const MIGRATIONS: &[&str] = &[
         updated_at  INTEGER NOT NULL
     ) STRICT;
     "#,
+    // 21 — the order a list keeps its reminders in.
+    //
+    // A list set to manual order holds it as `ReminderIDs`, every reminder in it by id in the
+    // order they were dragged into. Ignored, every list came out sorted by due date, which is
+    // only right for the lists set to sort that way.
+    r#"
+    ALTER TABLE reminder_lists ADD COLUMN reminder_order TEXT;
+    "#,
 ];

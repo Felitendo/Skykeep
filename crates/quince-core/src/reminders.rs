@@ -44,6 +44,86 @@ pub struct ReminderList {
     /// How the list orders its reminders: `manual`, `displayDate_asc`, and so on.
     #[serde(default)]
     pub sorting: Option<String>,
+    /// Every reminder in the list by id, in the order the phone keeps them when sorting by
+    /// hand. Read here, never sent to the window: a busy list holds hundreds.
+    #[serde(skip)]
+    pub reminder_order: Vec<String>,
+}
+
+/// Put a list's reminders in the order its own setting asks for.
+///
+/// Apple keeps the setting on the list as `SortingStyle`: `manual`, or a key and a direction
+/// such as `displayDate_asc`. By hand means the list's `ReminderIDs`; a reminder missing
+/// from those — one made somewhere that did not add it — goes after them, oldest first, which
+/// is where a new one lands. Whatever the setting, what is still to do comes before what is
+/// done, and ties fall back to the hand order so nothing jumps about between refreshes.
+fn sort_as_the_list_does(
+    rows: &mut [(Reminder, Option<i64>)],
+    sorting: Option<&str>,
+    order: &[String],
+) {
+    let uuid = |guid: &str| guid.rsplit('/').next().unwrap_or(guid).to_ascii_uppercase();
+    let place: std::collections::HashMap<String, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.to_ascii_uppercase(), i))
+        .collect();
+    let by_hand = |(r, created): &(Reminder, Option<i64>)| {
+        (
+            place.get(&uuid(&r.guid)).copied().unwrap_or(usize::MAX),
+            created.unwrap_or(i64::MAX),
+        )
+    };
+    let (key, descending) = match (sorting, sorting.and_then(|s| s.rsplit_once('_'))) {
+        (_, Some((key, direction))) => (key, direction == "desc"),
+        // A list that states no order and holds none by hand — one from the older web
+        // service — is sorted by date, as it always was here.
+        (None, None) if order.is_empty() => ("displayDate", false),
+        _ => ("manual", false),
+    };
+    rows.sort_by(|a, b| {
+        use std::cmp::Ordering;
+        let done = a.0.completed_at.is_some().cmp(&b.0.completed_at.is_some());
+        let chosen = match key {
+            // Undated ones go last whichever way the dates run, as they do on the phone.
+            "displayDate" | "dueDate" => match (a.0.due_at, b.0.due_at) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            },
+            "creationDate" => a.1.cmp(&b.1),
+            "title" => crate::fold::natural(&a.0.title, &b.0.title),
+            // Apple's scale runs 1 (high) to 9 (low), with 0 meaning none at all.
+            "priority" => {
+                let rank = |p: i64| if p == 0 { 10 } else { p };
+                rank(b.0.priority).cmp(&rank(a.0.priority))
+            }
+            _ => Ordering::Equal,
+        };
+        let chosen = if descending && key != "displayDate" && key != "dueDate" {
+            chosen.reverse()
+        } else if descending {
+            // Descending dates still keep the undated at the end.
+            match (a.0.due_at, b.0.due_at) {
+                (Some(_), Some(_)) => chosen.reverse(),
+                _ => chosen,
+            }
+        } else {
+            chosen
+        };
+        done.then(chosen).then_with(|| by_hand(a).cmp(&by_hand(b)))
+    });
+}
+
+fn order_json(order: &[String]) -> Option<String> {
+    (!order.is_empty()).then(|| serde_json::to_string(order).unwrap_or_default())
+}
+
+fn order_from_json(stored: Option<String>) -> Vec<String> {
+    stored
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 /// A folder of lists. It holds no reminders of its own.
@@ -210,13 +290,15 @@ impl Library {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled,
-                                             emblem, group_guid, pinned, sorting, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                             emblem, group_guid, pinned, sorting,
+                                             reminder_order, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT(guid) DO UPDATE SET
                    title = excluded.title, colour = excluded.colour, ctag = excluded.ctag,
                    sort_order = excluded.sort_order, enabled = excluded.enabled,
                    emblem = excluded.emblem, group_guid = excluded.group_guid,
                    pinned = excluded.pinned, sorting = excluded.sorting,
+                   reminder_order = excluded.reminder_order,
                    updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -232,6 +314,7 @@ impl Library {
                     l.group_guid,
                     i64::from(l.pinned),
                     l.sorting,
+                    order_json(&l.reminder_order),
                     stamp
                 ])?;
             }
@@ -520,13 +603,15 @@ impl Library {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled,
-                                             emblem, group_guid, pinned, sorting, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                             emblem, group_guid, pinned, sorting,
+                                             reminder_order, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT(guid) DO UPDATE SET
                    title = excluded.title, colour = excluded.colour, ctag = excluded.ctag,
                    sort_order = excluded.sort_order, enabled = excluded.enabled,
                    emblem = excluded.emblem, group_guid = excluded.group_guid,
                    pinned = excluded.pinned, sorting = excluded.sorting,
+                   reminder_order = excluded.reminder_order,
                    updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -542,6 +627,7 @@ impl Library {
                     l.group_guid,
                     i64::from(l.pinned),
                     l.sorting,
+                    order_json(&l.reminder_order),
                     stamp
                 ])?;
             }
@@ -640,7 +726,7 @@ impl Library {
     pub fn reminder_lists(&self) -> Result<Vec<ReminderList>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, title, colour, ctag, sort_order, enabled,
-                    emblem, group_guid, pinned, sorting
+                    emblem, group_guid, pinned, sorting, reminder_order
              FROM reminder_lists ORDER BY sort_order, title",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -655,6 +741,7 @@ impl Library {
                 group_guid: row.get(7)?,
                 pinned: row.get::<_, i64>(8)? != 0,
                 sorting: row.get(9)?,
+                reminder_order: order_from_json(row.get(10)?),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -751,21 +838,21 @@ impl Library {
     }
 
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
+        let list = self
+            .reminder_lists()?
+            .into_iter()
+            .find(|l| l.guid == list_guid);
         let mut stmt = self.conn.prepare(
             "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
-                    parent_guid, recur_frequency, recur_interval, etag, timezone, section_guid
+                    parent_guid, recur_frequency, recur_interval, etag, timezone, section_guid,
+                    CASE WHEN json_valid(raw)
+                         THEN json_extract(raw, '$.fields.CreationDate.value') END
              FROM reminders
-             WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)
-             ORDER BY completed_at IS NOT NULL,
-                      due_at IS NULL, due_at,
-                      priority DESC,
-                      title
-             LIMIT ?3",
+             WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)",
         )?;
-        let rows = stmt.query_map(
-            params![list_guid, i64::from(include_done), MOST_AT_ONCE],
-            |row| {
-                Ok(Reminder {
+        let rows = stmt.query_map(params![list_guid, i64::from(include_done)], |row| {
+            Ok((
+                Reminder {
                     guid: row.get(0)?,
                     list_guid: row.get(1)?,
                     title: row.get(2)?,
@@ -781,10 +868,17 @@ impl Library {
                     raw: None,
                     timezone: row.get(12)?,
                     section_guid: row.get(13)?,
-                })
-            },
-        )?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+                },
+                row.get::<_, Option<i64>>(14).unwrap_or(None),
+            ))
+        })?;
+        let mut found = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let (sorting, order) = list
+            .map(|l| (l.sorting, l.reminder_order))
+            .unwrap_or_default();
+        sort_as_the_list_does(&mut found, sorting.as_deref(), &order);
+        found.truncate(MOST_AT_ONCE);
+        Ok(found.into_iter().map(|(r, _)| r).collect())
     }
 }
 
@@ -1756,5 +1850,94 @@ mod search_tests {
         assert_eq!(found("run evening"), vec!["A"]);
         assert!(found("evening plants").is_empty());
         assert!(found("  ").is_empty());
+    }
+}
+
+/// A list's reminders in the order the list itself asks for.
+#[cfg(test)]
+mod list_sorting_tests {
+    use super::*;
+
+    fn reminder(guid: &str, title: &str, due: Option<i64>, priority: i64) -> Reminder {
+        Reminder {
+            guid: format!("Reminder/{guid}"),
+            list_guid: "List/L".into(),
+            title: title.into(),
+            notes: None,
+            due_at: due,
+            completed_at: None,
+            priority,
+            flagged: false,
+            parent_guid: None,
+            recur_frequency: None,
+            recur_interval: None,
+            etag: None,
+            raw: None,
+            timezone: None,
+            section_guid: None,
+        }
+    }
+
+    fn library(sorting: &str, order: &[&str]) -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "List/L".into(),
+            title: "L".into(),
+            enabled: true,
+            sorting: Some(sorting.into()),
+            reminder_order: order.iter().map(ToString::to_string).collect(),
+            ..Default::default()
+        }])
+        .unwrap();
+        lib.put_reminders(&[
+            reminder("aaa", "Charlie", Some(300), 0),
+            reminder("bbb", "alpha", None, 1),
+            reminder("ccc", "Bravo", Some(100), 9),
+            // Made somewhere that did not add it to the list's order.
+            reminder("ddd", "Delta", Some(200), 5),
+        ])
+        .unwrap();
+        lib
+    }
+
+    fn titles(lib: &Library) -> Vec<String> {
+        lib.reminders_in("List/L", false)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.title)
+            .collect()
+    }
+
+    /// By hand is the list's own order. It came out sorted by date, which is only right for
+    /// a list that asks for that.
+    #[test]
+    fn a_list_sorted_by_hand_keeps_its_order_and_puts_strays_last() {
+        let lib = library("manual", &["CCC", "aaa", "BBB"]);
+        assert_eq!(titles(&lib), ["Bravo", "Charlie", "alpha", "Delta"]);
+    }
+
+    #[test]
+    fn a_list_sorted_by_date_puts_the_undated_last() {
+        assert_eq!(
+            titles(&library("displayDate_asc", &[])),
+            ["Bravo", "Delta", "Charlie", "alpha"]
+        );
+        assert_eq!(
+            titles(&library("displayDate_desc", &[])),
+            ["Charlie", "Delta", "Bravo", "alpha"]
+        );
+    }
+
+    #[test]
+    fn title_and_priority_sort_as_the_phone_does() {
+        assert_eq!(
+            titles(&library("title_asc", &[])),
+            ["alpha", "Bravo", "Charlie", "Delta"]
+        );
+        // Highest first: 1 is high, 5 medium, 9 low, 0 none.
+        assert_eq!(
+            titles(&library("priority_desc", &[])),
+            ["alpha", "Delta", "Bravo", "Charlie"]
+        );
     }
 }

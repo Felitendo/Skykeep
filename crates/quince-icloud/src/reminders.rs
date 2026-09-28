@@ -482,6 +482,10 @@ fn list_from_record(record: &Value) -> Option<ReminderList> {
         group_guid: field::reference(record, "ParentList"),
         pinned: is_pinned(record),
         sorting: field::string(record, "SortingStyle"),
+        // A JSON array of reminder ids in a string field, in the order they were arranged.
+        reminder_order: field::string(record, "ReminderIDs")
+            .and_then(|ids| serde_json::from_str::<Vec<String>>(&ids).ok())
+            .unwrap_or_default(),
         // Apple's List record carries no sort order — the earlier `SortOrder` here read a
         // field that has never existed, so every list scored zero and the sidebar came out in
         // whatever order the database happened to return. That is why a new reminder always

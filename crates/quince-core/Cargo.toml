@@ -10,8 +10,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 jiff = "0.2.37"
 serde.workspace = true
 thiserror = "2"
+serde_json.workspace = true
 icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile = "3"
