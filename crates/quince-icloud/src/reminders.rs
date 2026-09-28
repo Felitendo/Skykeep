@@ -602,36 +602,60 @@ fn list_order_from(record: &Value) -> Vec<String> {
 /// So the question asked of it is whether it still describes the account: most of what it names
 /// should still be there. A list it has not heard of is just a new one and sorts after; a list
 /// of names that are mostly gone is a leftover and is ignored.
-fn apply_list_order(lists: &mut [ReminderList], order: &[String]) {
+fn apply_list_order(
+    lists: &mut [ReminderList],
+    groups: &mut [quince_core::reminders::ReminderGroup],
+    order: &[String],
+) {
     if order.is_empty() {
         return;
     }
+    let uuid_of = |guid: &str| guid.rsplit('/').next().unwrap_or(guid).to_string();
     let position = |guid: &str| {
-        let uuid = guid.rsplit('/').next().unwrap_or(guid);
-        order.iter().position(|id| id.eq_ignore_ascii_case(uuid))
+        let uuid = uuid_of(guid);
+        order.iter().position(|id| id.eq_ignore_ascii_case(&uuid))
     };
+    let known: Vec<String> = lists
+        .iter()
+        .map(|l| uuid_of(&l.guid))
+        .chain(groups.iter().map(|g| uuid_of(&g.guid)))
+        .collect();
     let still_here = order
         .iter()
-        .filter(|id| {
-            lists.iter().any(|l| {
-                l.guid
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&l.guid)
-                    .eq_ignore_ascii_case(id)
-            })
-        })
+        .filter(|id| known.iter().any(|k| k.eq_ignore_ascii_case(id)))
         .count();
     if still_here * 2 < order.len() {
         return;
     }
-    for list in lists.iter_mut() {
-        // A list the arrangement has not heard of sits after the ones it has, keeping the
-        // order it arrived in rather than tying with every other stranger.
-        list.sort_order = position(&list.guid)
+    // A list or group the arrangement has not heard of sits after the ones it has, keeping
+    // the order it arrived in rather than tying with every other stranger.
+    let place = |guid: &str, arrived: i64| {
+        position(guid)
             .and_then(|i| i64::try_from(i).ok())
-            .unwrap_or_else(|| i64::from(u32::MAX) + list.sort_order);
+            .unwrap_or_else(|| i64::from(u32::MAX) + arrived)
+    };
+    for list in lists.iter_mut() {
+        list.sort_order = place(&list.guid, list.sort_order);
     }
+    for group in groups.iter_mut() {
+        group.sort_order = place(&group.guid, group.sort_order);
+    }
+}
+
+/// The order lists and groups appear in on the phone.
+///
+/// It is on the account record, as `ListIDsMergeableOrdering`: one ordered set holding every
+/// list and group, a group's lists ordered among the rest by the same sequence. The
+/// `ManualSortHint` read before this is a leftover — on a real account seven of its eight
+/// ids named lists that no longer exist.
+fn account_list_order(record: &Value) -> Vec<String> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    record
+        .pointer("/fields/ListIDsMergeableOrdering/value")
+        .and_then(Value::as_str)
+        .and_then(|encoded| B64.decode(encoded.trim()).ok())
+        .and_then(|bytes| crate::mergeable::ordered_strings(&bytes))
+        .unwrap_or_default()
 }
 
 /// Read reminders from CloudKit into the local library.
@@ -771,6 +795,7 @@ pub fn apply_cloudkit(
     let mut gone_lists: Vec<String> = Vec::new();
     let mut list_order: Vec<String> = Vec::new();
     let mut groups: Vec<quince_core::reminders::ReminderGroup> = Vec::new();
+    let mut account_order: Vec<String> = Vec::new();
     // A RecurrenceRule is its own record pointing back at the reminder it governs.
     let mut rules: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
 
@@ -852,7 +877,13 @@ pub fn apply_cloudkit(
                     }
                 }
             }
-            // Carries the order the lists appear in on the user's other devices.
+            "Account" => {
+                let order = account_list_order(record);
+                if !order.is_empty() {
+                    account_order = order;
+                }
+            }
+            // An older record of the order, used only where the account holds none.
             "ManualSortHint" => {
                 let order = list_order_from(record);
                 if !order.is_empty() {
@@ -895,7 +926,26 @@ pub fn apply_cloudkit(
     }
 
     // Match the order the phone shows before storing.
-    apply_list_order(&mut lists, &list_order);
+    let order = if account_order.is_empty() {
+        &list_order
+    } else {
+        &account_order
+    };
+    apply_list_order(&mut lists, &mut groups, order);
+    // An incremental pass that carried no order says nothing about where anything sits, and
+    // its walk positions count only what changed. A list already stored keeps its place.
+    if incremental && order.is_empty() {
+        let stored: std::collections::HashMap<String, i64> = library
+            .reminder_lists()?
+            .into_iter()
+            .map(|l| (l.guid, l.sort_order))
+            .collect();
+        for list in &mut lists {
+            if let Some(&at) = stored.get(&list.guid) {
+                list.sort_order = at;
+            }
+        }
+    }
 
     if incremental {
         library.merge_reminder_lists(&lists)?;
@@ -2368,7 +2418,11 @@ mod order_tests {
     #[test]
     fn lists_take_the_order_the_phone_shows() {
         let mut lists = vec![list("List/CCC"), list("List/AAA"), list("List/BBB")];
-        apply_list_order(&mut lists, &["AAA".into(), "BBB".into(), "CCC".into()]);
+        apply_list_order(
+            &mut lists,
+            &mut [],
+            &["AAA".into(), "BBB".into(), "CCC".into()],
+        );
         lists.sort_by_key(|l| l.sort_order);
         let order: Vec<&str> = lists.iter().map(|l| l.guid.as_str()).collect();
         assert_eq!(order, vec!["List/AAA", "List/BBB", "List/CCC"]);
@@ -2378,7 +2432,7 @@ mod order_tests {
     #[test]
     fn unmentioned_lists_sort_after_the_rest() {
         let mut lists = vec![list("List/NEW"), list("List/AAA")];
-        apply_list_order(&mut lists, &["AAA".into()]);
+        apply_list_order(&mut lists, &mut [], &["AAA".into()]);
         assert!(
             lists
                 .iter()
@@ -2396,7 +2450,7 @@ mod order_tests {
     #[test]
     fn matching_ignores_case() {
         let mut lists = vec![list("List/abc")];
-        apply_list_order(&mut lists, &["ABC".into()]);
+        apply_list_order(&mut lists, &mut [], &["ABC".into()]);
         assert_eq!(lists[0].sort_order, 0);
     }
 
@@ -2405,7 +2459,7 @@ mod order_tests {
     fn an_absent_or_broken_hint_changes_nothing() {
         let mut lists = vec![list("List/AAA")];
         lists[0].sort_order = 7;
-        apply_list_order(&mut lists, &[]);
+        apply_list_order(&mut lists, &mut [], &[]);
         assert_eq!(lists[0].sort_order, 7);
 
         let broken = json!({
@@ -3306,6 +3360,7 @@ mod list_shape_tests {
         let before: Vec<i64> = lists.iter().map(|l| l.sort_order).collect();
         apply_list_order(
             &mut lists,
+            &mut [],
             &["GONE1".into(), "GONE2".into(), "GONE3".into(), "A".into()],
         );
         let after: Vec<i64> = lists.iter().map(|l| l.sort_order).collect();
@@ -3328,7 +3383,7 @@ mod list_shape_tests {
                 ..Default::default()
             })
             .collect();
-        apply_list_order(&mut lists, &["B".into(), "A".into()]);
+        apply_list_order(&mut lists, &mut [], &["B".into(), "A".into()]);
         lists.sort_by_key(|l| l.sort_order);
         let order: Vec<&str> = lists.iter().map(|l| l.guid.as_str()).collect();
         assert_eq!(order, vec!["List/B", "List/A", "List/NEW"]);
@@ -3401,9 +3456,9 @@ mod other_accounts_tests {
             enabled: true,
             ..Default::default()
         }];
-        apply_list_order(&mut lists, &[]);
+        apply_list_order(&mut lists, &mut [], &[]);
         assert_eq!(lists[0].sort_order, 0);
-        apply_list_order(&mut lists, &["SOMETHING-ELSE".into()]);
+        apply_list_order(&mut lists, &mut [], &["SOMETHING-ELSE".into()]);
         assert_eq!(
             lists[0].sort_order, 0,
             "an arrangement about other lists is not ours"
@@ -3651,5 +3706,125 @@ mod membership_tests {
         assert!(memberships_from(b"not json").is_empty());
         assert!(memberships_from(br#"{"memberships":"wrong"}"#).is_empty());
         assert!(memberships_from(br#"{"other":[]}"#).is_empty());
+    }
+}
+
+/// Where lists and groups sit, as the phone has them.
+#[cfg(test)]
+mod account_order_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn list(name: &str, title: &str, group: Option<&str>, is_group: bool) -> Value {
+        let mut fields = json!({
+            "Name": { "type": "STRING", "value": title },
+            "IsGroup": { "type": "NUMBER_INT64", "value": i64::from(is_group) },
+        });
+        if let Some(parent) = group {
+            fields["ParentList"] =
+                json!({ "type": "REFERENCE", "value": { "recordName": parent } });
+        }
+        json!({ "recordName": name, "recordType": "List", "fields": fields })
+    }
+
+    fn account(order: &[&str]) -> Value {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        let wire: Vec<usize> = (0..order.len()).rev().collect();
+        let bytes = crate::mergeable::build::ordered_set(order, &wire);
+        json!({
+            "recordName": "Account/x",
+            "recordType": "Account",
+            "fields": { "ListIDsMergeableOrdering": { "type": "BYTES", "value": B64.encode(bytes) } }
+        })
+    }
+
+    fn pass(library: &mut quince_core::Library, records: Vec<Value>, incremental: bool) {
+        apply_cloudkit(
+            library,
+            RemindersFetch {
+                memberships: std::collections::HashMap::new(),
+                records,
+                token: Some("t".into()),
+                incremental,
+            },
+        )
+        .unwrap();
+    }
+
+    fn walked() -> Vec<Value> {
+        // Walked in an order that is not the phone's.
+        vec![
+            list("List/GOALS", "Life Goals", Some("List/LIFE"), false),
+            list("List/LIFE", "Life", None, true),
+            list("List/DAILY", "Daily", Some("List/LIFE"), false),
+            list("List/UNI", "University", None, true),
+            list("List/TODO", "To-Do", None, false),
+        ]
+    }
+
+    /// The account record's order is the phone's, for groups as much as lists. The stale
+    /// hint beside it named lists that no longer exist, so the sidebar followed the walk.
+    #[test]
+    fn lists_and_groups_follow_the_account_record() {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        let mut records = walked();
+        records.push(account(&["DAILY", "TODO", "UNI", "LIFE", "GOALS"]));
+        pass(&mut library, records, false);
+
+        let order = |lists: Vec<ReminderList>| -> Vec<String> {
+            let mut lists = lists;
+            lists.sort_by_key(|l| l.sort_order);
+            lists.into_iter().map(|l| l.title).collect()
+        };
+        assert_eq!(
+            order(library.reminder_lists().unwrap()),
+            ["Daily", "To-Do", "Life Goals"]
+        );
+        let groups: Vec<String> = library
+            .reminder_groups()
+            .unwrap()
+            .into_iter()
+            .map(|g| g.title)
+            .collect();
+        assert_eq!(groups, ["University", "Life"]);
+        // And groups and lists share one sequence: University is before Life Goals's group.
+        let uni = library.reminder_groups().unwrap()[0].sort_order;
+        let todo = library
+            .reminder_lists()
+            .unwrap()
+            .iter()
+            .find(|l| l.title == "To-Do")
+            .unwrap()
+            .sort_order;
+        assert!(todo < uni);
+    }
+
+    /// A later pass with no order in it leaves every list where it was.
+    #[test]
+    fn a_pass_without_an_order_keeps_the_places_it_has() {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        let mut records = walked();
+        records.push(account(&["DAILY", "TODO", "UNI", "LIFE", "GOALS"]));
+        pass(&mut library, records, false);
+        let before: Vec<(String, i64)> = library
+            .reminder_lists()
+            .unwrap()
+            .into_iter()
+            .map(|l| (l.title, l.sort_order))
+            .collect();
+
+        // Only Life Goals changed; it arrives first in this walk.
+        pass(
+            &mut library,
+            vec![list("List/GOALS", "Life Goals", Some("List/LIFE"), false)],
+            true,
+        );
+        let after: Vec<(String, i64)> = library
+            .reminder_lists()
+            .unwrap()
+            .into_iter()
+            .map(|l| (l.title, l.sort_order))
+            .collect();
+        assert_eq!(before, after);
     }
 }

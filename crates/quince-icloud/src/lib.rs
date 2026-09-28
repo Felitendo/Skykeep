@@ -8,6 +8,7 @@ pub mod ckdocument;
 pub mod cloudkit;
 pub mod contacts;
 pub mod drive;
+pub mod mergeable;
 pub mod notes;
 pub mod reminders;
 pub mod sync;
