@@ -3225,6 +3225,7 @@ dependencies = [
 name = "quince-core"
 version = "0.1.0"
 dependencies = [
+ "icu_normalizer",
  "jiff",
  "rusqlite",
  "serde",

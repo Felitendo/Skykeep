@@ -630,7 +630,7 @@ impl Library {
     /// ASCII alone. Bounded like every other view, so a search that matches everything on a
     /// ten-year account does not carry all of it into the window.
     pub fn search_reminders(&self, query: &str) -> Result<Vec<Reminder>> {
-        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let words = crate::fold::words(query);
         if words.is_empty() {
             return Ok(Vec::new());
         }
@@ -665,9 +665,8 @@ impl Library {
         let mut found = Vec::new();
         for row in rows {
             let r = row?;
-            let haystack =
-                format!("{}\n{}", r.title, r.notes.as_deref().unwrap_or("")).to_lowercase();
-            if words.iter().all(|w| haystack.contains(w.as_str())) {
+            let haystack = format!("{}\n{}", r.title, r.notes.as_deref().unwrap_or(""));
+            if crate::fold::holds_all(&crate::fold::fold(&haystack), &words) {
                 found.push(r);
                 if found.len() == MOST_AT_ONCE {
                     break;
@@ -1670,6 +1669,7 @@ mod search_tests {
     #[test]
     fn case_folds_beyond_ascii_and_every_word_counts() {
         assert_eq!(found("CAFÉ"), vec!["D"]);
+        assert_eq!(found("cafe"), vec!["D"]);
         assert_eq!(found("run evening"), vec!["A"]);
         assert!(found("evening plants").is_empty());
         assert!(found("  ").is_empty());

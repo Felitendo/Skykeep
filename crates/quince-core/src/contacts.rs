@@ -90,7 +90,7 @@ impl Contact {
         } else {
             key
         };
-        key.to_lowercase()
+        crate::fold::fold(&key)
     }
 }
 
@@ -202,26 +202,19 @@ impl Library {
     /// The address book in display order, optionally filtered.
     ///
     /// The filter matches names and any stored method, so searching a phone number finds the
-    /// person it belongs to.
+    /// person it belongs to. Every word must match, in any order, without regard to case or
+    /// accents, and a number matches however it was typed: "98765 43210" finds
+    /// "+91 98765-43210". That is done here rather than in SQL, which folds ASCII alone and
+    /// knows nothing about phone formatting.
     pub fn contacts(&self, search: Option<&str>) -> Result<Vec<Contact>> {
-        let needle = search
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("%{}%", s.to_lowercase()));
+        let words = crate::fold::words(search.unwrap_or(""));
 
         let mut stmt = self.conn.prepare(
             "SELECT c.guid, c.first_name, c.middle_name, c.last_name, c.company, c.is_company,
                     c.birthday, c.notes, c.photo_url, c.photo_signature, c.photo_crop, c.etag
-             FROM contacts c
-             WHERE ?1 IS NULL
-                OR lower(coalesce(c.first_name, '') || ' ' || coalesce(c.middle_name, '')
-                         || ' ' || coalesce(c.last_name, '')
-                         || ' ' || coalesce(c.company, '')) LIKE ?1
-                OR EXISTS (SELECT 1 FROM contact_methods m
-                           WHERE m.contact_guid = c.guid AND lower(m.value) LIKE ?1)
-             ORDER BY c.sort_name",
+             FROM contacts c",
         )?;
-        let rows = stmt.query_map(params![needle], |row| {
+        let rows = stmt.query_map([], |row| {
             Ok(Contact {
                 guid: row.get(0)?,
                 first_name: row.get(1)?,
@@ -240,21 +233,85 @@ impl Library {
         })?;
         let mut contacts = rows.collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let mut methods = self.conn.prepare(
-            "SELECT kind, label, value FROM contact_methods
-             WHERE contact_guid = ?1 ORDER BY position",
+        // One pass over every method rather than a query per person: an address book of a
+        // few thousand would otherwise cost a few thousand queries on every keystroke.
+        let mut methods: std::collections::HashMap<String, Vec<ContactMethod>> =
+            std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT contact_guid, kind, label, value FROM contact_methods
+             ORDER BY contact_guid, position",
         )?;
-        for contact in &mut contacts {
-            let rows = methods.query_map(params![contact.guid], |row| {
-                Ok(ContactMethod {
-                    kind: row.get(0)?,
-                    label: row.get(1)?,
-                    value: row.get(2)?,
-                })
-            })?;
-            contact.methods = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ContactMethod {
+                    kind: row.get(1)?,
+                    label: row.get(2)?,
+                    value: row.get(3)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (guid, method) = row?;
+            methods.entry(guid).or_default().push(method);
         }
-        Ok(contacts)
+        for contact in &mut contacts {
+            contact.methods = methods.remove(&contact.guid).unwrap_or_default();
+        }
+
+        if !words.is_empty() {
+            contacts.retain(|c| c.matches(&words));
+        }
+        let mut keyed: Vec<(String, Contact)> =
+            contacts.into_iter().map(|c| (c.sort_key(), c)).collect();
+        keyed.sort_by(|(a, _), (b, _)| crate::fold::natural(a, b));
+        Ok(keyed.into_iter().map(|(_, c)| c).collect())
+    }
+}
+
+/// Only the digits of a number, so its formatting stops mattering.
+fn digits(text: &str) -> String {
+    text.chars().filter(char::is_ascii_digit).collect()
+}
+
+/// True for a query word that reads as (part of) a phone number rather than a name.
+fn looks_like_number(word: &str) -> bool {
+    word.chars().any(|c| c.is_ascii_digit())
+        && word
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '(' | ')' | '.' | '/'))
+}
+
+impl Contact {
+    fn matches(&self, words: &[String]) -> bool {
+        let mut text = [
+            self.first_name.as_deref(),
+            self.middle_name.as_deref(),
+            self.last_name.as_deref(),
+            self.company.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+        for m in &self.methods {
+            text.push('\n');
+            text.push_str(&m.value);
+        }
+        let text = crate::fold::fold(&text);
+        let numbers: Vec<String> = self
+            .methods
+            .iter()
+            .filter(|m| m.kind == "phone")
+            .map(|m| digits(&m.value))
+            .collect();
+        words.iter().all(|w| {
+            text.contains(w.as_str())
+                || (looks_like_number(w) && {
+                    let d = digits(w);
+                    numbers.iter().any(|n| n.contains(&d))
+                })
+        })
     }
 }
 
@@ -282,6 +339,60 @@ mod tests {
                 value: format!("+91{guid}"),
             }],
         }
+    }
+
+    #[test]
+    fn search_ignores_case_accents_and_word_order() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_contacts(&[
+            contact("1", Some("Émile"), Some("Zola")),
+            contact("2", Some("Zoë"), Some("Ahuja")),
+        ])
+        .unwrap();
+        let found = |q: &str| -> Vec<String> {
+            lib.contacts(Some(q))
+                .unwrap()
+                .iter()
+                .map(|c| c.guid.clone())
+                .collect()
+        };
+        assert_eq!(found("emile"), ["1"]);
+        assert_eq!(found("ÉMILE"), ["1"]);
+        assert_eq!(found("zola emile"), ["1"]);
+        assert_eq!(found("zoe"), ["2"]);
+        // A wildcard character is a character, not a pattern.
+        assert!(found("%").is_empty());
+        assert!(found("_").is_empty());
+    }
+
+    #[test]
+    fn a_number_matches_however_it_was_typed() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut c = contact("1", Some("Meera"), None);
+        c.methods[0].value = "+91 98765-43210".into();
+        lib.put_contacts(&[c]).unwrap();
+        for typed in ["9876543210", "98765 43210", "(987) 65", "+91-98765"] {
+            assert_eq!(lib.contacts(Some(typed)).unwrap().len(), 1, "{typed}");
+        }
+        assert!(lib.contacts(Some("12345")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn accented_names_sort_with_their_letter() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_contacts(&[
+            contact("1", Some("Zoya"), Some("Zutshi")),
+            contact("2", Some("Émile"), Some("Écrivain")),
+            contact("3", Some("Aarav"), Some("Ahuja")),
+        ])
+        .unwrap();
+        let order: Vec<String> = lib
+            .contacts(None)
+            .unwrap()
+            .iter()
+            .map(|c| c.guid.clone())
+            .collect();
+        assert_eq!(order, ["3", "2", "1"]);
     }
 
     #[test]

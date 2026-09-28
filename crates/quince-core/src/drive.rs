@@ -111,13 +111,15 @@ impl Library {
     }
 
     /// What is inside a folder, folders first and then by name — how a file browser reads.
+    ///
+    /// Named the way Finder orders them: numbers as numbers and accents ignored, so "Scan 10"
+    /// follows "Scan 9" and "Été" sits among the E's. SQL's `lower` can do neither.
     pub fn drive_children(&self, parent_id: &str) -> Result<Vec<DriveItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT drivewsid, parent_id, name, extension, kind, size, child_count,
                     created_at, modified_at, etag
              FROM drive_items
-             WHERE parent_id = ?1
-             ORDER BY kind = 'FILE', lower(name)",
+             WHERE parent_id = ?1",
         )?;
         let rows = stmt.query_map(params![parent_id], |row| {
             Ok(DriveItem {
@@ -133,7 +135,13 @@ impl Library {
                 etag: row.get(9)?,
             })
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let mut items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        items.sort_by(|a, b| {
+            (!a.is_container())
+                .cmp(&!b.is_container())
+                .then_with(|| crate::fold::natural(&a.name, &b.name))
+        });
+        Ok(items)
     }
 
     /// One item by its identifier, for building a breadcrumb trail.
@@ -205,6 +213,29 @@ mod tests {
             .map(|i| i.name.clone())
             .collect();
         assert_eq!(names, vec!["apples", "Zebra", "Archive", "notes"]);
+    }
+
+    /// Finder's order: "Scan 10" after "Scan 9", and "Été" among the E's rather than after Z.
+    #[test]
+    fn names_sort_the_way_finder_sorts_them() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_drive_children(
+            ROOT,
+            &[
+                item("a", "Scan 10", "FILE"),
+                item("b", "Zoo", "FILE"),
+                item("c", "Scan 9", "FILE"),
+                item("d", "Été", "FILE"),
+            ],
+        )
+        .unwrap();
+        let names: Vec<String> = lib
+            .drive_children(ROOT)
+            .unwrap()
+            .iter()
+            .map(|i| i.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Été", "Scan 9", "Scan 10", "Zoo"]);
     }
 
     #[test]

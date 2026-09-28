@@ -262,12 +262,13 @@ impl Library {
     /// Notes whose title or text holds every word of `query`, in the list's own order.
     ///
     /// Matched here rather than in SQL, because SQLite folds case for ASCII alone: a search
-    /// for "Café" would miss "café", and so would anything written in a script with case of
-    /// its own. Every word has to appear, in any order, which is how Apple's search behaves.
+    /// for "café" would miss "CAFÉ", and so would anything written in a script with case of
+    /// its own. Accents are ignored as they are on the phone, so "cafe" finds it too. Every
+    /// word has to appear, in any order, which is how Apple's search behaves.
     /// Recently Deleted is left out, as it is on the phone. Bodies are read to match against
     /// and never returned — the results cross into the window like any other list.
     pub fn search_notes(&self, query: &str) -> Result<Vec<Note>> {
-        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let words = crate::fold::words(query);
         if words.is_empty() {
             return Ok(Vec::new());
         }
@@ -301,8 +302,8 @@ impl Library {
         let mut found = Vec::new();
         for row in rows {
             let (note, body) = row?;
-            let haystack = format!("{}\n{}", note.title, body).to_lowercase();
-            if words.iter().all(|w| haystack.contains(w.as_str())) {
+            let haystack = format!("{}\n{}", note.title, body);
+            if crate::fold::holds_all(&crate::fold::fold(&haystack), &words) {
                 found.push(note);
             }
         }
@@ -380,6 +381,12 @@ mod search_tests {
     fn case_is_folded_beyond_ascii() {
         assert_eq!(found(&library(), "CAFÉ"), vec!["B"]);
         assert_eq!(found(&library(), "తెలుగు"), vec!["C"]);
+    }
+
+    /// Accents are ignored, as on the phone: "cafe" finds "Café".
+    #[test]
+    fn accents_are_ignored() {
+        assert_eq!(found(&library(), "cafe"), vec!["B"]);
     }
 
     /// Every word must be there, in any order.
