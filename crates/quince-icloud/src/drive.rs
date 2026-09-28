@@ -109,9 +109,14 @@ pub async fn download_url(
     params: Vec<(String, String)>,
     item: &DriveItem,
 ) -> Result<String> {
+    // The zone in the path is the file's own. An app library — Keynote's, Shortcuts', a
+    // third party's — is a zone of its own, and asking for one of its files under the
+    // ordinary Drive zone gets "Could not find document" rather than the file. Every file
+    // in every app library was undownloadable while this said com.apple.CloudDocs.
     let url = format!(
-        "{}/ws/com.apple.CloudDocs/download/by_id",
-        docws_root.trim_end_matches('/')
+        "{}/ws/{}/download/by_id",
+        docws_root.trim_end_matches('/'),
+        zone_of(&item.drivewsid).unwrap_or(DOCUMENTS_ZONE)
     );
     let mut query = params;
     query.push((
@@ -1284,5 +1289,63 @@ mod app_library_tests {
             "the documents zone must get as far as trying: {err}"
         );
         std::fs::remove_file(&file).ok();
+    }
+}
+
+#[cfg(test)]
+mod download_zone_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn file(drivewsid: &str) -> DriveItem {
+        DriveItem {
+            drivewsid: drivewsid.into(),
+            parent_id: None,
+            name: "Morning".into(),
+            extension: Some("shortcut".into()),
+            kind: "FILE".into(),
+            size: Some(10),
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: None,
+        }
+    }
+
+    /// A file in an app library is asked for under that library's zone. Under the ordinary
+    /// Drive zone Apple answers "Could not find document" — measured against a Shortcuts file.
+    #[tokio::test]
+    async fn a_download_asks_for_the_file_under_its_own_zone() {
+        let server = MockServer::start().await;
+        for zone in ["iCloud.is.workflow.my.workflows", "com.apple.CloudDocs"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/ws/{zone}/download/by_id")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "data_token": { "url": format!("https://x/{zone}") } }),
+                ))
+                .mount(&server)
+                .await;
+        }
+        let http = reqwest::Client::new();
+        let got = download_url(
+            &http,
+            &server.uri(),
+            vec![],
+            &file("FILE::iCloud.is.workflow.my.workflows::ABC"),
+        )
+        .await
+        .unwrap();
+        assert!(got.ends_with("iCloud.is.workflow.my.workflows"), "{got}");
+
+        let ordinary = download_url(
+            &http,
+            &server.uri(),
+            vec![],
+            &file("FILE::com.apple.CloudDocs::XYZ"),
+        )
+        .await
+        .unwrap();
+        assert!(ordinary.ends_with("com.apple.CloudDocs"), "{ordinary}");
     }
 }
