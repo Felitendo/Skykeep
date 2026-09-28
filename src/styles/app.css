@@ -2431,3 +2431,18 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
   border-radius: 4px;
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
+
+/* Search above the list, where Apple puts it: quiet until typed in. */
+.notes-search {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+}
+.notes-search::placeholder { color: var(--text-3); }
+.notes-search:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--gold-ring); }

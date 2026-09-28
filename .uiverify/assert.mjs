@@ -369,6 +369,47 @@ let failures = 0;
   await page.close();
 }
 
+// ── Notes can be searched ─────────────────────────────────────────────────────────────
+{
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    const n = (guid, title) => ({ guid, folderGuid: "F", title, snippet: null, body: null,
+      locked: false, editable: true, pinned: false, createdAt: 1, modifiedAt: 1, etag: null });
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: (cb) => cb,
+      invoke: async (cmd, args) => {
+        if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+        if (cmd === "auth_resume") return true;
+        if (cmd === "account_services") return ["notes"];
+        if (cmd === "note_folders") return [{ guid: "F", title: "Notes", sortOrder: 0, parentGuid: null }];
+        if (cmd === "notes_in") return [n("A", "Curtains"), n("B", "Shopping")];
+        if (cmd === "notes_search") return args.query.toLowerCase().includes("curt") ? [n("A", "Curtains")] : [];
+        if (cmd === "note_body") return "";
+        if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
+        if (cmd === "plugin:event|listen") return 0;
+        return [];
+      },
+    };
+  });
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Notes", exact: true }).click();
+  await page.waitForTimeout(300);
+  await page.fill('input[aria-label="Search notes"]', "curt");
+  await page.waitForTimeout(300);
+  const shown = await page.locator(".notes-list").innerText();
+  const narrowed = shown.includes("Curtains") && !shown.includes("Shopping");
+  await page.press('input[aria-label="Search notes"]', "Escape");
+  await page.waitForTimeout(300);
+  const back = (await page.locator(".notes-list").innerText()).includes("Shopping");
+  console.log(
+    narrowed && back
+      ? "PASS searching narrows the notes, and Escape brings them back"
+      : `FAIL search: narrowed=${narrowed} back=${back}`
+  );
+  if (!(narrowed && back)) failures++;
+  await page.close();
+}
+
 // ── A list shows its own sections ─────────────────────────────────────────────────────
 // Inside a real list, reminders outside any section come first with no heading, then each
 // section under its own heading — how Apple shows it, and how the phone showed "🌅".

@@ -258,6 +258,152 @@ impl Library {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    /// Notes whose title or text holds every word of `query`, in the list's own order.
+    ///
+    /// Matched here rather than in SQL, because SQLite folds case for ASCII alone: a search
+    /// for "Café" would miss "café", and so would anything written in a script with case of
+    /// its own. Every word has to appear, in any order, which is how Apple's search behaves.
+    /// Recently Deleted is left out, as it is on the phone. Bodies are read to match against
+    /// and never returned — the results cross into the window like any other list.
+    pub fn search_notes(&self, query: &str) -> Result<Vec<Note>> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, folder_guid, title,
+                    coalesce(snippet, substr(body, 1, 200)), locked, pinned,
+                    created_at, modified_at, editable, etag, coalesce(body, '')
+             FROM notes
+             WHERE folder_guid IS NULL OR folder_guid != ?1
+             ORDER BY pinned DESC, modified_at DESC, title",
+        )?;
+        let rows = stmt.query_map(params![TRASH_FOLDER], |row| {
+            let body: String = row.get(10)?;
+            Ok((
+                Note {
+                    guid: row.get(0)?,
+                    folder_guid: row.get(1)?,
+                    title: row.get(2)?,
+                    snippet: row.get(3)?,
+                    body: None,
+                    locked: row.get::<_, i64>(4)? != 0,
+                    pinned: row.get::<_, i64>(5)? != 0,
+                    created_at: row.get(6)?,
+                    modified_at: row.get(7)?,
+                    editable: row.get::<_, i64>(8)? != 0,
+                    etag: row.get(9)?,
+                },
+                body,
+            ))
+        })?;
+        let mut found = Vec::new();
+        for row in rows {
+            let (note, body) = row?;
+            let haystack = format!("{}\n{}", note.title, body).to_lowercase();
+            if words.iter().all(|w| haystack.contains(w.as_str())) {
+                found.push(note);
+            }
+        }
+        Ok(found)
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn note(guid: &str, folder: &str, title: &str, body: &str) -> Note {
+        Note {
+            guid: guid.into(),
+            folder_guid: Some(folder.into()),
+            title: title.into(),
+            snippet: None,
+            body: Some(body.into()),
+            locked: false,
+            editable: true,
+            pinned: false,
+            created_at: Some(1),
+            modified_at: Some(1),
+            etag: None,
+        }
+    }
+
+    fn library() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_note_folders(&[
+            NoteFolder {
+                guid: "F".into(),
+                title: "Notes".into(),
+                sort_order: 0,
+                parent_guid: None,
+            },
+            NoteFolder {
+                guid: TRASH_FOLDER.into(),
+                title: "Recently Deleted".into(),
+                sort_order: 1,
+                parent_guid: None,
+            },
+        ])
+        .unwrap();
+        lib.put_notes(&[
+            note("A", "F", "Curtains", "Bathroom accessories like mirrors"),
+            note("B", "F", "Café list", "Flat white, then a croissant"),
+            note("C", "F", "తెలుగు", "Notes written in Telugu"),
+            note(
+                "D",
+                TRASH_FOLDER,
+                "Curtains old",
+                "deleted draft about mirrors",
+            ),
+        ])
+        .unwrap();
+        lib
+    }
+
+    fn found(lib: &Library, q: &str) -> Vec<String> {
+        lib.search_notes(q)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.guid)
+            .collect()
+    }
+
+    #[test]
+    fn a_word_in_the_body_finds_the_note() {
+        assert_eq!(found(&library(), "mirrors"), vec!["A"]);
+    }
+
+    /// SQLite folds ASCII only; this is the case that made matching live in Rust.
+    #[test]
+    fn case_is_folded_beyond_ascii() {
+        assert_eq!(found(&library(), "CAFÉ"), vec!["B"]);
+        assert_eq!(found(&library(), "తెలుగు"), vec!["C"]);
+    }
+
+    /// Every word must be there, in any order.
+    #[test]
+    fn every_word_has_to_appear() {
+        assert_eq!(found(&library(), "croissant flat"), vec!["B"]);
+        assert!(found(&library(), "croissant mirrors").is_empty());
+    }
+
+    /// Recently Deleted is not searched, as on the phone.
+    #[test]
+    fn deleted_notes_are_not_found() {
+        assert!(!found(&library(), "draft").contains(&"D".to_string()));
+    }
+
+    #[test]
+    fn nothing_typed_finds_nothing_and_nothing_carries_a_body() {
+        assert!(found(&library(), "   ").is_empty());
+        assert!(library()
+            .search_notes("mirrors")
+            .unwrap()
+            .iter()
+            .all(|n| n.body.is_none()));
+    }
 }
 
 #[cfg(test)]

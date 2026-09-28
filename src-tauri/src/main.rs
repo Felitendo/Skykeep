@@ -808,6 +808,13 @@ async fn note_folders(data: State<'_, Data>) -> UiResult<Vec<NoteFolder>> {
     library.note_folders().map_err(|e| e.to_string())
 }
 
+/// Notes holding every word of `query`, from every folder but Recently Deleted.
+#[tauri::command]
+async fn notes_search(query: String, data: State<'_, Data>) -> UiResult<Vec<Note>> {
+    let library = data.0.lock().await;
+    library.search_notes(&query).map_err(|e| e.to_string())
+}
+
 /// Notes in a folder, or every note when no folder is given.
 #[tauri::command]
 async fn notes_in(folder_guid: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Note>> {
@@ -1436,6 +1443,7 @@ fn main() {
             note_delete,
             note_move,
             notes_in,
+            notes_search,
             contacts_list,
             contact_save,
             contact_delete,

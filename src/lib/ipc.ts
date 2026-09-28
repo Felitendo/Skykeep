@@ -89,6 +89,8 @@ export const api = {
 
   noteFolders: () => invoke<NoteFolder[]>("note_folders"),
   notesIn: (folderGuid: string | null) => invoke<Note[]>("notes_in", { folderGuid }),
+  /** Notes holding every word typed, from every folder but Recently Deleted. */
+  notesSearch: (query: string) => invoke<Note[]>("notes_search", { query }),
   /**
    * One note's text, whole. Null when there is no such note any more.
    *

@@ -39,15 +39,20 @@ export function NotesView() {
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  /** What is typed in the search field. While it holds anything, the list is the results. */
+  const [query, setQuery] = useState("");
+  const searching = query.trim().length > 0;
+
   const read = useCallback(async () => {
     const [found, list] = await Promise.all([
       api.noteFolders(),
-      api.notesIn(folder === ALL ? null : folder),
+      // Search reaches every folder, as Apple's does — a note is found wherever it is filed.
+      searching ? api.notesSearch(query) : api.notesIn(folder === ALL ? null : folder),
     ]);
     setFolders(Array.isArray(found) ? found : []);
     setNotes(Array.isArray(list) ? list : []);
     setLoaded(true);
-  }, [folder]);
+  }, [folder, query, searching]);
 
   // Reads the library and nothing else. `revision` ticks when a refresh finishes, whether
   // someone pressed for it or the timer came round, and that is the screen's whole
@@ -305,7 +310,13 @@ export function NotesView() {
       <section className="notes-list" aria-label="Notes">
         <header className="cal-bar">
           <div className="cal-nav">
-            <h1>{folder === ALL ? "All Notes" : folders.find((f) => f.guid === folder)?.title}</h1>
+            <h1>
+              {searching
+                ? "Search"
+                : folder === ALL
+                  ? "All Notes"
+                  : folders.find((f) => f.guid === folder)?.title}
+            </h1>
             <span className="badge">
               {notes.length} {notes.length === 1 ? "note" : "notes"}
             </span>
@@ -316,6 +327,17 @@ export function NotesView() {
             </button>
           </div>
         </header>
+        <input
+          className="notes-search"
+          type="search"
+          placeholder="Search"
+          aria-label="Search notes"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setQuery("");
+          }}
+        />
 
         {/* Shown only when the folder column has folded away. */}
         <div className="notes-folder-picker">
