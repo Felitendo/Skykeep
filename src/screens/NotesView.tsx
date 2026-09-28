@@ -92,8 +92,13 @@ export function NotesView() {
     [read]
   );
 
-  // Keep a note open across refreshes where possible; fall back to the first.
+  /** Mirrors `composing` for effects that must not re-run when it changes. */
+  const composingRef = useRef<{ folderGuid: string | null; body: string } | null>(null);
+
+  // Keep a note open across refreshes where possible; fall back to the first — but never
+  // while a new note is being written, which has nothing open behind it on purpose.
   useEffect(() => {
+    if (composingRef.current) return;
     if (notes.length === 0) return setOpenGuid(null);
     setOpenGuid((current) =>
       current && notes.some((n) => n.guid === current) ? current : notes[0].guid
@@ -107,7 +112,15 @@ export function NotesView() {
 
   // A different note means a different draft. Switching away from unsaved typing would
   // otherwise carry it into the next note and save it over that one.
+  //
+  // Except for the note just created from what is being typed: that is the same note, and
+  // what was typed while it was being created is still to be saved onto it.
+  const adopting = useRef<string | null>(null);
   useEffect(() => {
+    if (adopting.current !== null && adopting.current === openGuid) {
+      adopting.current = null;
+      return;
+    }
     setDraft(null);
     setSaved(false);
   }, [openGuid]);
@@ -212,33 +225,74 @@ export function NotesView() {
    * something worth keeping — a pause after typing, or leaving it — and simply evaporates
    * if you never type at all.
    */
-  const [composing, setComposing] = useState<{ folderGuid: string | null; body: string } | null>(
-    null
+  const [composing, setComposingState] = useState<{
+    folderGuid: string | null;
+    body: string;
+  } | null>(null);
+  const setComposing = useCallback(
+    (
+      next:
+        | { folderGuid: string | null; body: string }
+        | null
+        | ((
+            c: { folderGuid: string | null; body: string } | null
+          ) => { folderGuid: string | null; body: string } | null)
+    ) => {
+      setComposingState((current) => {
+        const value = typeof next === "function" ? next(current) : next;
+        composingRef.current = value;
+        return value;
+      });
+    },
+    []
   );
 
+  /**
+   * Turn what is being typed into a real note, once, without taking the page away.
+   *
+   * It used to swap the box being typed into for a different one: for as long as the create
+   * took, nothing was open — "Select a note" — and focus fell out onto the window, so the
+   * next keystroke went nowhere and Ctrl+A selected the whole app instead of the note. The
+   * box that went away could also fire its blur and create the note a second time, which is
+   * where three "Untitled" notes came from. Now the same box stays, a create in flight is not
+   * started again, and the note it makes is adopted in place, with anything typed during the
+   * create saved onto it afterwards.
+   */
+  const creating = useRef(false);
   const commitComposing = useCallback(async () => {
-    const draft = composing;
-    if (!draft) return;
+    const draft = composingRef.current;
+    if (!draft || creating.current) return;
     if (!draft.body.trim()) {
       // Nothing was ever typed. There is nothing to keep, so nothing is sent.
       setComposing(null);
       return;
     }
-    setComposing(null);
+    creating.current = true;
     setBusy(true);
     setError(null);
     try {
       const guid = await api.noteCreate(draft.folderGuid, draft.body);
-      await read();
+      const latest = composingRef.current?.body ?? draft.body;
+      adopting.current = guid;
+      setLoadedBody({ guid, text: draft.body });
+      if (latest !== draft.body) {
+        setDraft(latest);
+        pending.current = { guid, body: latest };
+      } else {
+        setDraft(null);
+        pending.current = null;
+      }
       setOpenGuid(guid);
+      setComposing(null);
+      await read();
     } catch (e) {
+      // The write failed, not the typing — it stays on screen to try again.
       setError(messageOf(e));
-      // The write failed, not the typing — put it back rather than lose it.
-      setComposing(draft);
     } finally {
+      creating.current = false;
       setBusy(false);
     }
-  }, [composing, read]);
+  }, [read, setComposing]);
 
   // The same pause-then-save rhythm as an existing note, up until there is a real note to
   // hand it to.
@@ -257,11 +311,15 @@ export function NotesView() {
     [composing, commitComposing]
   );
 
+  const editor = useRef<HTMLTextAreaElement | null>(null);
   const create = useCallback(async () => {
-    if (composing) await commitComposing();
-    setOpenGuid(null);
+    if (composingRef.current) await commitComposing();
+    await flush();
     setComposing({ folderGuid: folder === ALL ? null : folder, body: "" });
-  }, [composing, commitComposing, folder]);
+    setOpenGuid(null);
+    // Straight into the new note, as Apple's New Note does.
+    window.requestAnimationFrame(() => editor.current?.focus());
+  }, [commitComposing, flush, folder, setComposing]);
 
   const remove = useCallback(async () => {
     if (!open) return;
@@ -383,87 +441,82 @@ export function NotesView() {
       </section>
 
       <article className="note-body" aria-label="Note">
-        {composing ? (
+        {/*
+          * One editor for a new note and a saved one, always in the same place, so the box
+          * being typed into is never taken away when a new note becomes a real one. The
+          * slots above it are held open with `false` rather than removed, which is what lets
+          * React keep the same element — focus, cursor and selection with it.
+          */}
+        {!composing && open && !open.locked && !bodyRepeatsTitle(open, body) && (
+          <h2>{open.title}</h2>
+        )}
+        {!composing && open && !open.locked && (
+          <div className="note-bar">
+            <p className="note-when">
+              {busy ? "Saving…" : dirty ? "Saving…" : saved ? "Saved" : when(open.modifiedAt)}
+            </p>
+            <div className="note-bar-actions">
+              <Picker
+                label={`Folder for ${open.title}`}
+                value={open.folderGuid ?? ALL}
+                disabled={busy}
+                onChange={(guid) => void moveTo(guid)}
+                options={[
+                  { value: ALL, label: "No folder" },
+                  ...folders.map((f) => ({ value: f.guid, label: f.title })),
+                ]}
+              />
+              <button className="quiet danger" onClick={() => void remove()} disabled={busy}>
+                Delete
+              </button>
+            </div>
+          </div>
+        )}
+        {composing || (open && !open.locked && open.editable && body !== null) ? (
           <textarea
-            key="composing"
+            key="editor"
+            ref={editor}
             className="note-text"
-            aria-label="New note"
-            autoFocus
-            value={composing.body}
-            onChange={(e) => setComposing((c) => (c ? { ...c, body: e.target.value } : c))}
-            onBlur={() => void commitComposing()}
-            placeholder="New Note"
+            aria-label={composing ? "New note" : `Body of ${open?.title ?? "note"}`}
+            value={composing ? composing.body : (draft ?? body ?? "")}
+            placeholder={composing ? "New Note" : undefined}
+            onChange={(e) => {
+              const text = e.target.value;
+              if (composingRef.current) {
+                setComposing((c) => (c ? { ...c, body: text } : c));
+              } else {
+                type(text);
+              }
+            }}
+            onKeyDown={(e) => {
+              // Nothing needs saving by hand, but the reflex deserves an answer.
+              if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                e.preventDefault();
+                void (composingRef.current ? commitComposing() : flush());
+              }
+            }}
+            onBlur={() => void (composingRef.current ? commitComposing() : flush())}
             spellCheck
           />
+        ) : open?.locked ? (
+          <p className="cal-empty">
+            This note is locked. Apple keeps it encrypted, so there is nothing here to show —
+            open it on a device where you can enter its password.
+          </p>
+        ) : open && body === null ? (
+          /* Nothing to type into until the note's own text has arrived: an empty box over a
+             note whose body had not loaded would write that emptiness back. */
+          <p className="note-loading" aria-live="polite">
+            Opening…
+          </p>
         ) : open ? (
-          open.locked ? (
-            <p className="cal-empty">
-              This note is locked. Apple keeps it encrypted, so there is nothing here to
-              show — open it on a device where you can enter its password.
+          <>
+            <pre className="note-text">{body}</pre>
+            <p className="note-readonly">
+              This note holds formatting Quince can't rewrite without losing it, so it stays
+              read-only here. Editing it on an Apple device is safe.
             </p>
-          ) : (
-            <>
-              {/* Apple derives a note's title from its first line, so the body already
-                  contains it. Rendering both shows the same sentence twice. */}
-              {!bodyRepeatsTitle(open, body) && <h2>{open.title}</h2>}
-
-              <div className="note-bar">
-                <p className="note-when">
-                  {busy ? "Saving…" : dirty ? "Saving…" : saved ? "Saved" : when(open.modifiedAt)}
-                </p>
-                <div className="note-bar-actions">
-                  <Picker
-                    label={`Folder for ${open.title}`}
-                    value={open.folderGuid ?? ALL}
-                    disabled={busy}
-                    onChange={(guid) => void moveTo(guid)}
-                    options={[
-                      { value: ALL, label: "No folder" },
-                      ...folders.map((f) => ({ value: f.guid, label: f.title })),
-                    ]}
-                  />
-                  <button className="quiet danger" onClick={() => void remove()} disabled={busy}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-
-              {/*
-                * Nothing is shown to type into until the note's own text has arrived. An
-                * empty box over a note whose body had not loaded would write that emptiness
-                * back the moment anyone touched it.
-                */}
-              {body === null ? (
-                <p className="note-loading" aria-live="polite">
-                  Opening…
-                </p>
-              ) : open.editable ? (
-                <textarea
-                  className="note-text"
-                  aria-label={`Body of ${open.title}`}
-                  value={draft ?? body}
-                  onChange={(e) => type(e.target.value)}
-                  onKeyDown={(e) => {
-                    // Nothing needs saving by hand, but the reflex deserves an answer.
-                    if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-                      e.preventDefault();
-                      void flush();
-                    }
-                  }}
-                  onBlur={() => void flush()}
-                  spellCheck
-                />
-              ) : (
-                <>
-                  <pre className="note-text">{body}</pre>
-                  <p className="note-readonly">
-                    This note holds formatting Quince can't rewrite without losing it, so it
-                    stays read-only here. Editing it on an Apple device is safe.
-                  </p>
-                </>
-              )}
-            </>
-          )
+          </>
         ) : (
           loaded && <p className="cal-empty">Select a note.</p>
         )}

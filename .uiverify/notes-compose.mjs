@@ -1,0 +1,104 @@
+// Writing a new note the way a person does: New Note, type, pause, keep typing.
+//
+// The pause is where it went wrong. The box being typed into was swapped for another when
+// the note was created, so for a moment nothing was open ("Select a note"), focus fell onto
+// the window, and the box that went away could create the note a second time — three
+// "Untitled" notes from one. This runs it in a real browser against a slow create.
+import { chromium } from "playwright";
+
+const b = await chromium.launch();
+const ctx = await b.newContext({ viewport: { width: 1280, height: 820 } });
+await ctx.addInitScript(() => {
+  // WebKit, which the app runs on, blurs a focused field as it is removed; Chromium does not.
+  const remove = Node.prototype.removeChild;
+  Node.prototype.removeChild = function (child) {
+    const focused = document.activeElement;
+    if (focused && child.contains(focused)) {
+      focused.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    }
+    return remove.call(this, child);
+  };
+  const notes = [];
+  const bodies = {};
+  window.__creates = [];
+  window.__saves = [];
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  window.__TAURI_INTERNALS__ = {
+    transformCallback: (cb) => cb,
+    invoke: async (cmd, args) => {
+      if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+      if (cmd === "auth_resume") return true;
+      if (cmd === "account_services") return ["notes", "ckdatabasews"];
+      if (cmd === "note_folders") return [];
+      if (cmd === "notes_in") return notes.slice();
+      if (cmd === "note_body") return bodies[args.guid] ?? null;
+      if (cmd === "note_create") {
+        window.__creates.push(args.body);
+        await wait(400);
+        const guid = `N${window.__creates.length}`;
+        const [title, ...rest] = args.body.split("\n");
+        notes.unshift({ guid, folderGuid: null, title, snippet: rest.join(" "), body: null,
+          locked: false, pinned: false, createdAt: 1, modifiedAt: 1, editable: true, etag: "e" });
+        bodies[guid] = args.body;
+        return guid;
+      }
+      if (cmd === "note_save") {
+        window.__saves.push([args.guid, args.body]);
+        bodies[args.guid] = args.body;
+        return null;
+      }
+      if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
+      if (cmd === "plugin:event|listen") return 0;
+      return [];
+    },
+  };
+});
+
+const page = await ctx.newPage();
+await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.getByRole("button", { name: "Notes", exact: true }).click();
+await page.waitForTimeout(300);
+
+// Watch for the moment nothing is open, and for focus leaving the editor.
+await page.evaluate(() => {
+  window.__blank = 0;
+  window.__lostFocus = 0;
+  new MutationObserver(() => {
+    if (document.querySelector(".note-body .cal-empty")?.textContent?.includes("Select a note")) {
+      window.__blank++;
+    }
+  }).observe(document.body, { subtree: true, childList: true, characterData: true });
+});
+
+await page.getByRole("button", { name: "New note" }).click();
+await page.waitForTimeout(150);
+await page.keyboard.type("Shopping");
+const box = await page.evaluateHandle(() => document.activeElement);
+await page.waitForTimeout(1600); // the pause: long enough to create the note
+await page.keyboard.type("\nmilk and bread");
+await page.waitForTimeout(1600); // and long enough to save what followed
+
+const result = await page.evaluate((box) => ({
+  creates: window.__creates.length,
+  sameBox: document.activeElement === box && box.isConnected,
+  blank: window.__blank,
+  value: box.value,
+  saves: window.__saves,
+}), box);
+
+let failures = 0;
+const ok = (pass, yes, no) => {
+  console.log(pass ? `PASS ${yes}` : `FAIL ${no}`);
+  if (!pass) failures++;
+};
+ok(result.creates === 1, "one note is created, not several", `${result.creates} notes were created`);
+ok(result.sameBox, "the box being typed into stays, focused", "the box was swapped or lost focus");
+ok(result.blank === 0, "the note never disappears into “Select a note”", `“Select a note” showed ${result.blank} time(s)`);
+ok(
+  result.value === "Shopping\nmilk and bread" &&
+    result.saves.some(([g, body]) => g === "N1" && body === "Shopping\nmilk and bread"),
+  "what was typed after the pause is saved onto that note",
+  `box says ${JSON.stringify(result.value)}, saves ${JSON.stringify(result.saves)}`
+);
+await b.close();
+process.exitCode = failures === 0 ? 0 : 1;
