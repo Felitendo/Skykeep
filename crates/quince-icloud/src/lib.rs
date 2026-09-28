@@ -11,6 +11,7 @@ pub mod drive;
 pub mod notes;
 pub mod reminders;
 pub mod sync;
+pub mod topotext;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

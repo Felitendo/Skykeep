@@ -237,6 +237,9 @@ const ATTRIBUTE_RUN: u64 = 5;
 /// false. See the comment where they are dropped.
 const PROVENANCE: u64 = 3;
 
+/// The list of writers the records' ids refer to.
+const WRITERS: u64 = 4;
+
 /// A protobuf varint field: `(tag << 3) | 0`, then the value.
 fn varint_field(tag: u64, value: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(8);
@@ -272,6 +275,9 @@ fn utf16_len(text: &str) -> u64 {
 /// order, differing only in the text.
 fn document_bytes(text: &str) -> Vec<u8> {
     let mut note = length_delimited(TEXT_PATH[2], text.as_bytes());
+    // The records a phone rebuilds the text from. Without them the text is only a cache,
+    // and a phone shows a note with nothing in it. See `topotext`.
+    note.extend(crate::topotext::Topo::fresh(utf16_len(text)).encode());
     note.extend(length_delimited(
         ATTRIBUTE_RUN,
         &varint_field(1, utf16_len(text)),
@@ -508,6 +514,29 @@ fn set_varint_field(message: &[u8], tag: u64, value: u64) -> Option<Vec<u8>> {
 fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> {
     let (from, removed, inserted) = utf16_change(old_text, new_text);
 
+    // The merge records have to say what the text now says, or the phone shows what they
+    // say instead: edits made here arrived as text repeated, or lines that would not go.
+    let records = match crate::topotext::Topo::read(note) {
+        // The usual case: records that agree with the text, and the edit made to them the
+        // way a device would make it.
+        Some(mut topo) if topo.live_length() == utf16_len(old_text) => {
+            topo.edit(from, removed, inserted);
+            topo
+        }
+        // Records that already disagree — a note this app edited before it kept them. No
+        // edit can be placed in them truthfully, so what they hold is marked deleted and the
+        // text written anew. Other devices' characters keep their ids, so they merge.
+        Some(mut topo) => {
+            topo.replace_all(utf16_len(new_text));
+            topo
+        }
+        // Records in a shape this does not understand are not ours to rewrite.
+        None if has_field(note, PROVENANCE) => return None,
+        // None at all: a document written before any of this, or a template stripped of
+        // someone else's history. It gets records of its own.
+        None => crate::topotext::Topo::fresh(utf16_len(new_text)),
+    };
+
     // Collect the existing runs, whole.
     let mut runs: Vec<Vec<u8>> = Vec::new();
     let mut reader = Reader::new(note);
@@ -562,7 +591,12 @@ fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> 
             let n = usize::try_from(reader.varint()?).ok()?;
             reader.take(n)?;
             out.extend_from_slice(&length_delimited(field, new_text.as_bytes()));
+            // The records follow the text, where Apple puts them.
+            out.extend(records.encode());
             wrote_text = true;
+        } else if field == PROVENANCE || field == WRITERS {
+            // Written afresh above.
+            reader.skip(wire)?;
         } else if field == ATTRIBUTE_RUN && wire == WIRE_LEN {
             let n = usize::try_from(reader.varint()?).ok()?;
             reader.take(n)?;
@@ -668,19 +702,50 @@ pub fn repair_runs_in_base64(original: &str) -> Option<String> {
     Some(B64.encode(gzip(&repair_runs(&raw)?)))
 }
 
-/// Give a document the merge records Apple's notes carry, for tests that need one to copy.
-#[doc(hidden)]
-#[must_use]
-pub fn add_merge_records_for_test(original: &str) -> String {
+/// A document as a phone would have written it: its records replaced by ones from a writer
+/// that is not this app.
+#[cfg(test)]
+pub(crate) fn add_merge_records_for_test(original: &str) -> String {
     let raw = B64.decode(original.trim()).unwrap_or_default();
     let plain = inflate(&raw).unwrap_or_default();
     let note = field_at(&plain, &TEXT_PATH[..2]).unwrap_or_default();
+    let text = std::str::from_utf8(field_at(note, &TEXT_PATH[2..]).unwrap_or_default())
+        .unwrap_or_default();
 
-    let mut with = note.to_vec();
-    with.extend(length_delimited(3, &varint_field(5, 1)));
-    with.extend(length_delimited(4, &varint_field(1, 1)));
+    let mut with = length_delimited(TEXT_PATH[2], text.as_bytes());
+    with.extend(crate::topotext::Topo::fresh_by([0x50; 16], utf16_len(text)).encode());
+    let mut reader = Reader::new(note);
+    while !reader.done() {
+        let start = reader.at;
+        let Some(key) = reader.varint() else { break };
+        if reader.skip(key & 7).is_none() {
+            break;
+        }
+        if !matches!(key >> 3, 2..=4) {
+            with.extend_from_slice(&note[start..reader.at]);
+        }
+    }
     let rebuilt = rewrite(&plain, &TEXT_PATH[..2], &with).unwrap_or(plain);
     B64.encode(gzip(&rebuilt))
+}
+
+/// How much text a document's records say it holds, when they can be read.
+#[doc(hidden)]
+#[must_use]
+pub fn debug_records(original: &str) -> Option<u64> {
+    let raw = B64.decode(original.trim()).ok()?;
+    let plain = inflate(&raw)?;
+    Some(crate::topotext::Topo::read(field_at(&plain, &TEXT_PATH[..2])?)?.live_length())
+}
+
+/// How many writers a document's records name.
+#[cfg(test)]
+pub(crate) fn debug_writers(original: &str) -> usize {
+    let raw = B64.decode(original.trim()).unwrap_or_default();
+    let plain = inflate(&raw).unwrap_or_default();
+    field_at(&plain, &TEXT_PATH[..2])
+        .and_then(crate::topotext::Topo::read)
+        .map_or(0, |t| t.writer_clocks().len())
 }
 
 /// What a document says about the note it belongs to: whether it names a writer, and whether
@@ -793,7 +858,13 @@ pub fn is_rewritable(original: &[u8]) -> bool {
     let Some(current) = field_at(&plain, TEXT_PATH) else {
         return false;
     };
-    rewrite(&plain, TEXT_PATH, current).is_some_and(|rebuilt| rebuilt == plain)
+    if !rewrite(&plain, TEXT_PATH, current).is_some_and(|rebuilt| rebuilt == plain) {
+        return false;
+    }
+    // Merge records have to be ones an edit can be made to, the same test a save applies.
+    field_at(&plain, &TEXT_PATH[..2]).is_some_and(|note| {
+        !has_field(note, PROVENANCE) || crate::topotext::Topo::read(note).is_some()
+    })
 }
 
 /// [`replace_text`] over the base64 a CloudKit field carries, gzipped on the way back.
@@ -1246,6 +1317,32 @@ mod tests {
 mod rewrite_tests {
     use super::*;
 
+    /// The writer id a phone put on the fixture's text.
+    const PHONE: [u8; 16] = [0xAB; 16];
+
+    /// The note, with its text, runs and merge records taken out: everything an edit has no
+    /// business changing.
+    fn untouched_by_an_edit(document: &[u8]) -> Vec<u8> {
+        let plain = inflate(document).unwrap();
+        let note = field_at(&plain, &TEXT_PATH[..2]).unwrap();
+        let mut rest = Vec::new();
+        let mut reader = Reader::new(note);
+        while !reader.done() {
+            let start = reader.at;
+            let key = reader.varint().unwrap();
+            reader.skip(key & 7).unwrap();
+            if !matches!(key >> 3, 2..=5) {
+                rest.extend_from_slice(&note[start..reader.at]);
+            }
+        }
+        rewrite(&plain, &TEXT_PATH[..2], &rest).unwrap()
+    }
+
+    fn records(document: &[u8]) -> crate::topotext::Topo {
+        let plain = inflate(document).unwrap();
+        crate::topotext::Topo::read(field_at(&plain, &TEXT_PATH[..2]).unwrap()).unwrap()
+    }
+
     fn varint(tag: u64, value: u64) -> Vec<u8> {
         let mut out = Vec::new();
         write_varint(tag << 3, &mut out);
@@ -1258,18 +1355,8 @@ mod rewrite_tests {
     fn document(text: &str) -> Vec<u8> {
         let mut note = Vec::new();
         note.extend(length_delimited(2, text.as_bytes()));
-        // Two of Apple's merge records, which carry no length describing the text.
-        for index in 1..=2u64 {
-            let mut run = Vec::new();
-            run.extend(length_delimited(
-                1,
-                &[varint(1, 1), varint(2, 144_927)].concat(),
-            ));
-            run.extend(varint(2, 34_947));
-            run.extend(varint(5, index));
-            note.extend(length_delimited(3, &run));
-        }
-        note.extend(length_delimited(4, &length_delimited(1, &[0xAB; 28])));
+        // Merge records exactly as a phone writes them, by a writer that is not this app.
+        note.extend(crate::topotext::Topo::fresh_by(PHONE, utf16_len(text)).encode());
         // The attribute run that makes the text renderable, carrying styling alongside its
         // length exactly as Apple's own runs do.
         note.extend(length_delimited(
@@ -1300,11 +1387,12 @@ mod rewrite_tests {
             text_from_bytes(&after).as_deref(),
             Some("a longer body than the one it replaced")
         );
-        // Everything that is not the text is still there, byte for byte.
+        // Everything that is not the text or its records is still there, byte for byte.
+        assert_eq!(untouched_by_an_edit(&after), untouched_by_an_edit(&before));
+        // And the records describe the new text, not the old.
         assert_eq!(
-            replace_text(&after, "the original body").unwrap(),
-            before,
-            "putting the old text back must give the original document"
+            records(&after).live_length(),
+            utf16_len("a longer body than the one it replaced")
         );
     }
 
@@ -1464,58 +1552,48 @@ mod rewrite_tests {
         assert_eq!(utf16_change("", "new"), (0, 0, 3));
     }
 
-    /// The whole point of rewriting in place rather than re-encoding. An edit of the same
-    /// length must leave the document byte-identical apart from the text itself, which is
-    /// the strongest statement available that nothing else was touched.
+    /// The whole point of rewriting in place rather than re-encoding: an edit touches the
+    /// text and the records that describe it, and nothing else.
     #[test]
-    fn a_same_length_edit_changes_only_the_text() {
+    fn a_same_length_edit_changes_only_the_text_and_its_records() {
         let before = document("first");
         let after = replace_text(&before, "FIRST").unwrap();
-        assert_eq!(before.len(), after.len());
-
-        let differing: Vec<usize> = before
-            .iter()
-            .zip(&after)
-            .enumerate()
-            .filter_map(|(i, (a, b))| (a != b).then_some(i))
-            .collect();
-        assert_eq!(differing.len(), 5, "only the five text bytes moved");
+        assert_eq!(untouched_by_an_edit(&after), untouched_by_an_edit(&before));
+        assert_eq!(
+            field_at(&inflate(&after).unwrap(), TEXT_PATH),
+            Some(&b"FIRST"[..])
+        );
         // And the run still covers it, unchanged, because the length did not change.
         assert_eq!(debug_attribute_lengths(&after), vec![5]);
     }
-    /// And when the length does change, the merge records Apple uses to reconcile edits
-    /// across devices must come through byte for byte. Those are what a phone consults to
-    /// decide whether our version is newer than its own.
+
+    /// What a phone merges on. The characters it wrote and this edit did not touch keep their
+    /// ids, and its entry in the list of writers comes through as it was; what was typed here
+    /// is this app's own. Rewriting the records wholesale would make the phone's copy and
+    /// this one disagree about every character — which is how text came back doubled.
     #[test]
-    fn the_version_vectors_survive_a_save() {
-        let before = document("first");
-        let after = replace_text(&before, "second").unwrap();
+    fn a_phones_characters_keep_their_ids_through_a_save() {
+        let before = document("first draft");
+        let after = replace_text(&before, "first final draft").unwrap();
 
-        // Field 3 of the note is Apple's merge state. Pull it out of both and compare.
-        let merge_records = |bytes: &[u8]| -> Vec<Vec<u8>> {
-            let plain = inflate(bytes).unwrap();
-            let note = field_at(&plain, &TEXT_PATH[..2]).unwrap();
-            let mut found = Vec::new();
-            let mut reader = Reader::new(note);
-            while !reader.done() {
-                let key = reader.varint().unwrap();
-                let (field, wire) = (key >> 3, key & 7);
-                if field == 3 && wire == WIRE_LEN {
-                    let n = usize::try_from(reader.varint().unwrap()).unwrap();
-                    found.push(reader.take(n).unwrap().to_vec());
-                } else {
-                    reader.skip(wire).unwrap();
-                }
-            }
-            found
-        };
-
+        let (was, now) = (records(&before), records(&after));
+        let (was_ids, now_ids) = (was.live_ids(), now.live_ids());
+        assert_eq!(now.live_length(), 17);
         assert_eq!(
-            merge_records(&after),
-            merge_records(&before),
-            "the merge state must survive an edit untouched"
+            now_ids[..6],
+            was_ids[..6],
+            "\"first \" is still the phone's"
         );
-        assert!(!merge_records(&before).is_empty(), "the fixture has some");
+        assert_eq!(
+            now_ids[12..],
+            was_ids[6..],
+            "\"draft\" is still the phone's"
+        );
+        assert!(
+            now_ids[6..12].iter().all(|&(writer, _)| writer == 2),
+            "the typed words are this app's"
+        );
+        assert_eq!(now.writer_clocks()[0], (PHONE.to_vec(), vec![11, 1]));
     }
 
     #[test]
@@ -1665,16 +1743,18 @@ mod version_tests {
 mod merge_record_tests {
     use super::*;
 
-    /// What this app builds from nothing: text, a run, the versions. It reads back here
-    /// perfectly and a phone shows it as an empty note.
+    /// What this app builds from nothing carries records of its own that describe its text.
+    /// Without them it read back here perfectly and a phone showed it as an empty note.
     #[test]
-    fn a_document_built_from_nothing_has_no_merge_records() {
+    fn a_document_built_from_nothing_has_merge_records() {
         let built = text_to_base64("Buy milk");
         assert_eq!(text_from_base64(&built).as_deref(), Some("Buy milk"));
-        assert!(
-            !has_merge_records(&built),
-            "which is exactly why a phone showed nothing"
-        );
+        assert!(has_merge_records(&built));
+        let raw = B64.decode(&built).unwrap();
+        let plain = inflate(&raw).unwrap();
+        let topo = crate::topotext::Topo::read(field_at(&plain, &TEXT_PATH[..2]).unwrap())
+            .expect("records in Apple's shape");
+        assert_eq!(topo.live_length(), 8);
     }
 
     /// The shape Apple writes: records saying which writer produced which stretch of text.
@@ -1727,8 +1807,7 @@ mod merge_record_tests {
     #[test]
     fn swapping_the_text_keeps_what_makes_it_readable() {
         let mut note = length_delimited(TEXT_PATH[2], b"Old words");
-        note.extend(length_delimited(3, &varint_field(5, 1)));
-        note.extend(length_delimited(4, &varint_field(1, 1)));
+        note.extend(crate::topotext::Topo::fresh_by([7; 16], 9).encode());
         note.extend(length_delimited(ATTRIBUTE_RUN, &varint_field(1, 9)));
         let mut document = varint_field(1, 0);
         document.extend(varint_field(2, 0));

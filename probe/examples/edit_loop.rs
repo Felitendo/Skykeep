@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
         &root,
         params.clone(),
         Some("DefaultFolder-CloudKit"),
-        "edit test",
+        "Quince test",
         template.as_deref(),
     )
     .await?;
@@ -41,14 +41,16 @@ async fn main() -> Result<()> {
 
     // What someone typing actually produces: a growing body, saved after each pause.
     let steps = [
-        "edit test\n1",
-        "edit test\n1\n2",
-        "edit test\n1\n2\n3",
-        "edit test\n1\n2\n3\n4",
-        "edit test\n1\n2\n3\n4\n56",
+        "Quince test\n1",
+        "Quince test\n1\n2",
+        "Quince test\n1\n2\n3",
+        "Quince test\n1\n2\n3\n4",
+        "Quince test\n1\n2\n3\n4\n56",
         // And a deletion, which is where an append-only mistake shows up loudest.
-        "edit test\n1\n2",
-        "short",
+        "Quince test\n1\n2",
+        // A word changed in the middle, then an emoji, which counts as two units.
+        "Quince test\nfirst\n2",
+        "Quince test\nfirst line\nsecond line 🔴",
     ];
 
     let mut failures = 0;
@@ -73,20 +75,26 @@ async fn main() -> Result<()> {
         };
         let units: u64 = want.encode_utf16().count() as u64;
         let covered: u64 = runs.iter().sum();
-        let ok = got == *want && covered == units;
+        // What a phone rebuilds the note from has to say the same.
+        let records = quince_icloud::ckdocument::debug_records(doc);
+        let ok = got == *want && covered == units && records == Some(units);
         if !ok {
             failures += 1;
         }
         println!(
-            "  {} step {n}: {:?}   runs cover {covered} of {units}",
+            "  {} step {n}: {:?}   runs cover {covered} of {units}, records {records:?}",
             if ok { "PASS" } else { "FAIL" },
             got.chars().take(28).collect::<String>()
         );
     }
 
-    let note = library_note(&http, &root, &params, &guid).await?;
-    quince_icloud::notes::delete_cloudkit(&http, &root, params.clone(), &note).await?;
-    println!("\ncleaned up");
+    if std::env::var("KEEP").is_ok() {
+        println!("\nleft on the account to look at on a phone: {guid}");
+    } else {
+        let note = library_note(&http, &root, &params, &guid).await?;
+        quince_icloud::notes::delete_cloudkit(&http, &root, params.clone(), &note).await?;
+        println!("\ncleaned up");
+    }
     if failures > 0 {
         return Err(anyhow!("{failures} step(s) did not hold"));
     }

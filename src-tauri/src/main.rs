@@ -1343,6 +1343,29 @@ async fn contact_photo(
     })
 }
 
+/// Where this installation's writer id is kept.
+const WRITER_KEY: &str = "documents.writer";
+
+/// Give note and reminder edits this installation's own writer id.
+///
+/// Apple's devices merge a note by who wrote which characters, so every edit made here is
+/// signed. The same id every run keeps a note's list of writers from growing by one each time
+/// the app starts; a different id on every computer keeps two of them from numbering
+/// characters the same way. If it cannot be stored, a fresh one for this run is still correct.
+fn adopt_writer(library: &mut Library) {
+    let stored = library
+        .state(WRITER_KEY)
+        .ok()
+        .flatten()
+        .and_then(|s| uuid::Uuid::parse_str(&s).ok());
+    let id = stored.unwrap_or_else(|| {
+        let fresh = uuid::Uuid::new_v4();
+        let _ = library.set_state(WRITER_KEY, &fresh.to_string());
+        fresh
+    });
+    quince_icloud::topotext::set_writer(*id.as_bytes());
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1408,7 +1431,9 @@ fn main() {
             });
             // The local library. Opened once at startup so every command shares one
             // connection and the WAL behaves.
-            app.manage(Data(Mutex::new(Library::open(&dir)?)));
+            let mut library = Library::open(&dir)?;
+            adopt_writer(&mut library);
+            app.manage(Data(Mutex::new(library)));
             spawn_heartbeat(Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
             Ok(())

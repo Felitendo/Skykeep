@@ -763,35 +763,9 @@ mod write_tests {
         }
     }
 
-    /// A document shaped like the real ones: text surrounded by Apple's merge state.
+    /// A document shaped like the real ones: text with a phone's merge records around it.
     fn document(text: &str) -> String {
-        use base64::{engine::general_purpose::STANDARD as B64, Engine};
-        use std::io::Write;
-        fn framed(tag: u8, payload: &[u8]) -> Vec<u8> {
-            let mut out = vec![(tag << 3) | 2];
-            let mut len = payload.len();
-            loop {
-                let mut byte = (len & 0x7F) as u8;
-                len >>= 7;
-                if len != 0 {
-                    byte |= 0x80;
-                }
-                out.push(byte);
-                if len == 0 {
-                    break;
-                }
-            }
-            out.extend_from_slice(payload);
-            out
-        }
-        // Version-vector siblings alongside the text, which a save must not disturb.
-        let mut note = framed(2, text.as_bytes());
-        note.extend(framed(3, &[0x08, 0x01, 0x10, 0x83, 0x8d, 0x02]));
-        let proto = framed(2, &framed(3, &note));
-
-        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        gz.write_all(&proto).unwrap();
-        B64.encode(gz.finish().unwrap())
+        crate::ckdocument::add_merge_records_for_test(&crate::ckdocument::text_to_base64(text))
     }
 
     async fn server(existing: &str) -> MockServer {
@@ -851,13 +825,10 @@ mod write_tests {
             crate::ckdocument::text_from_base64(written).as_deref(),
             Some("Curtains\nmeasure the bay window\norder the rail")
         );
-        // The version vector alongside the text has to have come through the save.
-        let raw = crate::ckdocument::debug_inflate(written).unwrap();
-        assert!(
-            crate::ckdocument::debug_tree(&raw, 6)
-                .iter()
-                .any(|line| line.contains("3: message")),
-            "Apple's merge state must survive an edit"
+        // The records a phone merges on came through the save, describing the new text.
+        assert_eq!(
+            crate::ckdocument::debug_records(written),
+            Some(utf16("Curtains\nmeasure the bay window\norder the rail"))
         );
     }
 
@@ -1061,51 +1032,62 @@ mod folder_shape_tests {
     }
 }
 
+#[cfg(test)]
+fn utf16(text: &str) -> u64 {
+    text.encode_utf16().count() as u64
+}
+
 /// Shaping a new note like one Apple wrote.
 #[cfg(test)]
 mod template_tests {
     use super::*;
 
-    /// A document with the merge records a phone needs, to stand in for one Apple wrote.
+    /// A document with a phone's merge records, to stand in for one Apple wrote.
     fn apples_shape(text: &str) -> String {
-        let built = crate::ckdocument::text_to_base64(text);
-        // Built documents have no merge records, so this checks the fixture is honest about
-        // what it is rather than quietly testing nothing.
-        assert!(!crate::ckdocument::has_merge_records(&built));
-        crate::ckdocument::add_merge_records_for_test(&built)
+        crate::ckdocument::add_merge_records_for_test(&crate::ckdocument::text_to_base64(text))
     }
 
-    /// A new note keeps the writer from the note it was shaped by, and none of its history.
+    /// A new note's records are its own: none of the history of the note it was shaped by,
+    /// and the text it holds written by this app.
     ///
     /// The history is lengths measured against text that is not in this note. Carried over, a
     /// fifteen-character note came out on a phone as the same word four times with gaps in
-    /// between — worse than the blank it was meant to fix.
+    /// between. Carrying none at all left it blank.
     #[test]
-    fn a_new_note_takes_the_writer_but_not_the_other_notes_history() {
+    fn a_new_note_has_records_of_its_own() {
         let template = apples_shape("Something Apple wrote");
-        assert_eq!(
-            crate::ckdocument::debug_note_fields(&template),
-            (true, true),
-            "the fixture has both, or this proves nothing"
-        );
-
         let made = document_like_apples(Some(&template), "Something written here");
         assert_eq!(
             crate::ckdocument::text_from_base64(&made).as_deref(),
             Some("Something written here")
         );
-        let (writer, history) = crate::ckdocument::debug_note_fields(&made);
-        assert!(writer, "the writer travels");
-        assert!(!history, "the other note's history does not");
+        assert_eq!(
+            crate::ckdocument::debug_records(&made),
+            Some(utf16("Something written here")),
+            "records that describe exactly this text"
+        );
+        assert_eq!(
+            crate::ckdocument::debug_writers(&made),
+            1,
+            "this app alone wrote it; the template's writer did not"
+        );
     }
 
-    /// A note's own history is its own, and an edit leaves it alone.
+    /// A note's own history is its own, and an edit adds to it rather than replacing it.
     #[test]
     fn editing_a_note_keeps_the_notes_own_history() {
         let mine = apples_shape("What I wrote before");
         let edited =
             crate::ckdocument::replace_text_in_base64(&mine, "What I wrote after").unwrap();
-        assert_eq!(crate::ckdocument::debug_note_fields(&edited), (true, true));
+        assert_eq!(
+            crate::ckdocument::debug_records(&edited),
+            Some(utf16("What I wrote after"))
+        );
+        assert_eq!(
+            crate::ckdocument::debug_writers(&edited),
+            2,
+            "the phone, then this app"
+        );
     }
 
     /// A new account has no note to learn from. Building from nothing is the only option, and
