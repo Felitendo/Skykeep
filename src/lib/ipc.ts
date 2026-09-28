@@ -80,6 +80,8 @@ export const api = {
     invoke<void>("reminder_list_rename", { listGuid, title }),
   reminderListDelete: (listGuid: string) =>
     invoke<void>("reminder_list_delete", { listGuid }),
+  /** Reminders still to do holding every word typed, across every list. */
+  remindersSearch: (query: string) => invoke<Reminder[]>("reminders_search", { query }),
   remindersSmart: (kind: SmartList, until: number) =>
     invoke<Reminder[]>("reminders_smart", { kind, until }),
   reminderCreate: (listGuid: string, title: string) =>

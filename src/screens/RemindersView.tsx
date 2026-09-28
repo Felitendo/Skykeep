@@ -197,15 +197,21 @@ export function RemindersView() {
     };
   }, [selection, revision]);
 
+  /** What is typed in the search field. While it holds anything, the pane is the results. */
+  const [query, setQuery] = useState("");
+  const searching = query.trim().length > 0;
+
   const readItems = useCallback(async (): Promise<Reminder[]> => {
-    const found =
-      selection.type === "smart"
+    // Search reaches every list, as Apple's does, whatever is open in the sidebar.
+    const found = searching
+      ? await api.remindersSearch(query)
+      : selection.type === "smart"
         ? await api.remindersSmart(selection.kind, endOfToday())
         : await api.remindersIn(selection.guid, showDone);
     const fresh = Array.isArray(found) ? found : [];
     setItems(fresh);
     return fresh;
-  }, [selection, showDone]);
+  }, [selection, showDone, query, searching]);
 
   // Both reads come from the library. `revision` ticks when the shared refresh finishes —
   // pressed, or on the timer — so a reminder ticked on the phone appears here without this
@@ -475,11 +481,30 @@ export function RemindersView() {
    * which gather from everywhere, but not under a list heading where it would repeat.
    */
   const showListName =
+    !searching &&
     !inList &&
     (selection as { kind: SmartList }).kind !== "all" &&
     (selection as { kind: SmartList }).kind !== "flagged";
 
   const sections = useMemo(() => {
+    if (searching) {
+      // Results gather from every list, so the list each came from is the grouping — as in
+      // All.
+      const byList = new Map<string, typeof threaded>();
+      for (const row of threaded) {
+        byList.set(row.reminder.listGuid, [...(byList.get(row.reminder.listGuid) ?? []), row]);
+      }
+      return [...byList.entries()].map(([guid, rows]) => {
+        const list = lists.find((l) => l.guid === guid);
+        return {
+          key: guid,
+          heading: list?.title ?? "Reminders",
+          colour: list?.colour ?? null,
+          dated: false,
+          rows,
+        };
+      });
+    }
     if (inList) {
       // Inside a real list the grouping is the list's own sections, which is how Apple shows
       // it: reminders outside any section first with no heading, then each section in the
@@ -591,7 +616,7 @@ export function RemindersView() {
         dated: false,
         rows,
       }));
-  }, [threaded, inList, selection, lists, listSections]);
+  }, [threaded, inList, selection, lists, listSections, searching]);
 
   return (
     <div className="rem">
@@ -720,7 +745,7 @@ export function RemindersView() {
       <section className="rem-items">
         <header className="cal-bar">
           <div className="cal-nav">
-            <h1>{heading}</h1>
+            <h1>{searching ? "Search" : heading}</h1>
             {outstanding > 0 && <span className="badge">{outstanding}</span>}
           </div>
           <div className="cal-actions">
@@ -731,6 +756,17 @@ export function RemindersView() {
             )}
           </div>
         </header>
+        <input
+          className="notes-search"
+          type="search"
+          placeholder="Search"
+          aria-label="Search reminders"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setQuery("");
+          }}
+        />
 
         {error && (
           <p className="error" role="alert">

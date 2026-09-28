@@ -376,6 +376,13 @@ async fn reminder_counts(
     library.reminder_counts(until).map_err(|e| e.to_string())
 }
 
+/// Reminders still to do holding every word of `query`, across every enabled list.
+#[tauri::command]
+async fn reminders_search(query: String, data: State<'_, Data>) -> UiResult<Vec<Reminder>> {
+    let library = data.0.lock().await;
+    library.search_reminders(&query).map_err(|e| e.to_string())
+}
+
 /// The headings inside one reminders list, in the order they were made.
 #[tauri::command]
 async fn reminder_sections(
@@ -1426,6 +1433,7 @@ fn main() {
             calendar_list,
             reminder_lists,
             reminder_sections,
+            reminders_search,
             reminder_counts,
             reminders_in,
             reminders_due_between,

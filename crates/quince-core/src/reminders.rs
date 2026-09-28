@@ -623,6 +623,60 @@ impl Library {
     ///
     /// Ordering matters: a list that buries today's task under last month's completed ones
     /// is useless.
+    /// Reminders still to do whose title or notes hold every word of `query`, across every
+    /// enabled list.
+    ///
+    /// Matched in Rust rather than SQL for the reason Notes search is: SQLite folds case for
+    /// ASCII alone. Bounded like every other view, so a search that matches everything on a
+    /// ten-year account does not carry all of it into the window.
+    pub fn search_reminders(&self, query: &str) -> Result<Vec<Reminder>> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at, r.priority,
+                    r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval, r.etag,
+                    r.timezone, r.section_guid
+             FROM reminders r
+             JOIN reminder_lists l ON l.guid = r.list_guid
+             WHERE l.enabled = 1 AND r.completed_at IS NULL
+             ORDER BY r.due_at IS NULL, r.due_at, r.priority DESC, r.title",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Reminder {
+                guid: row.get(0)?,
+                list_guid: row.get(1)?,
+                title: row.get(2)?,
+                notes: row.get(3)?,
+                due_at: row.get(4)?,
+                completed_at: row.get(5)?,
+                priority: row.get(6)?,
+                flagged: row.get::<_, i64>(7)? != 0,
+                parent_guid: row.get(8)?,
+                recur_frequency: row.get(9)?,
+                recur_interval: row.get(10)?,
+                etag: row.get(11)?,
+                raw: None,
+                timezone: row.get(12)?,
+                section_guid: row.get(13)?,
+            })
+        })?;
+        let mut found = Vec::new();
+        for row in rows {
+            let r = row?;
+            let haystack =
+                format!("{}\n{}", r.title, r.notes.as_deref().unwrap_or("")).to_lowercase();
+            if words.iter().all(|w| haystack.contains(w.as_str())) {
+                found.push(r);
+                if found.len() == MOST_AT_ONCE {
+                    break;
+                }
+            }
+        }
+        Ok(found)
+    }
+
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
@@ -1545,5 +1599,79 @@ mod section_tests {
         assert!(lib.reminder_sections("List/L").unwrap().is_empty());
         assert_eq!(section_of(&lib, "Reminder/A"), None);
         assert_eq!(lib.reminders_in("List/L", true).unwrap().len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn r(guid: &str, title: &str, notes: Option<&str>, done: bool) -> Reminder {
+        Reminder {
+            guid: guid.into(),
+            list_guid: "List/L".into(),
+            title: title.into(),
+            notes: notes.map(ToString::to_string),
+            due_at: None,
+            completed_at: done.then_some(1),
+            priority: 0,
+            flagged: false,
+            parent_guid: None,
+            recur_frequency: None,
+            recur_interval: None,
+            etag: None,
+            raw: None,
+            timezone: None,
+            section_guid: None,
+        }
+    }
+
+    fn library() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "List/L".into(),
+            title: "GYM".into(),
+            colour: None,
+            ctag: None,
+            sort_order: 0,
+            enabled: true,
+        }])
+        .unwrap();
+        lib.put_reminders(&[
+            r("A", "Evening run", Some("Legs today"), false),
+            r("B", "Water the plants", None, false),
+            r("C", "Evening walk", None, true),
+            r("D", "Café run", None, false),
+        ])
+        .unwrap();
+        lib
+    }
+
+    fn found(q: &str) -> Vec<String> {
+        library()
+            .search_reminders(q)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.guid)
+            .collect()
+    }
+
+    #[test]
+    fn title_and_notes_are_both_searched() {
+        assert_eq!(found("plants"), vec!["B"]);
+        assert_eq!(found("legs"), vec!["A"]);
+    }
+
+    #[test]
+    fn finished_reminders_are_not_found() {
+        assert_eq!(found("evening"), vec!["A"]);
+    }
+
+    #[test]
+    fn case_folds_beyond_ascii_and_every_word_counts() {
+        assert_eq!(found("CAFÉ"), vec!["D"]);
+        assert_eq!(found("run evening"), vec!["A"]);
+        assert!(found("evening plants").is_empty());
+        assert!(found("  ").is_empty());
     }
 }

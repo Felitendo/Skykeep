@@ -410,6 +410,49 @@ let failures = 0;
   await page.close();
 }
 
+// ── Reminders can be searched, across every list ──────────────────────────────────────
+{
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    const r = (guid, listGuid, title) => ({ guid, listGuid, title, notes: null, dueAt: null,
+      completedAt: null, priority: 0, flagged: false, parentGuid: null, recurFrequency: null,
+      recurInterval: null, sectionGuid: null, etag: null });
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: (cb) => cb,
+      invoke: async (cmd, args) => {
+        if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+        if (cmd === "auth_resume") return true;
+        if (cmd === "account_services") return ["reminders"];
+        if (cmd === "reminder_lists") return [
+          { guid: "G", title: "GYM", colour: "#0a84ff", ctag: null, sortOrder: 0, enabled: true },
+          { guid: "D", title: "Daily", colour: "#ffd60a", ctag: null, sortOrder: 1, enabled: true }];
+        if (cmd === "reminder_counts") return { today: 0, scheduled: 0, flagged: 0, all: 2, lists: [] };
+        if (cmd === "reminders_smart" || cmd === "reminders_in") return [r("A", "G", "Evening run"), r("B", "D", "Water the plants")];
+        if (cmd === "reminders_search") return args.query.includes("plant") ? [r("B", "D", "Water the plants")] : [];
+        if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
+        if (cmd === "plugin:event|listen") return 0;
+        return [];
+      },
+    };
+  });
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Reminders", exact: true }).click();
+  await page.waitForTimeout(300);
+  await page.fill('input[aria-label="Search reminders"]', "plant");
+  await page.waitForTimeout(300);
+  const titles = await page.evaluate(() =>
+    [...document.querySelectorAll(".rem-list-items li input")].map((i) => i.value));
+  const heads = await page.locator(".rem-section").allInnerTexts();
+  const right = JSON.stringify(titles) === JSON.stringify(["Water the plants"]) && heads.includes("Daily");
+  console.log(
+    right
+      ? "PASS searching reminders finds across lists, under the list it came from"
+      : `FAIL reminder search showed ${JSON.stringify(titles)} under ${JSON.stringify(heads)}`
+  );
+  if (!right) failures++;
+  await page.close();
+}
+
 // ── A list shows its own sections ─────────────────────────────────────────────────────
 // Inside a real list, reminders outside any section come first with no heading, then each
 // section under its own heading — how Apple shows it, and how the phone showed "🌅".
