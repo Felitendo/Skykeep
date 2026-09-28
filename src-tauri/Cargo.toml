@@ -9,6 +9,7 @@ license.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tauri = { version = "2", features = [] }
 quince-auth = { path = "../crates/quince-auth" }
 quince-core = { path = "../crates/quince-core" }

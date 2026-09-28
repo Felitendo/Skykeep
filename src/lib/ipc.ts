@@ -31,6 +31,22 @@ export type Refresh = {
 };
 
 /** Emitted by the backend whenever a refresh finishes, background ones included. */
+/** Where each uploading file's progress is announced. */
+export const UPLOAD = "quince://upload";
+
+/** One file's upload, as it moves. */
+export type UploadEvent = {
+  id: string;
+  batch: string;
+  name: string;
+  /** The folders it sits in below the one it was dropped on. */
+  within: string;
+  sent: number;
+  total: number;
+  state: "waiting" | "sending" | "verifying" | "done" | "failed";
+  error: string | null;
+};
+
 export const SYNCED = "quince://synced";
 
 export const api = {
@@ -126,8 +142,9 @@ export const api = {
    * Resolves with the files that did not go up, one line each, so a single refusal does not
    * read as the whole upload failing.
    */
-  driveUpload: (folderId: string, paths: string[]) =>
-    invoke<string[]>("drive_upload", { folderId, paths }),
+  /** Files and folders into a Drive folder. Progress arrives as UPLOAD events. */
+  driveUpload: (batch: string, folderId: string, paths: string[]) =>
+    invoke<string[]>("drive_upload", { batch, folderId, paths }),
   driveCreateFolder: (parentId: string, name: string) =>
     invoke<void>("drive_create_folder", { parentId, name }),
   driveRename: (drivewsid: string, name: string) =>

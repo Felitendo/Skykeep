@@ -28,8 +28,16 @@ async fn main() -> Result<()> {
     println!("local file: {} bytes", body.len());
 
     // Into the root.
-    let landed =
-        quince_icloud::drive::upload(&http, &docws, &drivews, params.clone(), ROOT, &tmp).await?;
+    let landed = quince_icloud::drive::upload(
+        &http,
+        &docws,
+        &drivews,
+        params.clone(),
+        ROOT,
+        &tmp,
+        std::sync::Arc::new(|_, _| {}),
+    )
+    .await?;
     println!(
         "root: {} ({:?}) {} bytes  parent={:?}",
         landed.name,
@@ -67,6 +75,7 @@ async fn main() -> Result<()> {
         params.clone(),
         &folder.drivewsid,
         &tmp,
+        std::sync::Arc::new(|_, _| {}),
     )
     .await?;
     println!("folder: {} in {:?}", inner.name, inner.parent_id);

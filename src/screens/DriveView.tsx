@@ -8,9 +8,13 @@ import {
   isContainer,
   messageOf,
   DRIVE_ROOT,
+  UPLOAD,
   type DriveItem,
+  type UploadEvent,
 } from "../lib/ipc";
 import { ActionGlyph, FileGlyph } from "../components/FileGlyph";
+import { UploadTray } from "../components/UploadTray";
+import { listen } from "@tauri-apps/api/event";
 
 const KB = 1024;
 
@@ -52,7 +56,6 @@ export function DriveView() {
   const [newFolderName, setNewFolderName] = useState("");
   /** The item a Move dialog is open for, if any. */
   const [moving, setMoving] = useState<DriveItem | null>(null);
-  const [uploading, setUploading] = useState(false);
   /** True while files are held over the window, so the drop target can say so. */
   const [dropping, setDropping] = useState(false);
 
@@ -194,45 +197,80 @@ export function DriveView() {
    * One file Apple refuses must not look like all of them failing, so each is reported by
    * name and the rest still land.
    */
+  /** Every file sent from this window, until the tray is closed. */
+  const [uploads, setUploads] = useState<Map<string, UploadEvent>>(new Map());
+  const [uploadMenu, setUploadMenu] = useState(false);
+
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    listen<UploadEvent>(UPLOAD, (event) => {
+      const u = event.payload;
+      setUploads((was) => {
+        const next = new Map(was);
+        const before = next.get(u.id);
+        // Events for one file can pass each other; a finished file never goes back.
+        if (before && (before.state === "done" || before.state === "failed")) return was;
+        next.set(u.id, u);
+        return next;
+      });
+    })
+      .then((unlisten) => {
+        // Stopping may throw where there is no event system behind the page — a plain
+        // browser running the interface — and a screen closing must not throw for that.
+        const quietly = () => {
+          try {
+            // It answers with a promise, whose failure would otherwise escape this try.
+            void Promise.resolve(unlisten() as unknown).catch(() => {});
+          } catch {
+            // Nothing was listening.
+          }
+        };
+        if (cancelled) quietly();
+        else stop = quietly;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
+
   const upload = useCallback(
     async (paths: string[]) => {
       if (paths.length === 0) return;
-      setUploading(true);
       setError(null);
+      // Never blocks the window: browse, open another folder, start another upload.
+      const batch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const into = here.id;
       try {
-        const failed = await api.driveUpload(here.id, paths);
-        await refresh();
-        if (failed.length > 0) {
-          setError(
-            failed.length === paths.length
-              ? failed.join("\n")
-              : `${failed.length} of ${paths.length} did not go up — ${failed.join("; ")}`
-          );
-        } else {
-          setSavedTo(
-            paths.length === 1
-              ? `Uploaded ${paths[0].split("/").pop()}`
-              : `Uploaded ${paths.length} files`
-          );
-        }
+        await api.driveUpload(batch, into, paths);
+        // What failed is named in the tray, file by file; the folder is re-read either way.
+        if (into === here.id) await refresh();
       } catch (e) {
         setError(messageOf(e));
-      } finally {
-        setUploading(false);
       }
     },
     [here.id, refresh]
   );
 
-  const chooseAndUpload = useCallback(async () => {
-    try {
-      const chosen = await openFileDialog({ multiple: true, title: "Upload to iCloud Drive" });
-      if (!chosen) return;
-      await upload(Array.isArray(chosen) ? chosen : [chosen]);
-    } catch (e) {
-      setError(messageOf(e));
-    }
-  }, [upload]);
+  const chooseAndUpload = useCallback(
+    async (folders: boolean) => {
+      setUploadMenu(false);
+      try {
+        const chosen = await openFileDialog({
+          multiple: true,
+          directory: folders,
+          title: folders ? "Upload folders to iCloud Drive" : "Upload to iCloud Drive",
+        });
+        if (!chosen) return;
+        await upload(Array.isArray(chosen) ? chosen : [chosen]);
+      } catch (e) {
+        setError(messageOf(e));
+      }
+    },
+    [upload]
+  );
 
   // Dropping files on the window uploads them to the folder that is open. Tauri hands over
   // paths rather than contents, so a drop costs nothing until the file is actually read.
@@ -326,19 +364,37 @@ export function DriveView() {
             New Folder
           </button>
           {/* An app's own library takes files from the app, not from here. */}
-          <button
-            className="primary with-glyph"
-            onClick={() => void chooseAndUpload()}
-            disabled={loading || uploading || !acceptsUploads(here.id)}
-            title={
-              acceptsUploads(here.id)
-                ? undefined
-                : "This folder belongs to an app, which is the only thing that can add to it"
-            }
-          >
-            <ActionGlyph name="upload" />
-            {uploading ? "Uploading…" : "Upload"}
-          </button>
+          <span className="upload-menu-wrap">
+            <button
+              className="primary with-glyph"
+              aria-haspopup="menu"
+              aria-expanded={uploadMenu}
+              onClick={() => setUploadMenu((open) => !open)}
+              disabled={loading || !acceptsUploads(here.id)}
+              title={
+                acceptsUploads(here.id)
+                  ? undefined
+                  : "This folder belongs to an app, which is the only thing that can add to it"
+              }
+            >
+              <ActionGlyph name="upload" />
+              Upload
+            </button>
+            {uploadMenu && (
+              <span
+                className="upload-menu"
+                role="menu"
+                onKeyDown={(e) => e.key === "Escape" && setUploadMenu(false)}
+              >
+                <button role="menuitem" autoFocus onClick={() => void chooseAndUpload(false)}>
+                  Files…
+                </button>
+                <button role="menuitem" onClick={() => void chooseAndUpload(true)}>
+                  Folder…
+                </button>
+              </span>
+            )}
+          </span>
         </div>
       </header>
 
@@ -496,6 +552,8 @@ export function DriveView() {
           onMove={(destinationId) => void move(moving, destinationId)}
         />
       )}
+
+      <UploadTray uploads={[...uploads.values()]} onDismiss={() => setUploads(new Map())} />
     </div>
   );
 }

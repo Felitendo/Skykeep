@@ -438,6 +438,61 @@ pub async fn move_to(
 }
 
 #[cfg(test)]
+mod checksum_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn pattern(size: usize) -> Vec<u8> {
+        (0..size)
+            .map(|i| u8::try_from(i * 31 % 251).unwrap())
+            .collect()
+    }
+
+    /// Apple's own answers for these exact bytes, measured on real uploads.
+    #[test]
+    fn the_checksum_is_apples() {
+        for (size, apple) in [
+            (37, "AcbV5Q1Z72Y4XYc0UObScQwypTml"),
+            (3 * 1024 * 1024, "AbnSbKOQ813hyTYHFLl6Dh/oYsl2"),
+        ] {
+            let bytes = pattern(size);
+            let mut whole = AppleChecksum::default();
+            whole.update(&bytes);
+            assert_eq!(whole.finish(), apple, "{size} bytes");
+            // Fed in pieces as a stream feeds it, the answer is the same.
+            let mut pieces = AppleChecksum::default();
+            for chunk in bytes.chunks(256 * 1024 + 7) {
+                pieces.update(chunk);
+            }
+            assert_eq!(pieces.finish(), apple, "{size} bytes in pieces");
+        }
+    }
+
+    fn filed(signature: &str, size: u64, code: i64) -> Value {
+        json!({ "results": [{ "document": {
+            "document_id": "06502863-6910-440B-A1B9-29536C125463",
+            "name": "photo 2.jpg", "size": size,
+            "data": { "signature": signature },
+            "status": { "status_code": code, "error_message": "OK" }
+        }}]})
+    }
+
+    /// Found by the id Apple gave it, whatever it was renamed to.
+    #[test]
+    fn a_filed_document_is_accepted_only_when_it_is_the_file_sent() {
+        let sig = "AcbV5Q1Z72Y4XYc0UObScQwypTml";
+        assert_eq!(
+            filed_document(&filed(sig, 37, 0), sig, 37, "photo.jpg").unwrap(),
+            "FILE::com.apple.CloudDocs::06502863-6910-440B-A1B9-29536C125463"
+        );
+        assert!(filed_document(&filed("Aother", 37, 0), sig, 37, "photo.jpg").is_err());
+        assert!(filed_document(&filed(sig, 36, 0), sig, 37, "photo.jpg").is_err());
+        assert!(filed_document(&filed(sig, 37, 1), sig, 37, "photo.jpg").is_err());
+        assert!(filed_document(&json!({}), sig, 37, "photo.jpg").is_err());
+    }
+}
+
+#[cfg(test)]
 mod created_folder_tests {
     use super::*;
     use serde_json::json;
@@ -1053,19 +1108,60 @@ fn zone_of(drivewsid: &str) -> Option<&str> {
 /// The one zone a file uploaded from this machine belongs in.
 const DOCUMENTS_ZONE: &str = "com.apple.CloudDocs";
 
-/// Put a file from this machine into a Drive folder.
+/// Apple's checksum of a file's bytes, as its storage service reports it back.
 ///
-/// Three separate calls, because that is how Apple does it and skipping any of them leaves a
-/// half-made file: ask `upload/web` for somewhere to put the bytes, post the bytes to the URL
-/// it hands back, then tell `update/documents` to file the result under a name. Only the third
-/// call makes the file exist; the first two leave nothing visible behind if they fail.
+/// Measured against real uploads of 37 bytes and 3 MiB: the receipt's `fileChecksum` is a
+/// `0x01` byte and then SHA-1 of the bytes behind a fixed salt, base64. Knowing it means an
+/// upload can be proven intact — the bytes Apple holds are the ones on disk, not merely the
+/// same number of them.
+pub struct AppleChecksum(sha1::Sha1);
+
+const CHECKSUM_SALT: &[u8] = b"com.apple.XattrObjectSalt\0com.apple.DataObjectSalt\0";
+
+impl Default for AppleChecksum {
+    fn default() -> Self {
+        use sha1::Digest;
+        let mut hash = sha1::Sha1::new();
+        hash.update(CHECKSUM_SALT);
+        Self(hash)
+    }
+}
+
+impl AppleChecksum {
+    pub fn update(&mut self, bytes: &[u8]) {
+        use sha1::Digest;
+        self.0.update(bytes);
+    }
+
+    #[must_use]
+    pub fn finish(self) -> String {
+        use base64::Engine;
+        use sha1::Digest;
+        let mut out = vec![0x01u8];
+        out.extend_from_slice(&self.0.finalize());
+        base64::engine::general_purpose::STANDARD.encode(out)
+    }
+}
+
+/// How far one upload has got, for a progress bar.
+pub type Progress = std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>;
+
+/// Milliseconds since the epoch for a file time, when the filesystem keeps one.
+fn millis(time: std::io::Result<std::time::SystemTime>) -> Option<i64> {
+    time.ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+}
+
+/// Upload one file into a folder, and prove it arrived whole.
 ///
-/// The bytes are streamed off disk rather than read into memory, so putting a film in Drive
-/// costs the same as putting a note in it.
-///
-/// # Errors
-/// When the file cannot be read, when Apple refuses any of the three steps, or when the file
-/// does not afterwards appear in the folder it was meant for.
+/// Three steps, as iCloud.com does it: ask for somewhere to put the bytes, send them, then
+/// file them under a name. Every one is checked rather than trusted — the receipt must carry
+/// the checksum of exactly the bytes that were sent, and the filed document must carry it
+/// again at the same size — and the folder is read back for the document by its id. A file
+/// renamed on the way in because the name was taken ("photo 2.jpg") is found by id too, where
+/// matching by name reported it missing, and an older file of the same name could stand in
+/// for a failed one.
 pub async fn upload(
     http: &reqwest::Client,
     docws_root: &str,
@@ -1073,7 +1169,10 @@ pub async fn upload(
     params: Vec<(String, String)>,
     folder_id: &str,
     path: &std::path::Path,
+    progress: Progress,
 ) -> Result<DriveItem> {
+    use tokio::io::AsyncReadExt;
+
     if folder_id.trim().is_empty() {
         return Err(Error::Protocol("no folder was named to put this in".into()));
     }
@@ -1091,10 +1190,10 @@ pub async fn upload(
         .and_then(|n| n.to_str())
         .ok_or_else(|| Error::Protocol("that file has no name to give it".into()))?
         .to_string();
-    let size = tokio::fs::metadata(path)
+    let meta = tokio::fs::metadata(path)
         .await
-        .map_err(|e| Error::Protocol(format!("could not read {name}: {e}")))?
-        .len();
+        .map_err(|e| Error::Protocol(format!("could not read {name}: {e}")))?;
+    let size = meta.len();
     let docws = docws_root.trim_end_matches('/');
 
     // 1. Somewhere to put the bytes.
@@ -1123,25 +1222,59 @@ pub async fn upload(
         .and_then(Value::as_str)
         .ok_or_else(|| Error::Protocol("Apple's upload slot carried no document id".into()))?;
 
-    // 2. The bytes themselves, straight off disk.
+    // 2. The bytes, straight off disk and never all in memory, checksummed and counted on the
+    //    way past so what was sent is known exactly.
     let file = tokio::fs::File::open(path)
         .await
         .map_err(|e| Error::Protocol(format!("could not open {name}: {e}")))?;
-    let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::from(file), size)
-        .file_name(name.clone())
-        .mime_str(content_type(&name))
-        .map_err(|e| Error::Protocol(format!("{name} has a content type Apple refused: {e}")))?;
-    let sent = http
+    let checksum = std::sync::Arc::new(std::sync::Mutex::new(Some(AppleChecksum::default())));
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let stream = futures_util::stream::try_unfold(
+        (file, checksum.clone(), sent.clone(), progress.clone()),
+        move |(mut file, checksum, sent, progress)| async move {
+            let mut buf = vec![0u8; 256 * 1024];
+            let n = file.read(&mut buf).await?;
+            if n == 0 {
+                return Ok::<_, std::io::Error>(None);
+            }
+            buf.truncate(n);
+            if let Some(hash) = checksum.lock().ok().as_mut().and_then(|h| h.as_mut()) {
+                hash.update(&buf);
+            }
+            let so_far = sent.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed) + n as u64;
+            progress(so_far, size);
+            Ok(Some((buf, (file, checksum, sent, progress))))
+        },
+    );
+    let part =
+        reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), size)
+            .file_name(name.clone())
+            .mime_str(content_type(&name))
+            .map_err(|e| {
+                Error::Protocol(format!("{name} has a content type Apple refused: {e}"))
+            })?;
+    let response = http
         .post(url)
         .multipart(reqwest::multipart::Form::new().part("files", part))
         .send()
         .await?;
-    let status = sent.status();
-    let text = sent.text().await.unwrap_or_default();
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
         return Err(Error::Protocol(format!(
             "Apple would not take the file ({status}): {}",
             text.chars().take(160).collect::<String>()
+        )));
+    }
+    let local = checksum
+        .lock()
+        .ok()
+        .and_then(|mut h| h.take())
+        .map(AppleChecksum::finish)
+        .ok_or_else(|| Error::Protocol(format!("{name} could not be checksummed")))?;
+    if sent.load(std::sync::atomic::Ordering::Relaxed) != size {
+        return Err(Error::Protocol(format!(
+            "{name} changed on disk while it was being sent, so nothing was filed"
         )));
     }
     let receipt: Value = serde_json::from_str(&text)
@@ -1149,26 +1282,28 @@ pub async fn upload(
     let single = receipt
         .get("singleFile")
         .ok_or_else(|| Error::Protocol("Apple took the bytes but described nothing".into()))?;
+    if single.get("fileChecksum").and_then(Value::as_str) != Some(local.as_str()) {
+        return Err(Error::Protocol(format!(
+            "the bytes Apple received for {name} are not the file's, so it was not filed"
+        )));
+    }
     let of = |key: &str| single.get(key).cloned().unwrap_or(Value::Null);
 
-    // 3. File it under a name. Until this, the bytes belong to nothing.
-    let now = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(0);
-    post_json(
+    // 3. File it under a name, with the file's own dates — as Finder keeps them — rather than
+    //    the moment it happened to be uploaded.
+    let now = millis(Ok(std::time::SystemTime::now())).unwrap_or(0);
+    let modified = millis(meta.modified()).unwrap_or(now);
+    let created = millis(meta.created()).unwrap_or(modified);
+    let filed = post_json(
         http,
         &format!("{docws}/ws/com.apple.CloudDocs/update/documents"),
         &params,
         &json!({
             // Apple renames rather than overwrites when the name is taken, which is what a
-            // file manager does and what a person expects.
+            // file manager does and what a person expects: nothing already there is lost.
             "allow_conflict": true,
-            "btime": now,
-            "mtime": now,
+            "btime": created,
+            "mtime": modified,
             "command": "add_file",
             "create_short_guid": true,
             "document_id": document_id,
@@ -1184,18 +1319,41 @@ pub async fn upload(
         }),
     )
     .await?;
+    let stored = filed_document(&filed, &local, size, &name)?;
 
     // Apple answers 200 to writes it did not make. The folder is the only witness that counts.
     let after = folder_listing(http, drivews_root, &params, folder_id).await?;
-    let stem = name.rsplit_once('.').map_or(name.as_str(), |(s, _)| s);
     after
         .into_iter()
-        .find(|i| i.name == name || i.name == stem)
+        .find(|i| i.drivewsid == stored)
         .ok_or_else(|| {
             Error::Protocol(format!(
                 "Apple accepted {name} but the folder does not hold it"
             ))
         })
+}
+
+/// The id of the document an `add_file` reply describes, once it is shown to be the file sent.
+fn filed_document(reply: &Value, checksum: &str, size: u64, name: &str) -> Result<String> {
+    let document = reply
+        .pointer("/results/0/document")
+        .ok_or_else(|| Error::Protocol(format!("Apple filed {name} without describing it")))?;
+    let ok = document
+        .pointer("/status/status_code")
+        .and_then(Value::as_i64)
+        == Some(0);
+    let same_bytes = document.pointer("/data/signature").and_then(Value::as_str) == Some(checksum);
+    let same_size = document.get("size").and_then(Value::as_u64) == Some(size);
+    if !(ok && same_bytes && same_size) {
+        return Err(Error::Protocol(format!(
+            "what Apple filed as {name} is not the file that was sent"
+        )));
+    }
+    let id = document
+        .get("document_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Protocol(format!("Apple filed {name} without an id")))?;
+    Ok(format!("FILE::{DOCUMENTS_ZONE}::{id}"))
 }
 
 /// A JSON POST to Drive that fails loudly rather than returning something unusable.
@@ -1297,6 +1455,7 @@ mod app_library_tests {
                 vec![],
                 folder,
                 &file,
+                std::sync::Arc::new(|_, _| {}),
             )
             .await
             .expect_err("an app's own library is not somewhere to put a file");
@@ -1320,6 +1479,7 @@ mod app_library_tests {
             vec![],
             quince_core::drive::ROOT,
             &file,
+            std::sync::Arc::new(|_, _| {}),
         )
         .await
         .expect_err("nothing is listening, so this fails on the network");

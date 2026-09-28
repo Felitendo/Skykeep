@@ -3182,6 +3182,7 @@ name = "quince-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "jiff",
  "quince-auth",
  "quince-core",
@@ -3246,6 +3247,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha1",
  "thiserror 2.0.20",
  "tokio",
  "uuid",
@@ -3274,6 +3276,8 @@ dependencies = [
  "reqwest 0.12.28",
  "rpassword",
  "serde_json",
+ "sha1",
+ "sha2",
  "tokio",
  "uuid",
 ]

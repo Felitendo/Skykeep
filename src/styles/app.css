@@ -1984,3 +1984,112 @@ button.cal-day-item:hover { background: color-mix(in srgb, var(--sheet) 92%, var
 }
 .notes-search::placeholder { color: var(--text-3); }
 .notes-search:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--gold-ring); }
+
+/* ---- uploads ---------------------------------------------------------------- */
+
+.upload-menu-wrap { position: relative; display: inline-flex; }
+
+/* A menu, not a sheet: two choices under the button that opened them. */
+.upload-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 5px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 10px;
+  background: var(--sheet);
+  box-shadow: var(--shadow-sheet);
+}
+.upload-menu button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: left;
+  cursor: default;
+}
+.upload-menu button:hover,
+.upload-menu button:focus-visible { background: var(--gold); color: #fff; outline: none; }
+
+/* The corner list of files going up, like a browser's downloads. */
+.upload-tray {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 30;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(420px, 60vh);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--glass-edge);
+  border-radius: 12px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-sheet), var(--glass-specular);
+  overflow: hidden;
+}
+.upload-tray-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 8px;
+}
+.upload-tray-title { font-size: var(--t-13); font-weight: 600; }
+.upload-tray-percent { color: var(--text-2); font-size: var(--t-13); font-variant-numeric: tabular-nums; }
+.upload-tray-close {
+  padding: 2px 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-11);
+  font-weight: 600;
+  cursor: default;
+}
+.upload-tray-close:focus-visible { outline: 3px solid var(--gold-ring); }
+
+.upload-bar {
+  height: 4px;
+  margin: 0 14px 8px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  overflow: hidden;
+}
+.upload-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--gold);
+  transition: width 200ms var(--ease);
+}
+.upload-bar.small { height: 3px; margin: 4px 0 0; }
+
+.upload-rows { margin: 0; padding: 0 6px 8px; list-style: none; overflow-y: auto; }
+.upload-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+.upload-glyph { display: grid; place-items: center; }
+.upload-text { display: flex; flex-direction: column; min-width: 0; }
+.upload-name,
+.upload-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-name { font-size: var(--t-13); }
+.upload-where { color: var(--text-3); font-size: var(--t-11); }
+.upload-state { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
+.upload-row.is-done .upload-state { color: var(--gold-strong); font-size: var(--t-13); font-weight: 700; }
+.upload-row.is-failed .upload-state,
+.upload-row.is-failed .upload-where { color: var(--danger); }

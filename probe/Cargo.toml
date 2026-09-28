@@ -6,6 +6,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+sha1 = "0.10"
+sha2 = "0.10"
 anyhow.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

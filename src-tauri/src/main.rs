@@ -1056,7 +1056,152 @@ async fn drive_download(
     Ok(destination.to_string_lossy().into_owned())
 }
 
-/// Create a folder, and reflect it locally without waiting for the next full sync.
+/// Where an upload's progress is announced, one event per file as it moves.
+const UPLOAD: &str = "quince://upload";
+
+/// One file's upload, as the window shows it.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UploadEvent {
+    /// Unique within the batch the window started.
+    id: String,
+    batch: String,
+    name: String,
+    /// The folders it sits in below the one it was dropped on, for a folder upload.
+    within: String,
+    sent: u64,
+    total: u64,
+    /// `waiting`, `sending`, `verifying`, `done` or `failed`.
+    state: &'static str,
+    error: Option<String>,
+}
+
+/// One file to send, and the Drive folder it goes into.
+struct UploadJob {
+    event: UploadEvent,
+    path: std::path::PathBuf,
+    folder: String,
+}
+
+/// The Drive folder called `name` inside `parent`: the one already there, or a new one.
+///
+/// Dropping a folder that is already in iCloud adds to it, as Finder offers to, rather than
+/// making "Photos 2" beside it. Files inside that already exist are kept too: Apple renames
+/// the newcomer rather than overwrite.
+async fn folder_for(
+    http: &reqwest::Client,
+    root: &str,
+    params: &[(String, String)],
+    data: &State<'_, Data>,
+    parent: &str,
+    name: &str,
+) -> Result<String, String> {
+    resync_drive_folder(http, root, params.to_vec(), data, parent).await?;
+    let existing = {
+        let library = data.0.lock().await;
+        library
+            .drive_children(parent)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|i| i.is_container() && i.name.eq_ignore_ascii_case(name))
+    };
+    if let Some(folder) = existing {
+        return Ok(folder.drivewsid);
+    }
+    quince_icloud::drive::create_folder(http, root, params.to_vec(), parent, name)
+        .await
+        .map(|f| f.drivewsid)
+        .map_err(|e| e.to_string())
+}
+
+/// Every file under the paths dropped or chosen, with folders made to match on the way.
+///
+/// Links are not followed: one that points back up the tree would never finish, and one that
+/// points outside it would upload something nobody chose.
+#[allow(clippy::too_many_arguments)]
+async fn plan_upload(
+    http: &reqwest::Client,
+    root: &str,
+    params: &[(String, String)],
+    data: &State<'_, Data>,
+    batch: &str,
+    folder_id: &str,
+    paths: &[String],
+    failed: &mut Vec<String>,
+) -> Vec<UploadJob> {
+    let mut jobs = Vec::new();
+    // (path on disk, Drive folder it goes into, folders below the drop target)
+    let mut pending: Vec<(std::path::PathBuf, String, String)> = paths
+        .iter()
+        .map(|p| {
+            (
+                std::path::PathBuf::from(p),
+                folder_id.to_string(),
+                String::new(),
+            )
+        })
+        .collect();
+    while let Some((path, into, within)) = pending.pop() {
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into(),
+        );
+        let meta = match tokio::fs::symlink_metadata(&path).await {
+            Ok(meta) => meta,
+            Err(e) => {
+                failed.push(format!("{name}: {e}"));
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            let folder = match folder_for(http, root, params, data, &into, &name).await {
+                Ok(folder) => folder,
+                Err(e) => {
+                    failed.push(format!("{name}: {e}"));
+                    continue;
+                }
+            };
+            let below = if within.is_empty() {
+                name.clone()
+            } else {
+                format!("{within}/{name}")
+            };
+            let mut entries = match tokio::fs::read_dir(&path).await {
+                Ok(entries) => entries,
+                Err(e) => {
+                    failed.push(format!("{name}: {e}"));
+                    continue;
+                }
+            };
+            let mut children = Vec::new();
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                children.push(entry.path());
+            }
+            // Popped from the end, so reversed to go in name order.
+            children.sort();
+            for child in children.into_iter().rev() {
+                pending.push((child, folder.clone(), below.clone()));
+            }
+        } else if meta.is_file() {
+            jobs.push(UploadJob {
+                event: UploadEvent {
+                    id: format!("{batch}:{}", jobs.len()),
+                    batch: batch.to_string(),
+                    name,
+                    within,
+                    sent: 0,
+                    total: meta.len(),
+                    state: "waiting",
+                    error: None,
+                },
+                path,
+                folder: into,
+            });
+        }
+    }
+    jobs
+}
+
 /// Put files from this machine into a Drive folder.
 ///
 /// Paths, never bytes. The interface hands over what the person chose — from the file dialog
@@ -1065,13 +1210,23 @@ async fn drive_download(
 ///
 /// Each file is reported on separately: one that Apple refuses must not take the rest of a
 /// dragged selection down with it.
+///
+/// Folders are uploaded whole, and each file's progress is announced as it moves.
+///
+/// Three at a time: enough to keep the connection busy through each file's round trips
+/// without asking Apple for dozens of upload slots at once. Every file is proven intact
+/// before it counts as done — see `quince_icloud::drive::upload`. Returns what failed.
 #[tauri::command]
 async fn drive_upload(
+    app: tauri::AppHandle,
+    batch: String,
     folder_id: String,
     paths: Vec<String>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Vec<String>> {
+    use futures_util::StreamExt;
+
     let (http, root, params) = drive_context(&auth).await?;
     let docws = {
         let client = auth.client.lock().await;
@@ -1082,24 +1237,92 @@ async fn drive_upload(
     };
 
     let mut failed = Vec::new();
-    for path in &paths {
-        let path = std::path::Path::new(path);
-        let name = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |n| n.to_string_lossy().into(),
-        );
-        if let Err(e) =
-            quince_icloud::drive::upload(&http, &docws, &root, params.clone(), &folder_id, path)
-                .await
-        {
-            failed.push(format!("{name}: {e}"));
-        }
+    let jobs = plan_upload(
+        &http,
+        &root,
+        &params,
+        &data,
+        &batch,
+        &folder_id,
+        &paths,
+        &mut failed,
+    )
+    .await;
+    for job in &jobs {
+        app.emit(UPLOAD, &job.event).ok();
     }
+
+    let results: Vec<Option<String>> = futures_util::stream::iter(jobs)
+        .map(|job| {
+            let (app, http, docws, root, params) = (
+                app.clone(),
+                http.clone(),
+                docws.clone(),
+                root.clone(),
+                params.clone(),
+            );
+            async move {
+                let mut event = job.event.clone();
+                event.state = "sending";
+                app.emit(UPLOAD, &event).ok();
+
+                // Told about every quarter-megabyte, passed on at every whole percent: a
+                // smooth bar without a flood of messages for a large file.
+                let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let progress: quince_icloud::drive::Progress = {
+                    let (app, event, last) = (app.clone(), event.clone(), last.clone());
+                    std::sync::Arc::new(move |sent: u64, total: u64| {
+                        let step = (total / 100).max(1);
+                        let before = last.load(std::sync::atomic::Ordering::Relaxed);
+                        if sent / step != before / step || sent == total {
+                            last.store(sent, std::sync::atomic::Ordering::Relaxed);
+                            let mut e = event.clone();
+                            e.sent = sent;
+                            e.state = if sent >= total {
+                                "verifying"
+                            } else {
+                                "sending"
+                            };
+                            app.emit(UPLOAD, &e).ok();
+                        }
+                    })
+                };
+                let outcome = quince_icloud::drive::upload(
+                    &http,
+                    &docws,
+                    &root,
+                    params,
+                    &job.folder,
+                    &job.path,
+                    progress,
+                )
+                .await;
+                event.sent = event.total;
+                match outcome {
+                    Ok(_) => {
+                        event.state = "done";
+                        app.emit(UPLOAD, &event).ok();
+                        None
+                    }
+                    Err(e) => {
+                        event.state = "failed";
+                        event.error = Some(e.to_string());
+                        app.emit(UPLOAD, &event).ok();
+                        Some(format!("{}: {e}", event.name))
+                    }
+                }
+            }
+        })
+        .buffer_unordered(3)
+        .collect()
+        .await;
+    failed.extend(results.into_iter().flatten());
 
     resync_drive_folder(&http, &root, params, &data, &folder_id).await?;
     Ok(failed)
 }
 
+/// Create a folder, and reflect it locally without waiting for the next full sync.
 #[tauri::command]
 async fn drive_create_folder(
     parent_id: String,
