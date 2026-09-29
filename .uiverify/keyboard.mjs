@@ -199,7 +199,9 @@ const focused = (page) =>
   );
   check("month grid is ONE tab stop, not forty-two", stops === 1, `${stops} tabbable`);
 
-  const day = () => page.locator(".cal-day-panel h2").innerText();
+  // The selected day is the grid's one tab stop, and its label names the day — what a
+  // screen reader announces as the arrows move.
+  const day = () => page.locator('.cal-grid button[tabindex="0"]').getAttribute("aria-label");
   const before = await day();
   await page.locator('.cal-grid button[tabindex="0"]').focus();
   await page.keyboard.press("ArrowDown");

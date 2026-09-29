@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, messageOf } from "../lib/ipc";
 import { SyncProvider } from "../lib/sync";
 import { SyncStatus } from "../components/SyncStatus";
-import { CalendarView } from "./CalendarView";
+import { CalendarView } from "./calendar/CalendarView";
 import { RemindersView } from "./RemindersView";
 import { NotesView } from "./NotesView";
 import { ContactsView } from "./ContactsView";

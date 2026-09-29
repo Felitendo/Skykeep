@@ -4,6 +4,7 @@ import App from "./App";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/reminders.css";
+import "./styles/calendar.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

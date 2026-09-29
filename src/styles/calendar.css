@@ -1,0 +1,551 @@
+/* Calendar, laid out the way macOS Calendar is. Scoped under `.cx`. */
+
+.content:has(.cx) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
+
+.cx {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 0;
+}
+
+/* ---- sidebar: the calendars, and the month in miniature ------------------------ */
+
+.cx-side {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 0;
+  padding: 4px 14px 10px;
+  border-right: 1px solid var(--separator);
+  overflow-y: auto;
+}
+.cx-cals { display: flex; flex-direction: column; gap: 2px; }
+.cx-side-heading {
+  margin: 10px 0 4px;
+  color: var(--text-3);
+  font-size: var(--t-11);
+  font-weight: 600;
+}
+.cx-side-heading:first-child { margin-top: 0; }
+
+.cx-cal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: var(--t-13);
+  cursor: default;
+}
+.cx-cal:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.cx-cal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Apple's calendar checkbox: a rounded square in the calendar's own colour. */
+.cx-cal input {
+  appearance: none;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1.5px solid var(--cal);
+  border-radius: 4px;
+  background: transparent;
+}
+.cx-cal input:checked { background: var(--cal); }
+.cx-cal input:checked::after {
+  content: "";
+  width: 7px;
+  height: 4px;
+  margin-top: -2px;
+  border-left: 1.6px solid #fff;
+  border-bottom: 1.6px solid #fff;
+  transform: rotate(-45deg);
+}
+.cx-cal input:focus-visible { outline: 3px solid color-mix(in srgb, var(--cal) 40%, transparent); outline-offset: 1px; }
+
+.cx-minimonth { padding-top: 12px; }
+.cx-minimonth-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: var(--t-13);
+  font-weight: 600;
+}
+.cx-minimonth-head > span:last-child { display: inline-flex; gap: 2px; }
+.cx-minimonth-grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 1px; }
+.cx-minimonth-wd { color: var(--text-3); font-size: 10px; font-weight: 600; text-align: center; line-height: 20px; }
+.cx-minimonth-day {
+  position: relative;
+  justify-self: center;
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.cx-minimonth-day:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.cx-minimonth-day.is-out { color: var(--text-3); }
+.cx-minimonth-day.is-selected { background: color-mix(in srgb, var(--text) 16%, transparent); font-weight: 600; }
+.cx-minimonth-day.is-today { background: var(--sys-red); color: #fff; font-weight: 700; }
+.cx-minimonth-day.is-busy::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 3px;
+  height: 3px;
+  margin-left: -1.5px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.cx-minimonth-day.is-today.is-busy::after { background: #fff; }
+.cx-minimonth-day.is-blank { visibility: hidden; }
+.cx-minimonth-day:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 1px; }
+
+/* ---- toolbar -------------------------------------------------------------------- */
+
+.cx-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* Title, then the scopes, then stepping — wrapping onto a second line in a narrow window
+   rather than running into each other. */
+.cx-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 0 18px 12px;
+}
+.cx-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cx-title strong { font-weight: 700; }
+.cx-tools { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.cx-step { display: inline-flex; align-items: center; gap: 2px; }
+
+.cx-icon {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: default;
+}
+.cx-icon.small { min-width: 22px; height: 22px; font-size: 15px; }
+.cx-icon:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.cx-today {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--field-edge);
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: default;
+}
+.cx-icon:focus-visible, .cx-today:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 40%, transparent); }
+
+.cx-error { margin: 0 18px 8px; color: var(--danger); font-size: var(--t-13); }
+
+/* ---- month ---------------------------------------------------------------------- */
+
+.cx-month { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.cx-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border-bottom: 1px solid var(--separator);
+}
+/* Weekday names on the right of each column, over the day numbers, as Apple sets them. */
+.cx-weekdays span { padding: 0 10px 6px; color: var(--text-2); font-size: var(--t-13); text-align: right; }
+
+.cal-grid { flex: 1; display: grid; grid-template-rows: repeat(6, minmax(0, 1fr)); min-height: 0; }
+.cx-week {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-bottom: 1px solid var(--separator);
+  min-height: 0;
+}
+.cx-week:last-child { border-bottom: 0; }
+.cx-day {
+  container-type: inline-size;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 26px 3px 2px;
+  border-right: 1px solid var(--separator);
+  overflow: hidden;
+}
+.cx-day:last-child { border-right: 0; }
+.cx-day.is-weekend { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.cx-day.is-selected { background: color-mix(in srgb, var(--sys-blue) 7%, transparent); }
+.cx-day-hit {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: default;
+}
+.cx-day-hit:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: -2px; }
+
+.cx-daynum {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 1;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 11px;
+  font-size: var(--t-13);
+  font-variant-numeric: tabular-nums;
+  line-height: 22px;
+  text-align: center;
+  pointer-events: none;
+}
+.cx-day.is-out .cx-daynum { color: var(--text-3); }
+.cx-daynum.is-today { background: var(--sys-red); color: #fff; font-weight: 700; }
+
+.cx-items { position: relative; z-index: 1; margin: 0; padding: 0; list-style: none; pointer-events: none; }
+.cx-items li { pointer-events: auto; }
+.cx-item {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 18px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-11);
+  text-align: left;
+  cursor: default;
+}
+.cx-item:hover { background: color-mix(in srgb, var(--cal, var(--text)) 14%, transparent); }
+.cx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cal); }
+.cx-ring { width: 8px; height: 8px; border: 1.3px solid var(--text-3); border-radius: 50%; box-sizing: border-box; }
+.cx-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-item-time { color: var(--text-3); font-variant-numeric: tabular-nums; }
+/* In a narrow cell the title matters more than the time, which Apple drops first. */
+@container (max-width: 130px) {
+  .cx-item { grid-template-columns: 8px minmax(0, 1fr); }
+  .cx-item-time { display: none; }
+}
+.cx-item.is-reminder.is-done .cx-item-title { color: var(--text-3); text-decoration: line-through; }
+.cx-more {
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-11);
+  font-weight: 600;
+  cursor: default;
+}
+.cx-more:hover { color: var(--text); }
+
+/* An all-day or multi-day event: one tinted bar across the days it covers. */
+.cx-bar-event {
+  position: absolute;
+  z-index: 2;
+  height: 18px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--cal) 24%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-11);
+  font-weight: 600;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+.cx-bar-event::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--cal);
+}
+.cx-bar-event.from-before { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.cx-bar-event.from-before::before { display: none; }
+.cx-bar-event.to-after { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.cx-bar-event:hover { background: color-mix(in srgb, var(--cal) 34%, transparent); }
+.cx-bar-event:focus-visible, .cx-item:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 0; }
+
+/* ---- week and day ------------------------------------------------------------------ */
+
+.cal-hours { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.cx-gutter { width: 56px; flex: none; }
+.cx-grid-head,
+.cx-allday { display: flex; border-bottom: 1px solid var(--separator); }
+.cx-grid-head > .cal-col-head { flex: 1; }
+.cal-col-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 0 8px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: default;
+}
+.cx-col-num { font-size: 20px; font-weight: 400; color: var(--text); font-variant-numeric: tabular-nums; }
+.cal-col-head.is-today .cx-col-num {
+  min-width: 28px;
+  padding: 0 6px;
+  border-radius: 14px;
+  background: var(--sys-red);
+  color: #fff;
+  font-weight: 600;
+}
+.cal-col-head.is-today .cx-col-weekday { color: var(--sys-red); font-weight: 600; }
+.cal-col-head:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: -2px; }
+
+.cx-allday { position: relative; min-height: 28px; }
+.cx-allday-label {
+  padding: 5px 8px 0 0;
+  color: var(--text-3);
+  font-size: var(--t-11);
+  text-align: right;
+}
+.cx-allday-lanes { position: relative; flex: 1; }
+
+.cx-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.cx-hours-body { position: relative; display: flex; }
+.cx-hour-labels { position: relative; }
+.cx-hour-labels span {
+  position: absolute;
+  right: 8px;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  font-size: var(--t-11);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cx-hour-labels .cx-now-label { z-index: 2; padding: 0 2px; background: var(--bg); color: var(--sys-red); font-weight: 600; }
+
+.cx-columns {
+  position: relative;
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  background-image: linear-gradient(to bottom, var(--separator) 1px, transparent 1px);
+  background-size: 100% 48px;
+  touch-action: none;
+}
+.cx-column { position: relative; border-left: 1px solid var(--separator); }
+.cx-column.is-weekend { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+
+/* A timed event: a tinted block with a stripe of its calendar's colour down the left. */
+.cx-block {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  margin-left: 2px;
+  padding: 3px 6px 3px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--cal) 22%, var(--bg));
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  cursor: default;
+  transition: box-shadow 120ms var(--ease);
+}
+.cx-block::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--cal);
+}
+.cx-block:hover { background: color-mix(in srgb, var(--cal) 32%, var(--bg)); }
+.cx-block:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 0; }
+.cx-block.is-moving { z-index: 3; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28); opacity: 0.94; }
+.cx-block.is-draft {
+  --cal: var(--sys-blue);
+  left: 0;
+  right: 3px;
+  width: auto;
+  background: color-mix(in srgb, var(--sys-blue) 26%, var(--bg));
+  pointer-events: none;
+}
+.cx-block-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-11); font-weight: 600; }
+.cx-block-time,
+.cx-block-where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 10.5px; }
+
+.cx-reminder {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  font-size: var(--t-11);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.cx-reminder.is-done { color: var(--text-3); text-decoration: line-through; }
+
+/* Now: a red line across today with a dot at its start. */
+.cx-now {
+  position: absolute;
+  z-index: 2;
+  height: 2px;
+  margin-top: -1px;
+  background: var(--sys-red);
+  pointer-events: none;
+}
+.cx-now::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sys-red);
+}
+
+/* ---- year --------------------------------------------------------------------------- */
+
+.cal-year {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 22px 28px;
+  padding: 6px 18px 18px;
+  overflow-y: auto;
+}
+.cx-year-month { margin: 0 0 6px; color: var(--text); font-size: var(--t-15); font-weight: 700; }
+.cx-year-month.is-current { color: var(--sys-red); }
+
+@media (max-width: 1100px) { .cal-year { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 820px) {
+  .cx { grid-template-columns: 1fr; }
+  .cx-side { display: none; }
+  .cal-year { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cx-bar { grid-template-columns: 1fr; justify-items: start; }
+}
+
+/* ---- the event popover --------------------------------------------------------------- */
+
+.cx-popover {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 300px;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 12px;
+  background: var(--sheet);
+  box-shadow: var(--shadow-sheet);
+  animation: cx-pop 160ms var(--ease) both;
+}
+@keyframes cx-pop { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+.cx-popover input,
+.cx-popover textarea {
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+.cx-pop-title { padding: 0; font-size: var(--t-17); font-weight: 700; }
+.cx-pop-title::placeholder, .cx-pop-line::placeholder, .cx-pop-notes::placeholder { color: var(--text-3); }
+.cx-pop-line { padding: 0; font-size: var(--t-13); }
+.cx-pop-rows { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--separator); border-bottom: 1px solid var(--separator); }
+.cx-pop-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; font-size: var(--t-13); }
+.cx-pop-row > span:first-child { color: var(--text-2); text-align: right; }
+.cx-pop-row input[type="datetime-local"],
+.cx-pop-row input[type="date"] {
+  padding: 3px 6px;
+  border: 1px solid var(--field-edge);
+  border-radius: 6px;
+  background: var(--field);
+  font-size: var(--t-13);
+  color-scheme: light dark;
+}
+.cx-pop-row input[type="checkbox"] { justify-self: start; width: 16px; height: 16px; accent-color: var(--sys-blue); }
+.cx-pop-notes { padding: 0; font-size: var(--t-13); resize: vertical; }
+.cx-pop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cx-pop-actions > span { display: flex; gap: 6px; }
+.cx-pop-delete { padding: 4px 6px; border: 0; background: none; color: var(--sys-red); font: inherit; font-size: var(--t-13); cursor: default; }
+.cx-pop-note { margin: 0; color: var(--text-3); font-size: var(--t-11); }
+
+.cx-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 10px 9px 16px;
+  transform: translateX(-50%);
+  border: 1px solid var(--glass-edge);
+  border-radius: 12px;
+  background: var(--sheet);
+  box-shadow: var(--shadow-sheet);
+  font-size: var(--t-13);
+}
+.cx-toast-undo {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--sys-blue) 16%, transparent);
+  color: var(--sys-blue);
+  font: inherit;
+  font-weight: 600;
+  cursor: default;
+}
