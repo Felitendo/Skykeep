@@ -1,7 +1,7 @@
 // Screenshot every auth screen against the real built bundle.
 // Tauri IPC doesn't exist in a plain browser, so we stub __TAURI_INTERNALS__ with the exact
 // shapes the Rust commands return — no invented UI state.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { SERVICES, installStub } from "./stub.mjs";

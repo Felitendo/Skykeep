@@ -1,5 +1,5 @@
 // Deterministic checks on the library nav — cheaper and more reliable than eyeballing a screenshot.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 const b = await chromium.launch();
 const ctx = await b.newContext({ viewport: { width: 1040, height: 900 } });
 await ctx.addInitScript(({ services }) => {

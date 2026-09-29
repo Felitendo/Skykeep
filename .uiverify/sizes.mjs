@@ -5,7 +5,7 @@
 // Screens break at the sizes nobody looked at — the half-screen window, the small laptop —
 // so each is opened at a small, an ordinary and a very large size, and in Calendar each of
 // its four views too.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 import { SERVICES, installStub } from "./stub.mjs";
 
 const SIZES = [

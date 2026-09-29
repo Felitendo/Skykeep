@@ -4,7 +4,7 @@
 // the note was created, so for a moment nothing was open ("Select a note"), focus fell onto
 // the window, and the box that went away could create the note a second time — three
 // "Untitled" notes from one. This runs it in a real browser against a slow create.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 
 const b = await chromium.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 820 } });

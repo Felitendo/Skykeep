@@ -1,5 +1,5 @@
 // Load exactly what the app loads (the dev server) and surface any error that kills render.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 
 const b = await chromium.launch();
 const ctx = await b.newContext({ viewport: { width: 1100, height: 800 } });

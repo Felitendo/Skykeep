@@ -1,6 +1,6 @@
 // Keyboard-only operability. axe cannot judge focus flow, and this is what a keyboard or
 // screen-reader user actually experiences.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 
 const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservice",
                   "cksharews","contacts","contactsweb","developerapi","docws","drivews",

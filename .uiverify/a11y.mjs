@@ -1,6 +1,6 @@
 // Accessibility audit with axe-core — the same engine Lighthouse and Deque use.
 // Every auth screen, in both themes, at WCAG 2.1 AA.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 import AxeBuilder from "@axe-core/playwright";
 
 const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservice",

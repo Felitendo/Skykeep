@@ -5,7 +5,7 @@
 // change twice a year, a Japanese speaker in a zone that never changes, and a New Zealander
 // on the Chathams, whose clock moves by forty-five minutes — and asserts the app renders,
 // says true things, and never lays a date over its own label.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 
 const PLACES = [
   { label: "New York, German", timezoneId: "America/New_York", locale: "de-DE" },

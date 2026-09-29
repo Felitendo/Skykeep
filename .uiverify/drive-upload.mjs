@@ -3,7 +3,7 @@
 // "Uploading…" on the button said nothing about which of forty photos had gone. The tray must
 // show each one moving, call it uploaded only when the backend has proven it intact, and name
 // the reason for any that did not make it — while the window stays usable.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 
 const b = await chromium.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 820 } });

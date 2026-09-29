@@ -1,7 +1,7 @@
 // Calendar's Day and Week grids, checked in a real browser.
-import { chromium } from "playwright";
+import { engine } from "./engine.mjs";
 
-const b = await chromium.launch();
+const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } });
 // The moment of the screenshot this came from: 9:51 PM, so "now" sits just above 10 PM.
 await ctx.addInitScript(() => {
@@ -12,7 +12,7 @@ await ctx.addInitScript(() => {
   window.__fixedNow = today;
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
-    invoke: async (cmd) => {
+    invoke: async (cmd, args) => {
       if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
       if (cmd === "auth_resume") return true;
       if (cmd === "account_services") return ["calendar"];
@@ -22,6 +22,7 @@ await ctx.addInitScript(() => {
       if (cmd === "reminders_due_between") return [r("a", "Pick up the parcel", at(8)), r("b", "Water the plants", at(8)),
         { ...r("d", "Done already", at(16)), completedAt: at(16) }];
       if (cmd === "calendar_sync") return { calendars: 1, events: 0 };
+      if (cmd === "event_save") { (window.__saved ??= []).push(args.draft); return "E-new"; }
       if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
       if (cmd === "plugin:event|listen") return 0;
       return [];
@@ -106,6 +107,25 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   ok(JSON.stringify(fields) === JSON.stringify(["date", "time", "date", "time"]),
     "a start and an end, each a date and a time", `the popover's fields are ${JSON.stringify(fields)}`);
   await page.keyboard.press("Escape");
+}
+
+// The whole of making an event from the + button: it opens, takes a title, and is saved with
+// what was typed — the thing that has to work for Calendar to be usable at all.
+{
+  await page.locator('button[aria-label="New event"]').click();
+  await page.waitForTimeout(250);
+  const open = await page.locator(".cx-popover").count();
+  ok(open === 1, "the + button opens a new event", "the + button opened nothing");
+  await page.keyboard.type("Dinner with Asha");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.waitForTimeout(400);
+  const saved = await page.evaluate(() => window.__saved ?? []);
+  const good = saved.length === 1 && saved[0].title === "Dinner with Asha" &&
+    saved[0].endsAt - saved[0].startsAt === 3600 && saved[0].calendarGuid === "c";
+  ok(good, "what was typed is saved: its title, an hour long, in the default calendar",
+    `saved ${JSON.stringify(saved)}`);
+  ok((await page.locator(".cx-popover").count()) === 0, "and the popover closes once it is saved",
+    "the popover stayed open after saving");
 }
 
 await b.close();

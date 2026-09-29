@@ -1,6 +1,6 @@
 // Recently Deleted behaves as it does on the phone: a deleted note can be recovered, and the
 // only final delete is the one asked about first.
-import { chromium } from "playwright";
+import { engine as chromium } from "./engine.mjs";
 
 const b = await chromium.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 820 } });
