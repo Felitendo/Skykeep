@@ -36,6 +36,12 @@ pub fn set_writer(id: [u8; 16]) {
     let _ = WRITER.set(id);
 }
 
+/// This installation's writer id, as Apple writes a replica id: an uppercase UUID.
+#[must_use]
+pub fn writer_id() -> String {
+    uuid::Uuid::from_bytes(writer()).to_string().to_uppercase()
+}
+
 fn writer() -> [u8; 16] {
     *WRITER.get_or_init(|| *uuid::Uuid::new_v4().as_bytes())
 }

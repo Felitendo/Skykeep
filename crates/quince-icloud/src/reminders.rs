@@ -1130,7 +1130,7 @@ pub async fn create_cloudkit(
     let stamp = now_millis();
 
     client
-        .create_record(
+        .create_record_signed(
             ZONE,
             &record_name,
             "Reminder",
@@ -1148,7 +1148,59 @@ pub async fn create_cloudkit(
         )
         .await?;
 
+    // The phone adds a new reminder to the end of its list's own order. Without that, a list
+    // sorted by hand has nowhere to put it — measured: a list of 126 reminders held 125 ids,
+    // the missing one the reminder made here. The reminder itself is made either way, so a
+    // failure here costs its place in the order, never the reminder.
+    let _ = place_in_list(&client, list_guid, &record_name, None).await;
+
     Ok(record_name)
+}
+
+/// Add a reminder to the end of a list's `ReminderIDs`, and take it out of the list it left.
+async fn place_in_list(
+    client: &ZoneClient<'_>,
+    list_guid: &str,
+    reminder_guid: &str,
+    left: Option<&str>,
+) -> Result<()> {
+    let id = reminder_guid
+        .rsplit('/')
+        .next()
+        .unwrap_or(reminder_guid)
+        .to_string();
+    let edit = |list: Value, add: bool| {
+        let mut ids: Vec<String> = list
+            .pointer("/fields/ReminderIDs/value")
+            .and_then(Value::as_str)
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let had = ids.iter().any(|x| x.eq_ignore_ascii_case(&id));
+        if add && !had {
+            ids.push(id.clone());
+        } else if !add && had {
+            ids.retain(|x| !x.eq_ignore_ascii_case(&id));
+        } else {
+            return None;
+        }
+        Some(serde_json::json!({
+            "ReminderIDs": { "type": "STRING", "value": serde_json::to_string(&ids).unwrap_or_default() }
+        }))
+    };
+    for (guid, add) in [Some((list_guid, true)), left.map(|l| (l, false))]
+        .into_iter()
+        .flatten()
+    {
+        let Some(list) = client.lookup_record(ZONE, guid).await? else {
+            continue;
+        };
+        if let Some(fields) = edit(list, add) {
+            client
+                .update_record_signed(ZONE, guid, "List", None, fields)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// How often a reminder comes back.
@@ -1236,7 +1288,7 @@ pub async fn set_recurrence_cloudkit(
         .or(reminder.etag.as_deref());
 
     client
-        .update_record(
+        .update_record_signed(
             ZONE,
             &reminder.guid,
             "Reminder",
@@ -1270,7 +1322,7 @@ pub async fn delete_cloudkit(
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     client
-        .update_record(
+        .update_record_signed(
             ZONE,
             &reminder.guid,
             "Reminder",
@@ -1457,8 +1509,23 @@ pub async fn edit_cloudkit(
         .or(reminder.etag.as_deref());
 
     client
-        .update_record(ZONE, &reminder.guid, "Reminder", tag, Value::Object(fields))
+        .update_record_signed(ZONE, &reminder.guid, "Reminder", tag, Value::Object(fields))
         .await?;
+    // Moved to another list: it joins the end of that list's order and leaves the old one's,
+    // as on the phone. The move itself has happened either way.
+    if let Some(list_guid) = edit
+        .list_guid
+        .as_deref()
+        .filter(|l| *l != reminder.list_guid)
+    {
+        let _ = place_in_list(
+            &client,
+            list_guid,
+            &reminder.guid,
+            Some(&reminder.list_guid),
+        )
+        .await;
+    }
     Ok(())
 }
 
@@ -1481,7 +1548,7 @@ pub async fn create_list_cloudkit(
     let record_name = format!("List/{}", uuid::Uuid::new_v4().to_string().to_uppercase());
 
     client
-        .create_record(
+        .create_record_signed(
             ZONE,
             &record_name,
             "List",
@@ -1511,7 +1578,7 @@ pub async fn rename_list_cloudkit(
     }
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     client
-        .update_record(
+        .update_record_signed(
             ZONE,
             list_guid,
             "List",
@@ -1534,7 +1601,7 @@ pub async fn delete_list_cloudkit(
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     client
-        .update_record(
+        .update_record_signed(
             ZONE,
             list_guid,
             "List",
@@ -1582,7 +1649,7 @@ pub async fn set_completed_cloudkit(
     };
 
     client
-        .update_record(
+        .update_record_signed(
             ZONE,
             &reminder.guid,
             "Reminder",
@@ -1953,13 +2020,25 @@ mod write_tests {
             .await
             .unwrap();
 
-        let sent: Value =
-            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let modify = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/modify"))
+            .expect("a write was sent");
+        let sent: Value = serde_json::from_slice(&modify.body).unwrap();
         assert_eq!(sent["operations"][0]["operationType"], "update");
         assert_eq!(
             sent["operations"][0]["record"]["fields"]["Deleted"]["value"],
             1
         );
+        // Signed, so a phone merging field by field has a reason to take it.
+        let tokens: Value = serde_json::from_str(
+            sent["operations"][0]["record"]["fields"]["ResolutionTokenMap"]["value"]
+                .as_str()
+                .expect("the write carries resolution tokens"),
+        )
+        .unwrap();
+        assert!(tokens["map"]["deleted"]["counter"].as_u64() >= Some(1));
         assert_eq!(
             sent["operations"][0]["record"]["recordChangeTag"], "tag-3",
             "the change tag guards against clobbering a newer edit"
@@ -3830,5 +3909,76 @@ mod account_order_tests {
             .map(|l| (l.title, l.sort_order))
             .collect();
         assert_eq!(before, after);
+    }
+}
+
+/// A reminder made here takes its place in its list's own order, as one made on the phone does.
+#[cfg(test)]
+mod list_order_write_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn a_new_reminder_joins_the_end_of_its_list() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "records": [{
+                "recordName": "List/L", "recordType": "List", "recordChangeTag": "t1",
+                "fields": {
+                    "ReminderIDs": { "type": "STRING", "value": "[\"AAA\",\"BBB\"]" },
+                    "ResolutionTokenMap": { "type": "STRING", "value":
+                        "{\"map\":{\"reminderIDsMergeableOrdering\":{\"counter\":123,\"modificationTime\":1,\"replicaID\":\"P\"}}}" }
+                }
+            }]})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "x" }] })),
+            )
+            .mount(&server)
+            .await;
+
+        let made = create_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "List/L",
+            "Buy milk",
+        )
+        .await
+        .unwrap();
+        let uuid = made.trim_start_matches("Reminder/").to_string();
+
+        let lists: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+            .map(|b| b["operations"][0]["record"].clone())
+            .filter(|r| r["recordType"] == "List")
+            .collect();
+        assert_eq!(lists.len(), 1, "the list's order is written once");
+        let ids: Vec<String> =
+            serde_json::from_str(lists[0]["fields"]["ReminderIDs"]["value"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(ids, vec!["AAA".to_string(), "BBB".into(), uuid]);
+        let tokens: Value = serde_json::from_str(
+            lists[0]["fields"]["ResolutionTokenMap"]["value"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            tokens["map"]["reminderIDsMergeableOrdering"]["counter"],
+            124
+        );
     }
 }

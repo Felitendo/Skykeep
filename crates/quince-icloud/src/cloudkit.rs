@@ -282,6 +282,106 @@ pub mod field {
     }
 }
 
+/// Seconds between the Unix epoch and Apple's, the first moment of 2001 UTC.
+const APPLE_EPOCH: f64 = 978_307_200.0;
+
+/// The token key Apple uses for a field: its name with the first letter lowered, except where
+/// Apple named it something else.
+fn token_key(field: &str) -> String {
+    match field {
+        "ReminderIDs" => "reminderIDsMergeableOrdering".into(),
+        _ => {
+            let mut chars = field.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_lowercase().chain(chars).collect()
+            })
+        }
+    }
+}
+
+/// Add a `ResolutionTokenMap` to `fields` advancing the token of every field in it.
+fn stamp_tokens(fields: &mut Value, current: Option<&Value>) {
+    let Some(written) = fields.as_object() else {
+        return;
+    };
+    let mut map: Value = current
+        .and_then(|c| c.pointer("/fields/ResolutionTokenMap/value"))
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str(s).ok())
+        .filter(|v: &Value| v.get("map").is_some_and(Value::is_object))
+        .unwrap_or_else(|| json!({ "map": {} }));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+        - APPLE_EPOCH;
+    let writer = crate::topotext::writer_id();
+    let names: Vec<String> = written
+        .keys()
+        .filter(|k| k.as_str() != "ResolutionTokenMap")
+        .cloned()
+        .collect();
+    for name in names {
+        let key = token_key(&name);
+        let counter = map["map"][&key]["counter"].as_u64().unwrap_or(0) + 1;
+        map["map"][key] =
+            json!({ "counter": counter, "modificationTime": now, "replicaID": writer });
+    }
+    fields["ResolutionTokenMap"] = json!({ "type": "STRING", "value": map.to_string() });
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    fn tokens(fields: &Value) -> Value {
+        serde_json::from_str(fields["ResolutionTokenMap"]["value"].as_str().unwrap()).unwrap()
+    }
+
+    /// The shape measured on the phone's own records.
+    #[test]
+    fn each_field_written_gets_its_token_advanced() {
+        let current = json!({ "fields": { "ResolutionTokenMap": { "type": "STRING", "value":
+            r#"{"map":{"titleDocument":{"counter":1,"modificationTime":803701265.4,"replicaID":"A"},
+                      "priority":{"counter":4,"modificationTime":803701265.4,"replicaID":"B"},
+                      "reminderIDsMergeableOrdering":{"counter":123,"modificationTime":1.0,"replicaID":"C"}}}"# } } });
+        let mut fields = json!({
+            "TitleDocument": { "type": "ENCRYPTED_BYTES", "value": "x" },
+            "ReminderIDs": { "type": "STRING", "value": "[]" },
+            "LastModifiedDate": { "type": "TIMESTAMP", "value": 1 },
+        });
+        stamp_tokens(&mut fields, Some(&current));
+        let map = &tokens(&fields)["map"];
+        assert_eq!(map["titleDocument"]["counter"], 2);
+        assert_eq!(map["reminderIDsMergeableOrdering"]["counter"], 124);
+        assert_eq!(map["lastModifiedDate"]["counter"], 1);
+        // What was not written is left exactly as it was.
+        assert_eq!(map["priority"]["counter"], 4);
+        assert_eq!(map["priority"]["replicaID"], "B");
+        // Now, in Apple's seconds, by this installation.
+        let t = map["titleDocument"]["modificationTime"].as_f64().unwrap();
+        assert!(t > 812_000_000.0, "{t}");
+        assert_eq!(
+            map["titleDocument"]["replicaID"],
+            crate::topotext::writer_id()
+        );
+    }
+
+    #[test]
+    fn a_new_record_starts_every_token_at_one() {
+        let mut fields = json!({ "Name": { "type": "STRING", "value": "GYM" } });
+        stamp_tokens(&mut fields, None);
+        assert_eq!(tokens(&fields)["map"]["name"]["counter"], 1);
+    }
+
+    #[test]
+    fn a_broken_map_is_started_again_rather_than_kept() {
+        let current = json!({ "fields": { "ResolutionTokenMap": { "type": "STRING", "value": "not json" } } });
+        let mut fields = json!({ "Flagged": { "type": "NUMBER_INT64", "value": 1 } });
+        stamp_tokens(&mut fields, Some(&current));
+        assert_eq!(tokens(&fields)["map"]["flagged"]["counter"], 1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,6 +620,49 @@ impl ZoneClient<'_> {
     ///
     /// The caller supplies the record name so the same identifier can be stored locally
     /// without waiting for a round trip.
+    /// [`Self::update_record`], with each changed field's resolution token advanced.
+    ///
+    /// Reminders and lists carry `ResolutionTokenMap`, a JSON map from each field to
+    /// `{counter, modificationTime, replicaID}`, and a phone merges field by field on those
+    /// tokens. A write that leaves them alone gives a phone no reason to prefer it — measured on
+    /// the account, a reminder created here had every token at counter 0, and the phone's own
+    /// edits carry counters of 1 and up. So each field written gets its counter raised, the
+    /// time set to now, and this installation as the writer. Only for record types that carry
+    /// the map: CloudKit refuses a field its schema does not already have.
+    pub async fn update_record_signed(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        change_tag: Option<&str>,
+        mut changes: Value,
+    ) -> Result<Value> {
+        let current = self.lookup_record(zone, record_name).await?;
+        stamp_tokens(&mut changes, current.as_ref());
+        let tag = change_tag.map(ToString::to_string).or_else(|| {
+            current
+                .as_ref()
+                .and_then(|c| c.get("recordChangeTag"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        });
+        self.update_record(zone, record_name, record_type, tag.as_deref(), changes)
+            .await
+    }
+
+    /// [`Self::create_record`], with a first token for every field, as the phone makes one.
+    pub async fn create_record_signed(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        mut fields: Value,
+    ) -> Result<Value> {
+        stamp_tokens(&mut fields, None);
+        self.create_record(zone, record_name, record_type, fields)
+            .await
+    }
+
     pub async fn create_record(
         &self,
         zone: &str,
