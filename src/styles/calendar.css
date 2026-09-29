@@ -466,6 +466,8 @@
 .cal-year {
   flex: 1;
   display: grid;
+  /* Months packed at the top, as Calendar sets them — not spread to fill a tall window. */
+  align-content: start;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 22px 28px;
   padding: 6px 18px 18px;

@@ -831,7 +831,8 @@ function TimeGrid({
     if (!el) return;
     const showsToday = days.some((d) => sameDay(d, new Date()));
     const hour = showsToday ? Math.max(0, new Date().getHours() - 2) : 7;
-    el.scrollTop = hour * HOUR;
+    // A little above the hour, so its label — centred on the line — shows whole.
+    el.scrollTop = Math.max(0, hour * HOUR - 12);
     // Only when the days change, never under someone's scrolling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days.map((d) => dayKey(d)).join()]);

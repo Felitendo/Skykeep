@@ -157,5 +157,37 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
     "the popover stayed open after saving");
 }
 
+// In the morning, at the size of a full-screen window: the week opens scrolled to just
+// before now, which puts an hour line at the very top — where its label was cut in half —
+// and a tall window is where Year spread its months apart.
+{
+  const tall = await ctx.newPage();
+  await tall.setViewportSize({ width: 1920, height: 1040 });
+  await tall.clock.setFixedTime(new Date(2026, 8, 29, 8, 30));
+  await tall.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await tall.getByRole("button", { name: "Week", exact: true }).click();
+  await tall.waitForTimeout(400);
+  const first = await tall.evaluate(() => {
+    const scroll = document.querySelector(".cx-scroll").getBoundingClientRect();
+    const labels = [...document.querySelectorAll(".cx-hour-labels span:not(.cx-now-label)")]
+      .map((s) => ({ text: s.textContent, top: s.getBoundingClientRect().top, bottom: s.getBoundingClientRect().bottom }))
+      .filter((l) => l.bottom > scroll.top);
+    return { label: labels[0], edge: scroll.top };
+  });
+  ok(first.label && first.label.top >= first.edge - 0.5, `the first hour in view is shown whole  [${first.label?.text}]`,
+    `the first hour in view is cut: ${JSON.stringify(first)}`);
+
+  await tall.getByRole("button", { name: "Year", exact: true }).click();
+  await tall.waitForTimeout(250);
+  const gap = await tall.evaluate(() => {
+    // The days drawn, not the boxes around them: a stretched row stretches its boxes too.
+    const months = [...document.querySelectorAll(".cal-mini")];
+    const firstRowBottom = Math.max(...months.slice(0, 4).map((m) => m.querySelector(".cx-minimonth-grid").getBoundingClientRect().bottom));
+    return Math.min(...months.slice(4, 8).map((m) => m.querySelector("h2").getBoundingClientRect().top)) - firstRowBottom;
+  });
+  ok(gap <= 40, `Year's rows of months sit together  [${gap.toFixed(0)}px apart]`, `Year's rows are ${gap.toFixed(0)}px apart`);
+  await tall.close();
+}
+
 await b.close();
 process.exitCode = failures === 0 ? 0 : 1;
