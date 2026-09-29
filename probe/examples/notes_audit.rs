@@ -56,9 +56,21 @@ async fn main() -> Result<()> {
             .and_then(Value::as_str)
             .and_then(quince_icloud::ckdocument::text_from_base64)
             .unwrap_or_default();
-        let apple_body = f(r, "TextDataEncrypted")
+        let mut apple_body = f(r, "TextDataEncrypted")
             .and_then(Value::as_str)
             .and_then(quince_icloud::ckdocument::text_from_base64);
+        // A long note keeps its document as a file instead; fetched independently here.
+        if apple_body.is_none() {
+            if let Some(url) = f(r, "TextDataAsset").and_then(|v| v["downloadURL"].as_str()) {
+                let bytes = http
+                    .get(url.replace("${f}", "audit"))
+                    .send()
+                    .await?
+                    .bytes()
+                    .await?;
+                apple_body = quince_icloud::ckdocument::text_from_bytes(&bytes);
+            }
+        }
         let apple_folder = r
             .pointer("/fields/Folders/value")
             .and_then(Value::as_array)

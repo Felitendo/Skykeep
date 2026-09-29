@@ -538,8 +538,10 @@ export function NotesView() {
           <>
             <pre className="note-text">{body}</pre>
             <p className="note-readonly">
-              This note holds formatting Quince can't rewrite without losing it, so it stays
-              read-only here. Editing it on an Apple device is safe.
+              Quince can’t yet save changes to this note without risking what is in it — it
+              is very long, or its copy on iCloud is out of step with your devices — so it is
+              read-only here. Editing it on an Apple device is safe, and after that Quince can
+              usually edit it again.
             </p>
           </>
         ) : (

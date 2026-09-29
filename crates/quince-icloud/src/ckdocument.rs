@@ -523,13 +523,13 @@ fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> 
             topo.edit(from, removed, inserted);
             topo
         }
-        // Records that already disagree — a note this app edited before it kept them. No
-        // edit can be placed in them truthfully, so what they hold is marked deleted and the
-        // text written anew. Other devices' characters keep their ids, so they merge.
-        Some(mut topo) => {
-            topo.replace_all(utf16_len(new_text));
-            topo
-        }
+        // Records that already disagree with the text — left by this app's edits before it
+        // kept them. No edit can be placed in them truthfully, and replacing them wholesale
+        // was tried: a phone holding characters under ids those records never had kept every
+        // one of them, merged in the new ones too, and the note came back four times over
+        // with conflict copies beside it. A device that holds the real records has to write
+        // them first; until it does, this note is not ours to write.
+        Some(_) => return None,
         // Records in a shape this does not understand are not ours to rewrite.
         None if has_field(note, PROVENANCE) => return None,
         // None at all: a document written before any of this, or a template stripped of
@@ -861,9 +861,12 @@ pub fn is_rewritable(original: &[u8]) -> bool {
     if !rewrite(&plain, TEXT_PATH, current).is_some_and(|rebuilt| rebuilt == plain) {
         return false;
     }
-    // Merge records have to be ones an edit can be made to, the same test a save applies.
+    // Merge records have to be ones an edit can be made to — readable, and describing the text
+    // there now — the same test a save applies.
+    let text = std::str::from_utf8(current).unwrap_or_default();
     field_at(&plain, &TEXT_PATH[..2]).is_some_and(|note| {
-        !has_field(note, PROVENANCE) || crate::topotext::Topo::read(note).is_some()
+        !has_field(note, PROVENANCE)
+            || crate::topotext::Topo::read(note).is_some_and(|t| t.live_length() == utf16_len(text))
     })
 }
 
@@ -1878,5 +1881,36 @@ mod whitespace_tests {
         let encoded = text_to_base64("\n\n\nhello");
         let raw = B64.decode(encoded).unwrap();
         assert_eq!(debug_attribute_lengths(&raw), vec![8]);
+    }
+}
+
+/// A note whose records disagree with its text is not written.
+#[cfg(test)]
+mod out_of_step_tests {
+    use super::*;
+
+    /// Text of one length with records describing another, as this app's early edits left
+    /// Curtains: 140 characters of text over records for 167.
+    fn out_of_step() -> Vec<u8> {
+        let mut note = length_delimited(TEXT_PATH[2], b"Curtains");
+        note.extend(crate::topotext::Topo::fresh_by([0x44; 16], 12).encode());
+        note.extend(length_delimited(ATTRIBUTE_RUN, &varint_field(1, 8)));
+        let mut document = varint_field(1, 0);
+        document.extend(varint_field(2, 0));
+        document.extend(length_delimited(TEXT_PATH[1], &note));
+        let mut store = varint_field(1, 0);
+        store.extend(length_delimited(TEXT_PATH[0], &document));
+        gzip(&store)
+    }
+
+    /// Replacing such records wholesale was tried, and the phone merged its own characters
+    /// back in beside the new ones: the note came back four times over, with copies.
+    #[test]
+    fn it_is_refused_rather_than_replaced() {
+        assert!(replace_text(&out_of_step(), "Curtains\nKnife").is_none());
+        assert!(
+            !is_rewritable(&out_of_step()),
+            "and it is shown read-only before anyone types"
+        );
     }
 }

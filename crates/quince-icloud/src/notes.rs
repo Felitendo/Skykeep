@@ -63,7 +63,10 @@ fn note_from_record(record: &Value) -> Option<Note> {
     let guid = field::record_name(record)?;
     let title = field::document_text(record, "TitleEncrypted");
     let body = field::document_text(record, "TextDataEncrypted");
-    let editable = body.is_some() && can_rewrite(record);
+    // A note kept as a file is read from the file, but writing one back means sending a file,
+    // which this does not do yet — so it is shown and not offered for editing.
+    let from_asset = record.pointer(&format!("/fields/{FROM_ASSET}")).is_some();
+    let editable = body.is_some() && can_rewrite(record) && !from_asset;
 
     Some(Note {
         guid,
@@ -128,7 +131,10 @@ pub async fn fetch_cloudkit(
     since: Option<&str>,
 ) -> Result<NotesFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let walk = client.all_records(ZONE, since).await?;
+    let mut walk = client.all_records(ZONE, since).await?;
+    for record in &mut walk.records {
+        read_asset_body(http, record).await;
+    }
     Ok(NotesFetch {
         records: walk.records,
         token: walk.token,
@@ -136,6 +142,64 @@ pub async fn fetch_cloudkit(
         // for — pruning against a partial view would delete records that are perfectly fine.
         incremental: since.is_some() || !walk.complete,
     })
+}
+
+/// The most document a note record carries inline. CloudKit limits a whole record to about a
+/// megabyte; past that Apple keeps the document as a file, which this does not write yet.
+const MOST_INLINE: usize = 700 * 1024;
+
+/// Refuse a document too large to send inline, before anything is sent — the text stays on
+/// screen, where a failed request midway would have left it in doubt.
+fn fits_inline(document: &str) -> Result<()> {
+    if document.len() > MOST_INLINE {
+        return Err(Error::Protocol(
+            "This note is longer than Quince can save to iCloud yet. Nothing was changed.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Marks a record whose text was fetched from its `TextDataAsset` rather than read inline.
+const FROM_ASSET: &str = "_QuinceTextFromAsset";
+
+/// Fetch a long note's text from the file Apple keeps it in.
+///
+/// Measured on the account: a note of about a million characters has no `TextDataEncrypted`
+/// at all. The phone moved its document into `TextDataAsset`, a downloadable file holding the
+/// same gzipped document, and a note read only from the inline field came out empty and
+/// read-only. The file is fetched here and put where the inline text would be, so everything
+/// after reads it the same way, and the record is marked so nothing tries to write it back
+/// inline. A failed download leaves the note as it was: unread, never emptied.
+async fn read_asset_body(http: &reqwest::Client, record: &mut Value) {
+    if field::record_type(record).as_deref() != Some("Note")
+        || record.pointer("/fields/TextDataEncrypted").is_some()
+    {
+        return;
+    }
+    let Some(url) = record
+        .pointer("/fields/TextDataAsset/value/downloadURL")
+        .and_then(Value::as_str)
+        .map(|u| u.replace("${f}", "note"))
+    else {
+        return;
+    };
+    let Ok(response) = http.get(url).send().await else {
+        return;
+    };
+    if !response.status().is_success() {
+        return;
+    }
+    let Ok(bytes) = response.bytes().await else {
+        return;
+    };
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    if let Some(fields) = record.get_mut("fields").and_then(Value::as_object_mut) {
+        fields.insert(
+            "TextDataEncrypted".into(),
+            serde_json::json!({ "type": "ENCRYPTED_BYTES", "value": B64.encode(&bytes) }),
+        );
+        fields.insert(FROM_ASSET.into(), Value::Bool(true));
+    }
 }
 
 /// Store a fetched pass. Touches no network.
@@ -194,7 +258,9 @@ pub fn apply_cloudkit(
                     // as an empty note. Noticed during sync rather than fetched on demand:
                     // notes sit far enough into the zone walk that the first page of a hundred
                     // and thirty-nine records held none of them.
-                    if template.is_none() {
+                    if template.is_none()
+                        && record.pointer(&format!("/fields/{FROM_ASSET}")).is_none()
+                    {
                         template = record
                             .pointer("/fields/TextDataEncrypted/value")
                             .and_then(Value::as_str)
@@ -322,10 +388,11 @@ pub async fn edit_cloudkit(
 
     let rewritten = crate::ckdocument::replace_text_in_base64(encoded, body).ok_or_else(|| {
         Error::Protocol(
-            "This note holds formatting Quince can't rewrite safely, so it was left unchanged."
+            "Quince can’t safely save changes to this note yet, so nothing was changed. Editing it on an Apple device is safe."
                 .into(),
         )
     })?;
+    fits_inline(&rewritten)?;
 
     let (title, snippet) = title_and_snippet(body);
     let tag = current
@@ -388,6 +455,7 @@ pub async fn create_cloudkit(
 
     // A document Apple's own reader will show. See `document_like_apples`.
     let document = document_like_apples(template, body);
+    fits_inline(&document)?;
 
     let mut fields = serde_json::json!({
         "TextDataEncrypted": {
@@ -1319,5 +1387,47 @@ mod folder_of_tests {
             parsed.folder_guid.as_deref(),
             Some("DefaultFolder-CloudKit")
         );
+    }
+}
+
+/// A long note, kept by Apple as a file rather than inline, is read from the file.
+#[cfg(test)]
+mod asset_body_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn a_note_kept_as_a_file_is_read_and_not_offered_for_editing() {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine};
+        let server = MockServer::start().await;
+        let document = B64
+            .decode(crate::ckdocument::text_to_base64(
+                "A very long note\nand more",
+            ))
+            .unwrap();
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(document))
+            .mount(&server)
+            .await;
+        let mut record = json!({
+            "recordName": "N1", "recordType": "Note",
+            "fields": { "TextDataAsset": { "type": "ASSETID", "value": {
+                "downloadURL": format!("{}/B/abc/${{f}}?o=x", server.uri()) } } }
+        });
+        read_asset_body(&reqwest::Client::new(), &mut record).await;
+        let note = note_from_record(&record).unwrap();
+        assert_eq!(note.body.as_deref(), Some("A very long note\nand more"));
+        assert!(
+            !note.editable,
+            "writing one back means sending a file, which is not built"
+        );
+    }
+
+    #[test]
+    fn a_document_too_large_to_send_inline_is_refused_before_sending() {
+        assert!(fits_inline(&"x".repeat(MOST_INLINE + 1)).is_err());
+        assert!(fits_inline(&"x".repeat(1000)).is_ok());
     }
 }

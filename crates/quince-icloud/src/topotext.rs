@@ -371,13 +371,6 @@ impl Topo {
         self.insert(from, inserted);
     }
 
-    /// Everything the records say is there replaced by `length` new units. For a document
-    /// whose records already disagree with its text, where no edit can be placed truthfully.
-    pub(crate) fn replace_all(&mut self, length: u64) {
-        let live = self.live_length();
-        self.edit(0, live, length);
-    }
-
     // ── Writing ────────────────────────────────────────────────────────────────────────
 
     /// The note fields these records occupy: every substring at 3, then the writers at 4.
