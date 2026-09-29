@@ -920,7 +920,9 @@ function TimeGrid({
         <div className="cx-hours-body" style={{ height: `${24 * HOUR}px` }}>
           <div className="cx-gutter cx-hour-labels" aria-hidden="true">
             {Array.from({ length: 24 }, (_, h) =>
-              h === 0 ? null : (
+              // An hour the red "now" label sits over is left out, as Calendar does, rather
+              // than drawn underneath it.
+              h === 0 || (todayColumn >= 0 && Math.abs(h * 60 - nowMinutes) < 12) ? null : (
                 <span key={h} style={{ top: `${h * HOUR}px` }}>
                   {hourLabel(h)}
                 </span>
@@ -982,13 +984,12 @@ function TimeGrid({
                     </button>
                   );
                 })}
-                {reminders
-                  .filter((r) => r.dueAt !== null && sameDay(dateOf(r.dueAt), d))
-                  .map((r) => (
+                {stackReminders(reminders.filter((r) => r.dueAt !== null && sameDay(dateOf(r.dueAt), d)))
+                  .map(({ reminder: r, top }) => (
                     <span
                       key={r.guid}
                       className={`cx-reminder${r.completedAt ? " is-done" : ""}`}
-                      style={{ top: `${(((dateOf(r.dueAt ?? 0).getHours() * 60 + dateOf(r.dueAt ?? 0).getMinutes()) / 60) * HOUR)}px` }}
+                      style={{ top: `${top}px` }}
                     >
                       <span className="cx-ring" aria-hidden="true" />
                       {r.title}
@@ -1020,6 +1021,23 @@ function TimeGrid({
       </div>
     </div>
   );
+}
+
+/**
+ * Where each reminder sits on a day's hour grid. Two due at the same time — a morning routine
+ * set for eight — stack one under the other instead of being drawn over each other.
+ */
+export function stackReminders(list: Reminder[]): { reminder: Reminder; top: number }[] {
+  const LINE = 18;
+  const sorted = [...list].sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0) || a.title.localeCompare(b.title));
+  let lastBottom = -Infinity;
+  return sorted.map((reminder) => {
+    const at = dateOf(reminder.dueAt ?? 0);
+    const wanted = ((at.getHours() * 60 + at.getMinutes()) / 60) * HOUR;
+    const top = Math.max(wanted, lastBottom);
+    lastBottom = top + LINE;
+    return { reminder, top };
+  });
 }
 
 const pointOf = (el: Element): Anchor => {

@@ -36,6 +36,7 @@ step "somewhere else"   node .uiverify/elsewhere.mjs
 step "writing a note"   node .uiverify/notes-compose.mjs
 step "deleting a note"  node .uiverify/notes-trash.mjs
 step "uploading"        node .uiverify/drive-upload.mjs
+step "calendar grids"   node .uiverify/calendar.mjs
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then printf '\033[32mAll checks passed.\033[0m\n'; else printf '\033[31mSome checks failed.\033[0m\n'; fi
