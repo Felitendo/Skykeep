@@ -109,6 +109,35 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   await page.keyboard.press("Escape");
 }
 
+// A press whose release never arrives — what the app's WebKitGTK did — must not leave a
+// half-made event on the grid growing with every move of the mouse.
+{
+  const col = await page.locator(".cx-column").nth(2).boundingBox();
+  // A real press; the release is swallowed before the app can hear it.
+  await page.evaluate(() => {
+    const swallow = (e) => e.stopImmediatePropagation();
+    window.__swallow = swallow;
+    window.addEventListener("pointerup", swallow, true);
+    window.addEventListener("mouseup", swallow, true);
+  });
+  await page.mouse.move(col.x + 30, col.y + 13 * 48);
+  await page.mouse.down();
+  await page.mouse.up();
+  // The mouse moves on with no button held.
+  await page.mouse.move(col.x + 30, col.y + 17 * 48, { steps: 8 });
+  await page.waitForTimeout(250);
+  await page.evaluate(() => {
+    window.removeEventListener("pointerup", window.__swallow, true);
+    window.removeEventListener("mouseup", window.__swallow, true);
+  });
+  const left = await page.evaluate(() => ({
+    drafts: document.querySelectorAll(".cx-block.is-draft").length,
+    popovers: document.querySelectorAll(".cx-popover").length,
+  }));
+  ok(left.drafts === 0 && left.popovers === 0, "a press whose release is lost leaves nothing behind",
+    `a lost release left ${JSON.stringify(left)}`);
+}
+
 // The whole of making an event from the + button: it opens, takes a title, and is saved with
 // what was typed — the thing that has to work for Calendar to be usable at all.
 {

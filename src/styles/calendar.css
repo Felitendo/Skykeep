@@ -438,6 +438,8 @@
   pointer-events: none;
 }
 .cx-reminder.is-done { color: var(--text-3); text-decoration: line-through; }
+/* Above the line for now, on a backing of its own, so the line never runs through a title. */
+.cx-reminder { z-index: 3; right: auto; max-width: calc(100% - 8px); padding: 0 6px 0 2px; border-radius: 4px; background: var(--bg); }
 
 /* Now: a red line across today with a dot at its start. */
 .cx-now {

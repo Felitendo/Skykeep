@@ -854,53 +854,96 @@ function TimeGrid({
     return { x: r.left + (column + 1) * width, y, left: r.left + column * width } as Anchor;
   };
 
-  const onColumnDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest(".cx-block")) return;
-    const at = where(e.clientX, e.clientY);
-    if (!at) return;
-    const from = snap(at.minutes) - (snap(at.minutes) === 24 * 60 ? 15 : 0);
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    setDrag({ kind: "create", day: days[at.column], column: at.column, from, to: from + 15 });
+  /*
+   * A drag is followed from the window, not from the grid, and it ends on whichever comes
+   * first: the button's release, a move with no button held, the window losing focus, or
+   * Escape. In the app's WebKitGTK the release did not always reach the grid — a click left a
+   * sliver of "New Event" behind that then grew with every move of the mouse — so a release
+   * that never arrives is inferred from the next move, where the buttons say it is up.
+   */
+  const dragRef = useRef<Drag | null>(null);
+  const setDragNow = (d: Drag | null) => {
+    dragRef.current = d;
+    setDrag(d);
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!drag) return;
-    const at = where(e.clientX, e.clientY);
-    if (!at) return;
-    if (drag.kind === "create") {
-      setDrag({ ...drag, to: Math.max(drag.from + 15, snap(at.minutes)) });
+  const follow = (clientX: number, clientY: number) => {
+    const current = dragRef.current;
+    const at = where(clientX, clientY);
+    if (!current || !at) return;
+    if (current.kind === "create") {
+      setDragNow({ ...current, to: Math.max(current.from + 15, snap(at.minutes)) });
     } else {
       const el = columnsEl.current;
       const width = el ? el.getBoundingClientRect().width / days.length : 1;
-      setDrag({
-        ...drag,
-        dx: Math.round((e.clientX - drag.startX) / width),
-        dMinutes: snap(((e.clientY - drag.startY) / HOUR) * 60),
+      setDragNow({
+        ...current,
+        dx: Math.round((clientX - current.startX) / width),
+        dMinutes: snap(((clientY - current.startY) / HOUR) * 60),
       });
     }
   };
 
-  const onPointerUp = (e: React.PointerEvent) => {
-    if (!drag) return;
-    const done = drag;
-    setDrag(null);
+  const finish = (clientX: number, clientY: number) => {
+    const done = dragRef.current;
+    if (!done) return;
+    setDragNow(null);
     if (done.kind === "create") {
       // A click on empty time does nothing, as in Calendar — only a drag or a double-click
       // makes an event, so looking around the week never opens a form by accident.
       if (done.to - done.from > 15) {
         const base = seconds(done.day);
-        onCreate(base + done.from * 60, base + done.to * 60, false, besideColumn(done.column, e.clientY));
+        onCreate(base + done.from * 60, base + done.to * 60, false, besideColumn(done.column, clientY));
       }
     } else if (done.dx !== 0 || done.dMinutes !== 0) {
       const shift = done.dMinutes * 60;
-      const moved = (s: number) => {
-        const d = dateOf(s + shift);
+      const moved = (t: number) => {
+        const d = dateOf(t + shift);
         return seconds(new Date(d.getFullYear(), d.getMonth(), d.getDate() + done.dx, d.getHours(), d.getMinutes()));
       };
       onMove(done.event, moved(done.event.startsAt), moved(done.event.endsAt));
     } else {
-      onOpen(done.event, { x: e.clientX, y: e.clientY });
+      onOpen(done.event, { x: clientX, y: clientY });
     }
+  };
+
+  // The newest handlers, for listeners attached once per drag.
+  const handlers = useRef({ follow, finish });
+  handlers.current = { follow, finish };
+  const dragging = drag !== null;
+  useEffect(() => {
+    if (!dragging) return undefined;
+    const move = (e: PointerEvent) => {
+      if (e.buttons === 0) handlers.current.finish(e.clientX, e.clientY);
+      else handlers.current.follow(e.clientX, e.clientY);
+    };
+    const up = (e: PointerEvent | MouseEvent) => handlers.current.finish(e.clientX, e.clientY);
+    const drop = () => setDragNow(null);
+    const key = (e: KeyboardEvent) => e.key === "Escape" && drop();
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("mouseup", up);
+    window.addEventListener("pointercancel", drop);
+    window.addEventListener("blur", drop);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("pointercancel", drop);
+      window.removeEventListener("blur", drop);
+      window.removeEventListener("keydown", key);
+    };
+  }, [dragging]);
+
+  const onColumnDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest(".cx-block")) return;
+    const at = where(e.clientX, e.clientY);
+    if (!at) return;
+    // No text selection or native drag while making an event.
+    e.preventDefault();
+    const from = snap(at.minutes) - (snap(at.minutes) === 24 * 60 ? 15 : 0);
+    setDragNow({ kind: "create", day: days[at.column], column: at.column, from, to: from + 15 });
   };
 
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
@@ -971,8 +1014,6 @@ function TimeGrid({
             ref={columnsEl}
             style={{ "--cols": days.length } as React.CSSProperties}
             onPointerDown={onColumnDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
             onDoubleClick={(e) => {
               if ((e.target as HTMLElement).closest(".cx-block")) return;
               const at = where(e.clientX, e.clientY);
@@ -981,7 +1022,6 @@ function TimeGrid({
               const base = seconds(days[at.column]);
               onCreate(base + start * 60, base + (start + 60) * 60, false, besideColumn(at.column, e.clientY));
             }}
-            onPointerCancel={() => setDrag(null)}
           >
             {days.map((d, column) => (
               <div className={`cx-column${d.getDay() === 0 || d.getDay() === 6 ? " is-weekend" : ""}`} key={dayKey(d)}>
@@ -1004,9 +1044,9 @@ function TimeGrid({
                       onPointerDown={(e) => {
                         if (e.button !== 0) return;
                         e.stopPropagation();
-                        (e.currentTarget.closest(".cx-columns") as HTMLElement | null)?.setPointerCapture(e.pointerId);
+                        e.preventDefault();
                         if (canWrite(p.event.calendarGuid)) {
-                          setDrag({ kind: "move", event: p.event, startX: e.clientX, startY: e.clientY, dx: 0, dMinutes: 0 });
+                          setDragNow({ kind: "move", event: p.event, startX: e.clientX, startY: e.clientY, dx: 0, dMinutes: 0 });
                         } else {
                           onOpen(p.event, { x: e.clientX, y: e.clientY });
                         }
