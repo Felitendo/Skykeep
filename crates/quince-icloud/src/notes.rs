@@ -79,7 +79,16 @@ fn note_from_record(record: &Value) -> Option<Note> {
         // trash straight back into it here — and hid it, because deleted notes are filtered
         // from every folder view.
         folder_guid: first_folder(record).or_else(|| field::reference(record, "Folder")),
-        title: title.unwrap_or_else(|| "Untitled".into()),
+        // The stored title where there is one; otherwise the phone's rule applied to the text,
+        // and "New Note" — Apple's word, not ours — only when there is no text at all.
+        title: title
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| {
+                body.as_deref()
+                    .map(|b| title_and_snippet(b).0)
+                    .filter(|t| !t.is_empty())
+            })
+            .unwrap_or_else(|| "New Note".into()),
         snippet: field::document_text(record, "SnippetEncrypted"),
         body,
         // Set from the PasswordProtectedNote records below. Inferring it from a body that
@@ -338,25 +347,20 @@ fn now_millis() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// Apple's own rule for a note's title and its preview: the first line is the title, and
-/// what follows it is the snippet.
+/// Apple's own rule for a note's title and its preview: the first line with anything on it
+/// is the title, and the next such line is the snippet.
 ///
-/// Deriving both here rather than asking the interface for them is what keeps a note saved
-/// from this app looking, in the list on a phone, exactly like one typed on the phone.
+/// Measured on the account: a note whose text opens with a blank line was given, by the
+/// phone, the title of its first line with words on it ("Your iCloud") and the next line as
+/// its preview. This had taken the first line as written, blank or not — so such a note was
+/// "Untitled" here and titled on the phone, and an empty title was written for it. Deriving
+/// both the phone's way is what keeps a note saved here looking, in the list on a phone,
+/// exactly like one typed there.
 #[must_use]
 pub fn title_and_snippet(body: &str) -> (String, String) {
-    // The first line exactly as written, blank or not, and the next line that says something.
-    //
-    // Skipping the blank ones meant a note that opens with an empty line was titled here and
-    // untitled on the phone, which takes the first line as it finds it. Two apps disagreeing
-    // about what a note is called is worse than an untitled note.
-    let mut lines = body.lines();
-    let title = lines.next().unwrap_or_default().trim().to_string();
-    let snippet = lines
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or_default()
-        .to_string();
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let title = lines.next().unwrap_or_default().to_string();
+    let snippet = lines.next().unwrap_or_default().to_string();
     (title, snippet)
 }
 
@@ -952,6 +956,12 @@ mod write_tests {
             title_and_snippet("  just one line  "),
             ("just one line".into(), String::new())
         );
+        // What the phone did with a note that opens on a blank line: the first line with
+        // words on it is the title, the next the preview.
+        assert_eq!(
+            title_and_snippet("\nYour iCloud\n\nPhotos\n\nCalendar"),
+            ("Your iCloud".into(), "Photos".into())
+        );
         assert_eq!(title_and_snippet(""), (String::new(), String::new()));
     }
 
@@ -1274,13 +1284,13 @@ mod template_tests {
 mod title_tests {
     use super::*;
 
-    /// A phone takes the first line as it finds it. Skipping blank ones meant a note that
-    /// opens with an empty line read as titled here and untitled there — two apps disagreeing
-    /// about what the same note is called.
+    /// The phone names a note by its first line with words on it. Measured: a note opening on
+    /// a blank line was titled "Your iCloud" by the phone, its first line with text. Taking
+    /// the blank line — what this did — left it "Untitled" here and titled there.
     #[test]
-    fn the_title_is_the_first_line_even_when_it_is_empty() {
-        assert_eq!(title_and_snippet("\nhello").0, "");
-        assert_eq!(title_and_snippet("\n\n\nhello").0, "");
+    fn the_title_is_the_first_line_with_words_on_it() {
+        assert_eq!(title_and_snippet("\nhello").0, "hello");
+        assert_eq!(title_and_snippet("\n\n\nhello").0, "hello");
         assert_eq!(title_and_snippet("hello\nworld").0, "hello");
         assert_eq!(title_and_snippet("  hello  \nworld").0, "hello");
     }
@@ -1429,5 +1439,37 @@ mod asset_body_tests {
     fn a_document_too_large_to_send_inline_is_refused_before_sending() {
         assert!(fits_inline(&"x".repeat(MOST_INLINE + 1)).is_err());
         assert!(fits_inline(&"x".repeat(1000)).is_ok());
+    }
+}
+
+/// A note with no stored title is named from its text, the phone's way.
+#[cfg(test)]
+mod derived_title_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn record(text: Option<&str>) -> Value {
+        let mut fields = json!({});
+        if let Some(t) = text {
+            fields["TextDataEncrypted"] =
+                json!({ "type": "ENCRYPTED_BYTES", "value": crate::ckdocument::text_to_base64(t) });
+        }
+        json!({ "recordName": "N", "recordType": "Note", "fields": fields })
+    }
+
+    /// Measured: the phone left one note with no TitleEncrypted at all, its text "hi".
+    #[test]
+    fn a_missing_title_comes_from_the_text() {
+        assert_eq!(
+            note_from_record(&record(Some("\nhi\nthere")))
+                .unwrap()
+                .title,
+            "hi"
+        );
+        assert_eq!(
+            note_from_record(&record(Some(""))).unwrap().title,
+            "New Note"
+        );
+        assert_eq!(note_from_record(&record(None)).unwrap().title, "New Note");
     }
 }
