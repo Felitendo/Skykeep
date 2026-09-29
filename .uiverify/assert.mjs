@@ -280,6 +280,58 @@ let failures = 0;
 }
 
 
+// ── The Reminders sidebar sits evenly, and every tile holds its text ───────────────────
+// Reported from a real window: more room on one side of the column than the other, tiles of
+// different sizes once lists were pinned beside the built-in ones, and names running out of
+// their tiles. Measured at a narrow window, with six tiles, where all three showed.
+{
+  const page = await b.newPage({ viewport: { width: 900, height: 760 } });
+  await page.addInitScript(() => {
+    const list = (guid, title, pinned, colour) => ({ guid, title, colour, ctag: null, sortOrder: 0,
+      enabled: true, emblem: "fitness", groupGuid: null, pinned, sorting: "manual" });
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: (cb) => cb,
+      invoke: async (cmd) => {
+        if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+        if (cmd === "auth_resume") return true;
+        if (cmd === "account_services") return ["reminders"];
+        if (cmd === "reminder_lists")
+          return [list("A", "Daily", true, "#FFCC00"), list("B", "Everything for the house move", true, "#FF8D28"),
+                  list("C", "GYM", false, "#0088FF")];
+        if (cmd === "reminder_groups") return [];
+        if (cmd === "reminder_counts")
+          return { today: 5, scheduled: 12345, flagged: 0, all: 99999, lists: [["A", 3], ["B", 1000], ["C", 1]] };
+        if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
+        if (cmd === "plugin:event|listen") return 0;
+        return [];
+      },
+    };
+  });
+  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.waitForSelector(".rx-tile");
+  const m = await page.evaluate(() => {
+    const side = document.querySelector(".rx-side").getBoundingClientRect();
+    const search = document.querySelector(".rx-search").getBoundingClientRect();
+    const border = parseFloat(getComputedStyle(document.querySelector(".rx-side")).borderRightWidth);
+    const tiles = [...document.querySelectorAll(".rx-tile")];
+    const sizes = tiles.map((t) => { const r = t.getBoundingClientRect(); return `${r.width.toFixed(1)}x${r.height.toFixed(1)}`; });
+    const clipped = tiles.flatMap((t) => [...t.querySelectorAll(".rx-tile-name, .rx-tile-count")])
+      .filter((el) => el.getBoundingClientRect().right > el.closest(".rx-tile").getBoundingClientRect().right + 0.5)
+      .map((el) => el.textContent);
+    return { left: search.left - side.left, right: side.right - border - search.right, sizes, count: tiles.length, clipped };
+  });
+  const even = Math.abs(m.left - m.right) <= 1;
+  console.log(even ? `PASS the Reminders sidebar has the same inset on both sides  [${m.left.toFixed(1)} / ${m.right.toFixed(1)}]`
+    : `FAIL the Reminders sidebar is lopsided  [left ${m.left.toFixed(1)}, right ${m.right.toFixed(1)}]`);
+  if (!even) failures++;
+  const same = m.count === 6 && new Set(m.sizes).size === 1;
+  console.log(same ? `PASS six tiles, all one size  [${m.sizes[0]}]` : `FAIL tiles differ  ${JSON.stringify(m.sizes)}`);
+  if (!same) failures++;
+  console.log(m.clipped.length === 0 ? "PASS no tile's text runs out of it" : `FAIL text runs out of its tile: ${JSON.stringify(m.clipped)}`);
+  if (m.clipped.length) failures++;
+  await page.close();
+}
+
 // ── Drive: a name already in the folder is refused before iCloud is asked ─────────────
 // iCloud declines a second thing of the same name with a bare "UNKNOWN", which read as the
 // folder having been made and then lost. Finder refuses it up front and says why; so does this.
