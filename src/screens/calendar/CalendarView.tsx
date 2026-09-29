@@ -94,7 +94,9 @@ const weekdayShort = (d: Date) => d.toLocaleDateString(undefined, { weekday: "sh
 const tint = (c: Calendar | undefined) =>
   c?.colour && /^#[0-9a-f]{6}$/i.test(c.colour) ? c.colour : "var(--sys-blue)";
 
-type Anchor = { x: number; y: number };
+/** Where a popover opens: to the right of `x`, or to the left of `left` (or `x`) when the
+ *  window has no room on the right. */
+type Anchor = { x: number; y: number; left?: number };
 
 export function CalendarView() {
   const today = useMemo(() => new Date(), []);
@@ -167,7 +169,8 @@ export function CalendarView() {
     ]);
     setEvents(Array.isArray(found) ? found : []);
     setCalendars(Array.isArray(cals) ? cals : []);
-    setDue(Array.isArray(reminders) ? reminders : []);
+    // What is done is not on the schedule any more; Calendar hides completed reminders.
+    setDue(Array.isArray(reminders) ? reminders.filter((r) => !r.completedAt) : []);
     setLoaded(true);
   }, [range]);
 
@@ -346,6 +349,15 @@ export function CalendarView() {
         strong: selected.toLocaleDateString(undefined, { day: "numeric", month: "long" }),
         rest: `${selected.getFullYear()}`,
       };
+    // A week across two months is named for both, as Calendar does: "Sep – Oct 2026".
+    if (view === "week" && week[0].getMonth() !== week[6].getMonth()) {
+      const short = (d: Date) => d.toLocaleDateString(undefined, { month: "short" });
+      const sameYear = week[0].getFullYear() === week[6].getFullYear();
+      return {
+        strong: `${short(week[0])}${sameYear ? "" : ` ${week[0].getFullYear()}`} – ${short(week[6])}`,
+        rest: String(week[6].getFullYear()),
+      };
+    }
     const base = view === "week" ? week[6] : selected;
     return {
       strong: base.toLocaleDateString(undefined, { month: "long" }),
@@ -486,6 +498,11 @@ export function CalendarView() {
               setSelected(d);
               setView("day");
             }}
+            pending={
+              draft && !draft.guid && !draft.allDay
+                ? { startsAt: draft.startsAt, endsAt: draft.endsAt, title: draft.title }
+                : null
+            }
           />
         )}
 
@@ -787,6 +804,7 @@ function TimeGrid({
   onCreate,
   onMove,
   onPickDay,
+  pending,
 }: {
   days: Date[];
   today: Date;
@@ -798,6 +816,8 @@ function TimeGrid({
   onCreate: (startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => void;
   onMove: (e: CalendarEvent, startsAt: number, endsAt: number) => void;
   onPickDay: (d: Date) => void;
+  /** A new event being named in the popover, held on the grid where it was made. */
+  pending?: { startsAt: number; endsAt: number; title: string } | null;
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
   const columnsEl = useRef<HTMLDivElement | null>(null);
@@ -824,6 +844,14 @@ function TimeGrid({
     const column = Math.min(days.length - 1, Math.max(0, Math.floor(((clientX - r.left) / r.width) * days.length)));
     const minutes = Math.min(24 * 60, Math.max(0, ((clientY - r.top) / HOUR) * 60));
     return { column, minutes };
+  };
+
+  /** Beside the day column, not under the pointer: the popover must not cover the event. */
+  const besideColumn = (column: number, y: number): Anchor => {
+    const r = columnsEl.current?.getBoundingClientRect();
+    if (!r) return { x: 0, y };
+    const width = r.width / days.length;
+    return { x: r.left + (column + 1) * width, y, left: r.left + column * width } as Anchor;
   };
 
   const onColumnDown = (e: React.PointerEvent) => {
@@ -857,10 +885,12 @@ function TimeGrid({
     const done = drag;
     setDrag(null);
     if (done.kind === "create") {
-      const base = seconds(done.day);
-      // A click without a drag is an hour, like double-clicking in Calendar.
-      const to = done.to - done.from <= 15 ? done.from + 60 : done.to;
-      onCreate(base + done.from * 60, base + to * 60, false, { x: e.clientX, y: e.clientY });
+      // A click on empty time does nothing, as in Calendar — only a drag or a double-click
+      // makes an event, so looking around the week never opens a form by accident.
+      if (done.to - done.from > 15) {
+        const base = seconds(done.day);
+        onCreate(base + done.from * 60, base + done.to * 60, false, besideColumn(done.column, e.clientY));
+      }
     } else if (done.dx !== 0 || done.dMinutes !== 0) {
       const shift = done.dMinutes * 60;
       const moved = (s: number) => {
@@ -922,7 +952,9 @@ function TimeGrid({
             {Array.from({ length: 24 }, (_, h) =>
               // An hour the red "now" label sits over is left out, as Calendar does, rather
               // than drawn underneath it.
-              h === 0 || (todayColumn >= 0 && Math.abs(h * 60 - nowMinutes) < 12) ? null : (
+              // Measured in pixels, since that is what overlaps: two labels about 14px tall
+              // touch until they are 18px apart, whatever an hour is drawn as.
+              h === 0 || (todayColumn >= 0 && (Math.abs(h * 60 - nowMinutes) / 60) * HOUR < 18) ? null : (
                 <span key={h} style={{ top: `${h * HOUR}px` }}>
                   {hourLabel(h)}
                 </span>
@@ -941,6 +973,14 @@ function TimeGrid({
             onPointerDown={onColumnDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
+            onDoubleClick={(e) => {
+              if ((e.target as HTMLElement).closest(".cx-block")) return;
+              const at = where(e.clientX, e.clientY);
+              if (!at) return;
+              const start = Math.min(snap(Math.floor(at.minutes / 30) * 30), 23 * 60);
+              const base = seconds(days[at.column]);
+              onCreate(base + start * 60, base + (start + 60) * 60, false, besideColumn(at.column, e.clientY));
+            }}
             onPointerCancel={() => setDrag(null)}
           >
             {days.map((d, column) => (
@@ -951,12 +991,12 @@ function TimeGrid({
                   return (
                     <button
                       key={p.event.guid}
-                      className={`cx-block${moving ? " is-moving" : ""}`}
+                      className={`cx-block${moving ? " is-moving" : ""}${p.length < 45 ? " is-short" : ""}`}
                       style={
                         {
                           "--cal": tint(c),
                           top: `${((p.top + (moving?.dMinutes ?? 0)) / 60) * HOUR}px`,
-                          height: `${Math.max((p.length / 60) * HOUR - 2, 18)}px`,
+                          height: `${Math.max((p.length / 60) * HOUR - 2, 20)}px`,
                           left: `calc(${(p.column / p.columns) * 100}% + ${(moving?.dx ?? 0) * 100}%)`,
                           width: `calc(${100 / p.columns}% - 3px)`,
                         } as React.CSSProperties
@@ -995,6 +1035,18 @@ function TimeGrid({
                       {r.title}
                     </span>
                   ))}
+                {pending && !drag && sameDay(dateOf(pending.startsAt), d) && (
+                  <span
+                    className="cx-block is-draft"
+                    style={{
+                      top: `${((dateOf(pending.startsAt).getHours() * 60 + dateOf(pending.startsAt).getMinutes()) / 60) * HOUR}px`,
+                      height: `${Math.max(((pending.endsAt - pending.startsAt) / 3600) * HOUR - 2, 20)}px`,
+                    }}
+                  >
+                    <span className="cx-block-title">{pending.title.trim() || "New Event"}</span>
+                    <span className="cx-block-time">{clock(pending.startsAt)}</span>
+                  </span>
+                )}
                 {drag?.kind === "create" && drag.column === column && (
                   <span
                     className="cx-block is-draft"
@@ -1099,6 +1151,46 @@ function YearView({
 
 /* ---- the event popover ---------------------------------------------------------------- */
 
+/** A date and, unless it is all day, a time — two compact fields, as Calendar lays them out. */
+function When({
+  at,
+  allDay,
+  editable,
+  label,
+  onChange,
+}: {
+  at: number;
+  allDay: boolean;
+  editable: boolean;
+  label: string;
+  onChange: (s: number) => void;
+}) {
+  const d = dateOf(at);
+  const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return (
+    <span className="cx-when">
+      <input
+        type="date"
+        aria-label={`${label} date`}
+        value={day}
+        readOnly={!editable}
+        onChange={(e) => e.target.value && onChange(fromLocalInput(`${e.target.value}T${time}`))}
+      />
+      {!allDay && (
+        <input
+          type="time"
+          aria-label={`${label} time`}
+          step={300}
+          value={time}
+          readOnly={!editable}
+          onChange={(e) => e.target.value && onChange(fromLocalInput(`${day}T${e.target.value}`))}
+        />
+      )}
+    </span>
+  );
+}
+
 function EventPopover({
   draft,
   at,
@@ -1131,7 +1223,7 @@ function EventPopover({
     const { width, height } = el.getBoundingClientRect();
     const gap = 12;
     let left = at.x + gap;
-    if (left + width > window.innerWidth - 8) left = Math.max(8, at.x - width - gap);
+    if (left + width > window.innerWidth - 8) left = Math.max(8, (at.left ?? at.x) - width - gap);
     const top = Math.min(Math.max(8, at.y - 24), window.innerHeight - height - 8);
     setPos({ left, top });
   }, [at]);
@@ -1197,33 +1289,29 @@ function EventPopover({
             }}
           />
         </label>
-        <label className="cx-pop-row">
+        <div className="cx-pop-row">
           <span>starts</span>
-          <input
-            type={draft.allDay ? "date" : "datetime-local"}
-            value={toLocalInput(draft.startsAt, draft.allDay)}
-            readOnly={!editable}
-            onChange={(e) => {
-              if (!e.target.value) return;
-              const startsAt = fromLocalInput(e.target.value);
-              // Moving the start keeps the length, as Calendar does.
-              set({ startsAt, endsAt: startsAt + (draft.endsAt - draft.startsAt) });
-            }}
+          <When
+            at={draft.startsAt}
+            allDay={draft.allDay}
+            editable={editable}
+            label="Starts"
+            // Moving the start keeps the length, as Calendar does.
+            onChange={(startsAt) => set({ startsAt, endsAt: startsAt + (draft.endsAt - draft.startsAt) })}
           />
-        </label>
-        <label className="cx-pop-row">
+        </div>
+        <div className="cx-pop-row">
           <span>ends</span>
-          <input
-            type={draft.allDay ? "date" : "datetime-local"}
-            value={toLocalInput(draft.allDay ? draft.endsAt - 1 : draft.endsAt, draft.allDay)}
-            readOnly={!editable}
-            onChange={(e) => {
-              if (!e.target.value) return;
-              const end = fromLocalInput(e.target.value);
-              set({ endsAt: draft.allDay ? seconds(addDays(dateOf(end), 1)) : end });
-            }}
+          <When
+            at={draft.allDay ? draft.endsAt - 1 : draft.endsAt}
+            allDay={draft.allDay}
+            editable={editable}
+            label="Ends"
+            onChange={(end) =>
+              set({ endsAt: draft.allDay ? seconds(addDays(midnight(dateOf(end)), 1)) : Math.max(end, draft.startsAt + 300) })
+            }
           />
-        </label>
+        </div>
         <div className="cx-pop-row cal-field">
           <span>calendar</span>
           <Picker

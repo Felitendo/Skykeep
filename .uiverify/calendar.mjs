@@ -17,8 +17,10 @@ await ctx.addInitScript(() => {
       if (cmd === "auth_resume") return true;
       if (cmd === "account_services") return ["calendar"];
       if (cmd === "calendar_list") return [{ guid: "c", title: "Home", colour: "#0088FF", ctag: null, sortOrder: 0, enabled: true, writable: true, isDefault: true }];
-      if (cmd === "calendar_events") return [];
-      if (cmd === "reminders_due_between") return [r("a", "Pick up the parcel", at(8)), r("b", "Water the plants", at(8))];
+      if (cmd === "calendar_events") return [{ guid: "e", calendarGuid: "c", title: "New Event", location: null,
+        startsAt: at(19), endsAt: at(19, 15), allDay: false, timezone: null, url: null, notes: null, etag: null }];
+      if (cmd === "reminders_due_between") return [r("a", "Pick up the parcel", at(8)), r("b", "Water the plants", at(8)),
+        { ...r("d", "Done already", at(16)), completedAt: at(16) }];
       if (cmd === "calendar_sync") return { calendars: 1, events: 0 };
       if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
       if (cmd === "plugin:event|listen") return 0;
@@ -27,7 +29,7 @@ await ctx.addInitScript(() => {
   };
 });
 const page = await ctx.newPage();
-await page.clock.setFixedTime(new Date(2026, 8, 29, 21, 51));
+await page.clock.setFixedTime(new Date(2026, 8, 29, 22, 18));
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await page.getByRole("button", { name: "Day", exact: true }).click();
 await page.waitForSelector(".cal-hours.is-day");
@@ -50,6 +52,61 @@ const covered = await page.evaluate(() => {
     .map((s) => s.textContent);
 });
 ok(covered.length === 0, "the time of now never sits over an hour's label", `now covers ${JSON.stringify(covered)}`);
+
+const done = await page.locator(".cx-reminder", { hasText: "Done already" }).count();
+ok(done === 0, "a completed reminder is not on the schedule", "a completed reminder is drawn on the day");
+
+const short = await page.locator(".cx-block", { hasText: "New Event" }).evaluate((el) => {
+  const box = el.getBoundingClientRect();
+  const title = el.querySelector(".cx-block-title").getBoundingClientRect();
+  return { box: [box.top, box.bottom], title: [title.top, title.bottom] };
+});
+ok(short.title[0] >= short.box[0] - 0.5 && short.title[1] <= short.box[1] + 0.5,
+  "a quarter-hour event's title is whole inside its block", `the title is cut: ${JSON.stringify(short)}`);
+
+const label = await page.evaluate(() => {
+  const now = document.querySelector(".cx-now-label");
+  const gutter = now.parentElement.getBoundingClientRect();
+  const r = now.getBoundingClientRect();
+  return { text: now.textContent, inside: r.left >= gutter.left - 0.5 && r.right <= gutter.right + 0.5, width: r.width };
+});
+ok(label.inside, `the time of now fits beside the grid  [${label.text}]`, `the time of now is cut: ${JSON.stringify(label)}`);
+
+await page.getByRole("button", { name: "Week", exact: true }).click();
+await page.waitForTimeout(300);
+const title = (await page.locator(".cx-title").innerText()).replace(/\s+/g, " ").trim();
+ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named for both  [${title}]`,
+  `the week of Sep 27 – Oct 3 is titled "${title}"`);
+
+// Making an event, the way Calendar makes one.
+{
+  const col = await page.locator(".cx-column").nth(3).boundingBox();
+  const hour = (h) => col.y + h * 48;
+  await page.mouse.click(col.x + 30, hour(14));
+  await page.waitForTimeout(250);
+  ok((await page.locator(".cx-popover").count()) === 0, "a single click on empty time makes nothing",
+    "a single click on empty time opened a new event");
+
+  await page.mouse.move(col.x + 30, hour(14));
+  await page.mouse.down();
+  await page.mouse.move(col.x + 30, hour(15.5), { steps: 6 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const made = await page.evaluate(() => {
+    const pop = document.querySelector(".cx-popover")?.getBoundingClientRect();
+    const block = document.querySelector(".cx-block.is-draft")?.getBoundingClientRect();
+    return { pop: pop && [pop.left, pop.right, pop.top, pop.bottom], block: block && [block.left, block.right, block.top, block.bottom] };
+  });
+  ok(Boolean(made.pop), "dragging over empty time makes an event and opens it", "a drag opened nothing");
+  ok(Boolean(made.block), "the event being named stays on the grid where it was made", "the new event vanished from the grid");
+  const covers = made.pop && made.block && made.pop[0] < made.block[1] && made.pop[1] > made.block[0]
+    && made.pop[2] < made.block[3] && made.pop[3] > made.block[2];
+  ok(!covers, "the popover sits beside the new event, not over it", `the popover covers it: ${JSON.stringify(made)}`);
+  const fields = await page.locator(".cx-popover .cx-when input").evaluateAll((els) => els.map((e) => e.type));
+  ok(JSON.stringify(fields) === JSON.stringify(["date", "time", "date", "time"]),
+    "a start and an end, each a date and a time", `the popover's fields are ${JSON.stringify(fields)}`);
+  await page.keyboard.press("Escape");
+}
 
 await b.close();
 process.exitCode = failures === 0 ? 0 : 1;

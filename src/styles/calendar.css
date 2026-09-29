@@ -311,7 +311,8 @@
 /* ---- week and day ------------------------------------------------------------------ */
 
 .cal-hours { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.cx-gutter { width: 56px; flex: none; }
+/* Wide enough for "10:18 PM" in the red of now, which was cut to "0:18 PM" at 56px. */
+.cx-gutter { width: 66px; flex: none; }
 .cx-grid-head,
 .cx-allday { display: flex; border-bottom: 1px solid var(--separator); }
 .cx-grid-head > .cal-col-head { flex: 1; }
@@ -414,6 +415,9 @@
   background: color-mix(in srgb, var(--sys-blue) 26%, var(--bg));
   pointer-events: none;
 }
+/* Under three quarters of an hour there is room for one line: the title, then the time. */
+.cx-block.is-short { flex-direction: row; align-items: center; gap: 6px; padding-top: 1px; padding-bottom: 1px; }
+.cx-block.is-short .cx-block-where { display: none; }
 .cx-block-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-11); font-weight: 600; }
 .cx-block-time,
 .cx-block-where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 10.5px; }
@@ -507,7 +511,10 @@
 .cx-pop-rows { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--separator); border-bottom: 1px solid var(--separator); }
 .cx-pop-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; font-size: var(--t-13); }
 .cx-pop-row > span:first-child { color: var(--text-2); text-align: right; }
-.cx-pop-row input[type="datetime-local"],
+.cx-when { display: flex; gap: 6px; min-width: 0; }
+.cx-when input[type="date"] { flex: 1 1 auto; min-width: 0; }
+.cx-when input[type="time"] { flex: 0 0 auto; }
+.cx-pop-row input[type="time"],
 .cx-pop-row input[type="date"] {
   padding: 3px 6px;
   border: 1px solid var(--field-edge);
