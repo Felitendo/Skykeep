@@ -10,7 +10,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 quince-auth = { path = "../crates/quince-auth" }
 quince-core = { path = "../crates/quince-core" }
 quince-media = { workspace = true }
@@ -23,3 +23,9 @@ anyhow.workspace = true
 jiff = "0.2.37"
 uuid.workspace = true
 tauri-plugin-dialog = "2.7.3"
+notify-rust = "4"
+zbus = "5"
+tauri-plugin-single-instance = "2"
+
+[dev-dependencies]
+tempfile = "3"

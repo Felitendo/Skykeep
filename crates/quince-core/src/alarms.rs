@@ -34,6 +34,7 @@ pub struct DueAlarm {
     /// The alarm's id, or `snooze:<reminder>` for one snoozed here.
     pub key: String,
     pub reminder_guid: String,
+    pub list_guid: String,
     pub title: String,
     pub notes: Option<String>,
     pub list_title: Option<String>,
@@ -115,7 +116,7 @@ impl Library {
     /// still outstanding: one ticked off anywhere says nothing more.
     pub fn due_alarms(&self, now: i64) -> Result<Vec<DueAlarm>> {
         let sql = format!(
-            "SELECT p.key, p.reminder_guid, r.title, r.notes, l.title, p.fires_at
+            "SELECT p.key, p.reminder_guid, r.list_guid, r.title, r.notes, l.title, p.fires_at
                FROM ({PENDING}) p
                JOIN reminders r ON r.guid = p.reminder_guid
                LEFT JOIN reminder_lists l ON l.guid = r.list_guid
@@ -129,10 +130,11 @@ impl Library {
             Ok(DueAlarm {
                 key: row.get(0)?,
                 reminder_guid: row.get(1)?,
-                title: row.get(2)?,
-                notes: row.get(3)?,
-                list_title: row.get(4)?,
-                fires_at: row.get(5)?,
+                list_guid: row.get(2)?,
+                title: row.get(3)?,
+                notes: row.get(4)?,
+                list_title: row.get(5)?,
+                fires_at: row.get(6)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)

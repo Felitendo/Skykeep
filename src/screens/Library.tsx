@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, messageOf } from "../lib/ipc";
+import { listen } from "@tauri-apps/api/event";
+import { api, messageOf, OPEN_REMINDER } from "../lib/ipc";
 import { SyncProvider } from "../lib/sync";
 import { SyncStatus } from "../components/SyncStatus";
 import { CalendarView } from "./calendar/CalendarView";
@@ -59,6 +60,17 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
       // Remembering is a convenience; choosing still works.
     }
   };
+
+  // Clicking a reminder's alert brings the window back on Reminders.
+  useEffect(() => {
+    const stop = listen<string>(OPEN_REMINDER, () => {
+      if (services.includes("reminders")) choose("reminders");
+    });
+    return () => {
+      void stop.then((unlisten) => unlisten()).catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [services]);
 
   // Native sidebars move with the arrow keys and occupy a single tab stop. Without this a
   // keyboard user has to Tab through every row to reach the content.

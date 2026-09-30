@@ -1,6 +1,7 @@
 // Quince — desktop shell.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod alerts;
 mod refresh;
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
@@ -61,10 +62,12 @@ async fn resync_reminders(
     data: &State<'_, Data>,
 ) -> Result<(), String> {
     let mut library = data.0.lock().await;
-    quince_icloud::reminders::sync_cloudkit(http, root, params, &mut library, None)
+    let synced = quince_icloud::reminders::sync_cloudkit(http, root, params, &mut library, None)
         .await
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    alerts::changed();
+    synced
 }
 
 async fn cloudkit_context(
@@ -434,12 +437,23 @@ async fn reminder_set_done(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
+    set_done(&auth, &data, &guid, &list_guid, done).await
+}
+
+/// Tick a reminder off or put it back — from the window, or from an alert's button.
+async fn set_done(
+    auth: &State<'_, Auth>,
+    data: &State<'_, Data>,
+    guid: &str,
+    list_guid: &str,
+    done: bool,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(auth).await?;
 
     let reminder = {
         let library = data.0.lock().await;
         library
-            .reminders_in(&list_guid, true)
+            .reminders_in(list_guid, true)
             .map_err(|e| e.to_string())?
             .into_iter()
             .find(|r| r.guid == guid)
@@ -455,6 +469,7 @@ async fn reminder_set_done(
     quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
         .await
         .map_err(|e| e.to_string())?;
+    alerts::changed();
     Ok(())
 }
 
@@ -528,6 +543,7 @@ async fn reminder_create(
     quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
         .await
         .map_err(|e| e.to_string())?;
+    alerts::changed();
     Ok(())
 }
 
@@ -559,6 +575,7 @@ async fn reminder_delete(
     quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
         .await
         .map_err(|e| e.to_string())?;
+    alerts::changed();
     Ok(())
 }
 
@@ -610,6 +627,7 @@ async fn reminder_edit(
     quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
         .await
         .map_err(|e| e.to_string())?;
+    alerts::changed();
     Ok(())
 }
 
@@ -1461,6 +1479,7 @@ async fn sync_all(
 ) -> UiResult<refresh::Refresh> {
     let client = Arc::clone(&auth.client);
     let result = refresh::all(&client, &data.0).await;
+    alerts::changed();
     // Screens read the library, not the network, so they only need to be told to look again.
     app.emit(SYNCED, &result).ok();
     Ok(result)
@@ -1485,6 +1504,7 @@ fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
             }
             let data = app.state::<Data>();
             let result = refresh::all(&client, &data.0).await;
+            alerts::changed();
             app.emit(SYNCED, &result).ok();
         }
     });
@@ -1621,9 +1641,68 @@ fn adopt_writer(library: &mut Library) {
     quince_icloud::topotext::set_writer(*id.as_bytes());
 }
 
+/// Bring the window back, wherever it went.
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().ok();
+        window.unminimize().ok();
+        window.set_focus().ok();
+    }
+}
+
+/// A place in the tray, so Quince stays running — and ringing reminders — with its window
+/// closed, and can be opened again or quit from there.
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    let open = MenuItem::with_id(app, "open", "Open Quince", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Quince", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("quince")
+        .tooltip("Quince")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
+        // One Quince at a time: opening it again brings back the one already running, which
+        // may be sitting in the tray with its window closed.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
+        // Closing the window hides it rather than quitting, so reminders still ring. Quit is
+        // in the tray. Where no tray could be made there is nowhere to come back from, so
+        // there closing quits as it always did.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.app_handle().tray_by_id("quince").is_some() {
+                    api.prevent_close();
+                    window.hide().ok();
+                }
+            }
+        })
         // Images are served, not messaged. `quince://photo/<contact id>` is loaded by the
         // webview itself, which is what keeps a scrolling list cheap.
         .register_asynchronous_uri_scheme_protocol("quince", |ctx, request, responder| {
@@ -1691,6 +1770,10 @@ fn main() {
             app.manage(Data(Mutex::new(library)));
             spawn_heartbeat(Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
+            alerts::spawn(app.handle().clone());
+            if let Err(e) = build_tray(app) {
+                eprintln!("no tray on this desktop, so closing the window quits: {e}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

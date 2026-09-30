@@ -48,6 +48,8 @@ export type UploadEvent = {
 };
 
 export const SYNCED = "quince://synced";
+/** An alert was clicked: open Reminders, where that reminder is. */
+export const OPEN_REMINDER = "quince://open-reminder";
 
 export const api = {
   /** One refresh for every service. Never rejects for a single service failing. */
