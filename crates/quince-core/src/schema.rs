@@ -331,4 +331,38 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     UPDATE sync_state SET token = NULL WHERE service = 'reminders';
     "#,
+    // 23 — reminder alarms, so this app can ring when the phone would.
+    //
+    // A reminder's alert is not on the reminder: it lists `AlarmIDs`, each an `Alarm` record
+    // naming an `AlarmTrigger`, which holds the wall-clock moment to fire. The two are kept as
+    // Apple has them because either can change without the other in a pass. `alarm_fired`
+    // remembers every alert already shown — by alarm and moment, so an alarm moved to a new
+    // time rings again and one already shown never does twice, across restarts. Snoozes are
+    // this device's own and never go to Apple. The position is forgotten once more so the
+    // next pass reads every alarm already on the account.
+    r#"
+    CREATE TABLE reminder_alarms (
+        alarm_id        TEXT PRIMARY KEY,
+        reminder_guid   TEXT NOT NULL,
+        trigger_id      TEXT NOT NULL,
+        acknowledged_at INTEGER
+    ) STRICT;
+    CREATE INDEX reminder_alarms_by_trigger ON reminder_alarms (trigger_id);
+    CREATE TABLE alarm_triggers (
+        trigger_id TEXT PRIMARY KEY,
+        fires_at   INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX alarm_triggers_by_time ON alarm_triggers (fires_at);
+    CREATE TABLE alarm_fired (
+        alarm_id TEXT NOT NULL,
+        fires_at INTEGER NOT NULL,
+        fired_at INTEGER NOT NULL,
+        PRIMARY KEY (alarm_id, fires_at)
+    ) STRICT;
+    CREATE TABLE alarm_snoozes (
+        reminder_guid TEXT PRIMARY KEY,
+        fires_at      INTEGER NOT NULL
+    ) STRICT;
+    UPDATE sync_state SET token = NULL WHERE service = 'reminders';
+    "#,
 ];

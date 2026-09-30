@@ -800,6 +800,10 @@ pub fn apply_cloudkit(
     let mut list_order: Vec<String> = Vec::new();
     let mut groups: Vec<quince_core::reminders::ReminderGroup> = Vec::new();
     let mut account_order: Vec<String> = Vec::new();
+    // Alerts: an Alarm on a reminder, and the AlarmTrigger holding its moment.
+    let mut alarms: Vec<quince_core::alarms::Alarm> = Vec::new();
+    let mut triggers: Vec<quince_core::alarms::AlarmTrigger> = Vec::new();
+    let mut gone_alarms: Vec<String> = Vec::new();
     // A RecurrenceRule is its own record pointing back at the reminder it governs.
     let mut rules: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
 
@@ -822,6 +826,7 @@ pub fn apply_cloudkit(
             if removed {
                 gone_reminders.push(name.clone());
                 gone_sections.push(name.clone());
+                gone_alarms.push(name.clone());
                 gone_lists.push(name);
             }
             continue;
@@ -872,6 +877,16 @@ pub fn apply_cloudkit(
                     });
                 }
             }
+            // The phone removes an alarm outright rather than marking it; either way it
+            // no longer rings.
+            "Alarm" => match (removed, alarm_from_record(record)) {
+                (false, Some(alarm)) => alarms.push(alarm),
+                _ => gone_alarms.push(name),
+            },
+            "AlarmTrigger" => match (removed, trigger_from_record(record)) {
+                (false, Some(trigger)) => triggers.push(trigger),
+                _ => gone_alarms.push(name),
+            },
             "RecurrenceRule" => {
                 if !removed {
                     if let Some(target) = field::reference(record, "Reminder") {
@@ -977,6 +992,7 @@ pub fn apply_cloudkit(
     };
     library.put_reminder_groups(&groups)?;
     library.put_reminders(&reminders)?;
+    library.put_alarms(&alarms, &triggers, &gone_alarms, !incremental)?;
     if !gone_reminders.is_empty() || !gone_lists.is_empty() {
         library.forget_reminders(&gone_reminders, &gone_lists)?;
     }
@@ -3570,6 +3586,69 @@ mod other_accounts_tests {
     }
 }
 
+/// An `Alarm` record, as the reminder and trigger it ties together.
+///
+/// Measured on the account: `Reminder` is a reference to `Reminder/<id>`, `TriggerID` a bare
+/// id naming `AlarmTrigger/<id>`, and `AcknowledgedDate` — on the alarms someone has already
+/// seen go off — a timestamp. An alarm pointing at no reminder (there are dozens, left from
+/// reminders long gone) rings for nothing and is not kept.
+fn alarm_from_record(record: &Value) -> Option<quince_core::alarms::Alarm> {
+    let name = field::record_name(record)?;
+    Some(quince_core::alarms::Alarm {
+        id: name.strip_prefix("Alarm/").unwrap_or(&name).to_string(),
+        reminder_guid: field::reference(record, "Reminder")?,
+        trigger_id: field::string(record, "TriggerID")?,
+        acknowledged_at: field::timestamp_seconds(record, "AcknowledgedDate"),
+    })
+}
+
+/// An `AlarmTrigger` record, its moment resolved. Only date triggers ring here — every one on
+/// the account is one; a location trigger has no moment to wait for.
+fn trigger_from_record(record: &Value) -> Option<quince_core::alarms::AlarmTrigger> {
+    let name = field::record_name(record)?;
+    if field::string(record, "Type").as_deref() != Some("Date") {
+        return None;
+    }
+    let data = record
+        .pointer("/fields/DateComponentsData/value")
+        .and_then(Value::as_str)?;
+    Some(quince_core::alarms::AlarmTrigger {
+        id: name
+            .strip_prefix("AlarmTrigger/")
+            .unwrap_or(&name)
+            .to_string(),
+        fires_at: moment_of(data)?,
+    })
+}
+
+/// The instant an alarm's date components name.
+///
+/// They are a wall clock and a zone — nine in the morning, in Kolkata — not an instant, which
+/// is what keeps a reminder at nine wherever its owner is. Components with no zone are
+/// floating and mean this machine's own nine o'clock.
+fn moment_of(components_base64: &str) -> Option<i64> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    let parsed: Value = serde_json::from_slice(&B64.decode(components_base64).ok()?).ok()?;
+    let part = |k: &str| parsed.get(k).and_then(Value::as_i64);
+    let zone = parsed
+        .pointer("/timeZone/identifier")
+        .and_then(Value::as_str)
+        .and_then(|id| jiff::tz::TimeZone::get(id).ok())
+        .unwrap_or_else(jiff::tz::TimeZone::system);
+    let at = jiff::civil::date(
+        i16::try_from(part("year")?).ok()?,
+        i8::try_from(part("month")?).ok()?,
+        i8::try_from(part("day")?).ok()?,
+    )
+    .at(
+        i8::try_from(part("hour").unwrap_or(0)).ok()?,
+        i8::try_from(part("minute").unwrap_or(0)).ok()?,
+        i8::try_from(part("second").unwrap_or(0)).ok()?,
+        0,
+    );
+    Some(at.to_zoned(zone).ok()?.timestamp().as_second())
+}
+
 /// The date components an alarm is set by, as Apple writes them.
 ///
 /// `DateComponentsData` is declared BYTES and holds JSON — the same trick the sort hint uses.
@@ -3720,6 +3799,33 @@ mod alarm_tests {
 
     fn decoded(at: i64, tz: &str) -> Value {
         serde_json::from_slice(&B64.decode(date_components(at, tz).unwrap()).unwrap()).unwrap()
+    }
+
+    /// An alarm the phone set — 9:15 PM on 21 October 2025 in Kolkata, copied from the
+    /// account — is that instant, and one written here reads back as what was written.
+    #[test]
+    fn an_alarms_moment_is_its_wall_clock_in_its_zone() {
+        let phone = B64.encode(
+            r#"{"second":0,"month":10,"day":21,"minute":15,"hour":21,"year":2025,"era":1,"timeZone":{"identifier":"Asia\/Kolkata"}}"#,
+        );
+        // 21:15 IST is 15:45 UTC.
+        assert_eq!(moment_of(&phone), Some(1_761_061_500));
+        let at = 1_789_382_400;
+        assert_eq!(
+            moment_of(&date_components(at, "America/New_York").unwrap()),
+            Some(at)
+        );
+        assert_eq!(moment_of("not base64 at all"), None);
+    }
+
+    #[test]
+    fn a_trigger_that_is_not_a_date_has_no_moment() {
+        let record = serde_json::json!({
+            "recordName": "AlarmTrigger/X",
+            "recordType": "AlarmTrigger",
+            "fields": { "Type": { "type": "STRING", "value": "Location" } }
+        });
+        assert!(trigger_from_record(&record).is_none());
     }
 
     /// Apple's own alarm on this account decodes to exactly this shape.

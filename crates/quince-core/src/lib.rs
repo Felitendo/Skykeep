@@ -4,6 +4,7 @@
 //! from the network — the sync engine reconciles into this database, and the interface reads
 //! it. That is the whole reason the app can be instant and work offline.
 
+pub mod alarms;
 pub mod calendar;
 pub mod contacts;
 pub mod drive;

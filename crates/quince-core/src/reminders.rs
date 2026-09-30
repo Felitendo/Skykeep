@@ -135,7 +135,7 @@ pub struct ReminderGroup {
     pub sort_order: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Reminder {
     pub guid: String,
