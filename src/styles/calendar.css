@@ -1,6 +1,14 @@
 /* Calendar, laid out the way macOS Calendar is. Scoped under `.cx`. */
 
-.content:has(.cx) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
+.content:has(.cx) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-top: 18px;
+  /* The calendar lays itself out by the room it has, not the window's: the app's own sidebar
+     takes a share of the window, so a window-sized rule came in far too late. */
+  container: cx-page / inline-size;
+}
 
 .cx {
   flex: 1;
@@ -119,14 +127,17 @@
 .cx-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 /* Title, then the scopes, then stepping — wrapping onto a second line in a narrow window
    rather than running into each other. */
+/* One row, as Calendar's toolbar is: the title gives way first, and only a very narrow
+   calendar lets the controls drop beneath it. */
 .cx-bar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 10px 16px;
   padding: 0 18px 12px;
 }
-.cx-title {
+/* Under `.cx` so it outranks the app's `.content h1`, which had set it at 28px. */
+.cx .cx-title {
   flex: 1 1 auto;
   min-width: 0;
   margin: 0;
@@ -138,7 +149,9 @@
   text-overflow: ellipsis;
 }
 .cx-title strong { font-weight: 700; }
-.cx-tools { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+.cx-title-brief { display: none; }
+.cx-bar > .segmented { flex: none; }
+.cx-tools { flex: none; display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
 .cx-step { display: inline-flex; align-items: center; gap: 2px; }
 
 .cx-icon {
@@ -367,6 +380,9 @@
 
 .cx-columns {
   position: relative;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
   flex: 1;
   display: grid;
   grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
@@ -476,12 +492,21 @@
 .cx-year-month { margin: 0 0 6px; color: var(--text); font-size: var(--t-15); font-weight: 700; }
 .cx-year-month.is-current { color: var(--sys-red); }
 
-@media (max-width: 1100px) { .cal-year { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 820px) {
+@container cx-page (max-width: 900px) { .cal-year { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container cx-page (max-width: 760px) {
   .cx { grid-template-columns: 1fr; }
   .cx-side { display: none; }
   .cal-year { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cx-bar { grid-template-columns: 1fr; justify-items: start; }
+  .cx .cx-title { font-size: 18px; }
+  .cx-title-full { display: none; }
+  .cx-title-brief { display: inline; }
+  .cx-bar { gap: 10px 12px; padding-inline: 12px; }
+  .cx-bar .segment { padding-inline: 7px; }
+  .cx-tools { gap: 6px; }
+}
+@container cx-page (max-width: 470px) {
+  .cx-bar { flex-wrap: wrap; }
+  .cx .cx-title { flex-basis: 100%; }
 }
 
 /* ---- the event popover --------------------------------------------------------------- */
@@ -527,8 +552,27 @@
   font-size: var(--t-13);
   color-scheme: light dark;
 }
-.cx-pop-row input[type="checkbox"] { justify-self: start; width: 16px; height: 16px; accent-color: var(--sys-blue); }
-.cx-pop-notes { padding: 0; font-size: var(--t-13); resize: vertical; }
+/* Drawn, not left to the engine: WebKitGTK paints its own toolkit's white box here. */
+.cx-pop-row input[type="checkbox"] {
+  justify-self: start;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--field-edge);
+  border-radius: 4px;
+  background: var(--field) center / 10px no-repeat;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: background-color 120ms var(--ease);
+}
+.cx-pop-row input[type="checkbox"]:checked {
+  border-color: var(--sys-blue);
+  background-color: var(--sys-blue);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 5.2 4.1 7.3 8 2.8' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.cx-pop-row input[type="checkbox"]:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 45%, transparent); outline-offset: 1px; }
+/* Notes grow with what is written, as in Calendar; no grip in the corner. */
+.cx-pop-notes { min-height: 2.6em; max-height: 9em; padding: 0; font-size: var(--t-13); resize: none; field-sizing: content; }
 .cx-pop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .cx-pop-actions > span { display: flex; gap: 6px; }
 .cx-pop-delete { padding: 4px 6px; border: 0; background: none; color: var(--sys-red); font: inherit; font-size: var(--t-13); cursor: default; }

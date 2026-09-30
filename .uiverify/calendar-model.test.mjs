@@ -1,7 +1,7 @@
 // The arithmetic Calendar's views are drawn from, checked directly.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { placeDay, weekSpans, monthDays, daysOf, snap, clock } from "../src/screens/calendar/model.ts";
+import { placeDay, placeDayWith, weekSpans, monthDays, daysOf, snap, clock } from "../src/screens/calendar/model.ts";
 
 const at = (y, m, d, h = 0, min = 0) => Math.floor(new Date(y, m, d, h, min).getTime() / 1000);
 const ev = (guid, startsAt, endsAt, allDay = false) =>
@@ -53,6 +53,16 @@ test("overlapping meetings sit side by side; a later one gets the width back", (
   assert.deepEqual([by.b.column, by.b.columns], [1, 2]);
   assert.deepEqual([by.c.column, by.c.columns], [0, 1]);
   assert.equal(by.a.top, 540);
+});
+
+test("a reminder due during a meeting takes a column beside it", () => {
+  const day = new Date(2026, 8, 29);
+  const { events, marks } = placeDayWith([ev("m", at(2026, 8, 29, 19), at(2026, 8, 29, 20))], day,
+    [{ id: "r", top: 19 * 60, length: 22.5 }, { id: "late", top: 21 * 60, length: 22.5 }]);
+  assert.deepEqual([events[0].column, events[0].columns], [0, 2]);
+  const by = Object.fromEntries(marks.map((m) => [m.id, m]));
+  assert.deepEqual([by.r.column, by.r.columns], [1, 2]);
+  assert.deepEqual([by.late.column, by.late.columns], [0, 1]);
 });
 
 test("a five-minute call is still a quarter hour tall", () => {

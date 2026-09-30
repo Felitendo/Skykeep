@@ -17,7 +17,7 @@ import {
   hourLabel,
   midnight,
   monthDays,
-  placeDay,
+  placeDayWith,
   sameDay,
   seconds,
   snap,
@@ -307,17 +307,27 @@ export function CalendarView() {
       at
     );
   };
-  const pointAt = (el: Element | null): Anchor => {
-    const r = el?.getBoundingClientRect();
-    return r ? { x: r.right, y: r.top } : { x: window.innerWidth / 2, y: 120 };
-  };
 
   /** "New event": the next whole hour on the selected day, for an hour — Apple's default. */
   const newEvent = (e: React.MouseEvent) => {
     const at = new Date(selected);
     at.setHours(now.getHours() + 1, 0, 0, 0);
-    newAt(seconds(at), seconds(at) + 3600, false, pointAt(e.currentTarget));
+    const button = e.currentTarget.getBoundingClientRect();
+    // Under the button, never over the toolbar; in Day and Week it moves beside the new event
+    // once that is drawn.
+    newAt(seconds(at), seconds(at) + 3600, false, { x: button.right, y: button.bottom + 32 });
+    setFollowDraft(true);
   };
+  const [followDraft, setFollowDraft] = useState(false);
+  useLayoutEffect(() => {
+    if (!followDraft) return;
+    setFollowDraft(false);
+    const block = document.querySelector(".cx-block.is-draft");
+    if (!block) return;
+    block.scrollIntoView({ block: "nearest" });
+    const r = block.getBoundingClientRect();
+    setAnchor({ x: r.right, y: r.top, left: r.left });
+  }, [followDraft]);
 
   const shift = (by: number) =>
     setSelected((d) => {
@@ -342,26 +352,30 @@ export function CalendarView() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  /** The title, and the shorter one a narrow calendar shows in its place ("Sep 2026"). */
   const title = useMemo(() => {
-    if (view === "year") return { strong: String(selected.getFullYear()), rest: "" };
+    const short = (d: Date) => d.toLocaleDateString(undefined, { month: "short" });
+    if (view === "year") {
+      const year = String(selected.getFullYear());
+      return { strong: year, rest: "", brief: year };
+    }
     if (view === "day")
       return {
         strong: selected.toLocaleDateString(undefined, { day: "numeric", month: "long" }),
         rest: `${selected.getFullYear()}`,
+        brief: selected.toLocaleDateString(undefined, { day: "numeric", month: "short" }),
       };
     // A week across two months is named for both, as Calendar does: "Sep – Oct 2026".
     if (view === "week" && week[0].getMonth() !== week[6].getMonth()) {
-      const short = (d: Date) => d.toLocaleDateString(undefined, { month: "short" });
       const sameYear = week[0].getFullYear() === week[6].getFullYear();
-      return {
-        strong: `${short(week[0])}${sameYear ? "" : ` ${week[0].getFullYear()}`} – ${short(week[6])}`,
-        rest: String(week[6].getFullYear()),
-      };
+      const strong = `${short(week[0])}${sameYear ? "" : ` ${week[0].getFullYear()}`} – ${short(week[6])}`;
+      return { strong, rest: String(week[6].getFullYear()), brief: `${strong} ${week[6].getFullYear()}` };
     }
     const base = view === "week" ? week[6] : selected;
     return {
       strong: base.toLocaleDateString(undefined, { month: "long" }),
       rest: String(base.getFullYear()),
+      brief: `${short(base)} ${base.getFullYear()}`,
     };
   }, [view, selected, week]);
 
@@ -420,8 +434,13 @@ export function CalendarView() {
 
       <section className="cx-main">
         <header className="cx-bar">
-          <h1 className="cx-title">
-            <strong>{title.strong}</strong> {title.rest}
+          <h1 className="cx-title" aria-label={`${title.strong} ${title.rest}`.trim()}>
+            <span className="cx-title-full" aria-hidden="true">
+              <strong>{title.strong}</strong> {title.rest}
+            </span>
+            <strong className="cx-title-brief" aria-hidden="true">
+              {title.brief}
+            </strong>
           </h1>
           <div className="segmented" role="group" aria-label="View">
             {VIEWS.map((v) => (
@@ -688,13 +707,14 @@ function MonthView({
       <div className="cal-grid" role="grid" aria-label="Month" ref={grid}>
         {weeks.map((row) => {
           const spans = weekSpans(events, row[0]);
-          const lanes = Math.max(0, ...spans.map((s) => s.lane + 1));
           return (
             <div className="cx-week" role="row" key={dayKey(row[0])}>
               {row.map((day, i) => {
                 const list = items(day);
-                const lanesHere = spans.filter((s) => s.from <= i && s.to >= i).length;
-                const room = Math.max(0, rows - Math.max(lanes, lanesHere));
+                // Only the lanes of the bars that cross this day are kept clear in it: a bar
+                // at the end of the week had left the days before it room for nothing.
+                const lanesHere = Math.max(0, ...spans.filter((s) => s.from <= i && s.to >= i).map((s) => s.lane + 1));
+                const room = Math.max(0, rows - lanesHere);
                 // What fits, and when it does not, one line fewer so "N more" has a line too.
                 const visible = list.length > room ? list.slice(0, Math.max(0, room - 1)) : list;
                 const more = list.length - visible.length;
@@ -725,7 +745,7 @@ function MonthView({
                         ? day.toLocaleDateString(undefined, { month: "short", day: "numeric" })
                         : day.getDate()}
                     </span>
-                    <ul className="cx-items" style={{ marginTop: `${lanes * LANE}px` }}>
+                    <ul className="cx-items" style={{ marginTop: `${lanesHere * LANE}px` }}>
                       {visible.map((item) =>
                         item.kind === "event" ? (
                           <li key={item.event.guid}>
@@ -927,7 +947,13 @@ function TimeGrid({
     window.addEventListener("pointercancel", drop);
     window.addEventListener("blur", drop);
     window.addEventListener("keydown", key);
+    // A native drag, if one starts anyway, takes the pointer until it ends: the drag here
+    // ends with it rather than waiting for a release that will not come.
+    window.addEventListener("dragstart", drop);
+    window.addEventListener("dragend", drop);
     return () => {
+      window.removeEventListener("dragstart", drop);
+      window.removeEventListener("dragend", drop);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("mouseup", up);
@@ -946,6 +972,32 @@ function TimeGrid({
     const from = snap(at.minutes) - (snap(at.minutes) === 24 * 60 ? 15 : 0);
     setDragNow({ kind: "create", day: days[at.column], column: at.column, from, to: from + 15 });
   };
+
+  // Each day's events and timed reminders, laid out together so neither is drawn over the other.
+  const layouts = days.map((d) => {
+    const due = stackReminders(reminders.filter((r) => r.dueAt !== null && sameDay(dateOf(r.dueAt), d)));
+    const marks = due.map(({ reminder, top }) => ({
+      id: reminder.guid,
+      top: (top / HOUR) * 60,
+      length: (REMINDER_LINE / HOUR) * 60,
+    }));
+    // The event being named takes its own column too, beside what it overlaps, not over it.
+    if (pending && sameDay(dateOf(pending.startsAt), d)) {
+      const from = dateOf(pending.startsAt);
+      marks.push({
+        id: PENDING,
+        top: from.getHours() * 60 + from.getMinutes(),
+        length: Math.max((pending.endsAt - pending.startsAt) / 60, 15),
+      });
+    }
+    const laid = placeDayWith(events, d, marks);
+    return {
+      events: laid.events,
+      marks: laid.marks.filter((m) => m.id !== PENDING),
+      pending: laid.marks.find((m) => m.id === PENDING) ?? null,
+      reminders: new Map(due.map((x) => [x.reminder.guid, x.reminder])),
+    };
+  });
 
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
   const todayColumn = days.findIndex((d) => sameDay(d, today));
@@ -1015,6 +1067,11 @@ function TimeGrid({
             ref={columnsEl}
             style={{ "--cols": days.length } as React.CSSProperties}
             onPointerDown={onColumnDown}
+            // A press on the grid starts making an event, never a text selection or a native
+            // drag: in WebKitGTK either would take the pointer and the events that end the
+            // drag with it.
+            onMouseDown={(e) => e.preventDefault()}
+            onDragStart={(e) => e.preventDefault()}
             onDoubleClick={(e) => {
               if ((e.target as HTMLElement).closest(".cx-block")) return;
               const at = where(e.clientX, e.clientY);
@@ -1026,7 +1083,7 @@ function TimeGrid({
           >
             {days.map((d, column) => (
               <div className={`cx-column${d.getDay() === 0 || d.getDay() === 6 ? " is-weekend" : ""}`} key={dayKey(d)}>
-                {placeDay(events, d).map((p) => {
+                {layouts[column].events.map((p) => {
                   const moving = drag?.kind === "move" && drag.event.guid === p.event.guid ? drag : null;
                   const c = calendars.get(p.event.calendarGuid);
                   return (
@@ -1065,30 +1122,40 @@ function TimeGrid({
                     </button>
                   );
                 })}
-                {stackReminders(reminders.filter((r) => r.dueAt !== null && sameDay(dateOf(r.dueAt), d)))
-                  .map(({ reminder: r, top }) => (
+                {layouts[column].marks.map((m) => {
+                  const r = layouts[column].reminders.get(m.id)!;
+                  return (
                     <span
                       key={r.guid}
                       className={`cx-reminder${r.completedAt ? " is-done" : ""}`}
-                      style={{ top: `${top}px` }}
+                      style={{
+                        top: `${(m.top / 60) * HOUR}px`,
+                        left: `calc(${(m.column / m.columns) * 100}% + 4px)`,
+                        maxWidth: `calc(${100 / m.columns}% - 8px)`,
+                      }}
                     >
                       <span className="cx-ring" aria-hidden="true" />
                       {r.title}
                     </span>
-                  ))}
-                {pending && !drag && sameDay(dateOf(pending.startsAt), d) && (
+                  );
+                })}
+                {pending && !drag && layouts[column].pending && (
                   <span
                     className="cx-block is-draft"
                     style={{
-                      top: `${((dateOf(pending.startsAt).getHours() * 60 + dateOf(pending.startsAt).getMinutes()) / 60) * HOUR}px`,
-                      height: `${Math.max(((pending.endsAt - pending.startsAt) / 3600) * HOUR - 2, 20)}px`,
+                      top: `${(layouts[column].pending!.top / 60) * HOUR}px`,
+                      height: `${Math.max((layouts[column].pending!.length / 60) * HOUR - 2, 20)}px`,
+                      left: `${(layouts[column].pending!.column / layouts[column].pending!.columns) * 100}%`,
+                      width: `calc(${100 / layouts[column].pending!.columns}% - 3px)`,
                     }}
                   >
                     <span className="cx-block-title">{pending.title.trim() || "New Event"}</span>
                     <span className="cx-block-time">{clock(pending.startsAt)}</span>
                   </span>
                 )}
-                {drag?.kind === "create" && drag.column === column && (
+                {/* Drawn once the drag is one, never for a press held still: a
+                    quarter-hour sliver that release then discards reads as a bug. */}
+                {drag?.kind === "create" && drag.column === column && drag.to - drag.from > 15 && (
                   <span
                     className="cx-block is-draft"
                     style={{ top: `${(drag.from / 60) * HOUR}px`, height: `${((drag.to - drag.from) / 60) * HOUR}px` }}
@@ -1120,8 +1187,11 @@ function TimeGrid({
  * Where each reminder sits on a day's hour grid. Two due at the same time — a morning routine
  * set for eight — stack one under the other instead of being drawn over each other.
  */
+const REMINDER_LINE = 18;
+/** The layout's name for the event being named, which has no guid yet. */
+const PENDING = "\u0000pending";
 export function stackReminders(list: Reminder[]): { reminder: Reminder; top: number }[] {
-  const LINE = 18;
+  const LINE = REMINDER_LINE;
   const sorted = [...list].sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0) || a.title.localeCompare(b.title));
   let lastBottom = -Infinity;
   return sorted.map((reminder) => {
@@ -1264,7 +1334,10 @@ function EventPopover({
     const { width, height } = el.getBoundingClientRect();
     const gap = 12;
     let left = at.x + gap;
-    if (left + width > window.innerWidth - 8) left = Math.max(8, (at.left ?? at.x) - width - gap);
+    if (left + width > window.innerWidth - 8) left = (at.left ?? at.x) - width - gap;
+    // Neither side free — a block as wide as Day's column — so over its far end, clear of
+    // its title, which begins at the other.
+    if (left < 8) left = Math.max(8, window.innerWidth - width - 8);
     const top = Math.min(Math.max(8, at.y - 24), window.innerHeight - height - 8);
     setPos({ left, top });
   }, [at]);

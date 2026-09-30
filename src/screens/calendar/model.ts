@@ -107,6 +107,10 @@ export type Placed = {
   columns: number;
 };
 
+/** Something else on the hour grid that takes room there — a reminder due at a time. */
+export type Mark = { id: string; top: number; length: number };
+export type PlacedMark = Mark & { column: number; columns: number };
+
 /**
  * The timed events of one day, placed and set side by side where they overlap.
  *
@@ -115,37 +119,62 @@ export type Placed = {
  * up. A block is never shorter than a quarter hour, or a five-minute call would be unreadable.
  */
 export function placeDay(events: CalendarEvent[], day: Date): Placed[] {
+  return placeDayWith(events, day, []).events;
+}
+
+/**
+ * The same, with the day's reminders laid out among the events rather than over them: a
+ * reminder due during a meeting sits in a column beside it, as it does in Calendar, and the
+ * meeting's title stays readable.
+ */
+export function placeDayWith(
+  events: CalendarEvent[],
+  day: Date,
+  marks: Mark[],
+): { events: Placed[]; marks: PlacedMark[] } {
   const start = seconds(midnight(day));
   const end = seconds(addDays(day, 1));
-  const timed = events
-    .filter((e) => !spansDays(e) && e.endsAt > start && e.startsAt < end)
-    .map((event) => {
-      const from = Math.max(event.startsAt, start);
-      const to = Math.min(Math.max(event.endsAt, event.startsAt), end);
-      const top = (from - start) / 60;
-      return { event, top, length: Math.max((to - from) / 60, 15) };
-    })
-    .sort((a, b) => a.top - b.top || b.length - a.length);
+  type Item = { top: number; length: number; column: number; columns: number } & (
+    | { kind: "event"; event: CalendarEvent }
+    | { kind: "mark"; mark: Mark }
+  );
+  const items: Item[] = [
+    ...events
+      .filter((e) => !spansDays(e) && e.endsAt > start && e.startsAt < end)
+      .map((event): Item => {
+        const from = Math.max(event.startsAt, start);
+        const to = Math.min(Math.max(event.endsAt, event.startsAt), end);
+        return { kind: "event", event, top: (from - start) / 60, length: Math.max((to - from) / 60, 15), column: 0, columns: 1 };
+      }),
+    ...marks.map((mark): Item => ({ kind: "mark", mark, top: mark.top, length: mark.length, column: 0, columns: 1 })),
+  ].sort((a, b) => a.top - b.top || b.length - a.length);
 
-  const out: Placed[] = [];
-  let cluster: Placed[] = [];
+  let cluster: Item[] = [];
   let clusterEnd = -1;
   const close = () => {
     const columns = Math.max(1, ...cluster.map((p) => p.column + 1));
     for (const p of cluster) p.columns = columns;
-    out.push(...cluster);
     cluster = [];
   };
-  for (const item of timed) {
+  for (const item of items) {
     if (item.top >= clusterEnd && cluster.length) close();
     const busy = cluster.filter((p) => p.top + p.length > item.top).map((p) => p.column);
     let column = 0;
     while (busy.includes(column)) column++;
-    cluster.push({ ...item, column, columns: 1 });
+    item.column = column;
+    cluster.push(item);
     clusterEnd = Math.max(clusterEnd, item.top + item.length);
   }
   if (cluster.length) close();
-  return out;
+
+  const placed: Placed[] = [];
+  const placedMarks: PlacedMark[] = [];
+  for (const p of items) {
+    const { top, length, column, columns } = p;
+    if (p.kind === "event") placed.push({ event: p.event, top, length, column, columns });
+    else placedMarks.push({ ...p.mark, top, length, column, columns });
+  }
+  return { events: placed, marks: placedMarks };
 }
 
 /** Snap a number of minutes to the nearest quarter hour, as dragging in Calendar does. */

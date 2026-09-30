@@ -1,5 +1,6 @@
 // Calendar's Day and Week grids, checked in a real browser.
 import { engine } from "./engine.mjs";
+import { SERVICES, installStub } from "./stub.mjs";
 
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } });
@@ -20,7 +21,7 @@ await ctx.addInitScript(() => {
       if (cmd === "calendar_events") return [{ guid: "e", calendarGuid: "c", title: "New Event", location: null,
         startsAt: at(19), endsAt: at(19, 15), allDay: false, timezone: null, url: null, notes: null, etag: null }];
       if (cmd === "reminders_due_between") return [r("a", "Pick up the parcel", at(8)), r("b", "Water the plants", at(8)),
-        { ...r("d", "Done already", at(16)), completedAt: at(16) }];
+        { ...r("d", "Done already", at(16)), completedAt: at(16) }, r("s", "Study", at(19))];
       if (cmd === "calendar_sync") return { calendars: 1, events: 0 };
       if (cmd === "event_save") { (window.__saved ??= []).push(args.draft); return "E-new"; }
       if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
@@ -39,11 +40,22 @@ await page.waitForTimeout(300);
 let failures = 0;
 const ok = (pass, yes, no) => { console.log(pass ? `PASS ${yes}` : `FAIL ${no}`); if (!pass) failures++; };
 
-const boxes = await page.locator(".cx-reminder").evaluateAll((els) =>
-  els.map((e) => { const r = e.getBoundingClientRect(); return [r.top, r.bottom]; }));
+const boxes = await page.locator(".cx-reminder").evaluateAll((els) => els
+  .filter((e) => /parcel|plants/.test(e.textContent))
+  .map((e) => { const r = e.getBoundingClientRect(); return [r.top, r.bottom]; }));
 const apart = boxes.length === 2 && (boxes[0][1] <= boxes[1][0] || boxes[1][1] <= boxes[0][0]);
 ok(apart, "two reminders due at the same time are stacked, not drawn over each other",
   `the reminders at 8 overlap: ${JSON.stringify(boxes)}`);
+
+// A reminder due during an event sits beside it, as in Calendar, not over its title.
+const over = await page.evaluate(() => {
+  const blocks = [...document.querySelectorAll(".cx-block:not(.is-draft)")].map((b) => b.getBoundingClientRect());
+  return [...document.querySelectorAll(".cx-reminder")].filter((e) => {
+    const r = e.getBoundingClientRect();
+    return blocks.some((b) => r.left < b.right - 1 && r.right > b.left + 1 && r.top < b.bottom - 1 && r.bottom > b.top + 1);
+  }).map((e) => e.textContent);
+});
+ok(over.length === 0, "a reminder due during an event is set beside it, not over it", `drawn over an event: ${JSON.stringify(over)}`);
 
 const covered = await page.evaluate(() => {
   const now = document.querySelector(".cx-now-label")?.getBoundingClientRect();
@@ -79,14 +91,29 @@ const title = (await page.locator(".cx-title").innerText()).replace(/\s+/g, " ")
 ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named for both  [${title}]`,
   `the week of Sep 27 – Oct 3 is titled "${title}"`);
 
-// Making an event, the way Calendar makes one.
+// Making an event, the way Calendar makes one. The grid is scrolled to a known hour first:
+// where it opens depends on the clock and the window, and a press that lands outside the
+// grid proves nothing.
 {
+  await page.evaluate(() => { document.querySelector(".cx-scroll").scrollTop = 12 * 48; });
+  await page.waitForTimeout(100);
   const col = await page.locator(".cx-column").nth(3).boundingBox();
   const hour = (h) => col.y + h * 48;
   await page.mouse.click(col.x + 30, hour(14));
   await page.waitForTimeout(250);
   ok((await page.locator(".cx-popover").count()) === 0, "a single click on empty time makes nothing",
     "a single click on empty time opened a new event");
+
+  // Held still, a press is not yet a drag: Calendar draws nothing until the pointer moves.
+  await page.mouse.move(col.x + 30, hour(12));
+  await page.mouse.down();
+  await page.waitForTimeout(700);
+  const held = await page.locator(".cx-block.is-draft").count();
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+  const after = await page.locator(".cx-block.is-draft, .cx-popover").count();
+  ok(held === 0 && after === 0, "holding a press on empty time draws nothing",
+    `a held press drew ${held} draft(s), ${after} left after release`);
 
   await page.mouse.move(col.x + 30, hour(14));
   await page.mouse.down();
@@ -112,6 +139,8 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
 // A press whose release never arrives — what the app's WebKitGTK did — must not leave a
 // half-made event on the grid growing with every move of the mouse.
 {
+  await page.evaluate(() => { document.querySelector(".cx-scroll").scrollTop = 12 * 48; });
+  await page.waitForTimeout(100);
   const col = await page.locator(".cx-column").nth(2).boundingBox();
   // A real press; the release is swallowed before the app can hear it.
   await page.evaluate(() => {
@@ -187,6 +216,67 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   });
   ok(gap <= 40, `Year's rows of months sit together  [${gap.toFixed(0)}px apart]`, `Year's rows are ${gap.toFixed(0)}px apart`);
   await tall.close();
+}
+
+// A small window: the title is shortened, never cut, and a month cell with room for a line
+// shows an event in it rather than only "N more".
+{
+  // The shared fixture — a real week's worth of events and reminders, with an all-day bar.
+  const full = await b.newContext({ viewport: { width: 800, height: 600 } });
+  await full.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null,
+    calendarFixture: true, notesFixture: true, contactsFixture: true, driveFixture: true, remindersFixture: true });
+  const small = await full.newPage();
+  await small.setViewportSize({ width: 800, height: 600 });
+  // A Wednesday whose week crosses into the next month, so Week's title is its longest.
+  await small.clock.setFixedTime(new Date(2026, 8, 30, 18, 0));
+  await small.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await small.locator(".nav-item", { hasText: "Calendar" }).click();
+  for (const view of ["Week", "Month"]) {
+  await small.getByRole("button", { name: view, exact: true }).click();
+  await small.waitForTimeout(400);
+  const narrow = await small.evaluate(() => {
+    const t = document.querySelector(".cx-title");
+    const views = document.querySelector(".cx-tools").getBoundingClientRect();
+    const tr = t.getBoundingClientRect();
+    // A cell that shows only "N more" though no all-day bar crosses it gave its room away.
+    const bars = [...document.querySelectorAll(".cx-bar-event")].map((b) => b.getBoundingClientRect());
+    const starved = [...document.querySelectorAll(".cx-day")].filter((d) => {
+      if (!d.querySelector(".cx-more") || d.querySelector(".cx-item")) return false;
+      const r = d.getBoundingClientRect();
+      return !bars.some((b) => b.left < r.right - 1 && b.right > r.left + 1 && b.top < r.bottom && b.bottom > r.top);
+    });
+    return {
+      cut: t.scrollWidth > t.clientWidth + 1,
+      oneRow: Math.abs((tr.top + tr.bottom) / 2 - (views.top + views.bottom) / 2) < 8,
+      text: t.innerText.trim(),
+      starved: starved.length,
+    };
+  });
+  ok(!narrow.cut, `${view}: a narrow calendar's title is whole  [${narrow.text}]`, `${view}: the title is cut: ${JSON.stringify(narrow)}`);
+  ok(narrow.oneRow, `${view}: its toolbar stays one row`, `${view}: the toolbar broke onto two rows`);
+  if (view === "Month")
+    ok(narrow.starved === 0, "a month cell with room shows an event, not only \"N more\"",
+      `${narrow.starved} cell(s) show only "N more"`);
+  }
+
+  // "+" at six: the new event, 7 to 8, crosses the 7:30 Dentist — it takes a column beside it,
+  // and its popover opens by it, never over the toolbar.
+  await small.getByRole("button", { name: "Week", exact: true }).click();
+  await small.waitForTimeout(300);
+  await small.getByRole("button", { name: "New event" }).click();
+  await small.waitForTimeout(300);
+  const placed = await small.evaluate(() => {
+    const hit = (a, b) => a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
+    const draft = document.querySelector(".cx-block.is-draft")?.getBoundingClientRect();
+    const pop = document.querySelector(".cx-popover")?.getBoundingClientRect();
+    const bar = document.querySelector(".cx-bar").getBoundingClientRect();
+    const others = [...document.querySelectorAll(".cx-block:not(.is-draft)")].map((b) => b.getBoundingClientRect());
+    return { draft: Boolean(draft), over: draft ? others.filter((o) => hit(draft, o)).length : -1, onBar: pop ? hit(pop, bar) : null };
+  });
+  ok(placed.draft && placed.over === 0, "a new event is set beside the event it overlaps", `the new event: ${JSON.stringify(placed)}`);
+  ok(placed.onBar === false, "its popover opens clear of the toolbar", `the popover: ${JSON.stringify(placed)}`);
+  await small.keyboard.press("Escape");
+  await full.close();
 }
 
 await b.close();
