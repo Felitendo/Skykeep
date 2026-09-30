@@ -1,6 +1,6 @@
 // Calendar's Day and Week grids, checked in a real browser.
 import { engine } from "./engine.mjs";
-import { SERVICES, installStub } from "./stub.mjs";
+import { SERVICES, installStub, openScreen } from "./stub.mjs";
 
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } });
@@ -230,7 +230,7 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   // A Wednesday whose week crosses into the next month, so Week's title is its longest.
   await small.clock.setFixedTime(new Date(2026, 8, 30, 18, 0));
   await small.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await small.locator(".nav-item", { hasText: "Calendar" }).click();
+  await openScreen(small, "Calendar");
   for (const view of ["Week", "Month"]) {
   await small.getByRole("button", { name: view, exact: true }).click();
   await small.waitForTimeout(400);

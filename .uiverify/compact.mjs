@@ -6,7 +6,7 @@
 // words to a line, Drive cut every name to five letters, and a month cell said "3 more" over
 // the next day.
 import { engine } from "./engine.mjs";
-import { SERVICES, installStub } from "./stub.mjs";
+import { SERVICES, installStub, openScreen } from "./stub.mjs";
 
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 480, height: 400 } });
@@ -95,6 +95,23 @@ if ((await toggle.count()) === 1) {
   }));
   ok(month.dots > 0 && month.more === 0, `a narrow month shows its days' items as dots  [${month.dots}]`,
     `a narrow month: ${JSON.stringify(month)}`);
+}
+
+// A small laptop's window: 800 wide, where beside the sidebar a contact's card had 250px and
+// wrapped a phone number over four lines. The sidebar steps aside from 900 down.
+{
+  const mid = await ctx.newPage();
+  await mid.setViewportSize({ width: 800, height: 600 });
+  await mid.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await openScreen(mid, "Contacts");
+  await mid.waitForTimeout(400);
+  const phone = await mid.evaluate(() => {
+    const a = [...document.querySelectorAll(".contact-detail a")].find((x) => x.textContent.includes("+91"));
+    if (!a) return null;
+    return { lines: Math.round(a.getBoundingClientRect().height / parseFloat(getComputedStyle(a).lineHeight || "20")), text: a.textContent };
+  });
+  ok(phone && phone.lines <= 1, "at 800 wide a phone number keeps to one line", `at 800 wide: ${JSON.stringify(phone)}`);
+  await mid.close();
 }
 
 await b.close();

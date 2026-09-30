@@ -445,9 +445,10 @@
 /*
  * A narrow window, as iPadOS does it: the sidebar steps aside and the content takes the whole
  * width, with a button at the top left to bring the sidebar back over it. Picking a screen,
- * Escape or a click outside puts it away again.
+ * Escape or a click outside puts it away again. From 900px down: beside the sidebar an 800px
+ * window left the content 520px, and a phone number wrapped over four lines.
  */
-@media (max-width: 720px) {
+@media (max-width: 900px) {
   /* Outranks each screen's own `.content:has(...)` padding. */
   .library > main.content { padding: 54px 16px 16px; }
   .sidebar {
@@ -486,6 +487,17 @@
     cursor: default;
   }
   .sidebar-toggle:focus-visible { outline: 3px solid var(--gold-ring); }
+  .is-sidebar-open .sidebar-scrim {
+    position: absolute;
+    z-index: 25;
+    inset: 0;
+    display: block;
+    background: rgba(0, 0, 0, 0.35);
+  }
+}
+
+/* Narrower again, where a screen shows one column at a time and needs a way back. */
+@media (max-width: 720px) {
   /* Back to the list a detail was opened from, in the accent, as iOS writes it. */
   .compact-back {
     display: inline-flex;
@@ -506,13 +518,6 @@
   }
   .compact-back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .compact-back:focus-visible { outline: 3px solid var(--gold-ring); }
-  .is-sidebar-open .sidebar-scrim {
-    position: absolute;
-    z-index: 25;
-    inset: 0;
-    display: block;
-    background: rgba(0, 0, 0, 0.35);
-  }
 }
 .content h1 { margin: 0 0 6px; font-size: var(--t-28); font-weight: 600; letter-spacing: -0.022em; }
 /*
@@ -877,7 +882,8 @@
    A file browser: a path you can walk back along, then rows of what is here. */
 
 .drive { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.drive > * { width: 100%; max-width: 96ch; }
+/* The list fills the pane, as Finder's does; held to 96ch it left most of a wide window empty. */
+.drive > * { width: 100%; }
 
 .crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; }
 
@@ -934,9 +940,14 @@
 .drive-row-hit:disabled { cursor: default; }
 .drive-row-hit:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
 
+/* One width for every row, whether it has three actions or four, so the columns before it
+   line up down the list — a file's extra Download had pushed its size and date left. */
 .drive-row-actions {
   display: flex;
+  flex: none;
+  justify-content: flex-end;
   gap: 1px;
+  width: calc(4 * 26px + 3px + 6px);
   padding-right: 6px;
   opacity: 0;
 }
@@ -1082,6 +1093,7 @@
   .drive-row-hit > .drive-meta:last-child { grid-area: date; }
   .drive-row-hit > .drive-meta:nth-of-type(3):not(:empty)::after { content: " ·"; }
   .drive-row-actions {
+    width: auto;
     position: absolute;
     top: 50%;
     right: 4px;

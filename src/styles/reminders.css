@@ -399,6 +399,8 @@
   font-size: var(--t-13);
   line-height: 20px;
   outline: none;
+  /* A title longer than its row ends in "…" rather than being cut mid-letter. */
+  text-overflow: ellipsis;
 }
 .rx-title:focus { box-shadow: 0 1px 0 var(--accent); }
 .is-done .rx-title { color: var(--text-3); }
