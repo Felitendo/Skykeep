@@ -832,6 +832,13 @@ async fn notes_search(query: String, data: State<'_, Data>) -> UiResult<Vec<Note
 }
 
 /// Notes in a folder, or every note when no folder is given.
+/// How many notes each folder holds, and all of them but Recently Deleted.
+#[tauri::command]
+async fn note_counts(data: State<'_, Data>) -> UiResult<(i64, Vec<(String, i64)>)> {
+    let library = data.0.lock().await;
+    library.note_counts().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn notes_in(folder_guid: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Note>> {
     let library = data.0.lock().await;
@@ -1710,6 +1717,7 @@ fn main() {
             note_move,
             notes_in,
             notes_search,
+            note_counts,
             contacts_list,
             contact_save,
             contact_delete,

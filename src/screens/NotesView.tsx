@@ -1,30 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { Folder, FolderOpen, SquarePen, Trash2 } from "lucide-react";
+import { editorDate, groupNotes, joinTitle, listDate, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
 const ALL = "__all__";
-
-const when = (seconds: number | null) => {
-  if (seconds === null) return "";
-  const d = new Date(seconds * 1000);
-  const today = new Date();
-  const sameDay =
-    d.getFullYear() === today.getFullYear() &&
-    d.getMonth() === today.getMonth() &&
-    d.getDate() === today.getDate();
-  return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-    : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-};
-
-/** True when the body already opens with the title, which is Apple's usual case. */
-function bodyRepeatsTitle(note: Note, body: string | null): boolean {
-  const text = body?.trimStart();
-  if (!text) return false;
-  const title = note.title.trim();
-  return title.length > 0 && text.startsWith(title);
-}
 
 /** Apple's Recently Deleted, by the record name that is the same in every language. */
 const TRASH_FOLDER = "TrashFolder-CloudKit";
@@ -46,7 +28,19 @@ export function NotesView() {
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
 
+  /** Notes outside Recently Deleted, and how many each folder holds. */
+  const [counts, setCounts] = useState<{ all: number; per: Map<string, number> }>({
+    all: 0,
+    per: new Map(),
+  });
+
   const read = useCallback(async () => {
+    api
+      .noteCounts()
+      .then(([all, per]) => setCounts({ all, per: new Map(per) }))
+      .catch(() => {
+        // Counts are a courtesy; the list is what matters.
+      });
     const [found, list] = await Promise.all([
       api.noteFolders(),
       // Search reaches every folder, as Apple's does — a note is found wherever it is filed.
@@ -315,6 +309,7 @@ export function NotesView() {
   );
 
   const editor = useRef<HTMLTextAreaElement | null>(null);
+  const bodyEditor = useRef<HTMLTextAreaElement | null>(null);
   const create = useCallback(async () => {
     if (composingRef.current) await commitComposing();
     await flush();
@@ -361,49 +356,104 @@ export function NotesView() {
     return () => window.clearTimeout(timer);
   }, [saved]);
 
+  /** What the editor holds right now, whoever is writing it. */
+  const text = composing ? composing.body : (draft ?? body ?? "");
+  const { title: titleLine, rest } = splitTitle(text);
+  const hadBreak = text.includes("\n");
+  const canEdit = Boolean(composing) || Boolean(open && !open.locked && open.editable && body !== null);
+
+  /** Every change to either half of the editor becomes one change to the whole note. */
+  const apply = (next: string) => {
+    if (composingRef.current) setComposing((c) => (c ? { ...c, body: next } : c));
+    else type(next);
+  };
+  /**
+   * Make a change that moves the cursor into the other half, all at once. Waiting a frame to
+   * move focus left a gap a fast typist fills: the letter after Enter landed back in the
+   * title. The change is applied and drawn synchronously, and focus moves in the same turn.
+   */
+  const moveWith = (next: string, el: HTMLTextAreaElement | null, at: number) => {
+    flushSync(() => apply(next));
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(at, at);
+  };
+  const place = (el: HTMLTextAreaElement | null, at: number) => {
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(at, at);
+  };
+
+  // The title grows onto more lines as it is typed, as a heading does, rather than scrolling.
+  useLayoutEffect(() => {
+    const el = editor.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [titleLine, openGuid, composing]);
+
+  const sections = useMemo(() => groupNotes(notes), [notes]);
+  const heading = searching
+    ? "Search"
+    : folder === ALL
+      ? "All iCloud"
+      : (folders.find((f) => f.guid === folder)?.title ?? "Notes");
+  const saveFailed = error !== null;
+
   return (
     <div className="notes">
       <aside className="notes-folders" aria-label="Note folders">
-        <button
-          className="rem-list"
-          aria-current={folder === ALL}
-          onClick={() => setFolder(ALL)}
-        >
-          <span className="rem-list-name">All Notes</span>
+        <p className="notes-side-heading">iCloud</p>
+        <button className="notes-folder" aria-current={folder === ALL} onClick={() => setFolder(ALL)}>
+          <FolderOpen className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
+          <span className="notes-folder-name">All iCloud</span>
+          <span className="notes-folder-count">{counts.all || ""}</span>
         </button>
-        {nestFolders(folders).map(({ folder: f, depth }) => (
+        {nestFolders(folders)
+          .filter(({ folder: f }) => f.guid !== TRASH_FOLDER)
+          .map(({ folder: f, depth }) => (
+            <button
+              key={f.guid}
+              className="notes-folder"
+              aria-current={folder === f.guid}
+              onClick={() => setFolder(f.guid)}
+              style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
+            >
+              <Folder className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
+              <span className="notes-folder-name">{f.title}</span>
+              <span className="notes-folder-count">{counts.per.get(f.guid) || ""}</span>
+            </button>
+          ))}
+        {folders.some((f) => f.guid === TRASH_FOLDER) && (
           <button
-            key={f.guid}
-            className="rem-list"
-            aria-current={folder === f.guid}
-            onClick={() => setFolder(f.guid)}
-            /* A folder inside another is shown inside it, the way it was filed. */
-            style={depth > 0 ? { paddingLeft: `${8 + depth * 14}px` } : undefined}
+            className="notes-folder"
+            aria-current={folder === TRASH_FOLDER}
+            onClick={() => setFolder(TRASH_FOLDER)}
           >
-            <span className="rem-list-name">{f.title}</span>
+            <Trash2 className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
+            <span className="notes-folder-name">Recently Deleted</span>
+            <span className="notes-folder-count">{counts.per.get(TRASH_FOLDER) || ""}</span>
           </button>
-        ))}
+        )}
       </aside>
 
       <section className="notes-list" aria-label="Notes">
-        <header className="cal-bar">
-          <div className="cal-nav">
-            <h1>
-              {searching
-                ? "Search"
-                : folder === ALL
-                  ? "All Notes"
-                  : folders.find((f) => f.guid === folder)?.title}
-            </h1>
-            <span className="badge">
+        <header className="notes-list-head">
+          <div className="notes-list-title">
+            <h1>{heading}</h1>
+            <span className="notes-list-count">
               {notes.length} {notes.length === 1 ? "note" : "notes"}
             </span>
           </div>
-          <div className="cal-actions">
-            <button className="quiet" onClick={() => void create()} disabled={busy}>
-              New note
-            </button>
-          </div>
+          <button
+            className="notes-icon"
+            aria-label="New note"
+            title="New Note"
+            onClick={() => void create()}
+            disabled={busy}
+          >
+            <SquarePen size={18} strokeWidth={2} aria-hidden="true" />
+          </button>
         </header>
         <input
           className="notes-search"
@@ -424,7 +474,7 @@ export function NotesView() {
             value={folder}
             onChange={setFolder}
             options={[
-              { value: ALL, label: "All Notes" },
+              { value: ALL, label: "All iCloud" },
               ...folders.map((f) => ({ value: f.guid, label: f.title })),
             ]}
           />
@@ -432,97 +482,154 @@ export function NotesView() {
 
         {error && <p className="error" role="alert">{error}</p>}
 
-        <ul className="note-rows">
-          {notes.map((note) => (
-            <li key={note.guid}>
-              <button
-                className="note-row"
-                aria-current={openGuid === note.guid}
-                onClick={() => void selectNote(note.guid)}
-              >
-                <span className="note-row-title">
-                  {note.pinned && <span className="pin" aria-label="Pinned">●</span>}
-                  {note.title}
-                </span>
-                <span className="note-row-meta">
-                  <span className="note-row-when">{when(note.modifiedAt)}</span>
-                  <span className="note-row-snippet">
-                    {note.locked ? "Locked" : note.snippet?.slice(0, 60) || "No text"}
-                  </span>
-                </span>
-              </button>
-            </li>
+        <div className="note-rows" role="list">
+          {sections.map((section) => (
+            <Fragment key={section.key}>
+              <h2 className="notes-section">{section.heading}</h2>
+              {section.notes.map((note) => (
+                <div role="listitem" key={note.guid}>
+                  <button
+                    className="note-row"
+                    aria-current={openGuid === note.guid}
+                    onClick={() => void selectNote(note.guid)}
+                  >
+                    <span className="note-row-title">{note.title}</span>
+                    <span className="note-row-meta">
+                      <span className="note-row-when">{listDate(note.modifiedAt)}</span>
+                      <span className="note-row-snippet">
+                        {note.locked ? "Locked" : note.snippet?.slice(0, 80) || "No additional text"}
+                      </span>
+                    </span>
+                  </button>
+                </div>
+              ))}
+            </Fragment>
           ))}
-        </ul>
+        </div>
 
         {loaded && notes.length === 0 && !error && (
-          <p className="cal-empty">No notes here.</p>
+          <p className="cal-empty notes-empty">{searching ? "No results." : "No notes here."}</p>
         )}
       </section>
 
       <article className="note-body" aria-label="Note">
+        {(composing || open) && (
+          <div className="note-bar">
+            <p className="note-when">
+              {busy || (!saveFailed && (dirty || composing?.body.trim()))
+                ? "Saving…"
+                : saved
+                  ? "Saved"
+                  : editorDate(composing ? Math.floor(Date.now() / 1000) : (open?.modifiedAt ?? null))}
+            </p>
+            {!composing && open && !open.locked && (
+              <div className="note-bar-actions">
+                <Picker
+                  label={`Folder for ${open.title}`}
+                  value={open.folderGuid ?? ALL}
+                  disabled={busy}
+                  onChange={(guid) => void moveTo(guid)}
+                  options={[
+                    { value: ALL, label: "Notes" },
+                    ...folders
+                      .filter((f) => f.guid !== TRASH_FOLDER)
+                      .map((f) => ({ value: f.guid, label: f.title })),
+                  ]}
+                />
+                {inTrash && (
+                  <button className="quiet" onClick={() => void recover()} disabled={busy}>
+                    Recover
+                  </button>
+                )}
+                {inTrash ? (
+                  <button className="quiet danger" onClick={() => void remove()} disabled={busy}>
+                    Delete Now
+                  </button>
+                ) : (
+                  <button
+                    className="notes-icon danger"
+                    aria-label="Delete"
+                    title="Delete"
+                    onClick={() => void remove()}
+                    disabled={busy}
+                  >
+                    <Trash2 size={17} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/*
           * One editor for a new note and a saved one, always in the same place, so the box
           * being typed into is never taken away when a new note becomes a real one. The
-          * slots above it are held open with `false` rather than removed, which is what lets
-          * React keep the same element — focus, cursor and selection with it.
+          * first line is a title field and the rest a body, but they are one text: Enter in
+          * the title splits it, Backspace at the start of the body joins it, and what is
+          * saved is always the two put back together.
           */}
-        {!composing && open && !open.locked && !bodyRepeatsTitle(open, body) && (
-          <h2>{open.title}</h2>
-        )}
-        {!composing && open && !open.locked && (
-          <div className="note-bar">
-            <p className="note-when">
-              {busy ? "Saving…" : dirty ? "Saving…" : saved ? "Saved" : when(open.modifiedAt)}
-            </p>
-            <div className="note-bar-actions">
-              <Picker
-                label={`Folder for ${open.title}`}
-                value={open.folderGuid ?? ALL}
-                disabled={busy}
-                onChange={(guid) => void moveTo(guid)}
-                options={[
-                  { value: ALL, label: "No folder" },
-                  ...folders.map((f) => ({ value: f.guid, label: f.title })),
-                ]}
-              />
-              {inTrash && (
-                <button className="quiet" onClick={() => void recover()} disabled={busy}>
-                  Recover
-                </button>
-              )}
-              <button className="quiet danger" onClick={() => void remove()} disabled={busy}>
-                {inTrash ? "Delete Now" : "Delete"}
-              </button>
-            </div>
-          </div>
-        )}
-        {composing || (open && !open.locked && open.editable && body !== null) ? (
-          <textarea
-            key="editor"
-            ref={editor}
-            className="note-text"
-            aria-label={composing ? "New note" : `Body of ${open?.title ?? "note"}`}
-            value={composing ? composing.body : (draft ?? body ?? "")}
-            placeholder={composing ? "New Note" : undefined}
-            onChange={(e) => {
-              const text = e.target.value;
-              if (composingRef.current) {
-                setComposing((c) => (c ? { ...c, body: text } : c));
-              } else {
-                type(text);
-              }
-            }}
-            onKeyDown={(e) => {
-              // Nothing needs saving by hand, but the reflex deserves an answer.
-              if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-                e.preventDefault();
+        {canEdit ? (
+          <div className="note-editor">
+            <textarea
+              key="title"
+              ref={editor}
+              className="note-title"
+              rows={1}
+              aria-label={composing ? "New note" : `Title of ${open?.title ?? "note"}`}
+              placeholder={composing ? "New Note" : undefined}
+              value={titleLine}
+              spellCheck
+              onChange={(e) => apply(joinTitle(e.target.value, rest, hadBreak))}
+              onKeyDown={(e) => {
+                const el = e.currentTarget;
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  const at = el.selectionStart;
+                  moveWith(
+                    `${titleLine.slice(0, at)}\n${titleLine.slice(at)}${hadBreak ? `\n${rest}` : ""}`,
+                    bodyEditor.current,
+                    0
+                  );
+                } else if (e.key === "ArrowDown" && el.selectionStart === titleLine.length) {
+                  e.preventDefault();
+                  place(bodyEditor.current, 0);
+                } else if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                  e.preventDefault();
+                  void (composingRef.current ? commitComposing() : flush());
+                }
+              }}
+              onBlur={(e) => {
+                if (e.relatedTarget === bodyEditor.current) return;
                 void (composingRef.current ? commitComposing() : flush());
-              }
-            }}
-            onBlur={() => void (composingRef.current ? commitComposing() : flush())}
-            spellCheck
-          />
+              }}
+            />
+            <textarea
+              key="body"
+              ref={bodyEditor}
+              className="note-text"
+              aria-label={composing ? "New note text" : `Body of ${open?.title ?? "note"}`}
+              value={rest}
+              spellCheck
+              onChange={(e) => apply(joinTitle(titleLine, e.target.value, true))}
+              onKeyDown={(e) => {
+                const el = e.currentTarget;
+                if (e.key === "Backspace" && el.selectionStart === 0 && el.selectionEnd === 0 && hadBreak) {
+                  e.preventDefault();
+                  moveWith(titleLine + rest, editor.current, titleLine.length);
+                } else if (e.key === "ArrowUp" && !rest.slice(0, el.selectionStart).includes("\n")) {
+                  e.preventDefault();
+                  place(editor.current, titleLine.length);
+                } else if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                  e.preventDefault();
+                  void (composingRef.current ? commitComposing() : flush());
+                }
+              }}
+              onBlur={(e) => {
+                if (e.relatedTarget === editor.current) return;
+                void (composingRef.current ? commitComposing() : flush());
+              }}
+            />
+          </div>
         ) : open?.locked ? (
           <p className="cal-empty">
             This note is locked. Apple keeps it encrypted, so there is nothing here to show —
@@ -535,15 +642,16 @@ export function NotesView() {
             Opening…
           </p>
         ) : open ? (
-          <>
-            <pre className="note-text">{body}</pre>
+          <div className="note-editor is-readonly">
+            <h1 className="note-title">{splitTitle(body ?? "").title}</h1>
+            <pre className="note-text">{splitTitle(body ?? "").rest}</pre>
             <p className="note-readonly">
               Quince can’t yet save changes to this note without risking what is in it — it
               is very long, or its copy on iCloud is out of step with your devices — so it is
               read-only here. Editing it on an Apple device is safe, and after that Quince can
               usually edit it again.
             </p>
-          </>
+          </div>
         ) : (
           loaded && <p className="cal-empty">Select a note.</p>
         )}

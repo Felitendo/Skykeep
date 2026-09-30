@@ -56,7 +56,7 @@ await ctx.addInitScript(() => {
 
 const page = await ctx.newPage();
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-await page.getByRole("button", { name: "Notes", exact: true }).click();
+await page.locator(".nav-item", { hasText: "Notes" }).click();
 await page.waitForTimeout(300);
 
 // Watch for the moment nothing is open, and for focus leaving the editor.
@@ -73,18 +73,22 @@ await page.evaluate(() => {
 await page.getByRole("button", { name: "New note" }).click();
 await page.waitForTimeout(150);
 await page.keyboard.type("Shopping");
-const box = await page.evaluateHandle(() => document.activeElement);
 await page.waitForTimeout(1600); // the pause: long enough to create the note
+// Enter in the title goes on to the body, as in Notes.
 await page.keyboard.type("\nmilk and bread");
 await page.waitForTimeout(1600); // and long enough to save what followed
 
-const result = await page.evaluate((box) => ({
+const text = () => page.evaluate(() => {
+  const t = document.querySelector(".note-editor .note-title")?.value ?? null;
+  const r = document.querySelector(".note-editor .note-text")?.value ?? null;
+  return { title: t, rest: r, focused: Boolean(document.activeElement?.closest(".note-editor")) };
+});
+const after = await text();
+const result = await page.evaluate(() => ({
   creates: window.__creates.length,
-  sameBox: document.activeElement === box && box.isConnected,
   blank: window.__blank,
-  value: box.value,
   saves: window.__saves,
-}), box);
+}));
 
 let failures = 0;
 const ok = (pass, yes, no) => {
@@ -92,13 +96,30 @@ const ok = (pass, yes, no) => {
   if (!pass) failures++;
 };
 ok(result.creates === 1, "one note is created, not several", `${result.creates} notes were created`);
-ok(result.sameBox, "the box being typed into stays, focused", "the box was swapped or lost focus");
+ok(after.focused, "typing stays in the note throughout", "focus fell out of the note");
 ok(result.blank === 0, "the note never disappears into “Select a note”", `“Select a note” showed ${result.blank} time(s)`);
-ok(
-  result.value === "Shopping\nmilk and bread" &&
-    result.saves.some(([g, body]) => g === "N1" && body === "Shopping\nmilk and bread"),
-  "what was typed after the pause is saved onto that note",
-  `box says ${JSON.stringify(result.value)}, saves ${JSON.stringify(result.saves)}`
-);
+ok(after.title === "Shopping" && after.rest === "milk and bread",
+  "the first line is the title and Enter carries on into the body",
+  `title ${JSON.stringify(after.title)}, body ${JSON.stringify(after.rest)}`);
+ok(result.saves.some(([g, body]) => g === "N1" && body === "Shopping\nmilk and bread"),
+  "what was typed after the pause is saved onto that note", `saves ${JSON.stringify(result.saves)}`);
+
+// Backspace at the start of the body joins it back onto the title, as in Notes.
+await page.locator(".note-editor .note-text").focus();
+await page.evaluate(() => document.querySelector(".note-editor .note-text").setSelectionRange(0, 0));
+await page.keyboard.press("Backspace");
+await page.waitForTimeout(150);
+const joined = await text();
+ok(joined.title === "Shoppingmilk and bread" && joined.rest === "",
+  "Backspace at the start of the body joins it to the title", `after Backspace: ${JSON.stringify(joined)}`);
+
+// Enter in the middle of the title splits it there.
+await page.locator(".note-editor .note-title").focus();
+await page.evaluate(() => document.querySelector(".note-editor .note-title").setSelectionRange(8, 8));
+await page.keyboard.press("Enter");
+await page.waitForTimeout(150);
+const split = await text();
+ok(split.title === "Shopping" && split.rest === "milk and bread",
+  "Enter in the middle of the title splits the line there", `after Enter: ${JSON.stringify(split)}`);
 await b.close();
 process.exitCode = failures === 0 ? 0 : 1;

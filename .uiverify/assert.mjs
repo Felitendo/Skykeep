@@ -491,7 +491,7 @@ let failures = 0;
     };
   });
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Notes", exact: true }).click();
+  await page.locator(".nav-item", { hasText: "Notes" }).click();
   await page.waitForTimeout(300);
   await page.fill('input[aria-label="Search notes"]', "curt");
   await page.waitForTimeout(300);

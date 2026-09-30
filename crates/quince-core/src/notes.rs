@@ -200,6 +200,26 @@ impl Library {
         })
     }
 
+    /// How many notes each folder holds, by folder guid, and in all of them together.
+    ///
+    /// The sidebar puts a count beside every folder, as Notes does. "All" leaves Recently
+    /// Deleted out — a note waiting to be purged is not one of your notes — and the trash is
+    /// counted on its own line.
+    pub fn note_counts(&self) -> Result<(i64, Vec<(String, i64)>)> {
+        let mut stmt = self.conn.prepare(
+            "SELECT coalesce(folder_guid, ''), count(*) FROM notes GROUP BY folder_guid",
+        )?;
+        let per: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let all = per
+            .iter()
+            .filter(|(guid, _)| guid != TRASH_FOLDER)
+            .map(|(_, n)| n)
+            .sum();
+        Ok((all, per))
+    }
+
     pub fn note_folders(&self) -> Result<Vec<NoteFolder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, title, sort_order, parent_guid
@@ -703,5 +723,56 @@ mod unreadable_tests {
             Some("Shopping list\nMilk")
         );
         assert_eq!(lib.note_body("no-such-note").unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod count_tests {
+    use super::*;
+
+    fn note(guid: &str, folder: &str) -> Note {
+        Note {
+            guid: guid.into(),
+            folder_guid: Some(folder.into()),
+            title: guid.into(),
+            snippet: None,
+            body: None,
+            locked: false,
+            pinned: false,
+            created_at: None,
+            modified_at: None,
+            editable: true,
+            etag: None,
+        }
+    }
+
+    #[test]
+    fn every_folder_is_counted_and_all_leaves_out_the_trash() {
+        let mut lib = Library::in_memory().unwrap();
+        let folder = |guid: &str| NoteFolder {
+            guid: guid.into(),
+            title: guid.into(),
+            sort_order: 0,
+            parent_guid: None,
+        };
+        lib.put_note_folders(&[
+            folder("DefaultFolder-CloudKit"),
+            folder("Folder/work"),
+            folder(TRASH_FOLDER),
+        ])
+        .unwrap();
+        lib.put_notes(&[
+            note("a", "DefaultFolder-CloudKit"),
+            note("b", "DefaultFolder-CloudKit"),
+            note("c", "Folder/work"),
+            note("d", TRASH_FOLDER),
+        ])
+        .unwrap();
+        let (all, per) = lib.note_counts().unwrap();
+        assert_eq!(all, 3);
+        let of = |g: &str| per.iter().find(|(f, _)| f == g).map(|(_, n)| *n);
+        assert_eq!(of("DefaultFolder-CloudKit"), Some(2));
+        assert_eq!(of("Folder/work"), Some(1));
+        assert_eq!(of(TRASH_FOLDER), Some(1));
     }
 }

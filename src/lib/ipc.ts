@@ -108,6 +108,8 @@ export const api = {
 
   noteFolders: () => invoke<NoteFolder[]>("note_folders"),
   notesIn: (folderGuid: string | null) => invoke<Note[]>("notes_in", { folderGuid }),
+  /** [notes outside Recently Deleted, [folder guid, count]…]. */
+  noteCounts: () => invoke<[number, [string, number][]]>("note_counts"),
   /** Notes holding every word typed, from every folder but Recently Deleted. */
   notesSearch: (query: string) => invoke<Note[]>("notes_search", { query }),
   /**

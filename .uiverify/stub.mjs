@@ -114,7 +114,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
   ];
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
-    invoke: async (cmd) => {
+    invoke: async (cmd, args) => {
       switch (cmd) {
         case "auth_status":
           return { hasStoredSession: screen === "library", signedIn: screen === "library" };
@@ -143,6 +143,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "note_save": case "note_delete": case "note_move": return null;
         case "note_create": return "Note/new";
         case "notes_in": return !notesFixture ? [] : noteList;
+        case "note_body": return (noteList.find((n) => n.guid === args?.guid) ?? {}).body ?? null;
+        case "note_counts": {
+          const per = new Map();
+          for (const n of noteList) per.set(n.folderGuid, (per.get(n.folderGuid) ?? 0) + 1);
+          return [noteList.length, [...per.entries()]];
+        }
         case "contact_save": return "C-new";
         case "contact_delete": return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;

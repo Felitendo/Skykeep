@@ -29,7 +29,7 @@ await ctx.addInitScript(() => {
 });
 const page = await ctx.newPage();
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-await page.getByRole("button", { name: "Notes", exact: true }).click();
+await page.locator(".nav-item", { hasText: "Notes" }).click();
 await page.getByRole("button", { name: "Recently Deleted" }).click();
 await page.waitForTimeout(500);
 
