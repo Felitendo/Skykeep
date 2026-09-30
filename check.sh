@@ -36,6 +36,7 @@ step "keyboard only"    node .uiverify/keyboard.mjs
 step "somewhere else"   node .uiverify/elsewhere.mjs
 step "writing a note"   node .uiverify/notes-compose.mjs
 step "deleting a note"  node .uiverify/notes-trash.mjs
+step "pinning a note"   node .uiverify/notes-pin.mjs
 step "uploading"        node .uiverify/drive-upload.mjs
 step "calendar grids"   node .uiverify/calendar.mjs
 step "every size"       node .uiverify/sizes.mjs
@@ -46,7 +47,7 @@ export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
 step "webkit: set up"   .uiverify/webkit-libs.sh
 step "webkit: nav"      env ENGINE=webkit node .uiverify/assert.mjs
 step "webkit: keyboard" env ENGINE=webkit node .uiverify/keyboard.mjs
-step "webkit: notes"    bash -c 'ENGINE=webkit node .uiverify/notes-compose.mjs && ENGINE=webkit node .uiverify/notes-trash.mjs'
+step "webkit: notes"    bash -c 'ENGINE=webkit node .uiverify/notes-compose.mjs && ENGINE=webkit node .uiverify/notes-trash.mjs && ENGINE=webkit node .uiverify/notes-pin.mjs'
 step "webkit: drive"    env ENGINE=webkit node .uiverify/drive-upload.mjs
 step "webkit: calendar" env ENGINE=webkit node .uiverify/calendar.mjs
 step "webkit: sizes"    env ENGINE=webkit node .uiverify/sizes.mjs

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Folder, FolderOpen, SquarePen, Trash2 } from "lucide-react";
+import { Folder, FolderOpen, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
 import { editorDate, groupNotes, joinTitle, listDate, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { useSync } from "../lib/sync";
@@ -349,6 +349,11 @@ export function NotesView() {
     [open, write]
   );
 
+  const pin = useCallback(async () => {
+    if (!open) return;
+    await write(() => api.notePin(open.guid, !open.pinned));
+  }, [open, write]);
+
   // A save confirmation is a moment, not a state.
   useEffect(() => {
     if (!saved) return undefined;
@@ -536,6 +541,22 @@ export function NotesView() {
                       .map((f) => ({ value: f.guid, label: f.title })),
                   ]}
                 />
+                {!inTrash && (
+                  <button
+                    className="notes-icon"
+                    aria-label={open.pinned ? "Unpin Note" : "Pin Note"}
+                    aria-pressed={open.pinned}
+                    title={open.pinned ? "Unpin Note" : "Pin Note"}
+                    onClick={() => void pin()}
+                    disabled={busy}
+                  >
+                    {open.pinned ? (
+                      <PinOff size={17} strokeWidth={2} aria-hidden="true" />
+                    ) : (
+                      <Pin size={17} strokeWidth={2} aria-hidden="true" />
+                    )}
+                  </button>
+                )}
                 {inTrash && (
                   <button className="quiet" onClick={() => void recover()} disabled={busy}>
                     Recover

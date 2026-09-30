@@ -818,6 +818,22 @@ async fn note_move(
     resync_notes(&http, &root, params, &data).await
 }
 
+/// Pin a note to the top of its list, or unpin it.
+#[tauri::command]
+async fn note_pin(
+    guid: String,
+    pinned: bool,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let note = note_by_guid(&data, &guid).await?;
+    quince_icloud::notes::pin_cloudkit(&http, &root, params.clone(), &note, pinned)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await
+}
+
 #[tauri::command]
 async fn note_folders(data: State<'_, Data>) -> UiResult<Vec<NoteFolder>> {
     let library = data.0.lock().await;
@@ -831,7 +847,6 @@ async fn notes_search(query: String, data: State<'_, Data>) -> UiResult<Vec<Note
     library.search_notes(&query).map_err(|e| e.to_string())
 }
 
-/// Notes in a folder, or every note when no folder is given.
 /// How many notes each folder holds, and all of them but Recently Deleted.
 #[tauri::command]
 async fn note_counts(data: State<'_, Data>) -> UiResult<(i64, Vec<(String, i64)>)> {
@@ -839,6 +854,7 @@ async fn note_counts(data: State<'_, Data>) -> UiResult<(i64, Vec<(String, i64)>
     library.note_counts().map_err(|e| e.to_string())
 }
 
+/// Notes in a folder, or every note when no folder is given.
 #[tauri::command]
 async fn notes_in(folder_guid: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Note>> {
     let library = data.0.lock().await;
@@ -1715,6 +1731,7 @@ fn main() {
             note_create,
             note_delete,
             note_move,
+            note_pin,
             notes_in,
             notes_search,
             note_counts,

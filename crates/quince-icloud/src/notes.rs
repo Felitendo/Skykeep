@@ -575,6 +575,61 @@ fn filed_in(client: &ZoneClient<'_>, folder: &str) -> Value {
         "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
     })
 }
+/// The name of the record that holds one person's state for a note — whether it is pinned.
+///
+/// Measured on the account: `Note_UserSpecific::<owner>/Private::Notes::<owner>::<note>`,
+/// where the owner is the zone's. Apple validates it, so it is built exactly, never guessed.
+fn user_specific_name(owner: &str, note_guid: &str) -> String {
+    format!("Note_UserSpecific::{owner}/Private::Notes::{owner}::{note_guid}")
+}
+
+/// Pin a note, or unpin it, the way the phone does.
+///
+/// Pinning is not on the note: it is `IsPinned` on the per-user record beside it. That
+/// record is updated where Apple already made one, and made — under the name Apple would
+/// give it — for a note that has none yet. The note itself is not touched.
+pub async fn pin_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    note: &Note,
+    pinned: bool,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let record = client
+        .lookup_record(ZONE, &note.guid)
+        .await?
+        .ok_or_else(|| Error::Protocol("that note is no longer in iCloud".into()))?;
+    let owner = record
+        .pointer("/zoneID/ownerRecordName")
+        .or_else(|| record.pointer("/created/userRecordName"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Protocol("iCloud did not say whose note this is".into()))?
+        .to_string();
+    let name = user_specific_name(&owner, &note.guid);
+    let flag = serde_json::json!({ "IsPinned": { "type": "INT64", "value": i64::from(pinned) } });
+
+    if let Some(existing) = client.lookup_record(ZONE, &name).await? {
+        let tag = existing.get("recordChangeTag").and_then(Value::as_str);
+        client
+            .update_record(ZONE, &name, "Note_UserSpecific", tag, flag)
+            .await?;
+    } else {
+        let mut fields = flag;
+        fields["Note"] = client.reference_to(ZONE, &note.guid);
+        fields["Note"]["value"]["action"] = Value::from("NONE");
+        fields["Folder"] =
+            client.reference_to(ZONE, note.folder_guid.as_deref().unwrap_or(DEFAULT_FOLDER));
+        fields["Folder"]["value"]["action"] = Value::from("NONE");
+        fields["Deleted"] = serde_json::json!({ "type": "INT64", "value": 0 });
+        fields["IsSystemPaper"] = serde_json::json!({ "type": "INT64", "value": 0 });
+        client
+            .create_record(ZONE, &name, "Note_UserSpecific", fields)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Delete a note the way the phone does.
 ///
 /// This used to remove the record outright, which on iCloud is final: no Recently Deleted, no
@@ -608,6 +663,19 @@ pub async fn delete_cloudkit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_notes_own_record_is_named_as_apple_names_it() {
+        // Copied from a pinned note on the account.
+        assert_eq!(
+            user_specific_name(
+                "_909a7c35ff0feea469084c60822e0cfd",
+                "C454914D-6726-4216-ADDC-E441B9BB8952"
+            ),
+            "Note_UserSpecific::_909a7c35ff0feea469084c60822e0cfd/Private::Notes::\
+             _909a7c35ff0feea469084c60822e0cfd::C454914D-6726-4216-ADDC-E441B9BB8952"
+        );
+    }
     use quince_core::Library;
     use serde_json::json;
     use wiremock::matchers::{method, path_regex};

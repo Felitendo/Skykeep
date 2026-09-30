@@ -141,8 +141,14 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminders_smart": return !remindersFixture ? [] : reminderItems.filter(r => !r.completedAt);
         case "note_folders": return !notesFixture ? [] : noteFolders;
         case "note_save": case "note_delete": case "note_move": return null;
+        case "note_pin": {
+          const n = noteList.find((x) => x.guid === args?.guid);
+          if (n) n.pinned = args.pinned;
+          (window.__pins ??= []).push([args?.guid, args?.pinned]);
+          return null;
+        }
         case "note_create": return "Note/new";
-        case "notes_in": return !notesFixture ? [] : noteList;
+        case "notes_in": return !notesFixture ? [] : noteList.map((n) => ({ ...n }));
         case "note_body": return (noteList.find((n) => n.guid === args?.guid) ?? {}).body ?? null;
         case "note_counts": {
           const per = new Map();

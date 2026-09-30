@@ -127,6 +127,9 @@ export const api = {
   noteMove: (guid: string, folderGuid: string | null) =>
     invoke<void>("note_move", { guid, folderGuid }),
 
+  /** Pinned notes lead their list, here and on every device. */
+  notePin: (guid: string, pinned: boolean) => invoke<void>("note_pin", { guid, pinned }),
+
   /** Create when the guid is empty, otherwise save changes. Returns Apple's id for it. */
   contactSave: (contact: Contact) => invoke<string>("contact_save", { contact }),
   contactDelete: (guid: string) => invoke<void>("contact_delete", { guid }),
