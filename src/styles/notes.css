@@ -235,8 +235,14 @@ textarea.note-title::placeholder { color: var(--text-3); }
   .notes-folders { display: none; }
   .notes-folder-picker { display: block; }
 }
-@media (max-width: 640px) {
-  .notes { grid-template-columns: 1fr; grid-template-rows: minmax(0, 40%) minmax(0, 1fr); }
-  .notes-list { border-right: 0; border-bottom: 1px solid var(--separator); padding-bottom: 8px; }
-  .note-body { padding: 12px 0 0; }
+/* Narrower still, one column at a time, as on iPhone: the list, or the note it opened. */
+@media (max-width: 720px) {
+  .notes { grid-template-columns: minmax(0, 1fr); }
+  .notes-list { padding: 0; border-right: 0; }
+  .notes.is-detail .notes-list,
+  .notes:not(.is-detail) .note-body { display: none; }
+  .note-body { padding: 0; }
+  .note-bar { padding-right: 0; }
+  .note-when { text-align: right; }
+  .note-editor { padding-right: 0; }
 }

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft } from "lucide-react";
 import {
   api,
   MOST_AT_ONCE,
@@ -233,6 +234,11 @@ export function RemindersView() {
   /** What is typed in the search field. While it holds anything, the pane is the results. */
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
+  /**
+   * In a narrow window one column shows at a time, as on iPhone: the lists, or the list that
+   * was picked, with a way back. Searching shows the results under the search field.
+   */
+  const [detail, setDetail] = useState(false);
 
   const readItems = useCallback(async (): Promise<Reminder[]> => {
     // Search reaches every list, as Apple's does, whatever is open in the sidebar.
@@ -706,6 +712,7 @@ export function RemindersView() {
             onClick={() => {
               setQuery("");
               setSelection({ type: "list", guid: list.guid });
+              setDetail(true);
             }}
             onDoubleClick={() => setRenaming(list.guid)}
           >
@@ -761,6 +768,7 @@ export function RemindersView() {
       onClick={() => {
         setQuery("");
         choose();
+        setDetail(true);
       }}
     >
       <span className="rx-tile-glyph">
@@ -801,7 +809,10 @@ export function RemindersView() {
   );
 
   return (
-    <div className="rx" style={{ "--accent": accent } as React.CSSProperties}>
+    <div
+      className={`rx${detail && !searching ? " is-detail" : ""}${searching ? " is-searching" : ""}`}
+      style={{ "--accent": accent } as React.CSSProperties}
+    >
       <aside className="rx-side" aria-label="Reminder lists">
         <label className="rx-search">
           <Glyph name="search" />
@@ -891,6 +902,10 @@ export function RemindersView() {
       </aside>
 
       <section className="rx-main">
+        <button className="compact-back" onClick={() => setDetail(false)}>
+          <ChevronLeft size={18} strokeWidth={2.25} aria-hidden="true" />
+          <span>Lists</span>
+        </button>
         <header className="rx-head">
           <h1>{searching ? `Results for “${query.trim()}”` : heading}</h1>
           <span className="rx-head-count" aria-label={`${outstanding} to do`}>

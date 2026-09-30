@@ -6,11 +6,16 @@
 // so each is opened at a small, an ordinary and a very large size, and in Calendar each of
 // its four views too.
 import { engine as chromium } from "./engine.mjs";
-import { SERVICES, installStub } from "./stub.mjs";
+import { SERVICES, installStub, openScreen } from "./stub.mjs";
 
+// The smallest the window may be made, half of a 1080p screen, a small laptop, the owner's
+// own maximised window, and a large display.
 const SIZES = [
+  { width: 480, height: 400 },
   { width: 800, height: 600 },
+  { width: 960, height: 1040 },
   { width: 1280, height: 800 },
+  { width: 1920, height: 1040 },
   { width: 2560, height: 1440 },
 ];
 const SCREENS = ["Reminders", "Notes", "iCloud Drive", "Calendar", "Contacts"];
@@ -75,9 +80,9 @@ for (const size of SIZES) {
   });
   const page = await ctx.newPage();
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await page.waitForSelector(".sidebar .nav-item");
+  await page.waitForSelector(".sidebar .nav-item", { state: "attached" });
   for (const screen of SCREENS) {
-    await page.locator(".nav-item", { hasText: screen }).click();
+    await openScreen(page, screen);
     await page.waitForTimeout(350);
     const views = screen === "Calendar" ? CALENDAR_VIEWS : [null];
     for (const view of views) {

@@ -518,8 +518,16 @@
 
 .rx-empty { margin: 28px 0 0; color: var(--text-3); font-size: var(--t-15); text-align: center; }
 
+/* One column at a time, as on iPhone: the lists, or the list picked from them. Searching
+   keeps the field and shows what it found beneath it. */
 @media (max-width: 720px) {
-  .rx { grid-template-columns: 1fr; }
-  .rx-side { border-right: 0; border-bottom: 1px solid var(--separator); max-height: 45vh; padding-right: 2px; }
-  .rx-main { padding-left: 2px; }
+  .rx { grid-template-columns: minmax(0, 1fr); }
+  .rx-side { border-right: 0; padding-right: 0; }
+  .rx-main { padding-left: 0; }
+  .rx.is-detail .rx-side,
+  .rx:not(.is-detail):not(.is-searching) .rx-main,
+  .rx.is-searching .rx-side > :not(.rx-search),
+  .rx.is-searching .compact-back { display: none; }
+  .rx.is-searching { grid-template-rows: auto minmax(0, 1fr); }
+  .rx .compact-back { align-self: flex-start; margin-bottom: 6px; }
 }

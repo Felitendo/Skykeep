@@ -41,6 +41,11 @@ type View = (typeof VIEWS)[number]["key"];
 const HOUR = 48;
 /** A bar in the all-day row, and the gap under it. */
 const LANE = 20;
+/** Narrower than this, a month cell draws its items as dots. */
+const DOT_CELL = 72;
+/** The most dots one row of a narrow cell holds; past that the day is simply busy. */
+const MOST_DOTS = 4;
+
 /** What a month cell shows before it says "N more". */
 const MONTH_ROWS = 4;
 
@@ -682,13 +687,18 @@ function MonthView({
   // room for two, a large one for eight, and a fixed guess spilt items out of the cell.
   const grid = useRef<HTMLDivElement | null>(null);
   const [rows, setRows] = useState(MONTH_ROWS);
+  // A cell too narrow for any title shows its day's items as dots, as Calendar does on a
+  // small screen; a title cut to two letters and "3 more" squeezed below it said nothing.
+  const [dots, setDots] = useState(false);
   useLayoutEffect(() => {
     const el = grid.current;
     if (!el) return undefined;
     const measure = () => {
       const week = el.firstElementChild as HTMLElement | null;
       const height = week?.getBoundingClientRect().height ?? 0;
+      const width = (week?.firstElementChild as HTMLElement | null)?.getBoundingClientRect().width ?? 0;
       setRows(Math.max(1, Math.floor((height - 28) / 18)));
+      setDots(width > 0 && width < DOT_CELL);
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -716,7 +726,12 @@ function MonthView({
                 const lanesHere = Math.max(0, ...spans.filter((s) => s.from <= i && s.to >= i).map((s) => s.lane + 1));
                 const room = Math.max(0, rows - lanesHere);
                 // What fits, and when it does not, one line fewer so "N more" has a line too.
-                const visible = list.length > room ? list.slice(0, Math.max(0, room - 1)) : list;
+                // As dots, a row of them fits in any cell.
+                const visible = dots
+                  ? list.slice(0, MOST_DOTS)
+                  : list.length > room
+                    ? list.slice(0, Math.max(0, room - 1))
+                    : list;
                 const more = list.length - visible.length;
                 const isSelected = sameDay(day, selected);
                 return (
@@ -745,13 +760,16 @@ function MonthView({
                         ? day.toLocaleDateString(undefined, { month: "short", day: "numeric" })
                         : day.getDate()}
                     </span>
-                    <ul className="cx-items" style={{ marginTop: `${lanesHere * LANE}px` }}>
+                    <ul className={`cx-items${dots ? " is-dots" : ""}`} style={{ marginTop: `${lanesHere * LANE}px` }}>
                       {visible.map((item) =>
                         item.kind === "event" ? (
                           <li key={item.event.guid}>
                             <button
                               className="cx-item"
                               style={{ "--cal": tint(calendars.get(item.event.calendarGuid)) } as React.CSSProperties}
+                              // Named in full, for the dot that is all a narrow cell shows.
+                              aria-label={`${item.event.title}, ${clock(item.event.startsAt)}`}
+                              title={dots ? `${item.event.title} · ${clock(item.event.startsAt)}` : undefined}
                               onClick={(e) => onOpen(item.event, { x: e.clientX, y: e.clientY })}
                             >
                               <span className="cx-dot" aria-hidden="true" />
@@ -761,7 +779,10 @@ function MonthView({
                           </li>
                         ) : (
                           <li key={item.reminder.guid}>
-                            <span className={`cx-item is-reminder${item.reminder.completedAt ? " is-done" : ""}`}>
+                            <span
+                              className={`cx-item is-reminder${item.reminder.completedAt ? " is-done" : ""}`}
+                              title={dots ? `${item.reminder.title} · ${clock(item.at)}` : undefined}
+                            >
                               <span className="cx-ring" aria-hidden="true" />
                               <span className="cx-item-title">{item.reminder.title}</span>
                               <span className="cx-item-time">{clock(item.at)}</span>

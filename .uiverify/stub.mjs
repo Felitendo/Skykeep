@@ -193,3 +193,16 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     },
   };
 }
+
+/**
+ * Open a screen from the sidebar the way a person would — in a narrow window the sidebar is
+ * put away, so it is brought back first.
+ */
+export async function openScreen(page, name) {
+  const toggle = page.getByRole("button", { name: "Show Sidebar" });
+  if (await toggle.isVisible()) {
+    await toggle.click();
+    await page.waitForTimeout(320);
+  }
+  await page.locator(".nav-item", { hasText: name }).click();
+}

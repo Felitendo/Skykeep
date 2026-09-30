@@ -276,6 +276,12 @@
   .cx-item { grid-template-columns: 8px minmax(0, 1fr); }
   .cx-item-time { display: none; }
 }
+/* Dots, for a cell with no room for words: each item still opens on a click. */
+.cx-items.is-dots { display: flex; flex-wrap: wrap; gap: 3px; padding: 0 4px; }
+.cx-items.is-dots .cx-item { display: grid; place-items: center; width: 10px; height: 10px; padding: 0; border-radius: 50%; }
+.cx-items.is-dots .cx-item-title,
+.cx-items.is-dots .cx-item-time,
+.cx-items.is-dots .cx-more { display: none; }
 .cx-item.is-reminder.is-done .cx-item-title { color: var(--text-3); text-decoration: line-through; }
 .cx-more {
   padding: 0 6px;
@@ -500,7 +506,7 @@
   .cx .cx-title { font-size: 18px; }
   .cx-title-full { display: none; }
   .cx-title-brief { display: inline; }
-  .cx-bar { gap: 10px 12px; padding-inline: 12px; }
+  .cx-bar { gap: 10px 12px; padding-inline: 0; }
   .cx-bar .segment { padding-inline: 7px; }
   .cx-tools { gap: 6px; }
 }

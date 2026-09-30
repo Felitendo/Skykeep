@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Folder, FolderOpen, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
+import { ChevronLeft, Folder, FolderOpen, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
 import { LongTextarea } from "../components/LongTextarea";
 import { editorDate, groupNotes, joinTitle, listDate, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
@@ -17,6 +17,11 @@ export function NotesView() {
   const [folder, setFolder] = useState<string>(ALL);
   const [notes, setNotes] = useState<Note[]>([]);
   const [openGuid, setOpenGuid] = useState<string | null>(null);
+  /**
+   * In a narrow window only one column shows, as on iPhone: the list, or — once a note is
+   * picked or begun — that note, with a way back. A wide window shows both and ignores this.
+   */
+  const [detail, setDetail] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { revision } = useSync();
@@ -305,6 +310,7 @@ export function NotesView() {
     async (guid: string) => {
       if (composing) await commitComposing();
       setOpenGuid(guid);
+      setDetail(true);
     },
     [composing, commitComposing]
   );
@@ -316,6 +322,7 @@ export function NotesView() {
     await flush();
     setComposing({ folderGuid: folder === ALL ? null : folder, body: "" });
     setOpenGuid(null);
+    setDetail(true);
     // Straight into the new note, as Apple's New Note does.
     window.requestAnimationFrame(() => editor.current?.focus());
   }, [commitComposing, flush, folder, setComposing]);
@@ -396,7 +403,12 @@ export function NotesView() {
     if (!el) return;
     el.style.height = "0px";
     el.style.height = `${el.scrollHeight}px`;
-  }, [titleLine, openGuid, composing]);
+    // `detail` too: in a narrow window the note is hidden until opened, and a hidden title
+    // measures nothing — it came up zero lines tall, and the note had no title.
+  }, [titleLine, openGuid, composing, detail]);
+
+  // Another folder is another list, and a narrow window shows that list, not a note from the last.
+  useEffect(() => setDetail(false), [folder]);
 
   const sections = useMemo(() => groupNotes(notes), [notes]);
   const heading = searching
@@ -407,7 +419,7 @@ export function NotesView() {
   const saveFailed = error !== null;
 
   return (
-    <div className="notes">
+    <div className={`notes${detail ? " is-detail" : ""}`}>
       <aside className="notes-folders" aria-label="Note folders">
         <p className="notes-side-heading">iCloud</p>
         <button className="notes-folder" aria-current={folder === ALL} onClick={() => setFolder(ALL)}>
@@ -521,6 +533,17 @@ export function NotesView() {
       <article className="note-body" aria-label="Note">
         {(composing || open) && (
           <div className="note-bar">
+            <button
+              className="compact-back"
+              onClick={() => {
+                // Leaving the note takes what was typed with it, as leaving any note does.
+                void (composingRef.current ? commitComposing() : flush());
+                setDetail(false);
+              }}
+            >
+              <ChevronLeft size={18} strokeWidth={2.25} aria-hidden="true" />
+              <span>{heading}</span>
+            </button>
             <p className="note-when">
               {busy || (!saveFailed && (dirty || composing?.body.trim()))
                 ? "Saving…"

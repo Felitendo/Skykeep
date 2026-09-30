@@ -41,6 +41,7 @@ step "a long note"      node .uiverify/notes-long.mjs
 step "uploading"        node .uiverify/drive-upload.mjs
 step "calendar grids"   node .uiverify/calendar.mjs
 step "every size"       node .uiverify/sizes.mjs
+step "narrow windows"   node .uiverify/compact.mjs
 
 # The same screens in WebKit, the engine Quince draws in. Chromium above catches most things;
 # this catches what only WebKit does — pointer capture, blur on removal, its own layout.
@@ -52,6 +53,7 @@ step "webkit: notes"    bash -c 'ENGINE=webkit node .uiverify/notes-compose.mjs 
 step "webkit: drive"    env ENGINE=webkit node .uiverify/drive-upload.mjs
 step "webkit: calendar" env ENGINE=webkit node .uiverify/calendar.mjs
 step "webkit: sizes"    env ENGINE=webkit node .uiverify/sizes.mjs
+step "webkit: narrow"   env ENGINE=webkit node .uiverify/compact.mjs
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then printf '\033[32mAll checks passed.\033[0m\n'; else printf '\033[31mSome checks failed.\033[0m\n'; fi

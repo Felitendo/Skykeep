@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { PanelLeft } from "lucide-react";
 import { api, messageOf, OPEN_REMINDER } from "../lib/ipc";
 import { SyncProvider } from "../lib/sync";
 import { SyncStatus } from "../components/SyncStatus";
@@ -33,6 +34,8 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  /** In a narrow window the sidebar slides over the content, and only when asked for. */
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     api
@@ -54,12 +57,20 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
 
   const choose = (key: string) => {
     setSelected(key);
+    setSidebarOpen(false);
     try {
       window.localStorage.setItem(LAST_KEY, key);
     } catch {
       // Remembering is a convenience; choosing still works.
     }
   };
+
+  useEffect(() => {
+    if (!sidebarOpen) return undefined;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSidebarOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
 
   // Clicking a reminder's alert brings the window back on Reminders.
   useEffect(() => {
@@ -111,7 +122,18 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
 
   return (
     <SyncProvider>
-      <div className="library enter-library">
+      <div className={`library enter-library${sidebarOpen ? " is-sidebar-open" : ""}`}>
+        {/* Only in a narrow window, where the sidebar gives its room to the content. */}
+        <button
+          className="sidebar-toggle"
+          aria-label={sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+          aria-expanded={sidebarOpen}
+          title={sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+          onClick={() => setSidebarOpen((open) => !open)}
+        >
+          <PanelLeft size={17} strokeWidth={2} aria-hidden="true" />
+        </button>
+        <div className="sidebar-scrim" aria-hidden="true" onClick={() => setSidebarOpen(false)} />
         <nav className="sidebar" aria-label="Your iCloud">
           <h2>Your iCloud</h2>
           {services.map(item)}

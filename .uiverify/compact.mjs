@@ -1,0 +1,101 @@
+// A narrow window, as iPadOS and iPhone lay one out: the sidebar steps aside for the content
+// and comes back over it on request, and each two-column screen shows one column at a time —
+// the list, or what was opened from it, with a way back.
+//
+// At 480 wide the old layout left the content 260px beside a 216px sidebar: notes read three
+// words to a line, Drive cut every name to five letters, and a month cell said "3 more" over
+// the next day.
+import { engine } from "./engine.mjs";
+import { SERVICES, installStub } from "./stub.mjs";
+
+const b = await engine.launch();
+const ctx = await b.newContext({ viewport: { width: 480, height: 400 } });
+await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null,
+  calendarFixture: true, notesFixture: true, contactsFixture: true, driveFixture: true, remindersFixture: true });
+const page = await ctx.newPage();
+await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.waitForTimeout(400);
+
+let failures = 0;
+const ok = (pass, yes, no) => { console.log(pass ? `PASS ${yes}` : `FAIL ${no}`); if (!pass) failures++; };
+const visible = (selector) => page.evaluate((sel) => {
+  const el = document.querySelector(sel);
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && r.right > 0 && r.left < window.innerWidth;
+}, selector);
+const toggle = page.getByRole("button", { name: "Show Sidebar" });
+
+// The shell.
+const content = await page.evaluate(() => document.querySelector("main.content").getBoundingClientRect().width);
+ok(!(await visible(".sidebar")) && content > 440, `the content has the window  [${Math.round(content)}px of 480]`,
+  `the sidebar still takes room: content is ${Math.round(content)}px wide`);
+ok((await toggle.count()) === 1 && (await toggle.isVisible()), "a button brings the sidebar back", "there is no way to the sidebar");
+
+/** Open a screen the way a person would in a narrow window. */
+async function go(name) {
+  await toggle.click();
+  await page.waitForTimeout(320);
+  await page.locator(".nav-item", { hasText: name }).click();
+  await page.waitForTimeout(400);
+}
+if ((await toggle.count()) === 1) {
+  await toggle.click();
+  await page.waitForTimeout(320);
+  ok(await visible(".sidebar"), "and it slides over the content", "the sidebar did not open");
+  await page.locator(".nav-item", { hasText: "Notes" }).click();
+  await page.waitForTimeout(400);
+  ok(!(await visible(".sidebar")), "picking a screen puts it away", "the sidebar stayed over the content");
+
+  // Notes: the list, then the note — titled — then back.
+  ok((await visible(".notes-list")) && !(await visible(".note-body")), "Notes shows its list alone",
+    "Notes shows list and note squeezed side by side");
+  await page.locator(".note-row", { hasText: "Curtains" }).click();
+  await page.waitForTimeout(300);
+  const title = await page.evaluate(() => {
+    const t = document.querySelector(".note-title");
+    return t ? { value: t.value, height: t.getBoundingClientRect().height } : null;
+  });
+  ok(!(await visible(".notes-list")) && (await visible(".note-body")), "a note opens in its place",
+    "the note did not take the list's place");
+  ok(title?.value === "Curtains" && title.height > 20, `with its title showing  [${title?.value}, ${Math.round(title?.height ?? 0)}px]`,
+    `its title is not shown: ${JSON.stringify(title)}`);
+  await page.locator(".note-body .compact-back").click();
+  await page.waitForTimeout(300);
+  ok(await visible(".notes-list"), "and back returns to the list", "back did not return to the list");
+
+  // Reminders.
+  await go("Reminders");
+  ok((await visible(".rx-side")) && !(await visible(".rx-main")), "Reminders shows its lists alone",
+    "Reminders shows lists and reminders side by side");
+  await page.locator(".rx-tile").first().click();
+  await page.waitForTimeout(300);
+  ok(!(await visible(".rx-side")) && (await visible(".rx-main")), "a list opens in their place", "the list did not open in place");
+  await page.locator(".rx-main .compact-back").click();
+  await page.waitForTimeout(300);
+  ok(await visible(".rx-side"), "and back returns to the lists", "back did not return to the lists");
+
+  // Contacts.
+  await go("Contacts");
+  ok((await visible(".contacts-list")) && !(await visible(".contact-detail")), "Contacts shows its list alone",
+    "Contacts shows list and card side by side");
+  await page.locator(".contact-row").first().click();
+  await page.waitForTimeout(300);
+  ok(!(await visible(".contacts-list")) && (await visible(".contact-detail")), "a person opens in its place",
+    "the card did not open in place");
+
+  // A month too narrow for titles draws dots, not "N more" spilling over the next day.
+  await go("Calendar");
+  await page.getByRole("button", { name: "Month", exact: true }).click();
+  await page.waitForTimeout(400);
+  const month = await page.evaluate(() => ({
+    dots: document.querySelectorAll(".cx-items.is-dots .cx-item").length,
+    more: [...document.querySelectorAll(".cx-more")].filter((m) => m.getBoundingClientRect().height > 0).length,
+  }));
+  ok(month.dots > 0 && month.more === 0, `a narrow month shows its days' items as dots  [${month.dots}]`,
+    `a narrow month: ${JSON.stringify(month)}`);
+}
+
+await b.close();
+process.exitCode = failures === 0 ? 0 : 1;

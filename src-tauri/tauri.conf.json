@@ -13,8 +13,8 @@
         "title": "Quince",
         "width": 1040,
         "height": 720,
-        "minWidth": 880,
-        "minHeight": 600,
+        "minWidth": 480,
+        "minHeight": 400,
         "resizable": true,
         "center": true,
         "theme": null

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft } from "lucide-react";
 import {
   api,
   displayName,
@@ -82,6 +83,8 @@ export function ContactsView() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [search, setSearch] = useState("");
   const [openGuid, setOpenGuid] = useState<string | null>(null);
+  /** In a narrow window, the person picked rather than the list — as on iPhone. */
+  const [detail, setDetail] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { revision } = useSync();
@@ -175,7 +178,8 @@ export function ContactsView() {
   );
 
   return (
-    <div className="contacts">
+    // A contact being written is always what shows; it has its own Cancel.
+    <div className={`contacts${detail || draft ? " is-detail" : ""}`}>
       <section className="contacts-list" aria-label="Contacts">
         <header className="cal-bar">
           <div className="cal-nav">
@@ -206,7 +210,10 @@ export function ContactsView() {
               <button
                 className="contact-row"
                 aria-current={openGuid === contact.guid}
-                onClick={() => setOpenGuid(contact.guid)}
+                onClick={() => {
+                  setOpenGuid(contact.guid);
+                  setDetail(true);
+                }}
               >
                 <Avatar contact={contact} />
                 <span className="contact-row-name">{displayName(contact)}</span>
@@ -221,6 +228,12 @@ export function ContactsView() {
       </section>
 
       <article className="contact-detail" aria-label="Contact">
+        {!draft && (
+          <button className="compact-back" onClick={() => setDetail(false)}>
+            <ChevronLeft size={18} strokeWidth={2.25} aria-hidden="true" />
+            <span>Contacts</span>
+          </button>
+        )}
         {draft ? (
           <form
             className="contact-form"
