@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Folder, FolderOpen, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
+import { LongTextarea } from "../components/LongTextarea";
 import { editorDate, groupNotes, joinTitle, listDate, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { useSync } from "../lib/sync";
@@ -624,7 +625,7 @@ export function NotesView() {
                 void (composingRef.current ? commitComposing() : flush());
               }}
             />
-            <textarea
+            <LongTextarea
               key="body"
               ref={bodyEditor}
               className="note-text"
