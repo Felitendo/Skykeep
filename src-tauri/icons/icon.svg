@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!--
+    Quince: a quince, ripe gold, against the evening sky its data lives in.
+    A quince, not an apple: it narrows to a neck at the stem like a pear, its body sits low
+    and a little lopsided, and it has one leaf and no bite. Laid on Apple's icon grid — an
+    824px tile inset on the 1024 canvas — and drawn to read as one gold shape on blue at 16px.
+  -->
+  <defs>
+    <linearGradient id="sky" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#4573B8"/>
+      <stop offset="0.55" stop-color="#284B85"/>
+      <stop offset="1" stop-color="#172C54"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.12" r="0.8">
+      <stop offset="0" stop-color="#8FB4E8" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#8FB4E8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="skin" cx="0.38" cy="0.4" r="0.72">
+      <stop offset="0" stop-color="#F9D46E"/>
+      <stop offset="0.5" stop-color="#E4AE43"/>
+      <stop offset="0.82" stop-color="#C8912A"/>
+      <stop offset="1" stop-color="#93601A"/>
+    </radialGradient>
+    <radialGradient id="sheen" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFF6D6" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FFF6D6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="leaf" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#3D6B29"/>
+      <stop offset="1" stop-color="#83B552"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-20%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#06122A" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#sky)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#glow)"/>
+  <rect x="102" y="102" width="820" height="820" rx="184" fill="none"
+        stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="4"/>
+
+  <g filter="url(#shadow)">
+    <!-- Narrow at the neck, full and low in the body, the right side carrying more weight. -->
+    <path fill="url(#skin)" d="
+      M500 318
+      C540 312 574 330 594 364
+      C612 394 640 420 676 446
+      C736 490 766 560 760 634
+      C752 742 660 816 532 822
+      C404 828 288 768 268 652
+      C254 572 282 500 342 454
+      C380 424 408 398 420 366
+      C434 334 462 322 500 318Z"/>
+    <!-- Where the skin folds in round the stem. -->
+    <path d="M466 330C486 344 522 344 542 330" fill="none" stroke="#8A5815" stroke-opacity="0.6"
+          stroke-width="11" stroke-linecap="round"/>
+    <ellipse cx="420" cy="560" rx="70" ry="118" transform="rotate(-18 420 560)" fill="url(#sheen)"/>
+    <path d="M504 336C498 296 506 262 526 236" fill="none" stroke="#5E3C10" stroke-width="20"
+          stroke-linecap="round"/>
+    <path fill="url(#leaf)" d="M528 244C564 178 646 156 716 186C696 258 622 300 540 280C532 268 528 256 528 244Z"/>
+    <path d="M544 268C594 244 640 220 688 196" fill="none" stroke="#2C501D" stroke-opacity="0.55"
+          stroke-width="8" stroke-linecap="round"/>
+  </g>
+</svg>

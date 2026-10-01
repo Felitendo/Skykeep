@@ -27,6 +27,27 @@ const STILL_WORTH_SAYING: i64 = 6 * 60 * 60;
 /// Snooze, as the phone offers it.
 const SNOOZE: i64 = 60 * 60;
 
+/// The app's icon, carried in the binary so an alert shows it on any desktop. A notification
+/// names its icon either from the icon theme — where nothing is installed for a copy run
+/// straight from a download or a build, so alerts came up blank — or by file path, which
+/// always resolves. So it is written once beside the library and named by path.
+const ICON: &[u8] = include_bytes!("../icons/128x128@2x.png");
+static ICON_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+fn icon_path(app: &AppHandle) -> Option<&'static str> {
+    ICON_PATH
+        .get_or_init(|| {
+            let path = crate::state_dir(app).join("quince-alert.png");
+            let current = std::fs::read(&path).ok();
+            if current.as_deref() != Some(ICON) {
+                std::fs::create_dir_all(path.parent()?).ok()?;
+                std::fs::write(&path, ICON).ok()?;
+            }
+            Some(path.to_string_lossy().into_owned())
+        })
+        .as_deref()
+}
+
 /// Emitted to the window to open a reminder an alert was clicked for.
 pub const OPEN_REMINDER: &str = "quince://open-reminder";
 
@@ -132,7 +153,7 @@ fn show(app: AppHandle, due: DueAlarm) {
             .appname("Quince")
             .summary(&due.title)
             .body(&body)
-            .icon("quince")
+            .icon(icon_path(&app).unwrap_or("quince"))
             .hint(notify_rust::Hint::Category("reminder".into()))
             .hint(notify_rust::Hint::DesktopEntry("quince".into()))
             .hint(notify_rust::Hint::Resident(true))

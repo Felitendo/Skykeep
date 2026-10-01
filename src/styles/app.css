@@ -25,12 +25,14 @@
   text-align: center;
 }
 
+/* The icon's own grid leaves a margin round the tile, so it is drawn a little larger than
+   the tile is meant to look. */
 .mark {
-  width: 52px;
-  height: 52px;
-  margin: 0 auto 20px;
-  color: var(--gold);
+  width: 92px;
+  height: 92px;
+  margin: -10px auto 10px;
   display: block;
+  user-select: none;
 }
 
 .sheet h1 {
