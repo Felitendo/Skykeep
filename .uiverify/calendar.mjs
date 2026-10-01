@@ -24,6 +24,7 @@ await ctx.addInitScript(() => {
         { ...r("d", "Done already", at(16)), completedAt: at(16) }, r("s", "Study", at(19))];
       if (cmd === "calendar_sync") return { calendars: 1, events: 0 };
       if (cmd === "event_save") { (window.__saved ??= []).push(args.draft); return "E-new"; }
+      if (cmd === "event_delete") throw "iCloud didn't accept that change, so nothing was saved.";
       if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
       if (cmd === "plugin:event|listen") return 0;
       return [];
@@ -216,6 +217,31 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   });
   ok(gap <= 40, `Year's rows of months sit together  [${gap.toFixed(0)}px apart]`, `Year's rows are ${gap.toFixed(0)}px apart`);
   await tall.close();
+}
+
+// A delete iCloud turns down says so in a sentence, with a way to put it away — not a red
+// line of the request and Apple's JSON under the toolbar.
+{
+  const p = await ctx.newPage();
+  await p.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await p.getByRole("button", { name: "Week", exact: true }).click();
+  await p.waitForTimeout(300);
+  await p.locator(".cx-block", { hasText: "New Event" }).first().click();
+  await p.waitForTimeout(250);
+  await p.locator(".cx-pop-delete").click();
+  await p.waitForTimeout(300);
+  const notice = await p.evaluate(() => {
+    const n = document.querySelector('[role="alert"]');
+    return n && { text: n.textContent.trim(), dismiss: Boolean(n.querySelector('button[aria-label="Dismiss"]')) };
+  });
+  ok(notice?.text === "iCloud didn't accept that change, so nothing was saved." && notice.dismiss,
+    "a refused delete says so in a sentence, with Dismiss", `the notice: ${JSON.stringify(notice)}`);
+  if (notice?.dismiss) {
+    await p.getByRole("button", { name: "Dismiss" }).click();
+    await p.waitForTimeout(150);
+    ok((await p.locator('[role="alert"]').count()) === 0, "and Dismiss puts it away", "Dismiss left the notice up");
+  }
+  await p.close();
 }
 
 // A small window: the title is shortened, never cut, and a month cell with room for a line

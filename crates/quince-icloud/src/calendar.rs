@@ -187,6 +187,33 @@ fn client_state(calendar_guid: &str, ctag: Option<&str>) -> Value {
     })
 }
 
+/// What to tell someone when Apple's calendar turns a request down.
+///
+/// The screen showed what Apple sent — `/ca/events/work/4186… returned 404 Not Found:
+/// {"ChangeSet":…}` — which says nothing to a person about what happened or what to do. The
+/// sentence says that; the path, status and body go to the log for whoever has to look.
+fn refusal(path: &str, status: reqwest::StatusCode, body: &str) -> Error {
+    eprintln!(
+        "calendar: {path} answered {status}: {}",
+        body.chars().take(300).collect::<String>()
+    );
+    match status.as_u16() {
+        409 | 412 => Error::Conflict,
+        400 | 422 => Error::Refused("iCloud didn't accept that change, so nothing was saved.".into()),
+        401 | 403 => Error::Refused(
+            "iCloud won't let this calendar be changed from here — it may be read-only.".into(),
+        ),
+        429 => Error::Refused("iCloud asked Quince to slow down. Try again in a minute.".into()),
+        500..=599 => Error::Refused(
+            "iCloud's calendar isn't answering right now. Nothing was changed — try again in a moment."
+                .into(),
+        ),
+        code => Error::Refused(format!(
+            "iCloud's calendar turned that down (status {code}). Nothing was changed."
+        )),
+    }
+}
+
 /// Everything one calendar refresh yields.
 #[derive(Debug, Default)]
 pub struct Snapshot {
@@ -475,10 +502,7 @@ impl<'a> CalendarClient<'a> {
             return Err(Error::NotFound);
         }
         if !status.is_success() {
-            return Err(Error::Protocol(format!(
-                "{path} returned {status}: {}",
-                text.chars().take(200).collect::<String>()
-            )));
+            return Err(refusal(path, status, &text));
         }
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
@@ -511,10 +535,7 @@ impl<'a> CalendarClient<'a> {
             return Err(Error::NotFound);
         }
         if !status.is_success() {
-            return Err(Error::Protocol(format!(
-                "{path} returned {status}: {}",
-                text.chars().take(160).collect::<String>()
-            )));
+            return Err(refusal(path, status, &text));
         }
         serde_json::from_str(&text)
             .map_err(|e| Error::Protocol(format!("{path} returned invalid JSON: {e}")))
@@ -1004,8 +1025,11 @@ mod write_tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(message.contains("400"), "{message}");
-        assert!(message.contains("bad event"), "{message}");
+        // A sentence saying what happened, not the request and Apple's body.
+        assert_eq!(
+            message,
+            "iCloud didn't accept that change, so nothing was saved."
+        );
     }
 }
 

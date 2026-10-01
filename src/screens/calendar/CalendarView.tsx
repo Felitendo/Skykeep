@@ -1,3 +1,4 @@
+import { TriangleAlert, X } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   api,
@@ -480,9 +481,13 @@ export function CalendarView() {
         </header>
 
         {error && (
-          <p className="cx-error" role="alert">
-            {error}
-          </p>
+          <div className="cx-notice" role="alert">
+            <TriangleAlert size={15} strokeWidth={2} aria-hidden="true" />
+            <p>{error}</p>
+            <button className="cx-notice-close" aria-label="Dismiss" title="Dismiss" onClick={() => setError(null)}>
+              <X size={14} strokeWidth={2.25} aria-hidden="true" />
+            </button>
+          </div>
         )}
 
         {view === "month" && (

@@ -24,6 +24,10 @@ pub enum Error {
     ReauthRequired,
     #[error("this changed on another device first — refresh and try again")]
     Conflict,
+    /// Apple turned a request down, said in words a person can act on. What Apple actually
+    /// sent goes to the log, not the screen: a path and a JSON body told nobody anything.
+    #[error("{0}")]
+    Refused(String),
     /// Apple has no such record — it was deleted elsewhere, or never kept.
     #[error("that is no longer in iCloud")]
     NotFound,
