@@ -84,6 +84,30 @@ impl Library {
         Ok(())
     }
 
+    /// Every stored note's (pinned, locked), by guid — what a pass that carried only part of
+    /// a note's state leaves standing.
+    pub fn note_flags(&self) -> Result<std::collections::HashMap<String, (bool, bool)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT guid, pinned, locked FROM notes")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, i64>(1)? != 0, row.get::<_, i64>(2)? != 0),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Pin or unpin a stored note. A note this library does not hold is left alone.
+    pub fn set_note_pinned(&mut self, guid: &str, pinned: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notes SET pinned = ?2 WHERE guid = ?1",
+            params![guid, i64::from(pinned)],
+        )?;
+        Ok(())
+    }
+
     pub fn put_notes(&mut self, notes: &[Note]) -> Result<()> {
         let tx = self.conn.transaction()?;
         {

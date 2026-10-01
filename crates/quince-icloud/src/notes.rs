@@ -231,7 +231,7 @@ pub fn apply_cloudkit(
     let mut gone: Vec<String> = Vec::new();
     // Deletion and pinning live on the per-user record, keyed by a reference to the note.
     let mut deleted_notes: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut pinned_notes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut pins: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     // Apple names this record type outright, so locking is something we read rather than guess.
     let mut locked_notes: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -288,8 +288,9 @@ pub fn apply_cloudkit(
                     }
                     if removed {
                         deleted_notes.insert(target);
-                    } else if field::flag(record, "IsPinned") {
-                        pinned_notes.insert(target);
+                    } else {
+                        // Pinned or not, as this record says: an unpin is as much news as a pin.
+                        pins.insert(target, field::flag(record, "IsPinned"));
                     }
                 }
             }
@@ -301,10 +302,23 @@ pub fn apply_cloudkit(
     // says so. Without this, deleted notes would keep showing.
     notes.retain(|n| !deleted_notes.contains(&n.guid));
     gone.extend(deleted_notes);
+    // Pinning lives on its own record, and a pass carries only what changed: pinning a note
+    // changes that record and not the note, and editing a note changes the note and not that
+    // record. Read together only when both came in the same pass, a pin made here never showed
+    // and an edited pinned note came back unpinned. So each half stands on its own: a note in
+    // this pass keeps the pin already stored unless this pass says otherwise, and a pin in
+    // this pass reaches its note whether or not the note came too.
+    let stored = if incremental {
+        library.note_flags()?
+    } else {
+        std::collections::HashMap::new()
+    };
     for note in &mut notes {
-        note.pinned = pinned_notes.contains(&note.guid);
-        note.locked = locked_notes.contains(&note.guid);
+        let (was_pinned, was_locked) = stored.get(&note.guid).copied().unwrap_or((false, false));
+        note.pinned = pins.get(&note.guid).copied().unwrap_or(was_pinned);
+        note.locked = locked_notes.contains(&note.guid) || was_locked;
     }
+    let in_pass: std::collections::HashSet<String> = notes.iter().map(|n| n.guid.clone()).collect();
 
     // A note may reference a folder that this page did not carry; keeping the reference
     // would break the foreign key, so drop it and leave the note unfiled.
@@ -324,6 +338,11 @@ pub fn apply_cloudkit(
 
     library.put_note_folders(&folders)?;
     library.put_notes(&notes)?;
+    for (guid, pinned) in &pins {
+        if !in_pass.contains(guid) {
+            library.set_note_pinned(guid, *pinned)?;
+        }
+    }
     if !gone.is_empty() {
         library.forget_notes(&gone)?;
     }
@@ -816,6 +835,81 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(library.notes_in(None).unwrap()[0].pinned);
+    }
+
+    fn pin_record(pinned: i64) -> Value {
+        json!({ "recordName": "NoteUS/1", "recordType": "Note_UserSpecific",
+        "fields": {
+            "IsPinned": { "type": "INT64", "value": pinned },
+            "Note": { "type": "REFERENCE", "value": { "recordName": "Note/n1" } }
+        }})
+    }
+
+    async fn pass(library: &mut Library, records: Vec<Value>, since: Option<&str>) {
+        let server = serve(json!({ "zones": [{
+            "records": records, "syncToken": "t2", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            library,
+            since,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Pinning here writes the per-user record and not the note, so the pass after it carries
+    /// that record alone. The pin was only ever applied to notes in the same pass, so it was
+    /// dropped and the note never showed as pinned — and unpinning, likewise.
+    #[tokio::test]
+    async fn a_pin_reaches_its_note_without_the_note_in_the_pass() {
+        let mut library = Library::in_memory().unwrap();
+        pass(
+            &mut library,
+            vec![
+                folder_record("Folder/f1", "Notes"),
+                note_record("Note/n1", "Curtains", Some("x"), "Folder/f1"),
+            ],
+            None,
+        )
+        .await;
+        assert!(!library.notes_in(None).unwrap()[0].pinned);
+
+        pass(&mut library, vec![pin_record(1)], Some("t1")).await;
+        assert!(library.notes_in(None).unwrap()[0].pinned, "pinned");
+        pass(&mut library, vec![pin_record(0)], Some("t2")).await;
+        assert!(!library.notes_in(None).unwrap()[0].pinned, "and unpinned");
+    }
+
+    /// And the other way round: editing a pinned note changes the note and not its per-user
+    /// record, and the edit came back unpinned.
+    #[tokio::test]
+    async fn an_edited_pinned_note_stays_pinned() {
+        let mut library = Library::in_memory().unwrap();
+        pass(
+            &mut library,
+            vec![
+                folder_record("Folder/f1", "Notes"),
+                note_record("Note/n1", "Curtains", Some("x"), "Folder/f1"),
+                pin_record(1),
+            ],
+            None,
+        )
+        .await;
+        pass(
+            &mut library,
+            vec![note_record(
+                "Note/n1",
+                "Curtains",
+                Some("x and more"),
+                "Folder/f1",
+            )],
+            Some("t1"),
+        )
+        .await;
         assert!(library.notes_in(None).unwrap()[0].pinned);
     }
 
