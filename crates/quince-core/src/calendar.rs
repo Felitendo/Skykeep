@@ -7,7 +7,7 @@ use crate::{Library, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Calendar {
     pub guid: String,
@@ -30,7 +30,7 @@ const fn yes() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
     pub guid: String,
@@ -223,6 +223,16 @@ impl Library {
             })
         })?;
         rows.next().transpose().map_err(Into::into)
+    }
+
+    /// Every stored event starting in `[from, to)`, as (guid, calendar), whatever its
+    /// calendar's switch — what a pass over that window has to account for.
+    pub fn events_starting_between(&self, from: i64, to: i64) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, calendar_guid FROM events WHERE starts_at >= ?1 AND starts_at < ?2",
+        )?;
+        let rows = stmt.query_map(params![from, to], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Drop events Apple no longer has.

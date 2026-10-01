@@ -24,6 +24,9 @@ pub enum Error {
     ReauthRequired,
     #[error("this changed on another device first — refresh and try again")]
     Conflict,
+    /// Apple has no such record — it was deleted elsewhere, or never kept.
+    #[error("that is no longer in iCloud")]
+    NotFound,
     /// CloudKit would not read the cursor we held. Handled where the walk happens by starting
     /// over, so this should never reach a person.
     #[error("iCloud no longer recognises where we had got to")]

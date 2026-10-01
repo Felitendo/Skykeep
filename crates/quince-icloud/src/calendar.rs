@@ -162,7 +162,7 @@ fn event_from(v: &Value) -> Result<Option<Event>> {
 }
 
 /// `YYYY-MM-DD` for the day an instant falls on, in the event's own timezone.
-fn day_of(seconds: i64, timezone: Option<&str>) -> String {
+pub(crate) fn day_of(seconds: i64, timezone: Option<&str>) -> String {
     let zone = timezone
         .and_then(|name| TimeZone::get(name).ok())
         .unwrap_or(TimeZone::UTC);
@@ -192,6 +192,10 @@ fn client_state(calendar_guid: &str, ctag: Option<&str>) -> Value {
 pub struct Snapshot {
     pub calendars: Vec<Calendar>,
     pub events: Vec<Event>,
+    /// The span, in unix seconds `[from, to)`, Apple was asked about in full. Every event
+    /// starting inside it that Apple did not return is gone from iCloud. `None` for a reply
+    /// that covers only what was written.
+    pub covers: Option<(i64, i64)>,
 }
 
 /// Read a `/ca/startup` or `/ca/events` body.
@@ -215,7 +219,11 @@ pub fn parse_snapshot(body: &Value) -> Snapshot {
         })
         .unwrap_or_default();
 
-    Snapshot { calendars, events }
+    Snapshot {
+        calendars,
+        events,
+        covers: None,
+    }
 }
 
 /// Apple's calendar service.
@@ -312,16 +320,23 @@ impl<'a> CalendarClient<'a> {
             "ClientState": client_state(&event.calendar_guid, ctag),
         });
         let path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
-        self.post(
-            &path,
-            &body,
-            &day,
-            &day,
-            event.timezone.as_deref(),
-            Some("DELETE"),
-        )
-        .await?;
-        Ok(())
+        match self
+            .post(
+                &path,
+                &body,
+                &day,
+                &day,
+                event.timezone.as_deref(),
+                Some("DELETE"),
+            )
+            .await
+        {
+            // Deleting what is already gone has done what was asked — but only once Apple's
+            // own record confirms it is gone, not on the word of a status code alone.
+            // Measured: an event Apple no longer has answers 404 with an empty ChangeSet.
+            Err(Error::NotFound) if self.event_detail(event, &day).await.is_none() => Ok(()),
+            other => other.map(|_| ()),
+        }
     }
 
     /// Apple's own full record of an event, or `None` for one it has never heard of.
@@ -456,6 +471,9 @@ impl<'a> CalendarClient<'a> {
         if status.as_u16() == 450 {
             return Err(Error::ReauthRequired);
         }
+        if status.as_u16() == 404 {
+            return Err(Error::NotFound);
+        }
         if !status.is_success() {
             return Err(Error::Protocol(format!(
                 "{path} returned {status}: {}",
@@ -488,6 +506,9 @@ impl<'a> CalendarClient<'a> {
 
         if status.as_u16() == 450 {
             return Err(Error::ReauthRequired);
+        }
+        if status.as_u16() == 404 {
+            return Err(Error::NotFound);
         }
         if !status.is_success() {
             return Err(Error::Protocol(format!(
@@ -923,6 +944,49 @@ mod write_tests {
         let body: Value = serde_json::from_slice(&request(&server).await.body).unwrap();
         assert_eq!(body["Event"]["title"], "Dentist");
         assert_eq!(body["Event"]["alarms"], serde_json::json!([]));
+    }
+
+    /// Deleting an event Apple no longer has: it answers 404, and its own record confirms
+    /// there is nothing there, so the delete has done what was asked.
+    #[tokio::test]
+    async fn deleting_what_apple_no_longer_has_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(
+                serde_json::json!({ "ChangeSet": { "fullState": false, "UpcomingAlarm": [] } }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/eventdetail/.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        client.delete_event(&event(), None).await.unwrap();
+    }
+
+    /// But a 404 for an event Apple can still show is not passed off as a delete.
+    #[tokio::test]
+    async fn a_404_for_an_event_still_there_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/eventdetail/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "Event": [{ "guid": "E-1", "title": "Dentist" }] }),
+            ))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        assert!(client.delete_event(&event(), None).await.is_err());
     }
 
     #[tokio::test]

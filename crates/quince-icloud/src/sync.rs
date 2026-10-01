@@ -98,7 +98,23 @@ pub async fn fetch_calendar(
         }
     }
 
-    Ok(Snapshot { calendars, events })
+    // The whole window was asked about, day by day in the viewer's zone, so anything stored
+    // as starting inside it that did not come back is no longer in iCloud.
+    let zone = jiff::tz::TimeZone::get(timezone).unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    let edge = |d: Date| {
+        d.to_zoned(zone.clone())
+            .map(|z| z.timestamp().as_second())
+            .map_err(|e| Error::Protocol(format!("{d} has no start in {timezone}: {e}")))
+    };
+    let first = parse_date(from)?;
+    let after_last = parse_date(to)?
+        .checked_add(jiff::Span::new().days(1))
+        .map_err(|e| Error::Protocol(format!("{to} has no next day: {e}")))?;
+    Ok(Snapshot {
+        calendars,
+        events,
+        covers: Some((edge(first)?, edge(after_last)?)),
+    })
 }
 
 /// Create an event, or save changes to one, and store what Apple answers with.
@@ -121,12 +137,29 @@ pub async fn put_event(
         .and_then(|c| c.ctag);
 
     let answer = client.put_event(event, ctag.as_deref()).await?;
-    // Apple echoes the stored event back. If it did not, the local copy is what we sent,
-    // which is still better than showing nothing until the next refresh.
-    let stored: Vec<_> = if answer.events.is_empty() {
-        vec![event.clone()]
-    } else {
+    // What goes into the library is what Apple holds, never what was sent. Measured: a save
+    // to the account answers with an empty list, and storing the sent copy instead kept an
+    // event with no etag — so the next edit or delete went without one — and, where Apple
+    // had not kept it, a ghost that could never be deleted. So an empty answer is followed
+    // by asking for the event's day and taking Apple's own copy.
+    let stored: Vec<_> = if answer.events.iter().any(|e| e.guid == event.guid) {
         answer.events
+    } else {
+        let day = crate::calendar::day_of(event.starts_at, event.timezone.as_deref());
+        let tz = event.timezone.as_deref().unwrap_or("UTC");
+        let kept: Vec<_> = client
+            .events(&day, &day, tz)
+            .await?
+            .events
+            .into_iter()
+            .filter(|e| e.guid == event.guid)
+            .collect();
+        if kept.is_empty() {
+            return Err(Error::Protocol(
+                "iCloud took the event but did not keep it — nothing was saved".into(),
+            ));
+        }
+        kept
     };
     let known: std::collections::HashSet<String> =
         library.calendars()?.into_iter().map(|c| c.guid).collect();
@@ -173,6 +206,23 @@ pub fn apply_calendar(library: &mut Library, snapshot: Snapshot) -> Result<SyncS
         .collect();
 
     library.put_events(&events)?;
+    // An event deleted on the phone stayed here for good — a pass only ever added — and
+    // deleting that ghost here then failed, because Apple had nothing to delete. Within the
+    // window Apple was asked about, what it did not return is gone; outside it, nothing is
+    // assumed. Only calendars Apple reported are judged.
+    if let Some((from, to)) = snapshot.covers {
+        let returned: std::collections::HashSet<&str> =
+            events.iter().map(|e| e.guid.as_str()).collect();
+        let gone: Vec<String> = library
+            .events_starting_between(from, to)?
+            .into_iter()
+            .filter(|(guid, calendar)| {
+                known.contains(calendar.as_str()) && !returned.contains(guid.as_str())
+            })
+            .map(|(guid, _)| guid)
+            .collect();
+        library.forget_events(&gone)?;
+    }
     library.mark_synced("calendar", None)?;
 
     Ok(SyncSummary {
@@ -200,6 +250,151 @@ mod tests {
                   "startDate": [20260912, 2026, 9, 12, 11, 0, 660], "duration": 30 }
             ]
         })
+    }
+
+    fn saved_library() -> Library {
+        let mut library = Library::in_memory().unwrap();
+        library
+            .put_calendars(&[quince_core::calendar::Calendar {
+                guid: "work".into(),
+                title: "Work".into(),
+                ..Default::default()
+            }])
+            .unwrap();
+        library
+    }
+
+    fn new_event() -> quince_core::calendar::Event {
+        let start = "2026-10-03T04:30:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_second();
+        quince_core::calendar::Event {
+            guid: "NEW-1".into(),
+            calendar_guid: "work".into(),
+            title: "Dentist".into(),
+            starts_at: start,
+            ends_at: start + 3600,
+            timezone: Some("Asia/Kolkata".into()),
+            ..Default::default()
+        }
+    }
+
+    /// A save answers with nothing (measured on the account); what is stored is Apple's own
+    /// copy, read back, with the etag the next edit or delete needs.
+    #[tokio::test]
+    async fn a_saved_event_is_stored_as_apple_keeps_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ca/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Event": [{ "guid": "NEW-1", "pGuid": "work", "title": "Dentist", "etag": "apple-1",
+                            "tz": "Asia/Kolkata",
+                            "startDate": [20261003, 2026, 10, 3, 10, 0, 600], "duration": 60 }]
+            })))
+            .mount(&server)
+            .await;
+        let mut library = saved_library();
+        let http = reqwest::Client::new();
+        put_event(&http, &server.uri(), vec![], &mut library, &new_event())
+            .await
+            .unwrap();
+        assert_eq!(
+            library.event("NEW-1").unwrap().unwrap().etag.as_deref(),
+            Some("apple-1")
+        );
+    }
+
+    /// And where Apple did not keep it, nothing is stored — no ghost that cannot be deleted
+    /// — and the person is told.
+    #[tokio::test]
+    async fn an_event_apple_did_not_keep_is_not_stored() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ca/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "Event": [] })))
+            .mount(&server)
+            .await;
+        let mut library = saved_library();
+        let http = reqwest::Client::new();
+        assert!(
+            put_event(&http, &server.uri(), vec![], &mut library, &new_event())
+                .await
+                .is_err()
+        );
+        assert!(library.event("NEW-1").unwrap().is_none());
+    }
+
+    /// An event deleted on the phone leaves this library at the next pass over its window —
+    /// the ghost of one is what a delete here then failed on — while an event outside the
+    /// window, which Apple was not asked about, is left alone.
+    #[tokio::test]
+    async fn an_event_deleted_elsewhere_leaves_but_one_outside_the_window_stays() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ca/startup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Collection": [{ "guid": "cal-1", "title": "Work" }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ca/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "Event": [] })))
+            .mount(&server)
+            .await;
+        let mut library = Library::in_memory().unwrap();
+        library
+            .put_calendars(&[quince_core::calendar::Calendar {
+                guid: "cal-1".into(),
+                title: "Work".into(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let at = |s: &str| s.parse::<jiff::Timestamp>().unwrap().as_second();
+        let ev = |guid: &str, start: i64| quince_core::calendar::Event {
+            guid: guid.into(),
+            calendar_guid: "cal-1".into(),
+            title: guid.into(),
+            starts_at: start,
+            ends_at: start + 3600,
+            ..Default::default()
+        };
+        library
+            .put_events(&[
+                ev("deleted", at("2026-09-12T09:00:00Z")),
+                ev("later", at("2026-11-02T09:00:00Z")),
+            ])
+            .unwrap();
+
+        let http = reqwest::Client::new();
+        calendar(
+            &http,
+            &server.uri(),
+            vec![],
+            &mut library,
+            "2026-09-01",
+            "2026-09-30",
+            "UTC",
+        )
+        .await
+        .unwrap();
+        assert!(
+            library.event("deleted").unwrap().is_none(),
+            "deleted on the phone, gone here"
+        );
+        assert!(
+            library.event("later").unwrap().is_some(),
+            "outside the window, untouched"
+        );
     }
 
     /// Some accounts get collections from /ca/startup and nothing else; the events arrive
