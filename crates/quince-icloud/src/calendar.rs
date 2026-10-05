@@ -121,6 +121,29 @@ fn collection_from(v: &Value) -> Option<Calendar> {
     })
 }
 
+/// The zone an event's dates are read and written in.
+///
+/// A timed event's in its own zone. An all-day event's dates are a day on the calendar, not
+/// an instant — Apple sends `[20261005, 2026, 10, 5, 0, 0, 0]` with no zone — and it is that
+/// day wherever it is looked at, as on the phone. Read as midnight UTC (measured: the account
+/// stores it so), it fell on the day before for anyone west of Greenwich. So all-day dates are
+/// this machine's own midnight, which is where the interface draws a day.
+fn dates_zone(all_day: bool, timezone: Option<&str>) -> Option<String> {
+    if all_day {
+        TimeZone::system().iana_name().map(ToString::to_string)
+    } else {
+        timezone.map(ToString::to_string)
+    }
+}
+
+/// The zone to speak to Apple in about this event — the day it is asked about, the day its
+/// dates are written in. One rule everywhere: an all-day event saved in this machine's zone
+/// but looked up again in UTC (where Apple, keeping no zone on it, left it) was looked for on
+/// the wrong day, and a move then read as "Apple did not keep it" when Apple had.
+pub(crate) fn event_zone(event: &Event) -> Option<String> {
+    dates_zone(event.all_day, event.timezone.as_deref())
+}
+
 /// Turn one entry of Apple's `Event` array into an event.
 ///
 /// Returns `Ok(None)` for entries that carry no usable identity, so one odd row cannot fail
@@ -134,9 +157,11 @@ fn event_from(v: &Value) -> Result<Option<Event>> {
         return Ok(None);
     };
 
-    let starts_at = parse_apple_date(start_raw, timezone.as_deref())?;
+    let all_day = v.get("allDay").and_then(Value::as_bool).unwrap_or(false);
+    let dates = dates_zone(all_day, timezone.as_deref());
+    let starts_at = parse_apple_date(start_raw, dates.as_deref())?;
     let ends_at = match v.get("endDate") {
-        Some(raw) => parse_apple_date(raw, timezone.as_deref())?,
+        Some(raw) => parse_apple_date(raw, dates.as_deref())?,
         // Apple omits endDate on some entries; a duration in minutes is the fallback.
         None => {
             let minutes = v.get("duration").and_then(Value::as_i64).unwrap_or(0);
@@ -153,7 +178,7 @@ fn event_from(v: &Value) -> Result<Option<Event>> {
         // A zero-length event still needs to be selectable, and an end before its start is
         // nonsense we should not store.
         ends_at: ends_at.max(starts_at),
-        all_day: v.get("allDay").and_then(Value::as_bool).unwrap_or(false),
+        all_day,
         timezone,
         url: string(v, "url"),
         notes: string(v, "description"),
@@ -310,7 +335,7 @@ impl<'a> CalendarClient<'a> {
                 "that event has no identifier, so there is nothing to save it as".into(),
             ));
         }
-        let day = day_of(event.starts_at, event.timezone.as_deref());
+        let day = day_of(event.starts_at, event_zone(event).as_deref());
         // What Apple already has, if this event exists. An event carries far more than this
         // app models — its alerts, its guests, its attachments, its link to the series it
         // repeats in — and Apple takes the whole event on every write. Building one from
@@ -323,7 +348,7 @@ impl<'a> CalendarClient<'a> {
         });
         let path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
         let answer = self
-            .post(&path, &body, &day, &day, event.timezone.as_deref(), None)
+            .post(&path, &body, &day, &day, event_zone(event).as_deref(), None)
             .await?;
         Ok(parse_snapshot(&answer))
     }
@@ -341,7 +366,7 @@ impl<'a> CalendarClient<'a> {
                 "that event has no identifier, so there is nothing to delete".into(),
             ));
         }
-        let day = day_of(event.starts_at, event.timezone.as_deref());
+        let day = day_of(event.starts_at, event_zone(event).as_deref());
         let body = serde_json::json!({
             "Event": { "guid": event.guid, "pGuid": event.calendar_guid, "etag": event.etag },
             "ClientState": client_state(&event.calendar_guid, ctag),
@@ -353,7 +378,7 @@ impl<'a> CalendarClient<'a> {
                 &body,
                 &day,
                 &day,
-                event.timezone.as_deref(),
+                event_zone(event).as_deref(),
                 Some("DELETE"),
             )
             .await
@@ -377,7 +402,7 @@ impl<'a> CalendarClient<'a> {
         query.push(("lang".into(), "en-us".into()));
         query.push((
             "usertz".into(),
-            event.timezone.clone().unwrap_or_else(|| "UTC".into()),
+            event_zone(event).unwrap_or_else(|| "UTC".into()),
         ));
         query.push(("startDate".into(), day.to_string()));
         query.push(("endDate".into(), day.to_string()));
@@ -405,6 +430,7 @@ impl<'a> CalendarClient<'a> {
     /// survive an edit untouched. Only a genuinely new event is built from nothing.
     fn event_body(&self, event: &Event, existing: Option<&Value>) -> Value {
         let zone = event.timezone.as_deref();
+        let dates = dates_zone(event.all_day, zone);
         let minutes = ((event.ends_at - event.starts_at) / 60).max(0);
 
         let mut body = existing.cloned().unwrap_or_else(|| {
@@ -445,10 +471,22 @@ impl<'a> CalendarClient<'a> {
                 Value::String(event.notes.clone().unwrap_or_default()),
             ),
             ("url", event.url.clone().map_or(Value::Null, Value::String)),
-            ("startDate", format_apple_date(event.starts_at, zone)),
-            ("endDate", format_apple_date(event.ends_at, zone)),
-            ("localStartDate", format_apple_date(event.starts_at, zone)),
-            ("localEndDate", format_apple_date(event.ends_at, zone)),
+            (
+                "startDate",
+                format_apple_date(event.starts_at, dates.as_deref()),
+            ),
+            (
+                "endDate",
+                format_apple_date(event.ends_at, dates.as_deref()),
+            ),
+            (
+                "localStartDate",
+                format_apple_date(event.starts_at, dates.as_deref()),
+            ),
+            (
+                "localEndDate",
+                format_apple_date(event.ends_at, dates.as_deref()),
+            ),
             ("duration", Value::from(minutes)),
             ("allDay", Value::Bool(event.all_day)),
             (
@@ -1008,6 +1046,33 @@ mod write_tests {
         let http = reqwest::Client::new();
         let client = CalendarClient::new(&http, &server.uri(), vec![]);
         assert!(client.delete_event(&event(), None).await.is_err());
+    }
+
+    /// An all-day event is a day, not an instant: the 5th is the 5th here, whatever this
+    /// machine's zone. Run under `TZ=America/New_York` it fell on the 4th when read as UTC.
+    #[test]
+    fn an_all_day_event_is_its_own_day_wherever_it_is_read() {
+        let body = serde_json::json!({ "Event": [{
+            "guid": "A", "pGuid": "work", "title": "Holiday", "allDay": true,
+            "startDate": [20261005, 2026, 10, 5, 0, 0, 0],
+            "endDate": [20261006, 2026, 10, 6, 0, 0, 0] }] });
+        let event = &parse_snapshot(&body).events[0];
+        let here = TimeZone::system();
+        let day = |t: i64| {
+            jiff::Timestamp::from_second(t)
+                .unwrap()
+                .to_zoned(here.clone())
+        };
+        let (start, end) = (day(event.starts_at), day(event.ends_at));
+        assert_eq!(
+            (start.month(), start.day(), start.hour()),
+            (10, 5, 0),
+            "{start}"
+        );
+        assert_eq!((end.month(), end.day(), end.hour()), (10, 6, 0), "{end}");
+        // And written back, it says the same day.
+        let sent = format_apple_date(event.starts_at, dates_zone(true, None).as_deref());
+        assert_eq!(sent[0], 20261005);
     }
 
     #[tokio::test]

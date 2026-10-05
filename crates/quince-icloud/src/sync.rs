@@ -145,8 +145,9 @@ pub async fn put_event(
     let stored: Vec<_> = if answer.events.iter().any(|e| e.guid == event.guid) {
         answer.events
     } else {
-        let day = crate::calendar::day_of(event.starts_at, event.timezone.as_deref());
-        let tz = event.timezone.as_deref().unwrap_or("UTC");
+        let zone = crate::calendar::event_zone(event);
+        let day = crate::calendar::day_of(event.starts_at, zone.as_deref());
+        let tz = zone.as_deref().unwrap_or("UTC");
         let kept: Vec<_> = client
             .events(&day, &day, tz)
             .await?
@@ -331,6 +332,63 @@ mod tests {
                 .is_err()
         );
         assert!(library.event("NEW-1").unwrap().is_none());
+    }
+
+    /// An all-day event Apple keeps with no zone, moved to the 6th: the save asks for the 6th
+    /// here and finds it there. Looked up by its UTC date it was searched for on the 5th in
+    /// India, not found, and the move — which Apple had kept — reported as not saved.
+    #[tokio::test]
+    async fn a_moved_all_day_event_is_found_on_its_own_day() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ca/events"))
+            .and(query_param("startDate", "2026-10-06"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Event": [{ "guid": "DAY-1", "pGuid": "work", "title": "Holiday", "allDay": true,
+                            "etag": "apple-2",
+                            "startDate": [20261006, 2026, 10, 6, 0, 0, 0],
+                            "endDate": [20261007, 2026, 10, 7, 0, 0, 0] }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ca/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "Event": [] })))
+            .mount(&server)
+            .await;
+        let here = jiff::tz::TimeZone::system();
+        let midnight = |d: &str| {
+            d.parse::<jiff::civil::Date>()
+                .unwrap()
+                .to_zoned(here.clone())
+                .unwrap()
+                .timestamp()
+                .as_second()
+        };
+        let moved = quince_core::calendar::Event {
+            guid: "DAY-1".into(),
+            calendar_guid: "work".into(),
+            title: "Holiday".into(),
+            starts_at: midnight("2026-10-06"),
+            ends_at: midnight("2026-10-07"),
+            all_day: true,
+            timezone: None,
+            ..Default::default()
+        };
+        let mut library = saved_library();
+        let http = reqwest::Client::new();
+        put_event(&http, &server.uri(), vec![], &mut library, &moved)
+            .await
+            .unwrap();
+        assert_eq!(
+            library.event("DAY-1").unwrap().unwrap().etag.as_deref(),
+            Some("apple-2")
+        );
     }
 
     /// An event deleted on the phone leaves this library at the next pass over its window —
