@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Notice } from "../components/Notice";
 import { ChevronLeft } from "lucide-react";
 import {
   api,
@@ -202,7 +203,7 @@ export function ContactsView() {
           type="search"
         />
 
-        {error && <p className="error" role="alert">{error}</p>}
+        {error && <Notice message={error} onDismiss={() => setError(null)} />}
 
         <ul className="contact-rows">
           {contacts.map((contact) => (

@@ -61,13 +61,64 @@ async fn resync_reminders(
     params: Vec<(String, String)>,
     data: &State<'_, Data>,
 ) -> Result<(), String> {
-    let mut library = data.0.lock().await;
-    let synced = quince_icloud::reminders::sync_cloudkit(http, root, params, &mut library, None)
+    refresh_reminders(http, root, params, data, true).await
+}
+
+/// Ask Apple what changed in Reminders and store it — without holding the library while
+/// Apple answers.
+///
+/// Every screen reads that library. A refresh that held it across the network made every
+/// screen wait on Apple: when CloudKit was slow or overloaded (503, retry in 10s), Reminders,
+/// Notes and the rest drew nothing at all until it gave up. The fetch runs unlocked; the
+/// library is held only to store what came back.
+async fn refresh_reminders(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    data: &State<'_, Data>,
+    whole: bool,
+) -> Result<(), String> {
+    let since = if whole {
+        None
+    } else {
+        data.0
+            .lock()
+            .await
+            .sync_token("reminders")
+            .map_err(|e| e.to_string())?
+    };
+    let fetched = quince_icloud::reminders::fetch_cloudkit(http, root, params, since.as_deref())
         .await
-        .map(|_| ())
-        .map_err(|e| e.to_string());
+        .map_err(|e| e.to_string())?;
+    {
+        let mut library = data.0.lock().await;
+        quince_icloud::reminders::apply_cloudkit(&mut library, fetched)
+            .map_err(|e| e.to_string())?;
+    }
     alerts::changed();
-    synced
+    Ok(())
+}
+
+/// The same for Notes.
+async fn refresh_notes(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    data: &State<'_, Data>,
+) -> Result<(), String> {
+    let since = data
+        .0
+        .lock()
+        .await
+        .sync_token("notes")
+        .map_err(|e| e.to_string())?;
+    let fetched = quince_icloud::notes::fetch_cloudkit(http, root, params, since.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut library = data.0.lock().await;
+    quince_icloud::notes::apply_cloudkit(&mut library, fetched)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 async fn cloudkit_context(
@@ -252,10 +303,12 @@ async fn calendar_sync(
         (client.http().clone(), root, client.service_params())
     };
 
-    let mut library = data.0.lock().await;
-    quince_icloud::sync::calendar(&http, &root, params, &mut library, &from, &to, &timezone)
+    // Asked of Apple unlocked; the library is held only to store the answer.
+    let fetched = quince_icloud::sync::fetch_calendar(&http, &root, params, &from, &to, &timezone)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let mut library = data.0.lock().await;
+    quince_icloud::sync::apply_calendar(&mut library, fetched).map_err(|e| e.to_string())
 }
 
 /// What the interface sends to create or change an event.
@@ -333,10 +386,12 @@ async fn event_save(
         etag: existing.and_then(|e| e.etag),
     };
 
-    let mut library = data.0.lock().await;
-    quince_icloud::sync::put_event(&http, &root, params, &mut library, &event)
+    let ctag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &event.calendar_guid);
+    let kept = quince_icloud::sync::save_event(&http, &root, params, ctag.as_deref(), &event)
         .await
         .map_err(|e| e.to_string())?;
+    let mut library = data.0.lock().await;
+    quince_icloud::sync::store_events(&mut library, kept).map_err(|e| e.to_string())?;
     Ok(guid)
 }
 
@@ -350,9 +405,14 @@ async fn event_delete(guid: String, auth: State<'_, Auth>, data: State<'_, Data>
             .map_err(|e| e.to_string())?
             .ok_or("That event is no longer in the local library.")?
     };
-    let mut library = data.0.lock().await;
-    quince_icloud::sync::delete_event(&http, &root, params, &mut library, &event)
+    let ctag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &event.calendar_guid);
+    quince_icloud::calendar::CalendarClient::new(&http, &root, params)
+        .delete_event(&event, ctag.as_deref())
         .await
+        .map_err(|e| e.to_string())?;
+    let mut library = data.0.lock().await;
+    library
+        .forget_events(std::slice::from_ref(&event.guid))
         .map_err(|e| e.to_string())
 }
 
@@ -464,13 +524,7 @@ async fn set_done(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut library = data.0.lock().await;
-    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
-    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
-    alerts::changed();
-    Ok(())
+    refresh_reminders(&http, &root, params, data, false).await
 }
 
 /// Set or clear how often a reminder comes back.
@@ -538,13 +592,7 @@ async fn reminder_create(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut library = data.0.lock().await;
-    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
-    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
-    alerts::changed();
-    Ok(())
+    refresh_reminders(&http, &root, params, &data, false).await
 }
 
 #[tauri::command]
@@ -570,13 +618,7 @@ async fn reminder_delete(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut library = data.0.lock().await;
-    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
-    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
-    alerts::changed();
-    Ok(())
+    refresh_reminders(&http, &root, params, &data, false).await
 }
 
 /// Apply an edit — title, notes, due date, flag, completion — in one write.
@@ -622,13 +664,7 @@ async fn reminder_edit(
         .map_err(|e| e.to_string())?;
     }
 
-    let mut library = data.0.lock().await;
-    let since = library.sync_token("reminders").map_err(|e| e.to_string())?;
-    quince_icloud::reminders::sync_cloudkit(&http, &root, params, &mut library, since.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
-    alerts::changed();
-    Ok(())
+    refresh_reminders(&http, &root, params, &data, false).await
 }
 
 /// One of Apple's smart lists. `until` is the end of today in the viewer's own timezone,
@@ -699,12 +735,7 @@ async fn resync_notes(
     params: Vec<(String, String)>,
     data: &State<'_, Data>,
 ) -> Result<(), String> {
-    let mut library = data.0.lock().await;
-    let since = library.sync_token("notes").map_err(|e| e.to_string())?;
-    quince_icloud::notes::sync_cloudkit(http, root, params, &mut library, since.as_deref())
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    refresh_notes(http, root, params, data).await
 }
 
 /// One note, by record name. `None` once Apple no longer has it.
@@ -993,10 +1024,11 @@ async fn drive_sync_folder(
             .ok_or("Apple hasn't offered iCloud Drive for this account.")?;
         (client.http().clone(), root, client.service_params())
     };
-    let mut library = data.0.lock().await;
-    quince_icloud::drive::sync_folder(&http, &root, params, &mut library, &folder_id)
+    let items = quince_icloud::drive::fetch_folder(&http, &root, params, &folder_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let mut library = data.0.lock().await;
+    quince_icloud::drive::store_folder(&mut library, &folder_id, &items).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1034,9 +1066,11 @@ async fn resync_drive_folder(
     data: &State<'_, Data>,
     folder_id: &str,
 ) -> Result<(), String> {
-    let mut library = data.0.lock().await;
-    quince_icloud::drive::sync_folder(http, root, params, &mut library, folder_id)
+    let items = quince_icloud::drive::fetch_folder(http, root, params, folder_id)
         .await
+        .map_err(|e| e.to_string())?;
+    let mut library = data.0.lock().await;
+    quince_icloud::drive::store_folder(&mut library, folder_id, &items)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }

@@ -62,6 +62,29 @@ pub async fn sync_folder(
     library: &mut quince_core::Library,
     folder_id: &str,
 ) -> Result<usize> {
+    let items = fetch_folder(http, root, params, folder_id).await?;
+    store_folder(library, folder_id, &items)
+}
+
+/// Store a folder's contents fetched by [`fetch_folder`].
+pub fn store_folder(
+    library: &mut quince_core::Library,
+    folder_id: &str,
+    items: &[DriveItem],
+) -> Result<usize> {
+    library.put_drive_children(folder_id, items)?;
+    library.mark_synced("drive", None)?;
+    Ok(items.len())
+}
+
+/// Ask Apple for one folder's contents. Touches no local state, so it can run without
+/// holding the library every screen reads.
+pub async fn fetch_folder(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    folder_id: &str,
+) -> Result<Vec<DriveItem>> {
     let mut query = params;
     query.push(("clientVersion".into(), "2.1".into()));
 
@@ -87,10 +110,7 @@ pub async fn sync_folder(
 
     let parsed: Value = serde_json::from_str(&text)
         .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
-    let items = parse_folder(&parsed);
-    library.put_drive_children(folder_id, &items)?;
-    library.mark_synced("drive", None)?;
-    Ok(items.len())
+    Ok(parse_folder(&parsed))
 }
 
 /// Bare docwsid: `FILE::com.apple.CloudDocs::<uuid>` carries it after the last `::`.

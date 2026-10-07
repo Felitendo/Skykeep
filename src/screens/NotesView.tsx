@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Notice } from "../components/Notice";
 import { flushSync } from "react-dom";
 import { ChevronLeft, Folder, FolderOpen, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
 import { LongTextarea } from "../components/LongTextarea";
@@ -498,7 +499,7 @@ export function NotesView() {
           />
         </div>
 
-        {error && <p className="error" role="alert">{error}</p>}
+        {error && <Notice message={error} onDismiss={() => setError(null)} />}
 
         <div className="note-rows" role="list">
           {sections.map((section) => (

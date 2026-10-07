@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Notice } from "../components/Notice";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
@@ -399,9 +400,7 @@ export function DriveView() {
       </header>
 
       {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
+        <Notice message={error} onDismiss={() => setError(null)} />
       )}
       {savedTo && (
         <p className="drive-saved" role="status">

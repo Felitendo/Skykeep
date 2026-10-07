@@ -307,7 +307,6 @@
 .rx-link.danger { color: var(--sys-red); }
 .rx-link:disabled { opacity: 0.5; }
 
-.rx-error { margin: 0 14px 8px 0; color: var(--danger); font-size: var(--t-13); }
 
 .rx-capped {
   margin: 0 14px 8px 0;

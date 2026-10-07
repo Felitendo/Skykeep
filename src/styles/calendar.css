@@ -184,37 +184,7 @@
 }
 .cx-icon:focus-visible, .cx-today:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 40%, transparent); }
 
-/* Something went wrong: said once, plainly, beside a way to put it away — not a red line of
-   Apple's own words squeezed under the toolbar. */
-.cx-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 18px 10px;
-  padding: 8px 8px 8px 12px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--text);
-  font-size: var(--t-13);
-  line-height: 1.4;
-}
-.cx-notice > svg { flex: none; margin-top: 2px; color: var(--danger); }
-.cx-notice p { flex: 1; min-width: 0; margin: 0; }
-.cx-notice-close {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--text-2);
-  cursor: default;
-}
-.cx-notice-close:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
-.cx-notice-close:focus-visible { outline: 3px solid var(--gold-ring); }
+.cx .notice { margin: 0 18px 10px; }
 
 /* ---- month ---------------------------------------------------------------------- */
 

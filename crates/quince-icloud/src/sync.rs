@@ -117,6 +117,17 @@ pub async fn fetch_calendar(
     })
 }
 
+/// The change tag Apple last gave an event's calendar, which a write carries.
+#[must_use]
+pub fn calendar_ctag(library: &Library, calendar_guid: &str) -> Option<String> {
+    library
+        .calendars()
+        .ok()?
+        .into_iter()
+        .find(|c| c.guid == calendar_guid)
+        .and_then(|c| c.ctag)
+}
+
 /// Create an event, or save changes to one, and store what Apple answers with.
 ///
 /// Apple takes the whole event on every write, so an edit is the event as it should end up
@@ -129,42 +140,55 @@ pub async fn put_event(
     library: &mut Library,
     event: &quince_core::calendar::Event,
 ) -> Result<()> {
-    let client = CalendarClient::new(http, root, params);
-    let ctag = library
-        .calendars()?
-        .into_iter()
-        .find(|c| c.guid == event.calendar_guid)
-        .and_then(|c| c.ctag);
+    let ctag = calendar_ctag(library, &event.calendar_guid);
+    let kept = save_event(http, root, params, ctag.as_deref(), event).await?;
+    store_events(library, kept)
+}
 
-    let answer = client.put_event(event, ctag.as_deref()).await?;
+/// The network half of [`put_event`]: write the event, and return Apple's own copy of it.
+///
+/// Kept apart so a caller can do it without holding the library — everything on screen
+/// reads that library, and a save that held it while Apple was slow froze every screen.
+pub async fn save_event(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    ctag: Option<&str>,
+    event: &quince_core::calendar::Event,
+) -> Result<Vec<quince_core::calendar::Event>> {
+    let client = CalendarClient::new(http, root, params);
+    let answer = client.put_event(event, ctag).await?;
     // What goes into the library is what Apple holds, never what was sent. Measured: a save
     // to the account answers with an empty list, and storing the sent copy instead kept an
     // event with no etag — so the next edit or delete went without one — and, where Apple
     // had not kept it, a ghost that could never be deleted. So an empty answer is followed
     // by asking for the event's day and taking Apple's own copy.
-    let stored: Vec<_> = if answer.events.iter().any(|e| e.guid == event.guid) {
-        answer.events
-    } else {
-        let zone = crate::calendar::event_zone(event);
-        let day = crate::calendar::day_of(event.starts_at, zone.as_deref());
-        let tz = zone.as_deref().unwrap_or("UTC");
-        let kept: Vec<_> = client
-            .events(&day, &day, tz)
-            .await?
-            .events
-            .into_iter()
-            .filter(|e| e.guid == event.guid)
-            .collect();
-        if kept.is_empty() {
-            return Err(Error::Protocol(
-                "iCloud took the event but did not keep it — nothing was saved".into(),
-            ));
-        }
-        kept
-    };
+    if answer.events.iter().any(|e| e.guid == event.guid) {
+        return Ok(answer.events);
+    }
+    let zone = crate::calendar::event_zone(event);
+    let day = crate::calendar::day_of(event.starts_at, zone.as_deref());
+    let tz = zone.as_deref().unwrap_or("UTC");
+    let kept: Vec<_> = client
+        .events(&day, &day, tz)
+        .await?
+        .events
+        .into_iter()
+        .filter(|e| e.guid == event.guid)
+        .collect();
+    if kept.is_empty() {
+        return Err(Error::Protocol(
+            "iCloud took the event but did not keep it — nothing was saved".into(),
+        ));
+    }
+    Ok(kept)
+}
+
+/// The library half of [`put_event`]: store what Apple kept, in calendars this library has.
+pub fn store_events(library: &mut Library, kept: Vec<quince_core::calendar::Event>) -> Result<()> {
     let known: std::collections::HashSet<String> =
         library.calendars()?.into_iter().map(|c| c.guid).collect();
-    let storable: Vec<_> = stored
+    let storable: Vec<_> = kept
         .into_iter()
         .filter(|e| known.contains(&e.calendar_guid))
         .collect();
@@ -180,13 +204,10 @@ pub async fn delete_event(
     library: &mut Library,
     event: &quince_core::calendar::Event,
 ) -> Result<()> {
-    let client = CalendarClient::new(http, root, params);
-    let ctag = library
-        .calendars()?
-        .into_iter()
-        .find(|c| c.guid == event.calendar_guid)
-        .and_then(|c| c.ctag);
-    client.delete_event(event, ctag.as_deref()).await?;
+    let ctag = calendar_ctag(library, &event.calendar_guid);
+    CalendarClient::new(http, root, params)
+        .delete_event(event, ctag.as_deref())
+        .await?;
     library.forget_events(std::slice::from_ref(&event.guid))?;
     Ok(())
 }

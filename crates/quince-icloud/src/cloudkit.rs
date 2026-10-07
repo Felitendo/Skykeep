@@ -68,6 +68,11 @@ fn trouble_with(zone_result: &Value) -> Option<ZoneTrouble> {
     }
 }
 
+/// How many times a busy CloudKit is asked before saying so.
+const BUSY_TRIES: u32 = 3;
+/// The longest single wait a busy CloudKit is given, whatever it asks for.
+const LONGEST_WAIT: u64 = 30;
+
 impl<'a> ZoneClient<'a> {
     pub fn new(
         http: &'a reqwest::Client,
@@ -91,6 +96,49 @@ impl<'a> ZoneClient<'a> {
     }
 
     /// One page of changes for `zone`.
+    /// POST to CloudKit, waiting out a busy server the way it asks to be waited out.
+    ///
+    /// Measured on the account: an overloaded CloudKit answers 503 with
+    /// `{"serverErrorCode":"SERVER_OVERLOADED","retryAfter":10}`. That went to the screen as
+    /// raw JSON and the write was simply lost. It is a request to come back shortly, so it is
+    /// honoured — up to `BUSY_TRIES` times, never waiting more than `LONGEST_WAIT` — and only
+    /// a server still busy after that is reported, in words.
+    async fn post_json(&self, url: &str, body: &Value) -> Result<(reqwest::StatusCode, String)> {
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let response = self
+                .http
+                .post(url)
+                .query(&self.query())
+                .json(body)
+                .send()
+                .await?;
+            let status = response.status();
+            let header_wait = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            let text = response.text().await.unwrap_or_default();
+            if !matches!(status.as_u16(), 429 | 503) {
+                return Ok((status, text));
+            }
+            if tries >= BUSY_TRIES {
+                eprintln!("cloudkit: still busy after {tries} tries ({status}): {text}");
+                return Err(Error::Refused(
+                    "iCloud is busy right now. Nothing was changed — try again in a minute.".into(),
+                ));
+            }
+            let asked = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| v.get("retryAfter").and_then(Value::as_u64))
+                .or(header_wait)
+                .unwrap_or(2);
+            tokio::time::sleep(std::time::Duration::from_secs(asked.clamp(1, LONGEST_WAIT))).await;
+        }
+    }
+
     pub async fn changes(&self, zone: &str, sync_token: Option<&str>) -> Result<Page> {
         let mut zone_body = json!({
             "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
@@ -107,16 +155,9 @@ impl<'a> ZoneClient<'a> {
             "{}/database/1/{}/production/private/changes/zone",
             self.base, self.container
         );
-        let response = self
-            .http
-            .post(url)
-            .query(&self.query())
-            .json(&json!({ "zones": [zone_body] }))
-            .send()
+        let (status, text) = self
+            .post_json(&url, &json!({ "zones": [zone_body] }))
             .await?;
-
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
         if status.as_u16() == 450 {
             return Err(Error::ReauthRequired);
         }
@@ -396,6 +437,61 @@ mod tests {
         })
     }
 
+    fn overloaded() -> ResponseTemplate {
+        // What the account sent, verbatim but for the uuid.
+        ResponseTemplate::new(503).set_body_json(json!({
+            "uuid": "1", "retryAfter": 1, "serverErrorCode": "SERVER_OVERLOADED"
+        }))
+    }
+
+    /// A busy CloudKit asks to be asked again shortly; asked again, the change goes through
+    /// instead of being lost with raw JSON on the screen.
+    #[tokio::test]
+    async fn an_overloaded_cloudkit_is_waited_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(overloaded())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "R", "recordChangeTag": "t2" }]
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        client
+            .update_record("Reminders", "R", "Reminder", Some("t1"), json!({}))
+            .await
+            .unwrap();
+    }
+
+    /// And one still busy after that is said in a sentence, not Apple's JSON.
+    #[tokio::test]
+    async fn a_cloudkit_that_stays_busy_says_so_plainly() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(overloaded())
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        let message = client
+            .update_record("Reminders", "R", "Reminder", Some("t1"), json!({}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            "iCloud is busy right now. Nothing was changed — try again in a minute."
+        );
+    }
+
     /// Ignoring moreComing silently truncates someone's data, so paging is the thing to test.
     #[tokio::test]
     async fn paging_follows_more_coming_to_the_end() {
@@ -573,15 +669,7 @@ impl ZoneClient<'_> {
             "{}/database/1/{}/production/private/records/modify",
             self.base, self.container
         );
-        let response = self
-            .http
-            .post(url)
-            .query(&self.query())
-            .json(&body)
-            .send()
-            .await?;
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        let (status, text) = self.post_json(&url, &body).await?;
 
         if status.as_u16() == 450 {
             return Err(Error::ReauthRequired);
@@ -710,18 +798,22 @@ impl ZoneClient<'_> {
             "records": [{ "recordName": record_name }],
             "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
         });
-        let response = self
-            .http
-            .post(url)
-            .query(&self.query())
-            .json(&body)
-            .send()
-            .await?;
-        if !response.status().is_success() {
+        let (status, text) = self.post_json(&url, &body).await?;
+        if status.as_u16() == 450 {
+            return Err(Error::ReauthRequired);
+        }
+        // Nothing there is an answer; a server that failed to say is not. A busy or broken
+        // lookup read as "no such record" sent callers on to create what already existed, or
+        // to skip what was there.
+        if status.as_u16() == 404 {
             return Ok(None);
         }
-        let parsed: Value =
-            serde_json::from_str(&response.text().await.unwrap_or_default()).unwrap_or(Value::Null);
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "CloudKit couldn't look that up ({status})"
+            )));
+        }
+        let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         Ok(parsed
             .get("records")
             .and_then(Value::as_array)

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Notice } from "../components/Notice";
 import { ChevronLeft } from "lucide-react";
 import {
   api,
@@ -921,9 +922,7 @@ export function RemindersView() {
         )}
 
         {error && (
-          <p className="rx-error" role="alert">
-            {error}
-          </p>
+          <Notice message={error} onDismiss={() => setError(null)} />
         )}
 
         {/* An account with no lists: a reminder cannot exist outside one, so the one thing
