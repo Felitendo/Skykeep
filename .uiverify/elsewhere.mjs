@@ -39,7 +39,7 @@ const stub = ({ services, now, edge }) => {
     invoke: async (cmd) => {
       switch (cmd) {
         case "auth_status": return { hasStoredSession: true, signedIn: true };
-        case "auth_resume": return true;
+        case "auth_resume": return "library";
         case "account_services": return services;
         case "reminder_counts": return { today: 0, scheduled: 2, flagged: 0, all: 2, lists: [["L1", 2]] };
         case "reminder_lists": return lists;

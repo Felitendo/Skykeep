@@ -9,7 +9,7 @@ await ctx.addInitScript(() => {
     invoke: async (cmd) => {
       switch (cmd) {
         case "auth_status": return { hasStoredSession: true, signedIn: true };
-        case "auth_resume": return true;
+        case "auth_resume": return "library";
         case "account_services": return ["calendar", "reminders", "notes", "contacts", "drivews", "photos"];
         case "calendar_events": case "calendar_list": case "reminders_due_between": return [];
         case "calendar_last_synced": case "reminders_last_synced": case "notes_last_synced":

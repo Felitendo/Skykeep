@@ -18,7 +18,7 @@ await ctx.addInitScript(({ services }) => {
     transformCallback: (cb) => cb,
     invoke: async (cmd) => {
       if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-      if (cmd === "auth_resume") return true;
+      if (cmd === "auth_resume") return "library";
       if (cmd === "account_services") return services;
       if (cmd === "calendar_events") return [];
       if (cmd === "calendar_list")
@@ -293,7 +293,7 @@ let failures = 0;
       transformCallback: (cb) => cb,
       invoke: async (cmd) => {
         if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-        if (cmd === "auth_resume") return true;
+        if (cmd === "auth_resume") return "library";
         if (cmd === "account_services") return ["reminders"];
         if (cmd === "reminder_lists")
           return [list("A", "Daily", true, "#FFCC00"), list("B", "Everything for the house move", true, "#FF8D28"),
@@ -478,7 +478,7 @@ let failures = 0;
       transformCallback: (cb) => cb,
       invoke: async (cmd, args) => {
         if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-        if (cmd === "auth_resume") return true;
+        if (cmd === "auth_resume") return "library";
         if (cmd === "account_services") return ["notes"];
         if (cmd === "note_folders") return [{ guid: "F", title: "Notes", sortOrder: 0, parentGuid: null }];
         if (cmd === "notes_in") return [n("A", "Curtains"), n("B", "Shopping")];
@@ -520,7 +520,7 @@ let failures = 0;
       transformCallback: (cb) => cb,
       invoke: async (cmd, args) => {
         if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-        if (cmd === "auth_resume") return true;
+        if (cmd === "auth_resume") return "library";
         if (cmd === "account_services") return ["reminders"];
         if (cmd === "reminder_lists") return [
           { guid: "G", title: "GYM", colour: "#0a84ff", ctag: null, sortOrder: 0, enabled: true },
@@ -565,7 +565,7 @@ let failures = 0;
       transformCallback: (cb) => cb,
       invoke: async (cmd) => {
         if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-        if (cmd === "auth_resume") return true;
+        if (cmd === "auth_resume") return "library";
         if (cmd === "account_services") return ["reminders"];
         if (cmd === "reminder_lists") return [{ guid: "L", title: "Life Goals", colour: "#1badf8", ctag: null, sortOrder: 0, enabled: true }];
         if (cmd === "reminder_counts") return { today: 0, scheduled: 0, flagged: 0, all: 3, lists: [["L", 3]] };
@@ -614,7 +614,7 @@ let failures = 0;
       transformCallback: (cb) => cb,
       invoke: async (cmd) => {
         if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-        if (cmd === "auth_resume") return true;
+        if (cmd === "auth_resume") return "library";
         if (cmd === "account_services") return ["reminders"];
         if (cmd === "sync_all") { window.__passes++; return { services: [], asOf: 1, tookMs: 0 }; }
         if (cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
@@ -758,7 +758,7 @@ let failures = 0;
       transformCallback: (cb) => cb,
       invoke: async (cmd) => {
         if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-        if (cmd === "auth_resume") return true;
+        if (cmd === "auth_resume") return "library";
         if (cmd === "account_services") return services;
         if (cmd === "reminder_counts")
           return { today: 0, scheduled: 0, flagged: 0, all: 0, lists: [] };

@@ -43,6 +43,7 @@ step "calendar grids"   node .uiverify/calendar.mjs
 step "every size"       node .uiverify/sizes.mjs
 step "narrow windows"   node .uiverify/compact.mjs
 step "a screen failing"  node .uiverify/boundary.mjs
+step "coming back"       node .uiverify/resume.mjs
 
 # The same screens in WebKit, the engine Quince draws in. Chromium above catches most things;
 # this catches what only WebKit does — pointer capture, blur on removal, its own layout.
@@ -56,6 +57,7 @@ step "webkit: calendar" env ENGINE=webkit node .uiverify/calendar.mjs
 step "webkit: sizes"    env ENGINE=webkit node .uiverify/sizes.mjs
 step "webkit: narrow"   env ENGINE=webkit node .uiverify/compact.mjs
 step "webkit: failing"  env ENGINE=webkit node .uiverify/boundary.mjs
+step "webkit: back"     env ENGINE=webkit node .uiverify/resume.mjs
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then printf '\033[32mAll checks passed.\033[0m\n'; else printf '\033[31mSome checks failed.\033[0m\n'; fi

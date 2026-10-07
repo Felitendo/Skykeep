@@ -13,7 +13,7 @@ await ctx.addInitScript(() => {
     transformCallback: (cb) => cb,
     invoke: async (cmd, args) => {
       if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-      if (cmd === "auth_resume") return true;
+      if (cmd === "auth_resume") return "library";
       if (cmd === "account_services") return ["notes", "ckdatabasews"];
       if (cmd === "note_folders")
         return [{ guid: "TrashFolder-CloudKit", title: "Recently Deleted", sortOrder: 9, parentGuid: null }];

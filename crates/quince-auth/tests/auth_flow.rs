@@ -615,3 +615,125 @@ async fn a_different_account_does_not_inherit_the_wait() {
         "a different account must start clean, got: {err}"
     );
 }
+
+/// Sign in once, all the way through the code, into `dir`.
+async fn signed_in(dir: &std::path::Path) {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+    let mut client = client_for(&server, dir);
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+    client.submit_two_factor("123456").await.unwrap();
+}
+
+/// Apple, days later: the cookies and the session token have both lapsed.
+async fn lapsed(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(ResponseTemplate::new(421))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/accountLogin"))
+        .respond_with(ResponseTemplate::new(421))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    mount_init(server, 200).await;
+}
+
+/// "I was told I wouldn't need to sign in again": a session token lapses in days, and
+/// without the password the only way back was the sign-in screen. Kept, it signs this
+/// still-trusted computer back in — no screen, no code.
+#[tokio::test]
+async fn a_lapsed_session_signs_itself_back_in_without_a_code() {
+    let dir = tempfile::tempdir().unwrap();
+    signed_in(dir.path()).await;
+
+    let server = MockServer::start().await;
+    lapsed(&server).await;
+    mount_complete(&server, 200).await; // trusted: no code asked for
+    mount_trust_and_login(&server).await;
+
+    let mut client = client_for(&server, dir.path());
+    assert!(client.resume().await.unwrap(), "back in, by itself");
+    assert!(!client.awaiting_code());
+    let reqs = server.received_requests().await.unwrap();
+    let complete = requests_to(&reqs, "/signin/complete");
+    assert_eq!(complete.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&complete[0].body).unwrap();
+    assert_eq!(
+        body["trustTokens"][0], "trust-token-xyz",
+        "this computer's trust went with it"
+    );
+    assert!(
+        requests_to(&reqs, "/securitycode").is_empty(),
+        "and no code was asked for"
+    );
+}
+
+/// When the trust itself has run out, Apple wants a code: the code screen is next, not the
+/// sign-in screen, and the code finishes it.
+#[tokio::test]
+async fn when_the_trust_has_run_out_the_code_is_all_that_is_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    signed_in(dir.path()).await;
+
+    let server = MockServer::start().await;
+    lapsed(&server).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+
+    let mut client = client_for(&server, dir.path());
+    assert!(!client.resume().await.unwrap());
+    assert!(client.awaiting_code(), "the code screen is next");
+    client.submit_two_factor("123456").await.unwrap();
+    assert!(!client.awaiting_code());
+    assert_eq!(
+        client.session().password.as_deref(),
+        Some("hunter2"),
+        "and it stays kept"
+    );
+}
+
+/// A password is kept only once Apple has accepted it all the way, and signing out erases it.
+#[tokio::test]
+async fn a_password_is_kept_only_once_it_has_worked_and_forgotten_on_sign_out() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+    assert!(client.session().password.is_none(), "not before the code");
+    client.submit_two_factor("123456").await.unwrap();
+    assert_eq!(client.session().password.as_deref(), Some("hunter2"));
+    client.sign_out().unwrap();
+    assert!(
+        client_for(&server, dir.path()).session().password.is_none(),
+        "gone on sign-out"
+    );
+}

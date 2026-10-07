@@ -18,7 +18,7 @@ for (const scheme of ["dark", "light"]) {
       transformCallback: (cb) => cb,
       invoke: async (cmd, args) => {
         if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-        if (cmd === "auth_resume") return true;
+        if (cmd === "auth_resume") return "library";
         if (cmd === "account_services") return ["reminders", "notes", "calendar", "contacts", "drivews"];
         if (cmd === "reminder_lists") return fx.lists;
         if (cmd === "reminder_groups") return fx.groups;

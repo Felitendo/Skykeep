@@ -168,9 +168,36 @@ async fn auth_status(auth: State<'_, Auth>) -> UiResult<Status> {
 
 /// Try the stored session. `false` just means a sign-in is needed — not an error.
 #[tauri::command]
-async fn auth_resume(auth: State<'_, Auth>) -> UiResult<bool> {
+async fn auth_resume(auth: State<'_, Auth>) -> UiResult<&'static str> {
     let mut client = auth.client.lock().await;
-    client.resume().await.map_err(|e| e.to_string())
+    let resumed = client.resume().await.map_err(|e| e.to_string())?;
+    // Back in; or back in but for the code Apple wants before trusting this computer again;
+    // or out, with nothing kept to sign in with.
+    Ok(if resumed {
+        "library"
+    } else if client.awaiting_code() {
+        "code"
+    } else {
+        "signin"
+    })
+}
+
+/// Emitted when a lapsed session signed itself back in only as far as Apple's code.
+const NEEDS_CODE: &str = "quince://needs-code";
+
+/// Make sure the session is alive before a refresh uses it, signing back in if it lapsed.
+///
+/// A window left open past the life of Apple's cookies, or of its session token, had every
+/// refresh failing quietly from then on. Checked here, a lapse is mended before it is felt;
+/// one that needs a code brings the code screen up instead.
+async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
+    let mut guard = client.lock().await;
+    if guard.session().webservices.is_none() {
+        return;
+    }
+    if matches!(guard.heartbeat().await, Ok(false)) && guard.awaiting_code() {
+        app.emit(NEEDS_CODE, ()).ok();
+    }
 }
 
 #[tauri::command]
@@ -1512,6 +1539,7 @@ async fn sync_all(
     data: State<'_, Data>,
 ) -> UiResult<refresh::Refresh> {
     let client = Arc::clone(&auth.client);
+    keep_signed_in(&app, &client).await;
     let result = refresh::all(&client, &data.0).await;
     alerts::changed();
     // Screens read the library, not the network, so they only need to be told to look again.
@@ -1536,6 +1564,7 @@ fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
             if !signed_in {
                 continue;
             }
+            keep_signed_in(&app, &client).await;
             let data = app.state::<Data>();
             let result = refresh::all(&client, &data.0).await;
             alerts::changed();

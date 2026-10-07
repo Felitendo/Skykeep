@@ -63,7 +63,8 @@ export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
 
       <p className="assurance">
         Your password never leaves this computer. Quince proves you know it without sending
-        it, and keeps the result in your system keyring.
+        it, and keeps it in your system keyring so it can sign itself back in. Signing out
+        erases it.
       </p>
       {/*
         * What somebody is owed before they type an Apple ID into software a stranger wrote.

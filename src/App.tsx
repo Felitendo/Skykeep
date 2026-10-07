@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { SignIn } from "./screens/SignIn";
 import { CodeEntry } from "./screens/CodeEntry";
 import { Library } from "./screens/Library";
-import { api } from "./lib/ipc";
+import { listen } from "@tauri-apps/api/event";
+import { api, NEEDS_CODE } from "./lib/ipc";
 
 type Phase = "checking" | "signin" | "code" | "library";
 
@@ -19,8 +20,9 @@ export default function App() {
         // Always resume rather than trusting stored metadata. Apple's service endpoints
         // authenticate by cookie, and holding a token is not the same as being able to call
         // them — resuming is what establishes the cookies that make the session usable.
-        if (status.hasStoredSession && (await api.resume())) {
-          return !cancelled && setPhase("library");
+        if (status.hasStoredSession) {
+          const next = await api.resume();
+          if (next !== "signin") return !cancelled && setPhase(next);
         }
       } catch {
         /* fall through to sign-in */
@@ -29,6 +31,15 @@ export default function App() {
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // A session that lapsed while the window was open, and that Apple will take back only
+  // with a code: the code screen, not the sign-in screen — the password is already kept.
+  useEffect(() => {
+    const stop = listen(NEEDS_CODE, () => setPhase("code"));
+    return () => {
+      void stop.then((unlisten) => unlisten()).catch(() => {});
     };
   }, []);
 

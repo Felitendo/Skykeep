@@ -15,7 +15,7 @@ await ctx.addInitScript(() => {
     transformCallback: (cb) => cb,
     invoke: async (cmd, args) => {
       if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-      if (cmd === "auth_resume") return true;
+      if (cmd === "auth_resume") return "library";
       if (cmd === "account_services") return ["drivews", "docws"];
       if (cmd === "plugin:event|listen") {
         (handlers[args.event] ??= []).push(args.handler);

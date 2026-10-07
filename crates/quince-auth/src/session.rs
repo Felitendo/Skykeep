@@ -47,6 +47,18 @@ pub struct Session {
     pub webservices: Option<serde_json::Value>,
     pub dsid: Option<String>,
 
+    /// The Apple ID and password, so a session that lapsed can sign itself back in.
+    ///
+    /// Apple keeps a web session alive for days, not months: once its token lapses only the
+    /// password opens a new one, so without it every few days meant signing in by hand —
+    /// which is what someone promised "sign in once" ran into. With this machine still
+    /// trusted (the 60-day trust token), that sign-in needs no code. It lives here, in the OS
+    /// keyring with the rest of this, never in a file; signing out erases it.
+    #[serde(default)]
+    pub apple_id: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+
     /// Failed sign-ins in a row. Drives the local backoff.
     #[serde(default)]
     pub consecutive_failures: u32,

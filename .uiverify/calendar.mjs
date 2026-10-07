@@ -15,7 +15,7 @@ await ctx.addInitScript(() => {
     transformCallback: (cb) => cb,
     invoke: async (cmd, args) => {
       if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
-      if (cmd === "auth_resume") return true;
+      if (cmd === "auth_resume") return "library";
       if (cmd === "account_services") return ["calendar"];
       if (cmd === "calendar_list") return [{ guid: "c", title: "Home", colour: "#0088FF", ctag: null, sortOrder: 0, enabled: true, writable: true, isDefault: true }];
       if (cmd === "calendar_events") return [{ guid: "e", calendarGuid: "c", title: "New Event", location: null,

@@ -239,6 +239,10 @@ pub struct Client {
     store: Store,
     session: Session,
     endpoints: Endpoints,
+    /// An Apple ID and password being signed in with, kept only once the sign-in completes.
+    pending: Option<(String, String)>,
+    /// A lapsed session tried to sign itself back in and Apple wants a code first.
+    awaiting_code: bool,
 }
 
 impl Client {
@@ -289,7 +293,16 @@ impl Client {
             store,
             session,
             endpoints,
+            pending: None,
+            awaiting_code: false,
         })
+    }
+
+    /// A lapsed session tried to sign itself back in, and Apple wants a code before it will
+    /// trust this computer again. The code screen is the next thing to show.
+    #[must_use]
+    pub fn awaiting_code(&self) -> bool {
+        self.awaiting_code
     }
 
     pub fn session(&self) -> &Session {
@@ -397,19 +410,38 @@ impl Client {
         //
         // This is what makes staying signed in survive a lost cookie file, a copied install,
         // or cookies expiring before the trust token does.
-        match self.account_login().await {
-            Ok(data) => {
-                self.absorb(&data);
-                self.persist()?;
-                Ok(true)
-            }
-            Err(_) => {
-                // Genuinely dead. Drop the challenge state so it cannot contaminate the
-                // sign-in that follows.
-                self.clear_challenge_state();
-                Ok(false)
+        if let Ok(data) = self.account_login().await {
+            self.absorb(&data);
+            self.persist()?;
+            return Ok(true);
+        }
+
+        // The session token has lapsed too — Apple keeps one for days, not months. With the
+        // password kept, sign in again: this computer is still trusted, so Apple asks for no
+        // code, and nobody sees a sign-in screen. Only when the trust itself has run out
+        // (about two months) does Apple want a code, and then the code screen is what shows.
+        if let (Some(apple_id), Some(password)) =
+            (self.session.apple_id.clone(), self.session.password.clone())
+        {
+            match self.sign_in(&apple_id, &password).await {
+                Ok(SignInOutcome::Complete) => return Ok(true),
+                Ok(SignInOutcome::NeedsTwoFactor) => {
+                    self.awaiting_code = true;
+                    return Ok(false);
+                }
+                // The password was changed elsewhere: the kept one is worthless now.
+                Err(Error::BadCredentials) => {
+                    self.session.password = None;
+                    self.persist()?;
+                }
+                Err(_) => {}
             }
         }
+
+        // Genuinely dead. Drop the challenge state so it cannot contaminate the sign-in that
+        // follows.
+        self.clear_challenge_state();
+        Ok(false)
     }
 
     /// `POST /validate` — cheap liveness check. Doubles as the session heartbeat.
@@ -440,7 +472,10 @@ impl Client {
                 self.persist()?;
                 Ok(true)
             }
-            Err(_) => Ok(false),
+            // Cookies lapse after an idle spell long before the session does. Giving up here
+            // left a running window signed out for good — every refresh failing quietly —
+            // when the stored tokens, or the kept password, would have carried on.
+            Err(_) => self.resume().await,
         }
     }
 
@@ -458,7 +493,13 @@ impl Client {
         self.session.consecutive_failures = owed.consecutive_failures;
         self.session.retry_after = owed.retry_after;
 
+        // Kept only once Apple has accepted it all the way: see `absorb`.
+        self.pending = Some((apple_id.trim().to_string(), password.to_string()));
+        self.awaiting_code = false;
         let outcome = self.sign_in_inner(apple_id, password).await;
+        if outcome.is_err() {
+            self.pending = None;
+        }
         match &outcome {
             // Reaching the two-factor step means the password was accepted: not a failure.
             Ok(_) => {
@@ -835,6 +876,13 @@ impl Client {
     }
 
     fn absorb(&mut self, data: &Value) {
+        // A completed sign-in — with or without a code — is when a password has proved
+        // itself, so that is when it is kept.
+        if let Some((apple_id, password)) = self.pending.take() {
+            self.session.apple_id = Some(apple_id);
+            self.session.password = Some(password);
+            self.awaiting_code = false;
+        }
         if let Some(ws) = data.get("webservices") {
             self.session.webservices = Some(ws.clone());
         }

@@ -118,7 +118,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
       switch (cmd) {
         case "auth_status":
           return { hasStoredSession: screen === "library", signedIn: screen === "library" };
-        case "auth_resume":      return screen === "library";
+        case "auth_resume":      return screen === "library" ? "library" : "signin";
         case "auth_sign_in":     return screen === "code" ? "needs_two_factor" : "complete";
         case "auth_submit_code": return null;
         case "account_services": return services;

@@ -50,6 +50,8 @@ export type UploadEvent = {
 export const SYNCED = "quince://synced";
 /** An alert was clicked: open Reminders, where that reminder is. */
 export const OPEN_REMINDER = "quince://open-reminder";
+/** A lapsed session signed itself back in only as far as Apple's code. */
+export const NEEDS_CODE = "quince://needs-code";
 
 export const api = {
   /** One refresh for every service. Never rejects for a single service failing. */
@@ -58,7 +60,8 @@ export const api = {
   syncStatus: () => invoke<Refresh>("sync_status"),
 
   status: () => invoke<Status>("auth_status"),
-  resume: () => invoke<boolean>("auth_resume"),
+  /** Where a returning person goes: their library, the code Apple wants, or sign-in. */
+  resume: () => invoke<"library" | "code" | "signin">("auth_resume"),
   signIn: (appleId: string, password: string) =>
     invoke<SignInResult>("auth_sign_in", { appleId, password }),
   submitCode: (code: string) => invoke<void>("auth_submit_code", { code }),

@@ -17,7 +17,7 @@ function installStub({ screen, services, twoFactor, driveItems = [] }) {
       switch (cmd) {
         case "auth_status":
           return { hasStoredSession: screen === "library", signedIn: screen === "library" };
-        case "auth_resume": return screen === "library";
+        case "auth_resume": return screen === "library" ? "library" : "signin";
         case "auth_sign_in": return screen === "code" ? "needs_two_factor" : "complete";
         case "auth_two_factor_options": return twoFactor;
         case "account_services": return services;
