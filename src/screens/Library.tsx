@@ -9,6 +9,7 @@ import { RemindersView } from "./RemindersView";
 import { NotesView } from "./NotesView";
 import { ContactsView } from "./ContactsView";
 import { DriveView } from "./DriveView";
+import { ScreenBoundary } from "../components/ScreenBoundary";
 
 /**
  * What the sidebar holds: the services with a real screen behind them, most used first.
@@ -153,16 +154,21 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
         </nav>
 
         <main className="content">
-          {selected === "calendar" ? (
-            <CalendarView />
-          ) : selected === "reminders" ? (
-            <RemindersView />
-          ) : selected === "notes" ? (
-            <NotesView />
-          ) : selected === "contacts" ? (
-            <ContactsView />
-          ) : selected === "drivews" ? (
-            <DriveView />
+          {selected && SCREENS.some((s) => s.key === selected) ? (
+            // Keyed by screen, so moving to another screen also clears a failed one.
+            <ScreenBoundary key={selected} name={SCREENS.find((s) => s.key === selected)?.name ?? "This screen"}>
+              {selected === "calendar" ? (
+                <CalendarView />
+              ) : selected === "reminders" ? (
+                <RemindersView />
+              ) : selected === "notes" ? (
+                <NotesView />
+              ) : selected === "contacts" ? (
+                <ContactsView />
+              ) : (
+                <DriveView />
+              )}
+            </ScreenBoundary>
           ) : (
             ready &&
             services.length === 0 && (

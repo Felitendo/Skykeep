@@ -1634,3 +1634,7 @@
 }
 .notice-close:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
 .notice-close:focus-visible { outline: 3px solid var(--gold-ring); }
+
+/* A screen that failed to draw, in place of the screen — the rest of the app carries on. */
+.screen-failed { max-width: 46ch; margin: 64px auto 0; text-align: center; color: var(--text-2); }
+.screen-failed p { margin: 0 0 12px; font-size: var(--t-13); }
