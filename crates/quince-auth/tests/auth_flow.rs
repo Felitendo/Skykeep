@@ -737,3 +737,38 @@ async fn a_password_is_kept_only_once_it_has_worked_and_forgotten_on_sign_out() 
         "gone on sign-out"
     );
 }
+
+/// "I never receive the verification code." Since iOS 26.4 Apple no longer pushes it on the
+/// 409 by itself — the client has to ask, with a PUT to verify/trusteddevice/securitycode —
+/// so a sign-in that needs a code asks straight away, from the icloud.com origin.
+#[tokio::test]
+async fn a_sign_in_that_needs_a_code_asks_apple_to_send_it() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    let outcome = client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+    assert_eq!(outcome, SignInOutcome::NeedsTwoFactor);
+
+    let reqs = server.received_requests().await.unwrap();
+    let asked: Vec<_> = requests_to(&reqs, "/verify/trusteddevice/securitycode")
+        .into_iter()
+        .filter(|r| r.method.as_str() == "PUT")
+        .collect();
+    assert_eq!(asked.len(), 1, "the code was asked for");
+    let origin = asked[0].headers.get("origin").and_then(|v| v.to_str().ok());
+    assert_ne!(
+        origin,
+        Some(SRP_ORIGIN),
+        "from the icloud.com origin, not idmsa's"
+    );
+}

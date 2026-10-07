@@ -641,6 +641,15 @@ impl Client {
         match status {
             StatusCode::CONFLICT => {
                 self.persist()?;
+                // Ask for the code. Apple used to push it to trusted devices on this 409 by
+                // itself; since iOS 26.4 it waits to be asked (PUT verify/trusteddevice/
+                // securitycode), and until asked no "Allow sign-in?" ever reaches a phone —
+                // which is why the only way a code ever arrived here was Airplane Mode and
+                // Settings, or pressing "Send again". Not fatal if it fails: the code screen
+                // still offers sending it again, and a text.
+                if let Err(e) = self.resend_to_devices().await {
+                    eprintln!("asking Apple to send the code: {e}");
+                }
                 Ok(SignInOutcome::NeedsTwoFactor)
             }
             s if s.is_success() => {
@@ -803,7 +812,13 @@ impl Client {
         self.capture(&r);
         let status = r.status();
         let body = r.text().await.unwrap_or_default();
-        if !status.is_success() && status != StatusCode::NO_CONTENT {
+        // Since iOS 26.4 a correct code is answered 409 with `securityCode.valid: true`.
+        let accepted = status == StatusCode::CONFLICT
+            && serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|v| v.pointer("/securityCode/valid").and_then(Value::as_bool))
+                == Some(true);
+        if !status.is_success() && status != StatusCode::NO_CONTENT && !accepted {
             let err = apple_error("checking that code", status, &body);
             // A genuinely wrong code is final; don't burn an attempt probing further.
             if matches!(err, Error::BadCode) {
