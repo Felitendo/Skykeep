@@ -445,15 +445,98 @@ async fn event_delete(guid: String, auth: State<'_, Auth>, data: State<'_, Data>
 
 /// Events overlapping `[from, to]`, as unix seconds. Read straight from the library.
 #[tauri::command]
-async fn calendar_events(from: i64, to: i64, data: State<'_, Data>) -> UiResult<Vec<Event>> {
-    let library = data.0.lock().await;
-    library.events_between(from, to).map_err(|e| e.to_string())
+async fn calendar_events(
+    from: i64,
+    to: i64,
+    data: State<'_, Data>,
+    occasions: State<'_, Occasions>,
+) -> UiResult<Vec<Event>> {
+    let (mut events, people) = {
+        let library = data.0.lock().await;
+        (
+            library
+                .events_between(from, to)
+                .map_err(|e| e.to_string())?,
+            library.contacts(None).map_err(|e| e.to_string())?,
+        )
+    };
+    // Birthdays and holidays, as a phone draws them: neither is an iCloud calendar.
+    events.extend(quince_icloud::occasions::birthdays(&people, from, to));
+    events.extend(quince_icloud::occasions::holidays(
+        &occasions.feed.lock().await.1,
+        from,
+        to,
+    ));
+    events.sort_by(|a, b| {
+        a.starts_at
+            .cmp(&b.starts_at)
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    Ok(events)
+}
+
+/// The holiday feed for this machine's region, and its name, kept beside the library.
+struct Occasions {
+    feed: Mutex<(Option<String>, Vec<quince_icloud::occasions::Holiday>)>,
+}
+
+/// How long a copy of the holiday feed is used before asking Apple for a fresh one.
+const HOLIDAYS_KEPT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Keep the holiday feed: read the copy on disk at once, and fetch a fresh one when that copy
+/// is a week old or missing — then once a day after, in case it ages while Quince runs.
+fn spawn_holidays(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let path = state_dir(&app).join("holidays.ics");
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            *app.state::<Occasions>().feed.lock().await =
+                quince_icloud::occasions::parse_feed(&text);
+        }
+        let http = reqwest::Client::new();
+        loop {
+            let stale = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .map_or(true, |t| {
+                    t.elapsed().map_or(true, |age| age > HOLIDAYS_KEPT)
+                });
+            if stale {
+                if let Some((region, lang)) = quince_icloud::occasions::this_machines_feed() {
+                    if let Ok(text) =
+                        quince_icloud::occasions::fetch_feed(&http, &region, &lang).await
+                    {
+                        std::fs::write(&path, &text).ok();
+                        *app.state::<Occasions>().feed.lock().await =
+                            quince_icloud::occasions::parse_feed(&text);
+                        app.emit(SYNCED, refresh::status(&app.state::<Data>().0).await)
+                            .ok();
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+        }
+    });
 }
 
 #[tauri::command]
-async fn calendar_list(data: State<'_, Data>) -> UiResult<Vec<Calendar>> {
+async fn calendar_list(
+    data: State<'_, Data>,
+    occasions: State<'_, Occasions>,
+) -> UiResult<Vec<Calendar>> {
     let library = data.0.lock().await;
-    library.calendars().map_err(|e| e.to_string())
+    let mut calendars = library.calendars().map_err(|e| e.to_string())?;
+    let any_birthdays = library
+        .contacts(None)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|c| c.birthday.is_some());
+    let feed = occasions.feed.lock().await;
+    let holidays =
+        (!feed.1.is_empty()).then(|| feed.0.clone().unwrap_or_else(|| "Holidays".into()));
+    calendars.extend(quince_icloud::occasions::calendars(
+        holidays.as_deref(),
+        any_birthdays,
+    ));
+    Ok(calendars)
 }
 
 /// What every entry in the Reminders sidebar is holding.
@@ -1831,6 +1914,10 @@ fn main() {
             let mut library = Library::open(&dir)?;
             adopt_writer(&mut library);
             app.manage(Data(Mutex::new(library)));
+            app.manage(Occasions {
+                feed: Mutex::new((None, Vec::new())),
+            });
+            spawn_holidays(app.handle().clone());
             spawn_heartbeat(Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
             alerts::spawn(app.handle().clone());

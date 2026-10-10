@@ -10,6 +10,7 @@ pub mod contacts;
 pub mod drive;
 pub mod mergeable;
 pub mod notes;
+pub mod occasions;
 pub mod reminders;
 pub mod sync;
 pub mod topotext;

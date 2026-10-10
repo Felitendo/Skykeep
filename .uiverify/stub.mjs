@@ -14,6 +14,8 @@ export const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdevi
 export function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture, remindersFixture }) {
   const HOUR = 3600, DAY = 86400;
   const base = Math.floor(Date.now() / 1000 / DAY) * DAY + 9 * HOUR;
+  // Local midnight, n days from today: where an all-day day begins, as the app makes them.
+  const localDay = (n) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d.getTime() / 1000; };
   const events = !calendarFixture ? [] : [
     { guid: "e1", calendarGuid: "work", title: "Design review", location: "Studio",
       startsAt: base + HOUR, endsAt: base + 2 * HOUR, allDay: false,
@@ -27,6 +29,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     { guid: "e4", calendarGuid: "personal", title: "Flight to Hyderabad", location: null,
       startsAt: base + 3 * DAY, endsAt: base + 4 * DAY, allDay: true,
       timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
+    { guid: "quince:birthdays:c1:2026", calendarGuid: "quince:birthdays", title: "Zoya Ahuja’s Birthday",
+      location: null, startsAt: localDay(2), endsAt: localDay(3), allDay: true,
+      timezone: null, url: null, notes: null, etag: null },
+    { guid: "quince:holidays:diwali:2026", calendarGuid: "quince:holidays", title: "Diwali",
+      location: null, startsAt: localDay(5), endsAt: localDay(6), allDay: true,
+      timezone: null, url: null, notes: null, etag: null },
   ];
   const dueReminders = !calendarFixture ? [] : [
     { guid: "r1", listGuid: "daily", title: "Water the plants", notes: null,
@@ -109,7 +117,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
       writable: true, isDefault: true },
     { guid: "personal", title: "Asha", colour: "#1badf8", ctag: null, sortOrder: 2, enabled: true,
       writable: true, isDefault: false },
-    { guid: "holidays", title: "Holidays in India", colour: "#8e8e93", ctag: null, sortOrder: 3,
+    // As the app adds them: drawn from contacts and Apple's holiday feed, read-only.
+    { guid: "quince:birthdays", title: "Birthdays", colour: "#8e8e93", ctag: null, sortOrder: 900,
+      enabled: true, writable: false, isDefault: false },
+    { guid: "quince:holidays", title: "India Holidays", colour: "#34c759", ctag: null, sortOrder: 901,
       enabled: true, writable: false, isDefault: false },
   ];
   window.__TAURI_INTERNALS__ = {
