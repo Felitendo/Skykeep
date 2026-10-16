@@ -49,6 +49,7 @@ step "drive folders"    node .uiverify/drive-nav.mjs
 step "birthdays in contacts" node .uiverify/contact-birthday.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs
+step "reminders instant" node .uiverify/reminders-instant.mjs
 
 # The same screens in WebKit, the engine Quince draws in. Chromium above catches most things;
 # this catches what only WebKit does — pointer capture, blur on removal, its own layout.

@@ -386,7 +386,9 @@ impl<'a> CalendarClient<'a> {
             // Deleting what is already gone has done what was asked — but only once Apple's
             // own record confirms it is gone, not on the word of a status code alone.
             // Measured: an event Apple no longer has answers 404 with an empty ChangeSet.
-            Err(Error::NotFound) if matches!(self.event_detail(event, &day).await, Ok(None)) => Ok(()),
+            Err(Error::NotFound) if matches!(self.event_detail(event, &day).await, Ok(None)) => {
+                Ok(())
+            }
             other => other.map(|_| ()),
         }
     }
@@ -1039,7 +1041,10 @@ mod write_tests {
             .unwrap()
             .iter()
             .any(|r| r.method == reqwest::Method::POST);
-        assert!(!wrote, "nothing may be written over an event that could not be read");
+        assert!(
+            !wrote,
+            "nothing may be written over an event that could not be read"
+        );
     }
 
     /// Deleting an event Apple no longer has: it answers 404, and its own record confirms

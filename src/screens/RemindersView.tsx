@@ -279,19 +279,31 @@ export function RemindersView() {
     return () => window.clearTimeout(timer);
   }, [moved]);
 
-  /** Every write goes through here: to Apple first, then re-read, so nothing on screen is a guess. */
+  const patch = (guid: string, change: Partial<Reminder>) => (rows: Reminder[]) =>
+    rows.map((x) => (x.guid === guid ? { ...x, ...change } : x));
+
+  /**
+   * Every write goes through here. What it will do shows at once — a tick, a flag, a row
+   * gone — the way the phone answers a tap; then it goes to Apple and the list is re-read,
+   * so what stays on screen is what Apple kept. Waiting on the network before showing the
+   * tap made every add, tick and delete feel a second behind. A refusal re-reads, which
+   * puts the row back as it was, and says why.
+   */
   const write = useCallback(
     async (
       reminder: Reminder,
       run: () => Promise<void>,
+      predict?: (rows: Reminder[]) => Reminder[],
     ): Promise<Reminder[] | null> => {
       setBusyGuid(reminder.guid);
       setError(null);
+      if (predict) setItems((rows) => predict(rows));
       try {
         await run();
         return await readItems();
       } catch (e) {
         setError(messageOf(e));
+        readItems().catch(() => {});
         return null;
       } finally {
         setBusyGuid(null);
@@ -307,8 +319,13 @@ export function RemindersView() {
    */
   const toggle = async (r: Reminder) => {
     const wasOpen = !r.completedAt;
-    const fresh = await write(r, () =>
-      api.reminderSetDone(r.guid, r.listGuid, wasOpen),
+    const fresh = await write(
+      r,
+      () => api.reminderSetDone(r.guid, r.listGuid, wasOpen),
+      // A repeating one rolls on rather than closing, so only Apple's answer can show it.
+      repeatLabel(r) === null
+        ? patch(r.guid, { completedAt: wasOpen ? Math.floor(Date.now() / 1000) : null })
+        : undefined,
     );
     if (!fresh || !wasOpen || repeatLabel(r) === null) return;
     const after = fresh.find((x) => x.guid === r.guid);
@@ -317,15 +334,24 @@ export function RemindersView() {
     }
   };
   const flag = (r: Reminder) =>
-    write(r, () =>
-      api.reminderEdit(r.guid, r.listGuid, { flagged: !r.flagged }),
+    write(
+      r,
+      () => api.reminderEdit(r.guid, r.listGuid, { flagged: !r.flagged }),
+      patch(r.guid, { flagged: !r.flagged }),
     );
   const remove = (r: Reminder) =>
-    write(r, () => api.reminderDelete(r.guid, r.listGuid));
+    write(
+      r,
+      () => api.reminderDelete(r.guid, r.listGuid),
+      // A subtask goes with its parent, as on the phone.
+      (rows) => rows.filter((x) => x.guid !== r.guid && x.parentGuid !== r.guid),
+    );
   const rename = (r: Reminder, title: string) =>
     title.trim() && title.trim() !== r.title
-      ? write(r, () =>
-          api.reminderEdit(r.guid, r.listGuid, { title: title.trim() }),
+      ? write(
+          r,
+          () => api.reminderEdit(r.guid, r.listGuid, { title: title.trim() }),
+          patch(r.guid, { title: title.trim() }),
         )
       : Promise.resolve();
   const setDue = (r: Reminder, value: string) =>
@@ -444,11 +470,24 @@ export function RemindersView() {
     if (!title || !targetListGuid) return;
     setSyncing(true);
     setError(null);
+    // The row is there the moment Return is pressed, and the field is ready for the next.
+    const standIn = `pending:${Date.now()}`;
+    setDraft("");
+    // Only in the list it goes to: an undated reminder would not stay in Today or Scheduled.
+    if (inList) setItems((rows) => [
+      ...rows,
+      {
+        guid: standIn, listGuid: targetListGuid, title, notes: null, dueAt: null,
+        completedAt: null, priority: 0, flagged: false, parentGuid: null,
+        recurFrequency: null, recurInterval: null, etag: null,
+      } as Reminder,
+    ]);
     try {
       await api.reminderCreate(targetListGuid, title);
-      setDraft("");
       await readItems();
     } catch (err) {
+      setItems((rows) => rows.filter((r) => r.guid !== standIn));
+      setDraft((d) => d || title);
       setError(messageOf(err));
     } finally {
       setSyncing(false);
@@ -795,7 +834,6 @@ export function RemindersView() {
         aria-label={
           inList ? `Add a reminder to ${heading}` : `Add a reminder to ${targetList?.title ?? "a list"}`
         }
-        disabled={syncing}
       />
       {/* From a built-in view, where it lands is a real choice, so it is shown — but only
           once something is being typed, not as a permanent control on the screen. */}
