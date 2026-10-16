@@ -377,7 +377,13 @@ fn now_millis() -> i64 {
 /// exactly like one typed there.
 #[must_use]
 pub fn title_and_snippet(body: &str) -> (String, String) {
-    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    // The first line with words on it, as the phone takes it — not the first line that is
+    // merely not blank. A pasted note opening with a rule of box-drawing characters
+    // (`━━━━`) was sent with that rule as its title, and the phone showed none.
+    let mut lines = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.chars().any(char::is_alphanumeric));
     let title = lines.next().unwrap_or_default().to_string();
     let snippet = lines.next().unwrap_or_default().to_string();
     (title, snippet)
@@ -682,6 +688,15 @@ pub async fn delete_cloudkit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_is_the_first_line_with_words_on_it() {
+        let pasted = "━━━━━━━━━━━━━━━━\n\n𝗨𝗡𝗜𝗧 𝟭: 𝗜𝗡𝗧𝗥𝗢\n•  ──\nQuantum states";
+        assert_eq!(
+            title_and_snippet(pasted),
+            ("𝗨𝗡𝗜𝗧 𝟭: 𝗜𝗡𝗧𝗥𝗢".to_string(), "Quantum states".to_string())
+        );
+    }
 
     #[test]
     fn a_notes_own_record_is_named_as_apple_names_it() {
