@@ -339,10 +339,11 @@ export function CalendarView() {
   };
 
   /** "New event": the next whole hour on the selected day, for an hour — Apple's default. */
-  const newEvent = (e: React.MouseEvent) => {
+  const newEvent = (e?: React.MouseEvent) => {
     const at = new Date(selected);
     at.setHours(now.getHours() + 1, 0, 0, 0);
-    const button = e.currentTarget.getBoundingClientRect();
+    const button = (e?.currentTarget ?? document.querySelector('[aria-label="New event"]'))?.getBoundingClientRect()
+      ?? new DOMRect(window.innerWidth - 40, 40, 0, 0);
     // Under the button, never over the toolbar; in Day and Week it moves beside the new event
     // once that is drawn.
     newAt(seconds(at), seconds(at) + 3600, false, { x: button.right, y: button.bottom + 32 });
@@ -367,7 +368,7 @@ export function CalendarView() {
       return new Date(d.getFullYear() + by, d.getMonth(), 1);
     });
 
-  // Keyboard, as in Calendar: ⌘/Ctrl-arrows page, T goes to today, N makes an event.
+  // Keyboard, as in Calendar on a Mac (Ctrl here): arrows page, T today, 1–4 the views, N an event.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable]");
@@ -378,9 +379,15 @@ export function CalendarView() {
         return;
       }
       if (typing || draft) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === "ArrowLeft") shift(-1);
-      else if ((e.metaKey || e.ctrlKey) && e.key === "ArrowRight") shift(1);
-      else if (e.key === "t" && !e.metaKey && !e.ctrlKey) setSelected(midnight(new Date()));
+      const command = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
+      const k = e.key.toLowerCase();
+      if (command && e.key === "ArrowLeft") shift(-1);
+      else if (command && e.key === "ArrowRight") shift(1);
+      // ⌘T, and the bare T this screen always had.
+      else if (k === "t" && !e.altKey && !e.shiftKey) setSelected(midnight(new Date()));
+      // ⌘1–⌘4: Day, Week, Month, Year, in the order the switch shows them.
+      else if (command && /^[1-4]$/.test(e.key)) setView(VIEWS[Number(e.key) - 1].key);
+      else if (command && k === "n") newEvent();
       else return;
       e.preventDefault();
     };
