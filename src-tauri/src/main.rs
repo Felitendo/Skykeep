@@ -974,6 +974,39 @@ async fn note_create(
     .await
     .map_err(|e| e.to_string())?;
     resync_notes(&http, &root, params, &data).await?;
+
+    // Apple's change feed does not always carry a new record back on the very next pass.
+    // Without this the note just made was missing locally, and the first edit to it failed
+    // with "That note is no longer in the local library" — typing into a fresh note, then
+    // pasting, lost the paste's save. Saving reads the record from Apple, so a local stand-in
+    // with no tag is enough until the feed catches up.
+    let mut library = data.0.lock().await;
+    let known = library
+        .notes_in(None)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|n| n.guid == guid);
+    if !known {
+        let (title, snippet) = quince_icloud::notes::title_and_snippet(&body);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        library
+            .put_notes(&[Note {
+                guid: guid.clone(),
+                folder_guid,
+                title,
+                snippet: Some(snippet).filter(|s| !s.is_empty()),
+                body: Some(body),
+                locked: false,
+                pinned: false,
+                created_at: Some(now),
+                modified_at: Some(now),
+                editable: true,
+                etag: None,
+            }])
+            .map_err(|e| e.to_string())?;
+    }
     Ok(guid)
 }
 
