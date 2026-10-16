@@ -322,8 +322,17 @@ pub async fn create(
     tokens: &Tokens,
     contact: &Contact,
 ) -> Result<String> {
-    if contact.first_name.is_none() && contact.last_name.is_none() && contact.company.is_none() {
-        return Err(Error::Protocol("a contact needs a name".into()));
+    // Apple keeps a card that is only a number or an address — "No Name" on the phone — so
+    // only a card with nothing in it at all is turned away.
+    let blank = |v: &Option<String>| v.as_deref().is_none_or(|s| s.trim().is_empty());
+    if blank(&contact.first_name)
+        && blank(&contact.last_name)
+        && blank(&contact.company)
+        && contact.methods.iter().all(|m| m.value.trim().is_empty())
+    {
+        return Err(Error::Refused(
+            "Add a name, a phone number or an email address first.".into(),
+        ));
     }
     // Apple's own client mints the id rather than asking the service for one.
     let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
@@ -375,6 +384,17 @@ pub async fn delete(
     tokens: &Tokens,
     contact: &Contact,
 ) -> Result<()> {
+    // The tag Apple holds now, not the one stored at the last sync: a card edited on the
+    // phone since then was refused as a conflict, and the delete failed for no reason a
+    // person could see. Gone already is done.
+    let Some(current) = card(http, root, params.clone(), &contact.guid).await? else {
+        return Ok(());
+    };
+    let etag = current
+        .get("etag")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| contact.etag.clone());
     let mut query = params;
     query.push(("method".into(), "DELETE".into()));
     write(
@@ -385,7 +405,7 @@ pub async fn delete(
         reqwest::Method::POST,
         serde_json::json!({
             "contactId": contact.guid,
-            "etag": contact.etag,
+            "etag": etag,
         }),
     )
     .await?;
@@ -702,6 +722,7 @@ mod write_tests {
             first_name: None,
             last_name: None,
             company: None,
+            methods: vec![],
             ..person()
         };
         assert!(create(
@@ -737,9 +758,17 @@ mod write_tests {
         assert!(card.get("etag").is_none(), "nothing to replace yet");
     }
 
+    /// The etag sent is the one Apple holds now: a card edited on the phone since the last
+    /// sync was refused as a conflict when the stored one went.
     #[tokio::test]
-    async fn deleting_says_so_and_carries_the_etag() {
+    async fn deleting_says_so_and_carries_apples_current_etag() {
         let server = server().await;
+        Mock::given(path_regex(r".*/co/startup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contacts": [{ "contactId": "C1", "etag": "v2" }]
+            })))
+            .mount(&server)
+            .await;
         delete(
             &reqwest::Client::new(),
             &server.uri(),
@@ -749,11 +778,68 @@ mod write_tests {
         )
         .await
         .unwrap();
-        let (request, card) = sent(&server).await;
+        let request = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.url.path().ends_with("/co/contacts/card"))
+            .expect("the delete was sent");
         let query: std::collections::HashMap<_, _> = request.url.query_pairs().collect();
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(query["method"], "DELETE");
-        assert_eq!(card["contactId"], "C1");
-        assert_eq!(card["etag"], "v1", "a delete must not race another device");
+        assert_eq!(body["contacts"][0]["contactId"], "C1");
+        assert_eq!(body["contacts"][0]["etag"], "v2");
+    }
+
+    /// A card Apple no longer has is already deleted: nothing is sent and nothing fails.
+    #[tokio::test]
+    async fn deleting_a_card_already_gone_succeeds_quietly() {
+        let server = server().await;
+        Mock::given(path_regex(r".*/co/startup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "contacts": [] })))
+            .mount(&server)
+            .await;
+        delete(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &person(),
+        )
+        .await
+        .unwrap();
+        assert!(!server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with("/co/contacts/card")));
+    }
+
+    /// A number alone is a contact, as on the phone.
+    #[tokio::test]
+    async fn a_contact_with_only_a_number_is_created() {
+        let server = server().await;
+        let number_only = Contact {
+            first_name: None,
+            last_name: None,
+            company: None,
+            ..person()
+        };
+        assert!(
+            number_only.methods.iter().any(|m| !m.value.is_empty()),
+            "the fixture has a number"
+        );
+        create(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &tokens(),
+            &number_only,
+        )
+        .await
+        .unwrap();
     }
 
     /// A stale sync token is recoverable by re-reading, so it is named as a conflict rather
