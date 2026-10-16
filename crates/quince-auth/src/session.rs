@@ -134,7 +134,8 @@ impl Session {
 /// Normally the OS keyring (gnome-keyring / kwallet over the Secret Service API). Tests use
 /// a file instead, so a test run never touches the user's real keyring.
 enum Backend {
-    Keyring,
+    /// The keyring entry's name: one per state directory.
+    Keyring(String),
     File(PathBuf),
 }
 
@@ -177,6 +178,22 @@ pub fn account_fingerprint(apple_id: &str) -> String {
     format!("{:x}", hasher.finalize())[..32].to_string()
 }
 
+/// The keyring entry a state directory's session lives under.
+///
+/// It used to be one fixed name for every directory, so two Quince processes with separate
+/// libraries — the app and a probe, or two installs — kept one session between them: each
+/// sign-in overwrote the other's tokens while their cookies stayed apart, and each then found
+/// itself signed out. The app's own directory keeps the name it always had, so nobody is
+/// signed out by this change; any other directory gets an entry of its own.
+fn entry_name(state_dir: &Path) -> String {
+    if state_dir.ends_with(KEYRING_SERVICE) {
+        return KEYRING_ENTRY.to_string();
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(state_dir.to_string_lossy().as_bytes());
+    format!("{KEYRING_ENTRY}:{:x}", digest)[..KEYRING_ENTRY.len() + 17].to_string()
+}
+
 impl Store {
     /// Production: secrets in the OS keyring.
     pub fn keyring(state_dir: &Path) -> std::io::Result<Self> {
@@ -184,7 +201,7 @@ impl Store {
         Ok(Self {
             cookie_path: state_dir.join("cookies.json"),
             cooldown_path: state_dir.join("cooldown.json"),
-            backend: Backend::Keyring,
+            backend: Backend::Keyring(entry_name(state_dir)),
         })
     }
 
@@ -230,14 +247,18 @@ impl Store {
         std::fs::write(&self.cooldown_path, json)
     }
 
-    fn entry() -> Result<keyring::Entry, keyring::Error> {
-        keyring::Entry::new(KEYRING_SERVICE, KEYRING_ENTRY)
+    fn entry(&self) -> Result<keyring::Entry, keyring::Error> {
+        let name = match &self.backend {
+            Backend::Keyring(name) => name.as_str(),
+            Backend::File(_) => KEYRING_ENTRY,
+        };
+        keyring::Entry::new(KEYRING_SERVICE, name)
     }
 
     /// Load the stored session. A missing entry is normal (first run), not an error.
     pub fn load(&self) -> Session {
         let json = match &self.backend {
-            Backend::Keyring => match Self::entry().and_then(|e| e.get_password()) {
+            Backend::Keyring(_) => match self.entry().and_then(|e| e.get_password()) {
                 Ok(j) => j,
                 Err(_) => return Session::default(),
             },
@@ -252,8 +273,8 @@ impl Store {
     pub fn save(&self, session: &Session) -> Result<(), crate::Error> {
         let json = serde_json::to_string(session)?;
         match &self.backend {
-            Backend::Keyring => {
-                Self::entry()
+            Backend::Keyring(_) => {
+                self.entry()
                     .and_then(|e| e.set_password(&json))
                     .map_err(|e| crate::Error::Keyring(e.to_string()))?;
 
@@ -261,7 +282,7 @@ impl Store {
                 // prove it landed rather than assume. A keyring that accepts a write and
                 // loses it looks identical to working until the user reopens the app.
                 if session.trust_token.is_some() {
-                    let stored = Self::entry().and_then(|e| e.get_password()).ok();
+                    let stored = self.entry().and_then(|e| e.get_password()).ok();
                     if stored.as_deref() != Some(json.as_str()) {
                         return Err(crate::Error::Keyring(
                             "the system keyring accepted the sign-in but did not keep it. \
@@ -280,8 +301,8 @@ impl Store {
     /// Forget everything. Used by sign-out, and when Apple rejects the stored session for good.
     pub fn clear(&self) -> Result<(), crate::Error> {
         match &self.backend {
-            Backend::Keyring => {
-                if let Ok(entry) = Self::entry() {
+            Backend::Keyring(_) => {
+                if let Ok(entry) = self.entry() {
                     match entry.delete_credential() {
                         Ok(()) | Err(keyring::Error::NoEntry) => {}
                         Err(e) => return Err(crate::Error::Keyring(e.to_string())),
@@ -484,5 +505,23 @@ mod per_account_tests {
         assert!(!written.contains("someone"), "no local part");
         assert!(!written.contains("example.invalid"), "no domain");
         assert!(!written.contains('@'), "nothing that looks like an address");
+    }
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+
+    #[test]
+    fn each_library_keeps_its_own_session_and_the_app_keeps_its_old_one() {
+        let app = Path::new("/home/someone/.local/share/dev.quince.client");
+        let probe = Path::new("/home/someone/.local/share/quince-probe");
+        assert_eq!(
+            entry_name(app),
+            "session",
+            "the app is not signed out by the change"
+        );
+        assert_ne!(entry_name(probe), entry_name(app));
+        assert_eq!(entry_name(probe), entry_name(probe), "stable");
     }
 }
