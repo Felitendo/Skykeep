@@ -161,6 +161,22 @@ export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
   const [items, setItems] = useState<DriveItem[]>([]);
   const [inTrash, setInTrash] = useState(false);
+  /** icloud.com's "View as": Grid or List, remembered. */
+  const [grid, setGrid] = useState(() => {
+    try {
+      return window.localStorage.getItem("quince.drive.view") === "grid";
+    } catch {
+      return false;
+    }
+  });
+  const chooseView = (asGrid: boolean) => {
+    setGrid(asGrid);
+    try {
+      window.localStorage.setItem("quince.drive.view", asGrid ? "grid" : "list");
+    } catch {
+      // Shown so for now; forgotten on restart.
+    }
+  };
   const [sortBy, setSortBy] = useState<SortKey>(() => {
     try {
       const saved = window.localStorage.getItem(SORT_KEY);
@@ -546,6 +562,13 @@ export function DriveView() {
             Recently Deleted
           </button>
           <Picker
+            className="drive-view"
+            label="View as"
+            value={grid ? "grid" : "list"}
+            onChange={(v) => chooseView(v === "grid")}
+            options={[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]}
+          />
+          <Picker
             className="drive-sort"
             label="Sort by"
             value={sortBy}
@@ -604,7 +627,7 @@ export function DriveView() {
         </p>
       )}
 
-      <ul className="drive-rows">
+      <ul className={`drive-rows${grid ? " is-grid" : ""}`}>
         {pending
           .filter((p) => p.folder === here.id && !items.some((i) => driveName(i) === p.name))
           .map((p) => (

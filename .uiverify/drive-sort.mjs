@@ -50,5 +50,15 @@ await page.reload({ waitUntil: "networkidle" });
 await openScreen(page, "iCloud Drive");
 await page.waitForTimeout(400);
 ok(JSON.stringify(await files()) === JSON.stringify(byDate), "the order chosen is remembered");
+// View as Grid: tiles side by side, remembered.
+await page.getByRole("button", { name: /View as/ }).click();
+await page.getByRole("option", { name: "Grid" }).click();
+await page.waitForTimeout(200);
+const tops = async () => page.evaluate(() => [...document.querySelectorAll(".drive-rows .drive-row")].map((r) => Math.round(r.getBoundingClientRect().top)));
+ok(new Set((await tops()).slice(0, 3)).size === 1, "Grid sets items side by side");
+await page.reload({ waitUntil: "networkidle" });
+await openScreen(page, "iCloud Drive");
+await page.waitForTimeout(400);
+ok(new Set((await tops()).slice(0, 3)).size === 1, "and Grid is remembered");
 await b.close();
 process.exitCode = failures ? 1 : 0;

@@ -935,6 +935,30 @@
 .crumb-sep { color: var(--text-3); padding: 0 1px; }
 
 .drive-rows { list-style: none; margin: 8px 0 0; padding: 0; overflow-y: auto; min-height: 0; }
+/* Grid, as icloud.com and Finder's icon view lay it out: a large mark, the name under it in
+   two lines at most, the size and date left to List. Actions stay on hover, over the tile. */
+.drive-rows.is-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 8px;
+  align-content: start;
+}
+.drive-rows.is-grid .drive-row { position: relative; flex-direction: column; border-bottom: 0; height: 100%; }
+.drive-rows.is-grid .drive-row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.drive-rows.is-grid .drive-row-hit {
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  gap: 8px; padding: 14px 8px 10px; text-align: center; height: 100%;
+}
+.drive-rows.is-grid .drive-badge { height: 52px; transform: scale(2.1); transform-origin: center; }
+.drive-rows.is-grid .drive-name {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; white-space: normal; word-break: break-word; font-size: var(--t-12, 12px); line-height: 1.3;
+}
+.drive-rows.is-grid .drive-meta { display: none; }
+.drive-rows.is-grid .drive-row-actions {
+  position: absolute; top: 4px; right: 4px; padding: 2px; border-radius: 8px;
+  background: var(--sheet, var(--bg));
+}
 
 /* A row is the clickable hit area plus a strip of actions that only earn their space on
    hover — the same shape reminders and lists already use, so Drive reads as one app rather
