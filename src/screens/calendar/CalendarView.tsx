@@ -76,6 +76,9 @@ type Draft = {
   /** Carried through untouched: the editor has no field for it yet, and sending null wiped
    *  the link off every event that was edited, moved or resized here. */
   url: string | null;
+  /** The zone the event was made in. Sending this machine's instead moved a meeting set in
+   *  New York to local time on every edit, on every device. New events take this machine's. */
+  timezone: string | null;
 };
 
 const draftOf = (e: CalendarEvent): Draft => ({
@@ -88,6 +91,7 @@ const draftOf = (e: CalendarEvent): Draft => ({
   allDay: e.allDay,
   notes: e.notes ?? "",
   url: e.url,
+  timezone: e.timezone,
 });
 
 /** `YYYY-MM-DDTHH:mm` and `YYYY-MM-DD` for the date inputs, in local time. */
@@ -303,7 +307,7 @@ export function CalendarView() {
           startsAt: d.startsAt,
           endsAt: Math.max(d.endsAt, d.startsAt + (d.allDay ? 86_400 : 900)),
           allDay: d.allDay,
-          timezone: ZONE,
+          timezone: d.allDay ? ZONE : (d.timezone ?? ZONE),
           notes: d.notes.trim() || null,
           url: d.url,
         });
@@ -352,7 +356,7 @@ export function CalendarView() {
   const newAt = (startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => {
     if (!target) return;
     openDraft(
-      { guid: null, calendarGuid: target.guid, title: "", location: "", startsAt, endsAt, allDay, notes: "", url: null },
+      { guid: null, calendarGuid: target.guid, title: "", location: "", startsAt, endsAt, allDay, notes: "", url: null, timezone: null },
       at
     );
   };

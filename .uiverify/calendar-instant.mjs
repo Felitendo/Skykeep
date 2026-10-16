@@ -45,6 +45,11 @@ const sent = await page.evaluate(() => window.__saves.at(-1));
 ok(sent?.draft?.url === "https://meet.example/dentist",
   `an edit keeps the event's link  [${JSON.stringify(sent?.draft?.url)}]`);
 
+// And its own zone, not this machine's: the stub's browser says Asia/Calcutta, the event
+// was made in Asia/Kolkata (and a meeting set in New York must stay in New York).
+const zoned = await page.evaluate(() => window.__saves.at(-1)?.draft?.timezone);
+ok(zoned === "Asia/Kolkata", `an edit keeps the event's own time zone  [${zoned}]`);
+
 // A delete takes the event off the calendar at once.
 await page.locator(".cx-block", { hasText: "Design review" }).first().click();
 await page.waitForTimeout(250);

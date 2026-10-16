@@ -610,9 +610,8 @@ export function RemindersView() {
     const listOf = (guid: string) => lists.find((l) => l.guid === guid);
 
     if (kind === "today") {
-      // Apple's own buckets, all three shown once anything is due today. A day with nothing
-      // in it shows no empty headings, only that there is nothing — as icloud.com does.
-      if (threaded.length === 0) return [];
+      // Apple's own buckets, each shown only when something is in it: empty "Morning" and
+      // "Afternoon" headings above the one reminder due tonight read as missing reminders.
       const buckets: { key: string; heading: string | null; rows: typeof threaded }[] = [
         { key: "loose", heading: null, rows: [] },
         { key: "morning", heading: "Morning", rows: [] },
@@ -631,7 +630,7 @@ export function RemindersView() {
         buckets[hour < 12 ? 1 : hour < 17 ? 2 : 3].rows.push(row);
       }
       return buckets
-        .filter((b) => b.rows.length > 0 || b.heading !== null)
+        .filter((b) => b.rows.length > 0)
         // The buckets are all today, so a row under one needs only its time. The loose rows
         // above are overdue or undated and still have to say which day they mean.
         .map((b) => ({ ...b, colour: null, dated: b.heading !== null }));

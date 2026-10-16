@@ -10,6 +10,7 @@ import { NotesView } from "./NotesView";
 import { ContactsView } from "./ContactsView";
 import { DriveView } from "./DriveView";
 import { ScreenBoundary } from "../components/ScreenBoundary";
+import { AppIcon } from "../components/AppIcon";
 
 /**
  * What the sidebar holds: the services with a real screen behind them, most used first.
@@ -29,6 +30,7 @@ const SCREENS: { key: string; name: string }[] = [
 
 /** The screen open last time, so the app reopens where it was left. */
 const LAST_KEY = "quince.library.screen";
+const RAIL_KEY = "quince.library.rail";
 
 export function Library({ onSignOut }: { onSignOut: () => void }) {
   const [services, setServices] = useState<string[]>([]);
@@ -37,6 +39,23 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
   const [ready, setReady] = useState(false);
   /** In a narrow window the sidebar slides over the content, and only when asked for. */
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** A wide window can fold the sidebar to its icons, as Finder and Mail can; remembered. */
+  const [rail, setRail] = useState(() => {
+    try {
+      return window.localStorage.getItem(RAIL_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleRail = () =>
+    setRail((was) => {
+      try {
+        window.localStorage.setItem(RAIL_KEY, was ? "0" : "1");
+      } catch {
+        // Folds for now; forgotten on restart.
+      }
+      return !was;
+    });
 
   useEffect(() => {
     api
@@ -115,15 +134,17 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
         tabIndex={selected === key ? 0 : -1}
         onKeyDown={(e) => onKeyDown(e, index)}
         onClick={() => choose(key)}
+        title={rail ? (SCREENS.find((s) => s.key === key)?.name ?? key) : undefined}
       >
-        <span>{SCREENS.find((s) => s.key === key)?.name ?? key}</span>
+        <AppIcon app={key} />
+        <span className="nav-name">{SCREENS.find((s) => s.key === key)?.name ?? key}</span>
       </button>
     );
   };
 
   return (
     <SyncProvider>
-      <div className={`library enter-library${sidebarOpen ? " is-sidebar-open" : ""}`}>
+      <div className={`library enter-library${sidebarOpen ? " is-sidebar-open" : ""}${rail ? " is-rail" : ""}`}>
         {/* Only in a narrow window, where the sidebar gives its room to the content. */}
         <button
           className="sidebar-toggle"
@@ -136,7 +157,18 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
         </button>
         <div className="sidebar-scrim" aria-hidden="true" onClick={() => setSidebarOpen(false)} />
         <nav className="sidebar" aria-label="Your iCloud">
-          <h2>Your iCloud</h2>
+          <div className="sidebar-head">
+            <h2>iCloud</h2>
+            <button
+              className="sidebar-fold"
+              aria-label={rail ? "Show Sidebar Names" : "Fold Sidebar to Icons"}
+              aria-pressed={rail}
+              title={rail ? "Show Sidebar Names" : "Fold Sidebar to Icons"}
+              onClick={toggleRail}
+            >
+              <PanelLeft size={16} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
           {services.map(item)}
           {!ready && !error && <p className="badge">Loading…</p>}
           {error && (

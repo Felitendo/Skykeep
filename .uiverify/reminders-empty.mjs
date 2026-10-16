@@ -18,5 +18,20 @@ const seen = await page.evaluate(() => ({
 const pass = seen.headings.length === 0 && seen.empty === "No Reminders";
 console.log(pass ? "PASS an empty Today says No Reminders, with no empty headings"
   : `FAIL an empty Today: ${JSON.stringify(seen)}`);
+
+// And a Today with something in it heads only the parts of the day that hold something.
+const full = await b.newContext({ viewport: { width: 1200, height: 800 } });
+await full.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, remindersFixture: true });
+const p2 = await full.newPage();
+await p2.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await openScreen(p2, "Reminders");
+await p2.locator(".rx-tile", { hasText: "Today" }).click();
+await p2.waitForTimeout(400);
+const empty = await p2.evaluate(() => [...document.querySelectorAll(".rx-section")].filter((h) => {
+  const next = h.nextElementSibling;
+  return !next || next.querySelectorAll(".rx-row").length === 0;
+}).map((h) => h.textContent.trim()));
+const pass2 = empty.length === 0;
+console.log(pass2 ? "PASS a Today with reminders shows no empty headings" : `FAIL empty headings: ${JSON.stringify(empty)}`);
 await b.close();
-process.exitCode = pass ? 0 : 1;
+process.exitCode = pass && pass2 ? 0 : 1;
