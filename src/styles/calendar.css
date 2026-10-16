@@ -736,3 +736,6 @@
 @container cx-page (max-width: 900px) { .cx-pane { display: none; } }
 
 .cx-info-url { margin-top: 6px; font-size: var(--t-13); color: var(--sys-blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-pane-month { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--separator); }
+/* With the month in the Day pane, the sidebar's copy would be the same month twice. */
+.cx:has(.cx-pane-month) .cx-side .cx-minimonth { display: none; }

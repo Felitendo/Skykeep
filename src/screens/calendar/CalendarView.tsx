@@ -674,7 +674,15 @@ export function CalendarView() {
               reminders={due}
               calendars={byGuid}
               onOpen={(e, at) => openDraft(draftOf(e), at)}
-            />
+            >
+              {/* As macOS 27's Day view sets it: the month above the day, to step across it. */}
+              <MiniMonth
+                selected={selected}
+                today={now}
+                busy={(d) => dayItems(d).length > 0}
+                onPick={(d) => setSelected(d)}
+              />
+            </DayPane>
           )}
           </div>
         )}
@@ -1744,12 +1752,14 @@ function DayPane({
   reminders,
   calendars,
   onOpen,
+  children,
 }: {
   day: Date;
   events: CalendarEvent[];
   reminders: Reminder[];
   calendars: Map<string, Calendar>;
   onOpen: (e: CalendarEvent, at: Anchor) => void;
+  children?: React.ReactNode;
 }) {
   const from = seconds(day);
   const to = seconds(addDays(day, 1));
@@ -1775,6 +1785,7 @@ function DayPane({
   const nothing = allDay.length + timed.length + due.length === 0;
   return (
     <aside className="cx-pane" aria-label={day.toLocaleDateString(undefined, { dateStyle: "full" })}>
+      {children && <div className="cx-pane-month">{children}</div>}
       <h2 className="cx-pane-day">{day.toLocaleDateString(undefined, { weekday: "long" })}</h2>
       <p className="cx-pane-date">{day.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}</p>
       {nothing ? (
