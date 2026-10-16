@@ -1819,6 +1819,22 @@ fn adopt_writer(library: &mut Library) {
     quince_icloud::topotext::set_writer(*id.as_bytes());
 }
 
+/// Whether this session runs under a tiling Wayland compositor, which manages windows itself.
+fn tiling_compositor() -> bool {
+    let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    if set("HYPRLAND_INSTANCE_SIGNATURE") || set("SWAYSOCK") || set("NIRI_SOCKET") {
+        return true;
+    }
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| {
+        d.split(':').any(|name| {
+            [
+                "hyprland", "sway", "niri", "river", "i3", "qtile", "dwl", "wayfire",
+            ]
+            .contains(&name.to_ascii_lowercase().as_str())
+        })
+    })
+}
+
 /// Bring the window back, wherever it went.
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -1953,6 +1969,14 @@ fn main() {
             spawn_heartbeat(Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
             alerts::spawn(app.handle().clone());
+            // A tiling compositor places, sizes and closes windows itself; a title bar with
+            // minimise and maximise there only takes room and does nothing it does not. On a
+            // desktop that floats windows — GNOME, KDE — it is how a window is moved, so it stays.
+            if tiling_compositor() {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.set_decorations(false).ok();
+                }
+            }
             if let Err(e) = build_tray(app) {
                 eprintln!("no tray on this desktop, so closing the window quits: {e}");
             }
