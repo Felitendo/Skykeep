@@ -16,6 +16,36 @@ import {
 import { ActionGlyph, FileGlyph } from "../components/FileGlyph";
 import { UploadTray } from "../components/UploadTray";
 import { listen } from "@tauri-apps/api/event";
+import { Picker } from "../components/Picker";
+
+/** iCloud Drive's own four orders, as its "by Name" menu offers them. */
+const SORTS = [
+  { key: "name", label: "Name" },
+  { key: "date", label: "Date" },
+  { key: "kind", label: "Kind" },
+  { key: "size", label: "Size" },
+] as const;
+type SortKey = (typeof SORTS)[number]["key"];
+const SORT_KEY = "quince.drive.sort";
+
+/**
+ * Names compare as Finder compares them — "File 2" before "File 10", case ignored; dates and
+ * sizes newest and largest first. Folders keep together at the top under every order but
+ * Kind, which is itself the grouping.
+ */
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+function sortItems(rows: DriveItem[], by: SortKey): DriveItem[] {
+  const name = (a: DriveItem, b: DriveItem) => collator.compare(a.name, b.name);
+  const folderFirst = (a: DriveItem, b: DriveItem) => Number(isContainer(b)) - Number(isContainer(a));
+  const kindOf = (i: DriveItem) => (isContainer(i) ? " " : (i.extension ?? "").toLowerCase());
+  const order: Record<SortKey, (a: DriveItem, b: DriveItem) => number> = {
+    name: (a, b) => folderFirst(a, b) || name(a, b),
+    date: (a, b) => folderFirst(a, b) || (b.modifiedAt ?? b.createdAt ?? 0) - (a.modifiedAt ?? a.createdAt ?? 0) || name(a, b),
+    kind: (a, b) => collator.compare(kindOf(a), kindOf(b)) || name(a, b),
+    size: (a, b) => folderFirst(a, b) || (b.size ?? 0) - (a.size ?? 0) || name(a, b),
+  };
+  return [...rows].sort(order[by]);
+}
 
 const KB = 1024;
 
@@ -46,6 +76,22 @@ type Crumb = { id: string; name: string };
 export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
   const [items, setItems] = useState<DriveItem[]>([]);
+  const [sortBy, setSortBy] = useState<SortKey>(() => {
+    try {
+      const saved = window.localStorage.getItem(SORT_KEY);
+      return SORTS.some((o) => o.key === saved) ? (saved as SortKey) : "name";
+    } catch {
+      return "name";
+    }
+  });
+  const chooseSort = (key: SortKey) => {
+    setSortBy(key);
+    try {
+      window.localStorage.setItem(SORT_KEY, key);
+    } catch {
+      // Sorted for now; forgotten on restart.
+    }
+  };
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -408,6 +454,13 @@ export function DriveView() {
           ))}
         </nav>
         <div className="cal-actions">
+          <Picker
+            className="drive-sort"
+            label="Sort by"
+            value={sortBy}
+            onChange={(v) => chooseSort(v as SortKey)}
+            options={SORTS.map((o) => ({ value: o.key, label: `by ${o.label}` }))}
+          />
           <button
             className="quiet with-glyph"
             onClick={() => setCreatingFolder(true)}
@@ -506,7 +559,7 @@ export function DriveView() {
           </li>
         )}
 
-        {items.filter((item) => !gone.has(item.drivewsid)).map((item) => {
+        {sortItems(items.filter((item) => !gone.has(item.drivewsid)), sortBy).map((item) => {
           const container = isContainer(item);
           const busy = busyGuid === item.drivewsid;
           return (
