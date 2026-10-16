@@ -219,6 +219,31 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   await tall.close();
 }
 
+// An event's bottom edge, dragged, changes when it ends — its start stays where it was.
+{
+  const p = await ctx.newPage();
+  await p.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await p.getByRole("button", { name: "Week", exact: true }).click();
+  await p.waitForTimeout(300);
+  const grip = p.locator(".cx-block", { hasText: "New Event" }).first().locator(".cx-block-grip");
+  const box = await grip.boundingBox();
+  if (!box) {
+    ok(false, "", "the event has no edge to drag");
+  } else {
+    await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await p.mouse.down();
+    await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 48, { steps: 6 });
+    await p.mouse.up();
+    await p.waitForTimeout(300);
+    const saved = await p.evaluate(() => (window.__saved ?? []).at(-1));
+    const start = Math.floor(new Date(2026, 8, 29, 19, 0).getTime() / 1000);
+    ok(saved && saved.startsAt === start && saved.endsAt === start + 75 * 60,
+      "dragging an event's bottom edge changes its end, not its start",
+      `saved: ${JSON.stringify(saved && { startsAt: saved.startsAt - start, endsAt: saved.endsAt - start })}`);
+  }
+  await p.close();
+}
+
 // A delete iCloud turns down says so in a sentence, with a way to put it away — not a red
 // line of the request and Apple's JSON under the toolbar.
 {

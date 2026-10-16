@@ -902,7 +902,9 @@ function MonthView({
 
 type Drag =
   | { kind: "create"; day: Date; column: number; from: number; to: number }
-  | { kind: "move"; event: CalendarEvent; startX: number; startY: number; dx: number; dMinutes: number };
+  | { kind: "move"; event: CalendarEvent; startX: number; startY: number; dx: number; dMinutes: number }
+  /** Dragging an event's bottom edge: its end moves, its start stays. */
+  | { kind: "resize"; event: CalendarEvent; startY: number; dMinutes: number };
 
 function TimeGrid({
   days,
@@ -985,6 +987,10 @@ function TimeGrid({
     if (!current || !at) return;
     if (current.kind === "create") {
       setDragNow({ ...current, to: Math.max(current.from + 15, snap(at.minutes)) });
+    } else if (current.kind === "resize") {
+      // Never shorter than a quarter hour, as Calendar holds it.
+      const length = (current.event.endsAt - current.event.startsAt) / 60;
+      setDragNow({ ...current, dMinutes: Math.max(15 - length, snap(((clientY - current.startY) / HOUR) * 60)) });
     } else {
       const el = columnsEl.current;
       const width = el ? el.getBoundingClientRect().width / days.length : 1;
@@ -1007,6 +1013,8 @@ function TimeGrid({
         const base = seconds(done.day);
         onCreate(base + done.from * 60, base + done.to * 60, false, besideColumn(done.column, clientY));
       }
+    } else if (done.kind === "resize") {
+      if (done.dMinutes !== 0) onMove(done.event, done.event.startsAt, done.event.endsAt + done.dMinutes * 60);
     } else if (done.dx !== 0 || done.dMinutes !== 0) {
       const shift = done.dMinutes * 60;
       const moved = (t: number) => {
@@ -1176,16 +1184,17 @@ function TimeGrid({
               <div className={`cx-column${d.getDay() === 0 || d.getDay() === 6 ? " is-weekend" : ""}`} key={dayKey(d)}>
                 {layouts[column].events.map((p) => {
                   const moving = drag?.kind === "move" && drag.event.guid === p.event.guid ? drag : null;
+                  const sizing = drag?.kind === "resize" && drag.event.guid === p.event.guid ? drag : null;
                   const c = calendars.get(p.event.calendarGuid);
                   return (
                     <button
                       key={p.event.guid}
-                      className={`cx-block${moving ? " is-moving" : ""}${p.length < 45 ? " is-short" : ""}`}
+                      className={`cx-block${moving || sizing ? " is-moving" : ""}${p.length < 45 ? " is-short" : ""}`}
                       style={
                         {
                           "--cal": tint(c),
                           top: `${((p.top + (moving?.dMinutes ?? 0)) / 60) * HOUR}px`,
-                          height: `${Math.max((p.length / 60) * HOUR - 2, 20)}px`,
+                          height: `${Math.max(((p.length + (sizing?.dMinutes ?? 0)) / 60) * HOUR - 2, 20)}px`,
                           left: `calc(${(p.column / p.columns) * 100}% + ${(moving?.dx ?? 0) * 100}%)`,
                           width: `calc(${100 / p.columns}% - 3px)`,
                         } as React.CSSProperties
@@ -1210,6 +1219,18 @@ function TimeGrid({
                       <span className="cx-block-title">{p.event.title}</span>
                       <span className="cx-block-time">{clock(p.event.startsAt)}</span>
                       {p.event.location && <span className="cx-block-where">{p.event.location}</span>}
+                      {canWrite(p.event.calendarGuid) && (
+                        <span
+                          className="cx-block-grip"
+                          aria-hidden="true"
+                          onPointerDown={(e) => {
+                            if (e.button !== 0) return;
+                            e.stopPropagation();
+                            e.preventDefault();
+                            setDragNow({ kind: "resize", event: p.event, startY: e.clientY, dMinutes: 0 });
+                          }}
+                        />
+                      )}
                     </button>
                   );
                 })}

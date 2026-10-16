@@ -664,3 +664,6 @@
   font-weight: 600;
   cursor: default;
 }
+
+/* The bottom edge of an event that can be changed: drag it to change when it ends. */
+.cx-block-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 7px; cursor: ns-resize; }
