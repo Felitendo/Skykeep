@@ -77,7 +77,10 @@ export function DriveView() {
       // Show what is stored first, then fetch — a folder visited before opens instantly.
       const cached = await api.driveChildren(folderId);
       if (token !== openToken.current) return;
-      if (Array.isArray(cached) && cached.length > 0) setItems(cached);
+      // Always this folder's own rows, even none: keeping the last folder's rows on screen
+      // while a slow fetch ran meant a click landed on a row from the level just left, and
+      // Drive seemed to jump into folders nobody opened.
+      setItems(Array.isArray(cached) ? cached : []);
       await api.driveSyncFolder(folderId);
       if (token !== openToken.current) return;
       const fresh = await api.driveChildren(folderId);
@@ -201,6 +204,13 @@ export function DriveView() {
   /** Every file sent from this window, until the tray is closed. */
   const [uploads, setUploads] = useState<Map<string, UploadEvent>>(new Map());
   const [uploadMenu, setUploadMenu] = useState(false);
+  /**
+   * What has been asked for here and is not back from Apple yet, drawn at once as rows of
+   * its own: a folder being created, files going up. Nothing showed until Apple answered —
+   * seconds later — so a press seemed to do nothing, and then a folder appeared from nowhere.
+   */
+  const [pending, setPending] = useState<{ key: string; folder: string; name: string; doing: string }[]>([]);
+  const settle = (key: string) => setPending((p) => p.filter((x) => !x.key.startsWith(key)));
 
   useEffect(() => {
     let stop: (() => void) | undefined;
@@ -244,12 +254,23 @@ export function DriveView() {
       // Never blocks the window: browse, open another folder, start another upload.
       const batch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       const into = here.id;
+      setPending((p) => [
+        ...p,
+        ...paths.map((path, i) => ({
+          key: `${batch}:${i}`,
+          folder: into,
+          name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+          doing: "Uploading…",
+        })),
+      ]);
       try {
         await api.driveUpload(batch, into, paths);
         // What failed is named in the tray, file by file; the folder is re-read either way.
         if (into === here.id) await refresh();
       } catch (e) {
         setError(messageOf(e));
+      } finally {
+        settle(batch);
       }
     },
     [here.id, refresh]
@@ -324,6 +345,8 @@ export function DriveView() {
     }
     folderPending.current = true;
     setError(null);
+    const key = `folder-${Date.now()}`;
+    setPending((p) => [...p, { key, folder: here.id, name, doing: "Creating…" }]);
     try {
       await api.driveCreateFolder(here.id, name);
       await refresh();
@@ -331,6 +354,7 @@ export function DriveView() {
       setError(messageOf(e));
     } finally {
       folderPending.current = false;
+      settle(key);
     }
   }, [newFolderName, here.id, refresh, items]);
 
@@ -409,6 +433,20 @@ export function DriveView() {
       )}
 
       <ul className="drive-rows">
+        {pending
+          .filter((p) => p.folder === here.id && !items.some((i) => driveName(i) === p.name))
+          .map((p) => (
+            <li key={p.key} className="drive-row is-busy" aria-busy="true">
+              <span className="drive-row-hit">
+                <span className="drive-badge" aria-hidden="true">
+                  <span className="drive-spinner" />
+                </span>
+                <span className="drive-name">{p.name}</span>
+                <span className="drive-meta">{p.doing}</span>
+                <span className="drive-meta" />
+              </span>
+            </li>
+          ))}
         {creatingFolder && (
           <li>
             <form
@@ -539,7 +577,10 @@ export function DriveView() {
         })}
       </ul>
 
-      {loaded && items.length === 0 && !creatingFolder && !error && (
+      {items.length === 0 && !creatingFolder && !error && (loading || !loaded) && (
+        <p className="cal-empty" aria-live="polite">Opening {here.name}…</p>
+      )}
+      {loaded && !loading && items.length === 0 && !creatingFolder && !error && (
         <p className="cal-empty">This folder is empty.</p>
       )}
 
