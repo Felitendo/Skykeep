@@ -131,17 +131,20 @@
    calendar lets the controls drop beneath it. */
 .cx-bar {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px 16px;
   padding: 0 18px 12px;
 }
-/* Under `.cx` so it outranks the app's `.content h1`, which had set it at 28px. */
+/* Under `.cx` so it outranks the app's `.content h1`, which had set it at 28px.
+   On its own line under the controls, large, as macOS 27's Calendar sets "April 2026":
+   sharing the row with them, it was cut to "Octobe…" in an ordinary laptop window. */
 .cx .cx-title {
-  flex: 1 1 auto;
+  order: 9;
+  flex: 1 1 100%;
   min-width: 0;
-  margin: 0;
-  font-size: 22px;
+  margin: 2px 0 0;
+  font-size: 28px;
   font-weight: 400;
   letter-spacing: -0.02em;
   white-space: nowrap;
@@ -557,7 +560,7 @@
   .cx { grid-template-columns: 1fr; }
   .cx-side { display: none; }
   .cal-year { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cx .cx-title { font-size: 18px; }
+  .cx .cx-title { font-size: 22px; }
   .cx-title-full { display: none; }
   .cx-title-brief { display: inline; }
   .cx-bar { gap: 10px 12px; padding-inline: 0; }
