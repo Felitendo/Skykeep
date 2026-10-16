@@ -341,7 +341,7 @@ impl<'a> CalendarClient<'a> {
         // repeats in — and Apple takes the whole event on every write. Building one from
         // our own fields alone did not merely drop those, it cleared them: a weekly meeting
         // edited here came back a one-off with no alerts and no guests.
-        let existing = self.event_detail(event, &day).await;
+        let existing = self.event_detail(event, &day).await?;
         let body = serde_json::json!({
             "Event": self.event_body(event, existing.as_ref()),
             "ClientState": client_state(&event.calendar_guid, ctag),
@@ -386,7 +386,7 @@ impl<'a> CalendarClient<'a> {
             // Deleting what is already gone has done what was asked — but only once Apple's
             // own record confirms it is gone, not on the word of a status code alone.
             // Measured: an event Apple no longer has answers 404 with an empty ChangeSet.
-            Err(Error::NotFound) if self.event_detail(event, &day).await.is_none() => Ok(()),
+            Err(Error::NotFound) if matches!(self.event_detail(event, &day).await, Ok(None)) => Ok(()),
             other => other.map(|_| ()),
         }
     }
@@ -394,9 +394,10 @@ impl<'a> CalendarClient<'a> {
     /// Apple's own full record of an event, or `None` for one it has never heard of.
     ///
     /// Asked for before every write so an edit can be merged into what is really there.
-    /// A failure here is not fatal — it only means there is nothing to merge into, which is
-    /// exactly the case for a new event.
-    async fn event_detail(&self, event: &Event, day: &str) -> Option<Value> {
+    /// Only Apple saying it has no such event means "new": a failed request is an error.
+    /// Treating a network blip as "new" built the save from nothing and wrote empty
+    /// recurrence, alerts and guests over a real event.
+    async fn event_detail(&self, event: &Event, day: &str) -> Result<Option<Value>> {
         let mut query = self.params.clone();
         query.push(("clientVersion".into(), "5.1".into()));
         query.push(("lang".into(), "en-us".into()));
@@ -411,15 +412,23 @@ impl<'a> CalendarClient<'a> {
             "{}/ca/eventdetail/{}/{}",
             self.root, event.calendar_guid, event.guid
         );
-        let response = self.http.get(url).query(&query).send().await.ok()?;
-        if !response.status().is_success() {
-            return None;
+        let response = self.http.get(url).query(&query).send().await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
         }
-        let body: Value = serde_json::from_str(&response.text().await.ok()?).ok()?;
-        body.pointer("/Event/0")
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "Apple did not say what this event holds now ({status}), so it was not changed."
+            )));
+        }
+        let body: Value = serde_json::from_str(&response.text().await?)
+            .map_err(|e| Error::Protocol(format!("event detail: {e}")))?;
+        Ok(body
+            .pointer("/Event/0")
             .or_else(|| body.pointer("/Event"))
             .filter(|e| e.is_object())
-            .cloned()
+            .cloned())
     }
 
     /// Apple's event object, in the shape its own web client sends.
@@ -1003,6 +1012,34 @@ mod write_tests {
         let body: Value = serde_json::from_slice(&request(&server).await.body).unwrap();
         assert_eq!(body["Event"]["title"], "Dentist");
         assert_eq!(body["Event"]["alarms"], serde_json::json!([]));
+    }
+
+    /// Apple failing to say what an event holds is not "a new event": building the save
+    /// from nothing would write empty recurrence, alerts and guests over the real one.
+    #[tokio::test]
+    async fn an_edit_is_refused_when_apples_record_cannot_be_read() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/eventdetail/.*"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        assert!(client.put_event(&event(), None).await.is_err());
+        let wrote = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method == reqwest::Method::POST);
+        assert!(!wrote, "nothing may be written over an event that could not be read");
     }
 
     /// Deleting an event Apple no longer has: it answers 404, and its own record confirms
