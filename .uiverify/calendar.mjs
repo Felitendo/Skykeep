@@ -309,13 +309,15 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
     });
     return {
       cut: t.scrollWidth > t.clientWidth + 1,
-      oneRow: Math.abs((tr.top + tr.bottom) / 2 - (views.top + views.bottom) / 2) < 8,
+      // The scopes and the stepping share a row; the title sits under them, as on a Mac.
+      oneRow: (() => { const seg = document.querySelector(".cx-bar > .segmented").getBoundingClientRect();
+        return Math.abs((seg.top + seg.bottom) / 2 - (views.top + views.bottom) / 2) < 8 && tr.top >= seg.bottom - 1; })(),
       text: t.innerText.trim(),
       starved: starved.length,
     };
   });
   ok(!narrow.cut, `${view}: a narrow calendar's title is whole  [${narrow.text}]`, `${view}: the title is cut: ${JSON.stringify(narrow)}`);
-  ok(narrow.oneRow, `${view}: its toolbar stays one row`, `${view}: the toolbar broke onto two rows`);
+  ok(narrow.oneRow, `${view}: its controls stay one row, the title on its own beneath`, `${view}: the controls broke onto two rows`);
   if (view === "Month")
     ok(narrow.starved === 0, "a month cell with room shows an event, not only \"N more\"",
       `${narrow.starved} cell(s) show only "N more"`);
