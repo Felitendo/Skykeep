@@ -985,6 +985,7 @@
 
 .drive-row:hover .drive-row-actions,
 .drive-row-actions:focus-within { opacity: 1; }
+.drive-row-actions.is-shown { opacity: 1; gap: 6px; }
 
 /* Renaming in place, and creating a folder, share the same field treatment. */
 .drive-rename-input,

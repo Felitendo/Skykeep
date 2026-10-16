@@ -175,6 +175,16 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contact_delete": return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;
         case "drive_children": return !driveFixture ? [] : driveItems;
+        case "drive_trash": return !driveFixture ? [] : (window.__trash ??= [
+          { drivewsid: "FILE::t1", parentId: null, name: "Old notes", extension: "pdf", kind: "FILE",
+            size: 177000, childCount: null, createdAt: 1786000000, modifiedAt: 1786000000, etag: "t1" },
+          { drivewsid: "FILE::t2", parentId: null, name: "Wallpaper", extension: "jpg", kind: "FILE",
+            size: 1500000, childCount: null, createdAt: 1786000000, modifiedAt: 1786000000, etag: "t2" },
+        ]).slice();
+        case "drive_put_back": case "drive_delete_forever":
+          window.__trash = (window.__trash ?? []).filter((i) => i.drivewsid !== args.item.drivewsid);
+          (window.__trashCalls ??= []).push([cmd, args.item.drivewsid]);
+          return null;
         case "drive_sync_folder": return driveItems.length;
         case "drive_download": return "/home/user/Downloads/file.pdf";
         case "drive_create_folder": case "drive_rename": case "drive_delete": case "drive_move": return null;

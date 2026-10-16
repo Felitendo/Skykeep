@@ -71,11 +71,96 @@ const modified = (seconds: number | null) =>
         year: "numeric",
       });
 
+/**
+ * Recently Deleted, as icloud.com shows it: what was deleted, when, and two ways out —
+ * Recover, back to where it was, and Delete Now, for good. Each leaves the list the moment it
+ * is asked for; a refusal puts the row back and says why. Delete Now asks first, as Apple's
+ * does, because nothing brings it back.
+ */
+function DriveTrash({ onClose }: { onClose: () => void }) {
+  const [rows, setRows] = useState<DriveItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const read = useCallback(async () => {
+    try {
+      setRows(await api.driveTrash());
+    } catch (e) {
+      setError(messageOf(e));
+      setRows((r) => r ?? []);
+    }
+  }, []);
+  useEffect(() => {
+    void read();
+  }, [read]);
+
+  const out = async (gone: DriveItem[], run: (i: DriveItem) => Promise<void>) => {
+    const ids = new Set(gone.map((i) => i.drivewsid));
+    setRows((r) => (r ?? []).filter((i) => !ids.has(i.drivewsid)));
+    setError(null);
+    const failed = (await Promise.allSettled(gone.map(run))).find((r) => r.status === "rejected");
+    if (failed) {
+      setError(messageOf((failed as PromiseRejectedResult).reason));
+      await read();
+    }
+  };
+  const recover = (items: DriveItem[]) => out(items, (i) => api.drivePutBack(i));
+  const destroy = (items: DriveItem[]) => {
+    const what = items.length === 1 ? `\u201c${driveName(items[0])}\u201d` : `these ${items.length} items`;
+    if (!window.confirm(`Delete ${what} now? You can\u2019t undo this.`)) return;
+    void out(items, (i) => api.driveDeleteForever(i));
+  };
+
+  return (
+    <div className="drive drive-trash">
+      <header className="cal-bar">
+        <nav className="crumbs" aria-label="Folder path">
+          <button className="crumb" onClick={onClose}>iCloud Drive</button>
+          <span className="crumb-sep" aria-hidden="true">›</span>
+          <button className="crumb" aria-current>Recently Deleted</button>
+        </nav>
+        {rows && rows.length > 0 && (
+          <div className="cal-actions">
+            <button className="quiet" onClick={() => void recover(rows)}>Recover All</button>
+            <button className="quiet danger" onClick={() => destroy(rows)}>Delete All</button>
+          </div>
+        )}
+      </header>
+      {error && <Notice message={error} onDismiss={() => setError(null)} />}
+      {rows === null && <p className="cal-empty">Loading…</p>}
+      {rows && rows.length === 0 && !error && (
+        <p className="cal-empty">Nothing in Recently Deleted.</p>
+      )}
+      {rows && rows.length > 0 && (
+        <ul className="drive-rows">
+          {rows.map((item) => (
+            <li key={item.drivewsid}>
+              <div className="drive-row">
+                <span className="drive-row-hit">
+                  <span className="drive-badge" aria-hidden="true">
+                    <FileGlyph kind={item.kind} extension={item.extension} />
+                  </span>
+                  <span className="drive-name">{driveName(item)}</span>
+                  <span className="drive-meta">{isContainer(item) ? "" : fileSize(item.size)}</span>
+                  <span className="drive-meta">{modified(item.modifiedAt ?? item.createdAt)}</span>
+                </span>
+                <span className="drive-row-actions is-shown">
+                  <button className="quiet" onClick={() => void recover([item])}>Recover</button>
+                  <button className="quiet danger" onClick={() => destroy([item])}>Delete Now</button>
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 type Crumb = { id: string; name: string };
 
 export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
   const [items, setItems] = useState<DriveItem[]>([]);
+  const [inTrash, setInTrash] = useState(false);
   const [sortBy, setSortBy] = useState<SortKey>(() => {
     try {
       const saved = window.localStorage.getItem(SORT_KEY);
@@ -432,6 +517,8 @@ export function DriveView() {
     }
   }, [newFolderName, here.id, refresh, items]);
 
+  if (inTrash) return <DriveTrash onClose={() => setInTrash(false)} />;
+
   return (
     <div className={`drive${dropping ? " is-dropping" : ""}`}>
       <header className="cal-bar">
@@ -454,6 +541,10 @@ export function DriveView() {
           ))}
         </nav>
         <div className="cal-actions">
+          <button className="quiet with-glyph" onClick={() => setInTrash(true)}>
+            <ActionGlyph name="delete" />
+            Recently Deleted
+          </button>
           <Picker
             className="drive-sort"
             label="Sort by"

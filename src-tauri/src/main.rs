@@ -1640,6 +1640,40 @@ async fn drive_delete(
     resync_drive_folder(&http, &root, params, &data, parent).await
 }
 
+/// Drive's Recently Deleted, read live: Apple decides how long things stay there, so a copy
+/// kept here would only ever be a wrong count.
+#[tauri::command]
+async fn drive_trash(auth: State<'_, Auth>) -> UiResult<Vec<quince_core::drive::DriveItem>> {
+    let (http, root, params) = drive_context(&auth).await?;
+    quince_icloud::drive::trash(&http, &root, params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Recover an item from Recently Deleted to where it was.
+#[tauri::command]
+async fn drive_put_back(
+    item: quince_core::drive::DriveItem,
+    auth: State<'_, Auth>,
+) -> UiResult<()> {
+    let (http, root, params) = drive_context(&auth).await?;
+    quince_icloud::drive::put_back(&http, &root, params, &item)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Delete an item in Recently Deleted for good. The interface asks first.
+#[tauri::command]
+async fn drive_delete_forever(
+    item: quince_core::drive::DriveItem,
+    auth: State<'_, Auth>,
+) -> UiResult<()> {
+    let (http, root, params) = drive_context(&auth).await?;
+    quince_icloud::drive::delete_forever(&http, &root, params, &item)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Move an item into a different folder, refreshing both the old and new location.
 #[tauri::command]
 async fn drive_move(
@@ -2072,6 +2106,9 @@ fn main() {
             drive_create_folder,
             drive_rename,
             drive_delete,
+            drive_trash,
+            drive_put_back,
+            drive_delete_forever,
             drive_move,
             drive_item,
             reminder_set_done,

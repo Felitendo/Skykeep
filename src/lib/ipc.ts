@@ -162,6 +162,9 @@ export const api = {
   driveRename: (drivewsid: string, name: string) =>
     invoke<void>("drive_rename", { drivewsid, name }),
   driveDelete: (drivewsid: string) => invoke<void>("drive_delete", { drivewsid }),
+  driveTrash: () => invoke<DriveItem[]>("drive_trash"),
+  drivePutBack: (item: DriveItem) => invoke<void>("drive_put_back", { item }),
+  driveDeleteForever: (item: DriveItem) => invoke<void>("drive_delete_forever", { item }),
   driveMove: (drivewsid: string, destinationId: string) =>
     invoke<void>("drive_move", { drivewsid, destinationId }),
 };

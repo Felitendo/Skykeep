@@ -404,6 +404,90 @@ pub async fn delete(
     Ok(())
 }
 
+/// Drive's Recently Deleted, as icloud.com lists it: a folder Apple names `TRASH_ROOT`.
+pub const TRASH: &str = "TRASH_ROOT";
+
+/// What is in Recently Deleted now. Read-only.
+pub async fn trash(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+) -> Result<Vec<DriveItem>> {
+    folder_listing(http, root, &params, TRASH).await
+}
+
+/// Put an item back where it was deleted from (`putBackItemsFromTrash`), or delete it for
+/// good (`deleteItems`), as icloud.com's Recover and Delete Now do. Either way the trash is
+/// re-read afterwards and the item must have left it: a 200 alone has been seen to do nothing.
+async fn out_of_trash(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    endpoint: &str,
+    what: &str,
+) -> Result<()> {
+    let current = folder_listing(http, root, &params, TRASH).await?;
+    let Some(etag) = current
+        .iter()
+        .find(|i| i.drivewsid == item.drivewsid)
+        .map(|i| i.etag.clone().or_else(|| item.etag.clone()))
+    else {
+        return Err(Error::Refused(format!(
+            "That item is no longer in Recently Deleted, so it could not be {what}."
+        )));
+    };
+    let url = format!("{}/{endpoint}", root.trim_end_matches('/'));
+    let body = json!({ "items": [{ "drivewsid": item.drivewsid, "etag": etag }] });
+    let response = http.post(url).query(&params).json(&body).send().await?;
+    let status = response.status();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(Error::Protocol(format!(
+            "Drive refused that ({status}): {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+    let after = folder_listing(http, root, &params, TRASH).await?;
+    if after.iter().any(|i| i.drivewsid == item.drivewsid) {
+        return Err(Error::Refused(format!(
+            "iCloud answered, but the item is still in Recently Deleted, so it was not {what}."
+        )));
+    }
+    Ok(())
+}
+
+/// Recover: back to the folder it was deleted from.
+pub async fn put_back(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+) -> Result<()> {
+    out_of_trash(
+        http,
+        root,
+        params,
+        item,
+        "putBackItemsFromTrash",
+        "recovered",
+    )
+    .await
+}
+
+/// Delete Now: gone for good. Only ever from Recently Deleted, and only when asked.
+pub async fn delete_forever(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+) -> Result<()> {
+    out_of_trash(http, root, params, item, "deleteItems", "deleted").await
+}
+
 /// Move an item into a different folder.
 ///
 /// Verified the same way: a fresh etag before the write, and the destination re-read
@@ -896,6 +980,74 @@ mod write_tests {
         assert_eq!(
             body["items"][0]["drivewsid"],
             "FILE::com.apple.CloudDocs::ABC-123"
+        );
+    }
+
+    /// Recover sends the item, with the etag Recently Deleted holds now, and is only a success
+    /// once the item has left Recently Deleted.
+    #[tokio::test]
+    async fn recovering_puts_back_and_checks_it_left_the_trash() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                TRASH,
+                &file(),
+                "fresh",
+            )))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/putBackItemsFromTrash"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty_listing_of(TRASH)))
+            .mount(&server)
+            .await;
+
+        put_back(&reqwest::Client::new(), &server.uri(), vec![], &file())
+            .await
+            .unwrap();
+        let body = sent(&server, "/putBackItemsFromTrash").await;
+        assert_eq!(
+            body["items"][0]["drivewsid"],
+            "FILE::com.apple.CloudDocs::ABC-123"
+        );
+        assert_eq!(body["items"][0]["etag"], "fresh");
+    }
+
+    /// Delete Now that left the item in Recently Deleted is a failure, said so.
+    #[tokio::test]
+    async fn a_delete_now_that_did_nothing_is_reported() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                TRASH,
+                &file(),
+                "e1",
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/deleteItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+        let err = delete_forever(&reqwest::Client::new(), &server.uri(), vec![], &file())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("still in Recently Deleted"),
+            "{err}"
         );
     }
 
