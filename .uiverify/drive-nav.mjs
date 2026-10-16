@@ -54,5 +54,15 @@ await page.waitForTimeout(200);
 const making = await page.locator(".drive-row.is-busy").allInnerTexts();
 ok(making.some((t) => t.includes("Trips") && t.includes("Creating")), "a new folder shows at once, being made",
   `straight after Return: ${JSON.stringify(making)}`);
+// Gone elsewhere before it finished: the folder on screen stays the one on screen. A refresh
+// bound to where the work began re-read that folder at the end, and its rows replaced these.
+await page.locator(".drive-row-hit", { hasText: "Downloads" }).first().click();
+await page.waitForTimeout(2200);
+const inDownloads = await page.locator(".drive-name").allInnerTexts();
+await page.waitForTimeout(500);
+const stayed = await page.locator(".drive-name").allInnerTexts();
+const crumb = await page.locator('.crumb[aria-current="true"]').innerText();
+ok(crumb === "Downloads" && stayed.some((t) => t.startsWith("Ticket")) && !stayed.includes("Keynote"),
+  "a folder made elsewhere finishing does not pull the screen back", `in ${crumb}: ${JSON.stringify(stayed)} (was ${JSON.stringify(inDownloads)})`);
 await b.close();
 process.exitCode = failures === 0 ? 0 : 1;

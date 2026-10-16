@@ -61,6 +61,14 @@ export function DriveView() {
   const [dropping, setDropping] = useState(false);
 
   const here = trail[trail.length - 1];
+  // The folder on screen now, for work that finishes later. A refresh bound to the folder
+  // open when an upload or a new folder began re-read that folder when it ended — after the
+  // person had gone elsewhere — and its rows replaced the folder they were in: Drive "went
+  // back to the previous location".
+  const hereRef = useRef(here.id);
+  hereRef.current = here.id;
+  /** Items deleted here that Apple's listing may still carry for a moment after. */
+  const [gone, setGone] = useState<Set<string>>(new Set());
 
   // A folder load is asynchronous and the id it was for is not always the one still on
   // screen by the time it resolves — a fast double click used to let a second, third,
@@ -109,7 +117,7 @@ export function DriveView() {
     setTrail((t) => [...t, { id: item.drivewsid, name: driveName(item) }]);
   }
 
-  const refresh = useCallback(() => open(here.id), [open, here.id]);
+  const refresh = useCallback(() => open(hereRef.current), [open]);
 
   const download = useCallback(async (item: DriveItem) => {
     setBusyGuid(item.drivewsid);
@@ -165,6 +173,9 @@ export function DriveView() {
       setError(null);
       try {
         await api.driveDelete(item.drivewsid);
+        // Gone from the screen now, and kept gone: Apple's listing can still carry it for a
+        // moment, and it flickered back before vanishing.
+        setGone((g) => new Set(g).add(item.drivewsid));
         await refresh();
       } catch (e) {
         setError(messageOf(e));
@@ -212,6 +223,21 @@ export function DriveView() {
   const [pending, setPending] = useState<{ key: string; folder: string; name: string; doing: string }[]>([]);
   const settle = (key: string) => setPending((p) => p.filter((x) => !x.key.startsWith(key)));
 
+  // At most one re-read of the open folder every couple of seconds while files land.
+  const landedTimer = useRef<number | null>(null);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const landed = () => {
+    if (landedTimer.current !== null) return;
+    landedTimer.current = window.setTimeout(() => {
+      landedTimer.current = null;
+      void refreshRef.current();
+    }, 2000);
+  };
+  useEffect(() => () => {
+    if (landedTimer.current !== null) window.clearTimeout(landedTimer.current);
+  }, []);
+
   useEffect(() => {
     let stop: (() => void) | undefined;
     let cancelled = false;
@@ -225,6 +251,8 @@ export function DriveView() {
         next.set(u.id, u);
         return next;
       });
+      // Each file that lands shows as it lands, not all at once when the batch ends.
+      if (u.state === "done") landed();
     })
       .then((unlisten) => {
         // Stopping may throw where there is no event system behind the page — a plain
@@ -266,7 +294,7 @@ export function DriveView() {
       try {
         await api.driveUpload(batch, into, paths);
         // What failed is named in the tray, file by file; the folder is re-read either way.
-        if (into === here.id) await refresh();
+        if (into === hereRef.current) await refresh();
       } catch (e) {
         setError(messageOf(e));
       } finally {
@@ -478,7 +506,7 @@ export function DriveView() {
           </li>
         )}
 
-        {items.map((item) => {
+        {items.filter((item) => !gone.has(item.drivewsid)).map((item) => {
           const container = isContainer(item);
           const busy = busyGuid === item.drivewsid;
           return (

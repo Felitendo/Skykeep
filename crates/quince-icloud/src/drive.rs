@@ -1383,26 +1383,109 @@ async fn post_json(
     params: &[(String, String)],
     body: &Value,
 ) -> Result<Value> {
-    let response = http
-        .post(url)
-        .query(params)
-        .header("Referer", "https://www.icloud.com/")
-        .json(body)
-        .send()
-        .await?;
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
+    // A busy Drive (503, 429) asks to be asked again shortly. Ninety files going up three at
+    // a time met exactly that, and every one that met it was reported as not uploaded. It is
+    // waited out, as the server asks, up to three times; only one still busy is reported.
+    let mut tries: u64 = 0;
+    let (status, text) = loop {
+        tries += 1;
+        let response = http
+            .post(url)
+            .query(params)
+            .header("Referer", "https://www.icloud.com/")
+            .json(body)
+            .send()
+            .await?;
+        let status = response.status();
+        let wait = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        let text = response.text().await.unwrap_or_default();
+        if !matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504) || tries >= 3 {
+            break (status, text);
+        }
+        let asked = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| v.get("retryAfter").and_then(Value::as_u64))
+            .or(wait)
+            .unwrap_or(2 * tries);
+        tokio::time::sleep(std::time::Duration::from_secs(asked.clamp(1, 30))).await;
+    };
     if status.as_u16() == 450 {
         return Err(Error::ReauthRequired);
     }
     if !status.is_success() {
-        return Err(Error::Protocol(format!(
-            "Drive returned {status}: {}",
-            text.chars().take(160).collect::<String>()
-        )));
+        eprintln!(
+            "drive: {url} answered {status}: {}",
+            text.chars().take(300).collect::<String>()
+        );
+        return Err(Error::Refused(match status.as_u16() {
+            429 | 500..=599 => {
+                "iCloud Drive is busy right now — try this one again in a minute.".into()
+            }
+            409 => "Something with that name is already there.".into(),
+            403 => "iCloud Drive won't let this be changed.".into(),
+            code => format!("iCloud Drive turned this down (status {code})."),
+        }));
     }
     serde_json::from_str(&text)
         .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))
+}
+
+#[cfg(test)]
+mod busy_tests {
+    use super::*;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Ninety files three at a time met a busy Drive, and each was reported as not uploaded.
+    #[tokio::test]
+    async fn a_busy_drive_is_waited_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "1"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ok": true })),
+            )
+            .mount(&server)
+            .await;
+        let v = post_json(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &[],
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn a_drive_that_stays_busy_says_so_plainly() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "1"))
+            .mount(&server)
+            .await;
+        let e = post_json(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &[],
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "iCloud Drive is busy right now — try this one again in a minute."
+        );
+    }
 }
 
 #[cfg(test)]
