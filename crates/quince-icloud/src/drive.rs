@@ -1191,6 +1191,42 @@ pub async fn upload(
     path: &std::path::Path,
     progress: Progress,
 ) -> Result<DriveItem> {
+    // A busy Drive at any step is met again from the start — a new slot, the bytes again —
+    // so a file half sent is never filed, and a moment's overload costs nothing.
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let result = upload_once(
+            http,
+            docws_root,
+            drivews_root,
+            params.clone(),
+            folder_id,
+            path,
+            progress.clone(),
+        )
+        .await;
+        match result {
+            Err(Error::Refused(ref m)) if m == BUSY && attempt < 3 => {
+                tokio::time::sleep(std::time::Duration::from_secs(3 * attempt)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// What a busy Drive is said to be, in one place so a retry can know it.
+const BUSY: &str = "iCloud Drive is busy right now — try this one again in a minute.";
+
+async fn upload_once(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: Vec<(String, String)>,
+    folder_id: &str,
+    path: &std::path::Path,
+    progress: Progress,
+) -> Result<DriveItem> {
     use tokio::io::AsyncReadExt;
 
     if folder_id.trim().is_empty() {
@@ -1280,6 +1316,9 @@ pub async fn upload(
         .await?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
+    if matches!(status.as_u16(), 429 | 500..=599) {
+        return Err(Error::Refused(BUSY.into()));
+    }
     if !status.is_success() {
         return Err(Error::Protocol(format!(
             "Apple would not take the file ({status}): {}",
@@ -1567,6 +1606,50 @@ mod app_library_tests {
                 "the reason has to be the zone, not a network failure: {err}"
             );
         }
+        std::fs::remove_file(&file).ok();
+    }
+
+    /// A busy Drive while the bytes go up: the file is tried again from a fresh slot, up to
+    /// three times, and only then reported busy — not dropped at the first refusal.
+    #[tokio::test]
+    async fn a_file_refused_as_busy_is_sent_again() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/upload/web$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "url": format!("{}/content", server.uri()), "document_id": "D1" }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/content$"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let file = std::env::temp_dir().join("quince-busy-test.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let err = upload(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &server.uri(),
+            vec![],
+            "FOLDER::com.apple.CloudDocs::root",
+            &file,
+            std::sync::Arc::new(|_, _| {}),
+        )
+        .await
+        .unwrap_err();
+        let slots = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/upload/web"))
+            .count();
+        assert_eq!(slots, 3, "three tries, each from a fresh slot");
+        assert_eq!(err.to_string(), BUSY);
         std::fs::remove_file(&file).ok();
     }
 
