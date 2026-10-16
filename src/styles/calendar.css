@@ -667,3 +667,43 @@
 
 /* The bottom edge of an event that can be changed: drag it to change when it ends. */
 .cx-block-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 7px; cursor: ns-resize; }
+
+/* Day: the timeline, and beside it the day at a glance, as Calendar lays it out. The date is
+   the toolbar's title already, so the timeline drops its own one-column header. */
+.cx-dayview, .cx-weekview { flex: 1; display: flex; min-height: 0; }
+.cx-dayview > .cal-hours, .cx-weekview > .cal-hours { flex: 1; min-width: 0; }
+.cal-hours.is-day .cx-grid-head { display: none; }
+.cx-pane {
+  flex: none;
+  width: 280px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 18px 18px;
+  border-left: 1px solid var(--separator);
+}
+.cx-pane-day { margin: 0; font-size: var(--t-22); font-weight: 700; letter-spacing: -0.02em; }
+.cx-pane-date { margin: 2px 0 16px; color: var(--text-2); font-size: var(--t-13); }
+.cx-pane-empty { margin: 0; color: var(--text-3); font-size: var(--t-13); }
+.cx-pane-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.cx-pane-event {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  padding: 7px 10px 7px 12px;
+  border: 0;
+  border-left: 3px solid var(--cal);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--cal) 16%, transparent);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.cx-pane-event:hover { background: color-mix(in srgb, var(--cal) 24%, transparent); }
+.cx-pane-event:focus-visible { outline: 3px solid var(--gold-ring); }
+.cx-pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-13); font-weight: 600; }
+.cx-pane-when, .cx-pane-where { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
+.cx-pane-reminder { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 10px; font-size: var(--t-13); }
+.cx-pane-reminder .cx-pane-title { font-weight: 400; }
+/* Without room for both, the timeline keeps the window. */
+@container cx-page (max-width: 900px) { .cx-pane { display: none; } }

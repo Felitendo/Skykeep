@@ -578,6 +578,7 @@ export function CalendarView() {
         )}
 
         {(view === "week" || view === "day") && (
+          <div className={view === "day" ? "cx-dayview" : "cx-weekview"}>
           <TimeGrid
             days={view === "week" ? week : [selected]}
             today={now}
@@ -598,6 +599,16 @@ export function CalendarView() {
                 : null
             }
           />
+          {view === "day" && (
+            <DayPane
+              day={selected}
+              events={shown}
+              reminders={due}
+              calendars={byGuid}
+              onOpen={(e, at) => openDraft(draftOf(e), at)}
+            />
+          )}
+          </div>
         )}
 
         {view === "year" && (
@@ -1588,5 +1599,68 @@ function EventPopover({
       </div>
       {!editable && <p className="cx-pop-note">This calendar can be read here but not changed.</p>}
     </form>
+  );
+}
+
+/**
+ * The day at a glance, beside Day's timeline — as Calendar sets it: the date, then what fills
+ * it, all-day first and the rest in time order. A wide window gave the timeline the whole
+ * width and left most of it empty; this is what Calendar puts there.
+ */
+function DayPane({
+  day,
+  events,
+  reminders,
+  calendars,
+  onOpen,
+}: {
+  day: Date;
+  events: CalendarEvent[];
+  reminders: Reminder[];
+  calendars: Map<string, Calendar>;
+  onOpen: (e: CalendarEvent, at: Anchor) => void;
+}) {
+  const from = seconds(day);
+  const to = seconds(addDays(day, 1));
+  const today = events.filter((e) => e.startsAt < to && e.endsAt > from);
+  const allDay = today.filter((e) => spansDays(e));
+  const timed = today.filter((e) => !spansDays(e)).sort((a, b) => a.startsAt - b.startsAt);
+  const due = reminders
+    .filter((r) => r.dueAt !== null && r.dueAt >= from && r.dueAt < to && !r.completedAt)
+    .sort((a, b) => (a.dueAt ?? 0) - (b.dueAt ?? 0));
+  const row = (e: CalendarEvent, when: string) => (
+    <li key={e.guid}>
+      <button
+        className="cx-pane-event"
+        style={{ "--cal": tint(calendars.get(e.calendarGuid)) } as React.CSSProperties}
+        onClick={(ev) => onOpen(e, pointOf(ev.currentTarget))}
+      >
+        <span className="cx-pane-title">{e.title}</span>
+        <span className="cx-pane-when">{when}</span>
+        {e.location && <span className="cx-pane-where">{e.location}</span>}
+      </button>
+    </li>
+  );
+  const nothing = allDay.length + timed.length + due.length === 0;
+  return (
+    <aside className="cx-pane" aria-label={day.toLocaleDateString(undefined, { dateStyle: "full" })}>
+      <h2 className="cx-pane-day">{day.toLocaleDateString(undefined, { weekday: "long" })}</h2>
+      <p className="cx-pane-date">{day.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}</p>
+      {nothing ? (
+        <p className="cx-pane-empty">Nothing on this day.</p>
+      ) : (
+        <ul className="cx-pane-list">
+          {allDay.map((e) => row(e, "all-day"))}
+          {timed.map((e) => row(e, `${clock(e.startsAt)} – ${clock(e.endsAt)}`))}
+          {due.map((r) => (
+            <li key={r.guid} className="cx-pane-reminder">
+              <span className="cx-ring" aria-hidden="true" />
+              <span className="cx-pane-title">{r.title}</span>
+              <span className="cx-pane-when">{clock(r.dueAt ?? 0)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
   );
 }
