@@ -46,6 +46,7 @@ step "a screen failing"  node .uiverify/boundary.mjs
 step "coming back"       node .uiverify/resume.mjs
 step "birthdays, holidays" node .uiverify/occasions.mjs
 step "drive folders"    node .uiverify/drive-nav.mjs
+step "birthdays in contacts" node .uiverify/contact-birthday.mjs
 
 # The same screens in WebKit, the engine Quince draws in. Chromium above catches most things;
 # this catches what only WebKit does — pointer capture, blur on removal, its own layout.

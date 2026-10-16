@@ -171,7 +171,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           for (const n of noteList) per.set(n.folderGuid, (per.get(n.folderGuid) ?? 0) + 1);
           return [noteList.length, [...per.entries()]];
         }
-        case "contact_save": return "C-new";
+        case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
         case "contact_delete": return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;
         case "drive_children": return !driveFixture ? [] : driveItems;

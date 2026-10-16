@@ -1,0 +1,46 @@
+// A contact's birthday, as Contacts shows and edits it — the source the Birthdays calendar
+// draws from, which could be neither seen nor set here.
+import { engine } from "./engine.mjs";
+import { SERVICES, installStub } from "./stub.mjs";
+
+const b = await engine.launch();
+const ctx = await b.newContext({ viewport: { width: 1280, height: 820 } });
+await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null,
+  calendarFixture: false, notesFixture: false, contactsFixture: true, driveFixture: false, remindersFixture: false });
+await ctx.addInitScript(() => {
+  const internals = window.__TAURI_INTERNALS__;
+  const invoke = internals.invoke;
+  internals.invoke = async (cmd, args) => {
+    const answer = await invoke(cmd, args);
+    if (cmd === "contacts_list" && Array.isArray(answer)) return answer.map((c) => (c.guid === "c1" ? { ...c, birthday: "1604-03-17" } : c));
+    return answer;
+  };
+});
+const page = await ctx.newPage();
+await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.locator(".nav-item", { hasText: "Contacts" }).click();
+await page.waitForTimeout(400);
+await page.locator(".contact-row", { hasText: "Zoya" }).click();
+await page.waitForTimeout(300);
+
+let failures = 0;
+const ok = (pass, yes, no) => { console.log(pass ? `PASS ${yes}` : `FAIL ${no}`); if (!pass) failures++; };
+
+const card = await page.locator(".contact-detail").innerText();
+ok(/birthday\s*(17 March|March 17)/i.test(card) && !card.includes("1604"),
+  "the card shows the birthday, without Apple's no-year 1604", `the card: ${card.replace(/\s+/g, " ").slice(0, 160)}`);
+
+await page.getByRole("button", { name: "Edit", exact: true }).click();
+await page.waitForTimeout(200);
+const noYear = page.getByLabel("Year unknown");
+ok(await noYear.isChecked(), "editing keeps it as a birthday with no year", "the year-unknown box is not ticked");
+await noYear.uncheck();
+await page.getByLabel("Birthday").fill("1998-03-17");
+await page.getByRole("button", { name: "Save" }).click();
+await page.waitForTimeout(300);
+const sent = await page.evaluate(() => (window.__contactSaves ?? []).at(-1));
+const birthday = JSON.stringify(sent ?? {}).match(/"birthday":"([^"]*)"/)?.[1];
+ok(birthday === "1998-03-17", "and a birthday set here goes to iCloud as Apple writes it", `sent: ${birthday}`);
+
+await b.close();
+process.exitCode = failures === 0 ? 0 : 1;

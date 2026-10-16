@@ -334,6 +334,40 @@ export function ContactsView() {
               Add phone, email or link
             </button>
 
+            <div className="contact-birthday-field">
+              <label>
+                <span>Birthday</span>
+                <input
+                  type="date"
+                  aria-label="Birthday"
+                  value={draft.birthday ? (draft.birthday.startsWith(NO_YEAR) ? `2000${draft.birthday.slice(4, 10)}` : draft.birthday.slice(0, 10)) : ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) return setDraft({ ...draft, birthday: null });
+                    const unknown = draft.birthday?.startsWith(NO_YEAR) ?? false;
+                    setDraft({ ...draft, birthday: unknown ? `${NO_YEAR}${v.slice(4)}` : v });
+                  }}
+                />
+              </label>
+              {draft.birthday && (
+                <label className="contact-birthday-noyear">
+                  <input
+                    type="checkbox"
+                    checked={draft.birthday.startsWith(NO_YEAR)}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        birthday: e.target.checked
+                          ? `${NO_YEAR}${draft.birthday!.slice(4, 10)}`
+                          : `${new Date().getFullYear()}${draft.birthday!.slice(4, 10)}`,
+                      })
+                    }
+                  />
+                  Year unknown
+                </label>
+              )}
+            </div>
+
             <label className="contact-notes-field">
               <span>Notes</span>
               <textarea
@@ -391,9 +425,15 @@ export function ContactsView() {
                   </dd>
                 </div>
               ))}
+              {open.birthday && (
+                <div>
+                  <dt>birthday</dt>
+                  <dd>{birthdayText(open.birthday)}</dd>
+                </div>
+              )}
             </dl>
 
-            {open.methods.length === 0 && (
+            {open.methods.length === 0 && !open.birthday && (
               <p className="cal-empty">No phone numbers or addresses saved.</p>
             )}
             {open.notes && <p className="contact-notes">{open.notes}</p>}
@@ -422,4 +462,15 @@ export function ContactsView() {
       </article>
     </div>
   );
+}
+
+/** The year Apple writes for a birthday given without one. */
+const NO_YEAR = "1604";
+
+/** "17 March", or "17 March 1998" when the year is known — as a contact card shows it. */
+function birthdayText(raw: string): string {
+  const [y, m, d] = raw.slice(0, 10).split("-").map(Number);
+  if (!m || !d) return raw;
+  const date = new Date(y === Number(NO_YEAR) ? 2000 : y, m - 1, d);
+  return date.toLocaleDateString(undefined, y === Number(NO_YEAR) ? { day: "numeric", month: "long" } : { dateStyle: "long" });
 }
