@@ -77,6 +77,8 @@ export const api = {
   eventDelete: (guid: string) => invoke<void>("event_delete", { guid }),
   calendarSync: (from: string, to: string, timezone: string) =>
     invoke<SyncSummary>("calendar_sync", { from, to, timezone }),
+  /** Events holding every word of the query, soonest first. */
+  calendarSearch: (query: string) => invoke<CalendarEvent[]>("calendar_search", { query }),
   calendarEvents: (from: number, to: number) =>
     invoke<CalendarEvent[]>("calendar_events", { from, to }),
   calendarList: () => invoke<Calendar[]>("calendar_list"),

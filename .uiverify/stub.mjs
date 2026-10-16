@@ -134,6 +134,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_submit_code": return null;
         case "account_services": return services;
         case "calendar_events": return events;
+        case "calendar_search": {
+          const words = String(args?.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+          return events.filter((e) => words.every((w) => `${e.title} ${e.location ?? ""}`.toLowerCase().includes(w)))
+            .sort((a, b) => a.startsAt - b.startsAt);
+        }
         case "calendar_list": return calendars;
         case "event_save": return "E-new";
         case "event_delete": return null;

@@ -1,4 +1,5 @@
 import { Notice } from "../../components/Notice";
+import { Search } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   api,
@@ -123,8 +124,31 @@ export function CalendarView() {
       // Remembering the view is a convenience.
     }
   };
+  /** A found event: its day, in Day view, and the search put away. */
+  const openFound = (e: CalendarEvent) => {
+    setSelected(midnight(dateOf(e.startsAt)));
+    setView("day");
+    setQuery("");
+  };
+
   /** The day everything is anchored on: the one selected, and what the views are built around. */
   const [selected, setSelected] = useState<Date>(() => midnight(today));
+  // Search, as Calendar's toolbar field: every word, any calendar, soonest first.
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<CalendarEvent[]>([]);
+  const searchField = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) return setFound([]);
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      api.calendarSearch(q).then((r) => !cancelled && setFound(r)).catch(() => !cancelled && setFound([]));
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [due, setDue] = useState<Reminder[]>([]);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
@@ -347,6 +371,12 @@ export function CalendarView() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable]");
+      // Find, as everywhere on a Mac: ⌘F (Ctrl+F here) goes to the search field.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        searchField.current?.focus();
+        return;
+      }
       if (typing || draft) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "ArrowLeft") shift(-1);
       else if ((e.metaKey || e.ctrlKey) && e.key === "ArrowRight") shift(1);
@@ -477,8 +507,49 @@ export function CalendarView() {
                 ›
               </button>
             </span>
+            <label className="cx-search">
+              <Search size={13} strokeWidth={2.25} aria-hidden="true" />
+              <input
+                ref={searchField}
+                type="search"
+                placeholder="Search"
+                aria-label="Search events"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setQuery("");
+                  if (e.key === "Enter" && found[0]) openFound(found[0]);
+                }}
+              />
+            </label>
           </div>
         </header>
+
+        {query.trim() && (
+          <div className="cx-found" role="listbox" aria-label="Events found">
+            {found.length === 0 ? (
+              <p className="cx-found-none">No events match “{query.trim()}”.</p>
+            ) : (
+              found.map((e) => (
+                <button
+                  key={e.guid}
+                  className="cx-found-row"
+                  role="option"
+                  aria-selected={false}
+                  style={{ "--cal": tint(byGuid.get(e.calendarGuid)) } as React.CSSProperties}
+                  onClick={() => openFound(e)}
+                >
+                  <span className="cx-dot" aria-hidden="true" />
+                  <span className="cx-found-title">{e.title}</span>
+                  <span className="cx-found-when">
+                    {dateOf(e.startsAt).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
+                    {e.allDay ? "" : ` · ${clock(e.startsAt)}`}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        )}
 
         {error && (
           <Notice message={error} onDismiss={() => setError(null)} />

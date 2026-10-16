@@ -151,6 +151,59 @@
 .cx-title strong { font-weight: 700; }
 .cx-title-brief { display: none; }
 .cx-bar > .segmented { flex: none; }
+/* Search, at the toolbar's end as in Calendar. */
+.cx-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 168px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--r-field);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text-3);
+}
+.cx-search:focus-within { box-shadow: 0 0 0 3px var(--gold-ring); }
+.cx-search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--t-13); outline: none; }
+.cx-search input::placeholder { color: var(--text-3); }
+@container cx-page (max-width: 860px) { .cx-search { width: 120px; } }
+@container cx-page (max-width: 560px) { .cx-search { width: 34px; padding: 0 9px; } .cx-search:focus-within { width: 150px; } }
+
+/* What search found, laid over the view below, soonest first. */
+.cx-found {
+  position: relative;
+  z-index: 30;
+  max-height: min(60vh, 420px);
+  margin: 0 18px 10px;
+  padding: 4px;
+  overflow-y: auto;
+  border-radius: 12px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--shadow-sheet);
+}
+.cx-found-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: left;
+  cursor: default;
+}
+.cx-found-row:hover, .cx-found-row:focus-visible { background: color-mix(in srgb, var(--text) 8%, transparent); outline: none; }
+.cx-found-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-found-when { color: var(--text-3); font-size: var(--t-11); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cx-found-none { margin: 0; padding: 10px; color: var(--text-3); font-size: var(--t-13); }
+
 .cx-tools { flex: none; display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
 .cx-step { display: inline-flex; align-items: center; gap: 2px; }
 

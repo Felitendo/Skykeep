@@ -475,6 +475,38 @@ async fn calendar_events(
     Ok(events)
 }
 
+/// Events holding every word of `query`, soonest first — and birthdays and holidays in the
+/// year either side of now, which are found the same way.
+#[tauri::command]
+async fn calendar_search(
+    query: String,
+    data: State<'_, Data>,
+    occasions: State<'_, Occasions>,
+) -> UiResult<Vec<Event>> {
+    let words = quince_core::fold::words(&query);
+    let (mut found, people) = {
+        let library = data.0.lock().await;
+        (
+            library.search_events(&query).map_err(|e| e.to_string())?,
+            library.contacts(None).map_err(|e| e.to_string())?,
+        )
+    };
+    if !words.is_empty() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+        let (from, to) = (now - 366 * 86_400, now + 366 * 86_400);
+        let feed = occasions.feed.lock().await;
+        let extra = quince_icloud::occasions::birthdays(&people, from, to)
+            .into_iter()
+            .chain(quince_icloud::occasions::holidays(&feed.1, from, to))
+            .filter(|e| quince_core::fold::holds_all(&quince_core::fold::fold(&e.title), &words));
+        found.extend(extra);
+        found.sort_by_key(|e| e.starts_at);
+    }
+    Ok(found)
+}
+
 /// The holiday feed for this machine's region, and its name, kept beside the library.
 struct Occasions {
     feed: Mutex<(Option<String>, Vec<quince_icloud::occasions::Holiday>)>,
@@ -1944,6 +1976,7 @@ fn main() {
             event_save,
             event_delete,
             calendar_list,
+            calendar_search,
             reminder_lists,
             reminder_groups,
             reminder_sections,

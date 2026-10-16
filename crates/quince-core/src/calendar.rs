@@ -200,6 +200,38 @@ impl Library {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Events whose title, place or notes hold every word of `query`, accent- and
+    /// case-insensitively, soonest first — what Calendar's search field finds.
+    pub fn search_events(&self, query: &str) -> Result<Vec<Event>> {
+        let words = crate::fold::words(query);
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare("SELECT guid FROM events")?;
+        let guids: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut found: Vec<Event> = guids
+            .iter()
+            .filter_map(|g| self.event(g).ok().flatten())
+            .filter(|e| {
+                let text = [
+                    Some(e.title.as_str()),
+                    e.location.as_deref(),
+                    e.notes.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ");
+                crate::fold::holds_all(&crate::fold::fold(&text), &words)
+            })
+            .collect();
+        found.sort_by_key(|e| e.starts_at);
+        found.truncate(200);
+        Ok(found)
+    }
+
     /// One event by its guid, if the library still holds it.
     pub fn event(&self, guid: &str) -> Result<Option<Event>> {
         let mut stmt = self.conn.prepare(
@@ -396,5 +428,52 @@ mod tests {
         assert!(lib.last_synced("calendar").unwrap().is_none());
         lib.mark_synced("calendar", Some("token-1")).unwrap();
         assert!(lib.last_synced("calendar").unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn search_finds_every_word_in_title_place_or_notes_ignoring_accents() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_calendars(&[Calendar {
+            guid: "c".into(),
+            title: "Work".into(),
+            enabled: true,
+            writable: true,
+            ..Default::default()
+        }])
+        .unwrap();
+        let ev = |g: &str, t: &str, place: Option<&str>, at: i64| Event {
+            guid: g.into(),
+            calendar_guid: "c".into(),
+            title: t.into(),
+            location: place.map(Into::into),
+            starts_at: at,
+            ends_at: at + 60,
+            ..Default::default()
+        };
+        lib.put_events(&[
+            ev("a", "Dentist", Some("Café Road"), 200),
+            ev("b", "Design review", None, 100),
+            ev("c", "Dentist", None, 50),
+        ])
+        .unwrap();
+        let titles = |q: &str| {
+            lib.search_events(q)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.guid)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles("dentist"), ["c", "a"], "soonest first");
+        assert_eq!(
+            titles("dentist cafe"),
+            ["a"],
+            "every word, accents folded, place included"
+        );
+        assert!(titles("  ").is_empty());
     }
 }
