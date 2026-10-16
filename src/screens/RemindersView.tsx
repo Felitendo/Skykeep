@@ -571,7 +571,9 @@ export function RemindersView() {
     const listOf = (guid: string) => lists.find((l) => l.guid === guid);
 
     if (kind === "today") {
-      // Apple's own buckets, and it shows all three whether or not anything is in them.
+      // Apple's own buckets, all three shown once anything is due today. A day with nothing
+      // in it shows no empty headings, only that there is nothing — as icloud.com does.
+      if (threaded.length === 0) return [];
       const buckets: { key: string; heading: string | null; rows: typeof threaded }[] = [
         { key: "loose", heading: null, rows: [] },
         { key: "morning", heading: "Morning", rows: [] },
@@ -1172,7 +1174,7 @@ export function RemindersView() {
                 ? showDone
                   ? "Nothing in this list."
                   : "All done here."
-                : "Nothing here."}
+                : "No Reminders"}
           </p>
         )}
       </section>

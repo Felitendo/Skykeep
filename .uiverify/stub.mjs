@@ -145,7 +145,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
         case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
         case "reminder_lists": return !remindersFixture ? [] : reminderLists;
-        case "reminders_in": return !remindersFixture ? [] : reminderItems;
+        case "reminders_in": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems;
         case "reminders_due_between": return calendarFixture ? dueReminders : [];
         case "reminder_create": return null;
         case "reminder_delete": return null;
@@ -154,7 +154,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_edit": return null;
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;
-        case "reminders_smart": return !remindersFixture ? [] : reminderItems.filter(r => !r.completedAt);
+        case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems.filter(r => !r.completedAt);
         case "note_folders": return !notesFixture ? [] : noteFolders;
         case "note_save": case "note_delete": case "note_move": return null;
         case "note_pin": {
