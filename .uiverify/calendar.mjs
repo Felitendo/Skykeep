@@ -261,6 +261,17 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   });
   ok(notice?.text === "iCloud didn't accept that change, so nothing was saved." && notice.dismiss,
     "a refused delete says so in a sentence, with Dismiss", `the notice: ${JSON.stringify(notice)}`);
+  // Delete, pressed with an event open and no field in use, deletes it — as in Calendar.
+  if (notice?.dismiss) {
+    await p.getByRole("button", { name: "Dismiss" }).click();
+    await p.locator(".cx-block", { hasText: "New Event" }).first().click();
+    await p.waitForTimeout(250);
+    await p.evaluate(() => document.activeElement?.blur());
+    await p.keyboard.press("Delete");
+    await p.waitForTimeout(300);
+    ok((await p.locator('[role="alert"]').count()) === 1, "Delete deletes an open event, as in Calendar",
+      "Delete did nothing to the open event");
+  }
   if (notice?.dismiss) {
     await p.getByRole("button", { name: "Dismiss" }).click();
     await p.waitForTimeout(150);

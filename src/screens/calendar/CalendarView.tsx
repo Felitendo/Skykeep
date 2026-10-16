@@ -1455,7 +1455,16 @@ function EventPopover({
   }, [at]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return onClose();
+      // Delete, as in Calendar: an open event goes when Delete is pressed outside its fields —
+      // and Undo brings it back, since iCloud keeps no bin.
+      const typing = (e.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable]");
+      if ((e.key === "Delete" || e.key === "Backspace") && !typing && onDelete && editable) {
+        e.preventDefault();
+        onDelete();
+      }
+    };
     const onDown = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) onClose();
     };
@@ -1465,7 +1474,7 @@ function EventPopover({
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onDown);
     };
-  }, [onClose]);
+  }, [onClose, onDelete, editable]);
 
   const set = (patch: Partial<Draft>) => onChange({ ...draft, ...patch });
   return (
