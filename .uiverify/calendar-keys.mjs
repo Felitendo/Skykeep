@@ -25,5 +25,18 @@ await page.waitForTimeout(200);
 await page.keyboard.press("Control+n");
 await page.waitForTimeout(400);
 ok(await page.locator(".cx-block.is-draft").count() === 1, "Ctrl+N starts a new event");
+// Control-Option-Down moves the open event fifteen minutes later, and saves it.
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+await page.evaluate(() => { window.__nudges = []; const t = window.__TAURI_INTERNALS__; const inner = t.invoke;
+  t.invoke = async (c, a) => { if (c === "event_save") window.__nudges.push(a.draft); return inner(c, a); }; });
+await page.locator(".cx-block", { hasText: "Design review" }).first().click();
+await page.waitForTimeout(250);
+await page.evaluate(() => document.activeElement?.blur());
+await page.keyboard.press("Control+Alt+ArrowDown");
+await page.waitForTimeout(300);
+const sent = await page.evaluate(() => window.__nudges);
+ok(sent.length === 1 && sent[0].guid === "e1" && (sent[0].startsAt % 3600) === 900,
+  `Ctrl+Option+Down moves the event 15 minutes later  ${JSON.stringify(sent.map((d) => d.startsAt % 3600))}`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

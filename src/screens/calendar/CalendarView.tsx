@@ -704,6 +704,13 @@ export function CalendarView() {
             if (await save(draft)) setDraft(null);
           }}
           onDelete={draft.guid ? () => void remove(draft.guid as string) : undefined}
+          onNudge={draft.guid ? (by) => {
+            // Calendar's Control-Option-arrows: the open event moves, stays open, and is saved.
+            const moved = { ...draft, startsAt: draft.startsAt + by, endsAt: draft.endsAt + by };
+            setDraft(moved);
+            void save(moved);
+          } : undefined}
+          view={view}
         />
       )}
 
@@ -1503,6 +1510,8 @@ function EventPopover({
   onClose,
   onSave,
   onDelete,
+  onNudge,
+  view,
 }: {
   draft: Draft;
   at: Anchor;
@@ -1512,6 +1521,8 @@ function EventPopover({
   onClose: () => void;
   onSave: () => void;
   onDelete?: () => void;
+  onNudge?: (bySeconds: number) => void;
+  view?: string;
 }) {
   const box = useRef<HTMLFormElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number }>({ left: at.x, top: at.y });
@@ -1537,6 +1548,16 @@ function EventPopover({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") return onClose();
+      // Up/Down: fifteen minutes in Day and Week, a week in Month. Left/Right: a day.
+      if (e.ctrlKey && e.altKey && onNudge && editable && e.key.startsWith("Arrow")) {
+        const step = view === "month" || draft.allDay ? 7 * 86_400 : 15 * 60;
+        const by = { ArrowUp: -step, ArrowDown: step, ArrowLeft: -86_400, ArrowRight: 86_400 }[e.key];
+        if (by) {
+          e.preventDefault();
+          onNudge(by);
+        }
+        return;
+      }
       // Delete, as in Calendar: an open event goes when Delete is pressed outside its fields —
       // and Undo brings it back, since iCloud keeps no bin.
       const typing = (e.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable]");
@@ -1554,7 +1575,7 @@ function EventPopover({
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onDown);
     };
-  }, [onClose, onDelete, editable]);
+  }, [onClose, onDelete, onNudge, editable, view, draft.allDay]);
 
   const set = (patch: Partial<Draft>) => onChange({ ...draft, ...patch });
 
