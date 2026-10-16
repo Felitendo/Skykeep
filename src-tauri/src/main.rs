@@ -883,10 +883,14 @@ async fn resync_notes(
 /// One note, by record name. `None` once Apple no longer has it.
 async fn note_by_guid(data: &State<'_, Data>, guid: &str) -> Result<Note, String> {
     let library = data.0.lock().await;
-    library
-        .notes_in(None)
-        .map_err(|e| e.to_string())?
-        .into_iter()
+    // Recently Deleted too: "All" leaves it out, and Delete Now and Recover act on what is
+    // in it — looking only in "All" answered every one of them "no longer in the library".
+    let all = library.notes_in(None).map_err(|e| e.to_string())?;
+    let trash = library
+        .notes_in(Some(quince_core::notes::TRASH_FOLDER))
+        .map_err(|e| e.to_string())?;
+    all.into_iter()
+        .chain(trash)
         .find(|n| n.guid == guid)
         .ok_or_else(|| "That note is no longer in the local library.".into())
 }

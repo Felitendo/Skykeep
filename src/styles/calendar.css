@@ -583,9 +583,19 @@
   border-radius: 12px;
   background: var(--sheet);
   box-shadow: var(--shadow-sheet);
-  animation: cx-pop 160ms var(--ease) both;
+  /* Opacity and a small lift only, on the compositor: scaling from the corner read as a
+     jump toward the click, and re-ran on every re-anchor. */
+  animation: cx-pop 140ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  will-change: opacity, transform;
 }
-@keyframes cx-pop { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes cx-pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .cx-popover { animation: none; } }
+.cx-popover.is-info { gap: 4px; width: 280px; padding: 14px 16px; }
+.cx-info-title { margin: 0 0 2px; font-size: var(--t-17); font-weight: 700; line-height: 1.25; }
+.cx-info-line { margin: 0; font-size: var(--t-13); color: var(--text-2); }
+.cx-info-cal { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; font-size: var(--t-13); color: var(--text-2); }
+.cx-info-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cal); }
+.cx-info-notes { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--separator); font-size: var(--t-13); white-space: pre-wrap; }
 .cx-popover input,
 .cx-popover textarea {
   border: 0;

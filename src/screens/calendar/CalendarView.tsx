@@ -73,6 +73,9 @@ type Draft = {
   endsAt: number;
   allDay: boolean;
   notes: string;
+  /** Carried through untouched: the editor has no field for it yet, and sending null wiped
+   *  the link off every event that was edited, moved or resized here. */
+  url: string | null;
 };
 
 const draftOf = (e: CalendarEvent): Draft => ({
@@ -84,6 +87,7 @@ const draftOf = (e: CalendarEvent): Draft => ({
   endsAt: e.endsAt,
   allDay: e.allDay,
   notes: e.notes ?? "",
+  url: e.url,
 });
 
 /** `YYYY-MM-DDTHH:mm` and `YYYY-MM-DD` for the date inputs, in local time. */
@@ -263,17 +267,23 @@ export function CalendarView() {
       return next;
     });
 
-  /** Every write goes to Apple first, then the library is re-read. */
+  /**
+   * Every write shows at once — an event moved, resized, retitled or deleted is drawn that
+   * way the moment it is asked for — then goes to Apple and the library is re-read. A
+   * refusal re-reads, which puts the event back where it was, and says why.
+   */
   const write = useCallback(
-    async (run: () => Promise<void>) => {
+    async (run: () => Promise<void>, predict?: (rows: CalendarEvent[]) => CalendarEvent[]) => {
       setBusy(true);
       setError(null);
+      if (predict) setEvents((rows) => predict(rows));
       try {
         await run();
         await read();
         return true;
       } catch (e) {
         setError(messageOf(e));
+        read().catch(() => {});
         return false;
       } finally {
         setBusy(false);
@@ -295,8 +305,17 @@ export function CalendarView() {
           allDay: d.allDay,
           timezone: ZONE,
           notes: d.notes.trim() || null,
-          url: null,
+          url: d.url,
         });
+      }, (rows) => {
+        // Shown where it now sits at once; a new one is drawn by its draft until Apple names it.
+        if (!d.guid) return rows;
+        return rows.map((e) => e.guid === d.guid ? {
+          ...e, calendarGuid: d.calendarGuid, title: d.title.trim() || "New Event",
+          location: d.location.trim() || null, startsAt: d.startsAt,
+          endsAt: Math.max(d.endsAt, d.startsAt + (d.allDay ? 86_400 : 900)),
+          allDay: d.allDay, notes: d.notes.trim() || null,
+        } : e);
       }),
     [write]
   );
@@ -308,8 +327,8 @@ export function CalendarView() {
   const remove = useCallback(
     async (guid: string) => {
       const gone = events.find((e) => e.guid === guid) ?? null;
-      if (await write(() => api.eventDelete(guid))) {
-        setDraft(null);
+      setDraft(null);
+      if (await write(() => api.eventDelete(guid), (rows) => rows.filter((e) => e.guid !== guid))) {
         setUndo(gone);
       }
     },
@@ -333,7 +352,7 @@ export function CalendarView() {
   const newAt = (startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => {
     if (!target) return;
     openDraft(
-      { guid: null, calendarGuid: target.guid, title: "", location: "", startsAt, endsAt, allDay, notes: "" },
+      { guid: null, calendarGuid: target.guid, title: "", location: "", startsAt, endsAt, allDay, notes: "", url: null },
       at
     );
   };
@@ -1495,6 +1514,36 @@ function EventPopover({
   }, [onClose, onDelete, editable]);
 
   const set = (patch: Partial<Draft>) => onChange({ ...draft, ...patch });
+
+  // A holiday, a birthday, a subscribed feed: nothing to change, so Calendar shows what it
+  // is — not a form of greyed fields with a note saying they cannot be used.
+  if (!editable) {
+    const start = dateOf(draft.startsAt);
+    const end = dateOf(Math.max(draft.startsAt, draft.endsAt - (draft.allDay ? 86_400 : 0)));
+    const day = (d: Date) => d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    const time = (d: Date) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const sameDay = start.toDateString() === end.toDateString();
+    const when = draft.allDay
+      ? sameDay ? day(start) : `${day(start)} – ${day(end)}`
+      : sameDay ? `${day(start)}, ${time(start)} – ${time(end)}` : `${day(start)}, ${time(start)} – ${day(end)}, ${time(end)}`;
+    return (
+      <form
+        ref={box}
+        className="cx-popover is-info"
+        role="dialog"
+        aria-label={draft.title || "Event"}
+        style={{ left: pos.left, top: pos.top, "--cal": tint(calendar) } as React.CSSProperties}
+        onSubmit={(e) => { e.preventDefault(); onClose(); }}
+      >
+        <h3 className="cx-info-title">{draft.title}</h3>
+        {draft.location && <p className="cx-info-line">{draft.location}</p>}
+        <p className="cx-info-line">{when}</p>
+        <p className="cx-info-cal"><span className="cx-info-dot" aria-hidden="true" />{calendar?.title}</p>
+        {draft.notes && <p className="cx-info-notes">{draft.notes}</p>}
+      </form>
+    );
+  }
+
   return (
     <form
       ref={box}
@@ -1604,7 +1653,6 @@ function EventPopover({
           )}
         </span>
       </div>
-      {!editable && <p className="cx-pop-note">This calendar can be read here but not changed.</p>}
     </form>
   );
 }

@@ -554,18 +554,22 @@ export function NotesView() {
             </p>
             {!composing && open && !open.locked && (
               <div className="note-bar-actions">
-                <Picker
+                {!inTrash && <Picker
                   label={`Folder for ${open.title}`}
                   value={open.folderGuid ?? ALL}
                   disabled={busy}
                   onChange={(guid) => void moveTo(guid)}
                   options={[
-                    { value: ALL, label: "Notes" },
+                    // "No folder" only for an account without Apple's default "Notes" folder;
+                    // with one, it was a second "Notes" that meant something else.
+                    ...(folders.some((f) => f.guid === "DefaultFolder-CloudKit")
+                      ? []
+                      : [{ value: ALL, label: "Notes" }]),
                     ...folders
                       .filter((f) => f.guid !== TRASH_FOLDER)
                       .map((f) => ({ value: f.guid, label: f.title })),
                   ]}
-                />
+                />}
                 {!inTrash && (
                   <button
                     className="notes-icon"

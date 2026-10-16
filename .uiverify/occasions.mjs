@@ -31,11 +31,13 @@ const pop = await page.evaluate(() => {
   return p && {
     del: Boolean(p.querySelector(".cx-pop-delete")),
     buttons: [...p.querySelectorAll("button")].map((x) => x.textContent.trim()),
-    editable: [...p.querySelectorAll("input, textarea")].some((i) => !i.readOnly && !i.disabled && i.type !== "checkbox"),
+    fields: p.querySelectorAll("input, textarea, select").length,
+    title: p.querySelector(".cx-info-title")?.textContent,
   };
 });
-ok(pop && !pop.del && pop.buttons.includes("Close") && !pop.editable,
-  "a birthday opens read-only, with Close and nothing to delete", `its popover: ${JSON.stringify(pop)}`);
+// As Calendar shows one: what it is and when, not a form of fields that cannot be used.
+ok(pop && !pop.del && pop.fields === 0 && pop.title === "Zoya Ahuja’s Birthday",
+  "a birthday opens as an info card, with no fields and nothing to delete", `its popover: ${JSON.stringify(pop)}`);
 await page.keyboard.press("Escape");
 
 await page.locator(".cx-cal", { hasText: "Birthdays" }).click().catch(async () => {
