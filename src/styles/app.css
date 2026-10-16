@@ -1697,3 +1697,16 @@
 .contact-birthday-field label:first-child { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-11); color: var(--text-2); }
 .contact-birthday-field input[type="date"] { padding: 4px 8px; border: 1px solid var(--field-edge); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; font-size: var(--t-13); color-scheme: light dark; }
 .contact-birthday-noyear { display: flex; align-items: center; gap: 6px; padding-bottom: 6px; font-size: var(--t-13); color: var(--text-2); }
+
+/* File Info: a calm sheet, the mark large, the facts in two aligned columns. */
+.info-sheet { width: min(400px, calc(100vw - 32px)); padding: 0 0 8px; }
+.info-head { display: flex; align-items: center; justify-content: center; position: relative; padding: 14px 16px; border-bottom: 1px solid var(--separator); }
+.info-head h2 { margin: 0; font-size: var(--t-15); font-weight: 600; }
+.info-done { position: absolute; right: 10px; font-weight: 600; color: var(--sys-blue); }
+.info-mark { display: grid; place-items: center; margin: 18px auto 10px; width: 96px; height: 96px; border-radius: 16px; background: color-mix(in srgb, var(--text) 6%, transparent); }
+.info-mark > * { transform: scale(2.6); }
+.info-name { margin: 0 20px 14px; text-align: center; font-weight: 600; word-break: break-word; }
+.info-rows { margin: 0 20px; }
+.info-rows > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 12px; padding: 7px 0; border-top: 1px solid var(--separator); font-size: var(--t-13); }
+.info-rows dt { color: var(--text-2); }
+.info-rows dd { margin: 0; text-align: right; overflow-wrap: anywhere; }

@@ -155,6 +155,61 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** What a file's kind is called, as icloud.com's File Info names it. */
+const KINDS: Record<string, string> = {
+  pdf: "PDF document", png: "PNG image", jpg: "JPEG image", jpeg: "JPEG image", heic: "HEIC image",
+  gif: "GIF image", webp: "WebP image", mp4: "MPEG-4 movie", mov: "QuickTime movie", mp3: "MP3 audio",
+  m4a: "Apple MPEG-4 audio", wav: "WAVE audio", txt: "Plain text document", md: "Markdown document",
+  csv: "Comma-separated values", json: "JSON document", zip: "ZIP archive", html: "HTML document",
+  docx: "Office Open XML word processing document", doc: "Microsoft Word document",
+  xlsx: "Office Open XML spreadsheet", pptx: "Office Open XML presentation",
+  pages: "Pages document", numbers: "Numbers spreadsheet", key: "Keynote presentation",
+};
+function kindName(item: DriveItem) {
+  if (item.kind === "FOLDER") return "Folder";
+  if (item.kind === "APP_LIBRARY") return "Application Library";
+  const ext = (item.extension ?? "").toLowerCase();
+  return KINDS[ext] ?? (ext ? `${ext.toUpperCase()} file` : "Document");
+}
+
+/** File Info, as icloud.com shows it: the mark, the name, then what it is and where. */
+function InfoSheet({ item, where, onClose }: { item: DriveItem; where: string; onClose: () => void }) {
+  const done = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    const id = window.setTimeout(() => done.current?.focus(), 0);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => { window.clearTimeout(id); window.removeEventListener("keydown", onKey); };
+  }, [onClose]);
+  const when = (s: number | null) => (s === null ? "—" : new Date(s * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
+  const rows: [string, string][] = [
+    ["Kind", kindName(item)],
+    ...(isContainer(item)
+      ? item.childCount === null ? [] : [["Contents", `${item.childCount} item${item.childCount === 1 ? "" : "s"}`] as [string, string]]
+      : [["Size", fileSize(item.size)] as [string, string]]),
+    ["Where", where],
+    ["Created", when(item.createdAt)],
+    ["Modified", when(item.modifiedAt ?? item.createdAt)],
+  ];
+  return (
+    <div className="modal-veil" onClick={onClose}>
+      <div className="modal-sheet info-sheet" role="dialog" aria-label="File Info" onClick={(e) => e.stopPropagation()}>
+        <header className="info-head">
+          <h2>{isContainer(item) ? "Folder Info" : "File Info"}</h2>
+          <button ref={done} className="quiet info-done" onClick={onClose}>Done</button>
+        </header>
+        <div className="info-mark" aria-hidden="true"><FileGlyph kind={item.kind} extension={item.extension} /></div>
+        <p className="info-name">{driveName(item)}</p>
+        <dl className="info-rows">
+          {rows.map(([k, v]) => (
+            <div key={k}><dt>{k}</dt><dd>{v}</dd></div>
+          ))}
+        </dl>
+      </div>
+    </div>
+  );
+}
+
 type Crumb = { id: string; name: string };
 
 export function DriveView() {
@@ -204,6 +259,7 @@ export function DriveView() {
   const [newFolderName, setNewFolderName] = useState("");
   /** The item a Move dialog is open for, if any. */
   const [moving, setMoving] = useState<DriveItem | null>(null);
+  const [info, setInfo] = useState<DriveItem | null>(null);
   /** True while files are held over the window, so the drop target can say so. */
   const [dropping, setDropping] = useState(false);
 
@@ -756,6 +812,14 @@ export function DriveView() {
                       <ActionGlyph name="rename" />
                     </button>
                     <button
+                      className="drive-action"
+                      aria-label={`Get Info for ${driveName(item)}`}
+                      title="Get Info"
+                      onClick={() => setInfo(item)}
+                    >
+                      <ActionGlyph name="info" />
+                    </button>
+                    <button
                       className="drive-action danger"
                       aria-label={`Delete ${driveName(item)}`}
                       title="Delete"
@@ -786,6 +850,10 @@ export function DriveView() {
           onCancel={() => setMoving(null)}
           onMove={(destinationId) => void move(moving, destinationId)}
         />
+      )}
+
+      {info && (
+        <InfoSheet item={info} where={trail.map((c) => c.name).join(" › ")} onClose={() => setInfo(null)} />
       )}
 
       <UploadTray uploads={[...uploads.values()]} onDismiss={() => setUploads(new Map())} />

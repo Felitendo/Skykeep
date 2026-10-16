@@ -114,7 +114,7 @@ export function FileGlyph({ kind, extension }: { kind: string; extension: string
 }
 
 /** Actions on a row, at the same weight as everything else drawn here. */
-export type ActionName = "download" | "rename" | "move" | "delete" | "upload" | "newFolder";
+export type ActionName = "download" | "rename" | "move" | "delete" | "upload" | "newFolder" | "info";
 
 const ACTIONS: Record<ActionName, React.ReactNode> = {
   download: <path d="M8 2.8v7.4M4.8 7.2 8 10.4l3.2-3.2M3.2 12.6h9.6" />,
@@ -122,6 +122,7 @@ const ACTIONS: Record<ActionName, React.ReactNode> = {
   move: <path d="M2.6 5.2a1.4 1.4 0 0 1 1.4-1.4h2.3l1 1.2h5.1a1.4 1.4 0 0 1 1.4 1.4M6.4 10.6h6.4M10.4 8.2l2.4 2.4-2.4 2.4" />,
   delete: <path d="M3.4 4.8h9.2M6.4 4.8V3.4h3.2v1.4M5 4.8l.6 8h4.8l.6-8M7 7v3.6M9 7v3.6" />,
   upload: <path d="M8 13.2V5.8M4.8 9 8 5.8 11.2 9M3.2 3.4h9.6" />,
+  info: <path d="M8 13.4A5.4 5.4 0 1 0 8 2.6a5.4 5.4 0 0 0 0 10.8zM8 7.4v3.4M8 5.2v.1" />,
   newFolder: <path d="M2.6 5.2a1.4 1.4 0 0 1 1.4-1.4h2.3l1 1.2h5.1a1.4 1.4 0 0 1 1.4 1.4v5.4a1.4 1.4 0 0 1-1.4 1.4H4a1.4 1.4 0 0 1-1.4-1.4zM8 7.6v3.4M6.3 9.3h3.4" />,
 };
 
