@@ -50,6 +50,15 @@ ok(sent?.draft?.url === "https://meet.example/dentist",
 const zoned = await page.evaluate(() => window.__saves.at(-1)?.draft?.timezone);
 ok(zoned === "Asia/Kolkata", `an edit keeps the event's own time zone  [${zoned}]`);
 
+// The link can be set from the event itself. (The stub hands back the old title on re-read.)
+await page.locator(".cx-block", { hasText: "Dentist" }).first().click();
+await page.waitForTimeout(250);
+await page.getByLabel("URL").fill("https://example.com/new");
+await page.locator('input[placeholder="New Event"]').first().press("Enter");
+await page.waitForTimeout(1800);
+const linked = await page.evaluate(() => window.__saves.at(-1)?.draft?.url);
+ok(linked === "https://example.com/new", `a URL typed into the event is saved  [${linked}]`);
+
 // A delete takes the event off the calendar at once.
 await page.locator(".cx-block", { hasText: "Design review" }).first().click();
 await page.waitForTimeout(250);

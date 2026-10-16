@@ -734,3 +734,5 @@
 .cx-pane-reminder .cx-pane-title { font-weight: 400; }
 /* Without room for both, the timeline keeps the window. */
 @container cx-page (max-width: 900px) { .cx-pane { display: none; } }
+
+.cx-info-url { margin-top: 6px; font-size: var(--t-13); color: var(--sys-blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -346,7 +346,7 @@ export function CalendarView() {
           allDay: d.allDay,
           timezone: d.allDay ? ZONE : (d.timezone ?? ZONE),
           notes: d.notes.trim() || null,
-          url: d.url,
+          url: d.url?.trim() || null,
         });
       }, (rows) => {
         // Shown where it now sits at once; a new one is drawn by its draft until Apple names it.
@@ -1582,6 +1582,9 @@ function EventPopover({
         {draft.location && <p className="cx-info-line">{draft.location}</p>}
         <p className="cx-info-line">{when}</p>
         <p className="cx-info-cal"><span className="cx-info-dot" aria-hidden="true" />{calendar?.title}</p>
+        {draft.url && (
+          <a className="cx-info-url" href={draft.url} target="_blank" rel="noreferrer">{draft.url}</a>
+        )}
         {draft.notes && <p className="cx-info-notes">{draft.notes}</p>}
       </form>
     );
@@ -1668,6 +1671,15 @@ function EventPopover({
           />
         </div>
       </div>
+      <input
+        className="cx-pop-line"
+        type="url"
+        value={draft.url ?? ""}
+        placeholder="Add URL"
+        aria-label="URL"
+        readOnly={!editable}
+        onChange={(e) => set({ url: e.target.value || null })}
+      />
       <textarea
         className="cx-pop-notes"
         value={draft.notes}
