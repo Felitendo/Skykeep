@@ -14,7 +14,7 @@ await ctx.addInitScript(() => {
     const inner = t.invoke;
     t.invoke = async (cmd, args) => {
       if (cmd === "event_save") window.__saves.push(args);
-      if (cmd === "event_save" || cmd === "event_delete") await new Promise((r) => setTimeout(r, 1500));
+      if (cmd === "event_save" || cmd === "event_delete" || cmd === "reminder_set_done") await new Promise((r) => setTimeout(r, 1500));
       const out = await inner(cmd, args);
       if (cmd === "calendar_events" && Array.isArray(out))
         return out.map((e) => (e.guid === "e2" ? { ...e, url: "https://meet.example/dentist" } : e));
@@ -57,5 +57,13 @@ await page.evaluate(() => document.activeElement?.blur());
 await page.keyboard.press("Delete");
 await page.waitForTimeout(150);
 ok(await page.locator(".cx-block", { hasText: "Design review" }).count() === 0, "a deleted event leaves at once");
+// A reminder on the calendar ticks there, at once, as in Calendar.
+const ring = page.getByRole("checkbox", { name: /^Complete / }).first();
+const had = await ring.count();
+if (had) {
+  await ring.click();
+  await page.waitForTimeout(150);
+  ok((await ring.getAttribute("aria-checked")) === "true", "a reminder's ring on the calendar ticks it at once");
+} else ok(false, "no reminder on the calendar to tick");
 await b.close();
 process.exitCode = failures ? 1 : 0;

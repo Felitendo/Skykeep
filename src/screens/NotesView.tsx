@@ -78,16 +78,23 @@ export function NotesView() {
    * Every write goes to Apple first and the library is re-read after, so nothing on screen
    * is a guess about what was stored.
    */
+  /**
+   * A pin, a move, a delete shows the moment it is asked for, as on the phone; then it goes
+   * to Apple and the list is re-read. A refusal re-reads, which puts the note back, and says
+   * why.
+   */
   const write = useCallback(
-    async (run: () => Promise<void>) => {
+    async (run: () => Promise<void>, predict?: (rows: Note[]) => Note[]) => {
       setBusy(true);
       setError(null);
+      if (predict) setNotes((rows) => predict(rows));
       try {
         await run();
         await read();
         return true;
       } catch (e) {
         setError(messageOf(e));
+        read().catch(() => {});
         return false;
       } finally {
         setBusy(false);
@@ -341,26 +348,42 @@ export function NotesView() {
     ) {
       return;
     }
-    await write(() => api.noteDelete(open.guid));
+    const gone = open.guid;
+    await write(() => api.noteDelete(gone), (rows) => rows.filter((n) => n.guid !== gone));
   }, [open, write]);
 
-  /** Out of Recently Deleted and back into Notes. */
+  /** Out of Recently Deleted and back into Notes — Apple's "Notes" folder where there is one. */
   const recover = useCallback(async () => {
     if (!open) return;
-    await write(() => api.noteMove(open.guid, null));
-  }, [open, write]);
+    const back = folders.some((f) => f.guid === "DefaultFolder-CloudKit") ? "DefaultFolder-CloudKit" : null;
+    const guid = open.guid;
+    await write(() => api.noteMove(guid, back), (rows) => rows.filter((n) => n.guid !== guid));
+  }, [open, write, folders]);
 
   const moveTo = useCallback(
     async (guid: string) => {
       if (!open) return;
-      await write(() => api.noteMove(open.guid, guid === ALL ? null : guid));
+      const to = guid === ALL ? null : guid;
+      const moving = open.guid;
+      await write(
+        () => api.noteMove(moving, to),
+        // Out of the folder on screen; in All it stays, filed somewhere else.
+        (rows) => folder === ALL
+          ? rows.map((n) => (n.guid === moving ? { ...n, folderGuid: to } : n))
+          : rows.filter((n) => n.guid !== moving),
+      );
     },
-    [open, write]
+    [open, write, folder]
   );
 
   const pin = useCallback(async () => {
     if (!open) return;
-    await write(() => api.notePin(open.guid, !open.pinned));
+    const guid = open.guid;
+    const pinned = !open.pinned;
+    await write(
+      () => api.notePin(guid, pinned),
+      (rows) => rows.map((n) => (n.guid === guid ? { ...n, pinned } : n)),
+    );
   }, [open, write]);
 
   // A save confirmation is a moment, not a state.

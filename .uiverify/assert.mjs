@@ -92,8 +92,8 @@ await p.waitForSelector(".sidebar .nav-item");
 // The sidebar holds what works, most used first. Apple's thirty-odd services — "CloudKit
 // data", "Push", "Account gateway" — and screens that only said they were not built (Photos,
 // Mail, Find My, Shared albums) were all listed; none of them is anything to use here.
-const names = (await p.locator(".sidebar .nav-item").allInnerTexts()).map((t) => t.trim());
-const selected = (await p.textContent('.nav-item[aria-current="true"]'))?.trim();
+const names = (await p.locator(".sidebar .nav-item .nav-name").allInnerTexts()).map((t) => t.trim());
+const selected = (await p.textContent('.nav-item[aria-current="true"] .nav-name'))?.trim();
 console.log("nav items      :", JSON.stringify(names));
 console.log("page errors    :", errs.length ? errs : "none");
 const collapsed =

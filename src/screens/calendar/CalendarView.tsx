@@ -1,6 +1,6 @@
 import { Notice } from "../../components/Notice";
 import { Search } from "lucide-react";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   defaultCalendar,
@@ -81,6 +81,31 @@ type Draft = {
   timezone: string | null;
 };
 
+/**
+ * A reminder's ring on the calendar is its checkbox, as in Calendar: ticking it completes the
+ * reminder there and then. It fills at once, lingers a moment so the tick is seen, and leaves
+ * the schedule — Calendar shows no completed reminders.
+ */
+const TickContext = createContext<{ ticked: Set<string>; tick: (r: Reminder) => void } | null>(null);
+function Ring({ reminder }: { reminder: Reminder }) {
+  const ctx = useContext(TickContext);
+  const done = ctx?.ticked.has(reminder.guid) ?? false;
+  return (
+    <button
+      type="button"
+      className={`cx-ring${done ? " is-ticked" : ""}`}
+      role="checkbox"
+      aria-checked={done}
+      aria-label={`Complete ${reminder.title}`}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!done) ctx?.tick(reminder);
+      }}
+    />
+  );
+}
+
 const draftOf = (e: CalendarEvent): Draft => ({
   guid: e.guid,
   calendarGuid: e.calendarGuid,
@@ -159,6 +184,18 @@ export function CalendarView() {
   }, [query]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [due, setDue] = useState<Reminder[]>([]);
+  const [ticked, setTicked] = useState<Set<string>>(() => new Set());
+  const tickValue = useMemo(() => ({
+    ticked,
+    tick: (r: Reminder) => {
+      setTicked((was) => new Set(was).add(r.guid));
+      const untick = () => setTicked((was) => { const next = new Set(was); next.delete(r.guid); return next; });
+      api.reminderSetDone(r.guid, r.listGuid, true).then(
+        () => window.setTimeout(() => { setDue((rows) => rows.filter((x) => x.guid !== r.guid)); untick(); }, 600),
+        (e) => { untick(); setError(messageOf(e)); },
+      );
+    },
+  }), [ticked]);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   const [hidden, setHidden] = useState<Set<string>>(() => readSet(HIDDEN_KEY));
   const [loaded, setLoaded] = useState(false);
@@ -462,6 +499,7 @@ export function CalendarView() {
   );
 
   return (
+    <TickContext.Provider value={tickValue}>
     <div className="cx">
       <aside className="cx-side" aria-label="Calendars">
         <div className="cx-cals">
@@ -678,6 +716,7 @@ export function CalendarView() {
         </div>
       )}
     </div>
+    </TickContext.Provider>
   );
 }
 
@@ -894,7 +933,7 @@ function MonthView({
                               className={`cx-item is-reminder${item.reminder.completedAt ? " is-done" : ""}`}
                               title={dots ? `${item.reminder.title} · ${clock(item.at)}` : undefined}
                             >
-                              <span className="cx-ring" aria-hidden="true" />
+                              <Ring reminder={item.reminder} />
                               <span className="cx-item-title">{item.reminder.title}</span>
                               <span className="cx-item-time">{clock(item.at)}</span>
                             </span>
@@ -1287,7 +1326,7 @@ function TimeGrid({
                         maxWidth: `calc(${100 / m.columns}% - 8px)`,
                       }}
                     >
-                      <span className="cx-ring" aria-hidden="true" />
+                      <Ring reminder={r} />
                       {r.title}
                     </span>
                   );
@@ -1713,7 +1752,7 @@ function DayPane({
           {timed.map((e) => row(e, `${clock(e.startsAt)} – ${clock(e.endsAt)}`))}
           {due.map((r) => (
             <li key={r.guid} className="cx-pane-reminder">
-              <span className="cx-ring" aria-hidden="true" />
+              <Ring reminder={r} />
               <span className="cx-pane-title">{r.title}</span>
               <span className="cx-pane-when">{clock(r.dueAt ?? 0)}</span>
             </li>

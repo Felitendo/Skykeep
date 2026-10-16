@@ -188,7 +188,7 @@
 }
 .cx-found-row {
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -307,7 +307,7 @@
 .cx-items li { pointer-events: auto; }
 .cx-item {
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
   width: 100%;
@@ -324,12 +324,23 @@
 }
 .cx-item:hover { background: color-mix(in srgb, var(--cal, var(--text)) 14%, transparent); }
 .cx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cal); }
-.cx-ring { width: 8px; height: 8px; border: 1.3px solid var(--text-3); border-radius: 50%; box-sizing: border-box; }
+.cx-ring {
+  position: relative; flex: none; width: 10px; height: 10px; padding: 0; margin: 0;
+  border: 1.3px solid var(--text-3); border-radius: 50%; box-sizing: border-box;
+  background: none; box-shadow: none; cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+/* A target a finger or a trackpad can find, larger than the ring it draws. */
+.cx-ring::before { content: ""; position: absolute; inset: -6px; }
+.cx-ring:hover { border-color: var(--text); }
+.cx-ring:active { transform: scale(0.85); }
+.cx-ring.is-ticked { background: var(--sys-blue, #0a84ff); border-color: var(--sys-blue, #0a84ff); }
+.cx-ring:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 2px; }
 .cx-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cx-item-time { color: var(--text-3); font-variant-numeric: tabular-nums; }
 /* In a narrow cell the title matters more than the time, which Apple drops first. */
 @container (max-width: 130px) {
-  .cx-item { grid-template-columns: 8px minmax(0, 1fr); }
+  .cx-item { grid-template-columns: 10px minmax(0, 1fr); }
   .cx-item-time { display: none; }
 }
 /* Dots, for a cell with no room for words: each item still opens on a click. */
@@ -515,6 +526,8 @@
   text-overflow: ellipsis;
   pointer-events: none;
 }
+/* The label lets a drag on the timeline through; its ring is the one thing that takes a click. */
+.cx-reminder .cx-ring { pointer-events: auto; }
 .cx-reminder.is-done { color: var(--text-3); text-decoration: line-through; }
 /* Above the line for now, on a backing of its own, so the line never runs through a title. */
 .cx-reminder { z-index: 3; right: auto; max-width: calc(100% - 8px); padding: 0 6px 0 2px; border-radius: 4px; background: var(--bg); }
