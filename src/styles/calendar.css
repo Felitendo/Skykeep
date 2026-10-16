@@ -438,7 +438,8 @@
 .cx-allday-lanes { position: relative; flex: 1; }
 
 .cx-scroll { flex: 1; min-height: 0; overflow-y: auto; }
-.cx-hours-body { position: relative; display: flex; }
+/* Room above midnight and below the last hour, so a label centred on its line — "12:01 AM" just after midnight — is not cut in half by the top of the scroller. */
+.cx-hours-body { position: relative; display: flex; padding-block: 10px; }
 .cx-hour-labels { position: relative; }
 .cx-hour-labels span {
   position: absolute;
