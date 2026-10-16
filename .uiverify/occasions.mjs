@@ -62,6 +62,9 @@ if (rows.length) {
     open: Boolean(document.querySelector(".cx-found")),
   }));
   ok(after.day === "Day" && after.shows && !after.open, "and opening it shows its day", `after: ${JSON.stringify(after)}`);
+  const pane = await page.locator(".cx-pane").innerText().catch(() => "");
+  ok(pane.includes("Diwali") && pane.includes("all-day"), "Day keeps the day at a glance beside its timeline",
+    `the day pane reads: ${JSON.stringify(pane.slice(0, 120))}`);
 }
 
 await b.close();
