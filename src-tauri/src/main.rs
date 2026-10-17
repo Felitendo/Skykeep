@@ -1393,6 +1393,110 @@ async fn resync_contacts(
         .map_err(|e| e.to_string())
 }
 
+/// The Contacts lists, as the last pass stored them.
+#[tauri::command]
+async fn contact_lists(
+    data: State<'_, Data>,
+) -> UiResult<Vec<quince_icloud::contacts::ContactList>> {
+    let library = data.0.lock().await;
+    Ok(quince_icloud::contacts::stored_lists(&library))
+}
+
+/// One Contacts list write at a time. Each reads the list as Apple holds it and sends it
+/// back whole; two at once would both read the same etag and one would be refused.
+static CONTACT_LISTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Change a Contacts list: make one (no `guid`), rename it, add people to it or take them
+/// out, or delete it. Answers with the list's id.
+///
+/// Apple only takes a list whole, so membership is sent as what to add and remove and laid
+/// over the list as Apple holds it at the moment of writing — someone added on the phone a
+/// second ago stays in. A write that loses to one made elsewhere is read again and retried.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn contact_list_write(
+    guid: Option<String>,
+    name: Option<String>,
+    add: Option<Vec<String>>,
+    remove: Option<Vec<String>>,
+    delete: Option<bool>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    let _one = CONTACT_LISTS.lock().await;
+    let (http, root, params) = contacts_context(&auth).await?;
+    let add = add.unwrap_or_default();
+    let remove = remove.unwrap_or_default();
+    let mut attempt = 0;
+    let done = loop {
+        attempt += 1;
+        let (book, tokens) =
+            quince_icloud::contacts::fetch_book_with_tokens(&http, &root, params.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+        let written = match guid.as_deref().filter(|g| !g.is_empty()) {
+            None => {
+                quince_icloud::contacts::create_list(
+                    &http,
+                    &root,
+                    params.clone(),
+                    &tokens,
+                    name.as_deref().unwrap_or("Untitled List"),
+                    &add,
+                )
+                .await
+            }
+            Some(guid) => {
+                let Some(mut list) = book
+                    .lists
+                    .into_iter()
+                    .find(|l| l.guid.eq_ignore_ascii_case(guid))
+                else {
+                    // Already gone — deleted here a moment ago, or on another device.
+                    break guid.to_string();
+                };
+                if delete.unwrap_or(false) {
+                    quince_icloud::contacts::delete_list(
+                        &http,
+                        &root,
+                        params.clone(),
+                        &tokens,
+                        &list.guid,
+                    )
+                    .await
+                } else {
+                    if let Some(name) = name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                        list.name = name.to_string();
+                    }
+                    list.members
+                        .retain(|m| !remove.iter().any(|r| r.eq_ignore_ascii_case(m)));
+                    for person in &add {
+                        if !list.members.iter().any(|m| m.eq_ignore_ascii_case(person)) {
+                            list.members.push(person.clone());
+                        }
+                    }
+                    quince_icloud::contacts::update_list(
+                        &http,
+                        &root,
+                        params.clone(),
+                        &tokens,
+                        &list,
+                    )
+                    .await
+                }
+                .map(|()| list.guid)
+            }
+        };
+        match written {
+            Ok(guid) => break guid,
+            Err(quince_icloud::Error::Conflict) if attempt < 3 => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    resync_contacts(&http, &root, params, &data).await?;
+    Ok(done)
+}
+
 /// Create a contact, or save changes to one. Returns the id Apple knows it by.
 ///
 /// An edit starts from Apple's own card, so everything this app does not model — a photo,
@@ -2535,6 +2639,8 @@ fn main() {
             note_counts,
             contacts_list,
             contact_save,
+            contact_lists,
+            contact_list_write,
             contact_delete,
             drive_sync_folder,
             drive_children,

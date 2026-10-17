@@ -159,6 +159,14 @@ export const api = {
   contactSave: (contact: Contact) => invoke<string>("contact_save", { contact }),
   contactDelete: (guid: string) => invoke<void>("contact_delete", { guid }),
   contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
+  /** Contacts' lists — Apple's groups — in the order Apple keeps them. */
+  contactLists: () => invoke<ContactList[]>("contact_lists"),
+  /**
+   * Make a list (no guid), rename one, add people to it or take them out, or delete it.
+   * Membership goes as changes, laid over the list as Apple holds it. Returns its id.
+   */
+  contactListWrite: (change: { guid?: string; name?: string; add?: string[]; remove?: string[]; delete?: boolean }) =>
+    invoke<string>("contact_list_write", change),
 
   driveSyncFolder: (folderId: string) => invoke<number>("drive_sync_folder", { folderId }),
   driveChildren: (folderId: string) => invoke<DriveItem[]>("drive_children", { folderId }),
@@ -408,6 +416,14 @@ export type Note = {
 };
 
 export type ContactMethod = { kind: string; label: string | null; value: string };
+
+export type ContactList = {
+  guid: string;
+  name: string;
+  /** The contacts in it, by guid. */
+  members: string[];
+  etag: string | null;
+};
 
 export type Contact = {
   guid: string;

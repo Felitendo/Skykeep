@@ -1,16 +1,23 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Notice } from "../components/Notice";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, Plus, UsersRound, UserRound } from "lucide-react";
 import {
   api,
   displayName,
   messageOf,
   photoSrc,
   type Contact,
+  type ContactList,
   type ContactMethod,
 } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
+import { RowMenu, type MenuEntry } from "../components/RowMenu";
+
+/** The sidebar row that is every contact rather than a list. */
+const ALL = "";
+
+type MenuAt = { x: number; y: number; alignRight: boolean };
 
 /** The kinds of detail a card can hold, in the order Apple lists them. */
 const KINDS = [
@@ -92,6 +99,18 @@ export function ContactsView() {
   /** The card being written, or null while simply looking. */
   const [draft, setDraft] = useState<Contact | null>(null);
   const [busy, setBusy] = useState(false);
+  const [lists, setLists] = useState<ContactList[]>([]);
+  /** The list being looked at, or ALL. */
+  const [list, setList] = useState<string>(ALL);
+  /** A list whose name is being typed: "new" for one not made yet. */
+  const [naming, setNaming] = useState<string | null>(null);
+  const [listMenu, setListMenu] = useState<(MenuAt & { list: ContactList }) | null>(null);
+  /** A contact's menu: its actions, or — one step in — the lists it can go into. */
+  const [contactMenu, setContactMenu] = useState<(MenuAt & { contact: Contact; lists: boolean }) | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropOn, setDropOn] = useState<string | null>(null);
+  /** List writes go to Apple one after another, in the order they were made. */
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
 
   const read = useCallback(async (query: string) => {
     const found = await api.contactsList(query.trim() || null);
@@ -116,12 +135,119 @@ export function ContactsView() {
     // Re-reading on every keystroke is the point: the filter runs in SQLite.
   }, [read, search, revision]);
 
+  const readLists = useCallback(async () => {
+    const found = await api.contactLists();
+    setLists(Array.isArray(found) ? found : []);
+  }, []);
   useEffect(() => {
-    if (contacts.length === 0) return setOpenGuid(null);
+    readLists().catch((e) => setError(messageOf(e)));
+  }, [readLists, revision]);
+  // A list deleted elsewhere is not left open, empty, with nothing to say why.
+  useEffect(() => {
+    if (list !== ALL && !lists.some((l) => l.guid === list)) setList(ALL);
+  }, [lists, list]);
+
+  /** Who shows: everyone, or the people in the open list. */
+  const shown = useMemo(() => {
+    if (list === ALL) return contacts;
+    const members = new Set((lists.find((l) => l.guid === list)?.members ?? []).map((m) => m.toUpperCase()));
+    return contacts.filter((c) => members.has(c.guid.toUpperCase()));
+  }, [contacts, lists, list]);
+
+  useEffect(() => {
+    if (shown.length === 0) return setOpenGuid(null);
     setOpenGuid((current) =>
-      current && contacts.some((c) => c.guid === current) ? current : contacts[0].guid
+      current && shown.some((c) => c.guid === current) ? current : sortedContacts(shown)[0].guid
     );
-  }, [contacts]);
+  }, [shown]);
+
+  /**
+   * A change to a list: drawn at once, then sent. When Apple says no, the lists are read
+   * back as Apple holds them, so nothing stays on screen that did not happen.
+   */
+  const changeList = useCallback(
+    (predict: (lists: ContactList[]) => ContactList[], change: Parameters<typeof api.contactListWrite>[0]) => {
+      setLists(predict);
+      setError(null);
+      const sent = queue.current.then(async () => {
+        try {
+          const guid = await api.contactListWrite(change);
+          await readLists();
+          return guid;
+        } catch (e) {
+          setError(messageOf(e));
+          await readLists().catch(() => {});
+          return null;
+        }
+      });
+      queue.current = sent;
+      return sent;
+    },
+    [readLists]
+  );
+
+  const createList = useCallback(
+    async (name: string, members: string[] = []) => {
+      const title = name.trim() || "Untitled List";
+      const standIn = `pending-list-${Date.now()}`;
+      const guid = await changeList(
+        (ls) => [...ls, { guid: standIn, name: title, members, etag: null }],
+        { name: title, add: members }
+      );
+      if (guid) setList((current) => (current === standIn ? guid : current));
+      else setList((current) => (current === standIn ? ALL : current));
+    },
+    [changeList]
+  );
+  const renameList = (l: ContactList, name: string) => {
+    setNaming(null);
+    const title = name.trim();
+    if (!title || title === l.name) return;
+    void changeList((ls) => ls.map((x) => (x.guid === l.guid ? { ...x, name: title } : x)), { guid: l.guid, name: title });
+  };
+  const deleteList = (l: ContactList) => {
+    // icloud.com's own words for it.
+    if (!window.confirm(`Delete \u201c${l.name}\u201d?\n\nThis list will be deleted from every device. The contacts in it stay in Contacts.`)) return;
+    if (list === l.guid) setList(ALL);
+    void changeList((ls) => ls.filter((x) => x.guid !== l.guid), { guid: l.guid, delete: true });
+  };
+  const addToList = (l: ContactList, people: string[]) => {
+    const fresh = people.filter((p) => !l.members.some((m) => m.toUpperCase() === p.toUpperCase()));
+    if (fresh.length === 0) return;
+    void changeList(
+      (ls) => ls.map((x) => (x.guid === l.guid ? { ...x, members: [...x.members, ...fresh] } : x)),
+      { guid: l.guid, add: fresh }
+    );
+  };
+  const removeFromList = (l: ContactList, people: string[]) => {
+    const gone = new Set(people.map((p) => p.toUpperCase()));
+    void changeList(
+      (ls) => ls.map((x) => (x.guid === l.guid ? { ...x, members: x.members.filter((m) => !gone.has(m.toUpperCase())) } : x)),
+      { guid: l.guid, remove: people }
+    );
+  };
+  const openList = lists.find((l) => l.guid === list) ?? null;
+
+  /** What a contact's menu offers — the same whether opened by right-click or the card. */
+  const contactEntries = (c: Contact, choosingList: boolean): MenuEntry[] => {
+    if (choosingList) {
+      const into = lists.filter((l) => !l.guid.startsWith("pending-") && !l.members.some((m) => m.toUpperCase() === c.guid.toUpperCase()));
+      return [
+        ...into.map((l) => ({ label: l.name, run: () => addToList(l, [c.guid]) })),
+        ...(into.length ? [null] : []),
+        { label: "New List\u2026", run: () => void createList("Untitled List", [c.guid]) },
+      ];
+    }
+    return [
+      { label: "Add to List\u2026", keep: true, run: () => setContactMenu((m) => (m ? { ...m, lists: true } : m)) },
+      ...(openList ? [{ label: `Remove from \u201c${openList.name}\u201d`, run: () => removeFromList(openList, [c.guid]) }] : []),
+      null,
+      { label: "Edit Contact", run: () => { setOpenGuid(c.guid); setDraft({ ...c }); } },
+      { label: "Delete Contact\u2026", danger: true, run: () => {
+        if (window.confirm(`Delete ${displayName(c)}?`)) void removeContact(c.guid);
+      } },
+    ];
+  };
 
   /** Every write goes to Apple first, then the library is re-read. */
   const write = useCallback(
@@ -130,7 +256,8 @@ export function ContactsView() {
       setError(null);
       try {
         await run();
-        await read(search);
+        // A deleted contact leaves every list it was in, so the lists are read again too.
+        await Promise.all([read(search), readLists()]);
         return true;
       } catch (e) {
         setError(messageOf(e));
@@ -139,7 +266,7 @@ export function ContactsView() {
         setBusy(false);
       }
     },
-    [read, search]
+    [read, readLists, search]
   );
 
   const saveDraft = useCallback(async () => {
@@ -181,11 +308,70 @@ export function ContactsView() {
   return (
     // A contact being written is always what shows; it has its own Cancel.
     <div className={`contacts${detail || draft ? " is-detail" : ""}`}>
+      <aside className="contacts-lists" aria-label="Contact lists">
+        <p className="notes-side-heading">iCloud</p>
+        <ListRow
+          name="All Contacts"
+          count={contacts.length}
+          current={list === ALL}
+          everyone
+          onOpen={() => setList(ALL)}
+        />
+        {lists.map((l) =>
+          naming === l.guid ? (
+            <NameField key={l.guid} initial={l.name} label={`Rename ${l.name}`} onDone={(name) => renameList(l, name)} onCancel={() => setNaming(null)} />
+          ) : (
+            <ListRow
+              key={l.guid}
+              name={l.name}
+              count={l.members.filter((m) => contacts.some((c) => c.guid.toUpperCase() === m.toUpperCase())).length}
+              current={list === l.guid}
+              menuOpen={listMenu?.list.guid === l.guid}
+              dropping={dropOn === l.guid}
+              onOpen={() => setList(l.guid)}
+              onMenu={l.guid.startsWith("pending-") ? undefined : (at) => setListMenu({ ...at, list: l })}
+              onDragOver={(e) => {
+                if (!dragging || l.guid.startsWith("pending-")) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
+                if (dropOn !== l.guid) setDropOn(l.guid);
+              }}
+              onDragLeave={() => setDropOn((d) => (d === l.guid ? null : d))}
+              onDrop={(e) => {
+                e.preventDefault();
+                const person = dragging;
+                setDragging(null);
+                setDropOn(null);
+                if (person) addToList(l, [person]);
+              }}
+            />
+          )
+        )}
+        {naming === "new" && (
+          <NameField initial="Untitled List" label="New list name" onDone={(name) => { setNaming(null); void createList(name); }} onCancel={() => setNaming(null)} />
+        )}
+        <button className="notes-new-folder" onClick={() => setNaming("new")}>
+          <Plus size={15} strokeWidth={2} aria-hidden="true" />
+          New List
+        </button>
+        {listMenu && (
+          <RowMenu
+            at={listMenu}
+            onClose={() => setListMenu(null)}
+            entries={[
+              { label: "Rename List", run: () => setNaming(listMenu.list.guid) },
+              null,
+              { label: "Delete List\u2026", danger: true, run: () => deleteList(listMenu.list) },
+            ]}
+          />
+        )}
+      </aside>
+
       <section className="contacts-list" aria-label="Contacts">
         <header className="cal-bar">
           <div className="cal-nav">
-            <h1>Contacts</h1>
-            <span className="badge">{contacts.length}</span>
+            <h1>{openList?.name ?? "Contacts"}</h1>
+            <span className="badge">{shown.length}</span>
           </div>
           <div className="cal-actions">
             <button className="quiet" disabled={busy} onClick={() => setDraft(blank())}>
@@ -203,15 +389,39 @@ export function ContactsView() {
           type="search"
         />
 
+        {/* Shown only when the lists column has folded away. */}
+        <div className="contacts-list-picker">
+          <Picker
+            label="List"
+            value={list}
+            onChange={setList}
+            options={[{ value: ALL, label: "All Contacts" }, ...lists.map((l) => ({ value: l.guid, label: l.name }))]}
+          />
+        </div>
+
         {error && <Notice message={error} onDismiss={() => setError(null)} />}
 
         <ul className="contact-rows">
-          {sortedContacts(contacts).map((contact, i, all) => (
+          {sortedContacts(shown).map((contact, i, all) => (
             <Fragment key={contact.guid}>
             {(i === 0 || letterOf(all[i - 1]) !== letterOf(contact)) && (
               <li className="contact-letter" aria-hidden="true">{letterOf(contact)}</li>
             )}
-            <li>
+            <li
+              // Dragged onto a list, a person joins it — as in Contacts on the Mac.
+              draggable={lists.length > 0}
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = "copy";
+                e.dataTransfer.setData("text/plain", displayName(contact));
+                setDragging(contact.guid);
+              }}
+              onDragEnd={() => { setDragging(null); setDropOn(null); }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setOpenGuid(contact.guid);
+                setContactMenu({ x: e.clientX, y: e.clientY, alignRight: false, contact, lists: false });
+              }}
+            >
               <button
                 className="contact-row"
                 aria-current={openGuid === contact.guid}
@@ -228,8 +438,15 @@ export function ContactsView() {
           ))}
         </ul>
 
-        {loaded && contacts.length === 0 && !error && (
-          <p className="cal-empty">{search ? "No matches." : "No contacts yet."}</p>
+        {loaded && shown.length === 0 && !error && (
+          <p className="cal-empty">{search ? "No matches." : openList ? "No one in this list yet." : "No contacts yet."}</p>
+        )}
+        {contactMenu && (
+          <RowMenu
+            at={contactMenu}
+            onClose={() => setContactMenu(null)}
+            entries={contactEntries(contactMenu.contact, contactMenu.lists)}
+          />
         )}
       </section>
 
@@ -448,6 +665,21 @@ export function ContactsView() {
                 Edit
               </button>
               <button
+                className="quiet"
+                aria-haspopup="menu"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setContactMenu({ x: r.left, y: r.bottom + 4, alignRight: false, contact: open, lists: true });
+                }}
+              >
+                Add to List
+              </button>
+              {openList && (
+                <button className="quiet" onClick={() => removeFromList(openList, [open.guid])}>
+                  Remove from List
+                </button>
+              )}
+              <button
                 className="quiet danger"
                 disabled={busy}
                 onClick={() => {
@@ -466,6 +698,97 @@ export function ContactsView() {
         )}
       </article>
     </div>
+  );
+}
+
+/** A row in the lists column: All Contacts, or one list, with its count and ⋯. */
+function ListRow({
+  name,
+  count,
+  current,
+  everyone = false,
+  menuOpen = false,
+  dropping = false,
+  onOpen,
+  onMenu,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+}: {
+  name: string;
+  count: number;
+  current: boolean;
+  everyone?: boolean;
+  menuOpen?: boolean;
+  dropping?: boolean;
+  onOpen: () => void;
+  onMenu?: (at: MenuAt) => void;
+  onDragOver?: React.DragEventHandler;
+  onDragLeave?: React.DragEventHandler;
+  onDrop?: React.DragEventHandler;
+}) {
+  const Glyph = everyone ? UsersRound : UserRound;
+  return (
+    <div
+      className={`notes-folder-row${menuOpen ? " is-menu" : ""}${dropping ? " is-drop" : ""}`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onMenu?.({ x: e.clientX, y: e.clientY, alignRight: false });
+      }}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <button className="notes-folder" aria-current={current} onClick={onOpen}>
+        <Glyph className="contacts-list-glyph" size={16} strokeWidth={2} aria-hidden="true" />
+        <span className="notes-folder-name">{name}</span>
+        <span className="notes-folder-count">{count || ""}</span>
+      </button>
+      {onMenu && (
+        <button
+          className="notes-folder-more"
+          aria-label={`Actions for ${name}`}
+          aria-haspopup="menu"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            onMenu({ x: r.right, y: r.bottom + 4, alignRight: true });
+          }}
+        >
+          <span aria-hidden="true">•••</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A list's name being typed, in place: Return keeps it, Escape leaves it as it was. */
+function NameField({ initial, label, onDone, onCancel }: {
+  initial: string;
+  label: string;
+  onDone: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const settled = useRef(false);
+  return (
+    <input
+      className="notes-folder notes-folder-rename"
+      defaultValue={initial}
+      aria-label={label}
+      autoFocus
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={(e) => {
+        if (settled.current) return;
+        settled.current = true;
+        onDone(e.currentTarget.value);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          settled.current = true;
+          onCancel();
+        }
+      }}
+    />
   );
 }
 

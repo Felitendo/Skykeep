@@ -235,6 +235,27 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
         case "contact_delete": return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;
+        case "contact_lists": return !contactsFixture ? [] : (window.__lists ??= [
+          { guid: "L1", name: "Family", members: ["c2"], etag: "e1" },
+        ]).map((l) => ({ ...l, members: [...l.members] }));
+        case "contact_list_write": {
+          // Slow on purpose, as Apple is: the screen must not wait for this to redraw.
+          (window.__listWrites ??= []).push(args);
+          await new Promise((r) => setTimeout(r, 700));
+          if (window.__listFail) throw "Contacts refused the list.";
+          const lists = (window.__lists ??= [{ guid: "L1", name: "Family", members: ["c2"], etag: "e1" }]);
+          if (!args.guid) {
+            const guid = `L${lists.length + 1}`;
+            lists.push({ guid, name: args.name ?? "Untitled List", members: args.add ?? [], etag: "e" });
+            return guid;
+          }
+          const l = lists.find((x) => x.guid === args.guid);
+          if (args.delete) { window.__lists = lists.filter((x) => x.guid !== args.guid); return args.guid; }
+          if (args.name) l.name = args.name;
+          l.members = l.members.filter((m) => !(args.remove ?? []).includes(m));
+          for (const m of args.add ?? []) if (!l.members.includes(m)) l.members.push(m);
+          return l.guid;
+        }
         case "drive_thumbnails": return driveFixture ? { "FILE::d": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='60'><rect width='80' height='60' fill='%23eee'/></svg>" } : {};
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };

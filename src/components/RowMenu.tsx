@@ -1,7 +1,8 @@
 import { Portal } from "./Portal";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-export type MenuEntry = { label: string; run: () => void; danger?: boolean } | null;
+/** `keep` leaves the menu open — for an entry that leads on to a second step of choices. */
+export type MenuEntry = { label: string; run: () => void; danger?: boolean; keep?: boolean } | null;
 
 /**
  * A menu as macOS draws one: under the ⋯ that opened it or at the pointer for a right-click,
@@ -25,6 +26,7 @@ export function RowMenu({ at, entries, onClose }: {
     left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
     if (top + height > window.innerHeight - 8) top = Math.max(8, at.y - height - (at.alignRight ? 36 : 0));
     setPos({ left, top });
+    setActive(0);
     el.focus();
   }, [at]);
   useEffect(() => {
@@ -39,7 +41,11 @@ export function RowMenu({ at, entries, onClose }: {
       window.removeEventListener("resize", away);
     };
   }, [onClose]);
-  const pick = (i: number) => { onClose(); items[i]?.run(); };
+  const pick = (i: number) => {
+    const item = items[i];
+    if (!item?.keep) onClose();
+    item?.run();
+  };
   let n = -1;
   return (
     <Portal>

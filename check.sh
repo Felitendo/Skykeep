@@ -61,6 +61,7 @@ step "list info"         node .uiverify/reminders-list-info.mjs
 step "reminder date"     node .uiverify/reminders-date.mjs
 step "reminder keys"     node .uiverify/reminders-keys.mjs
 step "contacts order"    node .uiverify/contacts-order.mjs
+step "contacts lists"    node .uiverify/contacts-lists.mjs
 step "calendar alerts"   node .uiverify/calendar-alerts.mjs
 step "calendar repeat"   node .uiverify/calendar-repeat.mjs
 step "reminder add/done"  node .uiverify/reminders-add-done.mjs

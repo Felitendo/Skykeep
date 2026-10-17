@@ -184,6 +184,31 @@ pub struct Tokens {
 ///
 /// The tokens come from the same response as the contacts, so asking for both at once is
 /// one request rather than two, and the tokens are guaranteed to match the data.
+/// The whole address book — people and lists — with the tokens a write needs, in one read.
+pub async fn fetch_book_with_tokens(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+) -> Result<(AddressBook, Tokens)> {
+    let body = startup(http, root, params).await?;
+    let token = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .ok_or_else(|| Error::Protocol(format!("/co/startup carried no {key}")))
+    };
+    Ok((
+        AddressBook {
+            contacts: parse(&body),
+            lists: parse_lists(&body),
+        },
+        Tokens {
+            sync: token("syncToken")?,
+            pref: token("prefToken")?,
+        },
+    ))
+}
+
 pub async fn fetch_with_tokens(
     http: &reqwest::Client,
     root: &str,
@@ -544,7 +569,32 @@ async fn write_list(
             text.chars().take(200).collect::<String>()
         )));
     }
-    Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    refused_group(&body)?;
+    Ok(body)
+}
+
+/// Apple answers a refused group write with 200 and the reason in `errors` — a 409 when
+/// the etag sent is no longer the list's. Read as success, a lost write would look saved.
+fn refused_group(body: &Value) -> Result<()> {
+    let Some(error) = body
+        .get("errors")
+        .and_then(Value::as_array)
+        .and_then(|e| e.first())
+    else {
+        return Ok(());
+    };
+    match error.get("errorCode").and_then(Value::as_i64) {
+        Some(409) | Some(412) => Err(Error::Conflict),
+        code => Err(Error::Protocol(format!(
+            "Contacts refused the list ({}): {}",
+            code.map_or_else(|| "no code".into(), |c| c.to_string()),
+            error
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .unwrap_or("no reason given")
+        ))),
+    }
 }
 
 /// Make a list, with these people in it. Answers with its id.
@@ -685,6 +735,21 @@ pub fn apply(library: &mut quince_core::Library, book: AddressBook) -> Result<us
 
 #[cfg(test)]
 mod list_tests {
+    #[test]
+    fn a_refused_group_write_is_an_error_not_a_save() {
+        let busy = serde_json::json!({ "errors": [{ "groupId": "G", "etag": "e", "errorCode": 409, "errorMessage": "Conflict" }] });
+        assert!(matches!(
+            super::refused_group(&busy),
+            Err(crate::Error::Conflict)
+        ));
+        let other = serde_json::json!({ "errors": [{ "groupId": "G", "errorCode": 400, "errorMessage": "Bad" }] });
+        assert!(matches!(
+            super::refused_group(&other),
+            Err(crate::Error::Protocol(_))
+        ));
+        assert!(super::refused_group(&serde_json::json!({ "groups": [], "errors": [] })).is_ok());
+    }
+
     use super::*;
 
     /// Lists come out in the account's own order — `groupsOrder` — with their members.
