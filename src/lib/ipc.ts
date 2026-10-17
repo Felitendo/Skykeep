@@ -75,7 +75,7 @@ export const api = {
 
   eventSave: (draft: EventWrite) => invoke<string>("event_save", { draft }),
   eventAlerts: (guid: string) => invoke<number[]>("event_alerts", { guid }),
-  eventDelete: (guid: string) => invoke<void>("event_delete", { guid }),
+  eventDelete: (guid: string, scope?: "this" | "all") => invoke<void>("event_delete", { guid, scope: scope ?? null }),
   calendarSync: (from: string, to: string, timezone: string) =>
     invoke<SyncSummary>("calendar_sync", { from, to, timezone }),
   /** Events holding every word of the query, soonest first. */
@@ -228,6 +228,8 @@ export type EventWrite = {
   /** Set the alerts to exactly these minutes before the start (0 at the time); left out,
    *  the event keeps the alerts Apple holds. */
   alerts?: number[];
+  /** For one occurrence of a repeating event: whether the change is for it alone or the series. */
+  scope?: "this" | "all";
 };
 
 export type CalendarEvent = {

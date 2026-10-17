@@ -26,6 +26,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     { guid: "e3", calendarGuid: "work", title: "Sprint planning", location: "Room 2",
       startsAt: base + DAY + 2 * HOUR, endsAt: base + DAY + 3 * HOUR, allDay: false,
       timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
+    // One day of a weekly series, as Apple names an occurrence: the series' id and its start.
+    { guid: "SERIES__20261020T040000Z", calendarGuid: "work", title: "Weekly standup", location: null,
+      startsAt: base + 2 * HOUR, endsAt: base + 2 * HOUR + 1800, allDay: false,
+      timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
     { guid: "e4", calendarGuid: "personal", title: "Flight to Hyderabad", location: null,
       startsAt: base + 3 * DAY, endsAt: base + 4 * DAY, allDay: true,
       timezone: "Asia/Kolkata", url: null, notes: null, etag: null },
@@ -142,7 +146,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "calendar_list": return calendars;
         case "event_alerts": return args.guid === "e2" ? [15] : [];
         case "event_save": (window.__eventSaves ??= []).push(args.draft); return "E-new";
-        case "event_delete": return null;
+        case "event_delete": (window.__eventDeletes ??= []).push(args); return null;
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
         case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
         case "reminder_lists": return !remindersFixture ? [] : reminderLists;

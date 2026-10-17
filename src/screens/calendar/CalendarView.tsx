@@ -367,10 +367,34 @@ export function CalendarView() {
     [read]
   );
 
+  /**
+   * One occurrence of a repeating event is changed only once the person has said it is for
+   * that occurrence alone, as Calendar asks — sent as though it were an event, Apple took it
+   * as the whole series.
+   */
+  const [asking, setAsking] = useState<{ verb: "change" | "delete"; answer: (scope: "this" | "all" | null) => void } | null>(null);
+  useEffect(() => {
+    if (!asking) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        asking.answer(null);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [asking]);
+  const whichEvents = (verb: "change" | "delete") =>
+    new Promise<"this" | "all" | null>((answer) => setAsking({ verb, answer: (scope) => { setAsking(null); answer(scope); } }));
+
   const save = useCallback(
-    async (d: Draft) =>
-      write(async () => {
+    async (d: Draft) => {
+      const occurrence = Boolean(d.guid && d.guid.includes("__"));
+      const scope = occurrence ? await whichEvents("change") : null;
+      if (occurrence && !scope) return false;
+      return write(async () => {
         await api.eventSave({
+          ...(scope ? { scope } : {}),
           guid: d.guid,
           calendarGuid: d.calendarGuid,
           title: d.title.trim() || "New Event",
@@ -392,7 +416,8 @@ export function CalendarView() {
           endsAt: Math.max(d.endsAt, d.startsAt + (d.allDay ? 86_400 : 900)),
           allDay: d.allDay, notes: d.notes.trim() || null,
         } : e);
-      }),
+      });
+    },
     [write]
   );
 
@@ -403,9 +428,19 @@ export function CalendarView() {
   const remove = useCallback(
     async (guid: string) => {
       const gone = events.find((e) => e.guid === guid) ?? null;
+      const occurrence = guid.includes("__");
+      const scope = occurrence ? await whichEvents("delete") : null;
+      if (occurrence && !scope) return;
       setDraft(null);
-      if (await write(() => api.eventDelete(guid), (rows) => rows.filter((e) => e.guid !== guid))) {
-        setUndo(gone);
+      // All of a series leaves every one of its days; one, only itself.
+      const series = guid.split("__")[0];
+      if (await write(
+        () => api.eventDelete(guid, scope ?? undefined),
+        (rows) => rows.filter((e) => (scope === "all" ? e.guid.split("__")[0] !== series : e.guid !== guid)),
+      )) {
+        // Undo makes the event again; for one day out of a series that would be a new event,
+        // not the day put back, so it is not offered.
+        if (!occurrence) setUndo(gone);
       }
     },
     [events, write]
@@ -781,6 +816,30 @@ export function CalendarView() {
           } : undefined}
           view={view}
         />
+      )}
+
+      {asking && (
+        <Portal>
+          <div className="modal-veil" onClick={() => asking.answer(null)}>
+            <div className="modal-sheet cx-ask" role="alertdialog" aria-label="Repeating event" onClick={(e) => e.stopPropagation()}>
+              <h2>This is a repeating event.</h2>
+              <p>
+                {asking.verb === "delete"
+                  ? "Do you want to delete only this event, or all events in the series?"
+                  : "Do you want to change only this event, or all events in the series?"}
+              </p>
+              <div className="cx-ask-actions">
+                <button className="quiet" onClick={() => asking.answer(null)}>Cancel</button>
+                <button className={asking.verb === "delete" ? "quiet danger" : "quiet"} onClick={() => asking.answer("all")}>
+                  {asking.verb === "delete" ? "Delete All Events" : "All Events"}
+                </button>
+                <button className={asking.verb === "delete" ? "primary danger" : "primary"} autoFocus onClick={() => asking.answer("this")}>
+                  {asking.verb === "delete" ? "Delete Only This Event" : "Only This Event"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </Portal>
       )}
 
       {undo && (

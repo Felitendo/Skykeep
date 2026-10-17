@@ -739,3 +739,9 @@
 .cx-pane-month { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--separator); }
 /* With the month in the Day pane, the sidebar's copy would be the same month twice. */
 .cx:has(.cx-pane-month) .cx-side .cx-minimonth { display: none; }
+
+/* Calendar's question for a repeating event: what it is, then the two answers. */
+.cx-ask { width: min(380px, calc(100vw - 32px)); padding: 20px 22px 16px; }
+.cx-ask h2 { margin: 0 0 6px; font-size: var(--t-15); font-weight: 600; }
+.cx-ask p { margin: 0 0 16px; color: var(--text-2); font-size: var(--t-13); }
+.cx-ask-actions { display: flex; justify-content: flex-end; gap: 8px; }
