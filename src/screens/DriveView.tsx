@@ -174,7 +174,7 @@ function kindName(item: DriveItem) {
 }
 
 /** File Info, as icloud.com shows it: the mark, the name, then what it is and where. */
-function InfoSheet({ item, where, onClose }: { item: DriveItem; where: string; onClose: () => void }) {
+function InfoSheet({ item, where, thumb, onClose }: { item: DriveItem; where: string; thumb?: string; onClose: () => void }) {
   const done = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     const id = window.setTimeout(() => done.current?.focus(), 0);
@@ -199,7 +199,9 @@ function InfoSheet({ item, where, onClose }: { item: DriveItem; where: string; o
           <h2>{isContainer(item) ? "Folder Info" : "File Info"}</h2>
           <button ref={done} className="quiet info-done" onClick={onClose}>Done</button>
         </header>
-        <div className="info-mark" aria-hidden="true"><FileGlyph kind={item.kind} extension={item.extension} /></div>
+        <div className={`info-mark${thumb ? " has-thumb" : ""}`} aria-hidden="true">
+          {thumb ? <img src={thumb} alt="" draggable={false} /> : <FileGlyph kind={item.kind} extension={item.extension} />}
+        </div>
         <p className="info-name">{driveName(item)}</p>
         <dl className="info-rows">
           {rows.map(([k, v]) => (
@@ -234,6 +236,8 @@ export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
   const [items, setItems] = useState<DriveItem[]>([]);
   const [inTrash, setInTrash] = useState(false);
+  /** Apple's own pictures of this folder's files, where it has them; the rest keep icons. */
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
   /** What is free, as icloud.com says it under a folder's name: "5.18 GB available". */
   const [available, setAvailable] = useState<string | null>(null);
   useEffect(() => {
@@ -322,11 +326,17 @@ export function DriveView() {
       // while a slow fetch ran meant a click landed on a row from the level just left, and
       // Drive seemed to jump into folders nobody opened.
       setItems(Array.isArray(cached) ? cached : []);
+      setThumbs({});
       await api.driveSyncFolder(folderId);
       if (token !== openToken.current) return;
       const fresh = await api.driveChildren(folderId);
       if (token !== openToken.current) return;
       setItems(Array.isArray(fresh) ? fresh : []);
+      // Pictures last, and never in the way: a folder is usable before they arrive.
+      api.driveThumbnails(folderId).then(
+        (t) => { if (token === openToken.current && t) setThumbs(t); },
+        () => {},
+      );
     } catch (e) {
       if (token === openToken.current) setError(messageOf(e));
     } finally {
@@ -855,7 +865,7 @@ export function DriveView() {
                       {busy ? (
                         <span className="drive-spinner" />
                       ) : (
-                        <FileGlyph kind={item.kind} extension={item.extension} />
+                        thumbs[item.drivewsid] ? <img className="drive-thumb" src={thumbs[item.drivewsid]} alt="" draggable={false} /> : <FileGlyph kind={item.kind} extension={item.extension} />
                       )}
                     </span>
                     <span className="drive-name">{driveName(item)}</span>
@@ -924,7 +934,7 @@ export function DriveView() {
       )}
 
       {info && (
-        <InfoSheet item={info} where={trail.map((c) => c.name).join(" › ")} onClose={() => setInfo(null)} />
+        <InfoSheet item={info} where={trail.map((c) => c.name).join(" › ")} thumb={thumbs[info.drivewsid]} onClose={() => setInfo(null)} />
       )}
 
       <UploadTray uploads={[...uploads.values()]} onDismiss={() => setUploads(new Map())} />

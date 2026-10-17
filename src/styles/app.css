@@ -1763,3 +1763,10 @@
 .drive-row.is-selected .drive-name, .drive-row.is-selected .drive-meta { color: #fff; }
 .drive-rows.is-grid .drive-row.is-selected { background: color-mix(in srgb, var(--sys-blue, #0a84ff) 28%, transparent); box-shadow: inset 0 0 0 2px var(--sys-blue, #0a84ff); }
 .drive-rows.is-grid .drive-row.is-selected .drive-name { color: var(--text); }
+/* Apple's own picture of a file: small in a list, the tile's face in Grid, as icloud.com. */
+.drive-thumb { width: 22px; height: 22px; object-fit: contain; border-radius: 3px; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25); background: #fff; }
+.drive-rows.is-grid .drive-badge:has(.drive-thumb) { transform: none; height: 76px; }
+.drive-rows.is-grid .drive-thumb { width: 88px; height: 72px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(0,0,0,0.2); }
+.info-mark.has-thumb { background: none; width: auto; height: auto; }
+.info-mark.has-thumb > * { transform: none; }
+.info-mark.has-thumb img { max-width: 160px; max-height: 140px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }

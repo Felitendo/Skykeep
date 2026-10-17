@@ -466,6 +466,73 @@ pub async fn duplicate(
     Ok(())
 }
 
+/// Apple's own thumbnails for the files in one folder, as `(drivewsid, image bytes)`.
+///
+/// Measured on a real account: `POST {docws}/ws/com.apple.CloudDocs/download/batch` with
+/// `[{document_id}]` answers each file with a `data_token`, and — for the kinds Apple renders
+/// itself, Office and iWork documents among them — a `thumbnail_token.url` to fetch as-is.
+/// PDFs come back without one; those keep their icon. One batch for the folder, then each
+/// image; a file whose thumbnail fails is simply left out.
+pub async fn thumbnails(
+    http: &reqwest::Client,
+    docws_root: &str,
+    params: Vec<(String, String)>,
+    files: &[DriveItem],
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let wanted: Vec<(&DriveItem, &str)> = files
+        .iter()
+        .filter(|f| f.kind == "FILE")
+        .map(|f| (f, docwsid_of(&f.drivewsid)))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let body: Vec<Value> = wanted
+        .iter()
+        .map(|(_, d)| json!({ "document_id": d }))
+        .collect();
+    let url = format!(
+        "{}/ws/com.apple.CloudDocs/download/batch",
+        docws_root.trim_end_matches('/')
+    );
+    let response = http.post(url).query(&params).json(&body).send().await?;
+    if response.status().as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !response.status().is_success() {
+        return Err(Error::Protocol(format!(
+            "thumbnails returned {}",
+            response.status()
+        )));
+    }
+    let answer: Value = response
+        .json()
+        .await
+        .map_err(|e| Error::Protocol(format!("thumbnails: {e}")))?;
+    let mut out = Vec::new();
+    for entry in answer.as_array().into_iter().flatten() {
+        let (Some(doc), Some(thumb)) = (
+            entry.get("document_id").and_then(Value::as_str),
+            entry
+                .pointer("/thumbnail_token/url")
+                .and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let Some((item, _)) = wanted.iter().find(|(_, d)| d.eq_ignore_ascii_case(doc)) else {
+            continue;
+        };
+        if let Ok(r) = http.get(thumb).send().await {
+            if r.status().is_success() {
+                if let Ok(bytes) = r.bytes().await {
+                    out.push((item.drivewsid.clone(), bytes.to_vec()));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Drive's Recently Deleted, as icloud.com lists it: a folder Apple names `TRASH_ROOT`.
 pub const TRASH: &str = "TRASH_ROOT";
 

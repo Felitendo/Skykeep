@@ -1751,6 +1751,105 @@ async fn drive_duplicate(
     resync_drive_folder(&http, &drivews, params, &data, parent).await
 }
 
+/// Apple's thumbnails for one folder's files, as `data:` URLs keyed by drivewsid.
+///
+/// Kept on disk beside the library, named by item and version, so a folder opened again
+/// shows its pictures at once and only a changed file is fetched anew.
+#[tauri::command]
+async fn drive_thumbnails(
+    folder_id: String,
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<std::collections::HashMap<String, String>> {
+    use base64::Engine;
+    let files = {
+        let library = data.0.lock().await;
+        library
+            .drive_children(&folder_id)
+            .map_err(|e| e.to_string())?
+    };
+    let cache = state_dir(&app).join("thumbnails");
+    std::fs::create_dir_all(&cache).ok();
+    let key = |f: &quince_core::drive::DriveItem| {
+        let safe = |s: &str| {
+            s.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect::<String>()
+        };
+        cache.join(format!(
+            "{}-{}",
+            safe(&f.drivewsid),
+            safe(f.etag.as_deref().unwrap_or(""))
+        ))
+    };
+    let mut out = std::collections::HashMap::new();
+    let mut missing = Vec::new();
+    for f in files.iter().filter(|f| f.kind == "FILE") {
+        match std::fs::read(key(f)) {
+            Ok(bytes) if bytes.is_empty() => {} // known to have none
+            Ok(bytes) => {
+                out.insert(
+                    f.drivewsid.clone(),
+                    data_url(
+                        &bytes,
+                        &base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    ),
+                );
+            }
+            Err(_) => missing.push(f.clone()),
+        }
+    }
+    if !missing.is_empty() {
+        let (http, docws, params) = {
+            let client = auth.client.lock().await;
+            (
+                client.http().clone(),
+                client
+                    .session()
+                    .service_url("docws")
+                    .ok_or("Apple hasn't offered iCloud Drive for this account.")?,
+                client.service_params(),
+            )
+        };
+        let got = quince_icloud::drive::thumbnails(&http, &docws, params, &missing)
+            .await
+            .map_err(|e| e.to_string())?;
+        for f in &missing {
+            let bytes = got
+                .iter()
+                .find(|(id, _)| id == &f.drivewsid)
+                .map(|(_, b)| b.clone());
+            // An empty file records "Apple has no picture for this version", so it is not asked again.
+            std::fs::write(key(f), bytes.as_deref().unwrap_or(&[])).ok();
+            if let Some(bytes) = bytes {
+                out.insert(
+                    f.drivewsid.clone(),
+                    data_url(
+                        &bytes,
+                        &base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    ),
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// An image as a `data:` URL, its type read from its first bytes.
+fn data_url(bytes: &[u8], b64: &str) -> String {
+    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.starts_with(b"RIFF") {
+        "image/webp"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else {
+        "image/jpeg"
+    };
+    format!("data:{mime};base64,{b64}")
+}
+
 /// How much iCloud storage is used and how much there is, for "X GB available".
 #[tauri::command]
 async fn storage_info(auth: State<'_, Auth>) -> UiResult<quince_icloud::drive::Storage> {
@@ -2239,6 +2338,7 @@ fn main() {
             drive_trash,
             storage_info,
             drive_duplicate,
+            drive_thumbnails,
             drive_put_back,
             drive_delete_forever,
             drive_move,

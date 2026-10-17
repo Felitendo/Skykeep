@@ -56,6 +56,8 @@ await page.getByRole("option", { name: "Grid" }).click();
 await page.waitForTimeout(200);
 const tops = async () => page.evaluate(() => [...document.querySelectorAll(".drive-rows .drive-row")].map((r) => Math.round(r.getBoundingClientRect().top)));
 ok(new Set((await tops()).slice(0, 3)).size === 1, "Grid sets items side by side");
+ok((await page.locator(".drive-row", { hasText: "Semester Plan" }).locator("img.drive-thumb").count()) === 1,
+  "a file Apple has a picture of shows it, as icloud.com's grid does");
 await page.reload({ waitUntil: "networkidle" });
 await openScreen(page, "iCloud Drive");
 await page.waitForTimeout(400);

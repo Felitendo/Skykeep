@@ -188,6 +188,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
         case "contact_delete": return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;
+        case "drive_thumbnails": return driveFixture ? { "FILE::d": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='60'><rect width='80' height='60' fill='%23eee'/></svg>" } : {};
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
         case "drive_children": return !driveFixture ? [] : driveItems;
