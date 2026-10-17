@@ -335,93 +335,100 @@ fn utf16_change(old: &str, new: &str) -> (u64, u64, u64) {
     )
 }
 
-/// Apply that change to a set of run lengths, the way an attributed string does it.
+/// The field of a run that says it holds an attachment — a table, a picture — by id.
+const ATTACHMENT_INFO: u64 = 12;
+
+/// A note's runs after one edit — `removed` units at `from` replaced by `inserted` — each
+/// keeping its own bytes.
 ///
-/// Runs entirely before the change keep their length; runs entirely after keep theirs; the
-/// ones the change overlaps shrink by what it removed, and whichever run the change starts
-/// in grows by what it inserted. A run left covering nothing is dropped.
-fn adjust_run_lengths(lengths: &[u64], from: u64, removed: u64, inserted: u64) -> Vec<u64> {
+/// Every run is matched to itself, not to its place in the list: a run the edit removes
+/// entirely is dropped without the ones after it moving onto the next run's styling. New text
+/// joins the run it extends, as typing does — never an attachment's run, which holds its one
+/// placeholder character and nothing else; typed beside a table, it goes into the run on its
+/// other side, or a plain run of its own. Then, as before, a run set that did not add up is
+/// put right at the tail rather than flattened.
+fn rebuild_runs(
+    runs: &[Vec<u8>],
+    from: u64,
+    removed: u64,
+    inserted: u64,
+    wanted: u64,
+) -> Option<Vec<Vec<u8>>> {
+    let is_attachment = |run: &[u8]| bytes_field(run, ATTACHMENT_INFO).is_some();
     let removal_end = from + removed;
-    let mut adjusted = Vec::with_capacity(lengths.len());
+    // (template, length): templates are the runs' own bytes.
+    let mut out: Vec<(Vec<u8>, u64)> = Vec::with_capacity(runs.len() + 1);
+    let mut placed = inserted == 0;
     let mut cursor = 0u64;
-    let mut inserted_into = false;
-
-    for &length in lengths {
-        let start = cursor;
-        let end = cursor + length;
+    for (i, run) in runs.iter().enumerate() {
+        let (start, len) = (cursor, run_length(run));
+        let end = start + len;
         cursor = end;
-
         let overlap = removal_end.min(end).saturating_sub(from.max(start));
-        let mut next = length - overlap;
-
-        // Whichever run the change begins inside takes the new text. `end > from` rather
-        // than `>=` so an insertion at a boundary lands in the run it is extending.
-        if !inserted_into && (end > from || (end == from && start <= from)) {
+        let mut next = len - overlap;
+        if !placed && (end > from || (end == from && start <= from)) {
+            if !is_attachment(run) {
+                next += inserted;
+                placed = true;
+            } else if from <= start {
+                // Before the attachment: into the run before it, if that is plain text.
+                match out.last_mut() {
+                    Some((t, n)) if !is_attachment(t) => *n += inserted,
+                    _ => out.push((without_field(run, ATTACHMENT_INFO)?, inserted)),
+                }
+                placed = true;
+            } else {
+                // After it: into the run after it, if it begins right there and is plain.
+                out.push((run.clone(), next));
+                match runs.get(i + 1) {
+                    Some(after) if !is_attachment(after) => {}
+                    _ => {
+                        out.push((without_field(run, ATTACHMENT_INFO)?, inserted));
+                        placed = true;
+                    }
+                }
+                continue;
+            }
+        } else if !placed && start == from && i > 0 && is_attachment(&runs[i - 1]) {
             next += inserted;
-            inserted_into = true;
+            placed = true;
         }
-        adjusted.push(next);
+        out.push((run.clone(), next));
     }
-
-    // An edit past the end of every run — appending to a note whose runs were already short
-    // — belongs to the last one.
-    if !inserted_into && inserted > 0 {
-        if let Some(last) = adjusted.last_mut() {
-            *last += inserted;
-        } else {
-            adjusted.push(inserted);
+    if !placed {
+        match out.last_mut() {
+            Some((t, n)) if !is_attachment(t) => *n += inserted,
+            Some((t, _)) => {
+                let plain = without_field(t, ATTACHMENT_INFO)?;
+                out.push((plain, inserted));
+            }
+            None => out.push((Vec::new(), inserted)),
         }
     }
+    out.retain(|(_, n)| *n > 0);
 
-    adjusted.retain(|&n| n > 0);
-    adjusted
-}
-
-/// Make a set of run lengths add up to the text they describe, disturbing as little as
-/// possible.
-///
-/// Runs that are already right are left alone; the shortfall or excess is taken at the end,
-/// where unstyled trailing text sits. Flattening to a single run would also make the
-/// arithmetic work, and would throw away every heading and list in the note to do it.
-fn reconcile_run_lengths(mut lengths: Vec<u64>, wanted: u64) -> Vec<u64> {
-    let total: u64 = lengths.iter().sum();
-    if total == wanted {
-        return lengths;
-    }
-    if lengths.is_empty() {
-        return if wanted == 0 {
-            Vec::new()
-        } else {
-            vec![wanted]
-        };
-    }
-
+    // Runs that did not add up before this edit are put right at the tail.
+    let total: u64 = out.iter().map(|(_, n)| n).sum();
     if total < wanted {
-        // The text runs past what the runs cover; the tail is unstyled.
-        if let Some(last) = lengths.last_mut() {
-            *last += wanted - total;
+        match out.last_mut() {
+            Some((t, n)) if !is_attachment(t) => *n += wanted - total,
+            _ => out.push((Vec::new(), wanted - total)),
         }
-        return lengths;
-    }
-
-    // The runs claim more than there is. Give back from the end.
-    let mut excess = total - wanted;
-    while excess > 0 {
-        let Some(last) = lengths.last_mut() else {
-            break;
-        };
-        let given = (*last).min(excess);
-        *last -= given;
-        excess -= given;
-        if *last == 0 {
-            lengths.pop();
+    } else if total > wanted {
+        let mut excess = total - wanted;
+        while excess > 0 {
+            let Some((_, n)) = out.last_mut() else { break };
+            let given = (*n).min(excess);
+            *n -= given;
+            excess -= given;
+            if *n == 0 {
+                out.pop();
+            }
         }
     }
-    lengths.retain(|&n| n > 0);
-    if lengths.is_empty() && wanted > 0 {
-        lengths.push(wanted);
-    }
-    lengths
+    out.into_iter()
+        .map(|(t, n)| set_varint_field(&t, 1, n))
+        .collect()
 }
 
 /// Whether a message carries this field at all.
@@ -551,27 +558,8 @@ fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> 
         }
     }
 
-    let lengths: Vec<u64> = runs.iter().map(|run| run_length(run)).collect();
-
     let wanted = utf16_len(new_text);
-    // Apply the edit, then make sure the result still adds up. A note whose runs were
-    // already wrong before this edit — one of ours, written before any of this was
-    // understood — is put right here rather than left broken, and reconciling at the tail
-    // keeps every styled run it had. Flattening would also make the arithmetic work, and
-    // would throw away every heading in the note to do it.
-    let adjusted = reconcile_run_lengths(
-        adjust_run_lengths(&lengths, from, removed, inserted),
-        wanted,
-    );
-
-    let mut rebuilt_runs: Vec<Vec<u8>> = Vec::with_capacity(adjusted.len());
-    let mut source = runs.iter();
-    for length in &adjusted {
-        // Runs are consumed in order, so each keeps its own styling; a dropped one takes
-        // its styling with it, which is what dropping it means.
-        let template = source.next().cloned().unwrap_or_default();
-        rebuilt_runs.push(set_varint_field(&template, 1, *length)?);
-    }
+    let mut rebuilt_runs = rebuild_runs(&runs, from, removed, inserted, wanted)?;
     if rebuilt_runs.is_empty() && wanted > 0 {
         rebuilt_runs.push(varint_field(1, wanted));
     }
@@ -1822,6 +1810,26 @@ mod tests {
 
 #[cfg(test)]
 mod rewrite_tests {
+    /// Plain runs of these lengths after an edit, as the save rebuilds them.
+    fn lengths_after(lengths: &[u64], from: u64, removed: u64, inserted: u64) -> Vec<u64> {
+        let total: u64 = lengths.iter().sum();
+        let runs: Vec<Vec<u8>> = lengths.iter().map(|&n| varint_field(1, n)).collect();
+        rebuild_runs(&runs, from, removed, inserted, total - removed + inserted)
+            .unwrap()
+            .iter()
+            .map(|r| run_length(r))
+            .collect()
+    }
+    /// Plain runs of these lengths made to add up to `wanted`.
+    fn reconciled(lengths: Vec<u64>, wanted: u64) -> Vec<u64> {
+        let runs: Vec<Vec<u8>> = lengths.iter().map(|&n| varint_field(1, n)).collect();
+        rebuild_runs(&runs, 0, 0, 0, wanted)
+            .unwrap()
+            .iter()
+            .map(|r| run_length(r))
+            .collect()
+    }
+
     use super::*;
 
     /// The writer id a phone put on the fixture's text.
@@ -1951,7 +1959,7 @@ mod rewrite_tests {
         // Three runs of ten units each.
         let lengths = [10, 10, 10];
         // Replace two units in the middle run with five.
-        let adjusted = adjust_run_lengths(&lengths, 14, 2, 5);
+        let adjusted = lengths_after(&lengths, 14, 2, 5);
         assert_eq!(adjusted, vec![10, 13, 10], "only the middle run moves");
         assert_eq!(adjusted.iter().sum::<u64>(), 33);
     }
@@ -1959,7 +1967,7 @@ mod rewrite_tests {
     #[test]
     fn a_run_left_covering_nothing_is_dropped() {
         // Remove the whole middle run.
-        assert_eq!(adjust_run_lengths(&[10, 10, 10], 10, 10, 0), vec![10, 10]);
+        assert_eq!(lengths_after(&[10, 10, 10], 10, 10, 0), vec![10, 10]);
     }
 
     /// Repairing a note whose runs were already wrong must not cost it its formatting.
@@ -1967,23 +1975,23 @@ mod rewrite_tests {
     fn reconciling_takes_the_difference_at_the_end() {
         // Short by 169, as one real note on the account was: 16612 covered, 16781 there.
         assert_eq!(
-            reconcile_run_lengths(vec![10, 20, 16_582], 16_781),
+            reconciled(vec![10, 20, 16_582], 16_781),
             vec![10, 20, 16_751],
             "the shortfall is added to the trailing run, not spread over the styled ones"
         );
         // Over by 29, as another was: 167 claimed over 138 of text.
         assert_eq!(
-            reconcile_run_lengths(vec![100, 37, 30], 138),
+            reconciled(vec![100, 37, 30], 138),
             vec![100, 37, 1],
             "the excess is given back from the end"
         );
         // Over by enough to swallow whole trailing runs.
-        assert_eq!(reconcile_run_lengths(vec![10, 20, 30], 10), vec![10]);
+        assert_eq!(reconciled(vec![10, 20, 30], 10), vec![10]);
         // Already right: untouched.
-        assert_eq!(reconcile_run_lengths(vec![10, 20], 30), vec![10, 20]);
+        assert_eq!(reconciled(vec![10, 20], 30), vec![10, 20]);
         // Nothing at all to work with.
-        assert_eq!(reconcile_run_lengths(Vec::new(), 42), vec![42]);
-        assert_eq!(reconcile_run_lengths(Vec::new(), 0), Vec::<u64>::new());
+        assert_eq!(reconciled(Vec::new(), 42), vec![42]);
+        assert_eq!(reconciled(Vec::new(), 0), Vec::<u64>::new());
     }
 
     /// Repair must not touch the text, including whitespace a reader would trim off. This
@@ -2046,7 +2054,7 @@ mod rewrite_tests {
 
     #[test]
     fn appending_extends_the_last_run() {
-        assert_eq!(adjust_run_lengths(&[10, 10], 20, 0, 5), vec![10, 15]);
+        assert_eq!(lengths_after(&[10, 10], 20, 0, 5), vec![10, 15]);
     }
 
     /// The change is described in UTF-16 units, because that is what the runs count in.
@@ -2522,6 +2530,53 @@ mod run_tests {
         assert_eq!(ids.len(), 2);
         assert_eq!(ids[0], vec![7u8; 16], "the first line keeps the id it had");
         assert_ne!(ids[0], ids[1]);
+    }
+
+    /// Typing right after a table never joins the table's run: the new text is plain text in
+    /// a run of its own, and the attachment's run still holds its one character.
+    #[test]
+    fn text_typed_beside_an_attachment_is_not_part_of_it() {
+        let mut info = Vec::new();
+        len_field(12, b"\x0a\x02id", &mut info);
+        // The attachment's one character in a run of its own, then the newline.
+        let doc = doc_with("\u{FFFC}\n", &[(1, info), (1, Vec::new())]);
+        let out = replace_text(&doc, "\u{FFFC}hi\n").expect("edit");
+        let raw = debug_attribute_runs(&out);
+        let lens: Vec<u64> = raw.iter().map(|r| run_length(r)).collect();
+        assert_eq!(lens.iter().sum::<u64>(), 4);
+        let attached: Vec<u64> = raw
+            .iter()
+            .filter(|r| bytes_field(r, 12).is_some())
+            .map(|r| run_length(r))
+            .collect();
+        assert_eq!(
+            attached,
+            [1],
+            "the attachment run took typed text: {lens:?}"
+        );
+    }
+
+    /// An edit that removes a whole run leaves every later run with its own styling.
+    #[test]
+    fn removing_a_whole_run_does_not_shift_the_styles_after_it() {
+        let mut bold = Vec::new();
+        varint(5 << 3, &mut bold);
+        varint(1, &mut bold);
+        let mut heading = Vec::new();
+        let mut p = Vec::new();
+        varint(1 << 3, &mut p);
+        varint(1, &mut p);
+        len_field(2, &p, &mut heading);
+        // "ab" plain, "CD" bold, "ef\n" heading → delete "CD".
+        let doc = doc_with("abCDef\n", &[(2, Vec::new()), (2, bold), (3, heading)]);
+        let out = replace_text(&doc, "abef\n").expect("edit");
+        let read = runs_from_base64(&B64.encode(&out));
+        assert_eq!(
+            read.iter()
+                .map(|r| (r.length, r.style, r.bold))
+                .collect::<Vec<_>>(),
+            [(2, None, false), (3, Some(1), false)]
+        );
     }
 
     #[test]

@@ -52,25 +52,67 @@ async fn main() -> Result<()> {
         .join(" ")
     };
     let text = "Quince rich test\nShopping\nBuy milk now\nCall the bank";
-    let plain = |n: u64| Run { length: n, ..Run::default() };
+    let plain = |n: u64| Run {
+        length: n,
+        ..Run::default()
+    };
     let runs = vec![
-        Run { style: Some(0), ..plain(17) },
-        Run { style: Some(1), ..plain(9) },
-        Run { style: Some(103), checked: Some(true), ..plain(4) },
-        Run { style: Some(103), checked: Some(true), bold: true, ..plain(4) },
-        Run { style: Some(103), checked: Some(true), ..plain(5) },
-        Run { style: Some(101), ..plain(13) },
+        Run {
+            style: Some(0),
+            ..plain(17)
+        },
+        Run {
+            style: Some(1),
+            ..plain(9)
+        },
+        Run {
+            style: Some(103),
+            checked: Some(true),
+            ..plain(4)
+        },
+        Run {
+            style: Some(103),
+            checked: Some(true),
+            bold: true,
+            ..plain(4)
+        },
+        Run {
+            style: Some(103),
+            checked: Some(true),
+            ..plain(5)
+        },
+        Run {
+            style: Some(101),
+            ..plain(13)
+        },
     ];
-    let saved = quince_icloud::notes::edit_rich_cloudkit_from(&http, &root, p.clone(), &note, Some(body), text, Some(&runs)).await?;
+    let saved = quince_icloud::notes::edit_rich_cloudkit_from(
+        &http,
+        &root,
+        p.clone(),
+        &note,
+        Some(body),
+        text,
+        Some(&runs),
+    )
+    .await?;
     let back = zc.lookup_record("Notes", &guid).await?.unwrap();
     println!("saved text matches: {}", saved == text);
     println!("runs back: {}", show(&back));
-    let got = runs_from_base64(back["fields"]["TextDataEncrypted"]["value"].as_str().unwrap_or(""));
+    let got = runs_from_base64(
+        back["fields"]["TextDataEncrypted"]["value"]
+            .as_str()
+            .unwrap_or(""),
+    );
     let bold: Vec<u64> = got.iter().filter(|r| r.bold).map(|r| r.length).collect();
     println!("bold runs: {bold:?} (want [4])");
     println!(
         "text back: {:?}",
-        quince_icloud::ckdocument::text_from_base64(back["fields"]["TextDataEncrypted"]["value"].as_str().unwrap_or(""))
+        quince_icloud::ckdocument::text_from_base64(
+            back["fields"]["TextDataEncrypted"]["value"]
+                .as_str()
+                .unwrap_or("")
+        )
     );
     quince_icloud::notes::delete_cloudkit(&http, &root, p.clone(), &note).await?;
     println!("moved to Recently Deleted");
