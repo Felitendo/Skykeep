@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Notice } from "../components/Notice";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -210,6 +210,81 @@ function InfoSheet({ item, where, onClose }: { item: DriveItem; where: string; o
   );
 }
 
+type MenuEntry = { label: string; run: () => void; danger?: boolean } | null;
+
+/**
+ * A menu as macOS draws one: under the ⋯ that opened it or at the pointer for a right-click,
+ * kept on screen, arrows to move, Return to choose, Escape or a click elsewhere to leave.
+ */
+function RowMenu({ at, entries, onClose }: {
+  at: { x: number; y: number; alignRight: boolean };
+  entries: MenuEntry[];
+  onClose: () => void;
+}) {
+  const box = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState({ left: at.x, top: at.y });
+  const items = entries.filter((e): e is NonNullable<MenuEntry> => e !== null);
+  const [active, setActive] = useState(0);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    let left = at.alignRight ? at.x - width : at.x;
+    let top = at.y;
+    left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+    if (top + height > window.innerHeight - 8) top = Math.max(8, at.y - height - (at.alignRight ? 36 : 0));
+    setPos({ left, top });
+    el.focus();
+  }, [at]);
+  useEffect(() => {
+    const down = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) onClose(); };
+    const away = () => onClose();
+    document.addEventListener("mousedown", down);
+    window.addEventListener("blur", away);
+    window.addEventListener("resize", away);
+    return () => {
+      document.removeEventListener("mousedown", down);
+      window.removeEventListener("blur", away);
+      window.removeEventListener("resize", away);
+    };
+  }, [onClose]);
+  const pick = (i: number) => { onClose(); items[i]?.run(); };
+  let n = -1;
+  return (
+    <div
+      ref={box}
+      className="row-menu"
+      role="menu"
+      tabIndex={-1}
+      style={{ left: pos.left, top: pos.top }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") { e.preventDefault(); onClose(); }
+        else if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => (a + 1) % items.length); }
+        else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => (a - 1 + items.length) % items.length); }
+        else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(active); }
+      }}
+    >
+      {entries.map((entry, i) => {
+        if (!entry) return <div key={`sep${i}`} className="row-menu-sep" role="separator" />;
+        n += 1;
+        const index = n;
+        return (
+          <button
+            key={entry.label}
+            role="menuitem"
+            tabIndex={-1}
+            className={`row-menu-item${entry.danger ? " is-danger" : ""}${index === active ? " is-active" : ""}`}
+            onMouseEnter={() => setActive(index)}
+            onClick={() => pick(index)}
+          >
+            {entry.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 type Crumb = { id: string; name: string };
 
 export function DriveView() {
@@ -260,6 +335,8 @@ export function DriveView() {
   /** The item a Move dialog is open for, if any. */
   const [moving, setMoving] = useState<DriveItem | null>(null);
   const [info, setInfo] = useState<DriveItem | null>(null);
+  /** The ⋯ menu, or the same menu opened by a right-click, for one item. */
+  const [menu, setMenu] = useState<{ item: DriveItem; x: number; y: number; alignRight: boolean } | null>(null);
   /** True while files are held over the window, so the drop target can say so. */
   const [dropping, setDropping] = useState(false);
 
@@ -755,7 +832,13 @@ export function DriveView() {
                   />
                 </div>
               ) : (
-                <div className={`drive-row${container ? " is-folder" : ""}${busy ? " is-busy" : ""}`}>
+                <div
+                  className={`drive-row${container ? " is-folder" : ""}${busy ? " is-busy" : ""}${menu?.item.drivewsid === item.drivewsid ? " is-menu" : ""}`}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (!busy) setMenu({ item, x: e.clientX, y: e.clientY, alignRight: false });
+                  }}
+                >
                   <button
                     className="drive-row-hit"
                     // A folder opens; a file downloads to Downloads and reveals itself
@@ -782,51 +865,18 @@ export function DriveView() {
                     <span className="drive-meta">{modified(item.modifiedAt ?? item.createdAt)}</span>
                   </button>
                   <span className="drive-row-actions">
-                    {!container && (
-                      <button
-                        className="drive-action"
-                        aria-label={`Download ${driveName(item)}`}
-                        title="Download"
-                        disabled={busy}
-                        onClick={() => void download(item)}
-                      >
-                        <ActionGlyph name="download" />
-                      </button>
-                    )}
                     <button
                       className="drive-action"
-                      aria-label={`Move ${driveName(item)}`}
-                      title="Move to…"
+                      aria-label={`Actions for ${driveName(item)}`}
+                      aria-haspopup="menu"
+                      title="More"
                       disabled={busy}
-                      onClick={() => setMoving(item)}
+                      onClick={(e) => {
+                        const r = e.currentTarget.getBoundingClientRect();
+                        setMenu({ item, x: r.right, y: r.bottom + 4, alignRight: true });
+                      }}
                     >
-                      <ActionGlyph name="move" />
-                    </button>
-                    <button
-                      className="drive-action"
-                      aria-label={`Rename ${driveName(item)}`}
-                      title="Rename"
-                      disabled={busy}
-                      onClick={() => setRenaming(item.drivewsid)}
-                    >
-                      <ActionGlyph name="rename" />
-                    </button>
-                    <button
-                      className="drive-action"
-                      aria-label={`Get Info for ${driveName(item)}`}
-                      title="Get Info"
-                      onClick={() => setInfo(item)}
-                    >
-                      <ActionGlyph name="info" />
-                    </button>
-                    <button
-                      className="drive-action danger"
-                      aria-label={`Delete ${driveName(item)}`}
-                      title="Delete"
-                      disabled={busy}
-                      onClick={() => void remove(item)}
-                    >
-                      <ActionGlyph name="delete" />
+                      <span aria-hidden="true" className="drive-more">•••</span>
                     </button>
                   </span>
                 </div>
@@ -849,6 +899,22 @@ export function DriveView() {
           startingIn={here.id}
           onCancel={() => setMoving(null)}
           onMove={(destinationId) => void move(moving, destinationId)}
+        />
+      )}
+
+      {menu && (
+        <RowMenu
+          at={menu}
+          onClose={() => setMenu(null)}
+          entries={[
+            { label: isContainer(menu.item) ? "Open" : "Download a Copy", run: () => (isContainer(menu.item) ? enter(menu.item) : void download(menu.item)) },
+            { label: "Get Info", run: () => setInfo(menu.item) },
+            null,
+            { label: "Rename", run: () => setRenaming(menu.item.drivewsid) },
+            { label: "Move to Folder…", run: () => setMoving(menu.item) },
+            null,
+            { label: "Delete", danger: true, run: () => void remove(menu.item) },
+          ]}
         />
       )}
 

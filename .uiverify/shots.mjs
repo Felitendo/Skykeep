@@ -115,7 +115,8 @@ const shots = [
       await p.click('.nav-item:has-text("iCloud Drive")');
       await p.waitForSelector(".drive-row-hit");
       await p.hover(".drive-row.is-folder");
-      await p.click('.drive-row.is-folder .drive-action[aria-label^="Move"]');
+      await p.click('.drive-row.is-folder .drive-action[aria-label^="Actions for"]');
+      await p.getByRole("menuitem", { name: "Move to Folder…" }).click();
       await p.waitForSelector(".modal-sheet");
     } },
   { name: "04-library", screen: "library", theme: "light" },

@@ -267,7 +267,8 @@ const focused = (page) =>
   await page.click('.nav-item:has-text("iCloud Drive")');
   await page.waitForSelector(".drive-row-hit");
   await page.hover(".drive-row.is-folder");
-  await page.click('.drive-row.is-folder .drive-action[aria-label^="Move"]');
+  await page.click('.drive-row.is-folder .drive-action[aria-label^="Actions for"]');
+      await page.getByRole("menuitem", { name: "Move to Folder…" }).click();
   await page.waitForSelector(".modal-sheet");
 
   // The focus move is deliberately a tick after mount (it has to win a race against the
