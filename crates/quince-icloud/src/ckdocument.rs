@@ -1013,6 +1013,99 @@ pub fn debug_attribute_runs(bytes: &[u8]) -> Vec<Vec<u8>> {
     runs
 }
 
+/// One run of a note's text and how it is set, as Apple's attribute runs describe it.
+///
+/// Measured against notes written on a phone and on icloud.com: a run is field 5 of the
+/// note message; inside it `1` is its length in UTF-16 units, `2` the paragraph style —
+/// `1` its kind (0 title, 1 heading, 2 subheading, 4 monospaced, 100 bulleted, 101 dashed,
+/// 102 numbered, 103 checklist; none is body), `4` its indent, `5` the checklist item with
+/// `2` ticked — `5` the font hints (1 bold, 2 italic), `6` underline, `7` strikethrough and
+/// `9` a link.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Run {
+    pub length: u64,
+    pub style: Option<u64>,
+    pub indent: u64,
+    pub checked: Option<bool>,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
+    pub link: Option<String>,
+}
+
+/// Every run of a note document, in order. Empty for anything that is not one.
+#[must_use]
+pub fn runs_from_base64(value: &str) -> Vec<Run> {
+    let Ok(raw) = B64.decode(value.trim()) else {
+        return Vec::new();
+    };
+    debug_attribute_runs(&raw)
+        .iter()
+        .filter_map(|r| parse_run(r))
+        .collect()
+}
+
+fn parse_run(bytes: &[u8]) -> Option<Run> {
+    let mut run = Run::default();
+    let mut reader = Reader::new(bytes);
+    while !reader.done() {
+        let key = reader.varint()?;
+        let (field, wire) = (key >> 3, key & 7);
+        match (field, wire) {
+            (1, WIRE_VARINT) => run.length = reader.varint()?,
+            (2, WIRE_LEN) => {
+                let n = usize::try_from(reader.varint()?).ok()?;
+                parse_paragraph(reader.take(n)?, &mut run)?;
+            }
+            (5, WIRE_VARINT) => {
+                let hints = reader.varint()?;
+                run.bold = hints & 1 != 0;
+                run.italic = hints & 2 != 0;
+            }
+            (6, WIRE_VARINT) => run.underline = reader.varint()? != 0,
+            (7, WIRE_VARINT) => run.strike = reader.varint()? != 0,
+            (9, WIRE_LEN) => {
+                let n = usize::try_from(reader.varint()?).ok()?;
+                run.link = std::str::from_utf8(reader.take(n)?)
+                    .ok()
+                    .map(ToString::to_string);
+            }
+            _ => reader.skip(wire)?,
+        }
+    }
+    Some(run)
+}
+
+fn parse_paragraph(bytes: &[u8], run: &mut Run) -> Option<()> {
+    let mut reader = Reader::new(bytes);
+    while !reader.done() {
+        let key = reader.varint()?;
+        let (field, wire) = (key >> 3, key & 7);
+        match (field, wire) {
+            (1, WIRE_VARINT) => run.style = Some(reader.varint()?),
+            (4, WIRE_VARINT) => run.indent = reader.varint()?,
+            (5, WIRE_LEN) => {
+                let n = usize::try_from(reader.varint()?).ok()?;
+                let mut item = Reader::new(reader.take(n)?);
+                let mut done = false;
+                while !item.done() {
+                    let k = item.varint()?;
+                    if k >> 3 == 2 && k & 7 == WIRE_VARINT {
+                        done = item.varint()? != 0;
+                    } else {
+                        item.skip(k & 7)?;
+                    }
+                }
+                run.checked = Some(done);
+            }
+            _ => reader.skip(wire)?,
+        }
+    }
+    Some(())
+}
+
 /// A readable outline of a protobuf message: one line per field, nested.
 ///
 /// Rewriting a note body means preserving every field that is not the text, so the shape
@@ -1885,6 +1978,75 @@ mod whitespace_tests {
 }
 
 /// A note whose records disagree with its text is not written.
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+
+    fn varint(mut v: u64, out: &mut Vec<u8>) {
+        loop {
+            let b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                break;
+            }
+            out.push(b | 0x80);
+        }
+    }
+    fn len_field(field: u64, body: &[u8], out: &mut Vec<u8>) {
+        varint(field << 3 | 2, out);
+        varint(body.len() as u64, out);
+        out.extend_from_slice(body);
+    }
+
+    /// A dashed item, a ticked checklist item and a bold word, as Apple lays the runs out.
+    #[test]
+    fn runs_carry_their_paragraph_style_ticks_and_weight() {
+        let mut dashed = Vec::new();
+        varint(1 << 3, &mut dashed);
+        varint(5, &mut dashed);
+        let mut style = Vec::new();
+        varint(1 << 3, &mut style);
+        varint(101, &mut style);
+        len_field(2, &style, &mut dashed);
+
+        let mut ticked = Vec::new();
+        varint(1 << 3, &mut ticked);
+        varint(4, &mut ticked);
+        let mut item = Vec::new();
+        len_field(1, b"0123456789abcdef", &mut item);
+        varint(2 << 3, &mut item);
+        varint(1, &mut item);
+        let mut style = Vec::new();
+        varint(1 << 3, &mut style);
+        varint(103, &mut style);
+        len_field(5, &item, &mut style);
+        len_field(2, &style, &mut ticked);
+
+        let mut bold = Vec::new();
+        varint(1 << 3, &mut bold);
+        varint(3, &mut bold);
+        varint(5 << 3, &mut bold);
+        varint(1, &mut bold);
+
+        let mut note = Vec::new();
+        len_field(2, b"milk\negg\nhi", &mut note);
+        for r in [&dashed, &ticked, &bold] {
+            len_field(5, r, &mut note);
+        }
+        let mut doc = Vec::new();
+        let mut inner = Vec::new();
+        len_field(3, &note, &mut inner);
+        len_field(2, &inner, &mut doc);
+
+        let runs = runs_from_base64(&B64.encode(&doc));
+        assert_eq!(runs.len(), 3);
+        assert_eq!((runs[0].length, runs[0].style), (5, Some(101)));
+        assert_eq!((runs[1].style, runs[1].checked), (Some(103), Some(true)));
+        assert!(runs[2].bold && runs[2].style.is_none());
+    }
+}
+
 #[cfg(test)]
 mod out_of_step_tests {
     use super::*;
