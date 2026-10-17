@@ -76,7 +76,7 @@ export const api = {
   eventSave: (draft: EventWrite) => invoke<string>("event_save", { draft }),
   eventAlerts: (guid: string) => invoke<number[]>("event_alerts", { guid }),
   eventRepeat: (guid: string) => invoke<EventRepeat | null>("event_repeat", { guid }),
-  eventDelete: (guid: string, scope?: "this" | "all") => invoke<void>("event_delete", { guid, scope: scope ?? null }),
+  eventDelete: (guid: string, scope?: EventScope) => invoke<void>("event_delete", { guid, scope: scope ?? null }),
   calendarSync: (from: string, to: string, timezone: string) =>
     invoke<SyncSummary>("calendar_sync", { from, to, timezone }),
   /** Events holding every word of the query, soonest first. */
@@ -243,7 +243,7 @@ export type EventWrite = {
   repeat?: EventRepeat | null;
   repeatChanged?: boolean;
   /** For one occurrence of a repeating event: whether the change is for it alone or the series. */
-  scope?: "this" | "all";
+  scope?: EventScope;
 };
 
 /** How an event repeats, in icloud.com's words. */
@@ -424,6 +424,9 @@ export type ContactList = {
   members: string[];
   etag: string | null;
 };
+
+/** Which events a change to one day of a repeating event is for. */
+export type EventScope = "this" | "future" | "all";
 
 export type Contact = {
   guid: string;

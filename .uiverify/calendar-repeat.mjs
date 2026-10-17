@@ -53,6 +53,18 @@ await page.getByRole("button", { name: "All Events", exact: true }).click();
 await page.waitForTimeout(300);
 const all = await page.evaluate(() => window.__eventSaves?.at(-1));
 ok(all?.scope === "all", `and "all events" sends the change for the series  ${JSON.stringify({ s: all?.scope })}`);
+// All future events: from this day on, the days before kept.
+await page.locator(".cx-block", { hasText: "Weekly" }).first().click();
+await page.waitForTimeout(250);
+await page.locator('input[placeholder="New Event"]').first().fill("Weekly standup, new room");
+await page.locator('input[placeholder="New Event"]').first().press("Enter");
+await page.waitForTimeout(250);
+const buttons = await page.getByRole("alertdialog").getByRole("button").allInnerTexts();
+ok(buttons.join("|") === "Only This Event|All Future Events|All Events|Cancel", `the question offers this, future, all, as macOS stacks them  ${JSON.stringify(buttons)}`);
+await page.getByRole("button", { name: "All Future Events", exact: true }).click();
+await page.waitForTimeout(300);
+const future = await page.evaluate(() => window.__eventSaves?.at(-1));
+ok(future?.scope === "future" && future?.guid === "SERIES__20261020T040000Z", `and "all future events" sends that, from this occurrence  ${JSON.stringify({ s: future?.scope })}`);
 // Repeat: an occurrence shows its series' repeat; a one-off can be made to repeat.
 await page.locator(".cx-block", { hasText: "Weekly" }).first().click();
 await page.waitForTimeout(300);
@@ -75,5 +87,15 @@ await page.locator('input[placeholder="New Event"]').first().press("Enter");
 await page.waitForTimeout(300);
 const never = await page.evaluate(() => window.__eventSaves?.at(-1));
 ok(never?.scope === "all" && never?.repeat === null && (await page.getByRole("alertdialog").count()) === 0, `a series set to Never, for all of it  ${JSON.stringify({ s: never?.scope, r: never?.repeat })}`);
+// Deleting from this day on.
+await page.locator(".cx-block", { hasText: "Weekly" }).first().click();
+await page.waitForTimeout(250);
+await page.evaluate(() => document.activeElement?.blur());
+await page.keyboard.press("Delete");
+await page.waitForTimeout(250);
+await page.getByRole("button", { name: "Delete All Future Events" }).click();
+await page.waitForTimeout(300);
+const gone = await page.evaluate(() => window.__eventDeletes?.at(-1));
+ok(gone?.scope === "future", `"delete all future events" sends that  ${JSON.stringify(gone)}`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

@@ -319,6 +319,9 @@ fn minutes_of(m: &Value) -> Option<i64> {
 pub enum Scope {
     /// This one alone; the rest of the series as it was.
     This,
+    /// This one and every one after it — the series before it stays as it was. Apple splits
+    /// the series at this occurrence; on the first occurrence it is the same as `All`.
+    Future,
     /// The whole series: what changed here — and, if this occurrence was moved, the series
     /// moved by as much — every occurrence, past and future.
     All,
@@ -586,6 +589,11 @@ impl<'a> CalendarClient<'a> {
                 body["Event"]["changeRecurring"] = Value::from("all");
                 path.push_str("/all");
             }
+            // The occurrence's own dates go, not the series': from here on is what changes.
+            Some(Scope::Future) if occurrence => {
+                body["Event"]["changeRecurring"] = Value::from("future");
+                path.push_str("/future");
+            }
             _ => {}
         }
         let answer = self
@@ -632,6 +640,7 @@ impl<'a> CalendarClient<'a> {
         match scope {
             Some(Scope::This) => path.push_str("/this"),
             Some(Scope::All) if is_occurrence(&event.guid) => path.push_str("/all"),
+            Some(Scope::Future) if is_occurrence(&event.guid) => path.push_str("/future"),
             _ => {}
         }
         match self
@@ -1359,6 +1368,32 @@ mod write_tests {
         let body: Value = serde_json::from_slice(&sent.body).unwrap();
         assert_eq!(body["Event"]["recurrenceException"], true);
         assert_eq!(body["Event"]["changeRecurring"], "this");
+    }
+
+    /// "All future events" goes to the occurrence's `/future` path with its own dates —
+    /// measured live, Apple splits the series there and the days before keep their name.
+    #[tokio::test]
+    async fn from_this_occurrence_on_goes_to_its_future_path() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        let mut one = event();
+        one.guid = "SERIES__20261102T073300Z".into();
+        client
+            .put_event_full(&one, None, None, None, Some(Scope::Future))
+            .await
+            .unwrap();
+        let sent = request(&server).await;
+        assert!(
+            sent.url
+                .path()
+                .ends_with("/SERIES__20261102T073300Z/future"),
+            "{}",
+            sent.url.path()
+        );
+        let body: Value = serde_json::from_slice(&sent.body).unwrap();
+        assert_eq!(body["Event"]["changeRecurring"], "future");
+        assert!(body["Event"].get("recurrenceException").is_none());
     }
 
     /// Apple failing to say what an event holds is not "a new event": building the save

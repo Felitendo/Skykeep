@@ -10,8 +10,7 @@ import {
   messageOf,
   type Calendar,
   type CalendarEvent,
-  type Reminder,
-} from "../../lib/ipc";
+  type Reminder, type EventScope } from "../../lib/ipc";
 import { useSync } from "../../lib/sync";
 import { Picker } from "../../components/Picker";
 import {
@@ -394,7 +393,7 @@ export function CalendarView() {
    * that occurrence alone, as Calendar asks — sent as though it were an event, Apple took it
    * as the whole series.
    */
-  const [asking, setAsking] = useState<{ verb: "change" | "delete"; answer: (scope: "this" | "all" | null) => void } | null>(null);
+  const [asking, setAsking] = useState<{ verb: "change" | "delete"; answer: (scope: EventScope | null) => void } | null>(null);
   useEffect(() => {
     if (!asking) return undefined;
     const onKey = (e: KeyboardEvent) => {
@@ -407,7 +406,7 @@ export function CalendarView() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [asking]);
   const whichEvents = (verb: "change" | "delete") =>
-    new Promise<"this" | "all" | null>((answer) => setAsking({ verb, answer: (scope) => { setAsking(null); answer(scope); } }));
+    new Promise<EventScope | null>((answer) => setAsking({ verb, answer: (scope) => { setAsking(null); answer(scope); } }));
 
   const save = useCallback(
     async (d: Draft) => {
@@ -434,7 +433,16 @@ export function CalendarView() {
       }, (rows) => {
         // Shown where it now sits at once; a new one is drawn by its draft until Apple names it.
         if (!d.guid) return rows;
-        return rows.map((e) => e.guid === d.guid ? {
+        // Future and All carry the words to the other days too; their times Apple settles.
+        const series = d.guid.split("__")[0];
+        const from = events.find((e) => e.guid === d.guid)?.startsAt ?? d.startsAt;
+        const alsoThis = (e: { guid: string; startsAt: number }) =>
+          e.guid !== d.guid && e.guid.split("__")[0] === series &&
+          (scope === "all" || (scope === "future" && e.startsAt >= from));
+        return rows.map((e) => alsoThis(e) ? {
+          ...e, title: d.title.trim() || "New Event", location: d.location.trim() || null,
+          notes: d.notes.trim() || null,
+        } : e.guid === d.guid ? {
           ...e, calendarGuid: d.calendarGuid, title: d.title.trim() || "New Event",
           location: d.location.trim() || null, startsAt: d.startsAt,
           endsAt: Math.max(d.endsAt, d.startsAt + (d.allDay ? 86_400 : 900)),
@@ -442,7 +450,7 @@ export function CalendarView() {
         } : e);
       });
     },
-    [write]
+    [write, events]
   );
 
   /**
@@ -460,7 +468,10 @@ export function CalendarView() {
       const series = guid.split("__")[0];
       if (await write(
         () => api.eventDelete(guid, scope ?? undefined),
-        (rows) => rows.filter((e) => (scope === "all" ? e.guid.split("__")[0] !== series : e.guid !== guid)),
+        (rows) => rows.filter((e) =>
+          scope === "all" ? e.guid.split("__")[0] !== series
+          : scope === "future" ? !(e.guid.split("__")[0] === series && e.startsAt >= (gone?.startsAt ?? 0))
+          : e.guid !== guid),
       )) {
         // Undo makes the event again; for one day out of a series that would be a new event,
         // not the day put back, so it is not offered.
@@ -853,17 +864,21 @@ export function CalendarView() {
               <h2>This is a repeating event.</h2>
               <p>
                 {asking.verb === "delete"
-                  ? "Do you want to delete only this event, or all events in the series?"
-                  : "Do you want to change only this event, or all events in the series?"}
+                  ? "Do you want to delete only this event, this and all future events, or all events in the series?"
+                  : "Do you want to change only this event, this and all future events, or all events in the series?"}
               </p>
+              {/* Stacked, the chosen-by-default first, as macOS stacks an alert's choices. */}
               <div className="cx-ask-actions">
-                <button className="quiet" onClick={() => asking.answer(null)}>Cancel</button>
-                <button className={asking.verb === "delete" ? "quiet danger" : "quiet"} onClick={() => asking.answer("all")}>
-                  {asking.verb === "delete" ? "Delete All Events" : "All Events"}
-                </button>
                 <button className={asking.verb === "delete" ? "primary danger" : "primary"} autoFocus onClick={() => asking.answer("this")}>
                   {asking.verb === "delete" ? "Delete Only This Event" : "Only This Event"}
                 </button>
+                <button className={asking.verb === "delete" ? "quiet danger" : "quiet"} onClick={() => asking.answer("future")}>
+                  {asking.verb === "delete" ? "Delete All Future Events" : "All Future Events"}
+                </button>
+                <button className={asking.verb === "delete" ? "quiet danger" : "quiet"} onClick={() => asking.answer("all")}>
+                  {asking.verb === "delete" ? "Delete All Events" : "All Events"}
+                </button>
+                <button className="quiet" onClick={() => asking.answer(null)}>Cancel</button>
               </div>
             </div>
           </div>
