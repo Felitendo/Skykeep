@@ -1713,6 +1713,44 @@ async fn drive_delete(
     resync_drive_folder(&http, &root, params, &data, parent).await
 }
 
+/// Duplicate a file into its own folder, named as Finder names a copy.
+#[tauri::command]
+async fn drive_duplicate(
+    drivewsid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let item = {
+        let library = data.0.lock().await;
+        library
+            .drive_item(&drivewsid)
+            .map_err(|e| e.to_string())?
+            .ok_or("That item is no longer in the local library.")?
+    };
+    let (http, drivews, docws, params) = {
+        let client = auth.client.lock().await;
+        let session = client.session();
+        (
+            client.http().clone(),
+            session
+                .service_url("drivews")
+                .ok_or("Apple hasn't offered iCloud Drive for this account.")?,
+            session
+                .service_url("docws")
+                .ok_or("Apple hasn't offered iCloud Drive for this account.")?,
+            client.service_params(),
+        )
+    };
+    quince_icloud::drive::duplicate(&http, &docws, &drivews, params.clone(), &item)
+        .await
+        .map_err(|e| e.to_string())?;
+    let parent = item
+        .parent_id
+        .as_deref()
+        .unwrap_or(quince_core::drive::ROOT);
+    resync_drive_folder(&http, &drivews, params, &data, parent).await
+}
+
 /// How much iCloud storage is used and how much there is, for "X GB available".
 #[tauri::command]
 async fn storage_info(auth: State<'_, Auth>) -> UiResult<quince_icloud::drive::Storage> {
@@ -2200,6 +2238,7 @@ fn main() {
             drive_delete,
             drive_trash,
             storage_info,
+            drive_duplicate,
             drive_put_back,
             drive_delete_forever,
             drive_move,

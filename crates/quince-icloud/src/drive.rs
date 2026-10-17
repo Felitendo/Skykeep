@@ -404,6 +404,68 @@ pub async fn delete(
     Ok(())
 }
 
+/// Duplicate a file as icloud.com does: `POST {docws}/v1/item/copy/{item_id}` with
+/// `{info_to_update:{}}`. Apple names the copy as Finder would — "Plan 2.pdf" — in the same
+/// folder. `item_id` is not the drivewsid's tail (that answers 404): it is a field of the
+/// item in its folder's listing, so the listing is read first. Measured on a real account.
+pub async fn duplicate(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+) -> Result<()> {
+    let parent = parent_of(item);
+    let url = format!(
+        "{}/retrieveItemDetailsInFolders",
+        drivews_root.trim_end_matches('/')
+    );
+    let body = json!([{ "drivewsid": parent, "partialData": false }]);
+    let response = http.post(url).query(&params).json(&body).send().await?;
+    if response.status().as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    let listing: Value = response
+        .json()
+        .await
+        .map_err(|e| Error::Protocol(format!("Drive listing: {e}")))?;
+    let item_id = listing
+        .pointer("/0/items")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|i| {
+                i.get("drivewsid").and_then(Value::as_str) == Some(item.drivewsid.as_str())
+            })
+        })
+        .and_then(|i| i.get("item_id").and_then(Value::as_str))
+        .ok_or_else(|| {
+            Error::Refused("That item is no longer in its folder, so it was not duplicated.".into())
+        })?
+        .to_string();
+    let url = format!(
+        "{}/v1/item/copy/{item_id}",
+        docws_root.trim_end_matches('/')
+    );
+    let response = http
+        .post(url)
+        .query(&params)
+        .json(&json!({ "info_to_update": {} }))
+        .send()
+        .await?;
+    let status = response.status();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(Error::Protocol(format!(
+            "Drive refused the copy ({status}): {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+    Ok(())
+}
+
 /// Drive's Recently Deleted, as icloud.com lists it: a folder Apple names `TRASH_ROOT`.
 pub const TRASH: &str = "TRASH_ROOT";
 

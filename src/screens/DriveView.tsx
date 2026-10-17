@@ -422,6 +422,28 @@ export function DriveView() {
     [refresh]
   );
 
+  /**
+   * Duplicate, as Finder: the copy lands beside the original as "Name 2", and shows as being
+   * made at once — Apple decides its name, so the row is a stand-in until it answers.
+   */
+  const duplicate = useCallback(
+    async (item: DriveItem) => {
+      setError(null);
+      const key = `copy-${Date.now()}`;
+      const ext = item.extension ? `.${item.extension}` : "";
+      setPending((p) => [...p, { key, folder: here.id, name: `${item.name} copy${ext}`, doing: "Duplicating…" }]);
+      try {
+        await api.driveDuplicate(item.drivewsid);
+        await refresh();
+      } catch (e) {
+        setError(messageOf(e));
+      } finally {
+        setPending((p) => p.filter((x) => x.key !== key));
+      }
+    },
+    [refresh, here.id]
+  );
+
   const move = useCallback(
     async (item: DriveItem, destinationId: string) => {
       setMoving(null);
@@ -892,6 +914,7 @@ export function DriveView() {
             { label: isContainer(menu.item) ? "Open" : "Download a Copy", run: () => (isContainer(menu.item) ? enter(menu.item) : void download(menu.item)) },
             { label: "Get Info", run: () => setInfo(menu.item) },
             null,
+            ...(isContainer(menu.item) ? [] : [{ label: "Duplicate", run: () => void duplicate(menu.item) }]),
             { label: "Rename", run: () => setRenaming(menu.item.drivewsid) },
             { label: "Move to Folder…", run: () => setMoving(menu.item) },
             null,

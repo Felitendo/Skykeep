@@ -26,6 +26,15 @@ const offered = await page.getByRole("menuitem").allInnerTexts();
 ok(JSON.stringify(offered) === JSON.stringify(["Open", "Get Info", "Rename", "Move to Folder…", "Delete"]),
   `a right-click on a folder offers its menu  ${JSON.stringify(offered)}`);
 await page.keyboard.press("Escape");
+await page.locator(".drive-row", { hasText: "Semester Plan" }).click({ button: "right" });
+await page.waitForTimeout(150);
+const forFile = await page.getByRole("menuitem").allInnerTexts();
+ok(JSON.stringify(forFile) === JSON.stringify(["Download a Copy", "Get Info", "Duplicate", "Rename", "Move to Folder…", "Delete"]),
+  `a file's menu adds Duplicate  ${JSON.stringify(forFile)}`);
+await page.getByRole("menuitem", { name: "Duplicate" }).click();
+await page.waitForTimeout(200);
+ok(JSON.stringify(await page.evaluate(() => window.__dups)) === JSON.stringify(["FILE::d"]), "Duplicate asks Apple for a copy of that file");
+await page.keyboard.press("Escape");
 await page.waitForTimeout(100);
 ok((await page.getByRole("menu").count()) === 0, "and Escape puts it away");
 // A click selects, as in Finder; it does not download. A double-click opens.
