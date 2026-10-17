@@ -792,21 +792,29 @@ async fn reminder_edit(
     // time carries an Alarm pointing at an AlarmTrigger, and one written here used to have
     // the date and no alarm — so a phone showed the right time and then said nothing when it
     // came. The alert is part of setting a date, not a separate thing to remember.
-    if let Some(due) = edit.due_at {
-        let zone = jiff::tz::TimeZone::system();
-        quince_icloud::reminders::set_alarm_cloudkit(
-            &http,
-            &root,
-            params.clone(),
-            &guid,
-            due,
-            zone.iana_name().unwrap_or("UTC"),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    }
+    //
+    // The edit is already on Apple by now. If the alert fails, the library is still re-read
+    // before saying so: returning early left the old date on screen though Apple had the new
+    // one, and the next edit was made against a reminder that was not there any more.
+    let alarm = match edit.due_at {
+        Some(due) => {
+            let zone = jiff::tz::TimeZone::system();
+            quince_icloud::reminders::set_alarm_cloudkit(
+                &http,
+                &root,
+                params.clone(),
+                &guid,
+                due,
+                zone.iana_name().unwrap_or("UTC"),
+            )
+            .await
+            .map_err(|e| format!("The date was saved, but its alert was not: {e}"))
+        }
+        None => Ok(()),
+    };
 
-    refresh_reminders(&http, &root, params, &data, false).await
+    refresh_reminders(&http, &root, params, &data, false).await?;
+    alarm
 }
 
 /// One of Apple's smart lists. `until` is the end of today in the viewer's own timezone,
