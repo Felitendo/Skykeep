@@ -685,8 +685,15 @@ pub async fn create_cloudkit(
         "PaperStyleType": { "type": "INT64", "value": 0 },
         "Deleted": { "type": "INT64", "value": 0 },
     });
-    if let Some(folder) = folder_guid {
-        fields["Folder"] = client.reference_to(ZONE, folder);
+    // Filed as a move files it — `Folders`, which the phone reads, beside the older `Folder`
+    // — and in Apple's own "Notes" when no folder is chosen, since Apple has no "none".
+    // `Folder` alone left a note made here in a different folder on the phone than here.
+    if let Some(filing) = filed_in(&client, folder_guid.unwrap_or(DEFAULT_FOLDER)).as_object() {
+        for key in ["Folder", "Folders", "FoldersModificationDate"] {
+            if let Some(v) = filing.get(key) {
+                fields[key] = v.clone();
+            }
+        }
     }
     client
         .create_record(ZONE, &record_name, "Note", fields)
