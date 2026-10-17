@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
         p.clone(),
         &tokens,
         "Quince list test",
-        &[a.clone()],
+        std::slice::from_ref(&a),
     )
     .await?;
     let book = c::fetch(&http, &root, p.clone()).await?;
