@@ -141,6 +141,7 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
                     <FileGlyph kind={item.kind} extension={item.extension} />
                   </span>
                   <span className="drive-name">{driveName(item)}</span>
+                  <span className="drive-meta drive-kind">{kindName(item)}</span>
                   <span className="drive-meta">{isContainer(item) ? "" : fileSize(item.size)}</span>
                   <span className="drive-meta">{modified(item.modifiedAt ?? item.createdAt)}</span>
                 </span>
@@ -764,6 +765,27 @@ export function DriveView() {
         </p>
       )}
 
+      {!grid && (
+        // Finder's and icloud.com's column headings: what each column is, and a click to
+        // sort by it — the menu above and these are the same choice.
+        <div className="drive-row drive-head" role="presentation">
+          <span className="drive-row-hit">
+            <span />
+            {(["name", "kind", "size", "date"] as const).map((key) => (
+              <button
+                key={key}
+                className={`drive-col${sortBy === key ? " is-on" : ""}${key === "name" ? " is-name" : ""}`}
+                aria-pressed={sortBy === key}
+                onClick={() => chooseSort(key)}
+              >
+                {SORTS.find((o) => o.key === key)?.label}
+                {sortBy === key && <span aria-hidden="true"> ⌄</span>}
+              </button>
+            ))}
+          </span>
+          <span className="drive-row-actions" aria-hidden="true" />
+        </div>
+      )}
       <ul className={`drive-rows${grid ? " is-grid" : ""}`}>
         {pending
           .filter((p) => p.folder === here.id && !items.some((i) => driveName(i) === p.name))
@@ -774,6 +796,7 @@ export function DriveView() {
                   <span className="drive-spinner" />
                 </span>
                 <span className="drive-name">{p.name}</span>
+                <span className="drive-meta drive-kind" />
                 <span className="drive-meta">{p.doing}</span>
                 <span className="drive-meta" />
               </span>
@@ -872,6 +895,7 @@ export function DriveView() {
                       )}
                     </span>
                     <span className="drive-name">{driveName(item)}</span>
+                    <span className="drive-meta drive-kind">{kindName(item)}</span>
                     <span className="drive-meta">
                       {container
                         ? item.childCount === null

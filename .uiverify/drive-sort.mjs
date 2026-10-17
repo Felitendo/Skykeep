@@ -43,6 +43,11 @@ ok((await names())[0] === "Downloads", "folders stay at the top");
 await pick("Size");
 const bySize = await files();
 ok(JSON.stringify(bySize) === JSON.stringify(["File 2.txt", "Semester Plan.pdf", "File 10.txt"]), `by Size, largest first  ${JSON.stringify(bySize)}`);
+// The column heading is the same choice as the menu.
+await pick("Name");
+await page.locator(".drive-head").getByRole("button", { name: "Size" }).click();
+await page.waitForTimeout(150);
+ok(JSON.stringify(await files()) === JSON.stringify(bySize), "a click on the Size heading sorts by size");
 await pick("Date");
 const byDate = await files();
 ok(JSON.stringify(byDate) === JSON.stringify(["File 10.txt", "Semester Plan.pdf", "File 2.txt"]), `by Date, newest first  ${JSON.stringify(byDate)}`);

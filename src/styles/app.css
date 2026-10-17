@@ -1003,7 +1003,7 @@
 
 .drive-row-hit {
   display: grid;
-  grid-template-columns: 40px 1fr 90px 110px;
+  grid-template-columns: 40px minmax(0, 1fr) minmax(0, 170px) 80px 120px;
   align-items: center;
   gap: 12px;
   flex: 1;
@@ -1784,3 +1784,12 @@
   font-size: var(--t-12, 12px); font-weight: 600;
   border-bottom: 1px solid var(--separator);
 }
+/* The column headings, in the rows' own grid, quiet until one is the order. */
+.drive-head { border-bottom: 1px solid var(--separator); border-radius: 0; }
+.drive-head:hover { background: none; }
+.drive-head .drive-row-hit { cursor: default; padding-block: 4px; }
+.drive-col { padding: 0; border: 0; background: none; box-shadow: none; color: var(--text-3); font: inherit; font-size: var(--t-12, 12px); text-align: left; cursor: pointer; }
+.drive-col.is-on { color: var(--text-2); font-weight: 600; }
+.drive-col:hover { color: var(--text); }
+.drive-kind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) { .drive-kind, .drive-col:nth-of-type(2) { display: none; } .drive-row-hit { grid-template-columns: 40px minmax(0, 1fr) 80px 110px; } }
