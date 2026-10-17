@@ -370,7 +370,7 @@ let failures = 0;
   if ((await folderRow.count()) > 0) {
     // Fire several clicks back to back, the way an impatient double-click does, before the
     // slow folder load has had any chance to resolve.
-    await Promise.all([folderRow.click(), folderRow.click(), folderRow.click()]);
+    await Promise.all([folderRow.dblclick(), folderRow.dblclick(), folderRow.dblclick()]);
     await page.waitForTimeout(500);
     const crumbs = await page.locator(".crumb").allInnerTexts();
     const names = crumbs.slice(1);

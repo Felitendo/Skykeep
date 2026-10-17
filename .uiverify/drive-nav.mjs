@@ -36,7 +36,7 @@ await page.waitForTimeout(400);
 let failures = 0;
 const ok = (pass, yes, no) => { console.log(pass ? `PASS ${yes}` : `FAIL ${no}`); if (!pass) failures++; };
 
-await page.locator(".drive-row-hit", { hasText: "Downloads" }).click();
+await page.locator(".drive-row-hit", { hasText: "Downloads" }).dblclick();
 await page.waitForTimeout(300);
 const during = await page.locator(".drive-name").allInnerTexts();
 ok(!during.includes("Keynote") && !during.includes("Semester Plan.pdf"),
@@ -56,7 +56,7 @@ ok(making.some((t) => t.includes("Trips") && t.includes("Creating")), "a new fol
   `straight after Return: ${JSON.stringify(making)}`);
 // Gone elsewhere before it finished: the folder on screen stays the one on screen. A refresh
 // bound to where the work began re-read that folder at the end, and its rows replaced these.
-await page.locator(".drive-row-hit", { hasText: "Downloads" }).first().click();
+await page.locator(".drive-row-hit", { hasText: "Downloads" }).first().dblclick();
 await page.waitForTimeout(2200);
 const inDownloads = await page.locator(".drive-name").allInnerTexts();
 await page.waitForTimeout(500);

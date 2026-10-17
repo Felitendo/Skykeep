@@ -1758,3 +1758,8 @@
 .drive-row.is-menu { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .drive-row.is-menu .drive-row-actions { opacity: 1; }
 .drive-count { margin: 0 auto 0 10px; color: var(--text-3); font-size: var(--t-12, 12px); white-space: nowrap; }
+/* Selected, as Finder marks it: the accent behind the row, its text in white. */
+.drive-row.is-selected { background: var(--sys-blue, #0a84ff); }
+.drive-row.is-selected .drive-name, .drive-row.is-selected .drive-meta { color: #fff; }
+.drive-rows.is-grid .drive-row.is-selected { background: color-mix(in srgb, var(--sys-blue, #0a84ff) 28%, transparent); box-shadow: inset 0 0 0 2px var(--sys-blue, #0a84ff); }
+.drive-rows.is-grid .drive-row.is-selected .drive-name { color: var(--text); }

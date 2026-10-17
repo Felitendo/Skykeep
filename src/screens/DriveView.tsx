@@ -261,6 +261,8 @@ export function DriveView() {
   /** The item a Move dialog is open for, if any. */
   const [moving, setMoving] = useState<DriveItem | null>(null);
   const [info, setInfo] = useState<DriveItem | null>(null);
+  /** The one item selected, as a click in Finder selects it. */
+  const [selected, setSelected] = useState<string | null>(null);
   /** The ⋯ menu, or the same menu opened by a right-click, for one item. */
   const [menu, setMenu] = useState<{ item: DriveItem; x: number; y: number; alignRight: boolean } | null>(null);
   /** True while files are held over the window, so the drop target can say so. */
@@ -775,7 +777,7 @@ export function DriveView() {
                 </div>
               ) : (
                 <div
-                  className={`drive-row${container ? " is-folder" : ""}${busy ? " is-busy" : ""}${menu?.item.drivewsid === item.drivewsid ? " is-menu" : ""}`}
+                  className={`drive-row${container ? " is-folder" : ""}${busy ? " is-busy" : ""}${menu?.item.drivewsid === item.drivewsid ? " is-menu" : ""}${selected === item.drivewsid ? " is-selected" : ""}`}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     if (!busy) setMenu({ item, x: e.clientX, y: e.clientY, alignRight: false });
@@ -783,10 +785,23 @@ export function DriveView() {
                 >
                   <button
                     className="drive-row-hit"
-                    // A folder opens; a file downloads to Downloads and reveals itself
-                    // there — the same gesture either way, matching what a click on a row
-                    // does in every real file browser.
-                    onClick={() => (container ? enter(item) : void download(item))}
+                    // As Finder and icloud.com: a click selects, a double-click opens — a folder
+                    // goes in, a file is saved to Downloads and shown there. Return opens the
+                    // selected item too; a single click that opened made every misclick a
+                    // download.
+                    aria-pressed={selected === item.drivewsid}
+                    onClick={() => setSelected(item.drivewsid)}
+                    onDoubleClick={() => (container ? enter(item) : void download(item))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (container) enter(item);
+                        else void download(item);
+                      } else if (e.key === "Delete" || (e.key === "Backspace" && (e.metaKey || e.ctrlKey))) {
+                        e.preventDefault();
+                        void remove(item);
+                      }
+                    }}
                     disabled={busy}
                   >
                     <span className="drive-badge" aria-hidden="true">

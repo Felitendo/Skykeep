@@ -28,5 +28,17 @@ ok(JSON.stringify(offered) === JSON.stringify(["Open", "Get Info", "Rename", "Mo
 await page.keyboard.press("Escape");
 await page.waitForTimeout(100);
 ok((await page.getByRole("menu").count()) === 0, "and Escape puts it away");
+// A click selects, as in Finder; it does not download. A double-click opens.
+let downloads = 0;
+await page.evaluate(() => { const t = window.__TAURI_INTERNALS__; const inner = t.invoke;
+  t.invoke = async (c, a) => { if (c === "drive_download") window.__dl = (window.__dl ?? 0) + 1; return inner(c, a); }; });
+await page.locator(".drive-row-hit", { hasText: "Semester Plan" }).click();
+await page.waitForTimeout(200);
+downloads = await page.evaluate(() => window.__dl ?? 0);
+ok(downloads === 0 && (await page.locator(".drive-row.is-selected", { hasText: "Semester Plan" }).count()) === 1,
+  "a click selects the file, and downloads nothing");
+await page.locator(".drive-row-hit", { hasText: "Downloads" }).dblclick();
+await page.waitForTimeout(300);
+ok((await page.locator(".crumb", { hasText: "Downloads" }).count()) === 1, "a double-click opens the folder");
 await b.close();
 process.exitCode = failures ? 1 : 0;
