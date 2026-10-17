@@ -617,8 +617,10 @@ pub async fn create_folder_cloudkit(
     }
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let name = uuid::Uuid::new_v4().to_string();
+    // As every folder on a real account carries it, Apple's own two included.
     let mut fields = serde_json::json!({
         "TitleEncrypted": { "type": "ENCRYPTED_BYTES", "value": plain_title(title) },
+        "MinimumSupportedNotesVersion": { "type": "INT64", "value": 0 },
     });
     if let Some(parent) = parent {
         fields["ParentFolder"] = client.reference_to(ZONE, parent);
@@ -665,11 +667,12 @@ pub async fn rename_folder_cloudkit(
     Ok(())
 }
 
-/// Delete a folder as icloud.com does, except for its last step: every note in it — and in
-/// every folder inside it — goes to Recently Deleted, then each folder is flagged `Deleted`,
-/// which Apple's clients read as gone. icloud.com then destroys the folder record too; that
-/// is left undone here, since nothing reads a flagged folder and a destroyed record is past
-/// recovery. Notes are moved first, so a failure part-way loses nothing.
+/// Delete a folder as icloud.com does: every note in it — and in every folder inside it —
+/// goes to Recently Deleted first, then the folder records go, deepest first. The folder
+/// itself has to be removed outright: measured on a real account, CloudKit refuses a
+/// `Deleted` flag on a folder ("Field Deleted not found in Folder"), and icloud.com's own
+/// delete ends the same way. Nothing a person wrote is in a folder record — its notes are
+/// all safe in Recently Deleted before it goes — and a failure part-way loses nothing.
 pub async fn delete_folder_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -711,22 +714,9 @@ pub async fn delete_folder_cloudkit(
     }
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     for folder in doomed.iter().rev() {
-        let Some(current) = client.lookup_record(ZONE, folder).await? else {
-            continue;
-        };
-        let tag = current.get("recordChangeTag").and_then(Value::as_str);
-        client
-            .update_record(
-                ZONE,
-                folder,
-                "Folder",
-                tag,
-                serde_json::json!({
-                    "Deleted": { "type": "INT64", "value": 1 },
-                    "DeletedDate": { "type": "TIMESTAMP", "value": now_millis() },
-                }),
-            )
-            .await?;
+        if client.lookup_record(ZONE, folder).await?.is_some() {
+            client.delete_record(ZONE, folder).await?;
+        }
     }
     Ok(())
 }
