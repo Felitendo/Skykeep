@@ -142,10 +142,9 @@ mod tests {
         }
         let library = Library::open(dir.path()).unwrap();
         assert_eq!(library.sync_token("reminders").unwrap(), None);
-        assert_eq!(
-            library.sync_token("notes").unwrap().as_deref(),
-            Some("kept")
-        );
+        // Notes is read from the start once too, by a later migration of its own: every note
+        // has to have its formatting read, and only a full pass reaches the untouched ones.
+        assert_eq!(library.sync_token("notes").unwrap(), None);
     }
 
     #[test]

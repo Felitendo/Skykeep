@@ -768,9 +768,10 @@ async fn reminder_create(
     data: State<'_, Data>,
 ) -> UiResult<()> {
     let (http, root, params) = cloudkit_context(&auth).await?;
-    let guid = quince_icloud::reminders::create_cloudkit(&http, &root, params.clone(), &list_guid, &title)
-        .await
-        .map_err(|e| e.to_string())?;
+    let guid =
+        quince_icloud::reminders::create_cloudkit(&http, &root, params.clone(), &list_guid, &title)
+            .await
+            .map_err(|e| e.to_string())?;
     if due_at.is_some() || flagged.is_some() {
         let made = quince_core::reminders::Reminder {
             guid,
@@ -996,6 +997,16 @@ async fn note_body(guid: String, data: State<'_, Data>) -> UiResult<Option<Strin
     library.note_body(&guid).map_err(|e| e.to_string())
 }
 
+/// How a note's text is set — Apple's attribute runs, in order — as stored at the last sync.
+#[tauri::command]
+async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::Value> {
+    let library = data.0.lock().await;
+    let stored = library.note_runs(&guid).map_err(|e| e.to_string())?;
+    Ok(stored
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Array(Vec::new())))
+}
+
 #[tauri::command]
 async fn note_save(
     guid: String,
@@ -1093,6 +1104,7 @@ async fn note_create(
                 modified_at: Some(now),
                 editable: true,
                 etag: None,
+                runs: None,
             }])
             .map_err(|e| e.to_string())?;
     }
@@ -2396,6 +2408,7 @@ fn main() {
             note_folder_rename,
             note_folder_delete,
             note_body,
+            note_runs,
             note_save,
             note_create,
             note_delete,

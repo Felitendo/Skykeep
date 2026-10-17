@@ -1,7 +1,7 @@
 //! Notes and their folders in the local library.
 
 use crate::{Library, Result};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,6 +51,10 @@ pub struct Note {
     #[serde(default = "yes")]
     pub editable: bool,
     pub etag: Option<String>,
+    /// How the body is set — Apple's attribute runs, as JSON — read from the same record as
+    /// the body, so formatting shows without the network. Absent where none was read.
+    #[serde(default, skip_serializing)]
+    pub runs: Option<String>,
 }
 
 fn yes() -> bool {
@@ -108,19 +112,32 @@ impl Library {
         Ok(())
     }
 
+    /// The note's attribute runs as stored, JSON, if any were read.
+    pub fn note_runs(&self, guid: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT runs FROM notes WHERE guid = ?1",
+                params![guid],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     pub fn put_notes(&mut self, notes: &[Note]) -> Result<()> {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO notes (guid, folder_guid, title, snippet, body, locked, pinned,
-                                    created_at, modified_at, editable, etag, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                                    created_at, modified_at, editable, etag, updated_at, runs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(guid) DO UPDATE SET
                    folder_guid = excluded.folder_guid, title = excluded.title,
                    snippet = excluded.snippet, body = excluded.body,
                    locked = excluded.locked, pinned = excluded.pinned,
                    created_at = excluded.created_at, modified_at = excluded.modified_at,
-                   editable = excluded.editable,
+                   editable = excluded.editable, runs = excluded.runs,
                    etag = excluded.etag, updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -137,7 +154,8 @@ impl Library {
                     n.modified_at,
                     i64::from(n.editable),
                     n.etag,
-                    stamp
+                    stamp,
+                    n.runs
                 ])?;
             }
         }
@@ -317,6 +335,7 @@ impl Library {
                 modified_at: row.get(7)?,
                 editable: row.get::<_, i64>(8)? != 0,
                 etag: row.get(9)?,
+                runs: None,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -358,6 +377,7 @@ impl Library {
                     modified_at: row.get(7)?,
                     editable: row.get::<_, i64>(8)? != 0,
                     etag: row.get(9)?,
+                    runs: None,
                 },
                 body,
             ))
@@ -391,6 +411,7 @@ mod search_tests {
             created_at: Some(1),
             modified_at: Some(1),
             etag: None,
+            runs: None,
         }
     }
 
@@ -545,6 +566,7 @@ mod tests {
             modified_at: Some(modified),
             editable: true,
             etag: None,
+            runs: None,
         }
     }
 
@@ -652,6 +674,7 @@ mod body_tests {
                 created_at: Some(1),
                 modified_at: Some(2),
                 etag: None,
+                runs: None,
             },
             Note {
                 guid: "N2".into(),
@@ -667,6 +690,7 @@ mod body_tests {
                 created_at: Some(1),
                 modified_at: Some(1),
                 etag: None,
+                runs: None,
             },
         ])
         .unwrap();
@@ -730,6 +754,7 @@ mod unreadable_tests {
             created_at: Some(1),
             modified_at: Some(1),
             etag: None,
+            runs: None,
         }
     }
 
@@ -786,6 +811,7 @@ mod count_tests {
             modified_at: None,
             editable: true,
             etag: None,
+            runs: None,
         }
     }
 

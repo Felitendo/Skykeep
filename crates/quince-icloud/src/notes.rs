@@ -91,6 +91,12 @@ fn note_from_record(record: &Value) -> Option<Note> {
             .unwrap_or_else(|| "New Note".into()),
         snippet: field::document_text(record, "SnippetEncrypted"),
         body,
+        runs: record
+            .pointer("/fields/TextDataEncrypted/value")
+            .and_then(Value::as_str)
+            .map(crate::ckdocument::runs_from_base64)
+            .filter(|r| !r.is_empty())
+            .and_then(|r| serde_json::to_string(&r).ok()),
         // Set from the PasswordProtectedNote records below. Inferring it from a body that
         // failed to decode would label our own parsing failures as "locked", which is a
         // claim we would not be able to stand behind.
@@ -1257,6 +1263,7 @@ mod write_tests {
             modified_at: None,
             editable: true,
             etag: Some("tag".into()),
+            runs: None,
         }
     }
 

@@ -371,4 +371,10 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE reminders ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0;
     UPDATE sync_state SET token = NULL WHERE service = 'reminders';
     "#,
+    // A note's formatting — Apple's attribute runs — kept beside its body, and the notes zone
+    // read again from the start so every note has them.
+    r#"
+    ALTER TABLE notes ADD COLUMN runs TEXT;
+    UPDATE sync_state SET token = NULL WHERE service = 'notes';
+    "#,
 ];
