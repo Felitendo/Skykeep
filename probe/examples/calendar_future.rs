@@ -114,6 +114,22 @@ async fn main() -> Result<()> {
         .count();
     let kept = after.iter().filter(|f| f.1 == "Quince future test").count();
     println!("RESULT kept={kept} renamed={renamed} (want 2 and 2)");
+    // Deleting from the last day on leaves the one before it.
+    if let Some(last) = after.iter().max_by(|a, b| a.2.cmp(&b.2)) {
+        let mut e = third.clone();
+        e.guid = last.0.clone();
+        e.starts_at += 7 * 86_400;
+        e.ends_at += 7 * 86_400;
+        let gone = cal
+            .delete_event_scoped(&e, None, Some(quince_icloud::calendar::Scope::Future))
+            .await;
+        println!(
+            "future delete: {:?}",
+            gone.map(|_| "accepted").map_err(|e| e.to_string())
+        );
+    }
+    let after = list("after delete").await?;
+    println!("RESULT after delete: {} left (want 3)", after.len());
     // Every series that came of it, deleted.
     let mut series: Vec<String> = after
         .iter()
