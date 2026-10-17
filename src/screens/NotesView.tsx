@@ -3,7 +3,7 @@ import { Notice } from "../components/Notice";
 import { flushSync } from "react-dom";
 import { ChevronLeft, Folder, FolderOpen, FolderPlus, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
 import { LongTextarea } from "../components/LongTextarea";
-import { editorDate, groupNotes, joinTitle, listDate, splitTitle } from "./notes/model";
+import { editorDate, groupNotes, joinTitle, listDate, mergeEdits, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { RowMenu } from "../components/RowMenu";
 import { FormattedBody, runsFit, type Run } from "./notes/Formatted";
@@ -238,28 +238,50 @@ export function NotesView() {
    * walk away.
    */
   const pending = useRef<{ guid: string; body: string } | null>(null);
+  /**
+   * The text Apple last confirmed for the open note: what an edit began from. Sent with each
+   * save, so the save can tell an edit made on another device since and keep both.
+   */
+  const base = useRef<{ guid: string; text: string } | null>(null);
+  /** One save at a time: a second, started while the first was out, could land last with
+   *  older text. Saves chain behind this. */
+  const inFlight = useRef<Promise<void>>(Promise.resolve());
 
-  const flush = useCallback(async () => {
-    const next = pending.current;
-    if (!next) return;
-    pending.current = null;
-    if (await write(() => api.noteSave(next.guid, next.body))) {
-      // The draft is kept, not cleared. Clearing it handed the box back to whatever the
-      // library last handed over, and a save is followed by a refresh — so for a moment the
-      // box showed text older than what had just been typed, and the next keystroke was
-      // typed onto that and saved over the real note. A note went from five lines to a
-      // single letter that way.
-      //
-      // While someone is in a note, what is on their screen is the note. It is given up only
-      // when they leave it.
+  const flush = useCallback(() => {
+    const run = inFlight.current.then(async () => {
+      const next = pending.current;
+      if (!next) return;
+      pending.current = null;
+      const from = base.current?.guid === next.guid ? base.current.text : null;
+      let saved: string | null = null;
+      const ok = await write(async () => {
+        saved = await api.noteSave(next.guid, next.body, from);
+      });
+      if (!ok || saved === null) return;
+      const kept: string = saved;
+      base.current = { guid: next.guid, text: kept };
       setSaved(true);
-    }
+      // Apple holds `kept` — ours, or ours with another device's edit combined. What is on
+      // screen takes it in: unchanged if nothing was typed since, combined if something was.
+      // The draft is never handed back to the library's copy, which can lag a save, and was
+      // how a five-line note once became a single letter.
+      if (kept !== next.body) {
+        setDraft((typing) => {
+          if (typing === null || typing === next.body) return kept;
+          return mergeEdits(next.body, typing, kept) ?? typing;
+        });
+      }
+    });
+    inFlight.current = run.catch(() => {});
+    return run;
   }, [write]);
 
   const type = useCallback(
     (typed: string) => {
       // Nothing may be typed into a note whose text has not arrived.
       if (!open || body === null) return;
+      // The first keystroke in a note marks what it read as the base of the edit.
+      if (base.current?.guid !== open.guid) base.current = { guid: open.guid, text: body };
       setDraft(typed);
       setSaved(false);
       pending.current = typed === body ? null : { guid: open.guid, body: typed };
@@ -275,8 +297,16 @@ export function NotesView() {
     return () => window.clearTimeout(timer);
   }, [draft, flush]);
 
-  // Leaving the note takes whatever is outstanding with it, before the draft is cleared.
-  useEffect(() => () => void flush(), [openGuid, flush]);
+  // Leaving the note takes whatever is outstanding with it, before the draft is cleared; the
+  // next note's edit begins from what that note reads, never from this one's.
+  useEffect(() => () => {
+    void flush().then(() => {
+      if (base.current && base.current.guid !== openGuid) base.current = null;
+    });
+  }, [openGuid, flush]);
+  useEffect(() => {
+    if (base.current && base.current.guid !== openGuid) base.current = null;
+  }, [openGuid]);
 
   /**
    * A note nobody has typed into is not a note. Apple discards an empty new one the moment

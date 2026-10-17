@@ -421,53 +421,137 @@ pub async fn edit_cloudkit(
     note: &Note,
     body: &str,
 ) -> Result<()> {
+    edit_cloudkit_from(http, ckdatabasews_root, params, note, None, body)
+        .await
+        .map(|_| ())
+}
+
+/// Save `body` over a note that read `base` when the editing began, and answer with the text
+/// Apple now holds.
+///
+/// If the note has changed on another device since — Apple's text is no longer `base` — the
+/// two edits are combined when they touch different parts of the note, as two people
+/// editing apart would expect, and refused when they touch the same part. Writing `body`
+/// regardless replaced the other device's words with ours and recorded them as deleted, so
+/// they went from every device. The write itself is exact: a conflict at that moment reads
+/// the note again and decides again, never resending a document built from the old one.
+pub async fn edit_cloudkit_from(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    note: &Note,
+    base: Option<&str>,
+    body: &str,
+) -> Result<String> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    for _ in 0..3 {
+        let current = client
+            .lookup_record(ZONE, &note.guid)
+            .await?
+            .ok_or_else(|| Error::Refused("Apple no longer has that note.".into()))?;
+        let encoded = current
+            .pointer("/fields/TextDataEncrypted/value")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Error::Refused("That note has no body Apple will let us read.".into())
+            })?;
+        let theirs = crate::ckdocument::text_from_base64(encoded).unwrap_or_default();
+        let target = match base {
+            Some(base) if base != theirs => merge_edits(base, body, &theirs).ok_or_else(|| {
+                Error::Refused(
+                    "This note was changed on another device while you were writing, in the same place. Nothing was saved; your text is still here."
+                        .into(),
+                )
+            })?,
+            _ => body.to_string(),
+        };
+        let rewritten = crate::ckdocument::replace_text_in_base64(encoded, &target).ok_or_else(|| {
+            Error::Refused(
+                "Quince can’t safely save changes to this note yet, so nothing was changed. Editing it on an Apple device is safe."
+                    .into(),
+            )
+        })?;
+        fits_inline(&rewritten)?;
+        let (title, snippet) = title_and_snippet(&target);
+        let Some(tag) = current.get("recordChangeTag").and_then(Value::as_str) else {
+            return Err(Error::Refused(
+                "Apple did not say which version of the note it holds.".into(),
+            ));
+        };
+        match client
+            .update_record_exact(
+                ZONE,
+                &note.guid,
+                "Note",
+                tag,
+                serde_json::json!({
+                    "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": rewritten },
+                    "TitleEncrypted": {
+                        "type": "ENCRYPTED_BYTES",
+                        "value": crate::ckdocument::bare_text_to_base64(&title),
+                    },
+                    "SnippetEncrypted": {
+                        "type": "ENCRYPTED_BYTES",
+                        "value": crate::ckdocument::bare_text_to_base64(&snippet),
+                    },
+                    "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+                }),
+            )
+            .await
+        {
+            Ok(_) => return Ok(target),
+            Err(Error::Conflict) => {} // changed under us: read it again and decide again
+            Err(e) => return Err(e),
+        }
+    }
+    Err(Error::Refused(
+        "This note keeps changing on another device, so nothing was saved yet; your text is still here.".into(),
+    ))
+}
 
-    let current = client
-        .lookup_record(ZONE, &note.guid)
-        .await?
-        .ok_or_else(|| Error::Protocol("Apple no longer has that note.".into()))?;
-
-    let encoded = current
-        .pointer("/fields/TextDataEncrypted/value")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Protocol("That note has no body Apple will let us read.".into()))?;
-
-    let rewritten = crate::ckdocument::replace_text_in_base64(encoded, body).ok_or_else(|| {
-        Error::Protocol(
-            "Quince can’t safely save changes to this note yet, so nothing was changed. Editing it on an Apple device is safe."
-                .into(),
-        )
-    })?;
-    fits_inline(&rewritten)?;
-
-    let (title, snippet) = title_and_snippet(body);
-    let tag = current
-        .get("recordChangeTag")
-        .and_then(Value::as_str)
-        .or(note.etag.as_deref());
-
-    client
-        .update_record(
-            ZONE,
-            &note.guid,
-            "Note",
-            tag,
-            serde_json::json!({
-                "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": rewritten },
-                "TitleEncrypted": {
-                    "type": "ENCRYPTED_BYTES",
-                    "value": crate::ckdocument::bare_text_to_base64(&title),
-                },
-                "SnippetEncrypted": {
-                    "type": "ENCRYPTED_BYTES",
-                    "value": crate::ckdocument::bare_text_to_base64(&snippet),
-                },
-                "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
-            }),
-        )
-        .await?;
-    Ok(())
+/// Combine two edits of `base` — `mine` and `theirs` — when they change different stretches
+/// of it, or are the same edit; `None` when they overlap and one would have to lose.
+pub fn merge_edits(base: &str, mine: &str, theirs: &str) -> Option<String> {
+    if mine == theirs || base == theirs {
+        return Some(mine.to_string());
+    }
+    if base == mine {
+        return Some(theirs.to_string());
+    }
+    let b: Vec<char> = base.chars().collect();
+    let m: Vec<char> = mine.chars().collect();
+    let t: Vec<char> = theirs.chars().collect();
+    // Each edit as one stretch of `base` replaced: [from, to) → replacement.
+    let span = |other: &[char]| {
+        let pre = b.iter().zip(other).take_while(|(x, y)| x == y).count();
+        let max_suf = b.len().min(other.len()) - pre;
+        let suf = b
+            .iter()
+            .rev()
+            .zip(other.iter().rev())
+            .take(max_suf)
+            .take_while(|(x, y)| x == y)
+            .count();
+        (pre, b.len() - suf, other[pre..other.len() - suf].to_vec())
+    };
+    let (m0, m1, mr) = span(&m);
+    let (t0, t1, tr) = span(&t);
+    // Apart only if one ends strictly before the other begins; two inserts at one point, or
+    // touching stretches, are the same place.
+    let (first, second) = if m1 < t0 {
+        ((m0, m1, mr), (t0, t1, tr))
+    } else if t1 < m0 {
+        ((t0, t1, tr), (m0, m1, mr))
+    } else {
+        return None;
+    };
+    let mut out: Vec<char> = Vec::with_capacity(b.len() + first.2.len() + second.2.len());
+    out.extend_from_slice(&b[..first.0]);
+    out.extend_from_slice(&first.2);
+    out.extend_from_slice(&b[first.1..second.0]);
+    out.extend_from_slice(&second.2);
+    out.extend_from_slice(&b[second.1..]);
+    Some(out.into_iter().collect())
 }
 
 /// Set one paragraph of a note — a style from the Aa menu, or a checklist tick — written
@@ -1350,6 +1434,51 @@ mod write_tests {
         serde_json::from_slice::<Value>(&modify.body).unwrap()["operations"][0]["record"].clone()
     }
 
+    /// The phone changed the very words being edited here: nothing is written, and the
+    /// phone's version stands until the person decides.
+    #[tokio::test]
+    async fn an_edit_over_a_phone_edit_in_the_same_place_writes_nothing() {
+        let server = server("Curtains\nmeasure the bay window twice").await;
+        let err = edit_cloudkit_from(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            Some("Curtains\nmeasure the bay window"),
+            "Curtains\nmeasure the bay window once",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("changed on another device"),
+            "{err}"
+        );
+        let wrote = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with("/records/modify"));
+        assert!(!wrote, "nothing may be written over the phone's edit");
+    }
+
+    /// Apart, both survive: the phone's line and ours.
+    #[tokio::test]
+    async fn an_edit_apart_from_a_phone_edit_keeps_both() {
+        let server = server("Curtains!\nmeasure the bay window").await;
+        let saved = edit_cloudkit_from(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            Some("Curtains\nmeasure the bay window"),
+            "Curtains\nmeasure the bay window\norder the rail",
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved, "Curtains!\nmeasure the bay window\norder the rail");
+    }
+
     #[tokio::test]
     async fn an_edit_rewrites_the_body_in_place() {
         let server = server("Curtains\nmeasure the bay window").await;
@@ -1893,6 +2022,47 @@ mod asset_body_tests {
 }
 
 /// A note with no stored title is named from its text, the phone's way.
+#[cfg(test)]
+mod merge_tests {
+    use super::merge_edits;
+
+    /// Edits in different places both survive — the phone's added line is not erased by
+    /// a save made here from before it.
+    #[test]
+    fn edits_apart_are_combined() {
+        let base = "Groceries\nmilk\neggs";
+        let mine = "Groceries\nmilk\neggs\nbread";
+        let theirs = "Groceries!\nmilk\neggs";
+        assert_eq!(
+            merge_edits(base, mine, theirs).as_deref(),
+            Some("Groceries!\nmilk\neggs\nbread")
+        );
+    }
+
+    /// Edits in the same place cannot both be kept, so neither is chosen silently.
+    #[test]
+    fn edits_in_one_place_are_refused() {
+        assert_eq!(merge_edits("a b c", "a X c", "a Y c"), None);
+        assert_eq!(
+            merge_edits("ab", "aXb", "aYb"),
+            None,
+            "two inserts at one point"
+        );
+    }
+
+    #[test]
+    fn the_same_edit_or_none_is_trivial() {
+        assert_eq!(merge_edits("a", "ab", "ab").as_deref(), Some("ab"));
+        assert_eq!(merge_edits("a", "a", "ab").as_deref(), Some("ab"));
+        assert_eq!(merge_edits("a", "ab", "a").as_deref(), Some("ab"));
+    }
+
+    #[test]
+    fn text_beyond_ascii_is_cut_by_character() {
+        assert_eq!(merge_edits("ü 𝐔", "ü 𝐔 x", "Ü 𝐔").as_deref(), Some("Ü 𝐔 x"));
+    }
+}
+
 #[cfg(test)]
 mod derived_title_tests {
     use super::*;

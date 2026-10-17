@@ -593,6 +593,31 @@ impl ZoneClient<'_> {
     /// is sent. The change tag is CloudKit's optimistic-concurrency check: if the record
     /// moved since we read it, Apple refuses rather than silently overwriting whatever the
     /// phone did.
+    /// [`Self::update_record`] with no retry: a conflict comes back as [`Error::Conflict`].
+    ///
+    /// For writes built from the record as it stood — a note's document, with its merge
+    /// records — where resending the same fields under a newer tag would lay a stale document
+    /// over whatever the other device just wrote.
+    pub async fn update_record_exact(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        change_tag: &str,
+        changes: Value,
+    ) -> Result<Value> {
+        self.modify(
+            zone,
+            json!({ "operationType": "update", "record": {
+                "recordName": record_name,
+                "recordType": record_type,
+                "recordChangeTag": change_tag,
+                "fields": changes,
+            } }),
+        )
+        .await
+    }
+
     pub async fn update_record(
         &self,
         zone: &str,

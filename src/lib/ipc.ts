@@ -140,7 +140,9 @@ export const api = {
    * of thousands slow.
    */
   noteBody: (guid: string) => invoke<string | null>("note_body", { guid }),
-  noteSave: (guid: string, body: string) => invoke<void>("note_save", { guid, body }),
+  /** Answers with the text Apple now holds — ours, or ours combined with another device's. */
+  noteSave: (guid: string, body: string, base: string | null) =>
+    invoke<string>("note_save", { guid, body, base }),
   noteCreate: (folderGuid: string | null, body: string) =>
     invoke<string>("note_create", { folderGuid, body }),
   noteDelete: (guid: string) => invoke<void>("note_delete", { guid }),

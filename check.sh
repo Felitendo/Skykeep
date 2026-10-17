@@ -63,6 +63,7 @@ step "contacts order"    node .uiverify/contacts-order.mjs
 step "calendar alerts"   node .uiverify/calendar-alerts.mjs
 step "reminder add/done"  node .uiverify/reminders-add-done.mjs
 step "notes formatted"   node .uiverify/notes-formatted.mjs
+step "notes merge"       node .uiverify/notes-merge.mjs
 
 # The same screens in WebKit, the engine Quince draws in. Chromium above catches most things;
 # this catches what only WebKit does — pointer capture, blur on removal, its own layout.

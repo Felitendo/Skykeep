@@ -112,6 +112,22 @@ impl Library {
         Ok(())
     }
 
+    /// A note's text, title and snippet as just saved, touching nothing else — not its
+    /// formatting, its folder or its version, which the next pass brings from Apple.
+    pub fn set_note_text(
+        &mut self,
+        guid: &str,
+        body: &str,
+        title: &str,
+        snippet: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notes SET body = ?2, title = ?3, snippet = ?4 WHERE guid = ?1",
+            params![guid, body, title, snippet],
+        )?;
+        Ok(())
+    }
+
     /// The note's attribute runs as stored, JSON, if any were read.
     pub fn note_runs(&self, guid: &str) -> Result<Option<String>> {
         Ok(self

@@ -82,3 +82,26 @@ export function splitTitle(text: string): { title: string; rest: string } {
 export function joinTitle(title: string, rest: string, hadBreak: boolean): string {
   return rest.length > 0 || hadBreak ? `${title}\n${rest}` : title;
 }
+
+/**
+ * Two edits of `base` combined when they change different stretches of it — the same rule
+ * the save on the other side applies — or `null` when they overlap. Counted in code points
+ * so a character outside the BMP is never cut in two.
+ */
+export function mergeEdits(base: string, mine: string, theirs: string): string | null {
+  if (mine === theirs || base === theirs) return mine;
+  if (base === mine) return theirs;
+  const b = [...base], m = [...mine], t = [...theirs];
+  const span = (o: string[]): [number, number, string[]] => {
+    let pre = 0;
+    while (pre < b.length && pre < o.length && b[pre] === o[pre]) pre++;
+    let suf = 0;
+    const max = Math.min(b.length, o.length) - pre;
+    while (suf < max && b[b.length - 1 - suf] === o[o.length - 1 - suf]) suf++;
+    return [pre, b.length - suf, o.slice(pre, o.length - suf)];
+  };
+  const x = span(m), y = span(t);
+  const [first, second] = x[1] < y[0] ? [x, y] : y[1] < x[0] ? [y, x] : [null, null];
+  if (!first || !second) return null;
+  return [...b.slice(0, first[0]), ...first[2], ...b.slice(first[1], second[0]), ...second[2], ...b.slice(second[1])].join("");
+}

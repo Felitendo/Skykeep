@@ -1042,9 +1042,12 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 async fn note_save(
     guid: String,
     body: String,
+    // The text the editor began from. With it a save can tell an edit made on another device
+    // since, and keep both rather than write over it.
+    base: Option<String>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
-) -> UiResult<()> {
+) -> UiResult<String> {
     let (http, root, params) = cloudkit_context(&auth).await?;
     let note = note_by_guid(&data, &guid).await?;
     if !note.editable {
@@ -1052,29 +1055,36 @@ async fn note_save(
             "This note holds formatting Quince can't rewrite safely, so it stays read-only.".into(),
         );
     }
-    quince_icloud::notes::edit_cloudkit(&http, &root, params.clone(), &note, &body)
-        .await
-        .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await?;
+    let saved = quince_icloud::notes::edit_cloudkit_from(
+        &http,
+        &root,
+        params.clone(),
+        &note,
+        base.as_deref(),
+        &body,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    // Apple has it; a refresh failing now must not read as the save failing.
+    if let Err(e) = resync_notes(&http, &root, params, &data).await {
+        eprintln!("notes refresh after a save: {e}");
+    }
 
     // Apple accepted the body, but its change feed does not always carry our own write back
     // on the very next pass. Without this the editor re-reads the old text a moment after
-    // saving, which reads as the edit having been lost — and typing on from there would
-    // save the stale version over the good one.
-    let (title, snippet) = quince_icloud::notes::title_and_snippet(&body);
+    // saving, which reads as the edit having been lost. Only the text is set: the note's
+    // formatting and the rest come from Apple's own copy.
+    let (title, snippet) = quince_icloud::notes::title_and_snippet(&saved);
     let mut library = data.0.lock().await;
-    if let Some(mut stored) = library
-        .notes_in(None)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|n| n.guid == guid)
-    {
-        stored.body = Some(body);
-        stored.title = title;
-        stored.snippet = Some(snippet).filter(|s| !s.is_empty());
-        library.put_notes(&[stored]).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    library
+        .set_note_text(
+            &guid,
+            &saved,
+            &title,
+            Some(snippet.as_str()).filter(|s| !s.is_empty()),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(saved)
 }
 
 /// Write a new note and return the record name Apple gave it.
@@ -1104,7 +1114,11 @@ async fn note_create(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await?;
+    // Apple has made it. A refresh failing now must not read as the create failing — the
+    // editor would try again, and the person would have the note twice.
+    if let Err(e) = resync_notes(&http, &root, params, &data).await {
+        eprintln!("notes refresh after a create: {e}");
+    }
 
     // Apple's change feed does not always carry a new record back on the very next pass.
     // Without this the note just made was missing locally, and the first edit to it failed

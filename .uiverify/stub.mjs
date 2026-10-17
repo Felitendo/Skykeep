@@ -194,7 +194,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           window.__noteFolders = (window.__noteFolders ?? noteFolders.slice()).filter((f) => f.guid !== args.guid);
           (window.__folderCalls ??= []).push(["delete", args.guid]);
           return null;
-        case "note_save": case "note_delete": case "note_move": return null;
+        case "note_save":
+          (window.__noteSaves ??= []).push(args);
+          // A test can play the other device: what Apple answers is what it now holds.
+          return window.__phoneEdit ? window.__phoneEdit(args) : args.body;
+        case "note_delete": case "note_move": return null;
         case "note_pin": {
           const n = noteList.find((x) => x.guid === args?.guid);
           if (n) n.pinned = args.pinned;
