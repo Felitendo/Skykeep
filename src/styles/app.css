@@ -407,7 +407,28 @@
 }
 
 .nav-item:active { transform: scale(0.98); }
-.nav-item > svg { border-radius: 5.5px; box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.18), 0 1px 2px rgba(0, 0, 0, 0.25); }
+.nav-item > svg { border-radius: 5.4px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 0 0.5px rgba(0, 0, 0, 0.2); }
+/* The icon tiles: white in light mode; Apple's graphite in dark, as icloud.com draws them. */
+.app-icon .ai-tile-top { stop-color: #ffffff; }
+.app-icon .ai-tile-bottom { stop-color: #ececf0; }
+.app-icon .ai-edge { stroke: rgba(0, 0, 0, 0.1); }
+.app-icon .ai-rule { fill: #c7c7cc; }
+.app-icon .ai-ink { fill: #1c1c1e; }
+.app-icon .ai-card { fill: #8e8e93; }
+.app-icon .ai-person { fill: #fff; }
+.app-icon.ai-contacts .ai-tile-top { stop-color: #d8d8dc; }
+.app-icon.ai-contacts .ai-tile-bottom { stop-color: #b8b8be; }
+@media (prefers-color-scheme: dark) {
+  .app-icon .ai-tile-top { stop-color: #3a3a3e; }
+  .app-icon .ai-tile-bottom { stop-color: #1c1c1f; }
+  .app-icon .ai-edge { stroke: rgba(255, 255, 255, 0.14); }
+  .app-icon .ai-rule { fill: #5a5a60; }
+  .app-icon .ai-ink { fill: #f2f2f7; }
+  .app-icon .ai-card { fill: #636366; }
+  .app-icon .ai-person { fill: #e5e5ea; }
+  .app-icon.ai-contacts .ai-tile-top { stop-color: #3a3a3e; }
+  .app-icon.ai-contacts .ai-tile-bottom { stop-color: #1c1c1f; }
+}
 .nav-name { overflow: hidden; text-overflow: ellipsis; transition: opacity 160ms ease; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 6px; min-height: 28px; }
 .sidebar-head h2 { margin: 0 8px; }
@@ -1261,13 +1282,17 @@
   background: var(--sheet);
   border-radius: var(--r-plateau);
   box-shadow: var(--shadow-sheet), 0 0 0 0.5px var(--glass-edge);
-  animation: picker-in 140ms var(--ease) both;
+  /* Opacity and a 3px drop only, from its top edge, on the compositor. */
+  transform-origin: top center;
+  will-change: opacity, transform;
+  animation: picker-in 120ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
 }
 
 @keyframes picker-in {
-  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  from { opacity: 0; transform: translateY(-3px); }
   to { opacity: 1; transform: none; }
 }
+@media (prefers-reduced-motion: reduce) { .picker-menu { animation: none; } }
 
 .picker-menu li {
   display: flex;

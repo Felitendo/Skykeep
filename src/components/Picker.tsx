@@ -64,9 +64,20 @@ export function Picker({
     setOpen(true);
   };
 
+  // Focus follows the keyboard, not the pointer. Moving focus on every hover made the
+  // browser re-scroll and repaint the menu under the mouse, which read as flicker.
+  const byKeyboard = useRef(true);
   useEffect(() => {
-    if (open) items.current[active]?.focus();
+    if (open && byKeyboard.current) items.current[active]?.focus({ preventScroll: false });
   }, [open, active]);
+  useEffect(() => {
+    if (open) {
+      byKeyboard.current = true;
+      items.current[active]?.focus({ preventScroll: true });
+    }
+    // Only on opening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Clicking anywhere else dismisses the menu, which is what every menu does.
   useEffect(() => {
@@ -81,6 +92,7 @@ export function Picker({
   const onListKey = (e: React.KeyboardEvent) => {
     const move = (to: number) => {
       e.preventDefault();
+      byKeyboard.current = true;
       setActive(Math.max(0, Math.min(to, options.length - 1)));
     };
     if (e.key === "ArrowDown") move(active + 1);
@@ -134,7 +146,10 @@ export function Picker({
               className={index === active ? "is-active" : undefined}
               onKeyDown={onListKey}
               onClick={() => choose(index)}
-              onMouseEnter={() => setActive(index)}
+              onMouseEnter={() => {
+                byKeyboard.current = false;
+                setActive(index);
+              }}
             >
               <span className="picker-check" aria-hidden="true">
                 {option.value === value ? "✓" : ""}
