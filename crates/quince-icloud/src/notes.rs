@@ -360,7 +360,9 @@ pub fn apply_cloudkit(
     for note in &mut notes {
         let (was_pinned, was_locked) = stored.get(&note.guid).copied().unwrap_or((false, false));
         note.pinned = pins.get(&note.guid).copied().unwrap_or(was_pinned);
-        note.locked = locked_notes.contains(&note.guid) || was_locked;
+        // Locked when Apple says so in this pass, or when it was and still has no text to read.
+        // `|| was_locked` alone meant a note unlocked on a phone stayed locked here for good.
+        note.locked = locked_notes.contains(&note.guid) || (was_locked && note.body.is_none());
     }
     let in_pass: std::collections::HashSet<String> = notes.iter().map(|n| n.guid.clone()).collect();
 
