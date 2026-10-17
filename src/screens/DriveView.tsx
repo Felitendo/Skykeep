@@ -695,7 +695,7 @@ export function DriveView() {
           </p>
         )}
         <div className="cal-actions">
-          <button className="quiet with-glyph" onClick={() => setInTrash(true)}>
+          <button className="quiet with-glyph" title="Recently Deleted" onClick={() => setInTrash(true)}>
             <ActionGlyph name="delete" />
             Recently Deleted
           </button>
@@ -715,6 +715,7 @@ export function DriveView() {
           />
           <button
             className="quiet with-glyph"
+            title="New Folder"
             onClick={() => setCreatingFolder(true)}
             disabled={loading || creatingFolder}
           >

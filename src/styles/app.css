@@ -1793,3 +1793,16 @@
 .drive-col:hover { color: var(--text); }
 .drive-kind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 900px) { .drive-kind, .drive-col:nth-of-type(2) { display: none; } .drive-row-hit { grid-template-columns: 40px minmax(0, 1fr) 80px 110px; } }
+/* Drive's bar: the path and its count stay one line and give way first; the controls wrap
+   beneath only when the window is too narrow for both. At 760px the title broke in two and
+   ran into its own count. */
+.drive > .cal-bar { flex-wrap: wrap; row-gap: 10px; }
+.drive > .cal-bar .crumbs { flex-wrap: nowrap; overflow: hidden; }
+.drive > .cal-bar .crumb { white-space: nowrap; }
+.drive > .cal-bar .drive-count { flex: 1 1 auto; margin-left: 10px; }
+.drive > .cal-bar .cal-actions { flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 900px) {
+  /* Icons alone, their names kept for anyone who cannot see them. */
+  .drive > .cal-bar .with-glyph:not(.primary) { font-size: 0; gap: 0; padding-inline: 8px; }
+  .drive > .cal-bar .with-glyph:not(.primary) svg { font-size: initial; }
+}
