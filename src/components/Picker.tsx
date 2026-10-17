@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 export type PickerOption = { value: string; label: string };
 
@@ -38,6 +38,17 @@ export function Picker({
   const listId = useId();
 
   const current = options.find((o) => o.value === value);
+
+  // Where there is room: below, as usual, or above when the menu would run off the bottom of
+  // the window — near the foot of a popover it did, and its choices could not be reached.
+  const menu = useRef<HTMLUListElement | null>(null);
+  const [up, setUp] = useState(false);
+  useLayoutEffect(() => {
+    if (!open || !menu.current || !button.current) return;
+    const b = button.current.getBoundingClientRect();
+    const h = menu.current.getBoundingClientRect().height;
+    setUp(b.bottom + 4 + h > window.innerHeight - 8 && b.top - 4 - h > 8);
+  }, [open]);
 
   const close = useCallback(
     (restoreFocus: boolean) => {
@@ -133,7 +144,7 @@ export function Picker({
       </button>
 
       {open && (
-        <ul className="picker-menu" role="listbox" id={listId} aria-label={label}>
+        <ul ref={menu} className={`picker-menu${up ? " is-up" : ""}`} role="listbox" id={listId} aria-label={label}>
           {options.map((option, index) => (
             <li
               key={option.value}

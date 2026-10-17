@@ -140,7 +140,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             .sort((a, b) => a.startsAt - b.startsAt);
         }
         case "calendar_list": return calendars;
-        case "event_save": return "E-new";
+        case "event_alerts": return args.guid === "e2" ? [15] : [];
+        case "event_save": (window.__eventSaves ??= []).push(args.draft); return "E-new";
         case "event_delete": return null;
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
         case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };

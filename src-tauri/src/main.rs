@@ -355,6 +355,10 @@ struct EventDraft {
     timezone: Option<String>,
     notes: Option<String>,
     url: Option<String>,
+    /// Set the alerts to exactly these, minutes before the start (`0` at the time); absent,
+    /// the event's alerts are left as Apple holds them.
+    #[serde(default)]
+    alerts: Option<Vec<i64>>,
 }
 
 /// Everything an event write needs from the session, with the auth lock released first.
@@ -373,6 +377,27 @@ async fn calendar_context(
 ///
 /// Apple takes the whole event on every write, so an edit sends the event as it should end
 /// up rather than a patch. What comes back from Apple is what gets stored.
+/// An event's alerts as Apple holds them: minutes before its start, `0` at the time.
+#[tauri::command]
+async fn event_alerts(
+    guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Vec<i64>> {
+    let event = {
+        let library = data.0.lock().await;
+        library.event(&guid).map_err(|e| e.to_string())?
+    };
+    let Some(event) = event else {
+        return Ok(Vec::new());
+    };
+    let (http, root, params) = calendar_context(&auth).await?;
+    quince_icloud::calendar::CalendarClient::new(&http, &root, params)
+        .alerts(&event)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn event_save(
     draft: EventDraft,
@@ -414,9 +439,16 @@ async fn event_save(
     };
 
     let ctag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &event.calendar_guid);
-    let kept = quince_icloud::sync::save_event(&http, &root, params, ctag.as_deref(), &event)
-        .await
-        .map_err(|e| e.to_string())?;
+    let kept = quince_icloud::sync::save_event_with_alerts(
+        &http,
+        &root,
+        params,
+        ctag.as_deref(),
+        &event,
+        draft.alerts.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let mut library = data.0.lock().await;
     quince_icloud::sync::store_events(&mut library, kept).map_err(|e| e.to_string())?;
     Ok(guid)
@@ -2317,6 +2349,7 @@ fn main() {
             calendar_sync,
             calendar_events,
             event_save,
+            event_alerts,
             event_delete,
             calendar_list,
             calendar_search,

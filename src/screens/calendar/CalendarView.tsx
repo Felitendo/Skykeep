@@ -32,6 +32,33 @@ import {
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
+/** icloud.com's alert presets, minutes before the start; an all-day event's are by the day. */
+const ALERTS = [
+  { minutes: 0, label: "At time of event" },
+  { minutes: 5, label: "5 minutes before" },
+  { minutes: 15, label: "15 minutes before" },
+  { minutes: 30, label: "30 minutes before" },
+  { minutes: 60, label: "1 hour before" },
+  { minutes: 120, label: "2 hours before" },
+  { minutes: 1440, label: "1 day before" },
+  { minutes: 2880, label: "2 days before" },
+];
+const ALL_DAY_ALERTS = [
+  { minutes: 0, label: "On day of event" },
+  { minutes: 1440, label: "1 day before" },
+  { minutes: 2880, label: "2 days before" },
+  { minutes: 10080, label: "1 week before" },
+];
+/** An alert Apple holds that no preset names — set on a phone, say. */
+function alertLabel(m: number): string {
+  if (m === 0) return "At time of event";
+  const after = m < 0;
+  const a = Math.abs(m);
+  const text = a % 1440 === 0 ? `${a / 1440} day${a === 1440 ? "" : "s"}`
+    : a % 60 === 0 ? `${a / 60} hour${a === 60 ? "" : "s"}` : `${a} minutes`;
+  return `${text} ${after ? "after" : "before"}`;
+}
+
 /** Apple's four scopes, in Apple's order. */
 const VIEWS = [
   { key: "day", label: "Day" },
@@ -81,6 +108,11 @@ type Draft = {
   /** The zone the event was made in. Sending this machine's instead moved a meeting set in
    *  New York to local time on every edit, on every device. New events take this machine's. */
   timezone: string | null;
+  /** The alerts, minutes before the start; `undefined` until read from Apple — and while
+   *  undefined a save leaves them as they are, so a slow read can never clear them. */
+  alerts?: number[];
+  /** Whether the alerts were changed here, and so are to be written. */
+  alertsChanged?: boolean;
 };
 
 /**
@@ -349,6 +381,7 @@ export function CalendarView() {
           timezone: d.allDay ? ZONE : (d.timezone ?? ZONE),
           notes: d.notes.trim() || null,
           url: d.url?.trim() || null,
+          ...(d.alertsChanged && d.alerts ? { alerts: d.alerts } : {}),
         });
       }, (rows) => {
         // Shown where it now sits at once; a new one is drawn by its draft until Apple names it.
@@ -389,8 +422,15 @@ export function CalendarView() {
   }, [undo]);
 
   const openDraft = (d: Draft, at: Anchor) => {
-    setDraft(d);
+    setDraft(d.guid ? d : { ...d, alerts: [] });
     setAnchor(at);
+    const guid = d.guid;
+    if (guid && !guid.startsWith("quince:")) {
+      api.eventAlerts(guid).then(
+        (alerts) => setDraft((cur) => (cur && cur.guid === guid && !cur.alertsChanged ? { ...cur, alerts } : cur)),
+        () => {},
+      );
+    }
   };
   const newAt = (startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => {
     if (!target) return;
@@ -1722,6 +1762,37 @@ function EventPopover({
             options={choices.map((c) => ({ value: c.guid, label: c.title }))}
           />
         </div>
+        {/* Alert, and a second once there is a first — icloud.com's own pair and presets. */}
+        {[0, 1].map((n) => {
+          const alerts = draft.alerts;
+          if (n === 1 && !(alerts && alerts.length >= 1)) return null;
+          const presets = draft.allDay ? ALL_DAY_ALERTS : ALERTS;
+          const current = alerts?.[n];
+          const options = [
+            { value: "none", label: "None" },
+            ...presets.map((p) => ({ value: String(p.minutes), label: p.label })),
+            ...(current !== undefined && !presets.some((p) => p.minutes === current)
+              ? [{ value: String(current), label: alertLabel(current) }]
+              : []),
+          ];
+          return (
+            <div className="cx-pop-row cal-field" key={`alert${n}`}>
+              <span>{n === 0 ? "alert" : "2nd alert"}</span>
+              <Picker
+                label={n === 0 ? "Alert" : "Second alert"}
+                value={alerts === undefined ? "loading" : current === undefined ? "none" : String(current)}
+                disabled={!editable || alerts === undefined}
+                onChange={(v) => {
+                  const next = [...(alerts ?? [])];
+                  if (v === "none") next.splice(n, 1);
+                  else next[n] = Number(v);
+                  set({ alerts: next.slice(0, 2), alertsChanged: true });
+                }}
+                options={alerts === undefined ? [{ value: "loading", label: "…" }] : options}
+              />
+            </div>
+          );
+        })}
       </div>
       <input
         className="cx-pop-line"

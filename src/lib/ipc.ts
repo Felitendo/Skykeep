@@ -74,6 +74,7 @@ export const api = {
   services: () => invoke<string[]>("account_services"),
 
   eventSave: (draft: EventWrite) => invoke<string>("event_save", { draft }),
+  eventAlerts: (guid: string) => invoke<number[]>("event_alerts", { guid }),
   eventDelete: (guid: string) => invoke<void>("event_delete", { guid }),
   calendarSync: (from: string, to: string, timezone: string) =>
     invoke<SyncSummary>("calendar_sync", { from, to, timezone }),
@@ -216,6 +217,9 @@ export type EventWrite = {
   timezone: string | null;
   notes: string | null;
   url: string | null;
+  /** Set the alerts to exactly these minutes before the start (0 at the time); left out,
+   *  the event keeps the alerts Apple holds. */
+  alerts?: number[];
 };
 
 export type CalendarEvent = {

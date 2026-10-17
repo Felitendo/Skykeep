@@ -1806,3 +1806,4 @@
   .drive > .cal-bar .with-glyph:not(.primary) { font-size: 0; gap: 0; padding-inline: 8px; }
   .drive > .cal-bar .with-glyph:not(.primary) svg { font-size: initial; }
 }
+.picker-menu.is-up { top: auto; bottom: calc(100% + 4px); }
