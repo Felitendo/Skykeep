@@ -15,6 +15,7 @@ import { Picker } from "../components/Picker";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { dateText } from "../lib/when";
 
 /** The sidebar row that is every contact rather than a list. */
 const ALL = "";
@@ -989,7 +990,7 @@ function birthdayText(raw: string): string {
   const [y, m, d] = raw.slice(0, 10).split("-").map(Number);
   if (!m || !d) return raw;
   const date = new Date(y === Number(NO_YEAR) ? 2000 : y, m - 1, d);
-  return date.toLocaleDateString(undefined, y === Number(NO_YEAR) ? { day: "numeric", month: "long" } : { dateStyle: "long" });
+  return dateText(date, y === Number(NO_YEAR) ? { day: "numeric", month: "long" } : { dateStyle: "long" });
 }
 
 /**

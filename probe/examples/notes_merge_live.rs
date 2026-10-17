@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
                 .unwrap_or("")
         )
     );
-    // Same place, both sides: refused.
+    // Same place, both sides: both kept, as Notes merges them.
     let refused = quince_icloud::notes::edit_cloudkit_from(
         &http,
         &root,
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     println!(
         "same-place edit: {}",
         match refused {
-            Ok(t) => format!("WROTE {t:?}"),
+            Ok(t) => format!("merged {t:?}"),
             Err(e) => format!("refused — {e}"),
         }
     );

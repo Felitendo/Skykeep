@@ -562,8 +562,72 @@ pub async fn edit_rich_cloudkit_from(
     ))
 }
 
-/// Combine two edits of `base` — `mine` and `theirs` — when they change different stretches
-/// of it, or are the same edit; `None` when they overlap and one would have to lose.
+/// One edit of `base`, character by character: which of its characters it removed, and what
+/// it put in each gap between them (gap `i` is just before character `i`).
+struct Script {
+    removed: Vec<bool>,
+    added: Vec<Vec<char>>,
+}
+
+/// The edit that turns `base` into `other`, as removals and additions. The unchanged start
+/// and end are matched directly; the stretch between by longest common subsequence, so an
+/// edit in two places reads as two edits — or, when that stretch is too large to compare
+/// cheaply, as one replacement of it.
+fn script(base: &[char], other: &[char]) -> Script {
+    let mut removed = vec![false; base.len()];
+    let mut added = vec![Vec::new(); base.len() + 1];
+    let pre = base.iter().zip(other).take_while(|(a, b)| a == b).count();
+    let max_suf = base.len().min(other.len()) - pre;
+    let suf = base
+        .iter()
+        .rev()
+        .zip(other.iter().rev())
+        .take(max_suf)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (b, o) = (&base[pre..base.len() - suf], &other[pre..other.len() - suf]);
+    if b.len().saturating_mul(o.len()) <= 4_000_000 {
+        // lcs[i][j]: the longest common subsequence of b[i..] and o[j..].
+        let w = o.len() + 1;
+        let mut lcs = vec![0u32; (b.len() + 1) * w];
+        for i in (0..b.len()).rev() {
+            for j in (0..o.len()).rev() {
+                lcs[i * w + j] = if b[i] == o[j] {
+                    lcs[(i + 1) * w + j + 1] + 1
+                } else {
+                    lcs[(i + 1) * w + j].max(lcs[i * w + j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < b.len() || j < o.len() {
+            if i < b.len() && j < o.len() && b[i] == o[j] {
+                i += 1;
+                j += 1;
+            } else if j < o.len() && (i == b.len() || lcs[i * w + j + 1] >= lcs[(i + 1) * w + j]) {
+                added[pre + i].push(o[j]);
+                j += 1;
+            } else {
+                removed[pre + i] = true;
+                i += 1;
+            }
+        }
+    } else {
+        for r in &mut removed[pre..pre + b.len()] {
+            *r = true;
+        }
+        added[pre + b.len()] = o.to_vec();
+    }
+    Script { removed, added }
+}
+
+/// Combine two edits of `base` — `mine` and `theirs` — the way Notes' own merge does: nothing
+/// either side wrote is lost. What either removed goes; what either added stays, in place;
+/// two additions at the same point are both kept, the other device's first, and an addition
+/// both made is kept once.
+///
+/// It used to refuse when the two touched the same place — and a refusal was a save that did
+/// not happen, with "changed on another device" over a note nobody else was really editing.
 pub fn merge_edits(base: &str, mine: &str, theirs: &str) -> Option<String> {
     if mine == theirs || base == theirs {
         return Some(mine.to_string());
@@ -572,39 +636,20 @@ pub fn merge_edits(base: &str, mine: &str, theirs: &str) -> Option<String> {
         return Some(theirs.to_string());
     }
     let b: Vec<char> = base.chars().collect();
-    let m: Vec<char> = mine.chars().collect();
-    let t: Vec<char> = theirs.chars().collect();
-    // Each edit as one stretch of `base` replaced: [from, to) → replacement.
-    let span = |other: &[char]| {
-        let pre = b.iter().zip(other).take_while(|(x, y)| x == y).count();
-        let max_suf = b.len().min(other.len()) - pre;
-        let suf = b
-            .iter()
-            .rev()
-            .zip(other.iter().rev())
-            .take(max_suf)
-            .take_while(|(x, y)| x == y)
-            .count();
-        (pre, b.len() - suf, other[pre..other.len() - suf].to_vec())
-    };
-    let (m0, m1, mr) = span(&m);
-    let (t0, t1, tr) = span(&t);
-    // Apart only if one ends strictly before the other begins; two inserts at one point, or
-    // touching stretches, are the same place.
-    let (first, second) = if m1 < t0 {
-        ((m0, m1, mr), (t0, t1, tr))
-    } else if t1 < m0 {
-        ((t0, t1, tr), (m0, m1, mr))
-    } else {
-        return None;
-    };
-    let mut out: Vec<char> = Vec::with_capacity(b.len() + first.2.len() + second.2.len());
-    out.extend_from_slice(&b[..first.0]);
-    out.extend_from_slice(&first.2);
-    out.extend_from_slice(&b[first.1..second.0]);
-    out.extend_from_slice(&second.2);
-    out.extend_from_slice(&b[second.1..]);
-    Some(out.into_iter().collect())
+    let m = script(&b, &mine.chars().collect::<Vec<_>>());
+    let t = script(&b, &theirs.chars().collect::<Vec<_>>());
+    let mut out = String::with_capacity(mine.len().max(theirs.len()) + 16);
+    for gap in 0..=b.len() {
+        let (ta, ma) = (&t.added[gap], &m.added[gap]);
+        out.extend(ta.iter());
+        if ma != ta {
+            out.extend(ma.iter());
+        }
+        if gap < b.len() && !m.removed[gap] && !t.removed[gap] {
+            out.push(b[gap]);
+        }
+    }
+    Some(out)
 }
 
 /// Set one paragraph of a note — a style from the Aa menu, or a checklist tick — written
@@ -2132,14 +2177,39 @@ mod merge_tests {
         );
     }
 
-    /// Edits in the same place cannot both be kept, so neither is chosen silently.
+    /// Edits in the same place both survive, as Notes merges them: nothing typed is lost.
     #[test]
-    fn edits_in_one_place_are_refused() {
-        assert_eq!(merge_edits("a b c", "a X c", "a Y c"), None);
+    fn edits_in_one_place_both_survive() {
         assert_eq!(
-            merge_edits("ab", "aXb", "aYb"),
-            None,
+            merge_edits("a b c", "a X c", "a Y c").as_deref(),
+            Some("a YX c")
+        );
+        assert_eq!(
+            merge_edits("ab", "aXb", "aYb").as_deref(),
+            Some("aYXb"),
             "two inserts at one point"
+        );
+        // Both typed at the end: the phone's line, then this one's.
+        assert_eq!(
+            merge_edits("Tea filter\n", "Tea filter\nSpoon", "Tea filter\nKnife").as_deref(),
+            Some("Tea filter\nKnifeSpoon")
+        );
+        // One deleted a word the other edited beside: the deletion and the edit both hold.
+        assert_eq!(
+            merge_edits("one two three", "one three", "one two three!").as_deref(),
+            Some("one three!")
+        );
+    }
+
+    /// Edits in two places on one side, and another on the other, all survive.
+    #[test]
+    fn several_edits_on_each_side_combine() {
+        let base = "milk\neggs\nbread\njam";
+        let mine = "milk!\neggs\nbread\njam?";
+        let theirs = "milk\neggs\nbutter\njam";
+        assert_eq!(
+            merge_edits(base, mine, theirs).as_deref(),
+            Some("milk!\neggs\nbutter\njam?")
         );
     }
 

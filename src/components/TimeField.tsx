@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { timeText } from "../lib/when";
 
 /**
  * A time of day, typed as a person says it — "9", "930", "9:30", "9.30pm", "21:15",
@@ -77,7 +78,7 @@ const usesTwelveHour = (() => {
 
 export function formatTime(hours: number, minutes: number): string {
   const d = new Date(2000, 0, 1, hours, minutes);
-  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return timeText(d, { hour: "numeric", minute: "2-digit" });
 }
 
 /** `[hours, minutes]`, or null when the text is not a time. */

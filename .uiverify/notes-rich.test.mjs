@@ -37,3 +37,11 @@ test("runs follow another device's edit merged in", () => {
   const out = carryRuns("abc\ndef", [r(3, { bold: true }), r(4)], "abcXY\ndef");
   assert.deepEqual(out.map((x) => [x.length, x.bold]), [[5, true], [4, false]]);
 });
+
+import { mergeEdits } from "../src/screens/notes/model.ts";
+test("two edits merge as Notes merges them — nothing typed is lost", () => {
+  assert.equal(mergeEdits("Tea filter\n", "Tea filter\nSpoon", "Tea filter\nKnife"), "Tea filter\nKnifeSpoon");
+  assert.equal(mergeEdits("a b c", "a X c", "a Y c"), "a YX c");
+  assert.equal(mergeEdits("milk\neggs\nbread\njam", "milk!\neggs\nbread\njam?", "milk\neggs\nbutter\njam"), "milk!\neggs\nbutter\njam?");
+  assert.equal(mergeEdits("one two three", "one three", "one two three!"), "one three!");
+});

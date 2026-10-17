@@ -17,6 +17,7 @@ import {
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 import { Glyph, emblemGlyph, type GlyphName } from "../components/Glyph";
+import { dateText, timeText } from "../lib/when";
 
 /** Apple's built-in views, in Apple's order, each with the glyph and system colour its app uses. */
 const SMART: { kind: SmartList; title: string; glyph: GlyphName; colour: string }[] = [
@@ -76,9 +77,9 @@ function dueLabel(seconds: number, dated = false, allDay = false): { text: strin
   if (allDay) {
     if (dated || days === 0) return { text: dated ? "" : "Today", overdue: false };
     if (days === 1) return { text: "Tomorrow", overdue: false };
-    return { text: due.toLocaleDateString(undefined, { day: "numeric", month: "short" }), overdue: days < 0 };
+    return { text: dateText(due, { day: "numeric", month: "short" }), overdue: days < 0 };
   }
-  const time = due.toLocaleTimeString(undefined, {
+  const time = timeText(due, {
     hour: "numeric",
     minute: "2-digit",
   });
@@ -87,7 +88,7 @@ function dueLabel(seconds: number, dated = false, allDay = false): { text: strin
   }
   if (days < 0)
     return {
-      text: due.toLocaleDateString(undefined, {
+      text: dateText(due, {
         day: "numeric",
         month: "short",
       }),
@@ -97,7 +98,7 @@ function dueLabel(seconds: number, dated = false, allDay = false): { text: strin
     return { text: `Today ${time}`, overdue: due.getTime() < now.getTime() };
   if (days === 1) return { text: `Tomorrow ${time}`, overdue: false };
   return {
-    text: due.toLocaleDateString(undefined, { day: "numeric", month: "short" }),
+    text: dateText(due, { day: "numeric", month: "short" }),
     overdue: false,
   };
 }
@@ -744,7 +745,7 @@ export function RemindersView() {
               ? "Today"
               : days === 1
                 ? "Tomorrow"
-                : when.toLocaleDateString(undefined, {
+                : dateText(when, {
                     weekday: "short",
                     day: "numeric",
                     month: "short",

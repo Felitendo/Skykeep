@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { dateText } from "../lib/when";
 
 /**
  * Each screen's mark in the sidebar, drawn after the app it stands in for — Reminders' three
@@ -94,7 +95,7 @@ export function AppIcon({ app, size = 22 }: { app: string; size?: number }) {
         <>
           <text x="12" y="8" textAnchor="middle" fontSize="5" fontWeight="600" fill="#ff453a"
             fontFamily="-apple-system, 'SF Pro Text', Inter, system-ui, sans-serif" letterSpacing="0.2">
-            {today.toLocaleDateString(undefined, { weekday: "short" }).slice(0, 3)}
+            {dateText(today, { weekday: "short" }).slice(0, 3)}
           </text>
           <text x="12" y="19.4" textAnchor="middle" fontSize="11.6" fontWeight="300" className="ai-ink"
             fontFamily="-apple-system, 'SF Pro Display', Inter, system-ui, sans-serif" letterSpacing="-0.4">

@@ -29,6 +29,7 @@ import {
   startOfWeek,
   weekSpans,
 } from "./model";
+import { dateText, timeText } from "../../lib/when";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -183,7 +184,7 @@ const toLocalInput = (s: number, dateOnly: boolean) => {
 };
 const fromLocalInput = (value: string) => seconds(new Date(value.length === 10 ? `${value}T00:00` : value));
 
-const weekdayShort = (d: Date) => d.toLocaleDateString(undefined, { weekday: "short" });
+const weekdayShort = (d: Date) => dateText(d, { weekday: "short" });
 
 /** The colour a calendar is drawn in, or Apple's blue when it has none. */
 const tint = (c: Calendar | undefined) =>
@@ -573,7 +574,7 @@ export function CalendarView() {
 
   /** The title, and the shorter one a narrow calendar shows in its place ("Sep 2026"). */
   const title = useMemo(() => {
-    const short = (d: Date) => d.toLocaleDateString(undefined, { month: "short" });
+    const short = (d: Date) => dateText(d, { month: "short" });
     if (view === "year") {
       const year = String(selected.getFullYear());
       return { strong: year, rest: "", brief: year };
@@ -589,7 +590,7 @@ export function CalendarView() {
       return {
         strong: `${strong}${sep.trimEnd()}`,
         rest: parts.slice(at).map((p) => p.value).join(""),
-        brief: selected.toLocaleDateString(undefined, { day: "numeric", month: "short" }),
+        brief: dateText(selected, { day: "numeric", month: "short" }),
       };
     }
     // A week across two months is named for both, as Calendar does: "Sep – Oct 2026".
@@ -600,7 +601,7 @@ export function CalendarView() {
     }
     const base = view === "week" ? week[6] : selected;
     return {
-      strong: base.toLocaleDateString(undefined, { month: "long" }),
+      strong: dateText(base, { month: "long" }),
       rest: String(base.getFullYear()),
       brief: `${short(base)} ${base.getFullYear()}`,
     };
@@ -745,7 +746,7 @@ export function CalendarView() {
                   <span className="cx-dot" aria-hidden="true" />
                   <span className="cx-found-title">{e.title}</span>
                   <span className="cx-found-when">
-                    {dateOf(e.startsAt).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
+                    {dateText(dateOf(e.startsAt), { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
                     {e.allDay ? "" : ` · ${clock(e.startsAt)}`}
                   </span>
                 </button>
@@ -919,7 +920,7 @@ function MiniMonth({
   return (
     <div className="cx-minimonth">
       <div className="cx-minimonth-head">
-        <span>{shown.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</span>
+        <span>{dateText(shown, { month: "long", year: "numeric" })}</span>
         <span>
           <button
             className="cx-icon small"
@@ -949,7 +950,7 @@ function MiniMonth({
             className={`cx-minimonth-day${d.getMonth() !== shown.getMonth() ? " is-out" : ""}${
               sameDay(d, today) ? " is-today" : ""
             }${sameDay(d, selected) ? " is-selected" : ""}${busy(d) ? " is-busy" : ""}`}
-            aria-label={d.toLocaleDateString(undefined, { dateStyle: "full" })}
+            aria-label={dateText(d, { dateStyle: "full" })}
             onClick={() => onPick(d)}
           >
             {d.getDate()}
@@ -1075,7 +1076,7 @@ function MonthView({
                       ref={isSelected ? cell : undefined}
                       className="cx-day-hit"
                       tabIndex={isSelected ? 0 : -1}
-                      aria-label={`${day.toLocaleDateString(undefined, { dateStyle: "full" })}${
+                      aria-label={`${dateText(day, { dateStyle: "full" })}${
                         list.length ? `, ${list.length} item${list.length === 1 ? "" : "s"}` : ""
                       }`}
                       onClick={() => onSelect(day)}
@@ -1085,7 +1086,7 @@ function MonthView({
                     />
                     <span className={`cx-daynum${sameDay(day, today) ? " is-today" : ""}`}>
                       {day.getDate() === 1 && day.getMonth() !== inMonth
-                        ? day.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                        ? dateText(day, { month: "short", day: "numeric" })
                         : day.getDate()}
                     </span>
                     <ul className={`cx-items${dots ? " is-dots" : ""}`} style={{ marginTop: `${lanesHere * LANE}px` }}>
@@ -1368,7 +1369,7 @@ function TimeGrid({
             className={`cal-col-head${sameDay(d, today) ? " is-today" : ""}`}
             key={dayKey(d)}
             onClick={() => onPickDay(d)}
-            aria-label={d.toLocaleDateString(undefined, { dateStyle: "full" })}
+            aria-label={dateText(d, { dateStyle: "full" })}
           >
             <span className="cx-col-weekday">{weekdayShort(d)}</span>
             <span className="cx-col-num">{d.getDate()}</span>
@@ -1598,9 +1599,9 @@ function YearView({
         const days = monthDays(first);
         const current = today.getFullYear() === year && today.getMonth() === m;
         return (
-          <section className="cal-mini" key={m} aria-label={first.toLocaleDateString(undefined, { month: "long" })}>
+          <section className="cal-mini" key={m} aria-label={dateText(first, { month: "long" })}>
             <h2 className={`cx-year-month${current ? " is-current" : ""}`}>
-              {first.toLocaleDateString(undefined, { month: "long" })}
+              {dateText(first, { month: "long" })}
             </h2>
             <div className="cx-minimonth-grid">
               {days.slice(0, 7).map((d) => (
@@ -1615,7 +1616,7 @@ function YearView({
                   <button
                     key={dayKey(d)}
                     className={`cx-minimonth-day${sameDay(d, today) ? " is-today" : ""}${busy(d) ? " is-busy" : ""}`}
-                    aria-label={d.toLocaleDateString(undefined, { dateStyle: "full" })}
+                    aria-label={dateText(d, { dateStyle: "full" })}
                     onClick={() => onPick(d)}
                   >
                     {d.getDate()}
@@ -1754,8 +1755,8 @@ function EventPopover({
   if (!editable) {
     const start = dateOf(draft.startsAt);
     const end = dateOf(Math.max(draft.startsAt, draft.endsAt - (draft.allDay ? 86_400 : 0)));
-    const day = (d: Date) => d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-    const time = (d: Date) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const day = (d: Date) => dateText(d, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    const time = (d: Date) => timeText(d, { hour: "numeric", minute: "2-digit" });
     const sameDay = start.toDateString() === end.toDateString();
     const when = draft.allDay
       ? sameDay ? day(start) : `${day(start)} – ${day(end)}`
@@ -1999,10 +2000,10 @@ function DayPane({
   );
   const nothing = allDay.length + timed.length + due.length === 0;
   return (
-    <aside className="cx-pane" aria-label={day.toLocaleDateString(undefined, { dateStyle: "full" })}>
+    <aside className="cx-pane" aria-label={dateText(day, { dateStyle: "full" })}>
       {children && <div className="cx-pane-month">{children}</div>}
-      <h2 className="cx-pane-day">{day.toLocaleDateString(undefined, { weekday: "long" })}</h2>
-      <p className="cx-pane-date">{day.toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })}</p>
+      <h2 className="cx-pane-day">{dateText(day, { weekday: "long" })}</h2>
+      <p className="cx-pane-date">{dateText(day, { day: "numeric", month: "long", year: "numeric" })}</p>
       {nothing ? (
         <p className="cx-pane-empty">Nothing on this day.</p>
       ) : (

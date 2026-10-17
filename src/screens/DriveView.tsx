@@ -20,6 +20,7 @@ import { UploadTray } from "../components/UploadTray";
 import { listen } from "@tauri-apps/api/event";
 import { Picker } from "../components/Picker";
 import { RowMenu } from "../components/RowMenu";
+import { dateText } from "../lib/when";
 
 /** iCloud Drive's own four orders, as its "by Name" menu offers them. */
 const SORTS = [
@@ -68,7 +69,7 @@ function fileSize(bytes: number | null): string {
 const modified = (seconds: number | null) =>
   seconds === null
     ? ""
-    : new Date(seconds * 1000).toLocaleDateString(undefined, {
+    : dateText(new Date(seconds * 1000), {
         day: "numeric",
         month: "short",
         year: "numeric",

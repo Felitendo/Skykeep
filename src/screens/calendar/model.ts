@@ -6,6 +6,7 @@
  * moves, which is why nothing here adds a fixed 86,400 seconds.
  */
 import type { CalendarEvent } from "../../lib/ipc";
+import { timeText } from "../../lib/when.ts";
 
 export const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 export const addDays = (d: Date, n: number) =>
@@ -184,11 +185,10 @@ export const snap = (minutes: number, step = 15) => Math.round(minutes / step) *
 export function hourLabel(hour: number): string {
   if (hour === 12) return "Noon";
   const d = new Date(2024, 0, 1, hour);
-  return d.toLocaleTimeString(undefined, { hour: "numeric" });
+  return timeText(d, { hour: "numeric" });
 }
 
 /** "9:30 AM", with ":00" left off, as Calendar writes a time. */
 export const clock = (s: number) =>
-  dateOf(s)
-    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+  timeText(dateOf(s), { hour: "numeric", minute: "2-digit" })
     .replace(/:00(?=\D|$)/, "");
