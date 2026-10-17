@@ -1755,7 +1755,7 @@ async fn main() -> Result<()> {
                     quince_icloud::contacts::fetch(&http, &root, params)
                         .await
                         .ok()
-                        .and_then(|all| all.into_iter().find(|c| c.guid == guid))
+                        .and_then(|all| all.contacts.into_iter().find(|c| c.guid == guid))
                 }
             };
 

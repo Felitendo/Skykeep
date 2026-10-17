@@ -431,6 +431,188 @@ pub async fn card(
         }))
 }
 
+/// A Contacts list — Apple's "group" — by name, with the contacts in it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactList {
+    pub guid: String,
+    pub name: String,
+    pub members: Vec<String>,
+    pub etag: Option<String>,
+}
+
+/// The address book as `/co/startup` gives it: the people, and the lists they are in.
+pub struct AddressBook {
+    pub contacts: Vec<quince_core::contacts::Contact>,
+    pub lists: Vec<ContactList>,
+}
+
+/// Where the lists are kept between passes. They are few and small, so beside the library's
+/// other settings rather than in a table of their own.
+pub const LISTS_KEY: &str = "contacts.lists";
+
+/// The lists in a `/co/startup` answer, in the account's own order.
+pub fn parse_lists(body: &Value) -> Vec<ContactList> {
+    let order: Vec<String> = body
+        .pointer("/collections/0/groupsOrder")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut lists: Vec<ContactList> = body
+        .get("groups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|g| {
+            Some(ContactList {
+                guid: string(g, "groupId")?,
+                name: string(g, "name").unwrap_or_else(|| "Untitled List".into()),
+                members: g
+                    .get("contactIds")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(ToString::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                etag: string(g, "etag"),
+            })
+        })
+        .collect();
+    lists.sort_by_key(|l| {
+        order
+            .iter()
+            .position(|o| *o == l.guid)
+            .unwrap_or(usize::MAX)
+    });
+    lists
+}
+
+/// The lists the library holds from the last pass.
+pub fn stored_lists(library: &quince_core::Library) -> Vec<ContactList> {
+    library
+        .state(LISTS_KEY)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Write a list as icloud.com does — the whole of it, every time: a new one is `POST`ed with
+/// an id made here, a rename or a change of members is the full list `PUT` back with its
+/// etag, a delete names it. Membership travels as the entire set of contact ids.
+async fn write_list(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    method: Option<&str>,
+    group: Value,
+) -> Result<Value> {
+    let mut query = params;
+    query.push(("clientVersion".into(), "2.1".into()));
+    query.push(("locale".into(), "en_US".into()));
+    query.push(("order".into(), "last,first".into()));
+    query.push(("prefToken".into(), tokens.pref.clone()));
+    query.push(("syncToken".into(), tokens.sync.clone()));
+    if let Some(m) = method {
+        query.push(("method".into(), m.into()));
+    }
+    let url = format!("{}/co/groups/card/", root.trim_end_matches('/'));
+    let response = http
+        .post(url)
+        .query(&query)
+        .json(&serde_json::json!({ "groups": [group] }))
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if status.as_u16() == 412 || status.as_u16() == 409 {
+        return Err(Error::Conflict);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "contacts returned {status}: {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+    Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+/// Make a list, with these people in it. Answers with its id.
+pub async fn create_list(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    name: &str,
+    members: &[String],
+) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::Refused("A list needs a name.".into()));
+    }
+    let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+    write_list(
+        http,
+        root,
+        params,
+        tokens,
+        None,
+        serde_json::json!({ "groupId": guid, "name": name, "contactIds": members }),
+    )
+    .await?;
+    Ok(guid)
+}
+
+/// Rename a list, or change who is in it: the whole list, sent back with its etag.
+pub async fn update_list(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    list: &ContactList,
+) -> Result<()> {
+    write_list(
+        http,
+        root,
+        params,
+        tokens,
+        Some("PUT"),
+        serde_json::json!({ "groupId": list.guid, "etag": list.etag, "name": list.name, "contactIds": list.members }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Delete a list. The people in it stay in Contacts.
+pub async fn delete_list(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    guid: &str,
+) -> Result<()> {
+    write_list(
+        http,
+        root,
+        params,
+        tokens,
+        Some("DELETE"),
+        serde_json::json!({ "groupId": guid }),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Fetch the address book and reconcile it into the library.
 pub async fn sync(
     http: &reqwest::Client,
@@ -438,8 +620,8 @@ pub async fn sync(
     params: Vec<(String, String)>,
     library: &mut quince_core::Library,
 ) -> Result<usize> {
-    let contacts = fetch(http, root, params).await?;
-    apply(library, contacts)
+    let book = fetch(http, root, params).await?;
+    apply(library, book)
 }
 
 /// Ask Apple for the address book. Touches no local state, so a refresh can do the network
@@ -448,8 +630,12 @@ pub async fn fetch(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
-) -> Result<Vec<quince_core::contacts::Contact>> {
-    Ok(parse(&startup(http, root, params).await?))
+) -> Result<AddressBook> {
+    let body = startup(http, root, params).await?;
+    Ok(AddressBook {
+        contacts: parse(&body),
+        lists: parse_lists(&body),
+    })
 }
 
 /// The whole of `/co/startup`: the address book, the tokens, and everything else Apple
@@ -487,13 +673,38 @@ async fn startup(
 }
 
 /// Store a fetched address book. Touches no network.
-pub fn apply(
-    library: &mut quince_core::Library,
-    contacts: Vec<quince_core::contacts::Contact>,
-) -> Result<usize> {
-    library.put_contacts(&contacts)?;
+pub fn apply(library: &mut quince_core::Library, book: AddressBook) -> Result<usize> {
+    library.put_contacts(&book.contacts)?;
+    library.set_state(
+        LISTS_KEY,
+        &serde_json::to_string(&book.lists).unwrap_or_else(|_| "[]".into()),
+    )?;
     library.mark_synced("contacts", None)?;
-    Ok(contacts.len())
+    Ok(book.contacts.len())
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    /// Lists come out in the account's own order — `groupsOrder` — with their members.
+    #[test]
+    fn lists_are_read_in_the_accounts_order() {
+        let body = serde_json::json!({
+            "groups": [
+                { "groupId": "B", "name": "Family", "contactIds": ["c1", "c2"], "etag": "e1" },
+                { "groupId": "A", "name": "Work", "contactIds": [], "etag": "e2" }
+            ],
+            "collections": [{ "groupsOrder": ["A", "B"] }]
+        });
+        let lists = parse_lists(&body);
+        assert_eq!(
+            lists.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+            ["Work", "Family"]
+        );
+        assert_eq!(lists[1].members, ["c1", "c2"]);
+        assert_eq!(lists[1].etag.as_deref(), Some("e1"));
+    }
 }
 
 #[cfg(test)]
