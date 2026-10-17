@@ -426,10 +426,17 @@ export function DriveView() {
       if (!trimmed || trimmed === driveName(item)) return;
       setBusyGuid(item.drivewsid);
       setError(null);
+      // The new name shows the moment Return is pressed; Apple's answer confirms or undoes it.
+      const ext = item.extension ? `.${item.extension}` : "";
+      const shown = ext && trimmed.endsWith(ext)
+        ? { name: trimmed.slice(0, -ext.length), extension: item.extension }
+        : { name: trimmed, extension: null };
+      setItems((rows) => rows.map((r) => (r.drivewsid === item.drivewsid ? { ...r, ...shown } : r)));
       try {
         await api.driveRename(item.drivewsid, trimmed);
         await refresh();
       } catch (e) {
+        setItems((rows) => rows.map((r) => (r.drivewsid === item.drivewsid ? item : r)));
         setError(messageOf(e));
       } finally {
         setBusyGuid(null);
@@ -465,15 +472,19 @@ export function DriveView() {
   const move = useCallback(
     async (item: DriveItem, destinationId: string) => {
       setMoving(null);
-      setBusyGuid(item.drivewsid);
       setError(null);
+      // Out of this folder at once; back, with the reason, if Apple refuses.
+      setGone((g) => new Set(g).add(item.drivewsid));
       try {
         await api.driveMove(item.drivewsid, destinationId);
         await refresh();
       } catch (e) {
+        setGone((g) => {
+          const next = new Set(g);
+          next.delete(item.drivewsid);
+          return next;
+        });
         setError(messageOf(e));
-      } finally {
-        setBusyGuid(null);
       }
     },
     [refresh]
