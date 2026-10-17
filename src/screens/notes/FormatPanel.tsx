@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check } from "lucide-react";
-import { Portal } from "../../components/Portal";
+import { inMenu, Portal } from "../../components/Portal";
 import type { EditorStatus } from "./NoteEditor";
 import { STYLE } from "./rich";
 
@@ -54,7 +54,7 @@ export function FormatPanel({
   useEffect(() => {
     const down = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
-      if (!box.current?.contains(t) && !t.closest(".notes-aa")) onClose();
+      if (!box.current?.contains(t) && !t.closest(".notes-aa") && !inMenu(t)) onClose();
     };
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("mousedown", down);

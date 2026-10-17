@@ -12,6 +12,7 @@ import {
   DRIVE_ROOT,
   UPLOAD,
   type DriveItem,
+  type RecentItem,
   type TrashItem,
   type UploadEvent,
 } from "../lib/ipc";
@@ -20,7 +21,8 @@ import { UploadTray } from "../components/UploadTray";
 import { listen } from "@tauri-apps/api/event";
 import { Picker } from "../components/Picker";
 import { RowMenu } from "../components/RowMenu";
-import { dateText } from "../lib/when";
+import { dateText, timeText } from "../lib/when";
+import { Clock } from "lucide-react";
 
 /** iCloud Drive's own four orders, as its "by Name" menu offers them. */
 const SORTS = [
@@ -166,6 +168,140 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * Recents, as icloud.com and Finder have it: the files opened most recently, under Today,
+ * Yesterday, Previous 7 Days, Previous 30 Days and then each month. Read from Apple each
+ * time it is opened, since what was opened on the phone a minute ago belongs here too.
+ */
+function DriveRecents({ onClose }: { onClose: () => void }) {
+  const [rows, setRows] = useState<RecentItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [savedTo, setSavedTo] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ item: RecentItem; x: number; y: number; alignRight: boolean } | null>(null);
+  useEffect(() => {
+    api.driveRecents().then(
+      (found) => setRows(Array.isArray(found) ? found : []),
+      (e) => {
+        setError(messageOf(e));
+        setRows([]);
+      },
+    );
+  }, []);
+  useEffect(() => {
+    if (!savedTo) return undefined;
+    const timer = window.setTimeout(() => setSavedTo(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [savedTo]);
+  const download = async (item: RecentItem) => {
+    setBusy(item.drivewsid);
+    setError(null);
+    try {
+      setSavedTo(await api.driveDownload(item.drivewsid, item));
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const groups = groupRecents(rows ?? []);
+  return (
+    <div className="drive drive-recents">
+      <header className="cal-bar">
+        <nav className="crumbs" aria-label="Folder path">
+          <button className="crumb" onClick={onClose}>iCloud Drive</button>
+          <span className="crumb-sep" aria-hidden="true">›</span>
+          <button className="crumb" aria-current>Recents</button>
+        </nav>
+      </header>
+      {error && <Notice message={error} onDismiss={() => setError(null)} />}
+      {savedTo && <p className="drive-saved" role="status">Saved to {savedTo}</p>}
+      {rows === null && <p className="cal-empty">Loading…</p>}
+      {rows && rows.length === 0 && !error && (
+        <p className="cal-empty">Files which you’ve opened recently will appear here.</p>
+      )}
+      {groups.map((g) => (
+        <section key={g.heading} aria-label={g.heading}>
+          <h2 className="drive-group">{g.heading}</h2>
+          <ul className="drive-rows">
+            {g.items.map((item) => (
+              <li key={item.drivewsid}>
+                <div
+                  className={`drive-row${selected === item.drivewsid ? " is-selected" : ""}${busy === item.drivewsid ? " is-busy" : ""}`}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setSelected(item.drivewsid);
+                    setMenu({ item, x: e.clientX, y: e.clientY, alignRight: false });
+                  }}
+                >
+                  <button
+                    className="drive-row-hit"
+                    aria-pressed={selected === item.drivewsid}
+                    onClick={() => setSelected(item.drivewsid)}
+                    onDoubleClick={() => void download(item)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void download(item);
+                      }
+                    }}
+                  >
+                    <span className="drive-badge" aria-hidden="true">
+                      {busy === item.drivewsid ? <span className="drive-spinner" /> : <FileGlyph kind={item.kind} extension={item.extension} />}
+                    </span>
+                    <span className="drive-name">{driveName(item)}</span>
+                    <span className="drive-meta drive-kind">{kindName(item)}</span>
+                    <span className="drive-meta">{fileSize(item.size)}</span>
+                    <span className="drive-meta">{openedText(item.openedAt)}</span>
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+      {menu && (
+        <RowMenu
+          at={menu}
+          onClose={() => setMenu(null)}
+          entries={[{ label: "Download a Copy", run: () => void download(menu.item) }]}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Recents' headings, newest first: Today, Yesterday, Previous 7 and 30 Days, then months. */
+export function groupRecents(rows: RecentItem[], now = new Date()): { heading: string; items: RecentItem[] }[] {
+  const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const today = midnight(now);
+  const out: { heading: string; items: RecentItem[] }[] = [];
+  for (const item of rows) {
+    const when = new Date((item.openedAt ?? 0) * 1000);
+    const ago = Math.round((today - midnight(when)) / 864e5);
+    const heading =
+      ago <= 0 ? "Today"
+      : ago === 1 ? "Yesterday"
+      : ago <= 7 ? "Previous 7 Days"
+      : ago <= 30 ? "Previous 30 Days"
+      : dateText(when, when.getFullYear() === now.getFullYear() ? { month: "long" } : { month: "long", year: "numeric" });
+    const last = out[out.length - 1];
+    if (last?.heading === heading) last.items.push(item);
+    else out.push({ heading, items: [item] });
+  }
+  return out;
+}
+
+const openedText = (s: number | null) => {
+  if (s === null) return "";
+  const d = new Date(s * 1000);
+  const today = new Date();
+  return d.toDateString() === today.toDateString()
+    ? timeText(d, { hour: "numeric", minute: "2-digit" })
+    : dateText(d, { day: "numeric", month: "short", year: "numeric" });
+};
+
 /** What a file's kind is called, as icloud.com's File Info names it. */
 const KINDS: Record<string, string> = {
   pdf: "PDF document", png: "PNG image", jpg: "JPEG image", jpeg: "JPEG image", heic: "HEIC image",
@@ -260,6 +396,7 @@ export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
   const [items, setItems] = useState<DriveItem[]>([]);
   const [inTrash, setInTrash] = useState(false);
+  const [inRecents, setInRecents] = useState(false);
   /** Apple's own pictures of this folder's files, where it has them; the rest keep icons. */
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   /** What is free, as icloud.com says it under a folder's name: "5.18 GB available". */
@@ -692,6 +829,7 @@ export function DriveView() {
   }, [newFolderName, here.id, refresh, items]);
 
   if (inTrash) return <DriveTrash onClose={() => setInTrash(false)} />;
+  if (inRecents) return <DriveRecents onClose={() => setInRecents(false)} />;
 
   return (
     <div className={`drive${dropping ? " is-dropping" : ""}`}>
@@ -739,6 +877,10 @@ export function DriveView() {
           </p>
         )}
         <div className="cal-actions">
+          <button className="quiet with-glyph" title="Recents" onClick={() => setInRecents(true)}>
+            <Clock size={15} strokeWidth={1.6} aria-hidden="true" />
+            Recents
+          </button>
           <button className="quiet with-glyph" title="Recently Deleted" onClick={() => setInTrash(true)}>
             <ActionGlyph name="delete" />
             Recently Deleted

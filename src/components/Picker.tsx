@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Portal } from "./Portal";
 
 export type PickerOption = { value: string; label: string };
 
@@ -39,15 +40,40 @@ export function Picker({
 
   const current = options.find((o) => o.value === value);
 
-  // Where there is room: below, as usual, or above when the menu would run off the bottom of
-  // the window — near the foot of a popover it did, and its choices could not be reached.
+  /**
+   * Where the menu sits, as a Mac pop-up button places it: over the button, the current
+   * choice lying exactly on it, so the eye does not have to move — and then kept inside the
+   * window, scrolling if it is taller than the window.
+   *
+   * Drawn in a layer of its own over everything (a portal), never inside the control's own
+   * box. Inside a popover, a scrolling list or a clipped pane the menu was cut off, flipped
+   * after being drawn, or sat at the wrong place under a transformed ancestor — the menu
+   * problems that kept coming back. Placed before it is painted, so it never jumps.
+   */
   const menu = useRef<HTMLUListElement | null>(null);
-  const [up, setUp] = useState(false);
+  const [place, setPlace] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
   useLayoutEffect(() => {
-    if (!open || !menu.current || !button.current) return;
+    if (!open || !menu.current || !button.current) {
+      setPlace(null);
+      return;
+    }
     const b = button.current.getBoundingClientRect();
-    const h = menu.current.getBoundingClientRect().height;
-    setUp(b.bottom + 4 + h > window.innerHeight - 8 && b.top - 4 - h > 8);
+    const list = menu.current;
+    const chosen = items.current[Math.max(0, options.findIndex((o) => o.value === value))];
+    const pad = 8;
+    const maxHeight = window.innerHeight - pad * 2;
+    const height = Math.min(list.scrollHeight, maxHeight);
+    const width = Math.max(b.width, list.scrollWidth);
+    // The chosen row's label over the button's label.
+    const rowTop = chosen ? chosen.offsetTop : 0;
+    let top = b.top - rowTop + (b.height - (chosen?.offsetHeight ?? b.height)) / 2;
+    top = Math.max(pad, Math.min(top, window.innerHeight - pad - height));
+    const left = Math.max(pad, Math.min(b.left - 4, window.innerWidth - pad - width));
+    setPlace({ left, top, width, maxHeight });
+    // Taller than the window: scrolled so the chosen row is in view.
+    if (chosen && list.scrollHeight > maxHeight) list.scrollTop = Math.max(0, rowTop - (b.top - top));
+    // On opening only: what is chosen does not move the menu while it is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const close = useCallback(
@@ -78,26 +104,44 @@ export function Picker({
   // Focus follows the keyboard, not the pointer. Moving focus on every hover made the
   // browser re-scroll and repaint the menu under the mouse, which read as flicker.
   const byKeyboard = useRef(true);
+  // Only once the menu is placed and showing: it is drawn hidden while it is measured, and
+  // a hidden element cannot take focus — the first key went nowhere.
+  const shown = open && place !== null;
   useEffect(() => {
-    if (open && byKeyboard.current) items.current[active]?.focus({ preventScroll: false });
-  }, [open, active]);
+    if (shown && byKeyboard.current) items.current[active]?.focus({ preventScroll: true });
+  }, [shown, active]);
   useEffect(() => {
-    if (open) {
+    if (shown) {
       byKeyboard.current = true;
       items.current[active]?.focus({ preventScroll: true });
     }
     // Only on opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [shown]);
 
   // Clicking anywhere else dismisses the menu, which is what every menu does.
   useEffect(() => {
     if (!open) return undefined;
     const onDown = (e: MouseEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (!root.current?.contains(t) && !menu.current?.contains(t)) setOpen(false);
     };
+    // A menu fixed over a page that scrolls or resizes would be left floating somewhere
+    // else; as on the Mac, it goes. Its own scrolling is not that.
+    const onMove = (e: Event) => {
+      if (!menu.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onLeave = () => setOpen(false);
     document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    document.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onLeave);
+    window.addEventListener("blur", onLeave);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onLeave);
+      window.removeEventListener("blur", onLeave);
+    };
   }, [open]);
 
   const onListKey = (e: React.KeyboardEvent) => {
@@ -115,6 +159,8 @@ export function Picker({
       choose(active);
     } else if (e.key === "Escape" || e.key === "Tab") {
       e.preventDefault();
+      // Escape closes the menu and nothing more — not the popover or sheet it is in.
+      if (e.key === "Escape") e.stopPropagation();
       close(true);
     }
   };
@@ -144,7 +190,19 @@ export function Picker({
       </button>
 
       {open && (
-        <ul ref={menu} className={`picker-menu${up ? " is-up" : ""}`} role="listbox" id={listId} aria-label={label}>
+        <Portal>
+        <ul
+          ref={menu}
+          className="picker-menu"
+          role="listbox"
+          id={listId}
+          aria-label={label}
+          style={
+            place
+              ? { left: place.left, top: place.top, minWidth: place.width, maxHeight: place.maxHeight }
+              : { left: 0, top: 0, visibility: "hidden" }
+          }
+        >
           {options.map((option, index) => (
             <li
               key={option.value}
@@ -169,6 +227,7 @@ export function Picker({
             </li>
           ))}
         </ul>
+        </Portal>
       )}
     </div>
   );

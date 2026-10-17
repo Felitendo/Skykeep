@@ -195,14 +195,15 @@ pub fn text_to_base64(text: &str) -> String {
     B64.encode(gzip(&document_bytes(text)))
 }
 
-/// Encode text the way Apple stores a note's title and snippet: gzipped UTF-8, with no
-/// document wrapper around it.
+/// Encode text the way Apple stores a note's title and snippet: plain UTF-8, base64 — no
+/// compression and no document wrapper.
 ///
-/// The decoder already falls back to this shape on the way in; writing the wrapped form
-/// here instead would put protobuf framing into the title a phone displays.
+/// Measured on a real account: every title and snippet a phone or icloud.com wrote is plain;
+/// every one this app wrote gzipped showed on icloud.com as the gzip's bytes — "▒▒▒KNU(…" —
+/// in the note list. Writing the wrapped form would put protobuf framing there instead.
 #[must_use]
 pub fn bare_text_to_base64(text: &str) -> String {
-    B64.encode(gzip(text.as_bytes()))
+    B64.encode(text.as_bytes())
 }
 
 /// A length-delimited protobuf field: `(tag << 3) | 2`, then the length, then the payload.

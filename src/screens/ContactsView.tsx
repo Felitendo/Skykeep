@@ -299,7 +299,8 @@ export function ContactsView() {
       ];
     }
     return [
-      { label: "Add to List\u2026", keep: true, run: () => setContactMenu((m) => (m ? { ...m, lists: true } : m)) },
+      // A submenu of the lists, beside the line, as Contacts on the Mac has it.
+      { label: "Add to List", submenu: contactEntries(c, true) },
       ...(openList ? [{ label: `Remove from \u201c${openList.name}\u201d`, run: () => removeFromList(openList, [c.guid]) }] : []),
       null,
       { label: "Edit Contact", run: () => { setOpenGuid(c.guid); setDraft({ ...c }); } },

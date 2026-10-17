@@ -1,5 +1,5 @@
 import { Notice } from "../../components/Notice";
-import { Portal } from "../../components/Portal";
+import { inMenu, Portal } from "../../components/Portal";
 import { TimeField } from "../../components/TimeField";
 import { Search } from "lucide-react";
 import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -1762,7 +1762,7 @@ function EventPopover({
       }
     };
     const onDown = (e: MouseEvent) => {
-      if (!box.current || box.current.contains(e.target as Node)) return;
+      if (!box.current || box.current.contains(e.target as Node) || inMenu(e.target)) return;
       // A press on the event this is open for is not a press elsewhere: it keeps it open.
       if (draft.guid && (e.target as HTMLElement).closest?.(`[data-event="${CSS.escape(draft.guid)}"]`)) return;
       onClose();

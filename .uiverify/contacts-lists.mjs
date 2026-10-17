@@ -34,7 +34,8 @@ check(JSON.stringify(await people()) === JSON.stringify(["Amma"]), "a list shows
 // Add by the right-click menu, a step into its lists.
 await row("All Contacts").locator(".notes-folder").click();
 await page.locator(".contact-row", { hasText: "Zoya Ahuja" }).click({ button: "right" });
-await page.getByRole("menuitem", { name: "Add to List…" }).click();
+// "Add to List" opens its lists beside it, as a Mac submenu does.
+await page.getByRole("menuitem", { name: "Add to List" }).hover();
 await page.getByRole("menuitem", { name: "Family" }).click();
 await page.waitForTimeout(quick);
 check((await count("Family")) === 2, "added by menu, the count moves at once");

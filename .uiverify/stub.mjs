@@ -272,6 +272,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
         case "drive_children": return !driveFixture ? [] : driveItems;
+        case "drive_recents": {
+          if (!driveFixture) return [];
+          const now = Math.floor(Date.now() / 1000);
+          const f = (id, name, ext, opened) => ({ drivewsid: `FILE::r${id}`, parentId: "FOLDER::x", name, extension: ext, kind: "FILE",
+            size: 34145, childCount: null, createdAt: now - 9e6, modifiedAt: now - 9e6, etag: "e", openedAt: opened });
+          return [f(1, "Invoice-0001", "pdf", now - 600), f(2, "Boarding pass", "pdf", now - 86400 - 3600), f(3, "Lease", "pdf", now - 40 * 86400)];
+        }
         case "drive_trash": return !driveFixture ? [] : (window.__trash ??= [
           { drivewsid: "FILE::t1", parentId: null, name: "Old notes", extension: "pdf", kind: "FILE",
             size: 177000, childCount: null, createdAt: 1786000000, modifiedAt: 1786000000, etag: "t1",
