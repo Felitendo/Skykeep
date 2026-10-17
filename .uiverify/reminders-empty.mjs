@@ -31,7 +31,14 @@ const empty = await p2.evaluate(() => [...document.querySelectorAll(".rx-section
   const next = h.nextElementSibling;
   return !next || next.querySelectorAll(".rx-row").length === 0;
 }).map((h) => h.textContent.trim()));
-const pass2 = empty.length === 0;
+const tonight = await p2.evaluate(() => {
+  const h = [...document.querySelectorAll(".rx-section")].find((x) => x.textContent.trim() === "Tonight");
+  return h ? [...h.nextElementSibling.querySelectorAll(".rx-row")].map((r) => r.querySelector(".rx-meta, .rx-due, .rx-sub")?.textContent ?? r.textContent) : [];
+});
+const times = tonight.map((t) => t.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i)).filter(Boolean).map((m) => ((+m[1] % 12) + (/p/i.test(m[3]) ? 12 : 0)) * 60 + +m[2]);
+const ordered = times.every((t, i) => i === 0 || times[i - 1] <= t);
+console.log(ordered ? `PASS Tonight runs in time order  ${JSON.stringify(times)}` : `FAIL Tonight out of order ${JSON.stringify(times)}`);
+const pass2 = empty.length === 0 && ordered;
 console.log(pass2 ? "PASS a Today with reminders shows no empty headings" : `FAIL empty headings: ${JSON.stringify(empty)}`);
 await b.close();
 process.exitCode = pass && pass2 ? 0 : 1;

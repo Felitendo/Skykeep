@@ -657,6 +657,12 @@ export function RemindersView() {
         const hour = new Date(due * 1000).getHours();
         buckets[hour < 12 ? 1 : hour < 17 ? 2 : 3].rows.push(row);
       }
+      // Each part of the day in time order, as Today reads; the list's own order put 9:30
+      // above 8:30. A subtask keeps its place under its parent.
+      for (const b of buckets.slice(1)) {
+        if (b.rows.some((r) => r.depth > 0)) continue;
+        b.rows.sort((x, y) => (x.reminder.dueAt ?? 0) - (y.reminder.dueAt ?? 0));
+      }
       return buckets
         .filter((b) => b.rows.length > 0)
         // The buckets are all today, so a row under one needs only its time. The loose rows
