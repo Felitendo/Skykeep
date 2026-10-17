@@ -365,4 +365,10 @@ pub const MIGRATIONS: &[&str] = &[
     ) STRICT;
     UPDATE sync_state SET token = NULL WHERE service = 'reminders';
     "#,
+    // All-day reminders: Apple's `AllDay`, so a reminder due on a day shows as that day and
+    // not as midnight. The position is forgotten so the next pass reads it on every reminder.
+    r#"
+    ALTER TABLE reminders ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0;
+    UPDATE sync_state SET token = NULL WHERE service = 'reminders';
+    "#,
 ];

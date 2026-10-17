@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             raw: Some("z".repeat(5_000)),
             timezone: None,
             section_guid: None,
+            all_day: false,
         })
         .collect();
     let t = Instant::now();

@@ -796,7 +796,8 @@ async fn reminder_edit(
     // The edit is already on Apple by now. If the alert fails, the library is still re-read
     // before saying so: returning early left the old date on screen though Apple had the new
     // one, and the next edit was made against a reminder that was not there any more.
-    let alarm = match edit.due_at {
+    // An all-day reminder rings no alarm, as on the phone.
+    let alarm = match edit.due_at.filter(|_| !edit.all_day.unwrap_or(false)) {
         Some(due) => {
             let zone = jiff::tz::TimeZone::system();
             quince_icloud::reminders::set_alarm_cloudkit(

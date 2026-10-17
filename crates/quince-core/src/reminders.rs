@@ -176,6 +176,10 @@ pub struct Reminder {
     /// file, never from the reminder — Apple does not record it on the reminder at all.
     #[serde(default)]
     pub section_guid: Option<String>,
+    /// Due on a day, not at a time — Apple's `AllDay`. Its `DueDate` is that day's midnight,
+    /// and it rings no alarm.
+    #[serde(default)]
+    pub all_day: bool,
 }
 
 /// What every entry in the sidebar is holding.
@@ -454,7 +458,7 @@ impl Library {
         let mut stmt = self.conn.prepare(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
-                    r.etag, r.timezone, r.section_guid
+                    r.etag, r.timezone, r.section_guid, r.all_day
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.due_at IS NOT NULL
@@ -479,6 +483,7 @@ impl Library {
                 raw: None,
                 timezone: row.get(12)?,
                 section_guid: row.get(13)?,
+                all_day: row.get::<_, i64>(14)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -554,7 +559,7 @@ impl Library {
         let sql = format!(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
                     r.priority, r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval,
-                    r.etag, r.timezone, r.section_guid
+                    r.etag, r.timezone, r.section_guid, r.all_day
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND {clause}
@@ -579,6 +584,7 @@ impl Library {
                 raw: None,
                 timezone: row.get(12)?,
                 section_guid: row.get(13)?,
+                all_day: row.get::<_, i64>(14)? != 0,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -685,8 +691,8 @@ impl Library {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminders (guid, list_guid, title, notes, due_at, completed_at,
                                         priority, flagged, parent_guid, recur_frequency,
-                                        recur_interval, etag, raw, timezone, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                                        recur_interval, etag, raw, timezone, updated_at, all_day)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                  ON CONFLICT(guid) DO UPDATE SET
                    list_guid = excluded.list_guid, title = excluded.title,
                    notes = excluded.notes, due_at = excluded.due_at,
@@ -696,6 +702,7 @@ impl Library {
                    recur_interval = excluded.recur_interval,
                    etag = excluded.etag, raw = excluded.raw,
                    timezone = excluded.timezone,
+                   all_day = excluded.all_day,
                    updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -715,7 +722,8 @@ impl Library {
                     r.etag,
                     r.raw,
                     r.timezone,
-                    stamp
+                    stamp,
+                    i64::from(r.all_day)
                 ])?;
             }
         }
@@ -798,7 +806,7 @@ impl Library {
         let mut stmt = self.conn.prepare(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at, r.priority,
                     r.flagged, r.parent_guid, r.recur_frequency, r.recur_interval, r.etag,
-                    r.timezone, r.section_guid
+                    r.timezone, r.section_guid, r.all_day
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.completed_at IS NULL
@@ -821,6 +829,7 @@ impl Library {
                 raw: None,
                 timezone: row.get(12)?,
                 section_guid: row.get(13)?,
+                all_day: row.get::<_, i64>(14)? != 0,
             })
         })?;
         let mut found = Vec::new();
@@ -844,7 +853,7 @@ impl Library {
             .find(|l| l.guid == list_guid);
         let mut stmt = self.conn.prepare(
             "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
-                    parent_guid, recur_frequency, recur_interval, etag, timezone, section_guid,
+                    parent_guid, recur_frequency, recur_interval, etag, timezone, section_guid, all_day,
                     CASE WHEN json_valid(raw)
                          THEN json_extract(raw, '$.fields.CreationDate.value') END
              FROM reminders
@@ -868,8 +877,9 @@ impl Library {
                     raw: None,
                     timezone: row.get(12)?,
                     section_guid: row.get(13)?,
+                    all_day: row.get::<_, i64>(14)? != 0,
                 },
-                row.get::<_, Option<i64>>(14).unwrap_or(None),
+                row.get::<_, Option<i64>>(15).unwrap_or(None),
             ))
         })?;
         let mut found = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -915,6 +925,7 @@ mod tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -1105,6 +1116,7 @@ mod smart_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -1249,6 +1261,7 @@ mod count_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -1347,6 +1360,7 @@ mod payload_tests {
             raw: Some(apples_record),
             timezone: None,
             section_guid: None,
+            all_day: false,
         };
 
         let sent = serde_json::to_string(&reminder).unwrap();
@@ -1383,6 +1397,7 @@ mod payload_tests {
                 raw: Some("y".repeat(5_000)),
                 timezone: None,
                 section_guid: None,
+                all_day: false,
             })
             .collect();
         let bytes = serde_json::to_vec(&many).unwrap().len();
@@ -1414,6 +1429,7 @@ mod raw_column_tests {
             raw: Some("z".repeat(5_000)),
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -1497,6 +1513,7 @@ mod bound_tests {
                 raw: None,
                 timezone: None,
                 section_guid: None,
+                all_day: false,
             })
             .collect();
         lib.put_reminders(&rows).unwrap();
@@ -1586,6 +1603,7 @@ mod recurrence_daylight_tests {
             raw: None,
             timezone: Some(zone.into()),
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -1666,6 +1684,7 @@ mod section_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -1798,6 +1817,7 @@ mod search_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -1875,6 +1895,7 @@ mod list_sorting_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 

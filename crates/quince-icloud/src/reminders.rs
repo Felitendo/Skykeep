@@ -60,6 +60,7 @@ fn reminder_from(v: &Value) -> Option<Reminder> {
         raw: serde_json::to_string(v).ok(),
         timezone: None,
         section_guid: None,
+        all_day: v.get("isAllDay").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -453,6 +454,8 @@ fn reminder_from_record(record: &Value) -> Option<Reminder> {
         // moves an hour on each of the two days a year a clock changes.
         timezone: field::string(record, "TimeZone"),
         section_guid: None,
+        // `NUMBER_INT64` 0 or 1 on every dated reminder on a real account.
+        all_day: field::flag(record, "AllDay"),
     })
 }
 
@@ -1363,6 +1366,10 @@ pub struct ReminderEdit {
     pub notes: Option<Option<String>>,
     /// Unix seconds. `Some(None)` clears the due date.
     pub due_at: Option<Option<i64>>,
+    /// With a due date: whether it is a day rather than a time. A day is sent as that day's
+    /// midnight in UTC, as Apple's clients read an all-day date back.
+    #[serde(default)]
+    pub all_day: Option<bool>,
     pub flagged: Option<bool>,
     pub completed: Option<bool>,
     /// Apple's scale, shared with EventKit: 0 none, 1 high, 5 medium, 9 low.
@@ -1455,6 +1462,21 @@ pub async fn edit_cloudkit(
     }
 
     if let Some(due) = &edit.due_at {
+        // Day or time, said every time a date is set: a time given to a reminder the phone
+        // made all-day kept `AllDay` 1 and still showed as a day. A timed date carries the
+        // zone it was set in, as every dated reminder on a real account does.
+        let all_day = edit.all_day.unwrap_or(false) && due.is_some();
+        fields.insert(
+            "AllDay".into(),
+            serde_json::json!({ "type": "NUMBER_INT64", "value": i64::from(all_day) }),
+        );
+        if due.is_some() && !all_day {
+            let zone = jiff::tz::TimeZone::system();
+            fields.insert(
+                "TimeZone".into(),
+                serde_json::json!({ "type": "STRING", "value": zone.iana_name().unwrap_or("UTC") }),
+            );
+        }
         fields.insert(
             "DueDate".into(),
             match due {
@@ -2103,6 +2125,7 @@ mod write_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         };
         delete_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &reminder)
             .await
@@ -2195,6 +2218,7 @@ mod edit_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -2320,6 +2344,48 @@ mod edit_tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&modify.body).unwrap();
         assert_eq!(body["operations"][0]["record"]["recordChangeTag"], "fresh");
+    }
+
+    /// A day is a day: `AllDay` 1 and no zone. A time says it is a time and carries its zone —
+    /// otherwise a time given to a reminder the phone made all-day still showed as a day.
+    #[tokio::test]
+    async fn a_date_says_whether_it_is_a_day_or_a_time() {
+        let day = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &day.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                due_at: Some(Some(1_757_030_400)),
+                all_day: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let fields = sent(&day).await;
+        assert_eq!(fields["AllDay"]["value"], 1);
+        assert!(fields.get("TimeZone").is_none());
+
+        let time = accepting().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &time.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                due_at: Some(Some(1_757_000_000)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let fields = sent(&time).await;
+        assert_eq!(fields["AllDay"]["value"], 0);
+        assert!(fields["TimeZone"]["value"]
+            .as_str()
+            .is_some_and(|z| !z.is_empty()));
     }
 
     /// Seconds in, milliseconds out — a due date landing on the wrong day is worse than none.
@@ -2684,6 +2750,7 @@ mod recurring_tick_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -2883,6 +2950,7 @@ mod priority_and_move_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 
@@ -3064,6 +3132,7 @@ mod tombstone_tests {
                 raw: None,
                 timezone: None,
                 section_guid: None,
+                all_day: false,
             }])
             .unwrap();
         library
@@ -3200,6 +3269,7 @@ mod recurrence_write_tests {
             raw: None,
             timezone: None,
             section_guid: None,
+            all_day: false,
         }
     }
 

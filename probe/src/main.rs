@@ -1370,6 +1370,7 @@ async fn main() -> Result<()> {
                             raw: None,
                             timezone: None,
                             section_guid: None,
+                            all_day: false,
                         };
 
                         // Subtasks: nest one reminder under another, read it back, free it.
