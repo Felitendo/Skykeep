@@ -409,13 +409,19 @@ export function RemindersView() {
       .reverse()
       .find((x) => !x.parentGuid);
     if (!above) return Promise.resolve(null);
-    return write(r, () =>
-      api.reminderEdit(r.guid, r.listGuid, { parentGuid: above.guid })
+    return write(
+      r,
+      () => api.reminderEdit(r.guid, r.listGuid, { parentGuid: above.guid }),
+      patch(r.guid, { parentGuid: above.guid }),
     );
   };
 
   const outdent = (r: Reminder) =>
-    write(r, () => api.reminderEdit(r.guid, r.listGuid, { parentGuid: null }));
+    write(
+      r,
+      () => api.reminderEdit(r.guid, r.listGuid, { parentGuid: null }),
+      patch(r.guid, { parentGuid: null }),
+    );
 
   const moveToList = (r: Reminder, listGuid: string) =>
     listGuid === r.listGuid
@@ -1102,10 +1108,20 @@ export function RemindersView() {
                           disabled={busy.has(reminder.guid)}
                           onBlur={(e) => void rename(reminder, e.target.value)}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") e.currentTarget.blur();
-                            if (e.key === "Escape") {
+                            // As in Reminders on a Mac: Return finishes it and starts the next,
+                            // Tab tucks it under the one above, Shift-Tab brings it back out.
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              e.currentTarget.blur();
+                              window.setTimeout(() => document.querySelector<HTMLInputElement>(".rx-add input")?.focus(), 0);
+                            } else if (e.key === "Escape") {
                               e.currentTarget.value = reminder.title;
                               e.currentTarget.blur();
+                            } else if (e.key === "Tab" && inList) {
+                              e.preventDefault();
+                              const typed = e.currentTarget.value;
+                              void rename(reminder, typed);
+                              void (e.shiftKey ? (reminder.parentGuid ? outdent(reminder) : null) : (reminder.parentGuid ? null : indent(reminder)));
                             }
                           }}
                         />

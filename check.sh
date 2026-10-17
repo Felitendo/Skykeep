@@ -59,6 +59,7 @@ step "drive delete"      node .uiverify/drive-delete.mjs
 step "notes folders"     node .uiverify/notes-folders.mjs
 step "list info"         node .uiverify/reminders-list-info.mjs
 step "reminder date"     node .uiverify/reminders-date.mjs
+step "reminder keys"     node .uiverify/reminders-keys.mjs
 step "contacts order"    node .uiverify/contacts-order.mjs
 step "calendar alerts"   node .uiverify/calendar-alerts.mjs
 step "calendar repeat"   node .uiverify/calendar-repeat.mjs
