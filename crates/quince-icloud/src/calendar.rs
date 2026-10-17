@@ -313,6 +313,32 @@ fn minutes_of(m: &Value) -> Option<i64> {
     Some(if before { total } else { -total })
 }
 
+/// Which events a change to one occurrence of a repeating event is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Scope {
+    /// This one alone; the rest of the series as it was.
+    This,
+}
+
+/// Whether `guid` names one occurrence of a repeating event rather than an event: Apple gives
+/// each occurrence its series' id and its UTC start, `<series>__20261102T073300Z`.
+#[must_use]
+pub fn is_occurrence(guid: &str) -> bool {
+    guid.contains("__")
+}
+
+/// How an event repeats, in icloud.com's words: `freq` is `daily`, `weekly`, `monthly` or
+/// `yearly`; every `interval` of them; ending after `count` times, or never.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventRepeat {
+    pub freq: String,
+    pub interval: i64,
+    #[serde(default)]
+    pub count: Option<i64>,
+}
+
 /// Apple's calendar service.
 pub struct CalendarClient<'a> {
     http: &'a reqwest::Client,
@@ -369,6 +395,31 @@ impl<'a> CalendarClient<'a> {
         ctag: Option<&str>,
         alerts: Option<&[i64]>,
     ) -> Result<Snapshot> {
+        self.put_event_full(event, ctag, alerts, None, None).await
+    }
+
+    /// [`Self::put_event_with_alerts`], and when `repeat` is given, the event's repeat set
+    /// (`Some(Some(..))`) or cleared (`Some(None)`) as icloud.com writes it: a `Recurrence`
+    /// object named `<event>*MME-RID` beside the event, the event naming it. With `None` the
+    /// repeat Apple holds goes back as it is, object and all.
+    pub async fn put_event_full(
+        &self,
+        event: &Event,
+        ctag: Option<&str>,
+        alerts: Option<&[i64]>,
+        repeat: Option<Option<&EventRepeat>>,
+        scope: Option<Scope>,
+    ) -> Result<Snapshot> {
+        // One occurrence of a repeating event, sent as though it were an event of its own,
+        // made Apple take it as the whole series — measured: a weekly event three times over
+        // came back one event, repeating no more. An occurrence is changed only with its
+        // scope said, as icloud.com asks "this event or all events?".
+        let occurrence = is_occurrence(&event.guid);
+        if occurrence && scope.is_none() {
+            return Err(Error::Refused(
+                "This is one occurrence of a repeating event. Say whether the change is for this event alone.".into(),
+            ));
+        }
         if event.calendar_guid.trim().is_empty() {
             return Err(Error::Protocol(
                 "an event has to go in a calendar, and this account has none yet".into(),
@@ -428,7 +479,49 @@ impl<'a> CalendarClient<'a> {
         if !alarms.is_empty() {
             body["Alarm"] = Value::Array(alarms);
         }
-        let path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
+        let held_repeat: Vec<Value> = detail
+            .as_ref()
+            .and_then(|d| d.get("Recurrence"))
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .filter(|r| r.get("pGuid").and_then(Value::as_str) == Some(event.guid.as_str()))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        match repeat {
+            None => {
+                if !held_repeat.is_empty() {
+                    body["Recurrence"] = Value::Array(held_repeat);
+                }
+            }
+            Some(None) => {
+                body["Event"]["recurrence"] = Value::Null;
+            }
+            Some(Some(rule)) => {
+                let guid = format!("{}*MME-RID", event.guid);
+                let mut object = serde_json::json!({
+                    "guid": guid,
+                    "pGuid": event.guid,
+                    "freq": rule.freq,
+                    "interval": rule.interval.max(1),
+                });
+                if let Some(count) = rule.count {
+                    object["count"] = Value::from(count);
+                }
+                body["Recurrence"] = Value::Array(vec![object]);
+                body["Event"]["recurrence"] = Value::String(guid);
+            }
+        }
+        let mut path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
+        if let Some(Scope::This) = scope {
+            // As icloud.com marks "only this event": an exception to the series that had one.
+            body["Event"]["recurrenceException"] = Value::Bool(true);
+            body["Event"]["hadRecurrence"] = Value::Bool(true);
+            body["Event"]["changeRecurring"] = Value::from("this");
+            path.push_str("/this");
+        }
         let answer = self
             .post(&path, &body, &day, &day, event_zone(event).as_deref(), None)
             .await?;
@@ -440,6 +533,22 @@ impl<'a> CalendarClient<'a> {
     /// `etag` is what stops a delete from landing on a version of the event someone changed
     /// on another device in the meantime.
     pub async fn delete_event(&self, event: &Event, ctag: Option<&str>) -> Result<()> {
+        self.delete_event_scoped(event, ctag, None).await
+    }
+
+    /// [`Self::delete_event`], for an occurrence of a repeating event with its scope said:
+    /// `This` removes the one day and leaves the series.
+    pub async fn delete_event_scoped(
+        &self,
+        event: &Event,
+        ctag: Option<&str>,
+        scope: Option<Scope>,
+    ) -> Result<()> {
+        if is_occurrence(&event.guid) && scope.is_none() {
+            return Err(Error::Refused(
+                "This is one occurrence of a repeating event. Say whether to delete this event alone.".into(),
+            ));
+        }
         if event.calendar_guid.trim().is_empty() {
             return Err(Error::Protocol("that event names no calendar".into()));
         }
@@ -453,7 +562,10 @@ impl<'a> CalendarClient<'a> {
             "Event": { "guid": event.guid, "pGuid": event.calendar_guid, "etag": event.etag },
             "ClientState": client_state(&event.calendar_guid, ctag),
         });
-        let path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
+        let mut path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
+        if let Some(Scope::This) = scope {
+            path.push_str("/this");
+        }
         match self
             .post(
                 &path,
@@ -1118,6 +1230,46 @@ mod write_tests {
         let body: Value = serde_json::from_slice(&request(&server).await.body).unwrap();
         assert_eq!(body["Event"]["title"], "Dentist");
         assert_eq!(body["Event"]["alarms"], serde_json::json!([]));
+    }
+
+    /// One occurrence of a repeating event, sent as an event, collapsed the series on a real
+    /// account. Without its scope it is refused before anything is sent.
+    #[tokio::test]
+    async fn an_occurrence_is_not_saved_or_deleted_without_its_scope() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        let mut one = event();
+        one.guid = "SERIES__20261102T073300Z".into();
+        assert!(client.put_event(&one, None).await.is_err());
+        assert!(client.delete_event(&one, None).await.is_err());
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "nothing sent"
+        );
+    }
+
+    /// With "this event" said, it goes to the occurrence's own path, marked as an exception.
+    #[tokio::test]
+    async fn this_occurrence_alone_goes_to_its_this_path() {
+        let server = server().await;
+        let http = reqwest::Client::new();
+        let client = CalendarClient::new(&http, &server.uri(), vec![]);
+        let mut one = event();
+        one.guid = "SERIES__20261102T073300Z".into();
+        client
+            .put_event_full(&one, None, None, None, Some(Scope::This))
+            .await
+            .unwrap();
+        let sent = request(&server).await;
+        assert!(
+            sent.url.path().ends_with("/SERIES__20261102T073300Z/this"),
+            "{}",
+            sent.url.path()
+        );
+        let body: Value = serde_json::from_slice(&sent.body).unwrap();
+        assert_eq!(body["Event"]["recurrenceException"], true);
+        assert_eq!(body["Event"]["changeRecurring"], "this");
     }
 
     /// Apple failing to say what an event holds is not "a new event": building the save

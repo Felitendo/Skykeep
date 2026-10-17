@@ -373,6 +373,9 @@ struct EventDraft {
     /// the event's alerts are left as Apple holds them.
     #[serde(default)]
     alerts: Option<Vec<i64>>,
+    /// For one occurrence of a repeating event: which events the change is for.
+    #[serde(default)]
+    scope: Option<quince_icloud::calendar::Scope>,
 }
 
 /// Everything an event write needs from the session, with the auth lock released first.
@@ -460,6 +463,7 @@ async fn event_save(
         ctag.as_deref(),
         &event,
         draft.alerts.as_deref(),
+        draft.scope,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -469,7 +473,12 @@ async fn event_save(
 }
 
 #[tauri::command]
-async fn event_delete(guid: String, auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<()> {
+async fn event_delete(
+    guid: String,
+    scope: Option<quince_icloud::calendar::Scope>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
     let (http, root, params) = calendar_context(&auth).await?;
     let event = {
         let library = data.0.lock().await;
@@ -480,7 +489,7 @@ async fn event_delete(guid: String, auth: State<'_, Auth>, data: State<'_, Data>
     };
     let ctag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &event.calendar_guid);
     quince_icloud::calendar::CalendarClient::new(&http, &root, params)
-        .delete_event(&event, ctag.as_deref())
+        .delete_event_scoped(&event, ctag.as_deref(), scope)
         .await
         .map_err(|e| e.to_string())?;
     let mut library = data.0.lock().await;
