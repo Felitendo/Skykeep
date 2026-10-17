@@ -1240,6 +1240,7 @@ async fn main() -> Result<()> {
                         modified_at: None,
                         editable: true,
                         etag: None,
+                        runs: None,
                     };
                     match quince_icloud::notes::edit_cloudkit(
                         &http,

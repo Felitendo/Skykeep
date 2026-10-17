@@ -245,8 +245,12 @@ export function DriveView() {
   /** What is free, as icloud.com says it under a folder's name: "5.18 GB available". */
   const [available, setAvailable] = useState<string | null>(null);
   useEffect(() => {
+    // Shown only when Apple says: an empty or odd answer leaves the count on its own.
     api.storageInfo().then(
-      ({ usedBytes, totalBytes }) => setAvailable(decimalSize(Math.max(0, totalBytes - usedBytes))),
+      (s) => setAvailable(
+        s && Number.isFinite(s.totalBytes) && Number.isFinite(s.usedBytes)
+          ? decimalSize(Math.max(0, s.totalBytes - s.usedBytes))
+          : null),
       () => setAvailable(null),
     );
   }, []);

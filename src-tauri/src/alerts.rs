@@ -202,79 +202,6 @@ fn show(app: AppHandle, due: DueAlarm) {
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use quince_core::alarms::{Alarm, AlarmTrigger};
-    use quince_core::reminders::{Reminder, ReminderList};
-
-    fn library_with(fires: &[(&str, i64)]) -> quince_core::Library {
-        let dir = tempfile::tempdir().unwrap();
-        let mut lib = quince_core::Library::open(&dir.keep()).unwrap();
-        lib.put_reminder_lists(&[ReminderList {
-            guid: "L".into(),
-            title: "Home".into(),
-            enabled: true,
-            ..Default::default()
-        }])
-        .unwrap();
-        let mut reminders = Vec::new();
-        let mut alarms = Vec::new();
-        let mut triggers = Vec::new();
-        for (id, at) in fires {
-            reminders.push(Reminder {
-                guid: format!("R{id}"),
-                list_guid: "L".into(),
-                title: format!("Do {id}"),
-                ..Default::default()
-            });
-            alarms.push(Alarm {
-                id: format!("A{id}"),
-                reminder_guid: format!("R{id}"),
-                trigger_id: format!("T{id}"),
-                acknowledged_at: None,
-            });
-            triggers.push(AlarmTrigger {
-                id: format!("T{id}"),
-                fires_at: *at,
-            });
-        }
-        lib.put_reminders(&reminders).unwrap();
-        lib.put_alarms(&alarms, &triggers, &[], true).unwrap();
-        lib
-    }
-
-    #[test]
-    fn a_due_alert_is_taken_once_and_the_next_is_named() {
-        let mut lib = library_with(&[("now", 1_000_000), ("later", 1_003_600)]);
-        let (ring, next) = take_due(&mut lib, 1_000_000);
-        assert_eq!(
-            ring.iter().map(|d| d.title.as_str()).collect::<Vec<_>>(),
-            ["Do now"]
-        );
-        assert_eq!(next, Some(1_003_600));
-        // A second wake at the same moment — resume and a pass together — rings nothing.
-        let (again, _) = take_due(&mut lib, 1_000_000);
-        assert!(again.is_empty());
-    }
-
-    #[test]
-    fn missed_while_away_rings_once_but_long_gone_stays_quiet() {
-        let now = 10_000_000;
-        let mut lib = library_with(&[
-            ("an hour ago", now - 3_600),
-            ("last week", now - 7 * 86_400),
-        ]);
-        let (ring, _) = take_due(&mut lib, now);
-        assert_eq!(
-            ring.iter().map(|d| d.title.as_str()).collect::<Vec<_>>(),
-            ["Do an hour ago"]
-        );
-        // And the old one is recorded, not left to surface later.
-        assert!(lib.due_alarms(now).unwrap().is_empty());
-    }
-}
-
 /// Calendar alerts on the desktop, rung as the phone rings them.
 ///
 /// Apple keeps an event's alerts beside it, read one event at a time, so this looks only at
@@ -401,4 +328,77 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quince_core::alarms::{Alarm, AlarmTrigger};
+    use quince_core::reminders::{Reminder, ReminderList};
+
+    fn library_with(fires: &[(&str, i64)]) -> quince_core::Library {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lib = quince_core::Library::open(&dir.keep()).unwrap();
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "L".into(),
+            title: "Home".into(),
+            enabled: true,
+            ..Default::default()
+        }])
+        .unwrap();
+        let mut reminders = Vec::new();
+        let mut alarms = Vec::new();
+        let mut triggers = Vec::new();
+        for (id, at) in fires {
+            reminders.push(Reminder {
+                guid: format!("R{id}"),
+                list_guid: "L".into(),
+                title: format!("Do {id}"),
+                ..Default::default()
+            });
+            alarms.push(Alarm {
+                id: format!("A{id}"),
+                reminder_guid: format!("R{id}"),
+                trigger_id: format!("T{id}"),
+                acknowledged_at: None,
+            });
+            triggers.push(AlarmTrigger {
+                id: format!("T{id}"),
+                fires_at: *at,
+            });
+        }
+        lib.put_reminders(&reminders).unwrap();
+        lib.put_alarms(&alarms, &triggers, &[], true).unwrap();
+        lib
+    }
+
+    #[test]
+    fn a_due_alert_is_taken_once_and_the_next_is_named() {
+        let mut lib = library_with(&[("now", 1_000_000), ("later", 1_003_600)]);
+        let (ring, next) = take_due(&mut lib, 1_000_000);
+        assert_eq!(
+            ring.iter().map(|d| d.title.as_str()).collect::<Vec<_>>(),
+            ["Do now"]
+        );
+        assert_eq!(next, Some(1_003_600));
+        // A second wake at the same moment — resume and a pass together — rings nothing.
+        let (again, _) = take_due(&mut lib, 1_000_000);
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn missed_while_away_rings_once_but_long_gone_stays_quiet() {
+        let now = 10_000_000;
+        let mut lib = library_with(&[
+            ("an hour ago", now - 3_600),
+            ("last week", now - 7 * 86_400),
+        ]);
+        let (ring, _) = take_due(&mut lib, now);
+        assert_eq!(
+            ring.iter().map(|d| d.title.as_str()).collect::<Vec<_>>(),
+            ["Do an hour ago"]
+        );
+        // And the old one is recorded, not left to surface later.
+        assert!(lib.due_alarms(now).unwrap().is_empty());
+    }
 }

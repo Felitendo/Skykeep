@@ -15,6 +15,6 @@ async fn main() -> Result<()> {
         .await?;
     println!("{}", r.status());
     let t = r.text().await?;
-    println!("{}", &t.chars().take(900).collect::<String>());
+    println!("{}", t.chars().take(900).collect::<String>());
     Ok(())
 }
