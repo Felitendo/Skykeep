@@ -4,6 +4,7 @@ import { TimeField } from "../../components/TimeField";
 import { Search } from "lucide-react";
 import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  type EventRepeat,
   api,
   defaultCalendar,
   messageOf,
@@ -31,6 +32,24 @@ import {
 } from "./model";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+const REPEATS = [
+  { value: "never", label: "Never" },
+  { value: "daily", label: "Every Day" },
+  { value: "weekly", label: "Every Week" },
+  { value: "monthly", label: "Every Month" },
+  { value: "yearly", label: "Every Year" },
+];
+function repeatKey(r: EventRepeat | null): string {
+  if (!r) return "never";
+  return r.interval === 1 && r.count === null ? r.freq : "custom";
+}
+function repeatText(r: EventRepeat | null): string {
+  if (!r) return "Never";
+  const unit = { daily: "day", weekly: "week", monthly: "month", yearly: "year" }[r.freq];
+  const every = r.interval === 1 ? `Every ${unit}` : `Every ${r.interval} ${unit}s`;
+  return r.count ? `${every}, ${r.count} times` : every;
+}
 
 /** icloud.com's alert presets, minutes before the start; an all-day event's are by the day. */
 const ALERTS = [
@@ -113,6 +132,9 @@ type Draft = {
   alerts?: number[];
   /** Whether the alerts were changed here, and so are to be written. */
   alertsChanged?: boolean;
+  /** How it repeats; `undefined` until read from Apple, `null` for never. */
+  repeat?: EventRepeat | null;
+  repeatChanged?: boolean;
 };
 
 /**
@@ -390,7 +412,8 @@ export function CalendarView() {
   const save = useCallback(
     async (d: Draft) => {
       const occurrence = Boolean(d.guid && d.guid.includes("__"));
-      const scope = occurrence ? await whichEvents("change") : null;
+      // A repeat belongs to the series, so changing it is a change to all of it.
+      const scope = occurrence ? (d.repeatChanged ? "all" : await whichEvents("change")) : null;
       if (occurrence && !scope) return false;
       return write(async () => {
         await api.eventSave({
@@ -406,6 +429,7 @@ export function CalendarView() {
           notes: d.notes.trim() || null,
           url: d.url?.trim() || null,
           ...(d.alertsChanged && d.alerts ? { alerts: d.alerts } : {}),
+          ...(d.repeatChanged ? { repeat: d.repeat ?? null, repeatChanged: true } : {}),
         });
       }, (rows) => {
         // Shown where it now sits at once; a new one is drawn by its draft until Apple names it.
@@ -457,12 +481,16 @@ export function CalendarView() {
   }, [undo]);
 
   const openDraft = (d: Draft, at: Anchor) => {
-    setDraft(d.guid ? d : { ...d, alerts: [] });
+    setDraft(d.guid ? d : { ...d, alerts: [], repeat: null });
     setAnchor(at);
     const guid = d.guid;
     if (guid && !guid.startsWith("quince:")) {
       api.eventAlerts(guid).then(
         (alerts) => setDraft((cur) => (cur && cur.guid === guid && !cur.alertsChanged ? { ...cur, alerts } : cur)),
+        () => {},
+      );
+      api.eventRepeat(guid).then(
+        (repeat) => setDraft((cur) => (cur && cur.guid === guid && !cur.repeatChanged ? { ...cur, repeat } : cur)),
         () => {},
       );
     }
@@ -1852,6 +1880,24 @@ function EventPopover({
             </div>
           );
         })}
+        {/* Repeat, icloud.com's simple choices; a schedule it has no name for is shown as is. */}
+        <div className="cx-pop-row cal-field">
+          <span>repeat</span>
+          <Picker
+            label="Repeat"
+            value={draft.repeat === undefined ? "loading" : repeatKey(draft.repeat)}
+            disabled={!editable || draft.repeat === undefined}
+            onChange={(v) => set({ repeat: v === "never" ? null : { freq: v as EventRepeat["freq"], interval: 1, count: null }, repeatChanged: true })}
+            options={
+              draft.repeat === undefined
+                ? [{ value: "loading", label: "…" }]
+                : [
+                    ...REPEATS,
+                    ...(repeatKey(draft.repeat) === "custom" ? [{ value: "custom", label: repeatText(draft.repeat) }] : []),
+                  ]
+            }
+          />
+        </div>
       </div>
       <input
         className="cx-pop-line"

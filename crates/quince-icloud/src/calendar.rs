@@ -669,6 +669,27 @@ impl<'a> CalendarClient<'a> {
             .and_then(event_of))
     }
 
+    /// How an event repeats, as Apple holds it, or `None` for a one-off.
+    pub async fn repeat_of(&self, event: &Event) -> Result<Option<EventRepeat>> {
+        let day = day_of(event.starts_at, event_zone(event).as_deref());
+        let Some(body) = self.event_detail_body(event, &day).await? else {
+            return Ok(None);
+        };
+        Ok(body
+            .get("Recurrence")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|r| belongs_to(r, &event.guid))
+            .and_then(|r| {
+                Some(EventRepeat {
+                    freq: r.get("freq")?.as_str()?.to_string(),
+                    interval: r.get("interval").and_then(Value::as_i64).unwrap_or(1),
+                    count: r.get("count").and_then(Value::as_i64),
+                })
+            }))
+    }
+
     /// An event's alerts as Apple holds them: minutes before its start, `0` at its time.
     pub async fn alerts(&self, event: &Event) -> Result<Vec<i64>> {
         let day = day_of(event.starts_at, event_zone(event).as_deref());

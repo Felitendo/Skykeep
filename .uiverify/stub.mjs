@@ -144,6 +144,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             .sort((a, b) => a.startsAt - b.startsAt);
         }
         case "calendar_list": return calendars;
+        case "event_repeat": return String(args.guid).startsWith("SERIES__") ? { freq: "weekly", interval: 1, count: null } : null;
         case "event_alerts": return args.guid === "e2" ? [15] : [];
         case "event_save": (window.__eventSaves ??= []).push(args.draft); return "E-new";
         case "event_delete": (window.__eventDeletes ??= []).push(args); return null;

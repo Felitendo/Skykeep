@@ -156,10 +156,11 @@ pub async fn save_event(
     ctag: Option<&str>,
     event: &quince_core::calendar::Event,
 ) -> Result<Vec<quince_core::calendar::Event>> {
-    save_event_with_alerts(http, root, params, ctag, event, None, None).await
+    save_event_with_alerts(http, root, params, ctag, event, None, None, None).await
 }
 
 /// [`save_event`], with the event's alerts set to `alerts` when given.
+#[allow(clippy::too_many_arguments)]
 pub async fn save_event_with_alerts(
     http: &reqwest::Client,
     root: &str,
@@ -167,11 +168,12 @@ pub async fn save_event_with_alerts(
     ctag: Option<&str>,
     event: &quince_core::calendar::Event,
     alerts: Option<&[i64]>,
+    repeat: Option<Option<&crate::calendar::EventRepeat>>,
     scope: Option<crate::calendar::Scope>,
 ) -> Result<Vec<quince_core::calendar::Event>> {
     let client = CalendarClient::new(http, root, params);
     let answer = client
-        .put_event_full(event, ctag, alerts, None, scope)
+        .put_event_full(event, ctag, alerts, repeat, scope)
         .await?;
     // What goes into the library is what Apple holds, never what was sent. Measured: a save
     // to the account answers with an empty list, and storing the sent copy instead kept an

@@ -75,6 +75,7 @@ export const api = {
 
   eventSave: (draft: EventWrite) => invoke<string>("event_save", { draft }),
   eventAlerts: (guid: string) => invoke<number[]>("event_alerts", { guid }),
+  eventRepeat: (guid: string) => invoke<EventRepeat | null>("event_repeat", { guid }),
   eventDelete: (guid: string, scope?: "this" | "all") => invoke<void>("event_delete", { guid, scope: scope ?? null }),
   calendarSync: (from: string, to: string, timezone: string) =>
     invoke<SyncSummary>("calendar_sync", { from, to, timezone }),
@@ -228,9 +229,15 @@ export type EventWrite = {
   /** Set the alerts to exactly these minutes before the start (0 at the time); left out,
    *  the event keeps the alerts Apple holds. */
   alerts?: number[];
+  /** Set the repeat to this (null: never) when `repeatChanged`; otherwise it is left as it is. */
+  repeat?: EventRepeat | null;
+  repeatChanged?: boolean;
   /** For one occurrence of a repeating event: whether the change is for it alone or the series. */
   scope?: "this" | "all";
 };
+
+/** How an event repeats, in icloud.com's words. */
+export type EventRepeat = { freq: "daily" | "weekly" | "monthly" | "yearly"; interval: number; count: number | null };
 
 export type CalendarEvent = {
   guid: string;

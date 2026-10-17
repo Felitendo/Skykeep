@@ -376,6 +376,12 @@ struct EventDraft {
     /// For one occurrence of a repeating event: which events the change is for.
     #[serde(default)]
     scope: Option<quince_icloud::calendar::Scope>,
+    /// Set the repeat to this — `None` for never — when `repeat_changed`; otherwise the event
+    /// keeps the repeat Apple holds.
+    #[serde(default)]
+    repeat: Option<quince_icloud::calendar::EventRepeat>,
+    #[serde(default)]
+    repeat_changed: bool,
 }
 
 /// Everything an event write needs from the session, with the auth lock released first.
@@ -411,6 +417,25 @@ async fn event_alerts(
     let (http, root, params) = calendar_context(&auth).await?;
     quince_icloud::calendar::CalendarClient::new(&http, &root, params)
         .alerts(&event)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// How an event repeats, as Apple holds it.
+#[tauri::command]
+async fn event_repeat(
+    guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Option<quince_icloud::calendar::EventRepeat>> {
+    let event = {
+        let library = data.0.lock().await;
+        library.event(&guid).map_err(|e| e.to_string())?
+    };
+    let Some(event) = event else { return Ok(None) };
+    let (http, root, params) = calendar_context(&auth).await?;
+    quince_icloud::calendar::CalendarClient::new(&http, &root, params)
+        .repeat_of(&event)
         .await
         .map_err(|e| e.to_string())
 }
@@ -463,6 +488,7 @@ async fn event_save(
         ctag.as_deref(),
         &event,
         draft.alerts.as_deref(),
+        draft.repeat_changed.then_some(draft.repeat.as_ref()),
         draft.scope,
     )
     .await
@@ -2449,6 +2475,7 @@ fn main() {
             calendar_events,
             event_save,
             event_alerts,
+            event_repeat,
             event_delete,
             calendar_list,
             calendar_search,
