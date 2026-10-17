@@ -116,7 +116,11 @@ export function ContactsView() {
   const [moreMenu, setMoreMenu] = useState<MenuAt | null>(null);
   /** A contact being deleted while a list is open: out of the list, or gone everywhere? */
   const [deleting, setDeleting] = useState<Contact | null>(null);
-  const [dragging, setDragging] = useState<string | null>(null);
+  /** The people being dragged onto a list — one, or everyone selected. */
+  const [dragging, setDragging] = useState<string[] | null>(null);
+  /** More than one person selected, as Command- and Shift-click select in Contacts. */
+  const [picked, setPicked] = useState<string[]>([]);
+  const [pickMenu, setPickMenu] = useState<MenuAt | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
   /** List writes go to Apple one after another, in the order they were made. */
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -370,6 +374,16 @@ export function ContactsView() {
     () => contacts.find((c) => c.guid === openGuid) ?? null,
     [contacts, openGuid]
   );
+  // Who is still here of those picked — a search or a list change narrows them.
+  const pickedPeople = useMemo(() => sortedContacts(shown.filter((c) => picked.includes(c.guid))), [shown, picked]);
+  const multi = pickedPeople.length > 1;
+  const removeMany = async (people: Contact[]) => {
+    if (!window.confirm(`Delete ${people.length} contacts?\n\nThey will be deleted from Contacts on every device.`)) return;
+    setPicked([]);
+    await write(async () => {
+      for (const c of people) await api.contactDelete(c.guid);
+    });
+  };
 
   return (
     // A contact being written is always what shows; it has its own Cancel.
@@ -405,10 +419,10 @@ export function ContactsView() {
               onDragLeave={() => setDropOn((d) => (d === l.guid ? null : d))}
               onDrop={(e) => {
                 e.preventDefault();
-                const person = dragging;
+                const people = dragging;
                 setDragging(null);
                 setDropOn(null);
-                if (person) addToList(l, [person]);
+                if (people) addToList(l, people);
               }}
             />
           )
@@ -491,7 +505,19 @@ export function ContactsView() {
           />
         )}
 
-        <ul className="contact-rows">
+        <ul
+          className="contact-rows"
+          onKeyDown={(e) => {
+            // Command/Ctrl-A: everyone shown.
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+              e.preventDefault();
+              const everyone = shown.map((c) => c.guid);
+              setPicked(everyone.length > 1 ? everyone : []);
+            } else if (e.key === "Escape" && picked.length) {
+              setPicked([]);
+            }
+          }}
+        >
           {sortedContacts(shown).map((contact, i, all) => (
             <Fragment key={contact.guid}>
             {(i === 0 || letterOf(all[i - 1]) !== letterOf(contact)) && (
@@ -503,7 +529,7 @@ export function ContactsView() {
               onDragStart={(e) => {
                 e.dataTransfer.effectAllowed = "copy";
                 e.dataTransfer.setData("text/plain", displayName(contact));
-                setDragging(contact.guid);
+                setDragging(picked.includes(contact.guid) ? picked : [contact.guid]);
               }}
               onDragEnd={() => { setDragging(null); setDropOn(null); }}
               onContextMenu={(e) => {
@@ -514,8 +540,27 @@ export function ContactsView() {
             >
               <button
                 className="contact-row"
-                aria-current={openGuid === contact.guid}
-                onClick={() => {
+                aria-current={multi ? picked.includes(contact.guid) : openGuid === contact.guid}
+                onClick={(e) => {
+                  if (e.metaKey || e.ctrlKey) {
+                    // Command/Ctrl-click adds or takes away one, keeping the rest.
+                    const base = picked.length ? picked : openGuid ? [openGuid] : [];
+                    const next = base.includes(contact.guid) ? base.filter((g) => g !== contact.guid) : [...base, contact.guid];
+                    setPicked(next.length > 1 ? next : []);
+                    if (next.length === 1) setOpenGuid(next[0]);
+                    return;
+                  }
+                  if (e.shiftKey && openGuid) {
+                    // Shift-click takes everyone between the last picked and this one.
+                    const order = all.map((c) => c.guid);
+                    const [a, z] = [order.indexOf(openGuid), order.indexOf(contact.guid)].sort((x, y) => x - y);
+                    if (a >= 0) {
+                      const range = order.slice(a, z + 1);
+                      setPicked(range.length > 1 ? range : []);
+                      return;
+                    }
+                  }
+                  setPicked([]);
                   setOpenGuid(contact.guid);
                   setDetail(true);
                 }}
@@ -725,6 +770,43 @@ export function ContactsView() {
               </button>
             </div>
           </form>
+        ) : multi ? (
+          <div className="contact-many">
+            <div className="contact-many-faces" aria-hidden="true">
+              {pickedPeople.slice(0, 3).map((c) => <Avatar key={c.guid} contact={c} large />)}
+            </div>
+            <h2>{pickedPeople.length} Contacts Selected</h2>
+            <div className="cal-form-actions">
+              <button
+                className="quiet"
+                aria-haspopup="menu"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setPickMenu({ x: r.left, y: r.bottom + 4, alignRight: false });
+                }}
+              >
+                Add to List
+              </button>
+              {openList && (
+                <button className="quiet" onClick={() => { removeFromList(openList, pickedPeople.map((c) => c.guid)); setPicked([]); }}>
+                  Remove from List
+                </button>
+              )}
+              <button className="quiet" onClick={() => void exportCards(pickedPeople)}>Export vCards</button>
+              <button className="quiet danger" disabled={busy} onClick={() => void removeMany(pickedPeople)}>Delete</button>
+            </div>
+            {pickMenu && (
+              <RowMenu
+                at={pickMenu}
+                onClose={() => setPickMenu(null)}
+                entries={[
+                  ...lists.filter((l) => !l.guid.startsWith("pending-")).map((l) => ({ label: l.name, run: () => addToList(l, pickedPeople.map((c) => c.guid)) })),
+                  ...(lists.length ? [null] : []),
+                  { label: "New List\u2026", run: () => void createList("Untitled List", pickedPeople.map((c) => c.guid)) },
+                ]}
+              />
+            )}
+          </div>
         ) : open ? (
           <>
             {/* Photo and name together at the top of the card, as Contacts arranges them.

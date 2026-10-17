@@ -872,6 +872,11 @@
 .contact-rows:focus-within .contact-row[aria-current="true"] .avatar:not(:has(img)) { background: rgba(255, 255, 255, 0.28); color: #fff; }
 .contact-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
 .contact-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Several picked: their faces fanned, the count, and what can be done to all of them. */
+.contact-many { display: flex; flex-direction: column; align-items: center; gap: 14px; padding-top: 48px; text-align: center; }
+.contact-many-faces { display: flex; }
+.contact-many-faces .avatar + .avatar { margin-left: -22px; box-shadow: 0 0 0 3px var(--bg); }
+.contact-many h2 { margin: 0; font-size: var(--t-17); }
 /* "me" beside this person's own card, as Contacts marks it. */
 .contact-me { margin-left: auto; color: var(--text-3); font-size: var(--t-11); }
 .contact-rows:focus-within .contact-row[aria-current="true"] .contact-me { color: rgba(255, 255, 255, 0.82); }
