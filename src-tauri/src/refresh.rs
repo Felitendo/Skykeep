@@ -194,6 +194,9 @@ pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh 
     reports.push(match ctx.cloudkit.as_deref() {
         None => unavailable("notes", "Notes"),
         Some(root) => {
+            // One notes pass at a time, from reading the position through storing what came
+            // back — see `NOTES_PASS`.
+            let _one = crate::NOTES_PASS.lock().await;
             let since = token(data, "notes").await;
             let full = since.is_none();
             let fetched = quince_icloud::notes::fetch_cloudkit(

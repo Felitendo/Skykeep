@@ -257,6 +257,10 @@ pub fn apply_cloudkit(
             // which is exactly how a deleted note reappears.
             if removed {
                 if let Some(name) = field::record_name(record) {
+                    // A tombstone does not say what it was: a folder's name is tried as a
+                    // folder too — removing one this library does not have does nothing — or
+                    // a folder deleted on a phone stayed in the sidebar here for good.
+                    gone_folders.push(name.clone());
                     gone.push(name);
                 }
             }
@@ -1068,6 +1072,38 @@ mod tests {
 
     /// A folder deleted elsewhere — flagged `Deleted` on its way out, as icloud.com does it —
     /// leaves the list, and a note still filed in it is kept, unfiled, not lost.
+    /// A folder deleted on a phone arrives as a bare tombstone — a name, no type — and still
+    /// leaves the sidebar.
+    #[tokio::test]
+    async fn a_folder_tombstone_removes_the_folder() {
+        let mut library = Library::in_memory().unwrap();
+        let first = serve(json!({ "zones": [{
+            "records": [folder_record("F-gone", "Old")], "syncToken": "t1", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(
+            &reqwest::Client::new(),
+            &first.uri(),
+            vec![],
+            &mut library,
+            None,
+        )
+        .await
+        .unwrap();
+        let second = serve(json!({ "zones": [{
+            "records": [{ "recordName": "F-gone", "deleted": true }], "syncToken": "t2", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(
+            &reqwest::Client::new(),
+            &second.uri(),
+            vec![],
+            &mut library,
+            Some("t1"),
+        )
+        .await
+        .unwrap();
+        assert!(library.note_folders().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn a_folder_flagged_deleted_leaves_the_list() {
         let mut library = Library::in_memory().unwrap();

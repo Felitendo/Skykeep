@@ -100,12 +100,21 @@ async fn refresh_reminders(
 }
 
 /// The same for Notes.
+/// One notes pass at a time, held from reading the sync position through storing the answer.
+///
+/// Passes fetch without holding the library, so two could overlap — the timer's and the one
+/// after a save — and the slower, older one would store last: text from before the save put
+/// back over it, and a note just made here pruned as unknown. This is not the library's lock;
+/// every other screen keeps reading while a pass is out.
+pub static NOTES_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn refresh_notes(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
     data: &State<'_, Data>,
 ) -> Result<(), String> {
+    let _one = NOTES_PASS.lock().await;
     let since = data
         .0
         .lock()
