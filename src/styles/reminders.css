@@ -555,7 +555,8 @@
 .rx-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .rx-switch-track { position: relative; width: 34px; height: 20px; border-radius: 10px; background: color-mix(in srgb, var(--text) 22%, transparent); transition: background 160ms ease; }
 .rx-switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.3); transition: transform 160ms ease; }
-.rx-switch input:checked + .rx-switch-track { background: var(--sys-green, #34c759); }
+/* On, it takes the accent, as a macOS switch does — green is the phone's. */
+.rx-switch input:checked + .rx-switch-track { background: var(--sys-blue, #0a84ff); }
 .rx-switch input:checked + .rx-switch-track::after { transform: translateX(14px); }
 .rx-switch input:focus-visible + .rx-switch-track { outline: 2px solid var(--sys-blue); outline-offset: 2px; }
 .rx-switch input:disabled + .rx-switch-track { opacity: 0.4; }
