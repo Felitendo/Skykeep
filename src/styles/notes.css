@@ -295,3 +295,106 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .note-formatted a { color: var(--gold); text-decoration: underline; }
 /* Aa, as Notes writes it on its toolbar. */
 .notes-aa { font-weight: 600; font-size: 14px; letter-spacing: -0.02em; width: auto; padding-inline: 8px; }
+
+/* ---- the editor ------------------------------------------------------------------
+   One document, edited formatted, as Notes edits it. Sizes after Notes on the Mac: title
+   24, heading 19, subheading 16, body 15; lists hang their marks in the margin. */
+.note-rich-host { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.note-rich {
+  flex: 1;
+  min-height: 240px;
+  outline: none;
+  color: var(--text);
+  font-size: var(--t-15);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  caret-color: var(--notes-accent, var(--gold));
+  counter-reset: nf-num;
+}
+.note-rich .nf-p { margin: 0; min-height: 1.55em; padding-inline-start: calc(var(--indent, 0) * 1.5em); position: relative; }
+/* An empty new note says what it is for. */
+.note-rich[data-placeholder] .nf-p:only-child:has(> br:only-child)::after,
+.note-rich[data-placeholder] .nf-p:only-child:empty::after {
+  content: attr(data-placeholder);
+  content: "New Note";
+  position: absolute; inset-inline-start: 0; top: 0;
+  color: var(--text-3); pointer-events: none; font-size: 24px; font-weight: 700;
+}
+/* The title, explicit or — Notes' own rule — the first line when it has no style. */
+.note-rich .nf-p[data-style="0"],
+.note-rich .nf-p:first-child[data-style="none"] { font-size: 24px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; margin-bottom: 6px; }
+.note-rich .nf-p[data-style="1"] { font-size: 19px; font-weight: 700; line-height: 1.35; margin-top: 4px; }
+.note-rich .nf-p[data-style="2"] { font-size: 16px; font-weight: 600; }
+.note-rich .nf-p[data-style="4"] { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 13.5px; }
+/* Lists: the mark sits in a gutter of its own, so wrapped lines line up with the text. */
+.note-rich .nf-p[data-style="100"],
+.note-rich .nf-p[data-style="101"],
+.note-rich .nf-p[data-style="102"],
+.note-rich .nf-p[data-style="103"] { padding-inline-start: calc(var(--indent, 0) * 1.5em + 1.6em); }
+.note-rich .nf-p[data-style="100"]::before,
+.note-rich .nf-p[data-style="101"]::before,
+.note-rich .nf-p[data-style="102"]::before {
+  position: absolute; inset-inline-start: calc(var(--indent, 0) * 1.5em); width: 1.6em;
+  color: var(--text-2); font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.note-rich .nf-p[data-style="100"]::before { content: "•"; }
+.note-rich .nf-p[data-style="101"]::before { content: "–"; }
+.note-rich .nf-p:not([data-style="102"]) { counter-reset: nf-num; }
+.note-rich .nf-p[data-style="102"] { counter-increment: nf-num; }
+.note-rich .nf-p[data-style="102"]::before { content: counter(nf-num) "."; }
+/* A checklist item's circle: clicking it ticks the line (the editor reads the click). */
+.note-rich .nf-p[data-style="103"]::before {
+  content: ""; position: absolute; inset-inline-start: calc(var(--indent, 0) * 1.5em); top: 0.3em;
+  width: 17px; height: 17px; box-sizing: border-box; border: 1.5px solid var(--text-3); border-radius: 50%;
+  cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease;
+}
+.note-rich .nf-p[data-style="103"][data-checked="true"]::before {
+  border-color: var(--notes-accent, var(--gold));
+  background: var(--notes-accent, var(--gold))
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/12px no-repeat;
+}
+.note-rich .nf-p[data-style="103"][data-checked="true"] { color: var(--text-3); }
+.note-rich a { color: var(--notes-accent, var(--gold)); text-decoration: underline; }
+.note-rich .nf-attachment {
+  display: inline-block; padding: 0 6px; margin: 0 1px; border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text-2); font-size: var(--t-13);
+}
+.note-rich ::selection { background: color-mix(in srgb, var(--notes-accent, var(--gold)) 32%, transparent); }
+.notes-icon.is-on { background: color-mix(in srgb, var(--text) 10%, transparent); }
+
+/* ---- Aa ----------------------------------------------------------------------------
+   As icloud.com and the Mac draw it: the four marks in a row, the styles beneath, each set
+   the way it sets a line, the current one ticked. Opens without animation, as menus do. */
+.format-panel {
+  position: fixed;
+  z-index: 60;
+  width: 276px;
+  padding: 10px 8px 8px;
+  border-radius: 12px;
+  background: var(--sheet);
+  border: 0.5px solid var(--glass-edge, var(--separator));
+  box-shadow: 0 11px 34px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+.fp-marks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 0 4px 8px; border-bottom: 1px solid var(--separator); margin-bottom: 6px; }
+.fp-mark {
+  height: 30px; border: 0; border-radius: 8px; background: none; box-shadow: none;
+  color: var(--text); font: inherit; font-size: 16px; cursor: default;
+}
+.fp-mark:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.fp-mark[aria-pressed="true"] { background: color-mix(in srgb, var(--notes-accent, var(--gold)) 22%, transparent); color: var(--notes-accent-strong, var(--gold-strong)); }
+.fp-styles { display: flex; flex-direction: column; }
+.fp-style {
+  display: grid; grid-template-columns: 22px auto 1fr; align-items: center; column-gap: 2px;
+  min-height: 34px; padding: 4px 10px 4px 4px; border: 0; border-radius: 8px;
+  background: none; box-shadow: none; color: var(--text); font: inherit; font-size: var(--t-15); text-align: start; cursor: default;
+}
+.fp-style:hover, .fp-style:focus-visible { background: color-mix(in srgb, var(--text) 7%, transparent); outline: none; }
+.fp-style:not(:has(.fp-list-mark)) > span:last-child { grid-column: 2 / 4; }
+.fp-check { display: grid; place-items: center; color: var(--text); }
+.fp-title { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+.fp-heading { font-size: 18px; font-weight: 700; }
+.fp-subheading { font-size: 15px; font-weight: 600; }
+.fp-mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 14px; }
+.fp-list-mark { width: 16px; color: var(--text-2); }

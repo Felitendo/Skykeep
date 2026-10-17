@@ -54,8 +54,9 @@ if ((await toggle.count()) === 1) {
   await page.locator(".note-row", { hasText: "Curtains" }).click();
   await page.waitForTimeout(300);
   const title = await page.evaluate(() => {
-    const t = document.querySelector(".note-title");
-    return t ? { value: t.value, height: t.getBoundingClientRect().height } : null;
+    // The note's first line, set as its title.
+    const t = document.querySelector(".note-rich .nf-p");
+    return t ? { value: t.textContent, height: t.getBoundingClientRect().height } : null;
   });
   ok(!(await visible(".notes-list")) && (await visible(".note-body")), "a note opens in its place",
     "the note did not take the list's place");

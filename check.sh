@@ -21,6 +21,7 @@ step "rust tests"       cargo test --workspace --quiet
 step "typescript"       npx tsc --noEmit
 step "calendar layout"  node --test .uiverify/calendar-model.test.mjs
 step "notes layout"     node --test .uiverify/notes-model.test.mjs
+step "notes editor model" node --test .uiverify/notes-rich.test.mjs
 step "frontend build"   npm run build
 
 # The browser checks need the built bundle served.

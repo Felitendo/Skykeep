@@ -74,14 +74,15 @@ await page.getByRole("button", { name: "New note" }).click();
 await page.waitForTimeout(150);
 await page.keyboard.type("Shopping");
 await page.waitForTimeout(1600); // the pause: long enough to create the note
-// Enter in the title goes on to the body, as in Notes.
+// Return after the title goes on to the body, as in Notes.
 await page.keyboard.type("\nmilk and bread");
 await page.waitForTimeout(1600); // and long enough to save what followed
 
+// The editor is one document; its first line is the title.
 const text = () => page.evaluate(() => {
-  const t = document.querySelector(".note-editor .note-title")?.value ?? null;
-  const r = document.querySelector(".note-editor .note-text")?.value ?? null;
-  return { title: t, rest: r, focused: Boolean(document.activeElement?.closest(".note-editor")) };
+  const lines = [...document.querySelectorAll(".note-editor .note-rich .nf-p")].map((p) => p.textContent);
+  return { title: lines[0] ?? null, rest: lines.length ? lines.slice(1).join("\n") : null,
+    focused: Boolean(document.activeElement?.closest(".note-editor")) };
 });
 const after = await text();
 const result = await page.evaluate(() => ({
@@ -105,8 +106,9 @@ ok(result.saves.some(([g, body]) => g === "N1" && body === "Shopping\nmilk and b
   "what was typed after the pause is saved onto that note", `saves ${JSON.stringify(result.saves)}`);
 
 // Backspace at the start of the body joins it back onto the title, as in Notes.
-await page.locator(".note-editor .note-text").focus();
-await page.evaluate(() => document.querySelector(".note-editor .note-text").setSelectionRange(0, 0));
+await page.locator(".note-rich .nf-p").nth(1).click();
+await page.waitForTimeout(50);
+await page.keyboard.press("Home");
 await page.keyboard.press("Backspace");
 await page.waitForTimeout(150);
 const joined = await text();
@@ -114,8 +116,18 @@ ok(joined.title === "Shoppingmilk and bread" && joined.rest === "",
   "Backspace at the start of the body joins it to the title", `after Backspace: ${JSON.stringify(joined)}`);
 
 // Enter in the middle of the title splits it there.
-await page.locator(".note-editor .note-title").focus();
-await page.evaluate(() => document.querySelector(".note-editor .note-title").setSelectionRange(8, 8));
+await page.locator(".note-rich .nf-p").first().click();
+await page.evaluate(() => {
+  // The caret after "Shopping", placed exactly.
+  const text = document.querySelector(".note-rich .nf-p").firstChild;
+  const r = document.createRange();
+  r.setStart(text, 8);
+  r.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+});
+await page.waitForTimeout(80);
 await page.keyboard.press("Enter");
 await page.waitForTimeout(150);
 const split = await text();

@@ -1,16 +1,34 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Notice } from "../components/Notice";
-import { flushSync } from "react-dom";
-import { ChevronLeft, Folder, FolderOpen, FolderPlus, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
-import { LongTextarea } from "../components/LongTextarea";
-import { editorDate, groupNotes, joinTitle, listDate, mergeEdits, splitTitle } from "./notes/model";
+import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
+import { editorDate, groupNotes, listDate, mergeEdits, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { RowMenu } from "../components/RowMenu";
-import { FormattedBody, restyle, runsFit, STYLE, type Run } from "./notes/Formatted";
+import { FormattedBody, type Run } from "./notes/Formatted";
+import { carryRuns, runsFit } from "./notes/rich";
+import { NoteEditor, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
+import { FormatPanel } from "./notes/FormatPanel";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
 const ALL = "__all__";
+
+/** A new note's first line set as its title, as Notes sets it, unless it was given a style. */
+function titled(text: string, runs: Run[]): Run[] {
+  const end = text.indexOf("\n");
+  const firstLine = end < 0 ? text.length : end + 1;
+  const out: Run[] = [];
+  let at = 0;
+  for (const r of runs) {
+    const from = at;
+    at += r.length;
+    if (from >= firstLine || r.style !== null) { out.push(r); continue; }
+    const inside = Math.min(at, firstLine) - from;
+    out.push({ ...r, length: inside, style: 0 });
+    if (r.length > inside) out.push({ ...r, length: r.length - inside });
+  }
+  return out;
+}
 
 /** Apple's Recently Deleted, by the record name that is the same in every language. */
 const TRASH_FOLDER = "TrashFolder-CloudKit";
@@ -34,6 +52,11 @@ export function NotesView() {
   const { revision } = useSync();
   /** The body being typed, held apart from the note until it is saved. */
   const [draft, setDraft] = useState<string | null>(null);
+  /** `draft`, for effects that read it without re-running on every keystroke. */
+  const draftRef = useRef<string | null>(null);
+  draftRef.current = draft;
+  /** Counts every change made in the editor, formatting as much as text. */
+  const [edits, setEdits] = useState(0);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -180,14 +203,13 @@ export function NotesView() {
 
   /** How the open note is set, from Apple's attribute runs, read with its body. */
   const [loadedRuns, setLoadedRuns] = useState<{ guid: string; runs: Run[] } | null>(null);
-  /** Showing the note formatted; a click into its text switches to editing it. */
-  const [reading, setReading] = useState(true);
-  /** Where the line the Aa menu acts on begins, in the note's whole text. */
-  const [lineAt, setLineAt] = useState<number | null>(null);
-  const [styleMenu, setStyleMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
+  const loadedRunsRef = useRef(loadedRuns);
+  loadedRunsRef.current = loadedRuns;
+  /** The line the cursor is in and its marks, for the toolbar to show as on. */
+  const [status, setStatus] = useState<EditorStatus | null>(null);
+  const [formatAt, setFormatAt] = useState<{ x: number; y: number } | null>(null)
   useEffect(() => {
-    setReading(true);
-    setLineAt(null);
+    setFormatAt(null);
     if (!openGuid) return setLoadedRuns(null);
     let cancelled = false;
     api.noteRuns(openGuid).then(
@@ -197,70 +219,21 @@ export function NotesView() {
     return () => { cancelled = true; };
   }, [openGuid, revision]);
 
-  /**
-   * Tick a checklist item, as a tap on its circle does on the phone: shown at once, then
-   * written; a refusal puts the tick back and says why.
-   */
-  const tick = async (guid: string, start: number, checked: boolean) => {
-    const text = loadedBody?.guid === guid ? loadedBody.text : "";
-    const nl = text.indexOf("\n", start);
-    const end = nl < 0 ? text.length : nl + 1;
-    const flip = (on: boolean) =>
-      setLoadedRuns((cur) => {
-        if (!cur || cur.guid !== guid) return cur;
-        let at = 0;
-        const runs = cur.runs.map((r) => {
-          const inside = at >= start && at < end && r.style === 103;
-          at += r.length;
-          return inside ? { ...r, checked: on } : r;
-        });
-        return { guid, runs };
-      });
-    flip(checked);
-    try {
-      await api.noteParagraph(guid, start, { checked, expect: text.slice(start, nl < 0 ? text.length : nl) });
-    } catch (e) {
-      flip(!checked);
-      setError(messageOf(e));
-    }
-  };
-
-  /**
-   * Set the line the cursor is on to one of Notes' styles, as the Aa menu does. Anything
-   * typed is saved first, so the line is the line Apple holds; the style shows at once, the
-   * note shown formatted, and a refusal puts it back with the reason.
-   */
-  const applyStyle = async (style: number) => {
-    if (!open || lineAt === null) return;
-    const guid = open.guid;
-    await flush();
-    // Only over text Apple has: a save that did not go through leaves the typing on screen,
-    // and showing the formatted copy instead would hide it.
-    if (pending.current) return;
-    const text = (base.current?.guid === guid ? base.current.text : null) ?? (loadedBody?.guid === guid ? loadedBody.text : null);
-    if (text === null || (draft !== null && draft !== text)) return;
-    const nl = text.indexOf("\n", lineAt);
-    const expect = text.slice(lineAt, nl < 0 ? text.length : nl);
-    const before = loadedRuns?.guid === guid ? loadedRuns.runs : null;
-    if (before && runsFit(text, before)) {
-      setLoadedRuns({ guid, runs: restyle(text, before, lineAt, style) });
-      setDraft(null);
-      setLoadedBody({ guid, text });
-      setReading(true);
-    }
-    try {
-      await api.noteParagraph(guid, lineAt, { style, expect });
-    } catch (e) {
-      if (before) setLoadedRuns({ guid, runs: before });
-      setError(messageOf(e));
-    }
-  };
-
   /** What the open note says, or null while that is still unknown. */
   const body = open && loadedBody?.guid === open.guid ? loadedBody.text : null;
   const runs = open && loadedRuns?.guid === open.guid ? loadedRuns.runs : null;
-  // Formatted only while it is exactly what Apple holds: untouched here, the runs adding up.
-  const formatted = Boolean(body !== null && runs && draft === null && runsFit(body, runs));
+  /**
+   * Whether this note's formatting can be written from the editor: only when the runs read
+   * describe the text exactly. Otherwise the editor shows it plain and saves the text alone,
+   * which keeps Apple's formatting where it is — never a plain copy written over it.
+   */
+  const formatSafe = body !== null && runsFit(body, runs);
+  /** The editor, to hand it what Apple holds and to run the toolbar's commands. */
+  const editorRef = useRef<EditorHandle | null>(null);
+  /** A new note's id once it is made, so the editor it was typed in stays the one shown. */
+  const adoptedKey = useRef<string | null>(null);
+  /** The formatting on screen now, beside `draft` — the text on screen now. */
+  const draftRuns = useRef<Run[] | null>(null);
 
   const dirty = draft !== null && body !== null && draft !== body;
 
@@ -272,7 +245,7 @@ export function NotesView() {
    * note or the field takes it immediately, so nothing is ever waiting on a timer when you
    * walk away.
    */
-  const pending = useRef<{ guid: string; body: string } | null>(null);
+  const pending = useRef<{ guid: string; body: string; runs: Run[] | null } | null>(null);
   /**
    * The text Apple last confirmed for the open note: what an edit began from. Sent with each
    * save, so the save can tell an edit made on another device since and keep both.
@@ -290,20 +263,34 @@ export function NotesView() {
       const from = base.current?.guid === next.guid ? base.current.text : null;
       let saved: string | null = null;
       const ok = await write(async () => {
-        saved = await api.noteSave(next.guid, next.body, from);
+        saved = await api.noteSave(next.guid, next.body, from, next.runs);
       });
       if (!ok || saved === null) return;
       const kept: string = saved;
       base.current = { guid: next.guid, text: kept };
       setSaved(true);
+      // What Apple now holds becomes what this note reads, text and formatting together, so
+      // what is on screen and what was saved agree without a refresh.
+      const keptRuns = next.runs ? (kept === next.body ? next.runs : carryRuns(next.body, next.runs, kept)) : null;
+      adopted.current = `${next.guid}\u0000${kept}\u0000${JSON.stringify(keptRuns ?? (loadedRunsRef.current?.guid === next.guid ? loadedRunsRef.current.runs : null))}`;
+      setLoadedBody({ guid: next.guid, text: kept });
+      if (keptRuns) setLoadedRuns({ guid: next.guid, runs: keptRuns });
       // Apple holds `kept` — ours, or ours with another device's edit combined. What is on
       // screen takes it in: unchanged if nothing was typed since, combined if something was.
       // The draft is never handed back to the library's copy, which can lag a save, and was
       // how a five-line note once became a single letter.
       if (kept !== next.body) {
         setDraft((typing) => {
-          if (typing === null || typing === next.body) return kept;
-          return mergeEdits(next.body, typing, kept) ?? typing;
+          const now = typing ?? next.body;
+          const merged = now === next.body ? kept : (mergeEdits(next.body, now, kept) ?? now);
+          if (merged !== now) {
+            // Another device's words, taken into the editor with the formatting moved along.
+            const laid = draftRuns.current ? carryRuns(now, draftRuns.current, merged) : null;
+            draftRuns.current = laid;
+            editorRef.current?.replace(merged, laid);
+            if (merged !== kept) pending.current = { guid: next.guid, body: merged, runs: next.runs ? laid : null };
+          }
+          return merged;
         });
       }
     });
@@ -312,16 +299,21 @@ export function NotesView() {
   }, [write]);
 
   const type = useCallback(
-    (typed: string) => {
+    (typed: string, typedRuns: Run[]) => {
       // Nothing may be typed into a note whose text has not arrived.
       if (!open || body === null) return;
       // The first keystroke in a note marks what it read as the base of the edit.
       if (base.current?.guid !== open.guid) base.current = { guid: open.guid, text: body };
+      draftRuns.current = typedRuns;
       setDraft(typed);
+      setEdits((n) => n + 1);
       setSaved(false);
-      pending.current = typed === body ? null : { guid: open.guid, body: typed };
+      // Compared only when the text is back to what Apple holds — never on an ordinary key,
+      // which in a long note would be a second walk of the whole thing per keystroke.
+      const unchanged = typed === body && (!formatSafe || JSON.stringify(typedRuns) === JSON.stringify(runs));
+      pending.current = unchanged ? null : { guid: open.guid, body: typed, runs: formatSafe ? typedRuns : null };
     },
-    [open, body]
+    [open, body, runs, formatSafe]
   );
 
   // A pause in typing is the signal. Long enough not to write on every keystroke, short
@@ -330,7 +322,8 @@ export function NotesView() {
     if (!pending.current) return undefined;
     const timer = window.setTimeout(() => void flush(), 900);
     return () => window.clearTimeout(timer);
-  }, [draft, flush]);
+    // `edits` as well as the text: a change of style alone leaves the text as it was.
+  }, [draft, edits, flush]);
 
   // Leaving the note takes whatever is outstanding with it, before the draft is cleared; the
   // next note's edit begins from what that note reads, never from this one's.
@@ -402,14 +395,23 @@ export function NotesView() {
       const guid = await api.noteCreate(draft.folderGuid, draft.body);
       const latest = composingRef.current?.body ?? draft.body;
       adopting.current = guid;
+      // The same editor goes on as this note: nothing remounts under the cursor.
+      adoptedKey.current = guid;
       setLoadedBody({ guid, text: draft.body });
-      if (latest !== draft.body) {
-        setDraft(latest);
-        pending.current = { guid, body: latest };
-      } else {
-        setDraft(null);
-        pending.current = null;
-      }
+      base.current = { guid, text: draft.body };
+      // The note is made from its text; its formatting follows straight after — the first
+      // line a title, as Notes makes it, and whatever was set while composing.
+      const typedRuns = draftRuns.current && runsFit(latest, draftRuns.current) ? titled(latest, draftRuns.current) : null;
+      setDraft(latest);
+      setEdits((n) => n + 1);
+      pending.current = { guid, body: latest, runs: typedRuns };
+      // In the list at once, so the note is open — and its editor still there — before the
+      // list is read again.
+      const now = Math.floor(Date.now() / 1000);
+      setNotes((ns) => ns.some((n) => n.guid === guid) ? ns : [{
+        guid, folderGuid: draft.folderGuid, title: splitTitle(latest).title || "New Note", snippet: null, body: null,
+        locked: false, pinned: false, createdAt: now, modifiedAt: now, editable: true, etag: null,
+      } as Note, ...ns]);
       setOpenGuid(guid);
       setComposing(null);
       await read();
@@ -440,8 +442,6 @@ export function NotesView() {
     [composing, commitComposing]
   );
 
-  const editor = useRef<HTMLTextAreaElement | null>(null);
-  const bodyEditor = useRef<HTMLTextAreaElement | null>(null);
   const create = useCallback(async () => {
     if (composingRef.current) await commitComposing();
     await flush();
@@ -449,7 +449,7 @@ export function NotesView() {
     setOpenGuid(null);
     setDetail(true);
     // Straight into the new note, as Apple's New Note does.
-    window.requestAnimationFrame(() => editor.current?.focus());
+    window.requestAnimationFrame(() => editorRef.current?.focus());
   }, [commitComposing, flush, folder, setComposing]);
 
   /**
@@ -553,43 +553,40 @@ export function NotesView() {
     return () => window.clearTimeout(timer);
   }, [saved]);
 
-  /** What the editor holds right now, whoever is writing it. */
-  const text = composing ? composing.body : (draft ?? body ?? "");
-  const { title: titleLine, rest } = splitTitle(text);
-  const hadBreak = text.includes("\n");
   const canEdit = Boolean(composing) || Boolean(open && !open.locked && open.editable && body !== null);
 
-  /** Every change to either half of the editor becomes one change to the whole note. */
-  const apply = (next: string) => {
-    if (composingRef.current) setComposing((c) => (c ? { ...c, body: next } : c));
-    else type(next);
-  };
-  /**
-   * Make a change that moves the cursor into the other half, all at once. Waiting a frame to
-   * move focus left a gap a fast typist fills: the letter after Enter landed back in the
-   * title. The change is applied and drawn synchronously, and focus moves in the same turn.
-   */
-  const moveWith = (next: string, el: HTMLTextAreaElement | null, at: number) => {
-    flushSync(() => apply(next));
-    if (!el) return;
-    el.focus();
-    el.setSelectionRange(at, at);
-  };
-  const place = (el: HTMLTextAreaElement | null, at: number) => {
-    if (!el) return;
-    el.focus();
-    el.setSelectionRange(at, at);
+  /** Every change in the editor: to the note being composed, or to the open one. */
+  const apply = (next: string, nextRuns: Run[]) => {
+    if (composingRef.current) {
+      draftRuns.current = nextRuns;
+      setComposing((c) => (c ? { ...c, body: next } : c));
+    } else type(next, nextRuns);
   };
 
-  // The title grows onto more lines as it is typed, as a heading does, rather than scrolling.
-  useLayoutEffect(() => {
-    const el = editor.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${el.scrollHeight}px`;
-    // `detail` too: in a narrow window the note is hidden until opened, and a hidden title
-    // measures nothing — it came up zero lines tall, and the note had no title.
-  }, [titleLine, openGuid, composing, detail]);
+  // What Apple holds, taken into the editor when nothing is being typed — a change made on
+  // the phone arrives in the open note without it being reopened.
+  // Keyed to Apple's copy alone: a save, a keystroke or a re-render is never a reason to
+  // put the editor back to an older text.
+  const adopted = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open || body === null) return;
+    const key = `${open.guid}\u0000${body}\u0000${JSON.stringify(runs)}`;
+    if (adopted.current === key) return;
+    adopted.current = key;
+    // Only over nothing new: no typing at all, or none since what Apple last confirmed.
+    if (pending.current || (draftRef.current !== null && draftRef.current !== base.current?.text)) return;
+    editorRef.current?.replace(body, formatSafe ? runs : null);
+    draftRuns.current = formatSafe ? runs : null;
+    if (draftRef.current !== null && draftRef.current !== body) {
+      setDraft(null);
+      base.current = null;
+    }
+  }, [open, body, runs, formatSafe]);
+
+  const leave = () => {
+    editorRef.current?.flushChange();
+    void (composingRef.current ? commitComposing() : flush());
+  };
 
   // Another folder is another list, and a narrow window shows that list, not a note from the last.
   useEffect(() => setDetail(false), [folder]);
@@ -798,38 +795,45 @@ export function NotesView() {
             </p>
             {!composing && open && !open.locked && (
               <div className="note-bar-actions">
-                {styleMenu && (
-                  <RowMenu
-                    at={styleMenu}
-                    onClose={() => setStyleMenu(null)}
-                    entries={[
-                      { label: "Title", run: () => void applyStyle(STYLE.title) },
-                      { label: "Heading", run: () => void applyStyle(STYLE.heading) },
-                      { label: "Subheading", run: () => void applyStyle(STYLE.subheading) },
-                      { label: "Body", run: () => void applyStyle(STYLE.body) },
-                      { label: "Monospaced", run: () => void applyStyle(STYLE.mono) },
-                      null,
-                      { label: "• Bulleted List", run: () => void applyStyle(STYLE.bulleted) },
-                      { label: "– Dashed List", run: () => void applyStyle(STYLE.dashed) },
-                      { label: "1. Numbered List", run: () => void applyStyle(STYLE.numbered) },
-                      { label: "Checklist", run: () => void applyStyle(STYLE.checklist) },
-                    ]}
-                  />
-                )}
                 {!inTrash && open.editable && (
-                  <button
-                    className="notes-icon notes-aa"
-                    aria-label="Format"
-                    aria-haspopup="menu"
-                    title={lineAt === null ? "Format — click a line first" : "Format"}
-                    disabled={busy || lineAt === null}
-                    onClick={(e) => {
-                      const r = e.currentTarget.getBoundingClientRect();
-                      setStyleMenu({ x: r.right, y: r.bottom + 4, alignRight: true });
-                    }}
-                  >
-                    Aa
-                  </button>
+                  <>
+                    <button
+                      className={`notes-icon notes-aa${formatAt ? " is-on" : ""}`}
+                      aria-label="Format"
+                      aria-haspopup="dialog"
+                      aria-expanded={Boolean(formatAt)}
+                      title="Choose a style to apply to text"
+                      disabled={!canEdit}
+                      // Keeps the cursor where it is in the note while the panel is open.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={(e) => {
+                        const r = e.currentTarget.getBoundingClientRect();
+                        setFormatAt((at) => (at ? null : { x: r.left + r.width / 2, y: r.bottom + 6 }));
+                      }}
+                    >
+                      Aa
+                    </button>
+                    <button
+                      className={`notes-icon${status?.checklist ? " is-on" : ""}`}
+                      aria-label="Make a checklist"
+                      aria-pressed={Boolean(status?.checklist)}
+                      title="Make a checklist"
+                      disabled={!canEdit}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => editorRef.current?.toggleChecklist()}
+                    >
+                      <ListChecks size={18} strokeWidth={2} aria-hidden="true" />
+                    </button>
+                    {formatAt && (
+                      <FormatPanel
+                        at={formatAt}
+                        status={status}
+                        onClose={() => setFormatAt(null)}
+                        onStyle={(style) => editorRef.current?.setStyle(style)}
+                        onMark={(mark) => editorRef.current?.toggleMark(mark)}
+                      />
+                    )}
+                  </>
                 )}
                 {!inTrash && <Picker
                   label={`Folder for ${open.title}`}
@@ -896,117 +900,28 @@ export function NotesView() {
           * saved is always the two put back together.
           */}
         {canEdit ? (
-          <div className="note-editor">
-            <textarea
-              key="title"
-              ref={editor}
-              className="note-title"
-              onSelect={() => setLineAt(0)}
-              rows={1}
-              aria-label={composing ? "New note" : `Title of ${open?.title ?? "note"}`}
+          <div className="note-editor"
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                e.preventDefault();
+                leave();
+              }
+            }}
+          >
+            <NoteEditor
+              // One editor per note, so nothing typed in one can be shown in another.
+              key={composing || (open && adoptedKey.current === open.guid) ? "composing" : open?.guid}
+              ref={editorRef}
+              text={composing ? composing.body : (draft ?? body ?? "")}
+              runs={composing ? draftRuns.current : formatSafe ? runs : null}
+              editable
+              autoFocus={Boolean(composing)}
+              label={composing ? "New note" : `${open?.title ?? "Note"}`}
               placeholder={composing ? "New Note" : undefined}
-              value={titleLine}
-              spellCheck
-              onChange={(e) => apply(joinTitle(e.target.value, rest, hadBreak))}
-              onKeyDown={(e) => {
-                const el = e.currentTarget;
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  const at = el.selectionStart;
-                  moveWith(
-                    `${titleLine.slice(0, at)}\n${titleLine.slice(at)}${hadBreak ? `\n${rest}` : ""}`,
-                    bodyEditor.current,
-                    0
-                  );
-                } else if (e.key === "ArrowDown" && el.selectionStart === titleLine.length) {
-                  e.preventDefault();
-                  place(bodyEditor.current, 0);
-                } else if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-                  e.preventDefault();
-                  void (composingRef.current ? commitComposing() : flush());
-                }
-              }}
-              onBlur={(e) => {
-                if (e.relatedTarget === bodyEditor.current) return;
-                void (composingRef.current ? commitComposing() : flush());
-              }}
+              onChange={apply}
+              onStatus={setStatus}
+              onBlur={leave}
             />
-            {reading && formatted && !composing ? (
-              <div
-                className="note-text note-read"
-                role="textbox"
-                aria-readonly="false"
-                aria-label={`Body of ${open?.title ?? "note"}`}
-                tabIndex={0}
-                onClick={(e) => {
-                  const line = (e.target as HTMLElement).closest("[data-start]");
-                  const at = line ? Number(line.getAttribute("data-start")) : null;
-                  if (at !== null) setLineAt(at);
-                  setReading(false);
-                  // Into the text at the line clicked, so the cursor and the Aa menu agree.
-                  window.setTimeout(() => {
-                    const el = bodyEditor.current;
-                    if (!el) return;
-                    el.focus();
-                    if (at !== null) {
-                      const pos = Math.max(0, at - titleLine.length - 1);
-                      el.setSelectionRange(pos, pos);
-                    }
-                  }, 0);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    setReading(false);
-                    window.setTimeout(() => bodyEditor.current?.focus(), 0);
-                  }
-                }}
-              >
-                <FormattedBody
-                  text={body ?? ""}
-                  runs={runs ?? []}
-                  skip={titleLine.length + 1}
-                  onTick={open ? (start, checked) => void tick(open.guid, start, checked) : undefined}
-                />
-              </div>
-            ) : (
-            <LongTextarea
-              key="body"
-              ref={bodyEditor}
-              className="note-text"
-              onSelect={(e) => {
-                // The line the cursor is on, in the whole note: title line, then the body.
-                const el = e.currentTarget;
-                const offset = titleLine.length + 1 + el.selectionStart;
-                const all = titleLine + "\n" + el.value;
-                setLineAt(all.lastIndexOf("\n", offset - 1) + 1);
-              }}
-              aria-label={composing ? "New note text" : `Body of ${open?.title ?? "note"}`}
-              value={rest}
-              spellCheck
-              onChange={(e) => apply(joinTitle(titleLine, e.target.value, true))}
-              onKeyDown={(e) => {
-                const el = e.currentTarget;
-                if (e.key === "Backspace" && el.selectionStart === 0 && el.selectionEnd === 0 && hadBreak) {
-                  e.preventDefault();
-                  moveWith(titleLine + rest, editor.current, titleLine.length);
-                } else if (e.key === "ArrowUp" && !rest.slice(0, el.selectionStart).includes("\n")) {
-                  e.preventDefault();
-                  place(editor.current, titleLine.length);
-                } else if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-                  e.preventDefault();
-                  void (composingRef.current ? commitComposing() : flush());
-                }
-              }}
-              onBlur={(e) => {
-                if (e.relatedTarget === editor.current) return;
-                // Leaving the text — not for the Aa menu, which acts on it — shows the note
-                // formatted again once nothing is left unsaved.
-                if (!(e.relatedTarget as HTMLElement | null)?.closest(".notes-aa")) setReading(true);
-                void (composingRef.current ? commitComposing() : flush());
-              }}
-            />
-            )}
           </div>
         ) : open?.locked ? (
           <p className="cal-empty">

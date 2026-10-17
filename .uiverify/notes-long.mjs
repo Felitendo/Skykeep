@@ -1,9 +1,9 @@
 // A very long note types as a short one does, and saves exactly what was typed.
 //
-// React keeps a controlled textarea's text node equal to its value, rewriting all of it on
-// every key: in a 300,000-character note that made each keystroke a relayout of the whole
-// note. Watched here directly — the text node must not be touched while typing — because a
-// timing would pass or fail with the machine.
+// A keystroke must change the line typed in and nothing else: an editor that redrew the note
+// — React rewriting a controlled field, or the whole document set again — made each key a
+// relayout of 300,000 characters. Watched directly: no line of the note but the one typed
+// in is added, removed or replaced while typing, and each key is handled well inside a frame.
 import { engine } from "./engine.mjs";
 
 const b = await engine.launch();
@@ -39,23 +39,31 @@ await page.waitForTimeout(600);
 let failures = 0;
 const ok = (pass, yes, no) => { console.log(pass ? `PASS ${yes}` : `FAIL ${no}`); if (!pass) failures++; };
 
-await page.locator(".note-text").click();
+await page.locator(".note-rich .nf-p").last().click();
 await page.keyboard.press("Control+End");
+await page.waitForTimeout(50);
 await page.evaluate(() => {
   window.__rewrites = 0;
   new MutationObserver((m) => { window.__rewrites += m.length; })
-    .observe(document.querySelector(".note-text"), { childList: true, characterData: true, subtree: true });
+    .observe(document.querySelector(".note-rich"), { childList: true });
+  // How long each key takes to be handled, start to the next frame.
+  window.__keyMs = [];
+  document.addEventListener("keydown", () => {
+    const t = performance.now();
+    requestAnimationFrame(() => window.__keyMs.push(performance.now() - t));
+  }, true);
 });
-await page.keyboard.type(" and the end", { delay: 5 });
+await page.keyboard.type(" and the end", { delay: 20 });
 await page.waitForTimeout(100);
 const rewrites = await page.evaluate(() => window.__rewrites);
-ok(rewrites === 0, "typing in a long note leaves its text alone — no rewrite of the whole note per key",
-  `the note's text was rewritten ${rewrites} times while typing twelve characters`);
+ok(rewrites === 0, "typing in a long note touches only the line typed in",
+  `lines of the note were replaced ${rewrites} times while typing twelve characters`);
+const slowest = await page.evaluate(() => Math.max(...window.__keyMs));
+ok(slowest < 50, `and each key is drawn quickly  (slowest ${slowest.toFixed(1)} ms)`, `a key took ${slowest.toFixed(1)} ms to draw`);
 
 // Leaving the note saves it: every character there, and the new ones at the end.
-await page.locator(".note-title").click();
 await page.locator(".notes-search").click();
-await page.waitForTimeout(400);
+await page.waitForTimeout(600);
 const saved = await page.evaluate(() => {
   const last = window.__saves.at(-1);
   return last && { length: last.body?.length, tail: last.body?.slice(-24), expected: window.__bodyLength + 12 };

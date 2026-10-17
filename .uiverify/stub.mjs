@@ -189,6 +189,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems.filter(r => !r.completedAt);
         case "note_paragraph": (window.__paragraphs ??= []).push(args); return null;
         case "note_runs": {
+          if (window.__savedRuns?.[args.guid]) return window.__savedRuns[args.guid];
           // Curtains, set as a phone sets one: a title, then a dashed list and a ticked item.
           if (args.guid !== "n1") return [];
           const body = (noteList.find((n) => n.guid === "n1") ?? {}).body ?? "";
@@ -213,10 +214,16 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           window.__noteFolders = (window.__noteFolders ?? noteFolders.slice()).filter((f) => f.guid !== args.guid);
           (window.__folderCalls ??= []).push(["delete", args.guid]);
           return null;
-        case "note_save":
+        case "note_save": {
           (window.__noteSaves ??= []).push(args);
           // A test can play the other device: what Apple answers is what it now holds.
-          return window.__phoneEdit ? window.__phoneEdit(args) : args.body;
+          const kept = window.__phoneEdit ? window.__phoneEdit(args) : args.body;
+          // Kept, as Apple keeps it: the next read of the note gives what was saved.
+          const n = noteList.find((x) => x.guid === args.guid);
+          if (n) n.body = kept;
+          if (args.runs && kept === args.body) (window.__savedRuns ??= {})[args.guid] = args.runs;
+          return kept;
+        }
         case "note_delete": case "note_move": return null;
         case "note_pin": {
           const n = noteList.find((x) => x.guid === args?.guid);
