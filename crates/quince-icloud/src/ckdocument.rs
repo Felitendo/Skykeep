@@ -672,7 +672,12 @@ fn bytes_field(message: &[u8], tag: u64) -> Option<Vec<u8>> {
 /// font, links and the rest of each run go back untouched. A checklist item keeps the id it
 /// had; one made a checklist here is given a fresh one, as a phone gives it.
 #[must_use]
-pub fn set_paragraph(original: &[u8], start: u64, change: ParagraphChange) -> Option<Vec<u8>> {
+pub fn set_paragraph(
+    original: &[u8],
+    start: u64,
+    change: ParagraphChange,
+    expect: Option<&str>,
+) -> Option<Vec<u8>> {
     let plain = inflate(original)?;
     let text = std::str::from_utf8(field_at(&plain, TEXT_PATH)?).ok()?;
     let units: Vec<u16> = text.encode_utf16().collect();
@@ -687,6 +692,16 @@ pub fn set_paragraph(original: &[u8], start: u64, change: ParagraphChange) -> Op
         .map_or(total, |i| start + i as u64 + 1);
     if end == start {
         return None;
+    }
+    // The line asked about has to be the line there now. If another device edited above it,
+    // the same offset is a different line, and a tick or a style would land on that one.
+    if let Some(expected) = expect {
+        let here =
+            String::from_utf16(&units[usize::try_from(start).ok()?..usize::try_from(end).ok()?])
+                .ok()?;
+        if here.trim_end_matches('\n') != expected {
+            return None;
+        }
     }
 
     let note = field_at(&plain, &TEXT_PATH[..2])?;
@@ -780,9 +795,10 @@ pub fn set_paragraph_in_base64(
     original: &str,
     start: u64,
     change: ParagraphChange,
+    expect: Option<&str>,
 ) -> Option<String> {
     let raw = B64.decode(original.trim()).ok()?;
-    Some(B64.encode(gzip(&set_paragraph(&raw, start, change)?)))
+    Some(B64.encode(gzip(&set_paragraph(&raw, start, change, expect)?)))
 }
 
 /// Rewrite the text inside an existing document, leaving every other field exactly as it
@@ -2178,8 +2194,13 @@ mod run_tests {
         let mut doc = Vec::new();
         len_field(2, &inner, &mut doc);
 
-        let out =
-            set_paragraph_in_base64(&B64.encode(&doc), 3, ParagraphChange::Style(103)).unwrap();
+        let out = set_paragraph_in_base64(
+            &B64.encode(&doc),
+            3,
+            ParagraphChange::Style(103),
+            Some("cd"),
+        )
+        .unwrap();
         let runs = runs_from_base64(&out);
         assert_eq!(runs.iter().map(|r| r.length).collect::<Vec<_>>(), [3, 3, 2]);
         assert_eq!(
@@ -2239,8 +2260,13 @@ mod run_tests {
         assert!(runs[2].bold && runs[2].style.is_none());
 
         // Untick "egg" (the paragraph starting at 5): only its tick changes.
-        let unticked =
-            set_paragraph_in_base64(&B64.encode(&doc), 5, ParagraphChange::Checked(false)).unwrap();
+        let unticked = set_paragraph_in_base64(
+            &B64.encode(&doc),
+            5,
+            ParagraphChange::Checked(false),
+            Some("egg"),
+        )
+        .unwrap();
         let after = runs_from_base64(&unticked);
         assert_eq!(after[1].checked, Some(false));
         assert_eq!(after[0].style, Some(101), "the line above is untouched");
@@ -2252,7 +2278,7 @@ mod run_tests {
 
         // Make "hi" — inside a run of its own, no newline — a heading: only it changes.
         let headed =
-            set_paragraph_in_base64(&B64.encode(&doc), 9, ParagraphChange::Style(1)).unwrap();
+            set_paragraph_in_base64(&B64.encode(&doc), 9, ParagraphChange::Style(1), None).unwrap();
         let after = runs_from_base64(&headed);
         assert_eq!(after.last().unwrap().style, Some(1));
         assert!(after.last().unwrap().bold, "the run keeps its weight");

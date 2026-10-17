@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
         &note,
         19,
         ParagraphChange::Style(103),
+        Some("Buy milk"),
     )
     .await?;
     println!(
@@ -75,6 +76,7 @@ async fn main() -> Result<()> {
         &note,
         19,
         ParagraphChange::Checked(true),
+        Some("Buy milk"),
     )
     .await?;
     println!(
@@ -88,6 +90,7 @@ async fn main() -> Result<()> {
         &note,
         28,
         ParagraphChange::Style(101),
+        Some("Call the bank"),
     )
     .await?;
     let last = zc.lookup_record("Notes", &guid).await?.unwrap();

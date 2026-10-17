@@ -214,7 +214,7 @@ export function NotesView() {
       });
     flip(checked);
     try {
-      await api.noteParagraph(guid, start, { checked });
+      await api.noteParagraph(guid, start, { checked, expect: text.slice(start, nl < 0 ? text.length : nl) });
     } catch (e) {
       flip(!checked);
       setError(messageOf(e));

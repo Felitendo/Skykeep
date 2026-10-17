@@ -567,6 +567,7 @@ pub async fn set_paragraph_cloudkit(
     note: &Note,
     start: u64,
     change: crate::ckdocument::ParagraphChange,
+    expect: Option<&str>,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let current = client
@@ -577,7 +578,7 @@ pub async fn set_paragraph_cloudkit(
         .pointer("/fields/TextDataEncrypted/value")
         .and_then(Value::as_str)
         .ok_or_else(|| Error::Refused("That note has no body Apple will let us read.".into()))?;
-    let rewritten = crate::ckdocument::set_paragraph_in_base64(encoded, start, change).ok_or_else(|| {
+    let rewritten = crate::ckdocument::set_paragraph_in_base64(encoded, start, change, expect).ok_or_else(|| {
         Error::Refused("That line has changed since it was shown, so nothing was changed. Try again in a moment.".into())
     })?;
     fits_inline(&rewritten)?;

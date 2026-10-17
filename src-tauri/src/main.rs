@@ -1013,6 +1013,8 @@ async fn note_paragraph(
     start: u64,
     style: Option<u64>,
     checked: Option<bool>,
+    // The line's text as it was shown, so a tick cannot land on a line that moved there.
+    expect: Option<String>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
@@ -1031,6 +1033,7 @@ async fn note_paragraph(
         &note,
         start,
         change,
+        expect.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())?;
