@@ -1177,6 +1177,49 @@ pub async fn create_cloudkit(
 }
 
 /// Add a reminder to the end of a list's `ReminderIDs`, and take it out of the list it left.
+/// Move a reminder within its list's own order, before `before` — or to the end — as a drag
+/// in Reminders does. The order is the list's `ReminderIDs`; written with its merge token
+/// advanced, so the phone takes the new order rather than keeping its own.
+pub async fn reorder_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    list_guid: &str,
+    reminder_guid: &str,
+    before: Option<&str>,
+) -> Result<()> {
+    let bare = |g: &str| g.rsplit('/').next().unwrap_or(g).to_string();
+    let id = bare(reminder_guid);
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let list = client
+        .lookup_record(ZONE, list_guid)
+        .await?
+        .ok_or_else(|| Error::Refused("That list is no longer in iCloud.".into()))?;
+    let mut ids: Vec<String> = list
+        .pointer("/fields/ReminderIDs/value")
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    ids.retain(|x| !x.eq_ignore_ascii_case(&id));
+    let at = before
+        .map(bare)
+        .and_then(|b| ids.iter().position(|x| x.eq_ignore_ascii_case(&b)))
+        .unwrap_or(ids.len());
+    ids.insert(at, id);
+    client
+        .update_record_signed(
+            ZONE,
+            list_guid,
+            "List",
+            None,
+            serde_json::json!({
+                "ReminderIDs": { "type": "STRING", "value": serde_json::to_string(&ids).unwrap_or_default() }
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
 async fn place_in_list(
     client: &ZoneClient<'_>,
     list_guid: &str,

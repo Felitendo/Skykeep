@@ -971,6 +971,29 @@ async fn reminder_list_rename(
     resync_reminders(&http, &root, params, &data).await
 }
 
+/// Move a reminder within its list, before another or to the end, as a drag does.
+#[tauri::command]
+async fn reminder_reorder(
+    list_guid: String,
+    guid: String,
+    before: Option<String>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    quince_icloud::reminders::reorder_cloudkit(
+        &http,
+        &root,
+        params.clone(),
+        &list_guid,
+        &guid,
+        before.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    resync_reminders(&http, &root, params, &data).await
+}
+
 /// A list's colour, one of Apple's twelve, as Show List Info sets it.
 #[tauri::command]
 async fn reminder_list_colour(
@@ -2494,6 +2517,7 @@ fn main() {
             reminder_list_rename,
             reminder_list_delete,
             reminder_list_colour,
+            reminder_reorder,
             note_folders,
             note_folder_create,
             note_folder_rename,

@@ -169,6 +169,14 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (r) for (const [k, v] of Object.entries(args.edit)) if (k !== "listGuid") r[k] = v;
           return null;
         }
+        case "reminder_reorder": {
+          (window.__reorders ??= []).push(args);
+          const i = reminderItems.findIndex((x) => x.guid === args.guid);
+          const [moved] = reminderItems.splice(i, 1);
+          const at = reminderItems.findIndex((x) => x.guid === args.before);
+          reminderItems.splice(at < 0 ? reminderItems.length : at, 0, moved);
+          return null;
+        }
         case "reminder_list_colour": {
           (window.__listColours ??= []).push([args.listGuid, args.colour]);
           const hex = { purple: "#C077DB", red: "#FF3B30", blue: "#007AFF" }[args.colour];

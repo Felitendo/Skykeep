@@ -416,6 +416,27 @@ export function RemindersView() {
     );
   };
 
+  /** Drag and drop: what is being dragged, and the row it would land before. */
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropBefore, setDropBefore] = useState<string | null>(null);
+  const canReorder = inList && !searching;
+  /** Put a reminder before another in its list — at once, then to Apple; back if refused. */
+  const reorder = (guid: string, before: string) => {
+    const r = items.find((x) => x.guid === guid);
+    if (!r || !listGuid) return Promise.resolve(null);
+    return write(
+      r,
+      () => api.reminderReorder(listGuid, guid, before),
+      (rows) => {
+        const moved = rows.find((x) => x.guid === guid);
+        if (!moved) return rows;
+        const rest = rows.filter((x) => x.guid !== guid);
+        const at = rest.findIndex((x) => x.guid === before);
+        return [...rest.slice(0, at < 0 ? rest.length : at), moved, ...rest.slice(at < 0 ? rest.length : at)];
+      },
+    );
+  };
+
   const outdent = (r: Reminder) =>
     write(
       r,
@@ -1075,7 +1096,31 @@ export function RemindersView() {
                     key={reminder.guid}
                     className={`rx-row${reminder.completedAt ? " is-done" : ""}${
                       depth > 0 ? " is-subtask" : ""
-                    }${isOpen ? " is-open" : ""}`}
+                    }${isOpen ? " is-open" : ""}${dropBefore === reminder.guid ? " is-drop-before" : ""}${
+                      dragging === reminder.guid ? " is-dragging" : ""
+                    }`}
+                    // Drag to reorder, in a list, as Reminders does — open ones among themselves.
+                    draggable={canReorder && depth === 0 && !reminder.completedAt}
+                    onDragStart={(e) => {
+                      if (!canReorder) return;
+                      e.dataTransfer.effectAllowed = "move";
+                      e.dataTransfer.setData("text/plain", reminder.guid);
+                      setDragging(reminder.guid);
+                    }}
+                    onDragEnd={() => { setDragging(null); setDropBefore(null); }}
+                    onDragOver={(e) => {
+                      if (!dragging || dragging === reminder.guid || depth > 0 || reminder.completedAt) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      if (dropBefore !== reminder.guid) setDropBefore(reminder.guid);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const moving = dragging;
+                      setDragging(null);
+                      setDropBefore(null);
+                      if (moving && moving !== reminder.guid) void reorder(moving, reminder.guid);
+                    }}
                   >
                     <button
                       className="rx-tick"

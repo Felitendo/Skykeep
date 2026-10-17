@@ -104,6 +104,8 @@ export const api = {
   reminderListCreate: (title: string) => invoke<void>("reminder_list_create", { title }),
   reminderListRename: (listGuid: string, title: string) =>
     invoke<void>("reminder_list_rename", { listGuid, title }),
+  reminderReorder: (listGuid: string, guid: string, before: string | null) =>
+    invoke<void>("reminder_reorder", { listGuid, guid, before }),
   reminderListColour: (listGuid: string, colour: string) =>
     invoke<void>("reminder_list_colour", { listGuid, colour }),
   reminderListDelete: (listGuid: string) =>

@@ -32,5 +32,22 @@ await page.getByLabel("Rename Pick up the parcel").focus();
 await page.keyboard.press("Enter");
 await page.waitForTimeout(150);
 ok(await page.evaluate(() => document.activeElement?.closest(".rx-add") !== null), "Return goes on to a new reminder");
+// Drag to reorder: the row lands where it is dropped, at once, and Apple is asked.
+const titles = () => page.locator(".rx-row:not(.is-done) .rx-title").evaluateAll((els) => els.map((e) => e.value));
+const before = await titles();
+const last = before.filter(Boolean).at(-1);
+const src = page.locator(".rx-row", { has: page.getByLabel(`Rename ${last}`) });
+const dst = page.locator(".rx-row").first();
+await src.dragTo(dst);
+await page.waitForTimeout(200);
+const after = await titles();
+ok(after[0] === last, `a dragged reminder lands where it is dropped  ${JSON.stringify(after.slice(0, 3))}`);
+const asked = await page.evaluate(() => window.__reorders?.at(-1));
+ok(asked && asked.before, `and Apple is asked to put it there  ${JSON.stringify(asked)}`);
+// Typing in a title still types, in a row that can be dragged.
+await page.getByLabel(`Rename ${last}`).click();
+await page.keyboard.press("End");
+await page.keyboard.type("!");
+ok((await page.getByLabel(`Rename ${last}`).inputValue()).endsWith("!"), "a reminder's title still takes typing");
 await b.close();
 process.exitCode = failures ? 1 : 0;
