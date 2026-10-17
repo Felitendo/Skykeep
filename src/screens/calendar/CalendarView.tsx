@@ -499,6 +499,17 @@ export function CalendarView() {
     },
     [shown, due]
   );
+  /** Whether a day has anything at all — all-day events too, which Month draws as bars and
+   *  `dayItems` therefore leaves out. The dots in the mini month and Year use this; with
+   *  `dayItems` a birthday, a holiday or a trip left its days looking empty. */
+  const busyOn = useCallback(
+    (day: Date) => {
+      const start = seconds(day);
+      const end = seconds(addDays(day, 1));
+      return shown.some((e) => e.startsAt < end && e.endsAt > start) || dayItems(day).length > 0;
+    },
+    [shown, dayItems]
+  );
 
   return (
     <TickContext.Provider value={tickValue}>
@@ -533,7 +544,7 @@ export function CalendarView() {
         <MiniMonth
           selected={selected}
           today={now}
-          busy={(d) => dayItems(d).length > 0}
+          busy={busyOn}
           onPick={(d) => setSelected(d)}
         />
       </aside>
@@ -681,7 +692,7 @@ export function CalendarView() {
               <MiniMonth
                 selected={selected}
                 today={now}
-                busy={(d) => dayItems(d).length > 0}
+                busy={busyOn}
                 onPick={(d) => setSelected(d)}
               />
             </DayPane>
@@ -693,7 +704,7 @@ export function CalendarView() {
           <YearView
             year={selected.getFullYear()}
             today={now}
-            busy={(d) => dayItems(d).length > 0}
+            busy={busyOn}
             onPick={(d) => {
               setSelected(d);
               setView("day");

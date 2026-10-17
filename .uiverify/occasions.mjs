@@ -69,5 +69,10 @@ if (rows.length) {
     `the day pane reads: ${JSON.stringify(pane.slice(0, 120))}`);
 }
 
+// A day holding only all-day things — a holiday — still shows as busy in the mini month.
+const diwali = new Date(); diwali.setDate(diwali.getDate() + 5);
+const busyDays = await page.evaluate(() => [...document.querySelectorAll(".cx-side .cx-minimonth-day.is-busy")].map((d) => d.getAttribute("aria-label")));
+const label = diwali.toLocaleDateString(undefined, { dateStyle: "full" });
+ok(busyDays.includes(label), `a holiday's day carries a dot in the mini month  [${label}]`, `no dot on ${label}: ${JSON.stringify(busyDays)}`);
 await b.close();
 process.exitCode = failures === 0 ? 0 : 1;
