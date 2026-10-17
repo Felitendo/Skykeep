@@ -151,7 +151,12 @@
   border-radius: 0 0 8px 8px;
 }
 .note-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.note-row[aria-current="true"] { background: color-mix(in srgb, var(--gold) 26%, transparent); box-shadow: none; }
+/* The selection as macOS draws it: the accent, text in white, while the list has focus;
+   a quiet grey once focus is elsewhere — in the note being written, say. */
+.note-row[aria-current="true"] { background: color-mix(in srgb, var(--text) 11%, transparent); box-shadow: none; }
+.note-rows:focus-within .note-row[aria-current="true"] { background: var(--gold); color: #fff; }
+.note-rows:focus-within .note-row[aria-current="true"] .note-row-when,
+.note-rows:focus-within .note-row[aria-current="true"] .note-row-snippet { color: rgba(255, 255, 255, 0.82); }
 .note-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
 .note-row-title {
   overflow: hidden;

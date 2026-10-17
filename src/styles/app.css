@@ -866,7 +866,10 @@
 }
 
 .contact-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.contact-row[aria-current="true"] { background: var(--gold-tint); }
+/* As macOS selects: the accent with white text while the list has focus, grey after. */
+.contact-row[aria-current="true"] { background: color-mix(in srgb, var(--text) 11%, transparent); }
+.contact-rows:focus-within .contact-row[aria-current="true"] { background: var(--gold); color: #fff; }
+.contact-rows:focus-within .contact-row[aria-current="true"] .avatar:not(:has(img)) { background: rgba(255, 255, 255, 0.28); color: #fff; }
 .contact-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
 .contact-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -1791,6 +1794,12 @@
 .drive-row.is-selected .drive-name, .drive-row.is-selected .drive-meta { color: #fff; }
 .drive-rows.is-grid .drive-row.is-selected { background: color-mix(in srgb, var(--sys-blue, #0a84ff) 28%, transparent); box-shadow: inset 0 0 0 2px var(--sys-blue, #0a84ff); }
 .drive-rows.is-grid .drive-row.is-selected .drive-name { color: var(--text); }
+/* With focus elsewhere the selection stays, quietly — grey, the text its own colour. */
+.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected { background: color-mix(in srgb, var(--text) 11%, transparent); }
+.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected .drive-name { color: var(--text); }
+.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected .drive-meta { color: var(--text-2); }
+.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected .drive-more { color: var(--text); }
+.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected .drive-badge > svg { filter: none; }
 /* Apple's own picture of a file: small in a list, the tile's face in Grid, as icloud.com. */
 .drive-thumb { width: 22px; height: 22px; object-fit: contain; border-radius: 3px; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25); background: #fff; }
 .drive-rows.is-grid .drive-badge:has(.drive-thumb) { transform: none; height: 76px; }
