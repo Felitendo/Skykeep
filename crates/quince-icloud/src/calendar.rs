@@ -278,6 +278,41 @@ pub fn parse_snapshot(body: &Value) -> Snapshot {
     }
 }
 
+/// The event in an `eventdetail` answer.
+fn event_of(body: &Value) -> Option<Value> {
+    body.pointer("/Event/0")
+        .or_else(|| body.pointer("/Event"))
+        .filter(|e| e.is_object())
+        .cloned()
+}
+
+/// An alert as icloud.com writes one — `{guid: "<event>:<uuid>", pGuid: <event>,
+/// messageType: "message", isLocationBased: false, measurement: {weeks, days, hours,
+/// minutes, seconds, before}}` — `minutes` before the start, or at it for `0`.
+fn alarm_for(event_guid: &str, minutes: i64) -> Value {
+    let m = minutes.abs();
+    let (days, rest) = (m / 1440, m % 1440);
+    serde_json::json!({
+        "guid": format!("{event_guid}:{}", uuid::Uuid::new_v4().to_string().to_uppercase()),
+        "pGuid": event_guid,
+        "messageType": "message",
+        "isLocationBased": false,
+        "measurement": {
+            "weeks": 0, "days": days, "hours": rest / 60, "minutes": rest % 60, "seconds": 0,
+            "before": minutes > 0,
+        },
+    })
+}
+
+/// Minutes before the start an alert rings, from Apple's `measurement`; `0` at the time.
+fn minutes_of(m: &Value) -> Option<i64> {
+    let n = |k: &str| m.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let total =
+        n("weeks") * 10_080 + n("days") * 1440 + n("hours") * 60 + n("minutes") + n("seconds") / 60;
+    let before = m.get("before").and_then(Value::as_bool).unwrap_or(true);
+    Some(if before { total } else { -total })
+}
+
 /// Apple's calendar service.
 pub struct CalendarClient<'a> {
     http: &'a reqwest::Client,
@@ -321,6 +356,19 @@ impl<'a> CalendarClient<'a> {
     /// `/ca/events//<guid>`, which is a different request entirely. An account with no
     /// calendars is a real account, so it is caught here rather than sent.
     pub async fn put_event(&self, event: &Event, ctag: Option<&str>) -> Result<Snapshot> {
+        self.put_event_with_alerts(event, ctag, None).await
+    }
+
+    /// [`Self::put_event`], and when `alerts` is given, the event's alerts set to exactly
+    /// those — minutes before its start, `0` at the time of the event — as icloud.com writes
+    /// them: `Alarm` objects beside the event, each named `<event>:<uuid>`, the event listing
+    /// their guids. With `None` the alerts Apple holds are sent back as they are.
+    pub async fn put_event_with_alerts(
+        &self,
+        event: &Event,
+        ctag: Option<&str>,
+        alerts: Option<&[i64]>,
+    ) -> Result<Snapshot> {
         if event.calendar_guid.trim().is_empty() {
             return Err(Error::Protocol(
                 "an event has to go in a calendar, and this account has none yet".into(),
@@ -341,11 +389,45 @@ impl<'a> CalendarClient<'a> {
         // repeats in — and Apple takes the whole event on every write. Building one from
         // our own fields alone did not merely drop those, it cleared them: a weekly meeting
         // edited here came back a one-off with no alerts and no guests.
-        let existing = self.event_detail(event, &day).await?;
-        let body = serde_json::json!({
-            "Event": self.event_body(event, existing.as_ref()),
+        let detail = self.event_detail_body(event, &day).await?;
+        let existing = detail.as_ref().and_then(event_of);
+        let mut event_value = self.event_body(event, existing.as_ref());
+        let held: Vec<Value> = detail
+            .as_ref()
+            .and_then(|d| d.get("Alarm"))
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .filter(|a| a.get("pGuid").and_then(Value::as_str) == Some(event.guid.as_str()))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let alarms: Vec<Value> = match alerts {
+            None => held,
+            Some(minutes) => minutes
+                .iter()
+                .take(2) // as icloud.com allows: an alert and a second alert
+                .map(|m| alarm_for(&event.guid, *m))
+                .collect(),
+        };
+        // Only a change of alerts rewrites the event's list of them; otherwise it goes back
+        // exactly as Apple sent it, beside the alert objects it names.
+        if alerts.is_some() {
+            event_value["alarms"] = Value::Array(
+                alarms
+                    .iter()
+                    .filter_map(|a| a.get("guid").cloned())
+                    .collect(),
+            );
+        }
+        let mut body = serde_json::json!({
+            "Event": event_value,
             "ClientState": client_state(&event.calendar_guid, ctag),
         });
+        if !alarms.is_empty() {
+            body["Alarm"] = Value::Array(alarms);
+        }
         let path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
         let answer = self
             .post(&path, &body, &day, &day, event_zone(event).as_deref(), None)
@@ -400,6 +482,32 @@ impl<'a> CalendarClient<'a> {
     /// Treating a network blip as "new" built the save from nothing and wrote empty
     /// recurrence, alerts and guests over a real event.
     async fn event_detail(&self, event: &Event, day: &str) -> Result<Option<Value>> {
+        Ok(self
+            .event_detail_body(event, day)
+            .await?
+            .as_ref()
+            .and_then(event_of))
+    }
+
+    /// An event's alerts as Apple holds them: minutes before its start, `0` at its time.
+    pub async fn alerts(&self, event: &Event) -> Result<Vec<i64>> {
+        let day = day_of(event.starts_at, event_zone(event).as_deref());
+        let Some(body) = self.event_detail_body(event, &day).await? else {
+            return Ok(Vec::new());
+        };
+        Ok(body
+            .get("Alarm")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|a| a.get("pGuid").and_then(Value::as_str) == Some(event.guid.as_str()))
+            .filter_map(|a| minutes_of(a.get("measurement")?))
+            .collect())
+    }
+
+    /// The whole of `eventdetail`: the event, and beside it its `Alarm`, `Invitee` and
+    /// `Recurrence` objects.
+    async fn event_detail_body(&self, event: &Event, day: &str) -> Result<Option<Value>> {
         let mut query = self.params.clone();
         query.push(("clientVersion".into(), "5.1".into()));
         query.push(("lang".into(), "en-us".into()));
@@ -426,11 +534,7 @@ impl<'a> CalendarClient<'a> {
         }
         let body: Value = serde_json::from_str(&response.text().await?)
             .map_err(|e| Error::Protocol(format!("event detail: {e}")))?;
-        Ok(body
-            .pointer("/Event/0")
-            .or_else(|| body.pointer("/Event"))
-            .filter(|e| e.is_object())
-            .cloned())
+        Ok(event_of(&body).map(|_| body))
     }
 
     /// Apple's event object, in the shape its own web client sends.
