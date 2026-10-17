@@ -102,6 +102,8 @@ export const api = {
   reminderListCreate: (title: string) => invoke<void>("reminder_list_create", { title }),
   reminderListRename: (listGuid: string, title: string) =>
     invoke<void>("reminder_list_rename", { listGuid, title }),
+  reminderListColour: (listGuid: string, colour: string) =>
+    invoke<void>("reminder_list_colour", { listGuid, colour }),
   reminderListDelete: (listGuid: string) =>
     invoke<void>("reminder_list_delete", { listGuid }),
   /** Reminders still to do holding every word typed, across every list. */

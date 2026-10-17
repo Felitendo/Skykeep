@@ -532,3 +532,16 @@
   .rx.is-searching { grid-template-rows: auto minmax(0, 1fr); }
   .rx .compact-back { align-self: flex-start; margin-bottom: 6px; }
 }
+
+/* Show List Info: a centred sheet, the list's mark large in its colour, Apple's swatches. */
+.rx-info { width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 22px 24px 18px; }
+.rx-info h2 { margin: 0; font-size: var(--t-15); font-weight: 600; }
+.rx-info-mark { display: grid; place-items: center; width: 84px; height: 84px; border-radius: 50%; color: #fff; box-shadow: 0 6px 18px color-mix(in srgb, currentColor 0%, rgba(0,0,0,0.35)); transition: background 160ms ease; }
+.rx-info-mark svg { width: 40px; height: 40px; }
+.rx-info-name { width: 100%; padding: 8px 10px; border: 1px solid var(--separator); border-radius: 8px; background: color-mix(in srgb, var(--text) 5%, transparent); font: inherit; font-size: var(--t-15); font-weight: 600; text-align: center; outline: none; }
+.rx-info-name:focus { border-color: currentColor; }
+.rx-info-colours { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+.rx-info-swatch { width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; cursor: pointer; transition: transform 120ms ease; }
+.rx-info-swatch:hover { transform: scale(1.08); }
+.rx-info-swatch.is-on { box-shadow: 0 0 0 2px var(--sheet, var(--bg)), 0 0 0 4px var(--text-3); }
+.rx-info-actions { display: flex; justify-content: space-between; width: 100%; margin-top: 4px; }

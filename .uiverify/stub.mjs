@@ -152,6 +152,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_set_done": return null;
         case "reminder_set_repeat": return null;
         case "reminder_edit": return null;
+        case "reminder_list_colour": {
+          (window.__listColours ??= []).push([args.listGuid, args.colour]);
+          const hex = { purple: "#C077DB", red: "#FF3B30", blue: "#007AFF" }[args.colour];
+          const list = reminderLists.find((l) => l.guid === args.listGuid);
+          if (list && hex) list.colour = hex;
+          return null;
+        }
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;
         case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems.filter(r => !r.completedAt);

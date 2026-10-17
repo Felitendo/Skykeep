@@ -159,6 +159,8 @@ type Selection =
 
 export function RemindersView() {
   const [lists, setLists] = useState<ReminderList[]>([]);
+  /** The list whose Show List Info sheet is open. */
+  const [infoFor, setInfoFor] = useState<ReminderList | null>(null);
   const [groups, setGroups] = useState<ReminderGroup[]>([]);
   const [folded, setFolded] = useState<Set<string>>(readFolded);
   const toggleFolded = useCallback((guid: string) => {
@@ -771,6 +773,14 @@ export function RemindersView() {
           <span className="rx-list-actions">
             <button
               className="rx-icon-button"
+              aria-label={`Show List Info for ${list.title}`}
+              title="Show List Info"
+              onClick={() => setInfoFor(list)}
+            >
+              ⓘ
+            </button>
+            <button
+              className="rx-icon-button"
               aria-label={`Rename ${list.title}`}
               title="Rename"
               onClick={() => setRenaming(list.guid)}
@@ -1220,6 +1230,86 @@ export function RemindersView() {
           </p>
         )}
       </section>
+      {infoFor && (
+        <ListInfo
+          list={infoFor}
+          onClose={() => setInfoFor(null)}
+          onDone={(title, colour) => {
+            const list = infoFor;
+            setInfoFor(null);
+            // Shown at once; Apple's answer confirms or puts it back.
+            setLists((ls) => ls.map((l) => (l.guid === list.guid
+              ? { ...l, title: title || l.title, colour: colour ? LIST_COLOURS.find((c) => c.key === colour)!.hex : l.colour }
+              : l)));
+            void listWrite(async () => {
+              if (title && title !== list.title) await api.reminderListRename(list.guid, title);
+              if (colour) await api.reminderListColour(list.guid, colour);
+            });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Apple's twelve list colours, in its picker's order, keyed as CloudKit names them. */
+const LIST_COLOURS = [
+  { key: "red", hex: "#FF3B30" }, { key: "orange", hex: "#FF9500" }, { key: "yellow", hex: "#FFCC00" },
+  { key: "green", hex: "#34C759" }, { key: "lightBlue", hex: "#51AAF2" }, { key: "blue", hex: "#007AFF" },
+  { key: "indigo", hex: "#5856D6" }, { key: "pink", hex: "#EA426A" }, { key: "purple", hex: "#C077DB" },
+  { key: "brown", hex: "#A2845E" }, { key: "gray", hex: "#5B6770" }, { key: "rose", hex: "#D9A69F" },
+] as const;
+
+/** Show List Info, as icloud.com's: the list's mark, its name, and Apple's colours. */
+function ListInfo({ list, onClose, onDone }: {
+  list: ReminderList;
+  onClose: () => void;
+  onDone: (title: string, colour: string | null) => void;
+}) {
+  const [title, setTitle] = useState(list.title);
+  const current = LIST_COLOURS.find((c) => c.hex.toLowerCase() === (list.colour ?? "").toLowerCase())?.key ?? null;
+  const [colour, setColour] = useState<string | null>(current);
+  const shown = LIST_COLOURS.find((c) => c.key === colour)?.hex ?? list.colour ?? "#007AFF";
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const done = () => onDone(title.trim(), colour !== current ? colour : null);
+  return (
+    <div className="modal-veil" onClick={onClose}>
+      <div className="modal-sheet rx-info" role="dialog" aria-label={`\u201c${list.title}\u201d Info`} onClick={(e) => e.stopPropagation()}>
+        <h2>“{list.title}” Info</h2>
+        <span className="rx-info-mark" style={{ background: shown }} aria-hidden="true">
+          <Glyph name="list" />
+        </span>
+        <input
+          className="rx-info-name"
+          value={title}
+          aria-label="List name"
+          style={{ color: shown }}
+          autoFocus
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && done()}
+        />
+        <div className="rx-info-colours" role="radiogroup" aria-label="Colour">
+          {LIST_COLOURS.map((c) => (
+            <button
+              key={c.key}
+              role="radio"
+              aria-checked={colour === c.key}
+              aria-label={c.key}
+              className={`rx-info-swatch${colour === c.key ? " is-on" : ""}`}
+              style={{ background: c.hex }}
+              onClick={() => setColour(c.key)}
+            />
+          ))}
+        </div>
+        <div className="rx-info-actions">
+          <button className="quiet" onClick={onClose}>Cancel</button>
+          <button className="primary" onClick={done} disabled={!title.trim()}>Done</button>
+        </div>
+      </div>
     </div>
   );
 }
