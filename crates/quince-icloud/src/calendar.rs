@@ -319,6 +319,25 @@ fn minutes_of(m: &Value) -> Option<i64> {
 pub enum Scope {
     /// This one alone; the rest of the series as it was.
     This,
+    /// The whole series: what changed here — and, if this occurrence was moved, the series
+    /// moved by as much — every occurrence, past and future.
+    All,
+}
+
+/// The series an occurrence's id belongs to — `<series>__<start>` — or the id itself.
+#[must_use]
+pub fn series_of(guid: &str) -> &str {
+    guid.split("__").next().unwrap_or(guid)
+}
+
+/// Whether an `Alarm` or `Recurrence` object Apple holds belongs to this event. Its `pGuid` is
+/// the series' id, not an occurrence's: matching it against an occurrence's id left the repeat
+/// out of an "all events" save, and Apple took the series as no longer repeating.
+fn belongs_to(object: &Value, event_guid: &str) -> bool {
+    object
+        .get("pGuid")
+        .and_then(Value::as_str)
+        .is_some_and(|p| p == event_guid || p == series_of(event_guid))
 }
 
 /// Whether `guid` names one occurrence of a repeating event rather than an event: Apple gives
@@ -442,6 +461,46 @@ impl<'a> CalendarClient<'a> {
         // edited here came back a one-off with no alerts and no guests.
         let detail = self.event_detail_body(event, &day).await?;
         let existing = detail.as_ref().and_then(event_of);
+        // For the whole series from one of its occurrences, the series keeps its own dates —
+        // icloud.com sends the master's start and end — moved by however far this occurrence
+        // was moved here, so dragging Tuesday's 10:00 to 11:00 moves every one to 11:00.
+        let shifted;
+        let event = match (scope, existing.as_ref()) {
+            (Some(Scope::All), Some(found))
+                if occurrence && found.get("recurrenceMaster") != Some(&Value::Bool(true)) =>
+            {
+                let dates = dates_zone(event.all_day, event.timezone.as_deref());
+                let was = found
+                    .get("startDate")
+                    .map(|d| parse_apple_date(d, dates.as_deref()))
+                    .transpose()?;
+                let master_start = found
+                    .get("masterStartDate")
+                    .map(|d| parse_apple_date(d, dates.as_deref()))
+                    .transpose()?;
+                let master_end = found
+                    .get("masterEndDate")
+                    .map(|d| parse_apple_date(d, dates.as_deref()))
+                    .transpose()?;
+                match (was, master_start, master_end) {
+                    (Some(was), Some(ms), Some(me)) => {
+                        let moved = event.starts_at - was;
+                        let mut e = event.clone();
+                        e.starts_at = ms + moved;
+                        e.ends_at = me + moved + ((event.ends_at - event.starts_at) - (me - ms));
+                        shifted = e;
+                        &shifted
+                    }
+                    _ => {
+                        return Err(Error::Refused(
+                            "Apple did not say where this series begins, so nothing was changed."
+                                .into(),
+                        ))
+                    }
+                }
+            }
+            _ => event,
+        };
         let mut event_value = self.event_body(event, existing.as_ref());
         let held: Vec<Value> = detail
             .as_ref()
@@ -449,7 +508,7 @@ impl<'a> CalendarClient<'a> {
             .and_then(Value::as_array)
             .map(|all| {
                 all.iter()
-                    .filter(|a| a.get("pGuid").and_then(Value::as_str) == Some(event.guid.as_str()))
+                    .filter(|a| belongs_to(a, &event.guid))
                     .cloned()
                     .collect()
             })
@@ -485,7 +544,7 @@ impl<'a> CalendarClient<'a> {
             .and_then(Value::as_array)
             .map(|all| {
                 all.iter()
-                    .filter(|r| r.get("pGuid").and_then(Value::as_str) == Some(event.guid.as_str()))
+                    .filter(|r| belongs_to(r, &event.guid))
                     .cloned()
                     .collect()
             })
@@ -515,12 +574,19 @@ impl<'a> CalendarClient<'a> {
             }
         }
         let mut path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
-        if let Some(Scope::This) = scope {
-            // As icloud.com marks "only this event": an exception to the series that had one.
-            body["Event"]["recurrenceException"] = Value::Bool(true);
-            body["Event"]["hadRecurrence"] = Value::Bool(true);
-            body["Event"]["changeRecurring"] = Value::from("this");
-            path.push_str("/this");
+        match scope {
+            Some(Scope::This) => {
+                // As icloud.com marks "only this event": an exception to the series that had one.
+                body["Event"]["recurrenceException"] = Value::Bool(true);
+                body["Event"]["hadRecurrence"] = Value::Bool(true);
+                body["Event"]["changeRecurring"] = Value::from("this");
+                path.push_str("/this");
+            }
+            Some(Scope::All) if occurrence => {
+                body["Event"]["changeRecurring"] = Value::from("all");
+                path.push_str("/all");
+            }
+            _ => {}
         }
         let answer = self
             .post(&path, &body, &day, &day, event_zone(event).as_deref(), None)
@@ -563,8 +629,10 @@ impl<'a> CalendarClient<'a> {
             "ClientState": client_state(&event.calendar_guid, ctag),
         });
         let mut path = format!("/ca/events/{}/{}", event.calendar_guid, event.guid);
-        if let Some(Scope::This) = scope {
-            path.push_str("/this");
+        match scope {
+            Some(Scope::This) => path.push_str("/this"),
+            Some(Scope::All) if is_occurrence(&event.guid) => path.push_str("/all"),
+            _ => {}
         }
         match self
             .post(
@@ -612,7 +680,7 @@ impl<'a> CalendarClient<'a> {
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter(|a| a.get("pGuid").and_then(Value::as_str) == Some(event.guid.as_str()))
+            .filter(|a| belongs_to(a, &event.guid))
             .filter_map(|a| minutes_of(a.get("measurement")?))
             .collect())
     }
