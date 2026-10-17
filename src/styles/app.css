@@ -1775,3 +1775,5 @@
 /* On the selection's blue an icon turns white, as Finder's do; a blue folder on blue vanished. */
 .drive-rows:not(.is-grid) .drive-row.is-selected .drive-badge > svg { filter: brightness(0) invert(1); }
 .drive-row.is-selected .drive-more { color: #fff; }
+/* A time typed as said: the width of "12:45 PM", right-aligned figures, as macOS's. */
+.time-field { width: 8.5ch; text-align: center; font-variant-numeric: tabular-nums; }

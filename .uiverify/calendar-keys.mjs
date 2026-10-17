@@ -38,5 +38,20 @@ await page.waitForTimeout(300);
 const sent = await page.evaluate(() => window.__nudges);
 ok(sent.length === 1 && sent[0].guid === "e1" && (sent[0].startsAt % 3600) === 900,
   `Ctrl+Option+Down moves the event 15 minutes later  ${JSON.stringify(sent.map((d) => d.startsAt % 3600))}`);
+// A time is typed as said, and stepped with the arrows.
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+await page.evaluate(() => { window.__nudges = []; });
+await page.locator(".cx-block", { hasText: "Design review" }).first().click();
+await page.waitForTimeout(250);
+const start = page.getByLabel(/^Starts time$/i).first();
+await start.fill("4:30pm");
+await start.press("Enter");
+await page.waitForTimeout(150);
+const typed = await start.inputValue();
+ok(/4:30/.test(typed) && /PM|16/i.test(typed), `"4:30pm" typed into a time is read  [${typed}]`);
+await start.press("ArrowUp");
+await page.waitForTimeout(150);
+ok(/4:45/.test(await start.inputValue()), `the arrows step it fifteen minutes  [${await start.inputValue()}]`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

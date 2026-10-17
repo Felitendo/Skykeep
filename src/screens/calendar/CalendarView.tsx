@@ -1,5 +1,6 @@
 import { Notice } from "../../components/Notice";
 import { Portal } from "../../components/Portal";
+import { TimeField } from "../../components/TimeField";
 import { Search } from "lucide-react";
 import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1497,13 +1498,12 @@ function When({
         onChange={(e) => e.target.value && onChange(fromLocalInput(`${e.target.value}T${time}`))}
       />
       {!allDay && (
-        <input
-          type="time"
-          aria-label={`${label} time`}
-          step={300}
-          value={time}
-          readOnly={!editable}
-          onChange={(e) => e.target.value && onChange(fromLocalInput(`${day}T${e.target.value}`))}
+        <TimeField
+          label={`${label} time`}
+          hours={d.getHours()}
+          minutes={d.getMinutes()}
+          disabled={!editable}
+          onChange={(h, m) => onChange(fromLocalInput(`${day}T${pad(h)}:${pad(m)}`))}
         />
       )}
     </span>

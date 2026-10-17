@@ -131,7 +131,7 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   const covers = made.pop && made.block && made.pop[0] < made.block[1] && made.pop[1] > made.block[0]
     && made.pop[2] < made.block[3] && made.pop[3] > made.block[2];
   ok(!covers, "the popover sits beside the new event, not over it", `the popover covers it: ${JSON.stringify(made)}`);
-  const fields = await page.locator(".cx-popover .cx-when input").evaluateAll((els) => els.map((e) => e.type));
+  const fields = await page.locator(".cx-popover .cx-when input").evaluateAll((els) => els.map((e) => (e.classList.contains("time-field") ? "time" : e.type)));
   ok(JSON.stringify(fields) === JSON.stringify(["date", "time", "date", "time"]),
     "a start and an end, each a date and a time", `the popover's fields are ${JSON.stringify(fields)}`);
   await page.keyboard.press("Escape");

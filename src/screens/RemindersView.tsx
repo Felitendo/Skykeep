@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Notice } from "../components/Notice";
 import { Portal } from "../components/Portal";
+import { TimeField } from "../components/TimeField";
 import { ChevronLeft } from "lucide-react";
 import {
   api,
@@ -1360,13 +1361,12 @@ function DueField({ reminder, onChange }: { reminder: Reminder; onChange: (day: 
         />
         <span>Time</span>
       </label>
-      {time !== null && (
-        <input
-          type="time"
-          aria-label={`Time of day for ${reminder.title}`}
-          defaultValue={time}
-          key={`t${reminder.dueAt}`}
-          onBlur={(e) => e.target.value && e.target.value !== time && onChange(day, e.target.value)}
+      {time !== null && at && (
+        <TimeField
+          label={`Time of day for ${reminder.title}`}
+          hours={at.getHours()}
+          minutes={at.getMinutes()}
+          onChange={(h, m) => onChange(day, `${pad(h)}:${pad(m)}`)}
         />
       )}
     </div>
