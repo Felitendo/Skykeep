@@ -529,7 +529,8 @@ export function NotesView() {
                 className={`notes-folder-row${folderMenu?.folder.guid === f.guid ? " is-menu" : ""}`}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  openMenu(e.clientX, e.clientY, false);
+                  // Apple's own "Notes" folder has no menu: it cannot be renamed or deleted.
+                  if (own) openMenu(e.clientX, e.clientY, false);
                 }}
               >
                 <button

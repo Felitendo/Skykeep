@@ -602,10 +602,10 @@
   box-shadow: var(--shadow-sheet);
   /* Opacity and a small lift only, on the compositor: scaling from the corner read as a
      jump toward the click, and re-ran on every re-anchor. */
-  animation: cx-pop 140ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
-  will-change: opacity, transform;
+  /* A short fade and nothing else — no movement, no layer hint — as a macOS popover. */
+  animation: cx-pop 110ms ease-out both;
 }
-@keyframes cx-pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes cx-pop { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .cx-popover { animation: none; } }
 .cx-popover.is-info { gap: 4px; width: 280px; padding: 14px 16px; }
 .cx-info-title { margin: 0 0 2px; font-size: var(--t-17); font-weight: 700; line-height: 1.25; }

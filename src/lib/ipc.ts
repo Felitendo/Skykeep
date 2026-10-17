@@ -292,6 +292,8 @@ export type ReminderEdit = {
   title?: string;
   notes?: string | null;
   dueAt?: number | null;
+  /** With `dueAt`: a day, not a time. */
+  allDay?: boolean;
   flagged?: boolean;
   completed?: boolean;
   /** Apple's scale: 0 none, 1 high, 5 medium, 9 low. */
@@ -319,6 +321,8 @@ export type Reminder = {
   recurInterval: number | null;
   /** The section of its list this sits in, if any. */
   sectionGuid?: string | null;
+  /** Due on a day rather than at a time. */
+  allDay?: boolean;
   etag: string | null;
 };
 

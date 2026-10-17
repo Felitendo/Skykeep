@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Notice } from "../components/Notice";
+import { Portal } from "../components/Portal";
 import { ChevronLeft } from "lucide-react";
 import {
   api,
@@ -66,10 +67,16 @@ function daysApart(from: Date, to: Date): number {
  * "9:30 PM" and not "Tomorrow 9:30 PM". Saying it twice is the sort of thing that makes a
  * screen read as almost-right.
  */
-function dueLabel(seconds: number, dated = false): { text: string; overdue: boolean } {
+function dueLabel(seconds: number, dated = false, allDay = false): { text: string; overdue: boolean } {
   const due = new Date(seconds * 1000);
   const now = new Date();
   const days = daysApart(now, due);
+  // A day has no time to show, and is overdue only once the day itself has passed.
+  if (allDay) {
+    if (dated || days === 0) return { text: dated ? "" : "Today", overdue: false };
+    if (days === 1) return { text: "Tomorrow", overdue: false };
+    return { text: due.toLocaleDateString(undefined, { day: "numeric", month: "short" }), overdue: days < 0 };
+  }
   const time = due.toLocaleTimeString(undefined, {
     hour: "numeric",
     minute: "2-digit",
@@ -146,13 +153,22 @@ function repeatWord(r: Reminder): string | null {
   return ["Daily", "Weekly", "Monthly", "Yearly"][r.recurFrequency] ?? "Repeats";
 }
 
-/** `YYYY-MM-DDTHH:mm` for a datetime-local input, in local time. */
-function toInputValue(seconds: number | null): string {
-  if (seconds === null) return "";
-  const d = new Date(seconds * 1000);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
+/**
+ * An all-day date as Apple keeps it is that day's midnight in UTC. Shown and grouped here at
+ * the same day's local midnight — read as a moment, the 17th's UTC midnight is the evening of
+ * the 16th west of Greenwich, and a day reminder would drift into the day before.
+ */
+const dayToLocal = (utc: number) => {
+  const d = new Date(utc * 1000);
+  return Math.floor(new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()).getTime() / 1000);
+};
+const dayToUtc = (value: string) => {
+  const [y, m, d] = value.split("-").map(Number);
+  return Math.floor(Date.UTC(y, m - 1, d) / 1000);
+};
+const asShown = (r: Reminder): Reminder =>
+  r.allDay && r.dueAt !== null ? { ...r, dueAt: dayToLocal(r.dueAt) } : r;
+
 
 type Selection =
   { type: "smart"; kind: SmartList } | { type: "list"; guid: string };
@@ -251,7 +267,7 @@ export function RemindersView() {
       : selection.type === "smart"
         ? await api.remindersSmart(selection.kind, endOfToday())
         : await api.remindersIn(selection.guid, showDone);
-    const fresh = Array.isArray(found) ? found : [];
+    const fresh = (Array.isArray(found) ? found : []).map(asShown);
     setItems(fresh);
     return fresh;
   }, [selection, showDone, query, searching]);
@@ -361,12 +377,16 @@ export function RemindersView() {
           patch(r.guid, { title: title.trim() }),
         )
       : Promise.resolve();
-  const setDue = (r: Reminder, value: string) =>
-    write(r, () =>
-      api.reminderEdit(r.guid, r.listGuid, {
-        dueAt: value ? Math.floor(new Date(value).getTime() / 1000) : null,
-      }),
+  /** A date, and whether it has a time — the phone's Date and Time switches. */
+  const setDue = (r: Reminder, day: string, time: string | null) => {
+    const allDay = Boolean(day) && time === null;
+    const dueAt = !day ? null : allDay ? dayToUtc(day) : Math.floor(new Date(`${day}T${time}`).getTime() / 1000);
+    return write(
+      r,
+      () => api.reminderEdit(r.guid, r.listGuid, { dueAt, allDay }),
+      patch(r.guid, { dueAt: allDay && dueAt !== null ? dayToLocal(dueAt) : dueAt, allDay }),
     );
+  };
   const setNotes = (r: Reminder, notes: string) =>
     write(r, () =>
       api.reminderEdit(r.guid, r.listGuid, { notes: notes.trim() || null }),
@@ -1010,7 +1030,7 @@ export function RemindersView() {
             <ul className="rx-rows">
               {section.rows.map(({ reminder, depth }) => {
                 const due =
-                  reminder.dueAt === null ? null : dueLabel(reminder.dueAt, section.dated);
+                  reminder.dueAt === null ? null : dueLabel(reminder.dueAt, section.dated, reminder.allDay);
                 const isOpen = openGuid === reminder.guid;
                 const repeat = repeatLabel(reminder);
                 const justMoved = moved?.guid === reminder.guid ? moved.text : null;
@@ -1094,14 +1114,7 @@ export function RemindersView() {
 
                       {isOpen && (
                         <div className="rx-detail">
-                          <label className="rx-field">
-                            <span>Date</span>
-                            <input
-                              type="datetime-local"
-                              defaultValue={toInputValue(reminder.dueAt)}
-                              onBlur={(e) => void setDue(reminder, e.target.value)}
-                            />
-                          </label>
+<DueField reminder={reminder} onChange={(day, time) => void setDue(reminder, day, time)} />
                           <div className="rx-field">
                             <span>Repeat</span>
                             <Picker
@@ -1277,6 +1290,7 @@ function ListInfo({ list, onClose, onDone }: {
   }, [onClose]);
   const done = () => onDone(title.trim(), colour !== current ? colour : null);
   return (
+    <Portal>
     <div className="modal-veil" onClick={onClose}>
       <div className="modal-sheet rx-info" role="dialog" aria-label={`\u201c${list.title}\u201d Info`} onClick={(e) => e.stopPropagation()}>
         <h2>“{list.title}” Info</h2>
@@ -1310,6 +1324,51 @@ function ListInfo({ list, onClose, onDone }: {
           <button className="primary" onClick={done} disabled={!title.trim()}>Done</button>
         </div>
       </div>
+    </div>
+    </Portal>
+  );
+}
+
+/**
+ * The phone's date controls: a date, and a Time switch. Off, the reminder is due on the
+ * day — all day, no alert; on, at the time chosen. Each change is saved when it is made.
+ */
+function DueField({ reminder, onChange }: { reminder: Reminder; onChange: (day: string, time: string | null) => void }) {
+  const at = reminder.dueAt === null ? null : new Date(reminder.dueAt * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const day = at ? `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}` : "";
+  const time = at && !reminder.allDay ? `${pad(at.getHours())}:${pad(at.getMinutes())}` : null;
+  return (
+    <div className="rx-field rx-due">
+      <span>Date</span>
+      <input
+        type="date"
+        aria-label={`Date for ${reminder.title}`}
+        defaultValue={day}
+        key={`d${reminder.dueAt}`}
+        // A new date keeps the time already set; a first date is a day, as on the phone.
+        onBlur={(e) => e.target.value !== day && onChange(e.target.value, e.target.value ? time : null)}
+      />
+      <label className="rx-due-switch">
+        <input
+          type="checkbox"
+          role="switch"
+          aria-label={`Time for ${reminder.title}`}
+          checked={time !== null}
+          disabled={!day}
+          onChange={(e) => onChange(day, e.target.checked ? "09:00" : null)}
+        />
+        <span>Time</span>
+      </label>
+      {time !== null && (
+        <input
+          type="time"
+          aria-label={`Time of day for ${reminder.title}`}
+          defaultValue={time}
+          key={`t${reminder.dueAt}`}
+          onBlur={(e) => e.target.value && e.target.value !== time && onChange(day, e.target.value)}
+        />
+      )}
     </div>
   );
 }

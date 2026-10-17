@@ -1,3 +1,4 @@
+import { Portal } from "./Portal";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export type MenuEntry = { label: string; run: () => void; danger?: boolean } | null;
@@ -41,6 +42,7 @@ export function RowMenu({ at, entries, onClose }: {
   const pick = (i: number) => { onClose(); items[i]?.run(); };
   let n = -1;
   return (
+    <Portal>
     <div
       ref={box}
       className="row-menu"
@@ -72,6 +74,7 @@ export function RowMenu({ at, entries, onClose }: {
         );
       })}
     </div>
+    </Portal>
   );
 }
 

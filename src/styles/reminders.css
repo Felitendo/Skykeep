@@ -545,3 +545,7 @@
 .rx-info-swatch:hover { transform: scale(1.08); }
 .rx-info-swatch.is-on { box-shadow: 0 0 0 2px var(--sheet, var(--bg)), 0 0 0 4px var(--text-3); }
 .rx-info-actions { display: flex; justify-content: space-between; width: 100%; margin-top: 4px; }
+
+/* Date, then the Time switch, then the time once it is on — the phone's order. */
+.rx-due { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rx-due-switch { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-13); color: var(--text-2); }

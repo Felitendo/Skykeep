@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Notice } from "../components/Notice";
+import { Portal } from "../components/Portal";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
@@ -193,6 +194,7 @@ function InfoSheet({ item, where, thumb, onClose }: { item: DriveItem; where: st
     ["Modified", when(item.modifiedAt ?? item.createdAt)],
   ];
   return (
+    <Portal>
     <div className="modal-veil" onClick={onClose}>
       <div className="modal-sheet info-sheet" role="dialog" aria-label="File Info" onClick={(e) => e.stopPropagation()}>
         <header className="info-head">
@@ -210,6 +212,7 @@ function InfoSheet({ item, where, thumb, onClose }: { item: DriveItem; where: st
         </dl>
       </div>
     </div>
+    </Portal>
   );
 }
 
@@ -1014,6 +1017,7 @@ function MoveDialog({
   }, []);
 
   return (
+    <Portal>
     <div className="modal-veil" onClick={onCancel}>
       <div
         className="modal-sheet move-sheet"
@@ -1079,5 +1083,6 @@ function MoveDialog({
         </div>
       </div>
     </div>
+    </Portal>
   );
 }

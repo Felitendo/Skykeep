@@ -193,8 +193,9 @@
   padding: 0 18px 24px 0;
 }
 .note-editor textarea {
+  /* The whole pane, as Notes uses it. Held to 76ch, the text sat in a narrow column with its
+     scrollbar stranded mid-window and the right half of the screen empty. */
   width: 100%;
-  max-width: 76ch;
   padding: 0;
   border: 0;
   background: none;

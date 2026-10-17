@@ -1,4 +1,5 @@
 import { Notice } from "../../components/Notice";
+import { Portal } from "../../components/Portal";
 import { Search } from "lucide-react";
 import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1599,6 +1600,7 @@ function EventPopover({
       ? sameDay ? day(start) : `${day(start)} – ${day(end)}`
       : sameDay ? `${day(start)}, ${time(start)} – ${time(end)}` : `${day(start)}, ${time(start)} – ${day(end)}, ${time(end)}`;
     return (
+      <Portal>
       <form
         ref={box}
         className="cx-popover is-info"
@@ -1616,10 +1618,12 @@ function EventPopover({
         )}
         {draft.notes && <p className="cx-info-notes">{draft.notes}</p>}
       </form>
+      </Portal>
     );
   }
 
   return (
+    <Portal>
     <form
       ref={box}
       className="cx-popover"
@@ -1738,6 +1742,7 @@ function EventPopover({
         </span>
       </div>
     </form>
+    </Portal>
   );
 }
 

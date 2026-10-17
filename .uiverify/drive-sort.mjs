@@ -58,6 +58,17 @@ const tops = async () => page.evaluate(() => [...document.querySelectorAll(".dri
 ok(new Set((await tops()).slice(0, 3)).size === 1, "Grid sets items side by side");
 ok((await page.locator(".drive-row", { hasText: "Semester Plan" }).locator("img.drive-thumb").count()) === 1,
   "a file Apple has a picture of shows it, as icloud.com's grid does");
+// In Grid, a tile's menu is a menu — not the window's width — and Get Info sits mid-window.
+await page.locator(".drive-row", { hasText: "Semester Plan" }).click({ button: "right" });
+await page.waitForTimeout(150);
+const menuBox = await page.locator(".row-menu").boundingBox();
+ok(menuBox && menuBox.width < 320, `a tile's menu is menu-sized  [${Math.round(menuBox?.width ?? 0)}px]`);
+await page.getByRole("menuitem", { name: "Get Info" }).click();
+await page.waitForTimeout(250);
+const sheet = await page.locator(".info-sheet").boundingBox();
+const mid = sheet ? Math.abs(sheet.x + sheet.width / 2 - 600) : 999;
+ok(mid < 30, `Get Info opens in the middle of the window  [${Math.round(mid)}px off]`);
+await page.keyboard.press("Escape");
 await page.reload({ waitUntil: "networkidle" });
 await openScreen(page, "iCloud Drive");
 await page.waitForTimeout(400);
