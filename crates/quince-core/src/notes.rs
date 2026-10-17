@@ -327,6 +327,37 @@ impl Library {
     /// The preview is a truncation, so it is put in `snippet` — which is only ever displayed —
     /// and never in `body`, which is what an editor would save back. A body that came back
     /// short and got written would take the rest of the note with it.
+    /// One note by record name, wherever it is filed — Recently Deleted too — as `notes_in`
+    /// gives it: no body. One row by key, where finding it through `notes_in` read every note.
+    pub fn note(&self, guid: &str) -> Result<Option<Note>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT guid, folder_guid, title,
+                        coalesce(snippet, substr(body, 1, 200)), locked, pinned,
+                        created_at, modified_at, editable, etag
+                 FROM notes WHERE guid = ?1",
+                params![guid],
+                |row| {
+                    Ok(Note {
+                        guid: row.get(0)?,
+                        folder_guid: row.get(1)?,
+                        title: row.get(2)?,
+                        snippet: row.get(3)?,
+                        body: None,
+                        locked: row.get::<_, i64>(4)? != 0,
+                        pinned: row.get::<_, i64>(5)? != 0,
+                        created_at: row.get(6)?,
+                        modified_at: row.get(7)?,
+                        editable: row.get::<_, i64>(8)? != 0,
+                        etag: row.get(9)?,
+                        runs: None,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     pub fn notes_in(&self, folder_guid: Option<&str>) -> Result<Vec<Note>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, folder_guid, title,

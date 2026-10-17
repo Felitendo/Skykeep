@@ -978,15 +978,11 @@ async fn resync_notes(
 /// One note, by record name. `None` once Apple no longer has it.
 async fn note_by_guid(data: &State<'_, Data>, guid: &str) -> Result<Note, String> {
     let library = data.0.lock().await;
-    // Recently Deleted too: "All" leaves it out, and Delete Now and Recover act on what is
-    // in it — looking only in "All" answered every one of them "no longer in the library".
-    let all = library.notes_in(None).map_err(|e| e.to_string())?;
-    let trash = library
-        .notes_in(Some(quince_core::notes::TRASH_FOLDER))
-        .map_err(|e| e.to_string())?;
-    all.into_iter()
-        .chain(trash)
-        .find(|n| n.guid == guid)
+    // Wherever it is filed, Recently Deleted included: Delete Now and Recover act on notes
+    // there, and looking only in "All" answered each of them "no longer in the library".
+    library
+        .note(guid)
+        .map_err(|e| e.to_string())?
         .ok_or_else(|| "That note is no longer in the local library.".into())
 }
 
@@ -1138,11 +1134,7 @@ async fn note_create(
     // pasting, lost the paste's save. Saving reads the record from Apple, so a local stand-in
     // with no tag is enough until the feed catches up.
     let mut library = data.0.lock().await;
-    let known = library
-        .notes_in(None)
-        .map_err(|e| e.to_string())?
-        .iter()
-        .any(|n| n.guid == guid);
+    let known = library.note(&guid).map_err(|e| e.to_string())?.is_some();
     if !known {
         let (title, snippet) = quince_icloud::notes::title_and_snippet(&body);
         let now = std::time::SystemTime::now()
