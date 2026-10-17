@@ -1753,6 +1753,28 @@ pub async fn delete_list_cloudkit(
     list_guid: &str,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    // The reminders in it go with it. Marking only the list left them alive in a list nobody
+    // can see: Reminders hid them, but Calendar on the phone still showed every one with a
+    // date — a "Daily test" ringing from a list deleted days before. Found from Apple's own
+    // records, so the completed copies Apple's server made of a repeating one go too.
+    let walk = client.all_records(ZONE, None).await?;
+    for r in walk.records.iter().filter(|r| in_list(r, list_guid)) {
+        let Some(guid) = r.get("recordName").and_then(Value::as_str) else {
+            continue;
+        };
+        client
+            .update_record_signed(
+                ZONE,
+                guid,
+                "Reminder",
+                None,
+                serde_json::json!({
+                    "Deleted": { "type": "NUMBER_INT64", "value": 1 },
+                    "LastModifiedDate": { "type": "TIMESTAMP", "value": now_millis() },
+                }),
+            )
+            .await?;
+    }
     client
         .update_record_signed(
             ZONE,
@@ -1765,6 +1787,15 @@ pub async fn delete_list_cloudkit(
         )
         .await?;
     Ok(())
+}
+
+/// Whether a record is a live reminder in this list.
+fn in_list(r: &Value, list_guid: &str) -> bool {
+    r.get("recordType").and_then(Value::as_str) == Some("Reminder")
+        && r.pointer("/fields/Deleted/value").and_then(Value::as_i64) != Some(1)
+        && r.pointer("/fields/List/value/recordName")
+            .and_then(Value::as_str)
+            == Some(list_guid)
 }
 
 /// Tick a CloudKit reminder off, or put it back.
@@ -2658,16 +2689,55 @@ mod list_write_tests {
         assert!(op["record"]["fields"].get("Deleted").is_none());
     }
 
-    /// Deleting marks the flag Apple's own clients use rather than destroying the record.
+    /// Deleting marks the flag Apple's own clients use rather than destroying the record —
+    /// and the list's live reminders go with it, so none is left in a list nobody can see,
+    /// still showing in the phone's Calendar. Nothing in another list is touched.
     #[tokio::test]
     async fn deleting_marks_rather_than_destroys() {
         let server = accepting().await;
+        let reminder = |name: &str, list: &str, deleted: i64| {
+            json!({
+                "recordName": name, "recordType": "Reminder", "recordChangeTag": "t",
+                "fields": { "List": { "value": { "recordName": list } }, "Deleted": { "value": deleted } },
+            })
+        };
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "zones": [{
+                "records": [reminder("Reminder/in", "List/a", 0), reminder("Reminder/other", "List/b", 0), reminder("Reminder/gone", "List/a", 1)],
+                "syncToken": "s", "moreComing": false,
+            }] })))
+            .mount(&server)
+            .await;
         delete_list_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], "List/a")
             .await
             .unwrap();
-        let op = sent(&server).await;
-        assert_eq!(op["operationType"], "update");
-        assert_eq!(op["record"]["fields"]["Deleted"]["value"], 1);
+        let written: Vec<(String, Value)> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .map(|r| {
+                let op = serde_json::from_slice::<Value>(&r.body).unwrap()["operations"][0].clone();
+                (
+                    op["record"]["recordName"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    op["record"]["fields"]["Deleted"]["value"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            written,
+            [
+                ("Reminder/in".to_string(), json!(1)),
+                ("List/a".to_string(), json!(1))
+            ],
+            "the list's live reminder, then the list"
+        );
+        let _ = sent(&server).await;
     }
 
     #[tokio::test]
