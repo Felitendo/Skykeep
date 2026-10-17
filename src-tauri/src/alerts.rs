@@ -274,3 +274,131 @@ mod tests {
         assert!(lib.due_alarms(now).unwrap().is_empty());
     }
 }
+
+/// Calendar alerts on the desktop, rung as the phone rings them.
+///
+/// Apple keeps an event's alerts beside it, read one event at a time, so this looks only at
+/// what is coming: the events starting in the next two days, their alerts asked for once and
+/// asked again only when the event changes. Each alert is recorded as rung before it shows,
+/// under the same rule as reminders' — never twice, and one missed by more than a few hours
+/// is let go rather than shown late.
+pub fn spawn_events(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // Alerts already read, by event: its version, and minutes before its start.
+        let mut known: std::collections::HashMap<String, (Option<String>, Vec<i64>)> =
+            std::collections::HashMap::new();
+        loop {
+            let at = now();
+            let coming: Vec<quince_core::calendar::Event> = {
+                let data = app.state::<Data>();
+                let library = data.0.lock().await;
+                library
+                    .events_starting_between(at - STILL_WORTH_SAYING, at + 2 * 86_400)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|(guid, _)| !guid.starts_with("quince:"))
+                    .filter_map(|(guid, _)| library.event(&guid).ok().flatten())
+                    .collect()
+            };
+            // Ask for the alerts of any event not yet read, or changed since.
+            let stale: Vec<_> = coming
+                .iter()
+                .filter(|e| known.get(&e.guid).is_none_or(|(tag, _)| *tag != e.etag))
+                .cloned()
+                .collect();
+            if !stale.is_empty() {
+                let session = {
+                    let auth = app.state::<Auth>();
+                    let client = auth.client.lock().await;
+                    client
+                        .session()
+                        .service_url("calendar")
+                        .map(|root| (client.http().clone(), root, client.service_params()))
+                };
+                if let Some((http, root, params)) = session {
+                    let cal = quince_icloud::calendar::CalendarClient::new(&http, &root, params);
+                    for e in &stale {
+                        if let Ok(alerts) = cal.alerts(e).await {
+                            known.insert(e.guid.clone(), (e.etag.clone(), alerts));
+                        }
+                    }
+                }
+            }
+            let mut next: Option<i64> = None;
+            for e in &coming {
+                let Some((_, alerts)) = known.get(&e.guid) else {
+                    continue;
+                };
+                for minutes in alerts {
+                    let fires_at = e.starts_at - minutes * 60;
+                    if fires_at > at {
+                        next = Some(next.map_or(fires_at, |n| n.min(fires_at)));
+                        continue;
+                    }
+                    if at - fires_at > STILL_WORTH_SAYING {
+                        continue;
+                    }
+                    let key = format!("event:{}:{minutes}", e.guid);
+                    let ring = {
+                        let data = app.state::<Data>();
+                        let mut library = data.0.lock().await;
+                        !library.alarm_already_fired(&key, fires_at).unwrap_or(true)
+                            && library.mark_alarm_fired(&key, fires_at, at).is_ok()
+                    };
+                    if ring {
+                        show_event(app.clone(), e.clone(), *minutes);
+                    }
+                }
+            }
+            // Until the next alert, but look again every two minutes for new and moved events.
+            let wait = next.map_or(120, |t| (t - at).clamp(1, 120));
+            tokio::time::sleep(Duration::from_secs(u64::try_from(wait).unwrap_or(120))).await;
+        }
+    });
+}
+
+/// "Dentist" — "In 15 minutes · 4:30 PM", as Calendar words an alert.
+fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64) {
+    std::thread::spawn(move || {
+        let when = jiff::Timestamp::from_second(event.starts_at)
+            .map(|t| {
+                t.to_zoned(jiff::tz::TimeZone::system())
+                    .strftime("%-I:%M %p")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let lead = match minutes {
+            0 => "Now".to_string(),
+            m if m % 1440 == 0 => {
+                format!("In {} day{}", m / 1440, if m == 1440 { "" } else { "s" })
+            }
+            m if m % 60 == 0 => format!("In {} hour{}", m / 60, if m == 60 { "" } else { "s" }),
+            m if m > 0 => format!("In {m} minutes"),
+            m => format!("Started {} minutes ago", -m),
+        };
+        let mut body = if event.all_day {
+            lead
+        } else {
+            format!("{lead} · {when}")
+        };
+        if let Some(place) = event.location.as_deref().filter(|p| !p.trim().is_empty()) {
+            body.push_str(&format!("\n{place}"));
+        }
+        let shown = notify_rust::Notification::new()
+            .appname("Quince")
+            .summary(&event.title)
+            .body(&body)
+            .icon(icon_path(&app).unwrap_or("quince"))
+            .hint(notify_rust::Hint::Category("calendar".into()))
+            .hint(notify_rust::Hint::DesktopEntry("quince".into()))
+            .action("default", "Open")
+            .show();
+        if let Ok(handle) = shown {
+            handle.wait_for_action(|action| {
+                if action == "default" {
+                    crate::show_window(&app);
+                }
+            });
+        }
+    });
+}

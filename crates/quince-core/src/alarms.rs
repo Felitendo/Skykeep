@@ -156,6 +156,15 @@ impl Library {
     }
 
     /// Remember that an alert has rung, so it never rings again. A snooze, once rung, is done.
+    /// Whether this alert, at this moment, has already had its one chance to ring.
+    pub fn alarm_already_fired(&self, key: &str, fires_at: i64) -> Result<bool> {
+        Ok(self.conn().query_row(
+            "SELECT EXISTS (SELECT 1 FROM alarm_fired WHERE alarm_id = ?1 AND fires_at = ?2)",
+            params![key, fires_at],
+            |r| r.get::<_, i64>(0),
+        )? != 0)
+    }
+
     pub fn mark_alarm_fired(&mut self, key: &str, fires_at: i64, now: i64) -> Result<()> {
         self.conn().execute(
             "INSERT OR IGNORE INTO alarm_fired (alarm_id, fires_at, fired_at) VALUES (?1, ?2, ?3)",
@@ -342,5 +351,19 @@ mod tests {
         // And snoozing again later rings again.
         lib.snooze_reminder("R", 8_200).unwrap();
         assert_eq!(lib.due_alarms(9_000).unwrap().len(), 1);
+    }
+
+    /// A calendar alert, keyed by event and lead time, rings once at its moment — and again
+    /// only if the event moves and its moment with it.
+    #[test]
+    fn an_event_alert_is_recorded_once_per_moment() {
+        let mut lib = Library::in_memory().unwrap();
+        assert!(!lib.alarm_already_fired("event:E:15", 1_000).unwrap());
+        lib.mark_alarm_fired("event:E:15", 1_000, 1_000).unwrap();
+        assert!(lib.alarm_already_fired("event:E:15", 1_000).unwrap());
+        assert!(
+            !lib.alarm_already_fired("event:E:15", 4_600).unwrap(),
+            "moved, it rings at its new time"
+        );
     }
 }

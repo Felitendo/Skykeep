@@ -1015,9 +1015,16 @@ async fn note_paragraph(
     };
     let (http, root, params) = cloudkit_context(&auth).await?;
     let note = note_by_guid(&data, &guid).await?;
-    quince_icloud::notes::set_paragraph_cloudkit(&http, &root, params.clone(), &note, start, change)
-        .await
-        .map_err(|e| e.to_string())?;
+    quince_icloud::notes::set_paragraph_cloudkit(
+        &http,
+        &root,
+        params.clone(),
+        &note,
+        start,
+        change,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     resync_notes(&http, &root, params, &data).await
 }
 
@@ -2379,6 +2386,7 @@ fn main() {
             spawn_heartbeat(Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
             alerts::spawn(app.handle().clone());
+            alerts::spawn_events(app.handle().clone());
             // A tiling compositor places, sizes and closes windows itself; a title bar with
             // minimise and maximise there only takes room and does nothing it does not. On a
             // desktop that floats windows — GNOME, KDE — it is how a window is moved, so it stays.
