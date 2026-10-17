@@ -233,7 +233,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return [noteList.length, [...per.entries()]];
         }
         case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
-        case "contact_delete": return null;
+        case "contact_delete": (window.__contactDeletes ??= []).push(args); return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;
         case "contact_lists": return !contactsFixture ? [] : (window.__lists ??= [
           { guid: "L1", name: "Family", members: ["c2"], etag: "e1" },

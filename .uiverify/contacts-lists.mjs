@@ -95,10 +95,22 @@ await page.waitForTimeout(quick);
 check((await row("Office").count()) === 0, "a deleted list leaves the column at once");
 await page.waitForTimeout(900);
 
+// Delete, inside a list, asks: out of the list, or the card everywhere.
+await row("Family").locator(".notes-folder").click();
+await page.locator(".contact-row", { hasText: "Amma" }).click();
+await page.locator(".contact-detail").getByRole("button", { name: "Delete", exact: true }).click();
+const asked = page.getByRole("alertdialog", { name: "Delete contact" });
+check(await asked.isVisible(), "deleting inside a list asks which is meant");
+await asked.getByRole("button", { name: "Remove from List" }).click();
+await page.waitForTimeout(quick);
+check((await count("Family")) === 1 && !(await people()).includes("Amma"), "Remove from List takes them out at once");
+check(!(await page.evaluate(() => window.__contactDeletes?.length)), "and the card itself is left alone");
+await page.waitForTimeout(900);
+
 const writes = await page.evaluate(() => window.__listWrites);
 check(
   JSON.stringify(writes.map((w) => Object.keys(w).sort().join(","))) ===
-    JSON.stringify(["add,guid", "add,name", "add,guid", "guid,name", "guid,remove", "add,guid", "delete,guid"]),
+    JSON.stringify(["add,guid", "add,name", "add,guid", "guid,name", "guid,remove", "add,guid", "delete,guid", "guid,remove"]),
   "each change goes to Apple as what changed, not a guessed whole list"
 );
 

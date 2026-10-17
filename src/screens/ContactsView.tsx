@@ -13,6 +13,7 @@ import {
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
+import { Portal } from "../components/Portal";
 
 /** The sidebar row that is every contact rather than a list. */
 const ALL = "";
@@ -107,6 +108,8 @@ export function ContactsView() {
   const [listMenu, setListMenu] = useState<(MenuAt & { list: ContactList }) | null>(null);
   /** A contact's menu: its actions, or — one step in — the lists it can go into. */
   const [contactMenu, setContactMenu] = useState<(MenuAt & { contact: Contact; lists: boolean }) | null>(null);
+  /** A contact being deleted while a list is open: out of the list, or gone everywhere? */
+  const [deleting, setDeleting] = useState<Contact | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
   /** List writes go to Apple one after another, in the order they were made. */
@@ -244,7 +247,7 @@ export function ContactsView() {
       null,
       { label: "Edit Contact", run: () => { setOpenGuid(c.guid); setDraft({ ...c }); } },
       { label: "Delete Contact\u2026", danger: true, run: () => {
-        if (window.confirm(`Delete ${displayName(c)}?`)) void removeContact(c.guid);
+        askDelete(c);
       } },
     ];
   };
@@ -281,6 +284,15 @@ export function ContactsView() {
       setOpenGuid(guid);
     }
   }, [draft, write]);
+
+  /**
+   * Deleting a person is not something to discover by accident. Inside a list, icloud.com
+   * asks whether the card goes or only its place in the list — the same here.
+   */
+  const askDelete = (c: Contact) => {
+    if (openList) setDeleting(c);
+    else if (window.confirm(`Delete ${displayName(c)}?`)) void removeContact(c.guid);
+  };
 
   const removeContact = useCallback(
     async (guid: string) => {
@@ -440,6 +452,26 @@ export function ContactsView() {
 
         {loaded && shown.length === 0 && !error && (
           <p className="cal-empty">{search ? "No matches." : openList ? "No one in this list yet." : "No contacts yet."}</p>
+        )}
+        {deleting && openList && (
+          <Portal>
+            <div className="modal-veil" onClick={() => setDeleting(null)}>
+              <div className="modal-sheet cx-ask" role="alertdialog" aria-label="Delete contact" onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => { if (e.key === "Escape") setDeleting(null); }}>
+                <h2>Delete {displayName(deleting)}?</h2>
+                <p>Remove this contact from &ldquo;{openList.name}&rdquo;, or delete the card from Contacts on every device.</p>
+                <div className="cx-ask-actions">
+                  <button className="primary" autoFocus onClick={() => { const c = deleting; setDeleting(null); removeFromList(openList, [c.guid]); }}>
+                    Remove from List
+                  </button>
+                  <button className="quiet danger" onClick={() => { const c = deleting; setDeleting(null); void removeContact(c.guid); }}>
+                    Delete Card
+                  </button>
+                  <button className="quiet" onClick={() => setDeleting(null)}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          </Portal>
         )}
         {contactMenu && (
           <RowMenu
@@ -682,12 +714,7 @@ export function ContactsView() {
               <button
                 className="quiet danger"
                 disabled={busy}
-                onClick={() => {
-                  // Deleting a person is not something to discover by accident.
-                  if (window.confirm(`Delete ${displayName(open)}?`)) {
-                    void removeContact(open.guid);
-                  }
-                }}
+                onClick={() => askDelete(open)}
               >
                 Delete
               </button>
