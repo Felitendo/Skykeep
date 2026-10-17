@@ -181,7 +181,8 @@ export function RemindersView() {
   const [items, setItems] = useState<Reminder[]>([]);
   const [showDone, setShowDone] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [busyGuid, setBusyGuid] = useState<string | null>(null);
+  /** Every reminder with a write still on its way — a set, since several can be at once. */
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [openGuid, setOpenGuid] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [newList, setNewList] = useState("");
@@ -295,7 +296,7 @@ export function RemindersView() {
       run: () => Promise<void>,
       predict?: (rows: Reminder[]) => Reminder[],
     ): Promise<Reminder[] | null> => {
-      setBusyGuid(reminder.guid);
+      setBusy((was) => new Set(was).add(reminder.guid));
       setError(null);
       if (predict) setItems((rows) => predict(rows));
       try {
@@ -306,7 +307,11 @@ export function RemindersView() {
         readItems().catch(() => {});
         return null;
       } finally {
-        setBusyGuid(null);
+        setBusy((was) => {
+          const next = new Set(was);
+          next.delete(reminder.guid);
+          return next;
+        });
       }
     },
     [readItems],
@@ -1013,7 +1018,7 @@ export function RemindersView() {
                       role="checkbox"
                       aria-checked={Boolean(reminder.completedAt)}
                       aria-label={reminder.title}
-                      disabled={busyGuid === reminder.guid}
+                      disabled={busy.has(reminder.guid)}
                       style={{ "--tick": colourOf(home) } as React.CSSProperties}
                       onClick={() => toggle(reminder)}
                     />
@@ -1036,7 +1041,7 @@ export function RemindersView() {
                           defaultValue={reminder.title}
                           key={`${reminder.guid}-${reminder.title}`}
                           aria-label={`Rename ${reminder.title}`}
-                          disabled={busyGuid === reminder.guid}
+                          disabled={busy.has(reminder.guid)}
                           onBlur={(e) => void rename(reminder, e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") e.currentTarget.blur();
@@ -1092,7 +1097,7 @@ export function RemindersView() {
                             <Picker
                               label={`Repeat for ${reminder.title}`}
                               value={repeatKey(reminder)}
-                              disabled={busyGuid === reminder.guid || reminder.dueAt === null}
+                              disabled={busy.has(reminder.guid) || reminder.dueAt === null}
                               onChange={(key) => void setRepeat(reminder, key)}
                               options={
                                 repeatKey(reminder) === "custom"
@@ -1114,7 +1119,7 @@ export function RemindersView() {
                             <Picker
                               label={`Priority for ${reminder.title}`}
                               value={String(reminder.priority)}
-                              disabled={busyGuid === reminder.guid}
+                              disabled={busy.has(reminder.guid)}
                               onChange={(v) => void setPriority(reminder, Number(v))}
                               options={PRIORITIES.map((p) => ({
                                 value: String(p.value),
@@ -1127,7 +1132,7 @@ export function RemindersView() {
                             <Picker
                               label={`List for ${reminder.title}`}
                               value={reminder.listGuid}
-                              disabled={busyGuid === reminder.guid}
+                              disabled={busy.has(reminder.guid)}
                               onChange={(guid) => void moveToList(reminder, guid)}
                               options={lists.map((l) => ({ value: l.guid, label: l.title }))}
                             />
@@ -1144,7 +1149,7 @@ export function RemindersView() {
                             {depth > 0 ? (
                               <button
                                 className="rx-link"
-                                disabled={busyGuid === reminder.guid}
+                                disabled={busy.has(reminder.guid)}
                                 onClick={() => void outdent(reminder)}
                               >
                                 Move Out of Subtasks
@@ -1152,7 +1157,7 @@ export function RemindersView() {
                             ) : (
                               <button
                                 className="rx-link"
-                                disabled={busyGuid === reminder.guid}
+                                disabled={busy.has(reminder.guid)}
                                 onClick={() => void indent(reminder)}
                               >
                                 Make Subtask
@@ -1161,7 +1166,7 @@ export function RemindersView() {
                             <button
                               className="rx-link danger"
                               aria-label={`Delete ${reminder.title}`}
-                              disabled={busyGuid === reminder.guid}
+                              disabled={busy.has(reminder.guid)}
                               onClick={() => remove(reminder)}
                             >
                               Delete
@@ -1188,7 +1193,7 @@ export function RemindersView() {
                           reminder.flagged ? `Unflag ${reminder.title}` : `Flag ${reminder.title}`
                         }
                         aria-pressed={reminder.flagged}
-                        disabled={busyGuid === reminder.guid}
+                        disabled={busy.has(reminder.guid)}
                         onClick={() => flag(reminder)}
                       >
                         <Glyph name="flagged" />

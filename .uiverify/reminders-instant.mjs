@@ -38,5 +38,16 @@ await tick.click();
 await page.waitForTimeout(150);
 const ticked = (await tick.getAttribute("aria-checked")) === "true";
 ok(ticked, "a tick shows at once");
+// Two writes at once: the first finishing must not free the second's row while it is
+// still on its way. Each row stays held until its own answer comes.
+const a = page.getByRole("checkbox", { name: "Evening run" });
+await a.click();
+await page.waitForTimeout(600);
+const c = page.getByRole("checkbox", { name: "Pick up the parcel" });
+if (await c.count()) {
+  await c.click();
+  await page.waitForTimeout(1100); // the first has answered; the second has not
+  ok(await c.isDisabled(), "a row stays held while its own write is still on its way");
+}
 await b.close();
 process.exitCode = failures ? 1 : 0;
