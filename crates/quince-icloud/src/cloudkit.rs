@@ -121,7 +121,11 @@ impl<'a> ZoneClient<'a> {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.trim().parse::<u64>().ok());
             let text = response.text().await.unwrap_or_default();
-            if !matches!(status.as_u16(), 429 | 503) {
+            // A zone busy with another write answers 409 ZONE_BUSY — "rejected, retry", the
+            // whole request not applied — measured when a phone and this app wrote at once.
+            // It is a wait like 503's, not a conflict over the record.
+            let zone_busy = status.as_u16() == 409 && text.contains("\"ZONE_BUSY\"");
+            if !matches!(status.as_u16(), 429 | 503) && !zone_busy {
                 return Ok((status, text));
             }
             if tries >= BUSY_TRIES {
@@ -470,6 +474,35 @@ mod tests {
             .unwrap();
     }
 
+    /// A zone busy with another device's write answers 409 ZONE_BUSY and asks to be asked
+    /// again — measured on the account — and asked again, the write goes through.
+    #[tokio::test]
+    async fn a_busy_zone_is_waited_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "uuid": "1", "serverErrorCode": "ZONE_BUSY",
+                "reason": "Sync zone CAS Op-Lock failed. There was a concurrent write and this operation was rejected. Retry"
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "R", "recordChangeTag": "t2" }]
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        client
+            .update_record("Reminders", "R", "Reminder", Some("t1"), json!({}))
+            .await
+            .unwrap();
+    }
+
     /// And one still busy after that is said in a sentence, not Apple's JSON.
     #[tokio::test]
     async fn a_cloudkit_that_stays_busy_says_so_plainly() {
@@ -684,6 +717,37 @@ impl ZoneClient<'_> {
     }
 
     /// Send one operation to `records/modify` and surface what came back.
+    /// A `records/query` in the zone: `query` is CloudKit's `{recordType, filterBy}`. For the
+    /// server-side operations Apple runs as queries — completing a repeating reminder is one —
+    /// as much as for reading. Answers with the records it returns.
+    pub async fn records_query(&self, zone: &str, query: Value) -> Result<Vec<Value>> {
+        let body = json!({
+            "query": query,
+            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+        });
+        let url = format!(
+            "{}/database/1/{}/production/private/records/query",
+            self.base, self.container
+        );
+        let (status, text) = self.post_json(&url, &body).await?;
+        if status.as_u16() == 450 {
+            return Err(Error::ReauthRequired);
+        }
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "CloudKit refused the query ({status}): {}",
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+        let parsed: Value = serde_json::from_str(&text)
+            .map_err(|e| Error::Protocol(format!("CloudKit returned invalid JSON: {e}")))?;
+        Ok(parsed
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     async fn modify(&self, zone: &str, operation: Value) -> Result<Value> {
         let body = json!({
             "operations": [operation],

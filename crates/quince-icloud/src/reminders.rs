@@ -1728,6 +1728,13 @@ pub async fn delete_list_cloudkit(
 ///
 /// Sends only the fields that change, guarded by the record's change tag, so a reminder
 /// edited on the phone since we read it is refused rather than overwritten.
+///
+/// A repeating reminder is ticked as icloud.com ticks one: by asking Apple's server, which
+/// runs it as a query of the virtual type `CompleteRecurringReminder`. Measured on a real
+/// account, the server then keeps a completed copy of today's occurrence, moves the reminder
+/// itself — still open — to its next date, and updates the list. Doing it here instead, by
+/// setting `Completed` and a computed date on the one record, matched none of that: no
+/// history, and the series itself marked complete.
 pub async fn set_completed_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -1737,26 +1744,51 @@ pub async fn set_completed_cloudkit(
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
 
-    // A repeating reminder is already held completed while its record points at the next
-    // occurrence, so writing Completed again changes nothing and the tick appears to do
-    // nothing. Ticking one means moving to the occurrence after this one.
-    let fields = if done && reminder.repeats() {
-        let Some(next) = reminder.next_occurrence() else {
-            return Err(Error::Protocol(
-                "this repeats, but its schedule could not be read".into(),
-            ));
+    if done && reminder.repeats() {
+        let current = client
+            .lookup_record(ZONE, &reminder.guid)
+            .await?
+            .ok_or_else(|| Error::Refused("Apple no longer has that reminder.".into()))?;
+        let rule = current
+            .pointer("/fields/RecurrenceRuleIDs/value")
+            .and_then(|v| v.as_array().and_then(|a| a.first()).or(Some(v)))
+            .and_then(Value::as_str)
+            .filter(|r| !r.is_empty())
+            .ok_or_else(|| {
+                Error::Refused("This repeats, but Apple did not say on what schedule.".into())
+            })?;
+        let rule = if rule.starts_with("RecurrenceRule/") {
+            rule.to_string()
+        } else {
+            format!("RecurrenceRule/{rule}")
         };
-        serde_json::json!({
-            "Completed": { "value": 1, "type": "NUMBER_INT64" },
-            "DueDate": { "value": next.saturating_mul(1000), "type": "TIMESTAMP" },
-            "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
-        })
-    } else {
-        serde_json::json!({
-            "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" },
-            "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
-        })
-    };
+        let zone = reminder.timezone.clone().unwrap_or_else(|| {
+            jiff::tz::TimeZone::system()
+                .iana_name()
+                .unwrap_or("UTC")
+                .to_string()
+        });
+        let reference = |name: &str| serde_json::json!({ "value": { "recordName": name, "action": "VALIDATE" }, "type": "REFERENCE" });
+        let answered = client
+            .records_query(
+                ZONE,
+                serde_json::json!({
+                    "recordType": "CompleteRecurringReminder",
+                    "filterBy": [
+                        { "comparator": "EQUALS", "fieldName": "Reminder", "fieldValue": reference(&reminder.guid) },
+                        { "comparator": "EQUALS", "fieldName": "RecurrenceRule", "fieldValue": reference(&rule) },
+                        { "comparator": "EQUALS", "fieldName": "TimeZone", "fieldValue": { "value": zone, "type": "STRING" } },
+                    ],
+                }),
+            )
+            .await?;
+        if answered.is_empty() {
+            return Err(Error::Refused(
+                "Apple did not move this reminder on to its next date.".into(),
+            ));
+        }
+        return Ok(());
+    }
 
     client
         .update_record_signed(
@@ -1764,7 +1796,10 @@ pub async fn set_completed_cloudkit(
             &reminder.guid,
             "Reminder",
             reminder.etag.as_deref(),
-            fields,
+            serde_json::json!({
+                "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" },
+                "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
+            }),
         )
         .await?;
     Ok(())
@@ -2766,50 +2801,71 @@ mod recurring_tick_tests {
             .clone()
     }
 
-    /// The bug this fixes: Apple already holds a repeating reminder completed while its
-    /// record points at the next occurrence, so writing Completed again changed nothing and
-    /// the tick appeared to do nothing at all.
+    /// A repeating reminder is ticked by Apple's server, as icloud.com ticks one: the query
+    /// names the reminder, its rule and its zone, and nothing is written over the record.
     #[tokio::test]
-    async fn ticking_a_daily_reminder_moves_it_to_tomorrow() {
-        let server = accepting().await;
-        let due = FUTURE;
-        set_completed_cloudkit(
-            &reqwest::Client::new(),
-            &server.uri(),
-            vec![],
-            &repeating(0, 1, due),
-            true,
-        )
-        .await
-        .unwrap();
+    async fn ticking_a_repeating_reminder_asks_apples_server() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [{
+                "recordName": "Reminder/1", "recordType": "Reminder", "recordChangeTag": "t",
+                "fields": { "RecurrenceRuleIDs": { "type": "STRING_LIST", "value": ["RULE-1"] } }
+            }] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/query$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [
+                { "recordName": "Reminder/1", "recordType": "Reminder" }
+            ] })),
+            )
+            .mount(&server)
+            .await;
+        let mut daily = repeating(0, 1, FUTURE);
+        daily.timezone = Some("Asia/Kolkata".into());
+        set_completed_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &daily, true)
+            .await
+            .unwrap();
 
-        let sent = fields(&server).await;
-        assert_eq!(sent["Completed"]["value"], 1);
-        assert_eq!(
-            sent["DueDate"]["value"],
-            (due + 86_400) * 1000,
-            "a daily reminder must advance exactly one day"
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r.url.path().ends_with("/records/modify")),
+            "nothing written over it"
         );
+        let query = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/records/query"))
+            .expect("asked");
+        let body: Value = serde_json::from_slice(&query.body).unwrap();
+        assert_eq!(body["query"]["recordType"], "CompleteRecurringReminder");
+        let filters = &body["query"]["filterBy"];
+        assert_eq!(
+            filters[0]["fieldValue"]["value"]["recordName"],
+            "Reminder/1"
+        );
+        assert_eq!(
+            filters[1]["fieldValue"]["value"]["recordName"],
+            "RecurrenceRule/RULE-1"
+        );
+        assert_eq!(filters[2]["fieldValue"]["value"], "Asia/Kolkata");
     }
 
+    /// Unticking, or ticking a reminder that does not repeat, is the ordinary field write.
     #[tokio::test]
-    async fn the_interval_is_respected() {
+    async fn ticking_a_one_off_writes_completed() {
         let server = accepting().await;
-        let due = FUTURE;
-        set_completed_cloudkit(
-            &reqwest::Client::new(),
-            &server.uri(),
-            vec![],
-            &repeating(1, 2, due),
-            true,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            fields(&server).await["DueDate"]["value"],
-            (due + 14 * 86_400) * 1000,
-            "every two weeks means fourteen days"
-        );
+        let mut once = repeating(0, 1, FUTURE);
+        once.recur_frequency = None;
+        set_completed_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &once, true)
+            .await
+            .unwrap();
+        assert_eq!(fields(&server).await["Completed"]["value"], 1);
     }
 
     /// Un-ticking must not move the date; it just reopens the occurrence.
