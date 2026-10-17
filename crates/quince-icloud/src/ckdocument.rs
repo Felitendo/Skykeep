@@ -625,6 +625,166 @@ fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> 
     Some(out)
 }
 
+/// What to change about one paragraph's setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParagraphChange {
+    /// Apple's style number: 0 title … 3 body, 4 monospaced, 100–103 the lists.
+    Style(u64),
+    /// Tick or untick a checklist item.
+    Checked(bool),
+}
+
+/// Fields of a message, copied through, with every occurrence of `tag` taken out.
+fn without_field(message: &[u8], tag: u64) -> Option<Vec<u8>> {
+    let mut reader = Reader::new(message);
+    let mut out = Vec::with_capacity(message.len());
+    while !reader.done() {
+        let start = reader.at;
+        let key = reader.varint()?;
+        reader.skip(key & 7)?;
+        if key >> 3 != tag {
+            out.extend_from_slice(message.get(start..reader.at)?);
+        }
+    }
+    Some(out)
+}
+
+/// A length-delimited field's contents, if the message has one.
+fn bytes_field(message: &[u8], tag: u64) -> Option<Vec<u8>> {
+    let mut reader = Reader::new(message);
+    while !reader.done() {
+        let key = reader.varint()?;
+        if key >> 3 == tag && key & 7 == WIRE_LEN {
+            let n = usize::try_from(reader.varint()?).ok()?;
+            return Some(reader.take(n)?.to_vec());
+        }
+        reader.skip(key & 7)?;
+    }
+    None
+}
+
+/// Set one paragraph — the one beginning at UTF-16 offset `start` — as `change` says, and
+/// leave every other byte of the document as it was.
+///
+/// The text, its merge records and every run outside the paragraph are copied through. The
+/// runs are split exactly at the paragraph's edges, so a style never leaks onto the line
+/// above or below, and only the paragraph-style field of the runs inside is rewritten — the
+/// font, links and the rest of each run go back untouched. A checklist item keeps the id it
+/// had; one made a checklist here is given a fresh one, as a phone gives it.
+#[must_use]
+pub fn set_paragraph(original: &[u8], start: u64, change: ParagraphChange) -> Option<Vec<u8>> {
+    let plain = inflate(original)?;
+    let text = std::str::from_utf8(field_at(&plain, TEXT_PATH)?).ok()?;
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let total = units.len() as u64;
+    if start > total {
+        return None;
+    }
+    // The paragraph runs through its own newline, which carries its style.
+    let end = units[usize::try_from(start).ok()?..]
+        .iter()
+        .position(|&u| u == u16::from(b'\n'))
+        .map_or(total, |i| start + i as u64 + 1);
+    if end == start {
+        return None;
+    }
+
+    let note = field_at(&plain, &TEXT_PATH[..2])?;
+    let runs = debug_attribute_runs(original);
+    if runs.iter().map(|r| run_length(r)).sum::<u64>() != total {
+        return None; // runs that do not describe the text are not edited on top of
+    }
+
+    let mut rebuilt: Vec<Vec<u8>> = Vec::with_capacity(runs.len() + 2);
+    let mut at = 0u64;
+    for run in &runs {
+        let len = run_length(run);
+        let (from, to) = (at, at + len);
+        at = to;
+        // Cut points inside this run: the paragraph's start and end.
+        let mut cuts = vec![from];
+        for c in [start, end] {
+            if c > from && c < to {
+                cuts.push(c);
+            }
+        }
+        cuts.push(to);
+        for pair in cuts.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let mut piece = set_varint_field(run, 1, b - a)?;
+            if a >= start && b <= end {
+                piece = restyle(&piece, change)?;
+            }
+            rebuilt.push(piece);
+        }
+    }
+
+    let mut out = Vec::with_capacity(note.len() + 64);
+    let mut reader = Reader::new(note);
+    let mut wrote = false;
+    while !reader.done() {
+        let begin = reader.at;
+        let key = reader.varint()?;
+        let (field, wire) = (key >> 3, key & 7);
+        reader.skip(wire)?;
+        if field == ATTRIBUTE_RUN && wire == WIRE_LEN {
+            if !wrote {
+                for r in &rebuilt {
+                    out.extend_from_slice(&length_delimited(ATTRIBUTE_RUN, r));
+                }
+                wrote = true;
+            }
+        } else {
+            out.extend_from_slice(note.get(begin..reader.at)?);
+        }
+    }
+    if !wrote {
+        return None;
+    }
+    ensure_versions(&rewrite(&plain, &TEXT_PATH[..2], &out)?)
+}
+
+/// One run's paragraph style, changed.
+fn restyle(run: &[u8], change: ParagraphChange) -> Option<Vec<u8>> {
+    let paragraph = bytes_field(run, 2).unwrap_or_default();
+    let next = match change {
+        ParagraphChange::Style(style) => {
+            let mut p = set_varint_field(&paragraph, 1, style)?;
+            if style == 103 {
+                if bytes_field(&p, 5).is_none() {
+                    let mut item = length_delimited(1, uuid::Uuid::new_v4().as_bytes());
+                    item.extend(varint_field(2, 0));
+                    p.extend(length_delimited(5, &item));
+                }
+            } else {
+                p = without_field(&p, 5)?;
+            }
+            p
+        }
+        ParagraphChange::Checked(done) => {
+            let item = bytes_field(&paragraph, 5)?; // only a checklist item has a tick
+            let item = set_varint_field(&item, 2, u64::from(done))?;
+            let mut p = without_field(&paragraph, 5)?;
+            p.extend(length_delimited(5, &item));
+            p
+        }
+    };
+    let mut out = without_field(run, 2)?;
+    out.extend(length_delimited(2, &next));
+    Some(out)
+}
+
+/// [`set_paragraph`] over the base64 a CloudKit field carries, gzipped as Apple sends it.
+#[must_use]
+pub fn set_paragraph_in_base64(
+    original: &str,
+    start: u64,
+    change: ParagraphChange,
+) -> Option<String> {
+    let raw = B64.decode(original.trim()).ok()?;
+    Some(B64.encode(gzip(&set_paragraph(&raw, start, change)?)))
+}
+
 /// Rewrite the text inside an existing document, leaving every other field exactly as it
 /// was.
 ///
@@ -2001,6 +2161,39 @@ mod run_tests {
 
     /// A dashed item, a ticked checklist item and a bold word, as Apple lays the runs out.
     #[test]
+    fn a_paragraph_is_restyled_alone() {
+        // One run over three lines; restyling the middle one splits it, and only it changes.
+        let mut run = Vec::new();
+        varint(1 << 3, &mut run);
+        varint(8, &mut run);
+        let mut style = Vec::new();
+        varint(1 << 3, &mut style);
+        varint(3, &mut style);
+        len_field(2, &style, &mut run);
+        let mut note = Vec::new();
+        len_field(2, b"ab\ncd\nef", &mut note);
+        len_field(5, &run, &mut note);
+        let mut inner = Vec::new();
+        len_field(3, &note, &mut inner);
+        let mut doc = Vec::new();
+        len_field(2, &inner, &mut doc);
+
+        let out =
+            set_paragraph_in_base64(&B64.encode(&doc), 3, ParagraphChange::Style(103)).unwrap();
+        let runs = runs_from_base64(&out);
+        assert_eq!(runs.iter().map(|r| r.length).collect::<Vec<_>>(), [3, 3, 2]);
+        assert_eq!(
+            runs.iter().map(|r| r.style).collect::<Vec<_>>(),
+            [Some(3), Some(103), Some(3)]
+        );
+        assert_eq!(
+            runs[1].checked,
+            Some(false),
+            "a new checklist item starts unticked"
+        );
+    }
+
+    #[test]
     fn runs_carry_their_paragraph_style_ticks_and_weight() {
         let mut dashed = Vec::new();
         varint(1 << 3, &mut dashed);
@@ -2025,7 +2218,7 @@ mod run_tests {
 
         let mut bold = Vec::new();
         varint(1 << 3, &mut bold);
-        varint(3, &mut bold);
+        varint(2, &mut bold);
         varint(5 << 3, &mut bold);
         varint(1, &mut bold);
 
@@ -2044,6 +2237,26 @@ mod run_tests {
         assert_eq!((runs[0].length, runs[0].style), (5, Some(101)));
         assert_eq!((runs[1].style, runs[1].checked), (Some(103), Some(true)));
         assert!(runs[2].bold && runs[2].style.is_none());
+
+        // Untick "egg" (the paragraph starting at 5): only its tick changes.
+        let unticked =
+            set_paragraph_in_base64(&B64.encode(&doc), 5, ParagraphChange::Checked(false)).unwrap();
+        let after = runs_from_base64(&unticked);
+        assert_eq!(after[1].checked, Some(false));
+        assert_eq!(after[0].style, Some(101), "the line above is untouched");
+        assert_eq!(
+            text_from_base64(&unticked).as_deref(),
+            Some("milk\negg\nhi"),
+            "the text is untouched"
+        );
+
+        // Make "hi" — inside a run of its own, no newline — a heading: only it changes.
+        let headed =
+            set_paragraph_in_base64(&B64.encode(&doc), 9, ParagraphChange::Style(1)).unwrap();
+        let after = runs_from_base64(&headed);
+        assert_eq!(after.last().unwrap().style, Some(1));
+        assert!(after.last().unwrap().bold, "the run keeps its weight");
+        assert_eq!(after[1].style, Some(103));
     }
 }
 

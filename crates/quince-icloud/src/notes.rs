@@ -470,6 +470,48 @@ pub async fn edit_cloudkit(
     Ok(())
 }
 
+/// Set one paragraph of a note — a style from the Aa menu, or a checklist tick — written
+/// over what Apple holds now, with the text and everything else in the document unchanged.
+pub async fn set_paragraph_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    note: &Note,
+    start: u64,
+    change: crate::ckdocument::ParagraphChange,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let current = client
+        .lookup_record(ZONE, &note.guid)
+        .await?
+        .ok_or_else(|| Error::Refused("Apple no longer has that note.".into()))?;
+    let encoded = current
+        .pointer("/fields/TextDataEncrypted/value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Refused("That note has no body Apple will let us read.".into()))?;
+    let rewritten = crate::ckdocument::set_paragraph_in_base64(encoded, start, change).ok_or_else(|| {
+        Error::Refused("That line has changed since it was shown, so nothing was changed. Try again in a moment.".into())
+    })?;
+    fits_inline(&rewritten)?;
+    let tag = current
+        .get("recordChangeTag")
+        .and_then(Value::as_str)
+        .or(note.etag.as_deref());
+    client
+        .update_record(
+            ZONE,
+            &note.guid,
+            "Note",
+            tag,
+            serde_json::json!({
+                "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": rewritten },
+                "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
 /// Write a new note, optionally into a folder.
 ///
 /// Returns the record name Apple will know it by, so the caller can open it without waiting
