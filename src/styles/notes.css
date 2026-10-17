@@ -288,3 +288,5 @@ textarea.note-title::placeholder { color: var(--text-3); }
 }
 .nf-check.is-done > span:last-child { color: var(--text-3); }
 .note-formatted a { color: var(--gold); text-decoration: underline; }
+/* Aa, as Notes writes it on its toolbar. */
+.notes-aa { font-weight: 600; font-size: 14px; letter-spacing: -0.02em; width: auto; padding-inline: 8px; }

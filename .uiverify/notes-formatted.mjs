@@ -28,5 +28,18 @@ await page.locator(".nf-body, .nf-item:not(.nf-check)").first().click();
 await page.waitForTimeout(200);
 ok(await page.evaluate(() => document.activeElement?.classList.contains("note-text") && document.activeElement.tagName === "TEXTAREA"),
   "a click into it is editing");
+// Aa: a line clicked, then Heading — shown at once, and asked of Apple for that line alone.
+await page.keyboard.press("Escape");
+await page.locator(".note-row", { hasText: "Curtains" }).click();
+await page.waitForTimeout(300);
+const fan = page.locator(".note-read [data-start]", { hasText: "Fan" }).first();
+await fan.click();
+await page.waitForTimeout(200);
+await page.getByRole("button", { name: "Format" }).click();
+await page.getByRole("menuitem", { name: "Heading", exact: true }).click();
+await page.waitForTimeout(300);
+ok((await page.locator(".nf-heading", { hasText: "Fan" }).count()) === 1, "Aa → Heading shows the line as a heading at once");
+const styled = await page.evaluate(() => window.__paragraphs?.at(-1));
+ok(styled?.style === 1 && styled?.expect === "Fan", `and asks Apple for that line alone  ${JSON.stringify(styled)}`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

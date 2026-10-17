@@ -6,7 +6,7 @@ import { LongTextarea } from "../components/LongTextarea";
 import { editorDate, groupNotes, joinTitle, listDate, mergeEdits, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { RowMenu } from "../components/RowMenu";
-import { FormattedBody, runsFit, type Run } from "./notes/Formatted";
+import { FormattedBody, restyle, runsFit, STYLE, type Run } from "./notes/Formatted";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
@@ -182,8 +182,12 @@ export function NotesView() {
   const [loadedRuns, setLoadedRuns] = useState<{ guid: string; runs: Run[] } | null>(null);
   /** Showing the note formatted; a click into its text switches to editing it. */
   const [reading, setReading] = useState(true);
+  /** Where the line the Aa menu acts on begins, in the note's whole text. */
+  const [lineAt, setLineAt] = useState<number | null>(null);
+  const [styleMenu, setStyleMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
   useEffect(() => {
     setReading(true);
+    setLineAt(null);
     if (!openGuid) return setLoadedRuns(null);
     let cancelled = false;
     api.noteRuns(openGuid).then(
@@ -217,6 +221,37 @@ export function NotesView() {
       await api.noteParagraph(guid, start, { checked, expect: text.slice(start, nl < 0 ? text.length : nl) });
     } catch (e) {
       flip(!checked);
+      setError(messageOf(e));
+    }
+  };
+
+  /**
+   * Set the line the cursor is on to one of Notes' styles, as the Aa menu does. Anything
+   * typed is saved first, so the line is the line Apple holds; the style shows at once, the
+   * note shown formatted, and a refusal puts it back with the reason.
+   */
+  const applyStyle = async (style: number) => {
+    if (!open || lineAt === null) return;
+    const guid = open.guid;
+    await flush();
+    // Only over text Apple has: a save that did not go through leaves the typing on screen,
+    // and showing the formatted copy instead would hide it.
+    if (pending.current) return;
+    const text = (base.current?.guid === guid ? base.current.text : null) ?? (loadedBody?.guid === guid ? loadedBody.text : null);
+    if (text === null || (draft !== null && draft !== text)) return;
+    const nl = text.indexOf("\n", lineAt);
+    const expect = text.slice(lineAt, nl < 0 ? text.length : nl);
+    const before = loadedRuns?.guid === guid ? loadedRuns.runs : null;
+    if (before && runsFit(text, before)) {
+      setLoadedRuns({ guid, runs: restyle(text, before, lineAt, style) });
+      setDraft(null);
+      setLoadedBody({ guid, text });
+      setReading(true);
+    }
+    try {
+      await api.noteParagraph(guid, lineAt, { style, expect });
+    } catch (e) {
+      if (before) setLoadedRuns({ guid, runs: before });
       setError(messageOf(e));
     }
   };
@@ -763,6 +798,39 @@ export function NotesView() {
             </p>
             {!composing && open && !open.locked && (
               <div className="note-bar-actions">
+                {styleMenu && (
+                  <RowMenu
+                    at={styleMenu}
+                    onClose={() => setStyleMenu(null)}
+                    entries={[
+                      { label: "Title", run: () => void applyStyle(STYLE.title) },
+                      { label: "Heading", run: () => void applyStyle(STYLE.heading) },
+                      { label: "Subheading", run: () => void applyStyle(STYLE.subheading) },
+                      { label: "Body", run: () => void applyStyle(STYLE.body) },
+                      { label: "Monospaced", run: () => void applyStyle(STYLE.mono) },
+                      null,
+                      { label: "• Bulleted List", run: () => void applyStyle(STYLE.bulleted) },
+                      { label: "– Dashed List", run: () => void applyStyle(STYLE.dashed) },
+                      { label: "1. Numbered List", run: () => void applyStyle(STYLE.numbered) },
+                      { label: "Checklist", run: () => void applyStyle(STYLE.checklist) },
+                    ]}
+                  />
+                )}
+                {!inTrash && open.editable && (
+                  <button
+                    className="notes-icon notes-aa"
+                    aria-label="Format"
+                    aria-haspopup="menu"
+                    title={lineAt === null ? "Format — click a line first" : "Format"}
+                    disabled={busy || lineAt === null}
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setStyleMenu({ x: r.right, y: r.bottom + 4, alignRight: true });
+                    }}
+                  >
+                    Aa
+                  </button>
+                )}
                 {!inTrash && <Picker
                   label={`Folder for ${open.title}`}
                   value={open.folderGuid ?? ALL}
@@ -833,6 +901,7 @@ export function NotesView() {
               key="title"
               ref={editor}
               className="note-title"
+              onSelect={() => setLineAt(0)}
               rows={1}
               aria-label={composing ? "New note" : `Title of ${open?.title ?? "note"}`}
               placeholder={composing ? "New Note" : undefined}
@@ -869,9 +938,21 @@ export function NotesView() {
                 aria-readonly="false"
                 aria-label={`Body of ${open?.title ?? "note"}`}
                 tabIndex={0}
-                onClick={() => {
+                onClick={(e) => {
+                  const line = (e.target as HTMLElement).closest("[data-start]");
+                  const at = line ? Number(line.getAttribute("data-start")) : null;
+                  if (at !== null) setLineAt(at);
                   setReading(false);
-                  window.setTimeout(() => bodyEditor.current?.focus(), 0);
+                  // Into the text at the line clicked, so the cursor and the Aa menu agree.
+                  window.setTimeout(() => {
+                    const el = bodyEditor.current;
+                    if (!el) return;
+                    el.focus();
+                    if (at !== null) {
+                      const pos = Math.max(0, at - titleLine.length - 1);
+                      el.setSelectionRange(pos, pos);
+                    }
+                  }, 0);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
@@ -893,6 +974,13 @@ export function NotesView() {
               key="body"
               ref={bodyEditor}
               className="note-text"
+              onSelect={(e) => {
+                // The line the cursor is on, in the whole note: title line, then the body.
+                const el = e.currentTarget;
+                const offset = titleLine.length + 1 + el.selectionStart;
+                const all = titleLine + "\n" + el.value;
+                setLineAt(all.lastIndexOf("\n", offset - 1) + 1);
+              }}
               aria-label={composing ? "New note text" : `Body of ${open?.title ?? "note"}`}
               value={rest}
               spellCheck
@@ -912,6 +1000,9 @@ export function NotesView() {
               }}
               onBlur={(e) => {
                 if (e.relatedTarget === editor.current) return;
+                // Leaving the text — not for the Aa menu, which acts on it — shows the note
+                // formatted again once nothing is left unsaved.
+                if (!(e.relatedTarget as HTMLElement | null)?.closest(".notes-aa")) setReading(true);
                 void (composingRef.current ? commitComposing() : flush());
               }}
             />

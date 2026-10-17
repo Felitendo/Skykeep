@@ -33,6 +33,33 @@ export const STYLE = {
   checklist: 103,
 } as const;
 
+/**
+ * The runs with the paragraph beginning at `start` set to `style` — split at its edges, as
+ * the write to Apple splits them — so a change shows the moment it is chosen.
+ */
+export function restyle(text: string, runs: Run[], start: number, style: number): Run[] {
+  const nl = text.indexOf("\n", start);
+  const end = nl < 0 ? text.length : nl + 1;
+  const out: Run[] = [];
+  let at = 0;
+  for (const run of runs) {
+    const from = at;
+    const to = at + run.length;
+    at = to;
+    const cuts = [from, ...[start, end].filter((c) => c > from && c < to), to];
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const a = cuts[i], b = cuts[i + 1];
+      const inside = a >= start && b <= end;
+      out.push({
+        ...run,
+        length: b - a,
+        ...(inside ? { style, checked: style === STYLE.checklist ? (run.style === STYLE.checklist ? run.checked : false) : null } : {}),
+      });
+    }
+  }
+  return out;
+}
+
 /** Whether `runs` describe exactly this text. */
 export function runsFit(text: string, runs: Run[]): boolean {
   return runs.length > 0 && runs.reduce((n, r) => n + r.length, 0) === text.length;
@@ -110,15 +137,16 @@ export function FormattedBody({
         const style = p.run?.style ?? STYLE.body;
         number = style === STYLE.numbered ? number + 1 : 0;
         const indent = { paddingInlineStart: `${(p.run?.indent ?? 0) * 1.5}em` };
+        const at = { "data-start": p.start } as Record<string, number>;
         const content = p.spans.length ? p.spans.map((s, j) => <Inline key={j} span={s} />) : <br />;
-        if (style === STYLE.title) return <h2 key={i} className="nf-title" style={indent}>{content}</h2>;
-        if (style === STYLE.heading) return <h3 key={i} className="nf-heading" style={indent}>{content}</h3>;
-        if (style === STYLE.subheading) return <h4 key={i} className="nf-subheading" style={indent}>{content}</h4>;
-        if (style === STYLE.mono) return <pre key={i} className="nf-mono" style={indent}>{content}</pre>;
+        if (style === STYLE.title) return <h2 key={i} className="nf-title" style={indent} {...at}>{content}</h2>;
+        if (style === STYLE.heading) return <h3 key={i} className="nf-heading" style={indent} {...at}>{content}</h3>;
+        if (style === STYLE.subheading) return <h4 key={i} className="nf-subheading" style={indent} {...at}>{content}</h4>;
+        if (style === STYLE.mono) return <pre key={i} className="nf-mono" style={indent} {...at}>{content}</pre>;
         if (style === STYLE.checklist) {
           const done = Boolean(p.run?.checked);
           return (
-            <p key={i} className={`nf-item nf-check${done ? " is-done" : ""}`} style={indent}>
+            <p key={i} className={`nf-item nf-check${done ? " is-done" : ""}`} style={indent} {...at}>
               <button
                 type="button"
                 className="nf-circle"
@@ -138,13 +166,13 @@ export function FormattedBody({
         if (style === STYLE.bulleted || style === STYLE.dashed || style === STYLE.numbered) {
           const mark = style === STYLE.bulleted ? "•" : style === STYLE.dashed ? "–" : `${number}.`;
           return (
-            <p key={i} className="nf-item" style={indent}>
+            <p key={i} className="nf-item" style={indent} {...at}>
               <span className="nf-mark" aria-hidden="true">{mark}</span>
               <span>{content}</span>
             </p>
           );
         }
-        return <p key={i} className="nf-body" style={indent}>{content}</p>;
+        return <p key={i} className="nf-body" style={indent} {...at}>{content}</p>;
       })}
     </div>
   );
