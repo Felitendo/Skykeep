@@ -55,6 +55,7 @@ step "notes instant"     node .uiverify/notes-instant.mjs
 step "drive sort"        node .uiverify/drive-sort.mjs
 step "drive trash"       node .uiverify/drive-trash.mjs
 step "drive info"        node .uiverify/drive-info.mjs
+step "drive delete"      node .uiverify/drive-delete.mjs
 
 # The same screens in WebKit, the engine Quince draws in. Chromium above catches most things;
 # this catches what only WebKit does — pointer capture, blur on removal, its own layout.

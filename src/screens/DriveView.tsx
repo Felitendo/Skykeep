@@ -438,29 +438,25 @@ export function DriveView() {
     [refresh]
   );
 
+  /**
+   * Delete, as Finder does it: no question, since it goes to Recently Deleted and comes back
+   * from there. The row leaves at once and stays gone — Apple's listing can carry it for a
+   * moment, and it used to flicker back — unless Apple refuses, when it returns and says why.
+   */
   const remove = useCallback(
     async (item: DriveItem) => {
-      if (
-        !window.confirm(
-          `Move "${driveName(item)}" to Recently Deleted?${
-            isContainer(item) ? " Everything inside it goes with it." : ""
-          }`
-        )
-      ) {
-        return;
-      }
-      setBusyGuid(item.drivewsid);
       setError(null);
+      setGone((g) => new Set(g).add(item.drivewsid));
       try {
         await api.driveDelete(item.drivewsid);
-        // Gone from the screen now, and kept gone: Apple's listing can still carry it for a
-        // moment, and it flickered back before vanishing.
-        setGone((g) => new Set(g).add(item.drivewsid));
         await refresh();
       } catch (e) {
+        setGone((g) => {
+          const next = new Set(g);
+          next.delete(item.drivewsid);
+          return next;
+        });
         setError(messageOf(e));
-      } finally {
-        setBusyGuid(null);
       }
     },
     [refresh]
