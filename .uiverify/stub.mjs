@@ -151,7 +151,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
         case "reminder_set_repeat": return null;
-        case "reminder_edit": return null;
+        case "reminder_edit": (window.__edits ??= []).push(args.edit); return null;
         case "reminder_list_colour": {
           (window.__listColours ??= []).push([args.listGuid, args.colour]);
           const hex = { purple: "#C077DB", red: "#FF3B30", blue: "#007AFF" }[args.colour];
