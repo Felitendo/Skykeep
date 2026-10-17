@@ -14,6 +14,7 @@ import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 /** The sidebar row that is every contact rather than a list. */
 const ALL = "";
@@ -108,6 +109,11 @@ export function ContactsView() {
   const [listMenu, setListMenu] = useState<(MenuAt & { list: ContactList }) | null>(null);
   /** A contact's menu: its actions, or — one step in — the lists it can go into. */
   const [contactMenu, setContactMenu] = useState<(MenuAt & { contact: Contact; lists: boolean }) | null>(null);
+  /** The card that is this person's own. */
+  const [me, setMe] = useState<string | null>(null);
+  /** A moment's word that something finished — a file saved, cards brought in. */
+  const [done, setDone] = useState<string | null>(null);
+  const [moreMenu, setMoreMenu] = useState<MenuAt | null>(null);
   /** A contact being deleted while a list is open: out of the list, or gone everywhere? */
   const [deleting, setDeleting] = useState<Contact | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -139,9 +145,55 @@ export function ContactsView() {
   }, [read, search, revision]);
 
   const readLists = useCallback(async () => {
-    const found = await api.contactLists();
+    const [found, mine] = await Promise.all([api.contactLists(), api.contactMe()]);
     setLists(Array.isArray(found) ? found : []);
+    setMe(typeof mine === "string" ? mine : null);
   }, []);
+  // The word is a moment, not something that lingers over the next thing done.
+  useEffect(() => {
+    if (!done) return undefined;
+    const timer = window.setTimeout(() => setDone(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [done]);
+
+  /** People out as a vCard, named as icloud.com names the file. */
+  const exportCards = async (people: Contact[], label?: string) => {
+    if (people.length === 0) return;
+    const name =
+      people.length === 1 ? displayName(people[0])
+      : people.length === 2 ? `${displayName(people[0])} and ${displayName(people[1])}`
+      : label ?? "iCloud vCards";
+    try {
+      const path = await api.contactsExport(people.map((c) => c.guid), `${name}.vcf`);
+      setDone(`Saved to ${path}`);
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  };
+  const importCards = async () => {
+    try {
+      const chosen = await openFileDialog({ multiple: false, title: "Import vCard", filters: [{ name: "vCard", extensions: ["vcf", "vcard"] }] });
+      if (!chosen || Array.isArray(chosen)) return;
+      setBusy(true);
+      const [added, failed] = await api.contactsImport(chosen);
+      await Promise.all([read(search), readLists()]);
+      setDone(`${added} ${added === 1 ? "contact" : "contacts"} imported${failed ? `, ${failed} could not be read` : ""}.`);
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const makeMine = async (c: Contact) => {
+    const was = me;
+    setMe(c.guid);
+    try {
+      await api.contactSetMe(c.guid);
+    } catch (e) {
+      setMe(was);
+      setError(messageOf(e));
+    }
+  };
   useEffect(() => {
     readLists().catch((e) => setError(messageOf(e)));
   }, [readLists, revision]);
@@ -246,6 +298,8 @@ export function ContactsView() {
       ...(openList ? [{ label: `Remove from \u201c${openList.name}\u201d`, run: () => removeFromList(openList, [c.guid]) }] : []),
       null,
       { label: "Edit Contact", run: () => { setOpenGuid(c.guid); setDraft({ ...c }); } },
+      ...(me === c.guid ? [] : [{ label: "Make This My Card", run: () => void makeMine(c) }]),
+      { label: "Export vCard\u2026", run: () => void exportCards([c]) },
       { label: "Delete Contact\u2026", danger: true, run: () => {
         askDelete(c);
       } },
@@ -389,6 +443,19 @@ export function ContactsView() {
             <button className="quiet" disabled={busy} onClick={() => setDraft(blank())}>
               New contact
             </button>
+            <button
+              className="quiet"
+              aria-label="More"
+              aria-haspopup="menu"
+              title="More"
+              disabled={busy}
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setMoreMenu({ x: r.left, y: r.bottom + 4, alignRight: false });
+              }}
+            >
+              •••
+            </button>
           </div>
         </header>
 
@@ -412,6 +479,17 @@ export function ContactsView() {
         </div>
 
         {error && <Notice message={error} onDismiss={() => setError(null)} />}
+        {done && <p className="drive-saved" role="status">{done}</p>}
+        {moreMenu && (
+          <RowMenu
+            at={moreMenu}
+            onClose={() => setMoreMenu(null)}
+            entries={[
+              { label: "Import vCard\u2026", run: () => void importCards() },
+              { label: openList ? `Export \u201c${openList.name}\u201d\u2026` : "Export All Contacts\u2026", run: () => void exportCards(sortedContacts(shown), openList?.name) },
+            ]}
+          />
+        )}
 
         <ul className="contact-rows">
           {sortedContacts(shown).map((contact, i, all) => (
@@ -444,6 +522,7 @@ export function ContactsView() {
               >
                 <Avatar contact={contact} />
                 <span className="contact-row-name">{displayName(contact)}</span>
+                {me === contact.guid && <span className="contact-me" title="My Card">me</span>}
               </button>
             </li>
             </Fragment>
@@ -658,6 +737,7 @@ export function ContactsView() {
                 {open.company && !open.isCompany && (
                   <p className="contact-company">{open.company}</p>
                 )}
+                {me === open.guid && <p className="contact-company">My Card</p>}
               </div>
             </div>
 

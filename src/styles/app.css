@@ -872,6 +872,9 @@
 .contact-rows:focus-within .contact-row[aria-current="true"] .avatar:not(:has(img)) { background: rgba(255, 255, 255, 0.28); color: #fff; }
 .contact-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
 .contact-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* "me" beside this person's own card, as Contacts marks it. */
+.contact-me { margin-left: auto; color: var(--text-3); font-size: var(--t-11); }
+.contact-rows:focus-within .contact-row[aria-current="true"] .contact-me { color: rgba(255, 255, 255, 0.82); }
 
 .avatar {
   width: 26px;

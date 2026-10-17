@@ -201,6 +201,7 @@ pub async fn fetch_book_with_tokens(
         AddressBook {
             contacts: parse(&body),
             lists: parse_lists(&body),
+            me: me_card(&body),
         },
         Tokens {
             sync: token("syncToken")?,
@@ -470,7 +471,12 @@ pub struct ContactList {
 pub struct AddressBook {
     pub contacts: Vec<quince_core::contacts::Contact>,
     pub lists: Vec<ContactList>,
+    /// The card that is this person's own, if they have said.
+    pub me: Option<String>,
 }
+
+/// Where the my-card id is kept between passes.
+pub const ME_KEY: &str = "contacts.me";
 
 /// Where the lists are kept between passes. They are few and small, so beside the library's
 /// other settings rather than in a table of their own.
@@ -663,6 +669,152 @@ pub async fn delete_list(
     Ok(())
 }
 
+/// A plain-text call to Contacts with the address book's tokens, as icloud.com makes its
+/// export, import and my-card calls. Answers with Apple's reply as text.
+async fn co_text(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    method: reqwest::Method,
+    path: &str,
+    body: String,
+) -> Result<String> {
+    let mut query = params;
+    query.push(("clientVersion".into(), "2.1".into()));
+    query.push(("locale".into(), "en_US".into()));
+    query.push(("order".into(), "last,first".into()));
+    query.push(("prefToken".into(), tokens.pref.clone()));
+    query.push(("syncToken".into(), tokens.sync.clone()));
+    let url = format!("{}/{path}", root.trim_end_matches('/'));
+    let response = http
+        .request(method, url)
+        .query(&query)
+        .header("content-type", "text/plain")
+        .body(body)
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    if status.as_u16() == 412 || status.as_u16() == 409 {
+        return Err(Error::Conflict);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "contacts returned {status}: {}",
+            text.chars().take(200).collect::<String>()
+        )));
+    }
+    Ok(text)
+}
+
+/// These people as one vCard file, written by Apple — every field it holds, photos too.
+pub async fn export_vcards(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    ids: &[String],
+    file_name: &str,
+) -> Result<String> {
+    let body = serde_json::json!({ "contactIdsToExport": ids, "exportFileName": file_name });
+    let text = co_text(
+        http,
+        root,
+        params,
+        tokens,
+        reqwest::Method::POST,
+        "co/export/",
+        body.to_string(),
+    )
+    .await?;
+    if !text.trim_start().starts_with("BEGIN:VCARD") {
+        return Err(Error::Protocol(
+            "Contacts did not send back a vCard.".into(),
+        ));
+    }
+    Ok(text)
+}
+
+/// Add the people in a vCard file to Contacts. Answers with the ids Apple gave them, and
+/// how many cards it could not read.
+pub async fn import_vcards(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    vcard: &str,
+) -> Result<(Vec<String>, usize)> {
+    // Apple's own ceiling for an import, checked here so the refusal says why.
+    if vcard.len() > 10 * 1024 * 1024 {
+        return Err(Error::Refused(
+            "That file is larger than the 10 MB Contacts takes at once.".into(),
+        ));
+    }
+    if !vcard.contains("BEGIN:VCARD") {
+        return Err(Error::Refused("That file holds no contacts.".into()));
+    }
+    let text = co_text(
+        http,
+        root,
+        params,
+        tokens,
+        reqwest::Method::POST,
+        "co/import/",
+        vcard.to_string(),
+    )
+    .await?;
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let ids = body
+        .get("importedContactIds")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let failed = body
+        .get("errors")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    Ok((ids, failed))
+}
+
+/// Say which card is this person's own — "My Card" on every device.
+pub async fn set_me_card(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    id: &str,
+) -> Result<()> {
+    let body = serde_json::json!({ "meCardId": id });
+    co_text(
+        http,
+        root,
+        params,
+        tokens,
+        reqwest::Method::PUT,
+        "co/mecardid",
+        body.to_string(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Which card is this person's own, as `/co/startup` says.
+pub fn me_card(body: &Value) -> Option<String> {
+    body.get("meCardId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
 /// Fetch the address book and reconcile it into the library.
 pub async fn sync(
     http: &reqwest::Client,
@@ -685,6 +837,7 @@ pub async fn fetch(
     Ok(AddressBook {
         contacts: parse(&body),
         lists: parse_lists(&body),
+        me: me_card(&body),
     })
 }
 
@@ -729,6 +882,7 @@ pub fn apply(library: &mut quince_core::Library, book: AddressBook) -> Result<us
         LISTS_KEY,
         &serde_json::to_string(&book.lists).unwrap_or_else(|_| "[]".into()),
     )?;
+    library.set_state(ME_KEY, book.me.as_deref().unwrap_or(""))?;
     library.mark_synced("contacts", None)?;
     Ok(book.contacts.len())
 }

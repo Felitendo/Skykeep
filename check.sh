@@ -63,6 +63,7 @@ step "reminder keys"     node .uiverify/reminders-keys.mjs
 step "contacts order"    node .uiverify/contacts-order.mjs
 step "contacts lists"    node .uiverify/contacts-lists.mjs
 step "drive keys"        node .uiverify/drive-keys.mjs
+step "contacts vcard"    node .uiverify/contacts-vcard.mjs
 step "calendar alerts"   node .uiverify/calendar-alerts.mjs
 step "calendar repeat"   node .uiverify/calendar-repeat.mjs
 step "reminder add/done"  node .uiverify/reminders-add-done.mjs

@@ -1558,6 +1558,110 @@ async fn contact_delete(
     resync_contacts(&http, &root, params, &data).await
 }
 
+/// A path in `dir` for `name` that holds nothing yet: a number goes on the end rather than
+/// writing over a file already there — the rule a browser follows.
+fn free_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let (stem, ext) = name.rsplit_once('.').map_or((name, ""), |(s, e)| (s, e));
+    let mut path = dir.join(name);
+    let mut suffix = 1;
+    while path.exists() {
+        path = dir.join(if ext.is_empty() {
+            format!("{stem} {suffix}")
+        } else {
+            format!("{stem} {suffix}.{ext}")
+        });
+        suffix += 1;
+    }
+    path
+}
+
+/// These people as a vCard file in Downloads, written by Apple. Returns where it went.
+#[tauri::command]
+async fn contacts_export(
+    guids: Vec<String>,
+    file_name: String,
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+) -> UiResult<String> {
+    if guids.is_empty() {
+        return Err("Choose someone to export.".into());
+    }
+    let (http, root, params) = contacts_context(&auth).await?;
+    let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let vcard =
+        quince_icloud::contacts::export_vcards(&http, &root, params, &tokens, &guids, &file_name)
+            .await
+            .map_err(|e| e.to_string())?;
+    let downloads = app
+        .path()
+        .download_dir()
+        .map_err(|_| "Couldn't find your Downloads folder.".to_string())?;
+    // A name fit for a file: no folders smuggled in, never empty.
+    let clean: String = file_name
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | '\0'))
+        .collect();
+    let clean = if clean.trim().trim_end_matches(".vcf").is_empty() {
+        "iCloud vCards.vcf".into()
+    } else {
+        clean
+    };
+    let path = free_path(&downloads, &clean);
+    std::fs::write(&path, vcard).map_err(|e| format!("Couldn't save the vCard: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Add everyone in a vCard file to Contacts. Answers how many came in and how many could not.
+#[tauri::command]
+async fn contacts_import(
+    path: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<(usize, usize)> {
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("Couldn't read that file: {e}"))?;
+    let (http, root, params) = contacts_context(&auth).await?;
+    let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let (ids, failed) =
+        quince_icloud::contacts::import_vcards(&http, &root, params.clone(), &tokens, &text)
+            .await
+            .map_err(|e| e.to_string())?;
+    resync_contacts(&http, &root, params, &data).await?;
+    Ok((ids.len(), failed))
+}
+
+/// The card that is this person's own, as the last pass stored it.
+#[tauri::command]
+async fn contact_me(data: State<'_, Data>) -> UiResult<Option<String>> {
+    let library = data.0.lock().await;
+    Ok(library
+        .state(quince_icloud::contacts::ME_KEY)
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty()))
+}
+
+/// Make this card "My Card", on every device.
+#[tauri::command]
+async fn contact_set_me(
+    guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = contacts_context(&auth).await?;
+    let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    quince_icloud::contacts::set_me_card(&http, &root, params.clone(), &tokens, &guid)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_contacts(&http, &root, params, &data).await
+}
+
 /// The address book, optionally filtered by name or by any stored number or address.
 #[tauri::command]
 async fn contacts_list(search: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Contact>> {
@@ -2640,6 +2744,10 @@ fn main() {
             contacts_list,
             contact_save,
             contact_lists,
+            contacts_export,
+            contacts_import,
+            contact_me,
+            contact_set_me,
             contact_list_write,
             contact_delete,
             drive_sync_folder,

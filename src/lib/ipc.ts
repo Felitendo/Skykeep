@@ -159,6 +159,13 @@ export const api = {
   contactSave: (contact: Contact) => invoke<string>("contact_save", { contact }),
   contactDelete: (guid: string) => invoke<void>("contact_delete", { guid }),
   contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
+  /** These people as a vCard file in Downloads, written by Apple. Returns the path. */
+  contactsExport: (guids: string[], fileName: string) => invoke<string>("contacts_export", { guids, fileName }),
+  /** Everyone in a vCard file, added to Contacts. Returns [added, could not be read]. */
+  contactsImport: (path: string) => invoke<[number, number]>("contacts_import", { path }),
+  /** The card that is this person's own, if they have said. */
+  contactMe: () => invoke<string | null>("contact_me"),
+  contactSetMe: (guid: string) => invoke<void>("contact_set_me", { guid }),
   /** Contacts' lists — Apple's groups — in the order Apple keeps them. */
   contactLists: () => invoke<ContactList[]>("contact_lists"),
   /**

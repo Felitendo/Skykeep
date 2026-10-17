@@ -235,6 +235,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
         case "contact_delete": (window.__contactDeletes ??= []).push(args); return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;
+        case "contact_me": return window.__me ?? (contactsFixture ? "c1" : null);
+        case "contact_set_me": await new Promise((r) => setTimeout(r, 600)); window.__me = args.guid; return null;
+        case "contacts_export": (window.__exports ??= []).push(args); return `/home/test/Downloads/${args.fileName}`;
+        case "contacts_import": (window.__imports ??= []).push(args); return [2, 0];
+        case "plugin:dialog|open": return window.__pick ?? null;
         case "contact_lists": return !contactsFixture ? [] : (window.__lists ??= [
           { guid: "L1", name: "Family", members: ["c2"], etag: "e1" },
         ]).map((l) => ({ ...l, members: [...l.members] }));
