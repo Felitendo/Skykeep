@@ -283,6 +283,26 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// What Today holds: open reminders due by the end of today — overdue counts, as Apple
+/// shows it there. A timed reminder is compared as a moment, against the end of the local
+/// day (`?1`); an all-day one as a date, against the next day's UTC midnight (`?2`), since
+/// Apple keeps an all-day date as that day's UTC midnight. Compared as a moment, west of
+/// Greenwich tomorrow's all-day reminder fell before tonight's local midnight and showed in
+/// Today.
+const TODAY: &str = "r.completed_at IS NULL AND r.due_at IS NOT NULL
+     AND ((r.all_day = 0 AND r.due_at < ?1) OR (r.all_day = 1 AND r.due_at < ?2))";
+
+/// UTC midnight of the day after the local day that ends at `until`.
+fn all_day_bound(until: i64) -> i64 {
+    let zone = jiff::tz::TimeZone::system();
+    jiff::Timestamp::from_second(until - 1)
+        .ok()
+        .map(|t| t.to_zoned(zone).date())
+        .and_then(|d| d.tomorrow().ok())
+        .and_then(|d| d.to_zoned(jiff::tz::TimeZone::UTC).ok())
+        .map_or(until, |z| z.timestamp().as_second())
+}
+
 impl Library {
     /// Upsert lists without removing anything.
     ///
@@ -532,10 +552,7 @@ impl Library {
             .collect();
 
         Ok(ReminderCounts {
-            today: one(
-                "r.completed_at IS NULL AND r.due_at IS NOT NULL AND r.due_at < ?1",
-                &[until],
-            )?,
+            today: one(TODAY, &[until, all_day_bound(until)])?,
             scheduled: one("r.completed_at IS NULL AND r.due_at IS NOT NULL", &[])?,
             flagged: one("r.completed_at IS NULL AND r.flagged = 1", &[])?,
             all: one("r.completed_at IS NULL", &[])?,
@@ -548,10 +565,7 @@ impl Library {
         // regardless is what SQLite rejects as a parameter-count mismatch.
         let (clause, args): (&str, Vec<i64>) = match kind {
             // Overdue counts as today: Apple shows it there rather than hiding it in the past.
-            SmartList::Today => (
-                "r.completed_at IS NULL AND r.due_at IS NOT NULL AND r.due_at < ?1",
-                vec![until],
-            ),
+            SmartList::Today => (TODAY, vec![until, all_day_bound(until)]),
             SmartList::Scheduled => ("r.completed_at IS NULL AND r.due_at IS NOT NULL", vec![]),
             SmartList::Flagged => ("r.completed_at IS NULL AND r.flagged = 1", vec![]),
             SmartList::All => ("r.completed_at IS NULL", vec![]),
@@ -1118,6 +1132,47 @@ mod smart_tests {
             section_guid: None,
             all_day: false,
         }
+    }
+
+    /// An all-day reminder is in Today by its date, whatever the zone: today's is, tomorrow's
+    /// is not — though tomorrow's UTC midnight falls before tonight's local midnight west of
+    /// Greenwich, which is how it used to land in Today there.
+    #[test]
+    fn an_all_day_reminder_is_in_today_by_its_date() {
+        let zone = jiff::tz::TimeZone::system();
+        let today = jiff::Zoned::now().with_time_zone(zone.clone()).date();
+        let utc_midnight = |d: jiff::civil::Date| {
+            d.to_zoned(jiff::tz::TimeZone::UTC)
+                .unwrap()
+                .timestamp()
+                .as_second()
+        };
+        let end_of_today = today
+            .tomorrow()
+            .unwrap()
+            .to_zoned(zone)
+            .unwrap()
+            .timestamp()
+            .as_second();
+        let mut lib = seeded();
+        let mut on_day = reminder("all-day-today", Some(utc_midnight(today)), false, None);
+        on_day.all_day = true;
+        let mut next_day = reminder(
+            "all-day-tomorrow",
+            Some(utc_midnight(today.tomorrow().unwrap())),
+            false,
+            None,
+        );
+        next_day.all_day = true;
+        lib.put_reminders(&[on_day, next_day]).unwrap();
+        let guids: Vec<String> = lib
+            .reminders_smart(SmartList::Today, end_of_today)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.guid)
+            .collect();
+        assert_eq!(guids, vec!["all-day-today"]);
+        assert_eq!(lib.reminder_counts(end_of_today).unwrap().today, 1);
     }
 
     /// Overdue belongs in Today: Apple shows it there rather than hiding it in the past.
