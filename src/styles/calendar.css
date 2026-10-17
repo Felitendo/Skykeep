@@ -371,7 +371,7 @@
   border: 0;
   border-radius: 4px;
   background: color-mix(in srgb, var(--cal) 24%, transparent);
-  color: var(--text);
+  color: color-mix(in srgb, var(--cal) 58%, #000);
   font: inherit;
   font-size: var(--t-11);
   font-weight: 600;
@@ -480,7 +480,8 @@
   border: 0;
   border-radius: 5px;
   background: color-mix(in srgb, var(--cal) 22%, var(--bg));
-  color: var(--text);
+  /* The words in the calendar's own colour, deepened to read — as Calendar on the Mac. */
+  color: color-mix(in srgb, var(--cal) 58%, #000);
   font: inherit;
   text-align: left;
   overflow: hidden;
@@ -510,7 +511,7 @@
 .cx-block.is-short .cx-block-where { display: none; }
 .cx-block-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-11); font-weight: 600; }
 .cx-block-time,
-.cx-block-where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 10.5px; }
+.cx-block-where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; opacity: 0.8; font-size: 10.5px; }
 
 .cx-reminder {
   position: absolute;
@@ -746,3 +747,8 @@
 .cx-ask p { margin: 0 0 16px; color: var(--text-2); font-size: var(--t-13); }
 .cx-ask-actions { display: flex; flex-direction: column; gap: 8px; }
 .cx-ask-actions > button { width: 100%; }
+
+/* In the dark the calendar's colour is lifted toward white instead. */
+@media (prefers-color-scheme: dark) {
+  .cx-block, .cx-bar-event { color: color-mix(in srgb, var(--cal) 45%, #fff); }
+}
