@@ -1,0 +1,30 @@
+// Finder's keys in Drive: the arrows walk the selection, Command/Ctrl-Down opens what is
+// selected, Command/Ctrl-Up goes back to the folder it is in.
+import { engine } from "./engine.mjs";
+import { SERVICES, installStub } from "./stub.mjs";
+const b = await engine.launch();
+const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
+await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, driveFixture: true });
+const page = await ctx.newPage();
+await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
+await page.waitForTimeout(400);
+let failures = 0;
+const ok = (pass, what) => { console.log(`${pass ? "PASS" : "FAIL"} ${what}`); if (!pass) failures++; };
+const chosen = () => page.locator('.drive-row-hit[aria-pressed="true"] .drive-name').allInnerTexts();
+const names = await page.locator("button.drive-row-hit .drive-name").allInnerTexts();
+await page.locator("button.drive-row-hit").first().click();
+await page.keyboard.press("ArrowDown");
+ok(JSON.stringify(await chosen()) === JSON.stringify([names[1]]), `Down selects the next row  ${JSON.stringify(await chosen())}`);
+await page.keyboard.press("ArrowUp");
+ok(JSON.stringify(await chosen()) === JSON.stringify([names[0]]), "Up selects the one before");
+await page.locator(".drive-row-hit", { hasText: "Downloads" }).click();
+await page.keyboard.press("Control+ArrowDown");
+await page.waitForTimeout(400);
+ok((await page.locator(".crumb").allInnerTexts()).some((t) => t.includes("Downloads")), "Ctrl-Down opens the selected folder");
+await page.locator("button.drive-row-hit").first().click();
+await page.keyboard.press("Control+ArrowUp");
+await page.waitForTimeout(400);
+ok(!(await page.locator(".crumb").allInnerTexts()).some((t) => t.includes("Downloads")), "Ctrl-Up goes back to the folder above");
+await b.close();
+process.exitCode = failures ? 1 : 0;

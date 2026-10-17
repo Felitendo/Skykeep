@@ -900,10 +900,22 @@ export function DriveView() {
                     onClick={() => setSelected(item.drivewsid)}
                     onDoubleClick={() => (container ? enter(item) : void download(item))}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
+                      const mod = e.ctrlKey || e.metaKey;
+                      if (e.key === "Enter" || (mod && e.key === "ArrowDown")) {
                         e.preventDefault();
                         if (container) enter(item);
                         else void download(item);
+                      } else if (mod && e.key === "ArrowUp") {
+                        // Finder's Command-Up: the folder this one is in.
+                        e.preventDefault();
+                        if (trail.length > 1) setTrail((t) => t.slice(0, -1));
+                      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                        // The arrows walk the selection, as in Finder and icloud.com.
+                        e.preventDefault();
+                        const rows = [...(e.currentTarget.closest("ul")?.querySelectorAll<HTMLButtonElement>(".drive-row-hit") ?? [])];
+                        const next = rows[rows.indexOf(e.currentTarget) + (e.key === "ArrowDown" ? 1 : -1)];
+                        next?.focus();
+                        next?.click();
                       } else if (e.key === "Delete" || (e.key === "Backspace" && (e.metaKey || e.ctrlKey))) {
                         e.preventDefault();
                         void remove(item);
