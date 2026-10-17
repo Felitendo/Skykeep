@@ -1777,3 +1777,10 @@
 .drive-row.is-selected .drive-more { color: #fff; }
 /* A time typed as said: the width of "12:45 PM", right-aligned figures, as macOS's. */
 .time-field { width: 8.5ch; text-align: center; font-variant-numeric: tabular-nums; }
+/* The letter a run of names begins with, as Contacts heads its list. */
+.contact-letter {
+  position: sticky; top: 0; z-index: 1; padding: 10px 10px 4px;
+  background: var(--bg); color: var(--text-3);
+  font-size: var(--t-12, 12px); font-weight: 600;
+  border-bottom: 1px solid var(--separator);
+}

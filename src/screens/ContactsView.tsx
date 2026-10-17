@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Notice } from "../components/Notice";
 import { ChevronLeft } from "lucide-react";
 import {
@@ -206,8 +206,12 @@ export function ContactsView() {
         {error && <Notice message={error} onDismiss={() => setError(null)} />}
 
         <ul className="contact-rows">
-          {contacts.map((contact) => (
-            <li key={contact.guid}>
+          {sortedContacts(contacts).map((contact, i, all) => (
+            <Fragment key={contact.guid}>
+            {(i === 0 || letterOf(all[i - 1]) !== letterOf(contact)) && (
+              <li className="contact-letter" aria-hidden="true">{letterOf(contact)}</li>
+            )}
+            <li>
               <button
                 className="contact-row"
                 aria-current={openGuid === contact.guid}
@@ -220,6 +224,7 @@ export function ContactsView() {
                 <span className="contact-row-name">{displayName(contact)}</span>
               </button>
             </li>
+            </Fragment>
           ))}
         </ul>
 
@@ -473,4 +478,25 @@ function birthdayText(raw: string): string {
   if (!m || !d) return raw;
   const date = new Date(y === Number(NO_YEAR) ? 2000 : y, m - 1, d);
   return date.toLocaleDateString(undefined, y === Number(NO_YEAR) ? { day: "numeric", month: "long" } : { dateStyle: "long" });
+}
+
+/**
+ * The order Contacts keeps: by last name, then first — a company by its name — letters
+ * before anything else, accents and case aside, and a card with no name at all ("#") last.
+ */
+const contactCollator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+function sortKey(c: Contact): string {
+  if (c.isCompany && c.company) return c.company;
+  return [c.lastName, c.firstName, c.middleName].filter(Boolean).join(" ") || c.company || "";
+}
+function letterOf(c: Contact): string {
+  const first = sortKey(c).trim().charAt(0).toLocaleUpperCase();
+  return /\p{L}/u.test(first) ? first.normalize("NFD").charAt(0) : "#";
+}
+function sortedContacts(list: Contact[]): Contact[] {
+  return [...list].sort((a, b) => {
+    const la = letterOf(a) === "#", lb = letterOf(b) === "#";
+    if (la !== lb) return la ? 1 : -1;
+    return contactCollator.compare(sortKey(a), sortKey(b));
+  });
 }
