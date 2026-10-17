@@ -168,6 +168,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;
         case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems.filter(r => !r.completedAt);
+        case "note_paragraph": (window.__paragraphs ??= []).push(args); return null;
         case "note_runs": {
           // Curtains, set as a phone sets one: a title, then a dashed list and a ticked item.
           if (args.guid !== "n1") return [];

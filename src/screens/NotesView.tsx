@@ -193,6 +193,34 @@ export function NotesView() {
     return () => { cancelled = true; };
   }, [openGuid, revision]);
 
+  /**
+   * Tick a checklist item, as a tap on its circle does on the phone: shown at once, then
+   * written; a refusal puts the tick back and says why.
+   */
+  const tick = async (guid: string, start: number, checked: boolean) => {
+    const text = loadedBody?.guid === guid ? loadedBody.text : "";
+    const nl = text.indexOf("\n", start);
+    const end = nl < 0 ? text.length : nl + 1;
+    const flip = (on: boolean) =>
+      setLoadedRuns((cur) => {
+        if (!cur || cur.guid !== guid) return cur;
+        let at = 0;
+        const runs = cur.runs.map((r) => {
+          const inside = at >= start && at < end && r.style === 103;
+          at += r.length;
+          return inside ? { ...r, checked: on } : r;
+        });
+        return { guid, runs };
+      });
+    flip(checked);
+    try {
+      await api.noteParagraph(guid, start, { checked });
+    } catch (e) {
+      flip(!checked);
+      setError(messageOf(e));
+    }
+  };
+
   /** What the open note says, or null while that is still unknown. */
   const body = open && loadedBody?.guid === open.guid ? loadedBody.text : null;
   const runs = open && loadedRuns?.guid === open.guid ? loadedRuns.runs : null;
@@ -823,7 +851,12 @@ export function NotesView() {
                   }
                 }}
               >
-                <FormattedBody text={body ?? ""} runs={runs ?? []} skip={titleLine.length + 1} />
+                <FormattedBody
+                  text={body ?? ""}
+                  runs={runs ?? []}
+                  skip={titleLine.length + 1}
+                  onTick={open ? (start, checked) => void tick(open.guid, start, checked) : undefined}
+                />
               </div>
             ) : (
             <LongTextarea

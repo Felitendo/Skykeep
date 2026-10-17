@@ -997,6 +997,30 @@ async fn note_body(guid: String, data: State<'_, Data>) -> UiResult<Option<Strin
     library.note_body(&guid).map_err(|e| e.to_string())
 }
 
+/// Set one paragraph of a note: `style` from the Aa menu, or `checked` for a checklist tick.
+#[tauri::command]
+async fn note_paragraph(
+    guid: String,
+    start: u64,
+    style: Option<u64>,
+    checked: Option<bool>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    use quince_icloud::ckdocument::ParagraphChange;
+    let change = match (style, checked) {
+        (Some(s), _) => ParagraphChange::Style(s),
+        (None, Some(c)) => ParagraphChange::Checked(c),
+        (None, None) => return Ok(()),
+    };
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let note = note_by_guid(&data, &guid).await?;
+    quince_icloud::notes::set_paragraph_cloudkit(&http, &root, params.clone(), &note, start, change)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await
+}
+
 /// How a note's text is set — Apple's attribute runs, in order — as stored at the last sync.
 #[tauri::command]
 async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::Value> {
@@ -2409,6 +2433,7 @@ fn main() {
             note_folder_delete,
             note_body,
             note_runs,
+            note_paragraph,
             note_save,
             note_create,
             note_delete,

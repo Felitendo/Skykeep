@@ -16,7 +16,15 @@ const ticked = await page.locator(".nf-check.is-done").count();
 const marks = await page.locator(".nf-mark").allInnerTexts();
 ok(ticked === 1, `a ticked checklist item shows ticked  [${ticked}]`);
 ok(marks.length > 0 && marks.every((m) => m === "–"), `a dashed list shows its dashes  ${JSON.stringify(marks.slice(0, 3))}`);
-await page.locator(".note-read").click();
+// A tap on a ticked circle unticks it at once, and asks Apple to.
+const circle = page.locator(".nf-check .nf-circle").first();
+await circle.click();
+await page.waitForTimeout(150);
+ok((await circle.getAttribute("aria-checked")) === "false", "a tap on a ticked circle unticks it at once");
+const sent = await page.evaluate(() => window.__paragraphs?.at(-1));
+ok(sent?.checked === false && typeof sent?.start === "number" && sent.start > 0, `and asks Apple for that line  ${JSON.stringify(sent)}`);
+ok(await page.evaluate(() => document.activeElement?.tagName !== "TEXTAREA"), "a tick does not start editing");
+await page.locator(".nf-body, .nf-item:not(.nf-check)").first().click();
 await page.waitForTimeout(200);
 ok(await page.evaluate(() => document.activeElement?.classList.contains("note-text") && document.activeElement.tagName === "TEXTAREA"),
   "a click into it is editing");
