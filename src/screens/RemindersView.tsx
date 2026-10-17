@@ -1162,11 +1162,23 @@ export function RemindersView() {
                             } else if (e.key === "Escape") {
                               e.currentTarget.value = reminder.title;
                               e.currentTarget.blur();
-                            } else if (e.key === "Tab" && inList) {
+                            } else if (inList && (e.key === "Tab" || ((e.ctrlKey || e.metaKey) && (e.key === "]" || e.key === "[")))) {
+                              // Tab and Shift-Tab, or Command-] and Command-[ as the Mac's menu has them.
                               e.preventDefault();
                               const typed = e.currentTarget.value;
+                              const out = e.key === "[" || (e.key === "Tab" && e.shiftKey);
                               void rename(reminder, typed);
-                              void (e.shiftKey ? (reminder.parentGuid ? outdent(reminder) : null) : (reminder.parentGuid ? null : indent(reminder)));
+                              void (out ? (reminder.parentGuid ? outdent(reminder) : null) : (reminder.parentGuid ? null : indent(reminder)));
+                            } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
+                              // Up and Down walk the list, keeping where the caret was.
+                              const all = [...document.querySelectorAll<HTMLInputElement>(".rx-row .rx-title")];
+                              const next = all[all.indexOf(e.currentTarget) + (e.key === "ArrowDown" ? 1 : -1)];
+                              if (next) {
+                                e.preventDefault();
+                                const caret = e.currentTarget.selectionStart ?? 0;
+                                next.focus();
+                                next.setSelectionRange(Math.min(caret, next.value.length), Math.min(caret, next.value.length));
+                              }
                             }
                           }}
                         />

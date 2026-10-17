@@ -28,6 +28,24 @@ ok(!(await row().evaluate((el) => el.classList.contains("is-subtask"))), "Shift-
 sent = await page.evaluate(() => window.__edits?.at(-1));
 ok(sent && sent.parentGuid === null, `and asks Apple to  ${JSON.stringify(sent)}`);
 
+// Command-] and Command-[ do the same, as the Mac's Format menu has them.
+await page.getByLabel("Rename Pick up the parcel").focus();
+await page.keyboard.press("Control+]");
+await page.waitForTimeout(150);
+ok(await row().evaluate((el) => el.classList.contains("is-subtask")), "Ctrl-] indents it");
+await page.getByLabel("Rename Pick up the parcel").focus();
+await page.keyboard.press("Control+[");
+await page.waitForTimeout(150);
+ok(!(await row().evaluate((el) => el.classList.contains("is-subtask"))), "Ctrl-[ outdents it");
+// Up and Down walk from reminder to reminder.
+const order = await page.locator(".rx-row .rx-title").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+const at = order.indexOf("Rename Pick up the parcel");
+await page.getByLabel("Rename Pick up the parcel").focus();
+await page.keyboard.press("ArrowDown");
+ok(await page.evaluate((want) => document.activeElement?.getAttribute("aria-label") === want, order[at + 1]), "Down goes to the next reminder");
+await page.keyboard.press("ArrowUp");
+ok(await page.evaluate(() => document.activeElement?.getAttribute("aria-label") === "Rename Pick up the parcel"), "Up comes back");
+
 await page.getByLabel("Rename Pick up the parcel").focus();
 await page.keyboard.press("Enter");
 await page.waitForTimeout(150);
