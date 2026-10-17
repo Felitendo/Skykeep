@@ -71,6 +71,10 @@ async fn resync_reminders(
 /// screen wait on Apple: when CloudKit was slow or overloaded (503, retry in 10s), Reminders,
 /// Notes and the rest drew nothing at all until it gave up. The fetch runs unlocked; the
 /// library is held only to store what came back.
+/// One reminders pass at a time, for the reason [`NOTES_PASS`] gives: an older pass storing
+/// after a newer write put the reminder back as it was before the write.
+pub static REMINDERS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn refresh_reminders(
     http: &reqwest::Client,
     root: &str,
@@ -78,6 +82,7 @@ async fn refresh_reminders(
     data: &State<'_, Data>,
     whole: bool,
 ) -> Result<(), String> {
+    let _one = REMINDERS_PASS.lock().await;
     let since = if whole {
         None
     } else {

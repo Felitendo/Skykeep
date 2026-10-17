@@ -161,6 +161,7 @@ pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh 
     reports.push(match ctx.cloudkit.as_deref() {
         None => unavailable("reminders", "Reminders"),
         Some(root) => {
+            let _one = crate::REMINDERS_PASS.lock().await;
             let since = token(data, "reminders").await;
             let full = since.is_none();
             let fetched = quince_icloud::reminders::fetch_cloudkit(
