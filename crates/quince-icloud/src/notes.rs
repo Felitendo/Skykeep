@@ -147,8 +147,24 @@ pub async fn fetch_cloudkit(
 ) -> Result<NotesFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let mut walk = client.all_records(ZONE, since).await?;
-    for record in &mut walk.records {
-        read_asset_body(http, record).await;
+    // Long notes' files, eight at a time: one after another, a first pass over an account
+    // with many long notes waited on each download in turn.
+    let wanted: Vec<(usize, String)> = walk
+        .records
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| asset_url(r).map(|u| (i, u)))
+        .collect();
+    use futures_util::StreamExt;
+    let fetched: Vec<(usize, Option<Vec<u8>>)> = futures_util::stream::iter(wanted)
+        .map(|(i, url)| async move { (i, download(http, &url).await) })
+        .buffer_unordered(8)
+        .collect()
+        .await;
+    for (i, bytes) in fetched {
+        if let (Some(bytes), Some(record)) = (bytes, walk.records.get_mut(i)) {
+            put_asset_body(record, &bytes);
+        }
     }
     Ok(NotesFetch {
         records: walk.records,
@@ -185,33 +201,42 @@ const FROM_ASSET: &str = "_QuinceTextFromAsset";
 /// read-only. The file is fetched here and put where the inline text would be, so everything
 /// after reads it the same way, and the record is marked so nothing tries to write it back
 /// inline. A failed download leaves the note as it was: unread, never emptied.
+/// One record's long text, fetched and put in place — the pass does many of these at once.
+#[cfg(test)]
 async fn read_asset_body(http: &reqwest::Client, record: &mut Value) {
+    if let Some(url) = asset_url(record) {
+        if let Some(bytes) = download(http, &url).await {
+            put_asset_body(record, &bytes);
+        }
+    }
+}
+
+fn asset_url(record: &Value) -> Option<String> {
     if field::record_type(record).as_deref() != Some("Note")
         || record.pointer("/fields/TextDataEncrypted").is_some()
     {
-        return;
+        return None;
     }
-    let Some(url) = record
+    record
         .pointer("/fields/TextDataAsset/value/downloadURL")
         .and_then(Value::as_str)
         .map(|u| u.replace("${f}", "note"))
-    else {
-        return;
-    };
-    let Ok(response) = http.get(url).send().await else {
-        return;
-    };
+}
+
+async fn download(http: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
+    let response = http.get(url).send().await.ok()?;
     if !response.status().is_success() {
-        return;
+        return None;
     }
-    let Ok(bytes) = response.bytes().await else {
-        return;
-    };
+    response.bytes().await.ok().map(|b| b.to_vec())
+}
+
+fn put_asset_body(record: &mut Value, bytes: &[u8]) {
     use base64::{engine::general_purpose::STANDARD as B64, Engine};
     if let Some(fields) = record.get_mut("fields").and_then(Value::as_object_mut) {
         fields.insert(
             "TextDataEncrypted".into(),
-            serde_json::json!({ "type": "ENCRYPTED_BYTES", "value": B64.encode(&bytes) }),
+            serde_json::json!({ "type": "ENCRYPTED_BYTES", "value": B64.encode(bytes) }),
         );
         fields.insert(FROM_ASSET.into(), Value::Bool(true));
     }
