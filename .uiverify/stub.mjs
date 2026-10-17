@@ -168,6 +168,16 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;
         case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems.filter(r => !r.completedAt);
+        case "note_runs": {
+          // Curtains, set as a phone sets one: a title, then a dashed list and a ticked item.
+          if (args.guid !== "n1") return [];
+          const body = (noteList.find((n) => n.guid === "n1") ?? {}).body ?? "";
+          const lines = body.split("\n");
+          const runs = lines.map((l, i) => ({ length: l.length + (i < lines.length - 1 ? 1 : 0),
+            style: i === 0 ? 0 : i === 1 ? 103 : 101, indent: 0, checked: i === 1 ? true : null,
+            bold: false, italic: false, underline: false, strike: false, link: null }));
+          return runs;
+        }
         case "note_folders": return !notesFixture ? [] : (window.__noteFolders ??= noteFolders.slice()).slice();
         case "note_folder_create": {
           const guid = `f-${(window.__noteFolders ??= noteFolders.slice()).length + 1}`;

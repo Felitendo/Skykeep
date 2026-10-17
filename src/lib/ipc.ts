@@ -120,6 +120,7 @@ export const api = {
     invoke<void>("reminder_delete", { guid, listGuid }),
 
   noteFolders: () => invoke<NoteFolder[]>("note_folders"),
+  noteRuns: (guid: string) => invoke<import("../screens/notes/Formatted").Run[]>("note_runs", { guid }),
   noteFolderCreate: (title: string, parent: string | null) =>
     invoke<string>("note_folder_create", { title, parent }),
   noteFolderRename: (guid: string, title: string) => invoke<void>("note_folder_rename", { guid, title }),

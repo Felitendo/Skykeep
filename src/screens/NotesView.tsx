@@ -6,6 +6,7 @@ import { LongTextarea } from "../components/LongTextarea";
 import { editorDate, groupNotes, joinTitle, listDate, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { RowMenu } from "../components/RowMenu";
+import { FormattedBody, runsFit, type Run } from "./notes/Formatted";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
@@ -177,8 +178,26 @@ export function NotesView() {
     };
   }, [openGuid, revision]);
 
+  /** How the open note is set, from Apple's attribute runs, read with its body. */
+  const [loadedRuns, setLoadedRuns] = useState<{ guid: string; runs: Run[] } | null>(null);
+  /** Showing the note formatted; a click into its text switches to editing it. */
+  const [reading, setReading] = useState(true);
+  useEffect(() => {
+    setReading(true);
+    if (!openGuid) return setLoadedRuns(null);
+    let cancelled = false;
+    api.noteRuns(openGuid).then(
+      (runs) => { if (!cancelled) setLoadedRuns({ guid: openGuid, runs: Array.isArray(runs) ? runs : [] }); },
+      () => {},
+    );
+    return () => { cancelled = true; };
+  }, [openGuid, revision]);
+
   /** What the open note says, or null while that is still unknown. */
   const body = open && loadedBody?.guid === open.guid ? loadedBody.text : null;
+  const runs = open && loadedRuns?.guid === open.guid ? loadedRuns.runs : null;
+  // Formatted only while it is exactly what Apple holds: untouched here, the runs adding up.
+  const formatted = Boolean(body !== null && runs && draft === null && runsFit(body, runs));
 
   const dirty = draft !== null && body !== null && draft !== body;
 
@@ -785,6 +804,28 @@ export function NotesView() {
                 void (composingRef.current ? commitComposing() : flush());
               }}
             />
+            {reading && formatted && !composing ? (
+              <div
+                className="note-text note-read"
+                role="textbox"
+                aria-readonly="false"
+                aria-label={`Body of ${open?.title ?? "note"}`}
+                tabIndex={0}
+                onClick={() => {
+                  setReading(false);
+                  window.setTimeout(() => bodyEditor.current?.focus(), 0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    setReading(false);
+                    window.setTimeout(() => bodyEditor.current?.focus(), 0);
+                  }
+                }}
+              >
+                <FormattedBody text={body ?? ""} runs={runs ?? []} skip={titleLine.length + 1} />
+              </div>
+            ) : (
             <LongTextarea
               key="body"
               ref={bodyEditor}
@@ -811,6 +852,7 @@ export function NotesView() {
                 void (composingRef.current ? commitComposing() : flush());
               }}
             />
+            )}
           </div>
         ) : open?.locked ? (
           <p className="cal-empty">
@@ -826,7 +868,13 @@ export function NotesView() {
         ) : open ? (
           <div className="note-editor is-readonly">
             <h1 className="note-title">{splitTitle(body ?? "").title}</h1>
-            <pre className="note-text">{splitTitle(body ?? "").rest}</pre>
+            {runs && body !== null && runsFit(body, runs) ? (
+              <div className="note-text note-read">
+                <FormattedBody text={body} runs={runs} skip={splitTitle(body).title.length + 1} />
+              </div>
+            ) : (
+              <pre className="note-text">{splitTitle(body ?? "").rest}</pre>
+            )}
             <p className="note-readonly">
               Quince can’t yet save changes to this note without risking what is in it — it
               is very long, or its copy on iCloud is out of step with your devices — so it is
