@@ -689,6 +689,15 @@ export function DriveView() {
             </span>
           ))}
         </nav>
+        {loaded && (
+          // As icloud.com writes it under a folder's name: how much is in it.
+          <p className="drive-count" aria-live="polite">
+            {(() => {
+              const n = items.filter((x) => !gone.has(x.drivewsid)).length;
+              return `${n} item${n === 1 ? "" : "s"}`;
+            })()}
+          </p>
+        )}
         <div className="cal-actions">
           <button className="quiet with-glyph" onClick={() => setInTrash(true)}>
             <ActionGlyph name="delete" />

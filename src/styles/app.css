@@ -1757,3 +1757,4 @@
 .drive-more { font-size: 9px; letter-spacing: 1px; }
 .drive-row.is-menu { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .drive-row.is-menu .drive-row-actions { opacity: 1; }
+.drive-count { margin: 0 auto 0 10px; color: var(--text-3); font-size: var(--t-12, 12px); white-space: nowrap; }
