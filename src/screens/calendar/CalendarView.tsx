@@ -464,12 +464,20 @@ export function CalendarView() {
       const year = String(selected.getFullYear());
       return { strong: year, rest: "", brief: year };
     }
-    if (view === "day")
+    if (view === "day") {
+      // The language's own way of writing a date — "October 17, 2026", "17 October 2026" —
+      // with the day and month in bold and the year light, as Calendar sets it.
+      const parts = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "long", year: "numeric" })
+        .formatToParts(selected);
+      const at = parts.findIndex((p) => p.type === "year");
+      const strong = parts.slice(0, at).map((p) => p.value).join("").replace(/[\s,]+$/, "");
+      const sep = parts.slice(0, at).map((p) => p.value).join("").slice(strong.length);
       return {
-        strong: selected.toLocaleDateString(undefined, { day: "numeric", month: "long" }),
-        rest: `${selected.getFullYear()}`,
+        strong: `${strong}${sep.trimEnd()}`,
+        rest: parts.slice(at).map((p) => p.value).join(""),
         brief: selected.toLocaleDateString(undefined, { day: "numeric", month: "short" }),
       };
+    }
     // A week across two months is named for both, as Calendar does: "Sep – Oct 2026".
     if (view === "week" && week[0].getMonth() !== week[6].getMonth()) {
       const sameYear = week[0].getFullYear() === week[6].getFullYear();
