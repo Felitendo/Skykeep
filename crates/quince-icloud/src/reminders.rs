@@ -1569,9 +1569,15 @@ pub async fn create_list_cloudkit(
             &record_name,
             "List",
             serde_json::json!({
-                "Name": { "type": "STRING", "value": title },
+                // `isEncrypted`, as every list on a real account has it: without it CloudKit
+                // takes the field for raw bytes and refuses the list ("byte values must be
+                // base64 encoded") — measured, and why making a list here failed.
+                "Name": { "type": "STRING", "value": title, "isEncrypted": true },
                 "Deleted": { "type": "NUMBER_INT64", "value": 0 },
                 "IsGroup": { "type": "NUMBER_INT64", "value": 0 },
+                // As icloud.com makes a list: blue, and linked to the account.
+                "Color": { "type": "STRING", "value": list_colour_value("blue").unwrap_or_default() },
+                "IsLinkedToAccount": { "type": "NUMBER_INT64", "value": 1 },
                 "SortingStyle": { "type": "STRING", "value": "manual" },
             }),
         )
@@ -1599,7 +1605,73 @@ pub async fn rename_list_cloudkit(
             list_guid,
             "List",
             None,
-            serde_json::json!({ "Name": { "type": "STRING", "value": title } }),
+            serde_json::json!({ "Name": { "type": "STRING", "value": title, "isEncrypted": true } }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Apple's list colours, as icloud.com's picker offers them: the CloudKit name each is keyed
+/// by, its RGB, and the older name where it has one ("custom" where not). A list's `Color`
+/// is resolved by the CloudKit name first, so that is what matters; the rest is written as
+/// Apple writes it, so every client reads the same colour.
+pub const LIST_COLOURS: [(&str, [u8; 3], &str); 12] = [
+    ("red", [255, 59, 48], "red"),
+    ("orange", [255, 149, 0], "orange"),
+    ("yellow", [255, 204, 0], "yellow"),
+    ("green", [52, 199, 89], "green"),
+    ("lightBlue", [81, 170, 242], "custom"),
+    ("blue", [0, 122, 255], "blue"),
+    ("indigo", [88, 86, 214], "custom"),
+    ("pink", [234, 66, 106], "custom"),
+    ("purple", [192, 119, 219], "purple"),
+    ("brown", [162, 132, 94], "custom"),
+    ("gray", [91, 103, 112], "custom"),
+    ("rose", [217, 166, 159], "custom"),
+];
+
+/// A list's `Color` value, as icloud.com writes one — measured beside a list the phone made:
+/// `{"red":…,"green":…,"blue":…,"alpha":1,"colorRGBSpace":2,"daHexString":"#5AC8FA",
+/// "ckSymbolicColorName":"lightBlue","daSymbolicColorName":"custom"}`.
+pub fn list_colour_value(name: &str) -> Option<String> {
+    let (ck, [r, g, b], da) = LIST_COLOURS.iter().find(|(ck, _, _)| *ck == name)?;
+    Some(
+        serde_json::json!({
+            "red": f64::from(*r) / 255.0,
+            "green": f64::from(*g) / 255.0,
+            "blue": f64::from(*b) / 255.0,
+            "alpha": 1,
+            "colorRGBSpace": 2,
+            "daHexString": format!("#{r:02X}{g:02X}{b:02X}"),
+            "ckSymbolicColorName": ck,
+            "daSymbolicColorName": da,
+        })
+        .to_string(),
+    )
+}
+
+/// Change a list's colour, as Show List Info does: `Color` only, with its token advanced so
+/// every device takes the change.
+pub async fn set_list_colour_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    list_guid: &str,
+    colour: &str,
+) -> Result<()> {
+    let value = list_colour_value(colour).ok_or_else(|| {
+        Error::Refused(format!(
+            "\u{201c}{colour}\u{201d} isn't one of Apple's list colours."
+        ))
+    })?;
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record_signed(
+            ZONE,
+            list_guid,
+            "List",
+            None,
+            serde_json::json!({ "Color": { "type": "STRING", "value": value } }),
         )
         .await?;
     Ok(())
@@ -1763,7 +1835,7 @@ mod incremental_tests {
     fn list(name: &str, title: &str) -> Value {
         json!({
             "recordName": name, "recordType": "List",
-            "fields": { "Name": { "type": "STRING", "value": title } }
+            "fields": { "Name": { "type": "STRING", "value": title, "isEncrypted": true } }
         })
     }
 
@@ -3343,7 +3415,7 @@ mod list_shape_tests {
             "recordName": name,
             "recordType": "List",
             "fields": {
-                "Name": { "type": "STRING", "value": title },
+                "Name": { "type": "STRING", "value": title, "isEncrypted": true },
                 "IsGroup": { "type": "NUMBER_INT64", "value": i64::from(group) },
             }
         })
@@ -3505,7 +3577,7 @@ mod other_accounts_tests {
             "recordName": name,
             "recordType": "List",
             "fields": {
-                "Name": { "type": "STRING", "value": title },
+                "Name": { "type": "STRING", "value": title, "isEncrypted": true },
                 "IsGroup": { "type": "NUMBER_INT64", "value": i64::from(group) },
             }
         })
@@ -3906,7 +3978,7 @@ mod account_order_tests {
 
     fn list(name: &str, title: &str, group: Option<&str>, is_group: bool) -> Value {
         let mut fields = json!({
-            "Name": { "type": "STRING", "value": title },
+            "Name": { "type": "STRING", "value": title, "isEncrypted": true },
             "IsGroup": { "type": "NUMBER_INT64", "value": i64::from(is_group) },
         });
         if let Some(parent) = group {
