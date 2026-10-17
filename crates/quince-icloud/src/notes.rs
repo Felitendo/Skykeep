@@ -1572,12 +1572,12 @@ mod write_tests {
         serde_json::from_slice::<Value>(&modify.body).unwrap()["operations"][0]["record"].clone()
     }
 
-    /// The phone changed the very words being edited here: nothing is written, and the
-    /// phone's version stands until the person decides.
+    /// The phone added to the very line being edited here: both additions are written, as
+    /// Notes merges them — the phone's first — and neither device's words are lost.
     #[tokio::test]
-    async fn an_edit_over_a_phone_edit_in_the_same_place_writes_nothing() {
+    async fn an_edit_over_a_phone_edit_in_the_same_place_keeps_both() {
         let server = server("Curtains\nmeasure the bay window twice").await;
-        let err = edit_cloudkit_from(
+        let saved = edit_cloudkit_from(
             &reqwest::Client::new(),
             &server.uri(),
             vec![],
@@ -1586,18 +1586,15 @@ mod write_tests {
             "Curtains\nmeasure the bay window once",
         )
         .await
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("changed on another device"),
-            "{err}"
-        );
+        .unwrap();
+        assert_eq!(saved, "Curtains\nmeasure the bay window twice once");
         let wrote = server
             .received_requests()
             .await
             .unwrap()
             .iter()
             .any(|r| r.url.path().ends_with("/records/modify"));
-        assert!(!wrote, "nothing may be written over the phone's edit");
+        assert!(wrote, "the merged note is written");
     }
 
     /// Apart, both survive: the phone's line and ours.

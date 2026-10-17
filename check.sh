@@ -65,6 +65,8 @@ step "contacts order"    node .uiverify/contacts-order.mjs
 step "contacts lists"    node .uiverify/contacts-lists.mjs
 step "drive keys"        node .uiverify/drive-keys.mjs
 step "drive drag"        node .uiverify/drive-drag.mjs
+step "reminder colours"  node .uiverify/calendar-reminder-colour.mjs
+step "calendar dblclick"  node .uiverify/calendar-dblclick.mjs
 step "contacts vcard"    node .uiverify/contacts-vcard.mjs
 step "contacts select"   node .uiverify/contacts-select.mjs
 step "calendar alerts"   node .uiverify/calendar-alerts.mjs

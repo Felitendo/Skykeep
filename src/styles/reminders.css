@@ -7,18 +7,18 @@
 :root {
   /* Apple's system colours, which are what its built-in views are drawn in. They shift
      between light and dark, so they are not the same six hex values in both. */
-  --sys-blue: #007aff;
-  --sys-red: #ff3b30;
+  --sys-blue: #0088ff;
+  --sys-red: #ff383c;
   --sys-gray: #8e8e93;
-  --sys-orange: #ff9500;
+  --sys-orange: #ff8d28;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --sys-blue: #0a84ff;
-    --sys-red: #ff453a;
+    --sys-blue: #0091ff;
+    --sys-red: #ff4245;
     --sys-gray: #98989d;
-    --sys-orange: #ff9f0a;
+    --sys-orange: #ff9230;
   }
 }
 
@@ -277,7 +277,7 @@
   justify-content: space-between;
   gap: 16px;
   padding: 2px 14px 10px 0;
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 .rx-head h1 {
   margin: 0;
@@ -428,7 +428,7 @@
 }
 .rx-due.overdue { color: var(--sys-red); }
 .rx-repeat { display: inline-flex; gap: 3px; }
-.rx-moved { color: var(--accent); font-weight: 600; }
+.rx-moved { color: var(--accent-strong); font-weight: 600; }
 
 /* Info and flag wait at the end of the row until it is pointed at. A flag that is set is
    information, not a control, so it stays. */

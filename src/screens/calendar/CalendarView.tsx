@@ -142,7 +142,12 @@ type Draft = {
  * reminder there and then. It fills at once, lingers a moment so the tick is seen, and leaves
  * the schedule — Calendar shows no completed reminders.
  */
-const TickContext = createContext<{ ticked: Set<string>; tick: (r: Reminder) => void } | null>(null);
+const TickContext = createContext<{ ticked: Set<string>; tick: (r: Reminder) => void; colour: (r: Reminder) => string } | null>(null);
+/** A reminder's list colour, as Calendar on the Mac draws scheduled reminders in it. */
+const useListColour = () => {
+  const ctx = useContext(TickContext);
+  return (r: Reminder) => ({ "--cal": ctx?.colour(r) ?? "var(--sys-blue)" }) as React.CSSProperties;
+};
 function Ring({ reminder }: { reminder: Reminder }) {
   const ctx = useContext(TickContext);
   const done = ctx?.ticked.has(reminder.guid) ?? false;
@@ -241,8 +246,11 @@ export function CalendarView() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [due, setDue] = useState<Reminder[]>([]);
   const [ticked, setTicked] = useState<Set<string>>(() => new Set());
+  /** Each Reminders list's colour, by list. */
+  const [listColours, setListColours] = useState<Map<string, string>>(() => new Map());
   const tickValue = useMemo(() => ({
     ticked,
+    colour: (r: Reminder) => listColours.get(r.listGuid) || "var(--sys-blue)",
     tick: (r: Reminder) => {
       setTicked((was) => new Set(was).add(r.guid));
       const untick = () => setTicked((was) => { const next = new Set(was); next.delete(r.guid); return next; });
@@ -251,13 +259,15 @@ export function CalendarView() {
         (e) => { untick(); setError(messageOf(e)); },
       );
     },
-  }), [ticked]);
+  }), [ticked, listColours]);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   const [hidden, setHidden] = useState<Set<string>>(() => readSet(HIDDEN_KEY));
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const draftRef = useRef<Draft | null>(null);
+  draftRef.current = draft;
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   /** The last event deleted, held so the deletion can be taken back. */
   const [undo, setUndo] = useState<CalendarEvent | null>(null);
@@ -293,11 +303,13 @@ export function CalendarView() {
   }, [view, selected, week, month]);
 
   const read = useCallback(async () => {
-    const [found, cals, reminders] = await Promise.all([
+    const [found, cals, reminders, lists] = await Promise.all([
       api.calendarEvents(range.from, range.to),
       api.calendarList(),
       api.remindersDueBetween(range.from, range.to),
+      api.reminderLists().catch(() => []),
     ]);
+    setListColours(new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.colour && /^#[0-9a-f]{6}$/i.test(l.colour) ? l.colour : ""])));
     setEvents(Array.isArray(found) ? found : []);
     setCalendars(Array.isArray(cals) ? cals : []);
     // What is done is not on the schedule any more; Calendar hides completed reminders.
@@ -493,6 +505,9 @@ export function CalendarView() {
   }, [undo]);
 
   const openDraft = (d: Draft, at: Anchor) => {
+    // The event already open stays as it is: a second click — a double-click — closed it and
+    // opened it again, and the popover flickered.
+    if (d.guid && draftRef.current?.guid === d.guid) return;
     setDraft(d.guid ? d : { ...d, alerts: [], repeat: null });
     setAnchor(at);
     const guid = d.guid;
@@ -518,7 +533,9 @@ export function CalendarView() {
   /** "New event": the next whole hour on the selected day, for an hour — Apple's default. */
   const newEvent = (e?: React.MouseEvent) => {
     const at = new Date(selected);
-    at.setHours(now.getHours() + 1, 0, 0, 0);
+    // Late in the evening the next whole hour is tomorrow — in Week, often next week, off
+    // the screen it was asked for on. It stays on the day: the last hour of it.
+    at.setHours(Math.min(now.getHours() + 1, 23), 0, 0, 0);
     const button = (e?.currentTarget ?? document.querySelector('[aria-label="New event"]'))?.getBoundingClientRect()
       ?? new DOMRect(window.innerWidth - 40, 40, 0, 0);
     // Under the button, never over the toolbar; in Day and Week it moves beside the new event
@@ -990,6 +1007,7 @@ function MonthView({
   onCreate: (d: Date, at: Anchor) => void;
   onMore: (d: Date) => void;
 }) {
+  const listColour = useListColour();
   const cell = useRef<HTMLButtonElement | null>(null);
   const focused = useRef(false);
   const inMonth = selected.getMonth();
@@ -1095,6 +1113,7 @@ function MonthView({
                           <li key={item.event.guid}>
                             <button
                               className="cx-item"
+                              data-event={item.event.guid}
                               style={{ "--cal": tint(calendars.get(item.event.calendarGuid)) } as React.CSSProperties}
                               // Named in full, for the dot that is all a narrow cell shows.
                               aria-label={`${item.event.title}, ${clock(item.event.startsAt)}`}
@@ -1110,6 +1129,7 @@ function MonthView({
                           <li key={item.reminder.guid}>
                             <span
                               className={`cx-item is-reminder${item.reminder.completedAt ? " is-done" : ""}`}
+                              style={listColour(item.reminder)}
                               title={dots ? `${item.reminder.title} · ${clock(item.at)}` : undefined}
                             >
                               <Ring reminder={item.reminder} />
@@ -1191,6 +1211,7 @@ function TimeGrid({
   /** A new event being named in the popover, held on the grid where it was made. */
   pending?: { startsAt: number; endsAt: number; title: string } | null;
 }) {
+  const listColour = useListColour();
   const scroller = useRef<HTMLDivElement | null>(null);
   const columnsEl = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -1383,6 +1404,7 @@ function TimeGrid({
           {spans.map((s) => (
             <button
               key={s.event.guid}
+              data-event={s.event.guid}
               className={`cx-bar-event${s.continuesLeft ? " from-before" : ""}${s.continuesRight ? " to-after" : ""}`}
               style={
                 {
@@ -1448,6 +1470,7 @@ function TimeGrid({
                   return (
                     <button
                       key={p.event.guid}
+                      data-event={p.event.guid}
                       className={`cx-block${moving || sizing ? " is-moving" : ""}${p.length < 45 ? " is-short" : ""}`}
                       style={
                         {
@@ -1500,6 +1523,7 @@ function TimeGrid({
                       key={r.guid}
                       className={`cx-reminder${r.completedAt ? " is-done" : ""}`}
                       style={{
+                        ...listColour(r),
                         top: `${(m.top / 60) * HOUR}px`,
                         left: `calc(${(m.column / m.columns) * 100}% + 4px)`,
                         maxWidth: `calc(${100 / m.columns}% - 8px)`,
@@ -1738,7 +1762,10 @@ function EventPopover({
       }
     };
     const onDown = (e: MouseEvent) => {
-      if (box.current && !box.current.contains(e.target as Node)) onClose();
+      if (!box.current || box.current.contains(e.target as Node)) return;
+      // A press on the event this is open for is not a press elsewhere: it keeps it open.
+      if (draft.guid && (e.target as HTMLElement).closest?.(`[data-event="${CSS.escape(draft.guid)}"]`)) return;
+      onClose();
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousedown", onDown);
@@ -1746,7 +1773,7 @@ function EventPopover({
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onDown);
     };
-  }, [onClose, onDelete, onNudge, editable, view, draft.allDay]);
+  }, [onClose, onDelete, onNudge, editable, view, draft.allDay, draft.guid]);
 
   const set = (patch: Partial<Draft>) => onChange({ ...draft, ...patch });
 
@@ -1977,6 +2004,7 @@ function DayPane({
   onOpen: (e: CalendarEvent, at: Anchor) => void;
   children?: React.ReactNode;
 }) {
+  const listColour = useListColour();
   const from = seconds(day);
   const to = seconds(addDays(day, 1));
   const today = events.filter((e) => e.startsAt < to && e.endsAt > from);
@@ -1989,6 +2017,7 @@ function DayPane({
     <li key={e.guid}>
       <button
         className="cx-pane-event"
+        data-event={e.guid}
         style={{ "--cal": tint(calendars.get(e.calendarGuid)) } as React.CSSProperties}
         onClick={(ev) => onOpen(e, pointOf(ev.currentTarget))}
       >
@@ -2011,7 +2040,7 @@ function DayPane({
           {allDay.map((e) => row(e, "all-day"))}
           {timed.map((e) => row(e, `${clock(e.startsAt)} – ${clock(e.endsAt)}`))}
           {due.map((r) => (
-            <li key={r.guid} className="cx-pane-reminder">
+            <li key={r.guid} className="cx-pane-reminder" style={listColour(r)}>
               <Ring reminder={r} />
               <span className="cx-pane-title">{r.title}</span>
               <span className="cx-pane-when">{clock(r.dueAt ?? 0)}</span>

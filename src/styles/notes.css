@@ -44,9 +44,9 @@
 }
 .notes-folder:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .notes-folder[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
-.notes-folder:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+.notes-folder:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
 /* Apple's folders are drawn in the accent, which in Notes is its yellow — here, quince gold. */
-.notes-folder-glyph { flex: none; color: var(--gold); }
+.notes-folder-glyph { flex: none; color: var(--accent); }
 .notes-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notes-folder-count { color: var(--text-3); font-variant-numeric: tabular-nums; }
 
@@ -93,7 +93,7 @@
 }
 .notes-icon:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 .notes-icon.danger:hover { color: var(--danger); }
-.notes-icon:focus-visible { outline: 3px solid var(--gold-ring); }
+.notes-icon:focus-visible { outline: 3px solid var(--accent-ring); }
 .notes-icon:disabled { opacity: 0.45; }
 
 .notes-search {
@@ -110,7 +110,7 @@
   outline: none;
 }
 .notes-search::placeholder { color: var(--text-3); }
-.notes-search:focus-visible { box-shadow: 0 0 0 3px var(--gold-ring); }
+.notes-search:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); }
 
 .notes-folder-picker { display: none; margin-bottom: 8px; }
 .notes-folder-picker .picker { width: 100%; }
@@ -154,10 +154,10 @@
 /* The selection as macOS draws it: the accent, text in white, while the list has focus;
    a quiet grey once focus is elsewhere — in the note being written, say. */
 .note-row[aria-current="true"] { background: color-mix(in srgb, var(--text) 11%, transparent); box-shadow: none; }
-.note-rows:focus-within .note-row[aria-current="true"] { background: var(--gold); color: #fff; }
+.note-rows:focus-within .note-row[aria-current="true"] { background: var(--accent); color: var(--on-accent); }
 .note-rows:focus-within .note-row[aria-current="true"] .note-row-when,
-.note-rows:focus-within .note-row[aria-current="true"] .note-row-snippet { color: rgba(255, 255, 255, 0.82); }
-.note-row:focus-visible { outline: 3px solid var(--gold-ring); outline-offset: -1px; }
+.note-rows:focus-within .note-row[aria-current="true"] .note-row-snippet { color: var(--on-accent-2); }
+.note-row:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
 .note-row-title {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -264,10 +264,10 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .notes-folder-row:hover .notes-folder-more, .notes-folder-row.is-menu .notes-folder-more,
 .notes-folder-more:focus-visible { opacity: 1; }
 .notes-folder-row:hover .notes-folder-count, .notes-folder-row.is-menu .notes-folder-count { visibility: hidden; }
-.notes-folder-rename { width: 100%; box-sizing: border-box; border: 1px solid var(--gold); background: var(--bg); color: var(--text); font: inherit; outline: none; }
+.notes-folder-rename { width: 100%; box-sizing: border-box; border: 1px solid var(--accent); background: var(--bg); color: var(--text); font: inherit; outline: none; }
 .notes-new-folder {
   display: flex; align-items: center; gap: 6px; margin-top: auto; padding: 8px; border: 0;
-  background: none; box-shadow: none; color: var(--gold); font: inherit; font-size: var(--t-13); cursor: pointer;
+  background: none; box-shadow: none; color: var(--accent-strong); font: inherit; font-size: var(--t-13); cursor: pointer;
 }
 .notes-new-folder:hover { text-decoration: underline; }
 /* A note as Notes sets it, from Apple's own runs. Sizes after Notes on macOS: title 24,
@@ -288,11 +288,11 @@ textarea.note-title::placeholder { color: var(--text-3); }
   background: none; box-shadow: none; cursor: pointer; transition: background 120ms ease, border-color 120ms ease;
 }
 .nf-check.is-done .nf-circle {
-  border-color: var(--gold); background: var(--gold)
+  border-color: var(--accent); background: var(--accent)
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/12px no-repeat;
 }
 .nf-check.is-done > span:last-child { color: var(--text-3); }
-.note-formatted a { color: var(--gold); text-decoration: underline; }
+.note-formatted a { color: var(--accent-strong); text-decoration: underline; }
 /* Aa, as Notes writes it on its toolbar. */
 .notes-aa { font-weight: 600; font-size: 14px; letter-spacing: -0.02em; width: auto; padding-inline: 8px; }
 
@@ -309,7 +309,7 @@ textarea.note-title::placeholder { color: var(--text-3); }
   line-height: 1.55;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-  caret-color: var(--notes-accent, var(--gold));
+  caret-color: var(--accent);
   counter-reset: nf-num;
 }
 .note-rich .nf-p { margin: 0; min-height: 1.55em; padding-inline-start: calc(var(--indent, 0) * 1.5em); position: relative; }
@@ -350,17 +350,17 @@ textarea.note-title::placeholder { color: var(--text-3); }
   cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease;
 }
 .note-rich .nf-p[data-style="103"][data-checked="true"]::before {
-  border-color: var(--notes-accent, var(--gold));
-  background: var(--notes-accent, var(--gold))
+  border-color: var(--accent);
+  background: var(--accent)
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/12px no-repeat;
 }
 .note-rich .nf-p[data-style="103"][data-checked="true"] { color: var(--text-3); }
-.note-rich a { color: var(--notes-accent, var(--gold)); text-decoration: underline; }
+.note-rich a { color: var(--accent-strong); text-decoration: underline; }
 .note-rich .nf-attachment {
   display: inline-block; padding: 0 6px; margin: 0 1px; border-radius: 5px;
   background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text-2); font-size: var(--t-13);
 }
-.note-rich ::selection { background: color-mix(in srgb, var(--notes-accent, var(--gold)) 32%, transparent); }
+.note-rich ::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
 .notes-icon.is-on { background: color-mix(in srgb, var(--text) 10%, transparent); }
 
 /* ---- Aa ----------------------------------------------------------------------------
@@ -383,7 +383,7 @@ textarea.note-title::placeholder { color: var(--text-3); }
   color: var(--text); font: inherit; font-size: 16px; cursor: default;
 }
 .fp-mark:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
-.fp-mark[aria-pressed="true"] { background: color-mix(in srgb, var(--notes-accent, var(--gold)) 22%, transparent); color: var(--notes-accent-strong, var(--gold-strong)); }
+.fp-mark[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-strong); }
 .fp-styles { display: flex; flex-direction: column; }
 .fp-style {
   display: grid; grid-template-columns: 22px auto 1fr; align-items: center; column-gap: 2px;

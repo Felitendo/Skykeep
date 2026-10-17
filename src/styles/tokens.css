@@ -1,17 +1,29 @@
-/* Quince design tokens.
+/* Quince design tokens, after Apple's macOS 27 kit (docs/macos27-kit.md).
    The idiom is macOS, because familiarity is what earns trust from someone being asked for
-   their Apple ID. The accent is not Apple's system blue: it's quince gold, from the fruit the
-   app is named after, and it is the only saturated colour anywhere in the chrome. */
+   their Apple ID. Each app takes its own Mac accent, as Apple's apps colour themselves —
+   Notes yellow, Calendar red, the rest the system blue — set on <html data-app> by the
+   window, so a menu or popover drawn over an app takes its colour too. Quince gold is the
+   brand: the app icon and the sign-in. */
 
 :root {
   color-scheme: light dark;
 
   --gold: #c8912a;
   --gold-strong: #a9781f;
-  --gold-tint: rgba(200, 145, 42, 0.13);
-  --gold-ring: rgba(200, 145, 42, 0.32);
-  /* Passes 4.5:1 against white, for text sitting on a filled accent. */
   --gold-deep: #7d5a16;
+
+  /* The accent: `--accent` fills and draws glyphs; `-strong` is accent text on the window,
+     at 4.5:1 or better; `-deep` a filled control under white text, also 4.5:1. Apple's own
+     macOS 27 blue (#0088ff) carries white text at 3.5:1, so filled controls take the deeper
+     shade and keep the same hue. */
+  --accent: #0088ff;
+  --accent-strong: #0068d6;
+  --accent-deep: #0068d6;
+  --accent-tint: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-ring: color-mix(in srgb, var(--accent) 34%, transparent);
+  /* Text on a filled accent — white, or on Notes' yellow the near-black Notes uses. */
+  --on-accent: #fff;
+  --on-accent-2: rgba(255, 255, 255, 0.82);
 
   --bg: #f5f5f7;
   --sheet: #ffffff;
@@ -60,7 +72,17 @@
     -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
+/* Notes: Apple's yellow; its text and filled controls a deep gold that reads on white. */
+:root[data-app="notes"] { --accent: #ffcc00; --accent-strong: #8a6800; --accent-deep: #8a6800; --on-accent: #1d1d1f; --on-accent-2: rgba(0, 0, 0, 0.62); }
+/* Before any app is open — signing in — the brand's own gold. */
+:root:not([data-app]) { --accent: var(--gold); --accent-strong: var(--gold-deep); --accent-deep: var(--gold-deep); }
+/* Calendar: Apple's red. */
+:root[data-app="calendar"] { --accent: #ff383c; --accent-strong: #d70015; --accent-deep: #d70015; }
+
 @media (prefers-color-scheme: dark) {
+  :root { --accent: #0091ff; --accent-strong: #0091ff; --accent-deep: #0068d6; }
+  :root[data-app="notes"] { --accent: #ffd600; --accent-strong: #ffd600; --accent-deep: #8a6800; --on-accent: #1d1d1f; --on-accent-2: rgba(0, 0, 0, 0.62); }
+  :root[data-app="calendar"] { --accent: #ff4245; --accent-strong: #ff4245; --accent-deep: #d70015; }
   :root {
     --bg: #1c1c1e;
     --sheet: #2c2c2e;

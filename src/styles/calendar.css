@@ -166,7 +166,7 @@
   background: color-mix(in srgb, var(--text) 7%, transparent);
   color: var(--text-3);
 }
-.cx-search:focus-within { box-shadow: 0 0 0 3px var(--gold-ring); }
+.cx-search:focus-within { box-shadow: 0 0 0 3px var(--accent-ring); }
 .cx-search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--t-13); outline: none; }
 .cx-search input::placeholder { color: var(--text-3); }
 @container cx-page (max-width: 860px) { .cx-search { width: 120px; } }
@@ -324,17 +324,18 @@
 }
 .cx-item:hover { background: color-mix(in srgb, var(--cal, var(--text)) 14%, transparent); }
 .cx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cal); }
+/* A reminder's ring and its words in its list's colour, as Calendar on the Mac draws them. */
 .cx-ring {
   position: relative; flex: none; width: 10px; height: 10px; padding: 0; margin: 0;
-  border: 1.3px solid var(--text-3); border-radius: 50%; box-sizing: border-box;
+  border: 1.3px solid var(--cal, var(--text-3)); border-radius: 50%; box-sizing: border-box;
   background: none; box-shadow: none; cursor: pointer;
   transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 /* A target a finger or a trackpad can find, larger than the ring it draws. */
 .cx-ring::before { content: ""; position: absolute; inset: -6px; }
-.cx-ring:hover { border-color: var(--text); }
+.cx-ring:hover { background: color-mix(in srgb, var(--cal, var(--text)) 22%, transparent); }
 .cx-ring:active { transform: scale(0.85); }
-.cx-ring.is-ticked { background: var(--sys-blue, #0a84ff); border-color: var(--sys-blue, #0a84ff); }
+.cx-ring.is-ticked { background: var(--cal, var(--sys-blue)); border-color: var(--cal, var(--sys-blue)); }
 .cx-ring:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 2px; }
 .cx-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cx-item-time { color: var(--text-3); font-variant-numeric: tabular-nums; }
@@ -728,7 +729,7 @@
   cursor: default;
 }
 .cx-pane-event:hover { background: color-mix(in srgb, var(--cal) 24%, transparent); }
-.cx-pane-event:focus-visible { outline: 3px solid var(--gold-ring); }
+.cx-pane-event:focus-visible { outline: 3px solid var(--accent-ring); }
 .cx-pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-13); font-weight: 600; }
 .cx-pane-when, .cx-pane-where { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
 .cx-pane-reminder { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 10px; font-size: var(--t-13); }
@@ -752,3 +753,10 @@
 @media (prefers-color-scheme: dark) {
   .cx-block, .cx-bar-event { color: color-mix(in srgb, var(--cal) 45%, #fff); }
 }
+
+/* Reminders' words take their list's colour, deepened to read in light and lifted in dark. */
+.cx-reminder, .cx-item.is-reminder .cx-item-title, .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 62%, #000); }
+@media (prefers-color-scheme: dark) {
+  .cx-reminder, .cx-item.is-reminder .cx-item-title, .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 50%, #fff); }
+}
+.cx-reminder.is-done, .cx-item.is-reminder.is-done .cx-item-title { color: var(--text-3); }

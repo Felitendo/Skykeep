@@ -2626,6 +2626,33 @@ fn main() {
             show_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        // The window shows Quince and nothing else. A link to anywhere outside it — a phone
+        // number, an address, a web page in a note or an event — goes to the app this
+        // computer uses for it. Followed in place, a `tel:` link replaced the whole window
+        // with "URL can't be shown", and there was no way back.
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("links")
+                .on_navigation(|webview, url| {
+                    let inside =
+                        matches!(url.scheme(), "tauri" | "quince" | "about" | "data" | "blob")
+                            || url
+                                .host_str()
+                                .is_some_and(|h| h == "tauri.localhost" || h == "localhost");
+                    if !inside {
+                        use tauri_plugin_opener::OpenerExt;
+                        if let Err(e) = webview
+                            .app_handle()
+                            .opener()
+                            .open_url(url.as_str(), None::<&str>)
+                        {
+                            eprintln!("could not open {url}: {e}");
+                        }
+                    }
+                    inside
+                })
+                .build(),
+        )
         // Closing the window hides it rather than quitting, so reminders still ring. Quit is
         // in the tray. Where no tray could be made there is nowhere to come back from, so
         // there closing quits as it always did.

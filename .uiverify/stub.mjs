@@ -41,11 +41,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
       timezone: null, url: null, notes: null, etag: null },
   ];
   const dueReminders = !calendarFixture ? [] : [
-    { guid: "r1", listGuid: "daily", title: "Water the plants", notes: null,
+    { guid: "r1", listGuid: "l1", title: "Water the plants", notes: null,
       dueAt: base + DAY + 8 * HOUR, completedAt: null, priority: 1, etag: null },
-    { guid: "r2", listGuid: "health", title: "Evening run", notes: null,
+    { guid: "r2", listGuid: "l2", title: "Evening run", notes: null,
       dueAt: base + 6 * HOUR, completedAt: null, priority: 0, etag: null },
-    { guid: "r3", listGuid: "daily", title: "Plan tomorrow", notes: null,
+    { guid: "r3", listGuid: "l1", title: "Plan tomorrow", notes: null,
       dueAt: base + 13 * HOUR, completedAt: base + 13 * HOUR, priority: 0, etag: null },
   ];
   const noteFolders = [

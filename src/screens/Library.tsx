@@ -75,6 +75,15 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
       .catch((e) => setError(messageOf(e)));
   }, []);
 
+  // The open app's accent belongs to the whole window — menus and popovers drawn over it
+  // too — as each Mac app colours itself: Notes yellow, Calendar red, the rest blue.
+  useEffect(() => {
+    document.documentElement.dataset.app = selected ?? "";
+    return () => {
+      delete document.documentElement.dataset.app;
+    };
+  }, [selected]);
+
   const choose = (key: string) => {
     setSelected(key);
     setSidebarOpen(false);
