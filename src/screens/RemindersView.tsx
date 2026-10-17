@@ -1367,35 +1367,39 @@ function DueField({ reminder, onChange }: { reminder: Reminder; onChange: (day: 
   const day = at ? `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}` : "";
   const time = at && !reminder.allDay ? `${pad(at.getHours())}:${pad(at.getMinutes())}` : null;
   return (
-    <div className="rx-field rx-due">
+    <div className="rx-field">
       <span>Date</span>
-      <input
-        type="date"
-        aria-label={`Date for ${reminder.title}`}
-        defaultValue={day}
-        key={`d${reminder.dueAt}`}
-        // A new date keeps the time already set; a first date is a day, as on the phone.
-        onBlur={(e) => e.target.value !== day && onChange(e.target.value, e.target.value ? time : null)}
-      />
-      <label className="rx-due-switch">
+      <div className="rx-due">
         <input
-          type="checkbox"
-          role="switch"
-          aria-label={`Time for ${reminder.title}`}
-          checked={time !== null}
-          disabled={!day}
-          onChange={(e) => onChange(day, e.target.checked ? "09:00" : null)}
+          type="date"
+          className="rx-due-day"
+          aria-label={`Date for ${reminder.title}`}
+          defaultValue={day}
+          key={`d${reminder.dueAt}`}
+          // A new date keeps the time already set; a first date is a day, as on the phone.
+          onBlur={(e) => e.target.value !== day && onChange(e.target.value, e.target.value ? time : null)}
         />
-        <span>Time</span>
-      </label>
-      {time !== null && at && (
-        <TimeField
-          label={`Time of day for ${reminder.title}`}
-          hours={at.getHours()}
-          minutes={at.getMinutes()}
-          onChange={(h, m) => onChange(day, `${pad(h)}:${pad(m)}`)}
-        />
-      )}
+        <label className="rx-switch">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label={`Time for ${reminder.title}`}
+            checked={time !== null}
+            disabled={!day}
+            onChange={(e) => onChange(day, e.target.checked ? "09:00" : null)}
+          />
+          <span className="rx-switch-track" aria-hidden="true" />
+          <span>Time</span>
+        </label>
+        {time !== null && at && (
+          <TimeField
+            label={`Time of day for ${reminder.title}`}
+            hours={at.getHours()}
+            minutes={at.getMinutes()}
+            onChange={(h, m) => onChange(day, `${pad(h)}:${pad(m)}`)}
+          />
+        )}
+      </div>
     </div>
   );
 }

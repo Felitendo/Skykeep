@@ -546,6 +546,16 @@
 .rx-info-swatch.is-on { box-shadow: 0 0 0 2px var(--sheet, var(--bg)), 0 0 0 4px var(--text-3); }
 .rx-info-actions { display: flex; justify-content: space-between; width: 100%; margin-top: 4px; }
 
-/* Date, then the Time switch, then the time once it is on — the phone's order. */
-.rx-due { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.rx-due-switch { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-13); color: var(--text-2); }
+/* Date, then the Time switch, then the time once it is on — the phone's order, on one line. */
+.rx-due { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.rx-field .rx-due .rx-due-day { width: auto; flex: 0 1 11em; }
+.rx-field .rx-due .time-field { width: 10.5ch; flex: none; }
+/* The phone's switch: a pill that fills with the accent when on. */
+.rx-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; flex: none; color: var(--text-2); font-size: var(--t-13); cursor: pointer; }
+.rx-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.rx-switch-track { position: relative; width: 34px; height: 20px; border-radius: 10px; background: color-mix(in srgb, var(--text) 22%, transparent); transition: background 160ms ease; }
+.rx-switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.3); transition: transform 160ms ease; }
+.rx-switch input:checked + .rx-switch-track { background: var(--sys-green, #34c759); }
+.rx-switch input:checked + .rx-switch-track::after { transform: translateX(14px); }
+.rx-switch input:focus-visible + .rx-switch-track { outline: 2px solid var(--sys-blue); outline-offset: 2px; }
+.rx-switch input:disabled + .rx-switch-track { opacity: 0.4; }

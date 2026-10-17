@@ -16,7 +16,7 @@ await page.getByRole("button", { name: "Details for Evening run" }).click();
 await page.waitForTimeout(200);
 const sw = page.getByRole("switch", { name: "Time for Evening run" });
 ok((await sw.isChecked()) && (await page.getByLabel("Time of day for Evening run").count()) === 1, "a timed reminder shows its date, the Time switch on, and its time");
-await sw.click();
+await page.locator(".rx-switch", { has: sw }).click();
 await page.waitForTimeout(200);
 const off = await page.evaluate(() => window.__edits?.at(-1));
 const utcMidnight = off && off.dueAt % 86400 === 0;

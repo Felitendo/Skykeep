@@ -1780,7 +1780,7 @@
 /* In Grid the ⋯ sits on its own light or dark disc, so its dots take the text colour. */
 .drive-rows.is-grid .drive-more { color: var(--text); }
 /* A time typed as said: the width of "12:45 PM", right-aligned figures, as macOS's. */
-.time-field { width: 8.5ch; text-align: center; font-variant-numeric: tabular-nums; }
+.time-field { width: 10.5ch; text-align: center; font-variant-numeric: tabular-nums; }
 /* The letter a run of names begins with, as Contacts heads its list. */
 .contact-letter {
   position: sticky; top: 0; z-index: 1; padding: 10px 10px 4px;
