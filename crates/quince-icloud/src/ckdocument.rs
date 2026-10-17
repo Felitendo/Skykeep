@@ -789,6 +789,241 @@ fn restyle(run: &[u8], change: ParagraphChange) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Set a note's formatting from `runs` — what an editor shows — over a document whose text
+/// is already the text they describe.
+///
+/// Each stretch keeps the rest of the run it falls in as Apple wrote it — fonts, colours,
+/// attachments, anything this does not model — and only the fields an editor sets are
+/// written: the paragraph's style, indent and checklist tick, bold and italic, underline,
+/// strikethrough and the link. A paragraph's setting is the one its newline carries, laid
+/// over the whole line, so a style never covers half a line; a checklist item keeps the id
+/// it had, and one new here — or a line split off another — is given its own.
+#[must_use]
+pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
+    let plain = inflate(original)?;
+    let text = std::str::from_utf8(field_at(&plain, TEXT_PATH)?).ok()?;
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let total = units.len() as u64;
+    if runs.iter().map(|r| r.length).sum::<u64>() != total {
+        return None;
+    }
+    let note = field_at(&plain, &TEXT_PATH[..2])?;
+    let old = debug_attribute_runs(original);
+    if old.iter().map(|r| run_length(r)).sum::<u64>() != total {
+        return None;
+    }
+
+    // Where each paragraph ends (just past its newline, or the end of the text).
+    let mut ends: Vec<u64> = units
+        .iter()
+        .enumerate()
+        .filter(|(_, &u)| u == u16::from(b'\n'))
+        .map(|(i, _)| i as u64 + 1)
+        .collect();
+    if ends.last() != Some(&total) {
+        ends.push(total);
+    }
+    let run_at = |list: &[Run], at: u64| -> Option<Run> {
+        let mut from = 0;
+        for r in list {
+            if at < from + r.length {
+                return Some(r.clone());
+            }
+            from += r.length;
+        }
+        list.last().cloned()
+    };
+
+    // Every point anything changes: old runs, new runs, paragraph ends.
+    let mut cuts: Vec<u64> = vec![0, total];
+    let mut at = 0;
+    for r in &old {
+        at += run_length(r);
+        cuts.push(at);
+    }
+    at = 0;
+    for r in runs {
+        at += r.length;
+        cuts.push(at);
+    }
+    cuts.extend(ends.iter().copied());
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    let mut pieces: Vec<Vec<u8>> = Vec::new();
+    let mut seen_items: Vec<Vec<u8>> = Vec::new();
+    let mut paragraph_item: Option<(u64, Vec<u8>)> = None;
+    for pair in cuts.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if a == b {
+            continue;
+        }
+        // The old run this stretch lies in: everything not ours to set comes from it.
+        let mut from = 0;
+        let template = old
+            .iter()
+            .find(|r| {
+                let hit = a < from + run_length(r);
+                from += run_length(r);
+                hit
+            })
+            .cloned()
+            .unwrap_or_default();
+        let inline = run_at(runs, a)?;
+        let end = *ends.iter().find(|&&e| e > a)?;
+        let para = run_at(runs, end - 1)?;
+
+        let mut piece = set_varint_field(&template, 1, b - a)?;
+        // The paragraph: its style, indent and checklist item.
+        let mut p = bytes_field(&template, 2).unwrap_or_default();
+        p = match para.style {
+            Some(style) => set_varint_field(&p, 1, style)?,
+            None => without_field(&p, 1)?,
+        };
+        p = if para.indent > 0 {
+            set_varint_field(&p, 4, para.indent)?
+        } else {
+            without_field(&p, 4)?
+        };
+        if para.style == Some(103) {
+            let item = match &paragraph_item {
+                Some((e, item)) if *e == end => item.clone(),
+                _ => {
+                    // The id this line had, unless a line before it already took it.
+                    let had = bytes_field(&p, 5)
+                        .and_then(|i| bytes_field(&i, 1))
+                        .filter(|id| !seen_items.contains(id));
+                    let id = had.unwrap_or_else(|| uuid::Uuid::new_v4().as_bytes().to_vec());
+                    seen_items.push(id.clone());
+                    let mut item = length_delimited(1, &id);
+                    item.extend(varint_field(2, u64::from(para.checked.unwrap_or(false))));
+                    paragraph_item = Some((end, item.clone()));
+                    item
+                }
+            };
+            p = without_field(&p, 5)?;
+            p.extend(length_delimited(5, &item));
+        } else {
+            p = without_field(&p, 5)?;
+        }
+        piece = without_field(&piece, 2)?;
+        if !p.is_empty() {
+            piece.extend(length_delimited(2, &p));
+        }
+        // The characters: bold and italic, underline, strikethrough, link.
+        let hints = u64::from(inline.bold) | (u64::from(inline.italic) << 1);
+        piece = if hints > 0 {
+            set_varint_field(&piece, 5, hints)?
+        } else {
+            without_field(&piece, 5)?
+        };
+        piece = if inline.underline {
+            set_varint_field(&piece, 6, 1)?
+        } else {
+            without_field(&piece, 6)?
+        };
+        piece = if inline.strike {
+            set_varint_field(&piece, 7, 1)?
+        } else {
+            without_field(&piece, 7)?
+        };
+        piece = without_field(&piece, 9)?;
+        if let Some(link) = inline.link.as_deref().filter(|l| !l.is_empty()) {
+            piece.extend(length_delimited(9, link.as_bytes()));
+        }
+        // Joined to the run before when nothing but the length tells them apart.
+        if let Some(last) = pieces.last_mut() {
+            if without_field(last, 1)? == without_field(&piece, 1)? {
+                let joined = run_length(last) + (b - a);
+                *last = set_varint_field(last, 1, joined)?;
+                continue;
+            }
+        }
+        pieces.push(piece);
+    }
+
+    let mut out = Vec::with_capacity(note.len() + 64);
+    let mut reader = Reader::new(note);
+    let mut wrote = false;
+    while !reader.done() {
+        let begin = reader.at;
+        let key = reader.varint()?;
+        let (field, wire) = (key >> 3, key & 7);
+        reader.skip(wire)?;
+        if field == ATTRIBUTE_RUN && wire == WIRE_LEN {
+            if !wrote {
+                for r in &pieces {
+                    out.extend_from_slice(&length_delimited(ATTRIBUTE_RUN, r));
+                }
+                wrote = true;
+            }
+        } else {
+            out.extend_from_slice(note.get(begin..reader.at)?);
+        }
+    }
+    if !wrote {
+        for r in &pieces {
+            out.extend_from_slice(&length_delimited(ATTRIBUTE_RUN, r));
+        }
+    }
+    ensure_versions(&rewrite(&plain, &TEXT_PATH[..2], &out)?)
+}
+
+/// The text and its formatting together: the text replaced as [`replace_text`] replaces it,
+/// then the runs set as [`set_runs`] sets them. Over the base64 a CloudKit field carries.
+#[must_use]
+pub fn replace_rich_in_base64(original: &str, text: &str, runs: &[Run]) -> Option<String> {
+    let raw = B64.decode(original.trim()).ok()?;
+    let replaced = gzip(&replace_text(&raw, text)?);
+    Some(B64.encode(gzip(&set_runs(&replaced, runs)?)))
+}
+
+/// `runs`, which describe `from`, laid over `to` — the same text with one stretch changed,
+/// as another device's edit merged in changes it. The stretch that is new takes the setting
+/// of what is just before it.
+#[must_use]
+pub fn carry_runs(from: &str, runs: &[Run], to: &str) -> Vec<Run> {
+    let (at, removed, inserted) = utf16_change(from, to);
+    let mut each: Vec<usize> = Vec::new();
+    for (i, r) in runs.iter().enumerate() {
+        each.extend(std::iter::repeat_n(
+            i,
+            usize::try_from(r.length).unwrap_or(0),
+        ));
+    }
+    let (at, removed, inserted) = (at as usize, removed as usize, inserted as usize);
+    if at + removed > each.len() {
+        return Vec::new();
+    }
+    let fill = if at > 0 {
+        each[at - 1]
+    } else {
+        each.get(at + removed).copied().unwrap_or(0)
+    };
+    let mut next: Vec<usize> = each[..at].to_vec();
+    next.extend(std::iter::repeat_n(fill, inserted));
+    next.extend_from_slice(&each[at + removed..]);
+    let mut out: Vec<Run> = Vec::new();
+    for i in next {
+        match out.last_mut() {
+            Some(last)
+                if *last
+                    == Run {
+                        length: last.length,
+                        ..runs[i].clone()
+                    } =>
+            {
+                last.length += 1
+            }
+            _ => out.push(Run {
+                length: 1,
+                ..runs.get(i).cloned().unwrap_or_default()
+            }),
+        }
+    }
+    out
+}
+
 /// [`set_paragraph`] over the base64 a CloudKit field carries, gzipped as Apple sends it.
 #[must_use]
 pub fn set_paragraph_in_base64(
@@ -1197,8 +1432,8 @@ pub fn debug_attribute_runs(bytes: &[u8]) -> Vec<Vec<u8>> {
 /// 102 numbered, 103 checklist; none is body), `4` its indent, `5` the checklist item with
 /// `2` ticked — `5` the font hints (1 bold, 2 italic), `6` underline, `7` strikethrough and
 /// `9` a link.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Run {
     pub length: u64,
     pub style: Option<u64>,
@@ -2176,6 +2411,137 @@ mod run_tests {
     }
 
     /// A dashed item, a ticked checklist item and a bold word, as Apple lays the runs out.
+    /// A document: `text`, one run per (length, extra bytes) given.
+    fn doc_with(text: &str, runs: &[(u64, Vec<u8>)]) -> Vec<u8> {
+        let mut note = Vec::new();
+        len_field(2, text.as_bytes(), &mut note);
+        for (len, extra) in runs {
+            let mut run = Vec::new();
+            varint(1 << 3, &mut run);
+            varint(*len, &mut run);
+            run.extend_from_slice(extra);
+            len_field(5, &run, &mut note);
+        }
+        let mut inner = Vec::new();
+        len_field(3, &note, &mut inner);
+        let mut doc = Vec::new();
+        len_field(2, &inner, &mut doc);
+        doc
+    }
+
+    fn body(len: u64) -> Run {
+        Run {
+            length: len,
+            ..Run::default()
+        }
+    }
+
+    /// Bold on one word, a line made a checklist, and an attachment's bytes kept through.
+    #[test]
+    fn runs_are_set_from_an_editor_and_the_rest_kept() {
+        // "Buy milk\nCall\n" — the run under "Call" carries a field (12) this does not model.
+        let mut unknown = Vec::new();
+        len_field(12, b"attachment-ish", &mut unknown);
+        let doc = doc_with("Buy milk\nCall\n", &[(9, Vec::new()), (5, unknown)]);
+        let want = vec![
+            Run {
+                length: 3,
+                bold: true,
+                ..body(3)
+            },
+            Run {
+                length: 6,
+                ..body(6)
+            },
+            Run {
+                length: 5,
+                style: Some(103),
+                checked: Some(true),
+                ..body(5)
+            },
+        ];
+        let out = set_runs(&doc, &want).expect("set");
+        let read = runs_from_base64(&B64.encode(&out));
+        assert_eq!(read.iter().map(|r| r.length).collect::<Vec<_>>(), [3, 6, 5]);
+        assert!(read[0].bold && !read[1].bold);
+        assert_eq!((read[2].style, read[2].checked), (Some(103), Some(true)));
+        let raw = debug_attribute_runs(&out);
+        assert!(
+            raw[2].windows(14).any(|w| w == b"attachment-ish"),
+            "the unknown field went"
+        );
+    }
+
+    /// A style is the line's: one set on half a line covers all of it, from its newline.
+    #[test]
+    fn a_paragraph_style_covers_its_whole_line() {
+        let doc = doc_with("ab\ncd", &[(5, Vec::new())]);
+        let want = vec![
+            body(1),
+            Run {
+                length: 2,
+                style: Some(1),
+                ..body(2)
+            },
+            body(2),
+        ];
+        let read = runs_from_base64(&B64.encode(set_runs(&doc, &want).unwrap()));
+        assert_eq!(
+            read.iter().map(|r| (r.length, r.style)).collect::<Vec<_>>(),
+            [(3, Some(1)), (2, None)]
+        );
+    }
+
+    /// A checklist line split in two gives the second its own id, as a phone does.
+    #[test]
+    fn a_split_checklist_line_gets_its_own_id() {
+        let mut item = Vec::new();
+        len_field(1, &[7u8; 16], &mut item);
+        let mut para = Vec::new();
+        varint(1 << 3, &mut para);
+        varint(103, &mut para);
+        len_field(5, &item, &mut para);
+        let mut extra = Vec::new();
+        len_field(2, &para, &mut extra);
+        let doc = doc_with("a\nb", &[(3, extra)]);
+        let want = vec![Run {
+            length: 3,
+            style: Some(103),
+            checked: Some(false),
+            ..body(3)
+        }];
+        let out = set_runs(&doc, &want).unwrap();
+        let ids: Vec<Vec<u8>> = debug_attribute_runs(&out)
+            .iter()
+            .filter_map(|r| {
+                bytes_field(r, 2)
+                    .and_then(|p| bytes_field(&p, 5))
+                    .and_then(|i| bytes_field(&i, 1))
+            })
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], vec![7u8; 16], "the first line keeps the id it had");
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn runs_follow_a_merged_edit() {
+        let runs = vec![
+            Run {
+                length: 3,
+                bold: true,
+                ..body(3)
+            },
+            body(4),
+        ];
+        // "abc defg" → another device typed "XY" after "abc".
+        let out = carry_runs("abc\ndef", &runs, "abcXY\ndef");
+        assert_eq!(
+            out.iter().map(|r| (r.length, r.bold)).collect::<Vec<_>>(),
+            [(5, true), (4, false)]
+        );
+    }
+
     #[test]
     fn a_paragraph_is_restyled_alone() {
         // One run over three lines; restyling the middle one splits it, and only it changes.

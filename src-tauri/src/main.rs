@@ -1116,6 +1116,8 @@ async fn note_save(
     // The text the editor began from. With it a save can tell an edit made on another device
     // since, and keep both rather than write over it.
     base: Option<String>,
+    // The note's formatting, when it is edited formatted: runs over `body`.
+    runs: Option<Vec<quince_icloud::ckdocument::Run>>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
@@ -1126,13 +1128,14 @@ async fn note_save(
             "This note holds formatting Quince can't rewrite safely, so it stays read-only.".into(),
         );
     }
-    let saved = quince_icloud::notes::edit_cloudkit_from(
+    let saved = quince_icloud::notes::edit_rich_cloudkit_from(
         &http,
         &root,
         params.clone(),
         &note,
         base.as_deref(),
         &body,
+        runs.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -1155,6 +1158,18 @@ async fn note_save(
             Some(snippet.as_str()).filter(|s| !s.is_empty()),
         )
         .map_err(|e| e.to_string())?;
+    if let Some(runs) = runs {
+        let laid = if saved == body {
+            runs
+        } else {
+            quince_icloud::ckdocument::carry_runs(&body, &runs, &saved)
+        };
+        if let Ok(json) = serde_json::to_string(&laid) {
+            library
+                .set_note_runs(&guid, &json)
+                .map_err(|e| e.to_string())?;
+        }
+    }
     Ok(saved)
 }
 

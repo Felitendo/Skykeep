@@ -128,6 +128,16 @@ impl Library {
         Ok(())
     }
 
+    /// A note's formatting as just saved — Apple's runs, as JSON — so a read before the next
+    /// pass finds runs that describe the text it was just given.
+    pub fn set_note_runs(&mut self, guid: &str, runs: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notes SET runs = ?2 WHERE guid = ?1",
+            params![guid, runs],
+        )?;
+        Ok(())
+    }
+
     /// The note's attribute runs as stored, JSON, if any were read.
     pub fn note_runs(&self, guid: &str) -> Result<Option<String>> {
         Ok(self

@@ -474,6 +474,21 @@ pub async fn edit_cloudkit_from(
     base: Option<&str>,
     body: &str,
 ) -> Result<String> {
+    edit_rich_cloudkit_from(http, ckdatabasews_root, params, note, base, body, None).await
+}
+
+/// [`edit_cloudkit_from`], with the note's formatting as an editor shows it: `runs` describe
+/// `body`, and are laid over the text Apple ends up holding — moved along with another
+/// device's edit when one is merged in.
+pub async fn edit_rich_cloudkit_from(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    note: &Note,
+    base: Option<&str>,
+    body: &str,
+    runs: Option<&[crate::ckdocument::Run]>,
+) -> Result<String> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     for _ in 0..3 {
         let current = client
@@ -496,7 +511,14 @@ pub async fn edit_cloudkit_from(
             })?,
             _ => body.to_string(),
         };
-        let rewritten = crate::ckdocument::replace_text_in_base64(encoded, &target).ok_or_else(|| {
+        let rewritten = match runs {
+            Some(runs) => {
+                let laid = if target == body { runs.to_vec() } else { crate::ckdocument::carry_runs(body, runs, &target) };
+                crate::ckdocument::replace_rich_in_base64(encoded, &target, &laid)
+            }
+            None => crate::ckdocument::replace_text_in_base64(encoded, &target),
+        }
+        .ok_or_else(|| {
             Error::Refused(
                 "Quince can’t safely save changes to this note yet, so nothing was changed. Editing it on an Apple device is safe."
                     .into(),
