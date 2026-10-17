@@ -11,9 +11,19 @@ async fn main() -> Result<()> {
         .session()
         .service_url("drivews")
         .ok_or_else(|| anyhow!("no drivews"))?;
+    let rich =
+        quince_icloud::drive::trash_items(client.http(), &root, client.service_params()).await?;
+    for t in rich.iter().take(3) {
+        println!(
+            "  {} expires_at={:?} from={:?}",
+            t.item.display_name(),
+            t.expires_at,
+            t.restore_path
+        );
+    }
     let items = quince_icloud::drive::trash(client.http(), &root, client.service_params()).await?;
     println!("{} in Recently Deleted", items.len());
-    for i in items.iter().take(5) {
+    for i in items.iter().take(2) {
         println!(
             "  {} | {} | {:?} | etag={:?} parent={:?}",
             i.drivewsid,

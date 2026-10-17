@@ -241,9 +241,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_children": return !driveFixture ? [] : driveItems;
         case "drive_trash": return !driveFixture ? [] : (window.__trash ??= [
           { drivewsid: "FILE::t1", parentId: null, name: "Old notes", extension: "pdf", kind: "FILE",
-            size: 177000, childCount: null, createdAt: 1786000000, modifiedAt: 1786000000, etag: "t1" },
+            size: 177000, childCount: null, createdAt: 1786000000, modifiedAt: 1786000000, etag: "t1",
+            expiresAt: Math.floor(Date.now() / 1000) + 21 * 86400 - 60, restorePath: "Downloads/Old notes.pdf" },
           { drivewsid: "FILE::t2", parentId: null, name: "Wallpaper", extension: "jpg", kind: "FILE",
-            size: 1500000, childCount: null, createdAt: 1786000000, modifiedAt: 1786000000, etag: "t2" },
+            size: 1500000, childCount: null, createdAt: 1786000000, modifiedAt: 1786000000, etag: "t2",
+            expiresAt: Math.floor(Date.now() / 1000) + 2 * 86400 - 60, restorePath: "Wallpaper.jpg" },
         ]).slice();
         case "drive_put_back": case "drive_delete_forever":
           window.__trash = (window.__trash ?? []).filter((i) => i.drivewsid !== args.item.drivewsid);

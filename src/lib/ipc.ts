@@ -180,7 +180,7 @@ export const api = {
   driveRename: (drivewsid: string, name: string) =>
     invoke<void>("drive_rename", { drivewsid, name }),
   driveDelete: (drivewsid: string) => invoke<void>("drive_delete", { drivewsid }),
-  driveTrash: () => invoke<DriveItem[]>("drive_trash"),
+  driveTrash: () => invoke<TrashItem[]>("drive_trash"),
   driveThumbnails: (folderId: string) => invoke<Record<string, string>>("drive_thumbnails", { folderId }),
   driveDuplicate: (drivewsid: string) => invoke<void>("drive_duplicate", { drivewsid }),
   storageInfo: () => invoke<{ usedBytes: number; totalBytes: number }>("storage_info"),
@@ -456,6 +456,9 @@ export type DriveItem = {
   modifiedAt: number | null;
   etag: string | null;
 };
+
+/** An item in Drive's Recently Deleted: when it goes for good, and where Recover puts it. */
+export type TrashItem = DriveItem & { expiresAt: number | null; restorePath: string | null };
 
 export const DRIVE_ROOT = "FOLDER::com.apple.CloudDocs::root";
 

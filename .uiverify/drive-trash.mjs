@@ -18,6 +18,9 @@ await page.waitForTimeout(300);
 const names = () => page.locator(".drive-rows .drive-name").allInnerTexts();
 ok(JSON.stringify(await names()) === JSON.stringify(["Old notes.pdf", "Wallpaper.jpg"]), `Recently Deleted lists what was deleted  ${JSON.stringify(await names())}`);
 
+const notes = await page.locator("li", { hasText: "Old notes" }).innerText();
+ok(/21 days/.test(notes) && /From Downloads/.test(notes), `each shows its time left and where it came from  [${notes.replace(/\s+/g, " ")}]`);
+ok((await page.locator("li", { hasText: "Wallpaper" }).locator(".is-soon").count()) === 1, "and one nearly gone is marked so");
 await page.locator("li", { hasText: "Old notes" }).getByRole("button", { name: "Recover" }).click();
 await page.waitForTimeout(100);
 ok(!(await names()).includes("Old notes.pdf"), "Recover takes it off the list at once");

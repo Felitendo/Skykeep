@@ -1811,3 +1811,4 @@
   .drive > .cal-bar .with-glyph:not(.primary) svg { font-size: initial; }
 }
 .picker-menu.is-up { top: auto; bottom: calc(100% + 4px); }
+.drive-meta.is-soon { color: var(--sys-red, #ff453a); }

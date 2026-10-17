@@ -536,13 +536,83 @@ pub async fn thumbnails(
 /// Drive's Recently Deleted, as icloud.com lists it: a folder Apple names `TRASH_ROOT`.
 pub const TRASH: &str = "TRASH_ROOT";
 
+/// One item in Recently Deleted: when Apple will delete it for good, and where Recover
+/// puts it back — measured on a real account as `dateExpiration` and `restorePath`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashItem {
+    #[serde(flatten)]
+    pub item: DriveItem,
+    /// Unix seconds.
+    pub expires_at: Option<i64>,
+    pub restore_path: Option<String>,
+}
+
 /// What is in Recently Deleted now. Read-only.
 pub async fn trash(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
 ) -> Result<Vec<DriveItem>> {
-    folder_listing(http, root, &params, TRASH).await
+    Ok(trash_items(http, root, params)
+        .await?
+        .into_iter()
+        .map(|t| t.item)
+        .collect())
+}
+
+/// [`trash`], with each item's expiry and the folder it came from.
+pub async fn trash_items(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+) -> Result<Vec<TrashItem>> {
+    let url = format!(
+        "{}/retrieveItemDetailsInFolders",
+        root.trim_end_matches('/')
+    );
+    let body = json!([{ "drivewsid": TRASH, "partialData": false }]);
+    let response = http.post(url).query(&params).json(&body).send().await?;
+    let status = response.status();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "Drive returned {status}: {}",
+            text.chars().take(160).collect::<String>()
+        )));
+    }
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
+    let raw: Vec<&Value> = parsed
+        .pointer("/0/items")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    Ok(parse_folder(&parsed)
+        .into_iter()
+        .map(|item| {
+            let found = raw.iter().find(|r| {
+                r.get("drivewsid").and_then(Value::as_str) == Some(item.drivewsid.as_str())
+            });
+            let expires_at = found
+                .and_then(|r| r.get("dateExpiration"))
+                .and_then(Value::as_str)
+                .and_then(|d| d.parse::<jiff::Timestamp>().ok())
+                .map(|t| t.as_second());
+            let restore_path = found
+                .and_then(|r| r.get("restorePath"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            TrashItem {
+                item,
+                expires_at,
+                restore_path,
+            }
+        })
+        .collect())
 }
 
 /// Put an item back where it was deleted from (`putBackItemsFromTrash`), or delete it for

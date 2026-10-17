@@ -12,6 +12,7 @@ import {
   DRIVE_ROOT,
   UPLOAD,
   type DriveItem,
+  type TrashItem,
   type UploadEvent,
 } from "../lib/ipc";
 import { ActionGlyph, FileGlyph } from "../components/FileGlyph";
@@ -80,7 +81,7 @@ const modified = (seconds: number | null) =>
  * does, because nothing brings it back.
  */
 function DriveTrash({ onClose }: { onClose: () => void }) {
-  const [rows, setRows] = useState<DriveItem[] | null>(null);
+  const [rows, setRows] = useState<TrashItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const read = useCallback(async () => {
     try {
@@ -94,7 +95,7 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
     void read();
   }, [read]);
 
-  const out = async (gone: DriveItem[], run: (i: DriveItem) => Promise<void>) => {
+  const out = async (gone: TrashItem[], run: (i: DriveItem) => Promise<void>) => {
     const ids = new Set(gone.map((i) => i.drivewsid));
     setRows((r) => (r ?? []).filter((i) => !ids.has(i.drivewsid)));
     setError(null);
@@ -104,8 +105,8 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
       await read();
     }
   };
-  const recover = (items: DriveItem[]) => out(items, (i) => api.drivePutBack(i));
-  const destroy = (items: DriveItem[]) => {
+  const recover = (items: TrashItem[]) => out(items, (i) => api.drivePutBack(i));
+  const destroy = (items: TrashItem[]) => {
     const what = items.length === 1 ? `\u201c${driveName(items[0])}\u201d` : `these ${items.length} items`;
     if (!window.confirm(`Delete ${what} now? You can\u2019t undo this.`)) return;
     void out(items, (i) => api.driveDeleteForever(i));
@@ -140,10 +141,16 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
                   <span className="drive-badge" aria-hidden="true">
                     <FileGlyph kind={item.kind} extension={item.extension} />
                   </span>
-                  <span className="drive-name">{driveName(item)}</span>
-                  <span className="drive-meta drive-kind">{kindName(item)}</span>
+                  <span className="drive-name" title={item.restorePath ? `From ${item.restorePath}` : undefined}>
+                    {driveName(item)}
+                  </span>
+                  <span className="drive-meta drive-kind">
+                    {item.restorePath ? `From ${item.restorePath.split("/").slice(0, -1).join("/") || "iCloud Drive"}` : kindName(item)}
+                  </span>
                   <span className="drive-meta">{isContainer(item) ? "" : fileSize(item.size)}</span>
-                  <span className="drive-meta">{modified(item.modifiedAt ?? item.createdAt)}</span>
+                  <span className={`drive-meta${daysLeft(item.expiresAt) !== null && (daysLeft(item.expiresAt) ?? 99) <= 3 ? " is-soon" : ""}`}>
+                    {timeLeft(item.expiresAt)}
+                  </span>
                 </span>
                 <span className="drive-row-actions is-shown">
                   <button className="quiet" onClick={() => void recover([item])}>Recover</button>
@@ -232,6 +239,18 @@ function decimalSize(bytes: number): string {
   }
   const p = 10 ** places[unit];
   return `${(Math.round(value * p) / p).toLocaleString()} ${units[unit]}`;
+}
+
+/** Days until Apple deletes it for good, rounded up; `null` when Apple did not say. */
+function daysLeft(expiresAt: number | null): number | null {
+  if (expiresAt === null) return null;
+  return Math.max(0, Math.ceil((expiresAt * 1000 - Date.now()) / 86_400_000));
+}
+/** "21 days", "1 day", "Today" — icloud.com's Time Left. */
+function timeLeft(expiresAt: number | null): string {
+  const d = daysLeft(expiresAt);
+  if (d === null) return "";
+  return d === 0 ? "Today" : `${d} day${d === 1 ? "" : "s"}`;
 }
 
 type Crumb = { id: string; name: string };

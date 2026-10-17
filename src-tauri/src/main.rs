@@ -2070,9 +2070,9 @@ async fn storage_info(auth: State<'_, Auth>) -> UiResult<quince_icloud::drive::S
 /// Drive's Recently Deleted, read live: Apple decides how long things stay there, so a copy
 /// kept here would only ever be a wrong count.
 #[tauri::command]
-async fn drive_trash(auth: State<'_, Auth>) -> UiResult<Vec<quince_core::drive::DriveItem>> {
+async fn drive_trash(auth: State<'_, Auth>) -> UiResult<Vec<quince_icloud::drive::TrashItem>> {
     let (http, root, params) = drive_context(&auth).await?;
-    quince_icloud::drive::trash(&http, &root, params)
+    quince_icloud::drive::trash_items(&http, &root, params)
         .await
         .map_err(|e| e.to_string())
 }
