@@ -321,6 +321,9 @@ export function DriveView() {
   const [selected, setSelected] = useState<string | null>(null);
   /** The ⋯ menu, or the same menu opened by a right-click, for one item. */
   const [menu, setMenu] = useState<{ item: DriveItem; x: number; y: number; alignRight: boolean } | null>(null);
+  /** An item of Drive's own being dragged onto a folder, and the folder it is over. */
+  const dragItem = useRef<DriveItem | null>(null);
+  const [dropOn, setDropOn] = useState<string | null>(null);
   /** True while files are held over the window, so the drop target can say so. */
   const [dropping, setDropping] = useState(false);
 
@@ -632,6 +635,8 @@ export function DriveView() {
     try {
       void getCurrentWebview()
         .onDragDropEvent((event) => {
+          // A row of Drive's own being moved is not a file arriving from this machine.
+          if (dragItem.current) return;
           if (event.payload.type === "over") setDropping(true);
           else if (event.payload.type === "leave") setDropping(false);
           else if (event.payload.type === "drop") {
@@ -699,9 +704,24 @@ export function DriveView() {
                 </span>
               )}
               <button
-                className="crumb"
+                className={`crumb${dropOn === crumb.id ? " is-drop" : ""}`}
                 aria-current={i === trail.length - 1}
                 onClick={() => setTrail((t) => t.slice(0, i + 1))}
+                // A folder further up the path takes a dragged item too, as Finder's path bar does.
+                onDragOver={(e) => {
+                  if (!dragItem.current || i === trail.length - 1) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  if (dropOn !== crumb.id) setDropOn(crumb.id);
+                }}
+                onDragLeave={() => setDropOn((d) => (d === crumb.id ? null : d))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const moving = dragItem.current;
+                  dragItem.current = null;
+                  setDropOn(null);
+                  if (moving && i < trail.length - 1) void move(moving, crumb.id);
+                }}
               >
                 {crumb.name}
               </button>
@@ -884,7 +904,30 @@ export function DriveView() {
                 </div>
               ) : (
                 <div
-                  className={`drive-row${container ? " is-folder" : ""}${busy ? " is-busy" : ""}${menu?.item.drivewsid === item.drivewsid ? " is-menu" : ""}${selected === item.drivewsid ? " is-selected" : ""}`}
+                  className={`drive-row${container ? " is-folder" : ""}${busy ? " is-busy" : ""}${menu?.item.drivewsid === item.drivewsid ? " is-menu" : ""}${selected === item.drivewsid ? " is-selected" : ""}${dropOn === item.drivewsid ? " is-drop" : ""}`}
+                  // Dragged onto a folder, an item moves into it — as in Finder and icloud.com.
+                  draggable={!busy && item.kind !== "APP_LIBRARY"}
+                  onDragStart={(e) => {
+                    dragItem.current = item;
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("application/x-quince-drive", item.drivewsid);
+                  }}
+                  onDragEnd={() => { dragItem.current = null; setDropOn(null); }}
+                  onDragOver={(e) => {
+                    const moving = dragItem.current;
+                    if (!moving || item.kind !== "FOLDER" || moving.drivewsid === item.drivewsid) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    if (dropOn !== item.drivewsid) setDropOn(item.drivewsid);
+                  }}
+                  onDragLeave={() => setDropOn((d) => (d === item.drivewsid ? null : d))}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const moving = dragItem.current;
+                    dragItem.current = null;
+                    setDropOn(null);
+                    if (moving && item.kind === "FOLDER" && moving.drivewsid !== item.drivewsid) void move(moving, item.drivewsid);
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     if (!busy) setMenu({ item, x: e.clientX, y: e.clientY, alignRight: false });

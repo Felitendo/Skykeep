@@ -1853,3 +1853,7 @@
 }
 .picker-menu.is-up { top: auto; bottom: calc(100% + 4px); }
 .drive-meta.is-soon { color: var(--sys-red, #ff453a); }
+
+/* A folder or a folder up the path with something held over it, as Finder lights one. */
+.drive-row.is-drop { background: color-mix(in srgb, var(--sys-blue, #0a84ff) 16%, transparent); box-shadow: inset 0 0 0 2px var(--sys-blue, #0a84ff); }
+.crumb.is-drop { background: color-mix(in srgb, var(--sys-blue, #0a84ff) 16%, transparent); border-radius: 5px; }

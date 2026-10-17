@@ -279,7 +279,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return null;
         case "drive_sync_folder": return driveItems.length;
         case "drive_download": return "/home/user/Downloads/file.pdf";
-        case "drive_create_folder": case "drive_rename": case "drive_delete": case "drive_move": return null;
+        case "drive_move": (window.__moves ??= []).push(args); await new Promise((r) => setTimeout(r, 600)); return null;
+        case "drive_create_folder": case "drive_rename": case "drive_delete": return null;
         case "drive_item": return null;
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;
