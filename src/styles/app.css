@@ -429,7 +429,7 @@
   .app-icon.ai-contacts .ai-tile-top { stop-color: #3a3a3e; }
   .app-icon.ai-contacts .ai-tile-bottom { stop-color: #1c1c1f; }
 }
-.nav-name { overflow: hidden; text-overflow: ellipsis; transition: opacity 160ms ease; }
+.nav-name { overflow: hidden; text-overflow: ellipsis; transition: opacity 120ms ease 140ms; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 6px; min-height: 28px; }
 .sidebar-head h2 { margin: 0 8px; }
 .sidebar-fold {
@@ -442,7 +442,9 @@
 @media (min-width: 901px) {
   .is-rail .sidebar { width: 60px; }
   .is-rail .sidebar-head { flex-direction: column; }
-  .is-rail .sidebar-head h2, .is-rail .nav-name { opacity: 0; width: 0; margin: 0; }
+  /* Gone at once when folding — fading while the width closed squeezed the names into a
+     smear — and back only once the sidebar has opened (the delay on .nav-name above). */
+  .is-rail .sidebar-head h2, .is-rail .nav-name { opacity: 0; width: 0; margin: 0; transition: none; }
   .is-rail .nav-item { justify-content: center; gap: 0; padding-inline: 0; }
   .is-rail .sidebar-foot { display: none; }
 }
@@ -1774,7 +1776,9 @@
 .info-mark.has-thumb img { max-width: 160px; max-height: 140px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
 /* On the selection's blue an icon turns white, as Finder's do; a blue folder on blue vanished. */
 .drive-rows:not(.is-grid) .drive-row.is-selected .drive-badge > svg { filter: brightness(0) invert(1); }
-.drive-row.is-selected .drive-more { color: #fff; }
+.drive-rows:not(.is-grid) .drive-row.is-selected .drive-more { color: #fff; }
+/* In Grid the ⋯ sits on its own light or dark disc, so its dots take the text colour. */
+.drive-rows.is-grid .drive-more { color: var(--text); }
 /* A time typed as said: the width of "12:45 PM", right-aligned figures, as macOS's. */
 .time-field { width: 8.5ch; text-align: center; font-variant-numeric: tabular-nums; }
 /* The letter a run of names begins with, as Contacts heads its list. */

@@ -111,8 +111,11 @@ export const api = {
   remindersSearch: (query: string) => invoke<Reminder[]>("reminders_search", { query }),
   remindersSmart: (kind: SmartList, until: number) =>
     invoke<Reminder[]>("reminders_smart", { kind, until }),
-  reminderCreate: (listGuid: string, title: string) =>
-    invoke<void>("reminder_create", { listGuid, title }),
+  reminderCreate: (
+    listGuid: string,
+    title: string,
+    implied: { dueAt?: number; allDay?: boolean; flagged?: boolean } = {},
+  ) => invoke<void>("reminder_create", { listGuid, title, ...implied }),
   reminderDelete: (guid: string, listGuid: string) =>
     invoke<void>("reminder_delete", { guid, listGuid }),
 

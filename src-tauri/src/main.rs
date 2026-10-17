@@ -758,13 +758,36 @@ async fn reminders_due_between(
 async fn reminder_create(
     list_guid: String,
     title: String,
+    // What the view it was typed into implies, as on the phone: added in Today it is due
+    // today, in Flagged it is flagged. Without it the new reminder belonged to neither, and
+    // vanished from the view it was typed into the moment it was made.
+    due_at: Option<i64>,
+    all_day: Option<bool>,
+    flagged: Option<bool>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
     let (http, root, params) = cloudkit_context(&auth).await?;
-    quince_icloud::reminders::create_cloudkit(&http, &root, params.clone(), &list_guid, &title)
+    let guid = quince_icloud::reminders::create_cloudkit(&http, &root, params.clone(), &list_guid, &title)
         .await
         .map_err(|e| e.to_string())?;
+    if due_at.is_some() || flagged.is_some() {
+        let made = quince_core::reminders::Reminder {
+            guid,
+            list_guid: list_guid.clone(),
+            title: title.clone(),
+            ..Default::default()
+        };
+        let edit = quince_icloud::reminders::ReminderEdit {
+            due_at: due_at.map(Some),
+            all_day,
+            flagged,
+            ..Default::default()
+        };
+        quince_icloud::reminders::edit_cloudkit(&http, &root, params.clone(), &made, &edit)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     refresh_reminders(&http, &root, params, &data, false).await
 }

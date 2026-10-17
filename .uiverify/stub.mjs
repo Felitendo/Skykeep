@@ -148,7 +148,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_lists": return !remindersFixture ? [] : reminderLists;
         case "reminders_in": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems;
         case "reminders_due_between": return calendarFixture ? dueReminders : [];
-        case "reminder_create": return null;
+        case "reminder_create":
+          // Kept, as Apple keeps it, with what the view implied.
+          reminderItems.push({ guid: `made-${reminderItems.length}`, listGuid: args.listGuid, title: args.title,
+            notes: null, dueAt: args.dueAt ?? null, allDay: args.allDay ?? false, completedAt: null, priority: 0,
+            flagged: args.flagged ?? false, parentGuid: null, etag: null });
+          return null;
         case "reminder_delete": return null;
         case "reminder_set_done": return null;
         case "reminder_set_repeat": return null;

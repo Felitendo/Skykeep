@@ -498,20 +498,34 @@ export function RemindersView() {
     if (!title || !targetListGuid) return;
     setSyncing(true);
     setError(null);
+    // What the view implies, as on the phone: typed into Today or Scheduled it is due today,
+    // into Flagged it is flagged — so it stays where it was typed, rather than vanishing.
+    const kind = selection.type === "smart" ? selection.kind : null;
+    const today = new Date();
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    const todayKey = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-${pad2(today.getDate())}`;
+    const implied =
+      kind === "today" || kind === "scheduled"
+        ? { dueAt: dayToUtc(todayKey), allDay: true }
+        : kind === "flagged"
+          ? { flagged: true }
+          : {};
     // The row is there the moment Return is pressed, and the field is ready for the next.
     const standIn = `pending:${Date.now()}`;
     setDraft("");
-    // Only in the list it goes to: an undated reminder would not stay in Today or Scheduled.
-    if (inList) setItems((rows) => [
+    const shownHere = inList || kind === "today" || kind === "scheduled" || kind === "flagged" || kind === "all";
+    if (shownHere) setItems((rows) => [
       ...rows,
       {
-        guid: standIn, listGuid: targetListGuid, title, notes: null, dueAt: null,
-        completedAt: null, priority: 0, flagged: false, parentGuid: null,
+        guid: standIn, listGuid: targetListGuid, title, notes: null,
+        dueAt: implied.dueAt !== undefined ? dayToLocal(implied.dueAt) : null,
+        allDay: implied.allDay ?? false,
+        completedAt: null, priority: 0, flagged: implied.flagged ?? false, parentGuid: null,
         recurFrequency: null, recurInterval: null, etag: null,
       } as Reminder,
     ]);
     try {
-      await api.reminderCreate(targetListGuid, title);
+      await api.reminderCreate(targetListGuid, title, implied);
       await readItems();
     } catch (err) {
       setItems((rows) => rows.filter((r) => r.guid !== standIn));
@@ -560,7 +574,14 @@ export function RemindersView() {
     }
     const known = new Set(items.map((r) => r.guid));
     const out: { reminder: Reminder; depth: number }[] = [];
-    for (const r of items) {
+    // Open reminders first, in their list's own order; completed ones beneath them, the most
+    // recently completed first, as Reminders shows them. In the list's stored order they came
+    // out scattered among the open ones, in no order a person could follow.
+    const open = items.filter((r) => !r.completedAt);
+    const done = items
+      .filter((r) => r.completedAt)
+      .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
+    for (const r of [...open, ...done]) {
       // A subtask whose parent is not in this view — filtered out, or in another list —
       // has to appear at the top level rather than vanish.
       if (r.parentGuid && known.has(r.parentGuid)) continue;
