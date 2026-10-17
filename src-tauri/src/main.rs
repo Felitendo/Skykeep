@@ -1743,17 +1743,20 @@ async fn resync_drive_folder(
 #[tauri::command]
 async fn drive_download(
     drivewsid: String,
+    item: Option<quince_core::drive::DriveItem>,
     app: tauri::AppHandle,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
-    let item = {
+    // A file seen only in Recents was never in a folder this library has read, so the item
+    // comes with the request; the library's own copy wins when there is one.
+    let stored = {
         let library = data.0.lock().await;
-        library
-            .drive_item(&drivewsid)
-            .map_err(|e| e.to_string())?
-            .ok_or("That item is no longer in the local library.")?
+        library.drive_item(&drivewsid).map_err(|e| e.to_string())?
     };
+    let item = stored
+        .or(item.filter(|i| i.drivewsid == drivewsid))
+        .ok_or("That item is no longer in the local library.")?;
     if item.is_container() {
         return Err("That's a folder, not a file.".into());
     }
@@ -2285,6 +2288,22 @@ async fn drive_trash(auth: State<'_, Auth>) -> UiResult<Vec<quince_icloud::drive
         .map_err(|e| e.to_string())
 }
 
+/// The files opened most recently, newest first — Drive's Recents.
+#[tauri::command]
+async fn drive_recents(auth: State<'_, Auth>) -> UiResult<Vec<quince_icloud::drive::RecentItem>> {
+    let (http, root, params) = {
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("docws")
+            .ok_or("Apple hasn't offered Recents for this account.")?;
+        (client.http().clone(), root, client.service_params())
+    };
+    quince_icloud::drive::recents(&http, &root, params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Recover an item from Recently Deleted to where it was.
 #[tauri::command]
 async fn drive_put_back(
@@ -2758,6 +2777,7 @@ fn main() {
             drive_rename,
             drive_delete,
             drive_trash,
+            drive_recents,
             storage_info,
             drive_duplicate,
             drive_thumbnails,

@@ -548,6 +548,68 @@ pub struct TrashItem {
     pub restore_path: Option<String>,
 }
 
+/// A file in Recents, with when it was last opened.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentItem {
+    #[serde(flatten)]
+    pub item: DriveItem,
+    /// Unix seconds.
+    pub opened_at: Option<i64>,
+}
+
+/// The files opened most recently, newest first, as icloud.com's Recents lists them. Read
+/// from the document service (`docws`), not the folder one. Read-only.
+pub async fn recents(
+    http: &reqwest::Client,
+    docws_root: &str,
+    params: Vec<(String, String)>,
+) -> Result<Vec<RecentItem>> {
+    let mut query = params;
+    query.push(("limit".into(), "50".into()));
+    query.push(("unified_format".into(), "true".into()));
+    let url = format!(
+        "{}/ws/com.apple.CloudDocs/list/recents",
+        docws_root.trim_end_matches('/')
+    );
+    let response = http.get(url).query(&query).send().await?;
+    let status = response.status();
+    if status.as_u16() == 450 {
+        return Err(Error::ReauthRequired);
+    }
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(Error::Protocol(format!(
+            "Drive returned {status}: {}",
+            text.chars().take(160).collect::<String>()
+        )));
+    }
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
+    Ok(parse_recents(&parsed))
+}
+
+/// The documents of a `list/recents` answer, newest opened first.
+#[must_use]
+pub fn parse_recents(body: &Value) -> Vec<RecentItem> {
+    let mut out: Vec<RecentItem> = body
+        .get("documents")
+        .and_then(Value::as_array)
+        .map(|docs| {
+            docs.iter()
+                .filter_map(|d| {
+                    Some(RecentItem {
+                        item: item_from(d)?,
+                        opened_at: seconds(d, "lastOpenTime"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by_key(|r| std::cmp::Reverse(r.opened_at));
+    out
+}
+
 /// What is in Recently Deleted now. Read-only.
 pub async fn trash(
     http: &reqwest::Client,
@@ -2156,5 +2218,22 @@ mod storage_tests {
                 total_bytes: 5_368_709_120
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod recents_tests {
+    #[test]
+    fn recents_are_read_newest_opened_first() {
+        let body = serde_json::json!({ "documents": [
+            { "drivewsid": "FILE::z::a", "name": "Old", "extension": "pdf", "type": "FILE", "size": 10, "lastOpenTime": "2026-10-01T10:00:00Z" },
+            { "drivewsid": "FILE::z::b", "name": "New", "extension": "pdf", "type": "FILE", "size": 20, "lastOpenTime": "2026-10-16T18:46:11Z" },
+        ]});
+        let got = super::parse_recents(&body);
+        assert_eq!(
+            got.iter().map(|r| r.item.name.as_str()).collect::<Vec<_>>(),
+            ["New", "Old"]
+        );
+        assert_eq!(got[0].opened_at, Some(1_792_176_371));
     }
 }

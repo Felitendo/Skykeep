@@ -179,7 +179,9 @@ export const api = {
   driveChildren: (folderId: string) => invoke<DriveItem[]>("drive_children", { folderId }),
   driveItem: (drivewsid: string) => invoke<DriveItem | null>("drive_item", { drivewsid }),
   /** Saves to Downloads; returns the path it landed at. */
-  driveDownload: (drivewsid: string) => invoke<string>("drive_download", { drivewsid }),
+  driveDownload: (drivewsid: string, item?: DriveItem) => invoke<string>("drive_download", { drivewsid, item: item ?? null }),
+  /** The files opened most recently, newest first. */
+  driveRecents: () => invoke<RecentItem[]>("drive_recents"),
   /**
    * Put files from this machine into a Drive folder. Paths only — the bytes are read and
    * streamed in the backend, never carried through a message.
@@ -433,6 +435,8 @@ export type ContactList = {
 };
 
 /** Which events a change to one day of a repeating event is for. */
+export type RecentItem = DriveItem & { openedAt: number | null };
+
 export type EventScope = "this" | "future" | "all";
 
 export type Contact = {
