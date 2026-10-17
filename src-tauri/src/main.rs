@@ -1713,6 +1713,22 @@ async fn drive_delete(
     resync_drive_folder(&http, &root, params, &data, parent).await
 }
 
+/// How much iCloud storage is used and how much there is, for "X GB available".
+#[tauri::command]
+async fn storage_info(auth: State<'_, Auth>) -> UiResult<quince_icloud::drive::Storage> {
+    let (http, setup, params) = {
+        let client = auth.client.lock().await;
+        (
+            client.http().clone(),
+            client.setup_url().to_string(),
+            client.service_params(),
+        )
+    };
+    quince_icloud::drive::storage(&http, &setup, params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Drive's Recently Deleted, read live: Apple decides how long things stay there, so a copy
 /// kept here would only ever be a wrong count.
 #[tauri::command]
@@ -2183,6 +2199,7 @@ fn main() {
             drive_rename,
             drive_delete,
             drive_trash,
+            storage_info,
             drive_put_back,
             drive_delete_forever,
             drive_move,

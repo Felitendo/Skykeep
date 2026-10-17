@@ -926,6 +926,12 @@ impl Client {
         params
     }
 
+    /// The account service's root (`…/setup/ws/1`), where storage use is asked for.
+    #[must_use]
+    pub fn setup_url(&self) -> &str {
+        &self.endpoints.setup
+    }
+
     /// Shared HTTP client, for the service crates that ride this session.
     pub fn http(&self) -> &HttpClient {
         &self.http

@@ -40,5 +40,8 @@ ok(downloads === 0 && (await page.locator(".drive-row.is-selected", { hasText: "
 await page.locator(".drive-row-hit", { hasText: "Downloads" }).dblclick();
 await page.waitForTimeout(300);
 ok((await page.locator(".crumb", { hasText: "Downloads" }).count()) === 1, "a double-click opens the folder");
+// Under the folder's name, as icloud.com: its count and what is free, in thousands.
+const status = await page.locator(".drive-count").innerText();
+ok(status === "4 items, 5.19 GB available", `the folder's status line  [${status}]`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

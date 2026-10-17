@@ -1886,3 +1886,76 @@ mod download_zone_tests {
         assert!(ordinary.ends_with("com.apple.CloudDocs"), "{ordinary}");
     }
 }
+
+/// The account's iCloud storage, as icloud.com's "X GB available" reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Storage {
+    pub used_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// `POST {setup}/storageUsageInfo`, no body — what icloud.com's shell asks. Measured on a real
+/// account: `storageUsageInfo.{usedStorageInBytes,totalStorageInBytes}`.
+pub async fn storage(
+    http: &reqwest::Client,
+    setup_root: &str,
+    params: Vec<(String, String)>,
+) -> Result<Storage> {
+    let url = format!("{}/storageUsageInfo", setup_root.trim_end_matches('/'));
+    let response = http.post(url).query(&params).send().await?;
+    let status = response.status();
+    if status.as_u16() == 450 || status.as_u16() == 421 {
+        return Err(Error::ReauthRequired);
+    }
+    if !status.is_success() {
+        return Err(Error::Protocol(format!("storage returned {status}")));
+    }
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|e| Error::Protocol(format!("storage: {e}")))?;
+    let n = |k: &str| {
+        body.pointer(&format!("/storageUsageInfo/{k}"))
+            .and_then(Value::as_u64)
+    };
+    match (n("usedStorageInBytes"), n("totalStorageInBytes")) {
+        (Some(used_bytes), Some(total_bytes)) => Ok(Storage {
+            used_bytes,
+            total_bytes,
+        }),
+        _ => Err(Error::Protocol("storage: no usage in the answer".into())),
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The shape measured on a real account.
+    #[tokio::test]
+    async fn storage_is_read_from_apples_answer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/storageUsageInfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "storageUsageInfo": { "compStorageInBytes": 0, "usedStorageInBytes": 182_196_857_u64,
+                    "totalStorageInBytes": 5_368_709_120_u64, "commerceStorageInBytes": 0 },
+                "quotaStatus": { "overQuota": false }
+            })))
+            .mount(&server)
+            .await;
+        let got = storage(&reqwest::Client::new(), &server.uri(), vec![])
+            .await
+            .unwrap();
+        assert_eq!(
+            got,
+            Storage {
+                used_bytes: 182_196_857,
+                total_bytes: 5_368_709_120
+            }
+        );
+    }
+}

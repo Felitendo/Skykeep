@@ -188,6 +188,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
         case "contact_delete": return null;
         case "contacts_list": return !contactsFixture ? [] : contactList;
+        case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
         case "drive_children": return !driveFixture ? [] : driveItems;
         case "drive_trash": return !driveFixture ? [] : (window.__trash ??= [
           { drivewsid: "FILE::t1", parentId: null, name: "Old notes", extension: "pdf", kind: "FILE",

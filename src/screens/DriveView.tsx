@@ -211,12 +211,37 @@ function InfoSheet({ item, where, onClose }: { item: DriveItem; where: string; o
   );
 }
 
+/**
+ * Sizes as icloud.com writes storage: in thousands, not 1024s — so a 5 GB plan reads "5 GB"
+ * — kB with no decimals, MB with one, GB and up with two.
+ */
+function decimalSize(bytes: number): string {
+  const units = ["bytes", "kB", "MB", "GB", "TB", "PB"];
+  const places = [0, 0, 1, 2, 2, 2];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  const p = 10 ** places[unit];
+  return `${(Math.round(value * p) / p).toLocaleString()} ${units[unit]}`;
+}
+
 type Crumb = { id: string; name: string };
 
 export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
   const [items, setItems] = useState<DriveItem[]>([]);
   const [inTrash, setInTrash] = useState(false);
+  /** What is free, as icloud.com says it under a folder's name: "5.18 GB available". */
+  const [available, setAvailable] = useState<string | null>(null);
+  useEffect(() => {
+    api.storageInfo().then(
+      ({ usedBytes, totalBytes }) => setAvailable(decimalSize(Math.max(0, totalBytes - usedBytes))),
+      () => setAvailable(null),
+    );
+  }, []);
   /** icloud.com's "View as": Grid or List, remembered. */
   const [grid, setGrid] = useState(() => {
     try {
@@ -629,7 +654,7 @@ export function DriveView() {
           <p className="drive-count" aria-live="polite">
             {(() => {
               const n = items.filter((x) => !gone.has(x.drivewsid)).length;
-              return `${n} item${n === 1 ? "" : "s"}`;
+              return `${n} item${n === 1 ? "" : "s"}${available ? `, ${available} available` : ""}`;
             })()}
           </p>
         )}
