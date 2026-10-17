@@ -246,3 +246,21 @@ textarea.note-title::placeholder { color: var(--text-3); }
   .note-when { text-align: right; }
   .note-editor { padding-right: 0; }
 }
+/* A folder row: the folder, and its ⋯ on hover, as Notes on icloud.com draws it. */
+.notes-folder-row { position: relative; display: flex; align-items: center; }
+.notes-folder-row > .notes-folder { flex: 1; min-width: 0; }
+.notes-folder-more {
+  position: absolute; right: 6px; display: grid; place-items: center; width: 22px; height: 22px;
+  padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 12%, transparent);
+  box-shadow: none; color: var(--text); font-size: 8px; letter-spacing: 1px; opacity: 0; cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.notes-folder-row:hover .notes-folder-more, .notes-folder-row.is-menu .notes-folder-more,
+.notes-folder-more:focus-visible { opacity: 1; }
+.notes-folder-row:hover .notes-folder-count, .notes-folder-row.is-menu .notes-folder-count { visibility: hidden; }
+.notes-folder-rename { width: 100%; box-sizing: border-box; border: 1px solid var(--gold); background: var(--bg); color: var(--text); font: inherit; outline: none; }
+.notes-new-folder {
+  display: flex; align-items: center; gap: 6px; margin-top: auto; padding: 8px; border: 0;
+  background: none; box-shadow: none; color: var(--gold); font: inherit; font-size: var(--t-13); cursor: pointer;
+}
+.notes-new-folder:hover { text-decoration: underline; }

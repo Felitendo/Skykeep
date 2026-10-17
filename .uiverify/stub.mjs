@@ -155,7 +155,21 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;
         case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems.filter(r => !r.completedAt);
-        case "note_folders": return !notesFixture ? [] : noteFolders;
+        case "note_folders": return !notesFixture ? [] : (window.__noteFolders ??= noteFolders.slice()).slice();
+        case "note_folder_create": {
+          const guid = `f-${(window.__noteFolders ??= noteFolders.slice()).length + 1}`;
+          window.__noteFolders.push({ guid, title: args.title, sortOrder: 0, parentGuid: args.parent ?? null });
+          (window.__folderCalls ??= []).push(["create", args.title]);
+          return guid;
+        }
+        case "note_folder_rename":
+          window.__noteFolders = (window.__noteFolders ?? noteFolders.slice()).map((f) => (f.guid === args.guid ? { ...f, title: args.title } : f));
+          (window.__folderCalls ??= []).push(["rename", args.guid, args.title]);
+          return null;
+        case "note_folder_delete":
+          window.__noteFolders = (window.__noteFolders ?? noteFolders.slice()).filter((f) => f.guid !== args.guid);
+          (window.__folderCalls ??= []).push(["delete", args.guid]);
+          return null;
         case "note_save": case "note_delete": case "note_move": return null;
         case "note_pin": {
           const n = noteList.find((x) => x.guid === args?.guid);

@@ -244,6 +244,25 @@ impl Library {
         Ok((all, per))
     }
 
+    /// Forget folders Apple has deleted. A note still pointing at one is left unfiled here
+    /// rather than lost; the next pass files it wherever Apple has it.
+    pub fn remove_note_folders(&mut self, guids: &[String]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for guid in guids {
+            tx.execute(
+                "UPDATE notes SET folder_guid = NULL WHERE folder_guid = ?1",
+                params![guid],
+            )?;
+            tx.execute(
+                "UPDATE note_folders SET parent_guid = NULL WHERE parent_guid = ?1",
+                params![guid],
+            )?;
+            tx.execute("DELETE FROM note_folders WHERE guid = ?1", params![guid])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn note_folders(&self) -> Result<Vec<NoteFolder>> {
         let mut stmt = self.conn.prepare(
             "SELECT guid, title, sort_order, parent_guid

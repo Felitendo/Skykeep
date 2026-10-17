@@ -1,10 +1,11 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Notice } from "../components/Notice";
 import { flushSync } from "react-dom";
-import { ChevronLeft, Folder, FolderOpen, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
+import { ChevronLeft, Folder, FolderOpen, FolderPlus, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
 import { LongTextarea } from "../components/LongTextarea";
 import { editorDate, groupNotes, joinTitle, listDate, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
+import { RowMenu } from "../components/RowMenu";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
@@ -12,9 +13,13 @@ const ALL = "__all__";
 
 /** Apple's Recently Deleted, by the record name that is the same in every language. */
 const TRASH_FOLDER = "TrashFolder-CloudKit";
+/** Apple's own "Notes" folder: it can be neither renamed nor deleted. */
+const DEFAULT_FOLDER = "DefaultFolder-CloudKit";
 
 export function NotesView() {
   const [folders, setFolders] = useState<NoteFolder[]>([]);
+  const [folderMenu, setFolderMenu] = useState<{ folder: NoteFolder; x: number; y: number; alignRight: boolean } | null>(null);
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [folder, setFolder] = useState<string>(ALL);
   const [notes, setNotes] = useState<Note[]>([]);
   const [openGuid, setOpenGuid] = useState<string | null>(null);
@@ -340,6 +345,49 @@ export function NotesView() {
    * asked about first, in Apple's words.
    */
   const inTrash = open?.folderGuid === TRASH_FOLDER;
+  /**
+   * Folders, as Notes manages them. Each shows its change at once — a new "New Folder" ready
+   * to be named, a new name, a folder gone — and a refusal re-reads and says why.
+   */
+  const newFolder = async (parent: string | null) => {
+    const standIn = `pending-folder-${Date.now()}`;
+    setFolders((fs) => [...fs, { guid: standIn, title: "New Folder", sortOrder: 0, parentGuid: parent } as NoteFolder]);
+    try {
+      const guid = await api.noteFolderCreate("New Folder", parent);
+      await read();
+      setRenamingFolder(guid);
+    } catch (e) {
+      setFolders((fs) => fs.filter((f) => f.guid !== standIn));
+      setError(messageOf(e));
+    }
+  };
+  const renameFolder = async (f: NoteFolder, title: string) => {
+    setRenamingFolder(null);
+    const name = title.trim();
+    if (!name || name === f.title) return;
+    setFolders((fs) => fs.map((x) => (x.guid === f.guid ? { ...x, title: name } : x)));
+    try {
+      await api.noteFolderRename(f.guid, name);
+      await read();
+    } catch (e) {
+      setError(messageOf(e));
+      read().catch(() => {});
+    }
+  };
+  const deleteFolder = async (f: NoteFolder) => {
+    // Apple's own words for it.
+    if (!window.confirm(`Are you sure you want to delete \u201c${f.title}\u201d?\n\nAll notes and any subfolders will be deleted.`)) return;
+    setFolders((fs) => fs.filter((x) => x.guid !== f.guid && x.parentGuid !== f.guid));
+    if (folder === f.guid) setFolder(ALL);
+    try {
+      await api.noteFolderDelete(f.guid);
+      await read();
+    } catch (e) {
+      setError(messageOf(e));
+      read().catch(() => {});
+    }
+  };
+
   const remove = useCallback(async () => {
     if (!open) return;
     if (
@@ -355,7 +403,7 @@ export function NotesView() {
   /** Out of Recently Deleted and back into Notes — Apple's "Notes" folder where there is one. */
   const recover = useCallback(async () => {
     if (!open) return;
-    const back = folders.some((f) => f.guid === "DefaultFolder-CloudKit") ? "DefaultFolder-CloudKit" : null;
+    const back = folders.some((f) => f.guid === DEFAULT_FOLDER) ? DEFAULT_FOLDER : null;
     const guid = open.guid;
     await write(() => api.noteMove(guid, back), (rows) => rows.filter((n) => n.guid !== guid));
   }, [open, write, folders]);
@@ -453,19 +501,63 @@ export function NotesView() {
         </button>
         {nestFolders(folders)
           .filter(({ folder: f }) => f.guid !== TRASH_FOLDER)
-          .map(({ folder: f, depth }) => (
-            <button
-              key={f.guid}
-              className="notes-folder"
-              aria-current={folder === f.guid}
-              onClick={() => setFolder(f.guid)}
-              style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
-            >
-              <Folder className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
-              <span className="notes-folder-name">{f.title}</span>
-              <span className="notes-folder-count">{counts.per.get(f.guid) || ""}</span>
-            </button>
-          ))}
+          .map(({ folder: f, depth }) => {
+            const own = f.guid !== DEFAULT_FOLDER;
+            if (renamingFolder === f.guid) {
+              return (
+                <input
+                  key={f.guid}
+                  className="notes-folder notes-folder-rename"
+                  defaultValue={f.title}
+                  aria-label={`Rename ${f.title}`}
+                  autoFocus
+                  onFocus={(e) => e.currentTarget.select()}
+                  onBlur={(e) => void renameFolder(f, e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") { e.currentTarget.value = f.title; e.currentTarget.blur(); }
+                  }}
+                  style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
+                />
+              );
+            }
+            const openMenu = (x: number, y: number, alignRight: boolean) =>
+              setFolderMenu({ folder: f, x, y, alignRight });
+            return (
+              <div
+                key={f.guid}
+                className={`notes-folder-row${folderMenu?.folder.guid === f.guid ? " is-menu" : ""}`}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openMenu(e.clientX, e.clientY, false);
+                }}
+              >
+                <button
+                  className="notes-folder"
+                  aria-current={folder === f.guid}
+                  onClick={() => setFolder(f.guid)}
+                  style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
+                >
+                  <Folder className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
+                  <span className="notes-folder-name">{f.title}</span>
+                  <span className="notes-folder-count">{counts.per.get(f.guid) || ""}</span>
+                </button>
+                {own && (
+                  <button
+                    className="notes-folder-more"
+                    aria-label={`Actions for ${f.title}`}
+                    aria-haspopup="menu"
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect();
+                      openMenu(r.right, r.bottom + 4, true);
+                    }}
+                  >
+                    <span aria-hidden="true">•••</span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
         {folders.some((f) => f.guid === TRASH_FOLDER) && (
           <button
             className="notes-folder"
@@ -476,6 +568,22 @@ export function NotesView() {
             <span className="notes-folder-name">Recently Deleted</span>
             <span className="notes-folder-count">{counts.per.get(TRASH_FOLDER) || ""}</span>
           </button>
+        )}
+        <button className="notes-new-folder" onClick={() => void newFolder(null)}>
+          <FolderPlus size={15} strokeWidth={2} aria-hidden="true" />
+          New Folder
+        </button>
+        {folderMenu && (
+          <RowMenu
+            at={folderMenu}
+            onClose={() => setFolderMenu(null)}
+            entries={[
+              { label: "Rename Folder", run: () => setRenamingFolder(folderMenu.folder.guid) },
+              { label: "New Folder", run: () => void newFolder(folderMenu.folder.guid) },
+              null,
+              { label: "Delete Folder", danger: true, run: () => void deleteFolder(folderMenu.folder) },
+            ]}
+          />
         )}
       </aside>
 
@@ -585,7 +693,7 @@ export function NotesView() {
                   options={[
                     // "No folder" only for an account without Apple's default "Notes" folder;
                     // with one, it was a second "Notes" that meant something else.
-                    ...(folders.some((f) => f.guid === "DefaultFolder-CloudKit")
+                    ...(folders.some((f) => f.guid === DEFAULT_FOLDER)
                       ? []
                       : [{ value: ALL, label: "Notes" }]),
                     ...folders

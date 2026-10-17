@@ -226,6 +226,9 @@ pub fn apply_cloudkit(
     } = fetched;
 
     let mut folders: Vec<NoteFolder> = Vec::new();
+    // Folders Apple has deleted: removed outright, or — as icloud.com's own delete leaves
+    // them on the way — flagged `Deleted`, which its folder list filters out.
+    let mut gone_folders: Vec<String> = Vec::new();
     let mut template: Option<String> = None;
     let mut notes: Vec<Note> = Vec::new();
     let mut gone: Vec<String> = Vec::new();
@@ -279,7 +282,13 @@ pub fn apply_cloudkit(
                     notes.extend(note_from_record(record));
                 }
             }
-            "Folder" => folders.extend(folder_from_record(record)),
+            "Folder" => {
+                if removed || field::flag(record, "Deleted") {
+                    gone_folders.extend(field::record_name(record));
+                } else {
+                    folders.extend(folder_from_record(record));
+                }
+            }
             // Per-user state. The note it refers to is what matters, not this record's name.
             "Note_UserSpecific" | "PasswordProtectedNote_UserSpecific" => {
                 if let Some(target) = field::reference(record, "Note") {
@@ -338,6 +347,9 @@ pub fn apply_cloudkit(
 
     library.put_note_folders(&folders)?;
     library.put_notes(&notes)?;
+    if !gone_folders.is_empty() {
+        library.remove_note_folders(&gone_folders)?;
+    }
     for (guid, pinned) in &pins {
         if !in_pass.contains(guid) {
             library.set_note_pinned(guid, *pinned)?;
@@ -582,6 +594,143 @@ pub async fn move_cloudkit(
     Ok(())
 }
 
+/// A folder's title as icloud.com writes it: the UTF-8 bytes, base64, nothing else
+/// (`FolderEncodings` in its bundle) — not the gzip a note's title is sent in.
+fn plain_title(title: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(title.as_bytes())
+}
+
+/// Make a folder, as icloud.com's New Folder does: a `Folder` record with its title (plain
+/// UTF-8, base64 — "encrypted" in name only) and, when it sits inside another, a
+/// `ParentFolder` reference. Returns the record name, a client-made UUID as icloud.com uses.
+pub async fn create_folder_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    title: &str,
+    parent: Option<&str>,
+) -> Result<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(Error::Refused("A folder needs a name.".into()));
+    }
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let name = uuid::Uuid::new_v4().to_string();
+    let mut fields = serde_json::json!({
+        "TitleEncrypted": { "type": "ENCRYPTED_BYTES", "value": plain_title(title) },
+    });
+    if let Some(parent) = parent {
+        fields["ParentFolder"] = client.reference_to(ZONE, parent);
+    }
+    client.create_record(ZONE, &name, "Folder", fields).await?;
+    Ok(name)
+}
+
+/// Rename a folder: its title, written over what Apple holds now. Apple's own two cannot be.
+pub async fn rename_folder_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    guid: &str,
+    title: &str,
+) -> Result<()> {
+    let title = title.trim();
+    if guid == DEFAULT_FOLDER || guid == quince_core::notes::TRASH_FOLDER {
+        return Err(Error::Refused(
+            "Apple's own folders keep their names.".into(),
+        ));
+    }
+    if title.is_empty() {
+        return Err(Error::Refused("A folder needs a name.".into()));
+    }
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let current = client
+        .lookup_record(ZONE, guid)
+        .await?
+        .ok_or_else(|| Error::Refused("That folder is no longer in iCloud.".into()))?;
+    let tag = current.get("recordChangeTag").and_then(Value::as_str);
+    client
+        .update_record(
+            ZONE,
+            guid,
+            "Folder",
+            tag,
+            serde_json::json!({
+                "TitleEncrypted": { "type": "ENCRYPTED_BYTES", "value": plain_title(title) },
+                "TitleModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Delete a folder as icloud.com does, except for its last step: every note in it — and in
+/// every folder inside it — goes to Recently Deleted, then each folder is flagged `Deleted`,
+/// which Apple's clients read as gone. icloud.com then destroys the folder record too; that
+/// is left undone here, since nothing reads a flagged folder and a destroyed record is past
+/// recovery. Notes are moved first, so a failure part-way loses nothing.
+pub async fn delete_folder_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    all: &[NoteFolder],
+    notes: &[Note],
+    guid: &str,
+) -> Result<()> {
+    if guid == DEFAULT_FOLDER || guid == quince_core::notes::TRASH_FOLDER {
+        return Err(Error::Refused(
+            "Apple's own folders can't be deleted.".into(),
+        ));
+    }
+    // This folder, then every folder under it, deepest last.
+    let mut doomed = vec![guid.to_string()];
+    let mut i = 0;
+    while i < doomed.len() {
+        let parent = doomed[i].clone();
+        doomed.extend(
+            all.iter()
+                .filter(|f| f.parent_guid.as_deref() == Some(parent.as_str()))
+                .map(|f| f.guid.clone()),
+        );
+        i += 1;
+    }
+    for note in notes.iter().filter(|n| {
+        n.folder_guid
+            .as_deref()
+            .is_some_and(|f| doomed.iter().any(|d| d == f))
+    }) {
+        move_cloudkit(
+            http,
+            ckdatabasews_root,
+            params.clone(),
+            note,
+            Some(quince_core::notes::TRASH_FOLDER),
+        )
+        .await?;
+    }
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    for folder in doomed.iter().rev() {
+        let Some(current) = client.lookup_record(ZONE, folder).await? else {
+            continue;
+        };
+        let tag = current.get("recordChangeTag").and_then(Value::as_str);
+        client
+            .update_record(
+                ZONE,
+                folder,
+                "Folder",
+                tag,
+                serde_json::json!({
+                    "Deleted": { "type": "INT64", "value": 1 },
+                    "DeletedDate": { "type": "TIMESTAMP", "value": now_millis() },
+                }),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 /// Apple's own "Notes" folder, where a note filed nowhere in particular lives.
 pub const DEFAULT_FOLDER: &str = "DefaultFolder-CloudKit";
 
@@ -793,6 +942,91 @@ mod tests {
             "the text arrived and was stored"
         );
         assert_eq!(library.note_folders().unwrap()[0].title, "Notes");
+    }
+
+    /// A folder deleted elsewhere — flagged `Deleted` on its way out, as icloud.com does it —
+    /// leaves the list, and a note still filed in it is kept, unfiled, not lost.
+    #[tokio::test]
+    async fn a_folder_flagged_deleted_leaves_the_list() {
+        let mut library = Library::in_memory().unwrap();
+        let first = serve(json!({ "zones": [{
+            "records": [
+                folder_record("F-keep", "Keep"),
+                folder_record("F-gone", "Old"),
+                note_record("Note/n1", "Kept note", Some("body"), "F-gone"),
+            ],
+            "syncToken": "t1", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(
+            &reqwest::Client::new(),
+            &first.uri(),
+            vec![],
+            &mut library,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(library.note_folders().unwrap().len(), 2);
+
+        let mut flagged = folder_record("F-gone", "Old");
+        flagged["fields"]["Deleted"] = json!({ "type": "INT64", "value": 1 });
+        let second = serve(json!({ "zones": [{
+            "records": [flagged], "syncToken": "t2", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(
+            &reqwest::Client::new(),
+            &second.uri(),
+            vec![],
+            &mut library,
+            Some("t1"),
+        )
+        .await
+        .unwrap();
+        let titles: Vec<String> = library
+            .note_folders()
+            .unwrap()
+            .into_iter()
+            .map(|f| f.title)
+            .collect();
+        assert_eq!(titles, ["Keep"]);
+        assert_eq!(
+            library.notes_in(None).unwrap().len(),
+            1,
+            "the note survives"
+        );
+    }
+
+    /// New Folder writes icloud.com's shape: a title, and a parent reference when nested.
+    #[tokio::test]
+    async fn a_new_folder_is_a_titled_record_inside_its_parent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "x" }] })),
+            )
+            .mount(&server)
+            .await;
+        create_folder_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            " Recipes ",
+            Some("F-parent"),
+        )
+        .await
+        .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let record = serde_json::from_slice::<Value>(&requests[0].body).unwrap()["operations"][0]
+            ["record"]
+            .clone();
+        assert_eq!(record["recordType"], "Folder");
+        assert_eq!(record["fields"]["TitleEncrypted"]["value"], bare("Recipes"));
+        assert_eq!(
+            record["fields"]["ParentFolder"]["value"]["recordName"],
+            "F-parent"
+        );
     }
 
     /// Deletion lives on the per-user record, not the note. Missing that leaves deleted

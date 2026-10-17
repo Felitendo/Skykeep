@@ -1070,6 +1070,71 @@ async fn note_pin(
     resync_notes(&http, &root, params, &data).await
 }
 
+/// A new Notes folder, inside another when `parent` is given.
+#[tauri::command]
+async fn note_folder_create(
+    title: String,
+    parent: Option<String>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let guid = quince_icloud::notes::create_folder_cloudkit(
+        &http,
+        &root,
+        params.clone(),
+        &title,
+        parent.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await?;
+    Ok(guid)
+}
+
+#[tauri::command]
+async fn note_folder_rename(
+    guid: String,
+    title: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    quince_icloud::notes::rename_folder_cloudkit(&http, &root, params.clone(), &guid, &title)
+        .await
+        .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await
+}
+
+/// Delete a folder: its notes, and those of every folder inside it, to Recently Deleted.
+#[tauri::command]
+async fn note_folder_delete(
+    guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    // Read what is needed, then let go of the library before any network call.
+    let (folders, notes) = {
+        let library = data.0.lock().await;
+        (
+            library.note_folders().map_err(|e| e.to_string())?,
+            library.notes_in(None).map_err(|e| e.to_string())?,
+        )
+    };
+    quince_icloud::notes::delete_folder_cloudkit(
+        &http,
+        &root,
+        params.clone(),
+        &folders,
+        &notes,
+        &guid,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    resync_notes(&http, &root, params, &data).await
+}
+
 #[tauri::command]
 async fn note_folders(data: State<'_, Data>) -> UiResult<Vec<NoteFolder>> {
     let library = data.0.lock().await;
@@ -2095,6 +2160,9 @@ fn main() {
             reminder_list_rename,
             reminder_list_delete,
             note_folders,
+            note_folder_create,
+            note_folder_rename,
+            note_folder_delete,
             note_body,
             note_save,
             note_create,

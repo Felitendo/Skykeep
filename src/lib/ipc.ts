@@ -114,6 +114,10 @@ export const api = {
     invoke<void>("reminder_delete", { guid, listGuid }),
 
   noteFolders: () => invoke<NoteFolder[]>("note_folders"),
+  noteFolderCreate: (title: string, parent: string | null) =>
+    invoke<string>("note_folder_create", { title, parent }),
+  noteFolderRename: (guid: string, title: string) => invoke<void>("note_folder_rename", { guid, title }),
+  noteFolderDelete: (guid: string) => invoke<void>("note_folder_delete", { guid }),
   notesIn: (folderGuid: string | null) => invoke<Note[]>("notes_in", { folderGuid }),
   /** [notes outside Recently Deleted, [folder guid, count]…]. */
   noteCounts: () => invoke<[number, [string, number][]]>("note_counts"),
