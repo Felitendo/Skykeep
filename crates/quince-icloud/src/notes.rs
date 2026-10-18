@@ -685,15 +685,15 @@ pub async fn set_paragraph_cloudkit(
     let written = client
         .edit_record(ZONE, &note.guid, "Note", |current| {
             let Some(encoded) = current.pointer("/fields/TextDataEncrypted/value").and_then(Value::as_str) else {
-                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (Some(Error::Refused("That note has no body Apple will let us read.".into())));
+                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Error::Refused("That note has no body Apple will let us read.".into()));
                 return None;
             };
             let Some(rewritten) = crate::ckdocument::set_paragraph_in_base64(encoded, start, change, Some(expect)) else {
-                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (Some(Error::Refused("That line has changed since it was shown, so nothing was changed. Try again in a moment.".into())));
+                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Error::Refused("That line has changed since it was shown, so nothing was changed. Try again in a moment.".into()));
                 return None;
             };
             if let Err(e) = fits_inline(&rewritten) {
-                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (Some(e));
+                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
                 return None;
             }
             Some(serde_json::json!({
