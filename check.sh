@@ -66,6 +66,7 @@ step "contacts lists"    node .uiverify/contacts-lists.mjs
 step "drive keys"        node .uiverify/drive-keys.mjs
 step "drive drag"        node .uiverify/drive-drag.mjs
 step "drive recents"     node .uiverify/drive-recents.mjs
+step "drive gone folder" node .uiverify/drive-gone.mjs
 step "reminder colours"  node .uiverify/calendar-reminder-colour.mjs
 step "calendar dblclick"  node .uiverify/calendar-dblclick.mjs
 step "menus"             node .uiverify/menus.mjs

@@ -120,123 +120,144 @@ async fn context(client: &Arc<Mutex<Client>>) -> Context {
 /// Never returns an error: a refresh that partly failed is a normal outcome with a partial
 /// result, not an exception, and the interface has to be able to show exactly that.
 pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh {
+    run(client, data, &COVERED.map(|(service, _)| service)).await
+}
+
+/// Refresh only the services `wanted` names — what a push from Apple says changed — and
+/// report on those alone.
+pub async fn some(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, wanted: &[&str]) -> Refresh {
+    run(client, data, wanted).await
+}
+
+async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&str]) -> Refresh {
+    let wanted = |service: &str| services.contains(&service);
     let started = std::time::Instant::now();
     let ctx = context(client).await;
     let (from, to, zone) = default_window();
 
     let mut reports = Vec::with_capacity(COVERED.len());
 
-    reports.push(match ctx.calendar.as_deref() {
-        None => unavailable("calendar", "Calendar"),
-        Some(root) => {
-            // Fetch and store as one, never across a save: see `CALENDAR_PASS`.
-            let _one = crate::CALENDAR_PASS.lock().await;
-            let fetched = quince_icloud::sync::fetch_calendar(
-                &ctx.http,
-                root,
-                ctx.params.clone(),
-                &from,
-                &to,
-                &zone,
-            )
-            .await;
-            store(
-                "calendar",
-                "Calendar",
-                data,
-                fetched,
-                |library, snapshot| {
-                    let summary = quince_icloud::sync::apply_calendar(library, snapshot)?;
-                    Ok(format!(
-                        "{} event{} in {} calendar{}",
-                        summary.events,
-                        plural(summary.events),
-                        summary.calendars,
-                        plural(summary.calendars)
-                    ))
-                },
-            )
-            .await
-        }
-    });
+    if wanted("calendar") {
+        reports.push(match ctx.calendar.as_deref() {
+            None => unavailable("calendar", "Calendar"),
+            Some(root) => {
+                // Fetch and store as one, never across a save: see `CALENDAR_PASS`.
+                let _one = crate::CALENDAR_PASS.lock().await;
+                let fetched = quince_icloud::sync::fetch_calendar(
+                    &ctx.http,
+                    root,
+                    ctx.params.clone(),
+                    &from,
+                    &to,
+                    &zone,
+                )
+                .await;
+                store(
+                    "calendar",
+                    "Calendar",
+                    data,
+                    fetched,
+                    |library, snapshot| {
+                        let summary = quince_icloud::sync::apply_calendar(library, snapshot)?;
+                        Ok(format!(
+                            "{} event{} in {} calendar{}",
+                            summary.events,
+                            plural(summary.events),
+                            summary.calendars,
+                            plural(summary.calendars)
+                        ))
+                    },
+                )
+                .await
+            }
+        });
+    }
 
-    reports.push(match ctx.cloudkit.as_deref() {
-        None => unavailable("reminders", "Reminders"),
-        Some(root) => {
-            let _one = crate::REMINDERS_PASS.lock().await;
-            let since = token(data, "reminders").await;
-            let full = since.is_none();
-            let fetched = quince_icloud::reminders::fetch_cloudkit(
-                &ctx.http,
-                root,
-                ctx.params.clone(),
-                since.as_deref(),
-            )
-            .await;
-            store(
-                "reminders",
-                "Reminders",
-                data,
-                fetched,
-                move |library, f| {
-                    let (lists, count, _) = quince_icloud::reminders::apply_cloudkit(library, f)?;
+    if wanted("reminders") {
+        reports.push(match ctx.cloudkit.as_deref() {
+            None => unavailable("reminders", "Reminders"),
+            Some(root) => {
+                let _one = crate::REMINDERS_PASS.lock().await;
+                let since = token(data, "reminders").await;
+                let full = since.is_none();
+                let fetched = quince_icloud::reminders::fetch_cloudkit(
+                    &ctx.http,
+                    root,
+                    ctx.params.clone(),
+                    since.as_deref(),
+                )
+                .await;
+                store(
+                    "reminders",
+                    "Reminders",
+                    data,
+                    fetched,
+                    move |library, f| {
+                        let (lists, count, _) =
+                            quince_icloud::reminders::apply_cloudkit(library, f)?;
+                        if full {
+                            library.mark_full_sync("reminders")?;
+                        }
+                        Ok(format!(
+                            "{count} reminder{} in {lists} list{}",
+                            plural(count),
+                            plural(lists)
+                        ))
+                    },
+                )
+                .await
+            }
+        });
+    }
+
+    if wanted("notes") {
+        reports.push(match ctx.cloudkit.as_deref() {
+            None => unavailable("notes", "Notes"),
+            Some(root) => {
+                // One notes pass at a time, from reading the position through storing what came
+                // back — see `NOTES_PASS`.
+                let _one = crate::NOTES_PASS.lock().await;
+                let since = token(data, "notes").await;
+                let full = since.is_none();
+                let fetched = quince_icloud::notes::fetch_cloudkit(
+                    &ctx.http,
+                    root,
+                    ctx.params.clone(),
+                    since.as_deref(),
+                )
+                .await;
+                store("notes", "Notes", data, fetched, move |library, f| {
+                    let (folders, notes, _) = quince_icloud::notes::apply_cloudkit(library, f)?;
                     if full {
-                        library.mark_full_sync("reminders")?;
+                        library.mark_full_sync("notes")?;
                     }
                     Ok(format!(
-                        "{count} reminder{} in {lists} list{}",
-                        plural(count),
-                        plural(lists)
+                        "{notes} note{} in {folders} folder{}",
+                        plural(notes),
+                        plural(folders)
                     ))
-                },
-            )
-            .await
-        }
-    });
+                })
+                .await
+            }
+        });
+    }
 
-    reports.push(match ctx.cloudkit.as_deref() {
-        None => unavailable("notes", "Notes"),
-        Some(root) => {
-            // One notes pass at a time, from reading the position through storing what came
-            // back — see `NOTES_PASS`.
-            let _one = crate::NOTES_PASS.lock().await;
-            let since = token(data, "notes").await;
-            let full = since.is_none();
-            let fetched = quince_icloud::notes::fetch_cloudkit(
-                &ctx.http,
-                root,
-                ctx.params.clone(),
-                since.as_deref(),
-            )
-            .await;
-            store("notes", "Notes", data, fetched, move |library, f| {
-                let (folders, notes, _) = quince_icloud::notes::apply_cloudkit(library, f)?;
-                if full {
-                    library.mark_full_sync("notes")?;
-                }
-                Ok(format!(
-                    "{notes} note{} in {folders} folder{}",
-                    plural(notes),
-                    plural(folders)
-                ))
-            })
-            .await
-        }
-    });
-
-    reports.push(match ctx.contacts.as_deref() {
-        None => unavailable("contacts", "Contacts"),
-        Some(root) => {
-            // Fetch and store as one, never across a save: see `CONTACTS_PASS`.
-            let _one = crate::CONTACTS_PASS.lock().await;
-            let fetched = quince_icloud::contacts::fetch(&ctx.http, root, ctx.params.clone()).await;
-            store("contacts", "Contacts", data, fetched, |library, people| {
-                let count = quince_icloud::contacts::apply(library, people)?;
-                Ok(format!("{count} contact{}", plural(count)))
-            })
-            .await
-        }
-    });
+    if wanted("contacts") {
+        reports.push(match ctx.contacts.as_deref() {
+            None => unavailable("contacts", "Contacts"),
+            Some(root) => {
+                // Fetch and store as one, never across a save: see `CONTACTS_PASS`.
+                let _one = crate::CONTACTS_PASS.lock().await;
+                let fetched =
+                    quince_icloud::contacts::fetch(&ctx.http, root, ctx.params.clone()).await;
+                store("contacts", "Contacts", data, fetched, |library, people| {
+                    let count = quince_icloud::contacts::apply(library, people)?;
+                    Ok(format!("{count} contact{}", plural(count)))
+                })
+                .await
+            }
+        });
+    }
 
     let available: Vec<&str> = reports
         .iter()

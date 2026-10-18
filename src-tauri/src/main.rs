@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod alerts;
+mod push;
 mod refresh;
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
@@ -84,6 +85,12 @@ pub static CALENDAR_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new
 /// that read Apple before a save and stored after it put the old card back, and the next
 /// edit, made from it, was refused as a conflict.
 pub static CONTACTS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// One Drive folder fetched and stored at a time. A folder opened just before a rename is
+/// fetched with the old name; finishing after the rename's own re-read, it stored that old
+/// listing last and the rename looked undone. Held from fetch to store, the re-read after a
+/// write — which starts only once the write is made — always lands last.
+pub static DRIVE_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn refresh_reminders(
     http: &reqwest::Client,
@@ -1181,7 +1188,10 @@ async fn note_table(
     // does not bring — so asked of Apple now, and kept.
     let (http, root, params) = cloudkit_context(&auth).await?;
     let client = quince_icloud::cloudkit::ZoneClient::new(&http, &root, "com.apple.notes", params);
-    let record = client.lookup_record("Notes", &id).await.map_err(|e| e.to_string())?;
+    let record = client
+        .lookup_record("Notes", &id)
+        .await
+        .map_err(|e| e.to_string())?;
     let cells = record
         .as_ref()
         .and_then(|r| r.pointer("/fields/MergeableDataEncrypted/value"))
@@ -1190,7 +1200,9 @@ async fn note_table(
     if let Some(cells) = &cells {
         let mut library = data.0.lock().await;
         if let Ok(json) = serde_json::to_string(cells) {
-            library.set_state(&quince_icloud::table::state_key(&id), &json).map_err(|e| e.to_string())?;
+            library
+                .set_state(&quince_icloud::table::state_key(&id), &json)
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(cells)
@@ -1799,9 +1811,20 @@ async fn drive_sync_folder(
             .ok_or("Apple hasn't offered iCloud Drive for this account.")?;
         (client.http().clone(), root, client.service_params())
     };
-    let items = quince_icloud::drive::fetch_folder(&http, &root, params, &folder_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let _one = DRIVE_PASS.lock().await;
+    let items = match quince_icloud::drive::fetch_folder(&http, &root, params, &folder_id).await {
+        Ok(items) => items,
+        // Deleted or moved on another device: forgotten here too, so the screen can step back
+        // out of it rather than show a folder that is not there.
+        Err(quince_icloud::Error::NotFound) => {
+            let mut library = data.0.lock().await;
+            library
+                .forget_drive_folder(&folder_id)
+                .map_err(|e| e.to_string())?;
+            return Err("This folder was deleted or moved on another device.".into());
+        }
+        Err(e) => return Err(e.to_string()),
+    };
     let mut library = data.0.lock().await;
     quince_icloud::drive::store_folder(&mut library, &folder_id, &items).map_err(|e| e.to_string())
 }
@@ -1841,6 +1864,7 @@ async fn resync_drive_folder(
     data: &State<'_, Data>,
     folder_id: &str,
 ) -> Result<(), String> {
+    let _one = DRIVE_PASS.lock().await;
     let items = quince_icloud::drive::fetch_folder(http, root, params, folder_id)
         .await
         .map_err(|e| e.to_string())?;
@@ -2833,6 +2857,7 @@ fn main() {
             });
             spawn_holidays(app.handle().clone());
             spawn_heartbeat(Arc::clone(&client));
+            push::spawn(app.handle().clone(), Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
             alerts::spawn(app.handle().clone());
             alerts::spawn_events(app.handle().clone());
