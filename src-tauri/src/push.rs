@@ -40,8 +40,81 @@ fn service_of(container: &str) -> Option<&'static str> {
 
 pub fn spawn(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
     let (tx, rx) = mpsc::unbounded_channel::<&'static str>();
-    tauri::async_runtime::spawn(refresher(app, Arc::clone(&client), rx));
+    tauri::async_runtime::spawn(refresher(app.clone(), Arc::clone(&client), rx));
+    tauri::async_runtime::spawn(watch_calendar(app, Arc::clone(&client), tx.clone()));
     tauri::async_runtime::spawn(listen(client, tx));
+}
+
+/// How often Calendar is asked whether anything changed: often while the window is open,
+/// rarely from the tray, where only an alert depends on it.
+const CALENDAR_LOOK: Duration = Duration::from_secs(4);
+const CALENDAR_LOOK_HIDDEN: Duration = Duration::from_secs(30);
+
+/// Calendar has no push for the web. Its own "has anything changed" call, `/ca/idle`, answers
+/// in a few hundred milliseconds with only the calendars whose tag moved, so it is asked every
+/// few seconds and a full refresh runs only when one did — measured within the poll of a
+/// change made on another device.
+async fn watch_calendar(
+    app: tauri::AppHandle,
+    client: Arc<Mutex<Client>>,
+    tx: mpsc::UnboundedSender<&'static str>,
+) {
+    let zone = jiff::tz::TimeZone::system()
+        .iana_name()
+        .unwrap_or("UTC")
+        .to_string();
+    // Each calendar's tag as last seen; empty until the first answer seeds it.
+    let mut known: Vec<(String, String)> = Vec::new();
+    let mut seeded = false;
+    let mut backoff = Duration::from_secs(5);
+    loop {
+        let visible = app
+            .get_webview_window("main")
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
+        tokio::time::sleep(if visible {
+            CALENDAR_LOOK
+        } else {
+            CALENDAR_LOOK_HIDDEN
+        })
+        .await;
+        let session = {
+            let guard = client.lock().await;
+            let s = guard.session();
+            s.webservices
+                .is_some()
+                .then(|| s.service_url("calendar"))
+                .flatten()
+                .map(|root| (guard.http().clone(), guard.service_params(), root))
+        };
+        let Some((http, params, root)) = session else {
+            seeded = false;
+            known.clear();
+            continue;
+        };
+        let calendar = quince_icloud::calendar::CalendarClient::new(&http, &root, params);
+        match calendar.changed(&known, &zone).await {
+            Ok(changed) => {
+                backoff = Duration::from_secs(5);
+                for (guid, ctag) in &changed {
+                    known.retain(|(g, _)| g != guid);
+                    if let Some(ctag) = ctag {
+                        known.push((guid.clone(), ctag.clone()));
+                    }
+                }
+                // The first answer is every calendar there is, not a change.
+                if seeded && !changed.is_empty() {
+                    tx.send("calendar").ok();
+                }
+                seeded = true;
+            }
+            Err(e) => {
+                eprintln!("calendar watch: {e}");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(5 * 60));
+            }
+        }
+    }
 }
 
 /// Refresh what the pushes named, a burst at a time.

@@ -836,6 +836,34 @@ impl<'a> CalendarClient<'a> {
         body
     }
 
+    /// Which calendars changed since `known` — each calendar's guid and the ctag last seen —
+    /// from `/ca/idle`, icloud.com's own "has anything changed" call. It does not wait: it
+    /// answers in a few hundred milliseconds with the calendars whose ctag is not the one
+    /// sent, any it was not told of, and any gone. Nothing changed is an empty list.
+    ///
+    /// Measured: the body is `{ClientState: {Collection: [{guid, ctag}], alarmRange,
+    /// fullState: true, userTime}}`, and the answer is `{ChangeSet: {inserts|updates|deletes:
+    /// {Collection: [...]}}}`. It needs the same query a read does, dates included.
+    pub async fn changed(
+        &self,
+        known: &[(String, String)],
+        tz: &str,
+    ) -> Result<Vec<(String, Option<String>)>> {
+        let today = jiff::Zoned::now().date().to_string();
+        let state: Vec<Value> = known
+            .iter()
+            .map(|(guid, ctag)| serde_json::json!({ "guid": guid, "ctag": ctag }))
+            .collect();
+        let body = serde_json::json!({ "ClientState": {
+            "Collection": state, "alarmRange": 60, "fullState": true,
+            "userTime": jiff::Timestamp::now().as_second(),
+        } });
+        let answer = self
+            .post("/ca/idle", &body, &today, &today, Some(tz), None)
+            .await?;
+        Ok(changed_collections(&answer))
+    }
+
     async fn post(
         &self,
         path: &str,
@@ -913,10 +941,59 @@ impl<'a> CalendarClient<'a> {
     }
 }
 
+/// The calendars an `/ca/idle` answer says changed: guid and new ctag, `None` when gone.
+#[must_use]
+pub fn changed_collections(answer: &Value) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for (kind, gone) in [("inserts", false), ("updates", false), ("deletes", true)] {
+        let Some(list) = answer
+            .pointer(&format!("/ChangeSet/{kind}/Collection"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for c in list {
+            // A delete may name the calendar by guid alone, or be the guid itself.
+            let guid = c.get("guid").and_then(Value::as_str).or_else(|| c.as_str());
+            if let Some(guid) = guid {
+                let ctag = if gone {
+                    None
+                } else {
+                    c.get("ctag").and_then(Value::as_str).map(str::to_string)
+                };
+                out.push((guid.to_string(), ctag));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The shapes `/ca/idle` was measured answering with: nothing, a calendar it was not told
+    /// of, a calendar whose tag moved; and a calendar gone.
+    #[test]
+    fn idle_answers_read_as_the_calendars_that_changed() {
+        assert!(
+            changed_collections(&json!({"ChangeSet":{"UpcomingAlarm":[],"fullState":true}}))
+                .is_empty()
+        );
+        let answer = json!({"ChangeSet":{"fullState":true,
+            "inserts":{"Collection":[{"guid":"MMEBirthdays","ctag":"c1","title":"Untitled"}]},
+            "updates":{"Collection":[{"guid":"411F","ctag":"c2"}]},
+            "deletes":{"Collection":[{"guid":"OLD"}]}}});
+        assert_eq!(
+            changed_collections(&answer),
+            vec![
+                ("MMEBirthdays".to_string(), Some("c1".to_string())),
+                ("411F".to_string(), Some("c2".to_string())),
+                ("OLD".to_string(), None),
+            ]
+        );
+    }
 
     #[test]
     fn a_date_is_read_in_its_own_timezone() {
