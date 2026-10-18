@@ -2021,3 +2021,10 @@
 .switch[aria-checked="true"] .switch-knob { translate: 16px 0; }
 .switch:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 2px; }
 .switch:disabled { opacity: 0.5; }
+
+/* Advanced Data Protection with web access off: one plain answer, Apple's own switch. */
+.web-access-off { max-width: 520px; margin: 12vh auto 0; text-align: center; }
+.web-access-off h1 { font-size: var(--t-22); font-weight: 700; margin: 0 0 12px; }
+.web-access-off p { color: var(--text-2); font-size: var(--t-15); line-height: 1.5; margin: 0 0 12px; }
+.web-access-off b { color: var(--text); font-weight: 600; }
+.settings-gap { margin-top: 12px; }

@@ -290,7 +290,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_thumbnails": return driveFixture ? { "FILE::d": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='60'><rect width='80' height='60' fill='%23eee'/></svg>" } : {};
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
-        case "account_info": return { name: "Asha Rao", email: "asha@example.com", photoContact: window.__mePhoto ?? null };
+        case "account_info": return { name: "Asha Rao", email: "asha@example.com", photoContact: window.__mePhoto ?? null, webAccessAllowed: window.__webAccess ?? true, dataProtection: false };
         case "settings_get": return { reminderAlerts: true, eventAlerts: true, ...(window.__settings ?? {}) };
         case "settings_set":
           if (window.__settingsFail) throw "Couldn't save that setting.";

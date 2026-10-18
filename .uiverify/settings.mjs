@@ -82,5 +82,16 @@ await page.waitForTimeout(300);
 const asked = await page.evaluate(() => window.__imgs);
 ok(asked.some((s) => s?.includes("me-card")), `the account shows the photo on the person's own card  [${asked.join(", ")}]`);
 ok((await page.locator(".sidebar-account .account-avatar").innerText()).trim() === "AR", "and its initials hold the place where the photo cannot be had");
+// An account that keeps its data from the web gets one plain answer, with Apple's switch.
+{
+  const c2 = await b.newContext({ viewport: { width: 1180, height: 820 } });
+  await c2.addInitScript(() => { window.__webAccess = false; });
+  await c2.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, remindersFixture: true });
+  const p2 = await c2.newPage();
+  await p2.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await p2.waitForTimeout(500);
+  ok(await p2.getByText("Access iCloud Data on the Web").first().isVisible(), "web access off says how to turn it on, instead of failing screen by screen");
+  await c2.close();
+}
 await b.close();
 process.exitCode = failures ? 1 : 0;

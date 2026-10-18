@@ -52,6 +52,8 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  /** False when the account keeps its data from the web: nothing here can be read. */
+  const [webAccess, setWebAccess] = useState<boolean | null>(null);
   /** In a narrow window the sidebar slides over the content, and only when asked for. */
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /** A wide window can fold the sidebar to its icons, as Finder and Mail can; remembered. */
@@ -103,6 +105,10 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
       }
       return !was;
     });
+
+  useEffect(() => {
+    api.accountInfo().then((a) => setWebAccess(a?.webAccessAllowed ?? null), () => {});
+  }, []);
 
   useEffect(() => {
     api
@@ -248,7 +254,23 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
         </nav>
 
         <main className="content" ref={content}>
-          {selected === "settings" ? (
+          {webAccess === false && selected !== "settings" ? (
+            // Advanced Data Protection with web access off: every read would fail, and each
+            // screen would say so its own way. One plain answer, with Apple's own switch.
+            <div className="web-access-off" role="alert">
+              <h1>Your iCloud data is kept off the web</h1>
+              <p>
+                Your Apple Account uses Advanced Data Protection with “Access iCloud Data on the Web”
+                turned off, so Apple doesn’t let any app outside your devices — Quince included —
+                read your iCloud.
+              </p>
+              <p>
+                To use Quince, turn it on: on your iPhone, open <b>Settings</b>, tap your name, then
+                <b> iCloud</b>, and turn on <b>Access iCloud Data on the Web</b>. Then sign in to Quince
+                again.
+              </p>
+            </div>
+          ) : selected === "settings" ? (
             <ScreenBoundary key="settings" name="Settings">
               <Suspense fallback={null}>
                 <SettingsView onSignOut={onSignOut} />

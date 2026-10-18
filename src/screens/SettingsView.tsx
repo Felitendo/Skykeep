@@ -83,6 +83,15 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
         </p>
       )}
 
+      {account?.dataProtection != null && (
+        <section className="settings-group settings-gap">
+          <div className="settings-row">
+            <span className="settings-label">Advanced Data Protection</span>
+            <span className="settings-value">{account.dataProtection ? "On" : "Off"}</span>
+          </div>
+        </section>
+      )}
+
       <h2 className="settings-heading">iCloud Storage</h2>
       <section className="settings-group">
         <div className="settings-row is-stacked">
