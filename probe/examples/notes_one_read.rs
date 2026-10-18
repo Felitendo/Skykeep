@@ -42,6 +42,19 @@ async fn main() -> Result<()> {
             runs.iter().map(|r| r.length).sum::<u64>(),
             text.encode_utf16().count()
         );
+        for line in quince_icloud::ckdocument::debug_merge_graph(
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, body.trim())
+                .unwrap_or_default(),
+        ) {
+            println!("  {line}");
+        }
+        println!(
+            "why {}",
+            quince_icloud::ckdocument::debug_rewritable(
+                &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, body.trim())
+                    .unwrap_or_default()
+            )
+        );
         println!(
             "rewritable {}",
             quince_icloud::ckdocument::is_rewritable(

@@ -13,7 +13,10 @@ export const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdevi
    real library. Times are unix seconds relative to now. */
 export function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture, remindersFixture }) {
   const HOUR = 3600, DAY = 86400;
-  const base = Math.floor(Date.now() / 1000 / DAY) * DAY + 9 * HOUR;
+  // Today at 9 in the morning, on this machine's clock. Counted from UTC's midnight it was
+  // yesterday for the first hours after local midnight in a zone east of UTC — and the
+  // week's events fell into last week.
+  const base = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000) + 9 * HOUR;
   // Local midnight, n days from today: where an all-day day begins, as the app makes them.
   const localDay = (n) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + n); return d.getTime() / 1000; };
   const events = !calendarFixture ? [] : [
@@ -338,4 +341,7 @@ export async function openScreen(page, name) {
     await page.waitForTimeout(320);
   }
   await page.locator(".nav-item", { hasText: name }).click();
+  // Each app's code arrives on its own; the screen is open once it is drawn.
+  const root = { Calendar: ".cx", Notes: ".notes", Reminders: ".rx", Contacts: ".contacts", "iCloud Drive": ".drive" }[name];
+  if (root) await page.locator(root).first().waitFor({ state: "attached", timeout: 10000 });
 }

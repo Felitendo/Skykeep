@@ -1,14 +1,27 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { PanelLeft } from "lucide-react";
 import { api, messageOf, OPEN_REMINDER } from "../lib/ipc";
 import { SyncProvider } from "../lib/sync";
 import { SyncStatus } from "../components/SyncStatus";
-import { CalendarView } from "./calendar/CalendarView";
-import { RemindersView } from "./RemindersView";
-import { NotesView } from "./NotesView";
-import { ContactsView } from "./ContactsView";
-import { DriveView } from "./DriveView";
+
+/*
+ * Each app is its own chunk, so the window opens on the code for the app it shows, not all
+ * five — Notes' editor alone is a few hundred kilobytes. The rest are fetched as soon as the
+ * window is up, before anyone could reach them, so switching never waits on a load.
+ */
+const loaders = {
+  calendar: () => import("./calendar/CalendarView").then((m) => ({ default: m.CalendarView })),
+  reminders: () => import("./RemindersView").then((m) => ({ default: m.RemindersView })),
+  notes: () => import("./NotesView").then((m) => ({ default: m.NotesView })),
+  contacts: () => import("./ContactsView").then((m) => ({ default: m.ContactsView })),
+  drivews: () => import("./DriveView").then((m) => ({ default: m.DriveView })),
+};
+const CalendarView = lazy(loaders.calendar);
+const RemindersView = lazy(loaders.reminders);
+const NotesView = lazy(loaders.notes);
+const ContactsView = lazy(loaders.contacts);
+const DriveView = lazy(loaders.drivews);
 import { ScreenBoundary } from "../components/ScreenBoundary";
 import { AppIcon } from "../components/AppIcon";
 
@@ -83,6 +96,15 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
       delete document.documentElement.dataset.app;
     };
   }, [selected]);
+
+  // The other apps' code, fetched while nothing else is happening.
+  useEffect(() => {
+    if (!ready) return undefined;
+    const t = window.setTimeout(() => {
+      for (const load of Object.values(loaders)) void load().catch(() => {});
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [ready]);
 
   const choose = (key: string) => {
     setSelected(key);
@@ -198,6 +220,7 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
           {selected && SCREENS.some((s) => s.key === selected) ? (
             // Keyed by screen, so moving to another screen also clears a failed one.
             <ScreenBoundary key={selected} name={SCREENS.find((s) => s.key === selected)?.name ?? "This screen"}>
+              <Suspense fallback={null}>
               {selected === "calendar" ? (
                 <CalendarView />
               ) : selected === "reminders" ? (
@@ -209,6 +232,7 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
               ) : (
                 <DriveView />
               )}
+              </Suspense>
             </ScreenBoundary>
           ) : (
             ready &&

@@ -1270,6 +1270,44 @@ pub fn is_rewritable(original: &[u8]) -> bool {
     })
 }
 
+/// The merge graph of a note document, for looking at one that will not edit.
+#[must_use]
+pub fn debug_merge_graph(original: &[u8]) -> Vec<String> {
+    inflate(original)
+        .and_then(|plain| field_at(&plain, &TEXT_PATH[..2]).map(crate::topotext::debug_graph))
+        .unwrap_or_default()
+}
+
+/// Why [`is_rewritable`] says what it says, for looking at a note that will not edit.
+#[must_use]
+pub fn debug_rewritable(original: &[u8]) -> String {
+    let Some(plain) = inflate(original) else {
+        return "does not inflate".into();
+    };
+    let Some(current) = field_at(&plain, TEXT_PATH) else {
+        return "no text field".into();
+    };
+    if !rewrite(&plain, TEXT_PATH, current).is_some_and(|rebuilt| rebuilt == plain) {
+        return "does not rebuild byte for byte".into();
+    }
+    let text = std::str::from_utf8(current).unwrap_or_default();
+    let Some(note) = field_at(&plain, &TEXT_PATH[..2]) else {
+        return "no note message".into();
+    };
+    if !has_field(note, PROVENANCE) {
+        return "ok (no merge records)".into();
+    }
+    match crate::topotext::Topo::read(note) {
+        None => "merge records unreadable".into(),
+        Some(t) if t.live_length() != utf16_len(text) => format!(
+            "merge records say {} units, text has {}",
+            t.live_length(),
+            utf16_len(text)
+        ),
+        Some(_) => "ok".into(),
+    }
+}
+
 /// [`replace_text`] over the base64 a CloudKit field carries, gzipped on the way back.
 #[must_use]
 pub fn replace_text_in_base64(original: &str, text: &str) -> Option<String> {

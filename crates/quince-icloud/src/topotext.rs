@@ -71,6 +71,30 @@ pub(crate) struct Topo {
     writers: Vec<Writer>,
 }
 
+/// The raw graph of a note's records, for looking at one that will not read: each
+/// substring's id, length, deleted flag and links.
+#[must_use]
+pub fn debug_graph(note: &[u8]) -> Vec<String> {
+    let Some(all) = fields(note) else {
+        return vec!["unreadable fields".into()];
+    };
+    let mut out = Vec::new();
+    for (i, (field, wire, payload, _)) in all.iter().filter(|f| f.0 == 3 && f.1 == 2).enumerate() {
+        let _ = (field, wire);
+        match substring(payload) {
+            Some((s, next)) => out.push(format!(
+                "{i}: id {}:{} len {} stamp {}:{} del {} next {:?}",
+                s.writer, s.clock, s.length, s.stamp_writer, s.stamp_clock, s.deleted, next
+            )),
+            None => out.push(format!(
+                "{i}: UNPARSEABLE {:?}",
+                fields(payload).map(|f| f.iter().map(|x| (x.0, x.1)).collect::<Vec<_>>())
+            )),
+        }
+    }
+    out
+}
+
 // ── Reading ────────────────────────────────────────────────────────────────────────────
 
 /// One field: its number, its wire type, the payload of a length-delimited one, and the
@@ -206,16 +230,33 @@ impl Topo {
         if substrings.len() < 2 {
             return None;
         }
+        // Apple lists the substrings in reading order. A note edited on two devices at once
+        // branches — a substring with two successors, the branches joining further on — and
+        // stays in reading order; every link then points forward in the list, though not
+        // always to the next one. That is read as the order it is listed in. A link that
+        // points back, or a substring that leads nowhere, is a graph this does not know how
+        // to order, and it is refused rather than guessed at.
         let last = links.len() - 1;
         for (i, next) in links.iter().enumerate() {
-            let expected: Vec<u64> = if i == last {
-                vec![]
-            } else {
-                vec![i as u64 + 1]
-            };
-            if *next != expected {
+            if i == last {
+                if !next.is_empty() {
+                    return None;
+                }
+            } else if next.is_empty() || next.iter().any(|&n| n as usize <= i || n as usize > last)
+            {
                 return None;
             }
+        }
+        // And every substring but the start is reached from one before it: nothing hangs loose.
+        let mut reached = vec![false; links.len()];
+        reached[0] = true;
+        for next in &links {
+            for &n in next {
+                reached[n as usize] = true;
+            }
+        }
+        if reached.iter().any(|r| !r) {
+            return None;
         }
         let first = &substrings[0];
         let end = &substrings[last];
@@ -579,6 +620,37 @@ mod tests {
         assert_eq!(t.writers[0].clocks, vec![74800, 31]);
         assert_eq!(t.writers.len(), 2);
         assert_eq!(t.substrings[2].writer, 2);
+    }
+
+    #[test]
+    fn a_note_edited_on_two_devices_at_once_reads_in_list_order() {
+        // As a real note was found: the start leads to two branches, which join at the end.
+        let sub = |w: u64, c: u64, len: u64, del: bool, next: &[u64]| {
+            let mut s = message(1, &pair(w, c));
+            s.extend(varint_field(2, len));
+            s.extend(message(3, &pair(w, c)));
+            if del {
+                s.extend(varint_field(4, 1));
+            }
+            for &n in next {
+                s.extend(varint_field(5, n));
+            }
+            message(3, &s)
+        };
+        let mut note = message(2, b"abcX");
+        note.extend(sub(0, 0, 0, false, &[1, 3]));
+        note.extend(sub(1, 0, 3, false, &[2]));
+        note.extend(sub(1, 3, 2, true, &[4]));
+        note.extend(sub(2, 0, 1, false, &[4]));
+        note.extend(sub(0, END, 0, false, &[]));
+        let t = Topo::read(&note).expect("a branched graph in reading order reads");
+        assert_eq!(t.live_length(), 4);
+        // A link back, or a substring nothing leads to, is still refused.
+        let mut back = message(2, b"abc");
+        back.extend(sub(0, 0, 0, false, &[1]));
+        back.extend(sub(1, 0, 3, false, &[0]));
+        back.extend(sub(0, END, 0, false, &[]));
+        assert!(Topo::read(&back).is_none());
     }
 
     #[test]

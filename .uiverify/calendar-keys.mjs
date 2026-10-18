@@ -36,8 +36,10 @@ await page.evaluate(() => document.activeElement?.blur());
 await page.keyboard.press("Control+Alt+ArrowDown");
 await page.waitForTimeout(300);
 const sent = await page.evaluate(() => window.__nudges);
-ok(sent.length === 1 && sent[0].guid === "e1" && (sent[0].startsAt % 3600) === 900,
-  `Ctrl+Option+Down moves the event 15 minutes later  ${JSON.stringify(sent.map((d) => d.startsAt % 3600))}`);
+// Design review starts at the fixture's 10 in the morning, local time.
+const was = await page.evaluate(() => { const d = new Date(); d.setHours(10, 0, 0, 0); return d.getTime() / 1000; });
+ok(sent.length === 1 && sent[0].guid === "e1" && sent[0].startsAt === was + 900,
+  `Ctrl+Option+Down moves the event 15 minutes later  ${JSON.stringify(sent.map((d) => d.startsAt - was))}`);
 // A time is typed as said, and stepped with the arrows.
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
