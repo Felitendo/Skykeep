@@ -12,15 +12,38 @@ It is a native Linux application — Rust underneath, a real window, no browser 
 
 ## What works
 
-| | Read | Write | Syncs to your devices |
-|---|---|---|---|
-| **Calendar** | yes | create, edit, delete | yes |
-| **Reminders** | yes | lists, subtasks, repeats, priority, alerts | yes |
-| **Notes** | yes | create, edit, move, delete | yes |
-| **Contacts** | yes | create, edit, delete | yes |
-| **iCloud Drive** | yes | upload, download, rename, move, delete | yes |
-| Photos | not yet | | |
-| Mail, Find My | not yet | | |
+Everything here is read from and written to your real iCloud account, shows the moment you
+make it — before Apple has answered — and is put back with the reason if Apple refuses.
+
+**Notes** — edited formatted, as on a Mac: titles, headings, monospaced text, bulleted,
+dashed and numbered lists, checklists you tick, bold, italic, underline and strikethrough,
+from the Aa panel, the checklist button or the Mac's keys. Folders: new, rename, nest,
+delete. Pin, move, Recently Deleted and Recover. An edit made on your phone at the same time
+is merged in, not overwritten, and nothing either side typed is lost.
+
+**Reminders** — lists with Apple's colours and glyphs, groups, subtasks (Tab, ⌘]), repeats,
+due dates and all-day dates, flags, priorities, alerts that ring on this computer, drag to
+reorder, Today / Scheduled / Flagged / All, and completing a repeating reminder the way your
+phone does.
+
+**Calendar** — Day, Week, Month and Year; make an event by dragging or double-clicking;
+move and resize by dragging, or nudge with ⌃⌥ and the arrows; alerts; repeats, with Only
+This Event, All Future Events and All Events for one day of a series; your reminders on the
+schedule in their list's colour; birthdays and holidays; the Mac's keyboard throughout.
+
+**Contacts** — cards with phones, emails, links, birthdays and notes; lists in a sidebar,
+with people added by menu or by dragging; select several to add, remove, export or delete
+together; vCard import and export; My Card.
+
+**iCloud Drive** — browse in a list or grid with Apple's own thumbnails; sort; upload by
+button or by dropping files on the window; download, rename, duplicate, Get Info; move by
+dialog or by dragging onto a folder; Recents; Recently Deleted with the time each item has
+left, Recover and Delete Now; your storage.
+
+Each app takes its own Mac colours — Notes yellow, Calendar red, the rest blue — from
+Apple's macOS 27 design kit, in light and dark.
+
+Not yet: Photos, Mail, Find My, and tables in Notes (a note with one opens and edits; the table itself shows as a placeholder until it can be edited here).
 
 ## Installing
 
@@ -29,6 +52,14 @@ It is a native Linux application — Rust underneath, a real window, no browser 
 ```sh
 cd packaging/arch && makepkg -si
 ```
+
+**Running it from the source**
+
+```sh
+./run.sh
+```
+
+builds the interface and the app and opens Quince.
 
 **Anything else**
 
