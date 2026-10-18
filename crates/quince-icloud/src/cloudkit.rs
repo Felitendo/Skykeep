@@ -827,6 +827,42 @@ impl ZoneClient<'_> {
             .await
     }
 
+    /// Change a record by working the change out from the record as Apple holds it, written
+    /// only over that exact version — and, if another device wrote first, read again and
+    /// worked out again. For fields written whole from what was read, such as a list's order:
+    /// the plain retry resent the array built from the older read, and a reminder the phone
+    /// had just added dropped out of the order. `change` answers `None` when nothing needs
+    /// writing. Signed as [`Self::update_record_signed`] signs.
+    pub async fn edit_record_signed(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        change: impl Fn(&Value) -> Option<Value>,
+    ) -> Result<Option<Value>> {
+        for _ in 0..5 {
+            let Some(current) = self.lookup_record(zone, record_name).await? else {
+                return Err(Error::Refused("That is no longer in iCloud.".into()));
+            };
+            let Some(mut changes) = change(&current) else {
+                return Ok(None);
+            };
+            let Some(tag) = current.get("recordChangeTag").and_then(Value::as_str) else {
+                return Err(Error::Conflict);
+            };
+            stamp_tokens(&mut changes, Some(&current));
+            match self
+                .update_record_exact(zone, record_name, record_type, tag, changes)
+                .await
+            {
+                Ok(v) => return Ok(Some(v)),
+                Err(Error::Conflict) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::Conflict)
+    }
+
     /// [`Self::create_record`], with a first token for every field, as the phone makes one.
     pub async fn create_record_signed(
         &self,

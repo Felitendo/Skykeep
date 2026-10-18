@@ -809,6 +809,8 @@ pub fn apply_cloudkit(
     let mut gone_alarms: Vec<String> = Vec::new();
     // A RecurrenceRule is its own record pointing back at the reminder it governs.
     let mut rules: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
+    // Reminders whose record lists repeat rules, whether or not the rules came in this pass.
+    let mut with_rules: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for record in &records {
         let Some(name) = field::record_name(record) else {
@@ -840,6 +842,13 @@ pub fn apply_cloudkit(
                 if removed {
                     gone_reminders.push(name);
                 } else {
+                    if record
+                        .pointer("/fields/RecurrenceRuleIDs/value")
+                        .and_then(Value::as_array)
+                        .is_some_and(|ids| !ids.is_empty())
+                    {
+                        with_rules.insert(name.clone());
+                    }
                     reminders.extend(reminder_from_record(record));
                 }
             }
@@ -940,12 +949,33 @@ pub fn apply_cloudkit(
     }
 
     // Attach each rule to the reminder it governs, so completing one can advance it.
+    //
+    // A pass that carries only changes brings a reminder edited on the phone without its
+    // rule, which did not change. Read as "no rule", the reminder was stored as a one-off,
+    // and ticking it here then marked the whole series complete. A reminder that still lists
+    // rules keeps the repeat already stored; one that lists none no longer repeats.
+    let stored_repeats = if incremental {
+        library.reminder_repeats()?
+    } else {
+        Default::default()
+    };
     for reminder in &mut reminders {
         if let Some((frequency, interval)) = rules.get(&reminder.guid) {
             reminder.recur_frequency = Some(*frequency);
             reminder.recur_interval = Some(*interval);
+        } else if with_rules.contains(&reminder.guid) {
+            if let Some(&(frequency, interval)) = stored_repeats.get(&reminder.guid) {
+                reminder.recur_frequency = Some(frequency);
+                reminder.recur_interval = interval;
+            }
         }
     }
+    // And a rule changed on the phone while its reminder was not: the stored reminder takes it.
+    let rule_only: Vec<(String, i64, i64)> = rules
+        .iter()
+        .filter(|(target, _)| !reminders.iter().any(|r| &r.guid == *target))
+        .map(|(target, (f, i))| (target.clone(), *f, *i))
+        .collect();
 
     // Match the order the phone shows before storing.
     let order = if account_order.is_empty() {
@@ -995,6 +1025,9 @@ pub fn apply_cloudkit(
     };
     library.put_reminder_groups(&groups)?;
     library.put_reminders(&reminders)?;
+    for (target, frequency, interval) in &rule_only {
+        library.set_reminder_repeat(target, *frequency, *interval)?;
+    }
     library.put_alarms(&alarms, &triggers, &gone_alarms, !incremental)?;
     if !gone_reminders.is_empty() || !gone_lists.is_empty() {
         library.forget_reminders(&gone_reminders, &gone_lists)?;
@@ -1191,33 +1224,30 @@ pub async fn reorder_cloudkit(
     let bare = |g: &str| g.rsplit('/').next().unwrap_or(g).to_string();
     let id = bare(reminder_guid);
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let list = client
-        .lookup_record(ZONE, list_guid)
-        .await?
-        .ok_or_else(|| Error::Refused("That list is no longer in iCloud.".into()))?;
-    let mut ids: Vec<String> = list
-        .pointer("/fields/ReminderIDs/value")
-        .and_then(Value::as_str)
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-    ids.retain(|x| !x.eq_ignore_ascii_case(&id));
-    let at = before
-        .map(bare)
-        .and_then(|b| ids.iter().position(|x| x.eq_ignore_ascii_case(&b)))
-        .unwrap_or(ids.len());
-    ids.insert(at, id);
+    // Worked out from the list as Apple holds it at the moment of writing, every time.
     client
-        .update_record_signed(
-            ZONE,
-            list_guid,
-            "List",
-            None,
-            serde_json::json!({
+        .edit_record_signed(ZONE, list_guid, "List", |list| {
+            let mut ids = list_ids(list);
+            ids.retain(|x| !x.eq_ignore_ascii_case(&id));
+            let at = before
+                .map(bare)
+                .and_then(|b| ids.iter().position(|x| x.eq_ignore_ascii_case(&b)))
+                .unwrap_or(ids.len());
+            ids.insert(at, id.clone());
+            Some(serde_json::json!({
                 "ReminderIDs": { "type": "STRING", "value": serde_json::to_string(&ids).unwrap_or_default() }
-            }),
-        )
+            }))
+        })
         .await?;
     Ok(())
+}
+
+/// A list's manual order, as its `ReminderIDs` field holds it.
+fn list_ids(list: &Value) -> Vec<String> {
+    list.pointer("/fields/ReminderIDs/value")
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
 }
 
 async fn place_in_list(
@@ -1231,12 +1261,8 @@ async fn place_in_list(
         .next()
         .unwrap_or(reminder_guid)
         .to_string();
-    let edit = |list: Value, add: bool| {
-        let mut ids: Vec<String> = list
-            .pointer("/fields/ReminderIDs/value")
-            .and_then(Value::as_str)
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default();
+    let edit = |list: &Value, add: bool| {
+        let mut ids = list_ids(list);
         let had = ids.iter().any(|x| x.eq_ignore_ascii_case(&id));
         if add && !had {
             ids.push(id.clone());
@@ -1253,13 +1279,13 @@ async fn place_in_list(
         .into_iter()
         .flatten()
     {
-        let Some(list) = client.lookup_record(ZONE, guid).await? else {
-            continue;
-        };
-        if let Some(fields) = edit(list, add) {
-            client
-                .update_record_signed(ZONE, guid, "List", None, fields)
-                .await?;
+        match client
+            .edit_record_signed(ZONE, guid, "List", |list| edit(list, add))
+            .await
+        {
+            // A list gone since is nothing to place the reminder in, or take it out of.
+            Ok(_) | Err(Error::Refused(_)) => {}
+            Err(e) => return Err(e),
         }
     }
     Ok(())
@@ -2689,6 +2715,78 @@ mod list_write_tests {
         assert!(op["record"]["fields"].get("Deleted").is_none());
     }
 
+    /// The phone added a reminder to the list between this app reading its order and writing
+    /// it: Apple refuses the write, and the retry is worked out again from the list as it now
+    /// is — the phone's reminder stays in the order. Resending the array from the first read
+    /// dropped it.
+    #[tokio::test]
+    async fn a_reorder_that_loses_a_race_keeps_the_phones_reminder() {
+        let server = MockServer::start().await;
+        let list = |tag: &str, ids: &[&str]| {
+            json!({ "records": [{
+                "recordName": "List/a", "recordType": "List", "recordChangeTag": tag,
+                "fields": { "ReminderIDs": { "type": "STRING", "value": serde_json::to_string(ids).unwrap() } },
+            }]})
+        };
+        // First reads see A, B; after the conflict, the phone's P is there too.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(list("t1", &["A", "B"])))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(list("t2", &["A", "B", "P"])))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "records": [{ "recordName": "List/a", "reason": "conflict", "serverErrorCode": "CONFLICT" }] })))
+            .up_to_n_times(1).with_priority(1).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "List/a" }] })),
+            )
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        reorder_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "List/a",
+            "Reminder/B",
+            Some("Reminder/A"),
+        )
+        .await
+        .unwrap();
+        let writes: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap())
+            .collect();
+        let last = writes.last().unwrap();
+        let ids: Vec<String> = serde_json::from_str(
+            last["operations"][0]["record"]["fields"]["ReminderIDs"]["value"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            ids,
+            ["B", "A", "P"],
+            "worked out again from the list as it now is"
+        );
+        assert_eq!(last["operations"][0]["record"]["recordChangeTag"], "t2");
+    }
+
     /// Deleting marks the flag Apple's own clients use rather than destroying the record —
     /// and the list's live reminders go with it, so none is left in a list nobody can see,
     /// still showing in the phone's Calendar. Nothing in another list is touched.
@@ -4021,86 +4119,102 @@ pub async fn set_alarm_cloudkit(
         })
         .unwrap_or_default();
 
-    // Whatever was there goes, whether it is being replaced or removed. An alarm left behind
-    // pointing at an old time is worse than none: the phone rings for something that moved.
+    // Which of them ring for the date: their trigger is a Date trigger. Those are this one's
+    // to replace. Any other — a location, arriving or leaving — was set on the phone for its
+    // own reason and is kept: replacing every alarm deleted those too.
+    let mut dated: Vec<(String, Option<String>)> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
     for id in &existing {
         let alarm = client.lookup_record(ZONE, &format!("Alarm/{id}")).await?;
-        if let Some(trigger) = alarm
+        let trigger = alarm
             .as_ref()
             .and_then(|a| a.pointer("/fields/TriggerID/value"))
             .and_then(Value::as_str)
-        {
+            .map(ToString::to_string);
+        let kind = match &trigger {
+            Some(t) => client
+                .lookup_record(ZONE, &format!("AlarmTrigger/{t}"))
+                .await?
+                .and_then(|r| {
+                    r.pointer("/fields/Type/value")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                }),
+            None => None,
+        };
+        // An alarm whose trigger cannot be read is treated as the date's, as before.
+        if kind.as_deref().is_none_or(|k| k == "Date") {
+            dated.push((id.clone(), trigger));
+        } else {
+            kept.push(id.clone());
+        }
+    }
+
+    let mut ids = kept.clone();
+    if let Some(at) = at_seconds {
+        let alarm_id = uuid::Uuid::new_v4().to_string().to_uppercase();
+        let trigger_id = uuid::Uuid::new_v4().to_string().to_uppercase();
+        // The alarm first: the trigger points back at it with a reference Apple validates, so
+        // it has to exist by then. The alarm's own TriggerID is a plain string and can name a
+        // record that is still to come.
+        client
+            .create_record(
+                ZONE,
+                &format!("Alarm/{alarm_id}"),
+                "Alarm",
+                serde_json::json!({
+                    "AlarmUID": { "type": "STRING", "value": alarm_id },
+                    "TriggerID": { "type": "STRING", "value": trigger_id },
+                    "Reminder": client.reference_to(ZONE, reminder_guid),
+                    "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+                    "Imported": { "type": "NUMBER_INT64", "value": 0 },
+                }),
+            )
+            .await?;
+        client
+            .create_record(
+                ZONE,
+                &format!("AlarmTrigger/{trigger_id}"),
+                "AlarmTrigger",
+                serde_json::json!({
+                    "Alarm": client.reference_to(ZONE, &format!("Alarm/{alarm_id}")),
+                    "DateComponentsData": {
+                        "type": "BYTES",
+                        "value": date_components(at, timezone)?,
+                    },
+                    "Type": { "type": "STRING", "value": "Date" },
+                    "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+                    "Imported": { "type": "NUMBER_INT64", "value": 0 },
+                }),
+            )
+            .await?;
+        ids.push(alarm_id);
+    }
+
+    // The reminder's list of alarms, signed as the phone signs a change so it is believed:
+    // the kept ones and the new one. Made before anything is removed, so a failure part way
+    // leaves an extra alarm rather than none.
+    client
+        .update_record_signed(
+            ZONE,
+            reminder_guid,
+            "Reminder",
+            None,
+            serde_json::json!({ "AlarmIDs": { "type": "STRING_LIST", "value": ids } }),
+        )
+        .await?;
+
+    // Then the date's old alarms go. An alarm left pointing at an old time is worse than
+    // none: the phone rings for something that moved.
+    for (id, trigger) in &dated {
+        if let Some(trigger) = trigger {
             client
                 .delete_record(ZONE, &format!("AlarmTrigger/{trigger}"))
                 .await?;
         }
         client.delete_record(ZONE, &format!("Alarm/{id}")).await?;
     }
-
-    let Some(at) = at_seconds else {
-        return client
-            .update_record(
-                ZONE,
-                reminder_guid,
-                "Reminder",
-                None,
-                serde_json::json!({ "AlarmIDs": { "type": "STRING_LIST", "value": [] } }),
-            )
-            .await
-            .map(|_| ());
-    };
-
-    let alarm_id = uuid::Uuid::new_v4().to_string().to_uppercase();
-    let trigger_id = uuid::Uuid::new_v4().to_string().to_uppercase();
-
-    // The alarm first: the trigger points back at it with a reference Apple validates, so it
-    // has to exist by then. The alarm's own TriggerID is a plain string and can name a record
-    // that is still to come.
-    client
-        .create_record(
-            ZONE,
-            &format!("Alarm/{alarm_id}"),
-            "Alarm",
-            serde_json::json!({
-                "AlarmUID": { "type": "STRING", "value": alarm_id },
-                "TriggerID": { "type": "STRING", "value": trigger_id },
-                "Reminder": client.reference_to(ZONE, reminder_guid),
-                "Deleted": { "type": "NUMBER_INT64", "value": 0 },
-                "Imported": { "type": "NUMBER_INT64", "value": 0 },
-            }),
-        )
-        .await?;
-
-    client
-        .create_record(
-            ZONE,
-            &format!("AlarmTrigger/{trigger_id}"),
-            "AlarmTrigger",
-            serde_json::json!({
-                "Alarm": client.reference_to(ZONE, &format!("Alarm/{alarm_id}")),
-                "DateComponentsData": {
-                    "type": "BYTES",
-                    "value": date_components(at, timezone)?,
-                },
-                "Type": { "type": "STRING", "value": "Date" },
-                "Deleted": { "type": "NUMBER_INT64", "value": 0 },
-                "Imported": { "type": "NUMBER_INT64", "value": 0 },
-            }),
-        )
-        .await?;
-
-    client
-        .update_record(
-            ZONE,
-            reminder_guid,
-            "Reminder",
-            None,
-            serde_json::json!({
-                "AlarmIDs": { "type": "STRING_LIST", "value": [alarm_id] },
-            }),
-        )
-        .await
-        .map(|_| ())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -4137,6 +4251,85 @@ mod alarm_tests {
             "fields": { "Type": { "type": "STRING", "value": "Location" } }
         });
         assert!(trigger_from_record(&record).is_none());
+    }
+
+    /// A date change replaces the date's alarm and nothing else: a location alarm the phone
+    /// set stays. The new alarm is in the reminder's list before the old one is removed, so a
+    /// failure part way leaves one too many rather than none.
+    #[tokio::test]
+    async fn a_new_date_replaces_only_the_dates_alarm() {
+        use wiremock::matchers::{body_string_contains, method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let found = |rec: Value| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "records": [rec] }))
+        };
+        let lookup = |name: &str, rec: Value| {
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/records/lookup$"))
+                .and(body_string_contains(format!("\"{name}\"")))
+                .respond_with(found(rec))
+        };
+        lookup("Reminder/R", serde_json::json!({ "recordName": "Reminder/R", "recordType": "Reminder", "recordChangeTag": "t",
+            "fields": { "AlarmIDs": { "type": "STRING_LIST", "value": ["L", "D"] } } })).mount(&server).await;
+        lookup("Alarm/L", serde_json::json!({ "recordName": "Alarm/L", "recordType": "Alarm", "recordChangeTag": "t", "fields": { "TriggerID": { "type": "STRING", "value": "TL" } } })).mount(&server).await;
+        lookup("Alarm/D", serde_json::json!({ "recordName": "Alarm/D", "recordType": "Alarm", "recordChangeTag": "t", "fields": { "TriggerID": { "type": "STRING", "value": "TD" } } })).mount(&server).await;
+        lookup("AlarmTrigger/TL", serde_json::json!({ "recordName": "AlarmTrigger/TL", "recordType": "AlarmTrigger", "recordChangeTag": "t", "fields": { "Type": { "type": "STRING", "value": "Location" } } })).mount(&server).await;
+        lookup("AlarmTrigger/TD", serde_json::json!({ "recordName": "AlarmTrigger/TD", "recordType": "AlarmTrigger", "recordChangeTag": "t", "fields": { "Type": { "type": "STRING", "value": "Date" } } })).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "records": [{ "recordName": "x" }] })),
+            )
+            .mount(&server)
+            .await;
+        set_alarm_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "Reminder/R",
+            Some(1_789_382_400),
+            "Asia/Kolkata",
+        )
+        .await
+        .unwrap();
+        let ops: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["operations"][0].clone())
+            .collect();
+        let gone: Vec<&str> = ops
+            .iter()
+            .filter(|o| o["operationType"] != "create" && o["operationType"] != "update")
+            .filter_map(|o| o["record"]["recordName"].as_str())
+            .collect();
+        assert!(
+            gone.contains(&"Alarm/D") && gone.contains(&"AlarmTrigger/TD"),
+            "the date's alarm goes: {gone:?}"
+        );
+        assert!(
+            !gone.iter().any(|g| g.ends_with("/L") || g.ends_with("/TL")),
+            "the location alarm stays: {gone:?}"
+        );
+        let list_at = ops
+            .iter()
+            .position(|o| o["record"]["recordName"] == "Reminder/R")
+            .expect("the alarm list is written");
+        let ids = &ops[list_at]["record"]["fields"]["AlarmIDs"]["value"];
+        assert_eq!(ids.as_array().unwrap().len(), 2);
+        assert_eq!(ids[0], "L");
+        let first_delete = ops
+            .iter()
+            .position(|o| o["record"]["recordName"] == "Alarm/D")
+            .unwrap();
+        assert!(
+            list_at < first_delete,
+            "listed before the old one is removed"
+        );
     }
 
     /// Apple's own alarm on this account decodes to exactly this shape.
@@ -4260,6 +4453,81 @@ mod account_order_tests {
             list("List/UNI", "University", None, true),
             list("List/TODO", "To-Do", None, false),
         ]
+    }
+
+    fn reminder(name: &str, list: &str, title: &str, rules: &[&str]) -> Value {
+        json!({ "recordName": name, "recordType": "Reminder", "fields": {
+            "List": { "type": "REFERENCE", "value": { "recordName": list } },
+            "TitleDocument": { "type": "STRING", "value": crate::ckdocument::text_to_base64(title) },
+            "RecurrenceRuleIDs": { "type": "STRING_LIST", "value": rules },
+        }})
+    }
+    fn rule(name: &str, target: &str, frequency: i64) -> Value {
+        json!({ "recordName": name, "recordType": "RecurrenceRule", "fields": {
+            "Reminder": { "type": "REFERENCE", "value": { "recordName": target } },
+            "Frequency": { "type": "INT64", "value": frequency },
+            "Interval": { "type": "INT64", "value": 1 },
+        }})
+    }
+
+    /// Renamed on the phone, a repeating reminder comes back in a pass of changes without its
+    /// rule, which did not change. It still repeats — read as a one-off, a tick here ended the
+    /// whole series. A rule changed alone reaches the stored reminder; one with no rules left
+    /// no longer repeats.
+    #[test]
+    fn a_repeating_reminder_edited_elsewhere_still_repeats() {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        pass(
+            &mut library,
+            vec![
+                list("List/DAILY", "Daily", None, false),
+                reminder("Reminder/GYM", "List/DAILY", "Gym", &["Rule/1"]),
+                rule("Rule/1", "Reminder/GYM", 1),
+            ],
+            false,
+        );
+        let repeat = |library: &quince_core::Library| {
+            library
+                .reminder_repeats()
+                .unwrap()
+                .get("Reminder/GYM")
+                .map(|r| r.0)
+        };
+        assert_eq!(repeat(&library), Some(1));
+
+        pass(
+            &mut library,
+            vec![reminder(
+                "Reminder/GYM",
+                "List/DAILY",
+                "Gym, legs",
+                &["Rule/1"],
+            )],
+            true,
+        );
+        assert_eq!(
+            repeat(&library),
+            Some(1),
+            "an edit that left the rule alone keeps the repeat"
+        );
+
+        pass(&mut library, vec![rule("Rule/1", "Reminder/GYM", 2)], true);
+        assert_eq!(
+            repeat(&library),
+            Some(2),
+            "a rule changed alone reaches the reminder"
+        );
+
+        pass(
+            &mut library,
+            vec![reminder("Reminder/GYM", "List/DAILY", "Gym", &[])],
+            true,
+        );
+        assert_eq!(
+            repeat(&library),
+            None,
+            "with no rules left it no longer repeats"
+        );
     }
 
     /// The account record's order is the phone's, for groups as much as lists. The stale

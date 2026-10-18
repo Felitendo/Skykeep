@@ -699,6 +699,32 @@ impl Library {
         Ok(removed)
     }
 
+    /// Every stored reminder's repeat — frequency, then interval — by guid.
+    pub fn reminder_repeats(
+        &self,
+    ) -> Result<std::collections::HashMap<String, (i64, Option<i64>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, recur_frequency, recur_interval FROM reminders WHERE recur_frequency IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, i64>(1)?, row.get::<_, Option<i64>>(2)?),
+            ))
+        })?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(Into::into)
+    }
+
+    /// A reminder's repeat, changed by a rule that arrived without the reminder.
+    pub fn set_reminder_repeat(&mut self, guid: &str, frequency: i64, interval: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE reminders SET recur_frequency = ?2, recur_interval = ?3 WHERE guid = ?1",
+            params![guid, frequency, interval],
+        )?;
+        Ok(())
+    }
+
     pub fn put_reminders(&mut self, reminders: &[Reminder]) -> Result<()> {
         let tx = self.conn.transaction()?;
         {

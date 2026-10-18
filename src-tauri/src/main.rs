@@ -902,7 +902,14 @@ async fn reminder_edit(
     // before saying so: returning early left the old date on screen though Apple had the new
     // one, and the next edit was made against a reminder that was not there any more.
     // An all-day reminder rings no alarm, as on the phone.
-    let alarm = match edit.due_at.filter(|_| !edit.all_day.unwrap_or(false)) {
+    // Made all-day, a reminder keeps no timed alarm: the old one kept ringing at the time it
+    // used to have.
+    let alarm_change = if edit.all_day == Some(true) {
+        Some(None)
+    } else {
+        edit.due_at
+    };
+    let alarm = match alarm_change {
         Some(due) => {
             let zone = jiff::tz::TimeZone::system();
             quince_icloud::reminders::set_alarm_cloudkit(
