@@ -501,7 +501,15 @@ pub async fn edit_rich_cloudkit_from(
             .ok_or_else(|| {
                 Error::Refused("That note has no body Apple will let us read.".into())
             })?;
-        let theirs = crate::ckdocument::text_from_base64(encoded).unwrap_or_default();
+        // Apple's text exactly as stored. Read through the display decoder, a note holding a
+        // character that decoder declines read as empty — "everything deleted on the phone"
+        // — and the merge kept only what was typed here.
+        let theirs = crate::ckdocument::stored_text_from_base64(encoded).ok_or_else(|| {
+            Error::Refused(
+                "Quince couldn't read this note's text as Apple holds it, so nothing was saved."
+                    .into(),
+            )
+        })?;
         let target = match base {
             Some(base) if base != theirs => merge_edits(base, body, &theirs).ok_or_else(|| {
                 Error::Refused(
@@ -664,35 +672,45 @@ pub async fn set_paragraph_cloudkit(
     expect: Option<&str>,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let current = client
-        .lookup_record(ZONE, &note.guid)
-        .await?
-        .ok_or_else(|| Error::Refused("Apple no longer has that note.".into()))?;
-    let encoded = current
-        .pointer("/fields/TextDataEncrypted/value")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Refused("That note has no body Apple will let us read.".into()))?;
-    let rewritten = crate::ckdocument::set_paragraph_in_base64(encoded, start, change, expect).ok_or_else(|| {
-        Error::Refused("That line has changed since it was shown, so nothing was changed. Try again in a moment.".into())
-    })?;
-    fits_inline(&rewritten)?;
-    let tag = current
-        .get("recordChangeTag")
-        .and_then(Value::as_str)
-        .or(note.etag.as_deref());
-    client
-        .update_record(
-            ZONE,
-            &note.guid,
-            "Note",
-            tag,
-            serde_json::json!({
+    // Rebuilt from the note as Apple holds it at the moment of writing, and written over that
+    // version only: a plain retry resent a document built from an older read over a phone's
+    // edit. `expect` is required here — without it, a tick landed on whatever line was at
+    // that offset now.
+    let Some(expect) = expect else {
+        return Err(Error::Refused(
+            "Which line was meant is not known, so nothing was changed.".into(),
+        ));
+    };
+    let refused = std::sync::Mutex::new(None::<Error>);
+    let written = client
+        .edit_record(ZONE, &note.guid, "Note", |current| {
+            let Some(encoded) = current.pointer("/fields/TextDataEncrypted/value").and_then(Value::as_str) else {
+                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (Some(Error::Refused("That note has no body Apple will let us read.".into())));
+                return None;
+            };
+            let Some(rewritten) = crate::ckdocument::set_paragraph_in_base64(encoded, start, change, Some(expect)) else {
+                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (Some(Error::Refused("That line has changed since it was shown, so nothing was changed. Try again in a moment.".into())));
+                return None;
+            };
+            if let Err(e) = fits_inline(&rewritten) {
+                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (Some(e));
+                return None;
+            }
+            Some(serde_json::json!({
                 "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": rewritten },
                 "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
-            }),
-        )
+            }))
+        })
         .await?;
-    Ok(())
+    match (
+        written,
+        refused
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    ) {
+        (None, Some(e)) => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// Write a new note, optionally into a folder.
@@ -1046,17 +1064,45 @@ pub async fn delete_cloudkit(
     note: &Note,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let fields = if note.folder_guid.as_deref() == Some(TRASH_FOLDER) {
+    if note.folder_guid.as_deref() == Some(TRASH_FOLDER) {
         // Already in Recently Deleted: this is "Delete Now". Apple marks the record rather
-        // than removing it, and so does this.
-        serde_json::json!({
-            "Deleted": { "type": "INT64", "value": 1 },
-            "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
-        })
-    } else {
-        // Delete means Recently Deleted, where it waits thirty days to be recovered.
-        filed_in(&client, TRASH_FOLDER)
-    };
+        // than removing it, and so does this — only while Apple still has it there. Recovered
+        // on the phone since this window last looked, it is a live note, and deleting it
+        // for good would destroy what someone just chose to keep.
+        let still_there = std::sync::atomic::AtomicBool::new(true);
+        client
+            .edit_record(ZONE, &note.guid, "Note", |current| {
+                let in_trash = current
+                    .pointer("/fields/Folders/value")
+                    .and_then(Value::as_array)
+                    .is_some_and(|f| {
+                        f.iter().any(|r| {
+                            r.get("recordName").and_then(Value::as_str) == Some(TRASH_FOLDER)
+                        })
+                    })
+                    || current
+                        .pointer("/fields/Folder/value/recordName")
+                        .and_then(Value::as_str)
+                        == Some(TRASH_FOLDER);
+                if !in_trash {
+                    still_there.store(false, std::sync::atomic::Ordering::Relaxed);
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "Deleted": { "type": "INT64", "value": 1 },
+                    "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
+                }))
+            })
+            .await?;
+        if !still_there.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Error::Refused(
+                "This note was recovered on another device, so it was kept.".into(),
+            ));
+        }
+        return Ok(());
+    }
+    // Delete means Recently Deleted, where it waits thirty days to be recovered.
+    let fields = filed_in(&client, TRASH_FOLDER);
     client
         .update_record(ZONE, &note.guid, "Note", note.etag.as_deref(), fields)
         .await?;
@@ -1787,7 +1833,7 @@ mod write_tests {
     /// Deleting again from Recently Deleted marks it, as the phone does; still no removal.
     #[tokio::test]
     async fn deleting_from_recently_deleted_marks_the_record() {
-        let server = server("x").await;
+        let server = in_folder(TRASH_FOLDER).await;
         let mut trashed = note("Note/1");
         trashed.folder_guid = Some(TRASH_FOLDER.into());
         delete_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &trashed)
@@ -1798,6 +1844,47 @@ mod write_tests {
             .iter()
             .all(|op| op["operationType"] != "forceDelete" && op["operationType"] != "delete"));
         assert_eq!(ops[0]["record"]["fields"]["Deleted"]["value"], 1);
+    }
+
+    /// Recovered on the phone since this window looked, the note is live again: Delete Now
+    /// writes nothing and says so.
+    #[tokio::test]
+    async fn delete_now_spares_a_note_recovered_elsewhere() {
+        let server = in_folder(DEFAULT_FOLDER).await;
+        let mut trashed = note("Note/1");
+        trashed.folder_guid = Some(TRASH_FOLDER.into());
+        let err = delete_cloudkit(&reqwest::Client::new(), &server.uri(), vec![], &trashed)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("recovered"), "{err}");
+        assert!(operations(&server).await.is_empty(), "nothing is written");
+    }
+
+    /// A note Apple holds in `folder`.
+    async fn in_folder(folder: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{
+                    "recordName": "Note/1", "recordType": "Note", "recordChangeTag": "fresh",
+                    "fields": {
+                        "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": document("x") },
+                        "Folders": { "type": "REFERENCE_LIST", "value": [{ "recordName": folder }] },
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Note/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
     }
 
     /// The phone reads `Folders`; writing only `Folder` left a moved note where it was.

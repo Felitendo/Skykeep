@@ -160,10 +160,17 @@ impl Library {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(guid) DO UPDATE SET
                    folder_guid = excluded.folder_guid, title = excluded.title,
-                   snippet = excluded.snippet, body = excluded.body,
+                   snippet = excluded.snippet,
+                   -- A body that did not arrive — a long note's file whose download failed —
+                   -- is not an empty note: what is stored stays, formatting and all, until
+                   -- one arrives. A note locked since is the exception: its text goes.
+                   body = CASE WHEN excluded.locked THEN NULL ELSE COALESCE(excluded.body, body) END,
+                   runs = CASE WHEN excluded.locked THEN NULL
+                               WHEN excluded.body IS NULL THEN runs ELSE excluded.runs END,
+                   editable = CASE WHEN excluded.body IS NULL AND NOT excluded.locked AND body IS NOT NULL
+                                   THEN editable ELSE excluded.editable END,
                    locked = excluded.locked, pinned = excluded.pinned,
                    created_at = excluded.created_at, modified_at = excluded.modified_at,
-                   editable = excluded.editable, runs = excluded.runs,
                    etag = excluded.etag, updated_at = excluded.updated_at",
             )?;
             let stamp = now();
@@ -470,6 +477,34 @@ mod search_tests {
             etag: None,
             runs: None,
         }
+    }
+
+    /// A pass in which a long note's text failed to download says nothing about its text: the
+    /// stored body and formatting stay, and it stays editable. Locked since, its text goes.
+    #[test]
+    fn a_body_that_did_not_arrive_keeps_the_stored_one() {
+        let mut lib = library();
+        let mut n = note("N", "F", "Long", "the whole long text");
+        n.runs = Some("[]".into());
+        lib.put_notes(&[n.clone()]).unwrap();
+        let mut empty = n.clone();
+        empty.body = None;
+        empty.runs = None;
+        empty.editable = false;
+        lib.put_notes(&[empty.clone()]).unwrap();
+        assert_eq!(
+            lib.note_body("N").unwrap().as_deref(),
+            Some("the whole long text")
+        );
+        assert_eq!(lib.note_runs("N").unwrap().as_deref(), Some("[]"));
+        assert!(lib.note("N").unwrap().unwrap().editable);
+        empty.locked = true;
+        lib.put_notes(&[empty]).unwrap();
+        assert_eq!(
+            lib.note_body("N").unwrap(),
+            None,
+            "a locked note keeps no text here"
+        );
     }
 
     fn library() -> Library {

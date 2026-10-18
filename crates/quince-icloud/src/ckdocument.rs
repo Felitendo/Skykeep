@@ -164,6 +164,18 @@ pub fn text_from_bytes(raw: &[u8]) -> Option<String> {
     usable_text(&plain)
 }
 
+/// The document's text exactly as it is stored — what an edit is made to, unlike
+/// [`text_from_base64`], which declines text with unusual characters in it. `None` only for
+/// a document that is not one.
+#[must_use]
+pub fn stored_text_from_base64(value: &str) -> Option<String> {
+    let raw = B64.decode(value.trim()).ok()?;
+    let plain = inflate(&raw)?;
+    std::str::from_utf8(field_at(&plain, TEXT_PATH)?)
+        .ok()
+        .map(ToString::to_string)
+}
+
 /// Valid, non-empty UTF-8 with nothing unprintable in it.
 ///
 /// The printability check is what stops a protobuf being mistaken for text: raw wire bytes
@@ -1203,7 +1215,9 @@ pub fn without_history(original: &str) -> Option<String> {
         let key = reader.varint()?;
         let (field, wire) = (key >> 3, key & 7);
         reader.skip(wire)?;
-        if field != PROVENANCE {
+        // Its formatting goes too: the borrowed note's first run — a checklist with that
+        // note's item id, a link to its URL — became the whole new note's.
+        if field != PROVENANCE && field != ATTRIBUTE_RUN {
             kept.extend_from_slice(note.get(start..reader.at)?);
         }
     }

@@ -840,6 +840,30 @@ impl ZoneClient<'_> {
         record_type: &str,
         change: impl Fn(&Value) -> Option<Value>,
     ) -> Result<Option<Value>> {
+        self.edit_record_inner(zone, record_name, record_type, change, true)
+            .await
+    }
+
+    /// [`Self::edit_record_signed`] for records Apple does not sign — notes.
+    pub async fn edit_record(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        change: impl Fn(&Value) -> Option<Value>,
+    ) -> Result<Option<Value>> {
+        self.edit_record_inner(zone, record_name, record_type, change, false)
+            .await
+    }
+
+    async fn edit_record_inner(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        change: impl Fn(&Value) -> Option<Value>,
+        signed: bool,
+    ) -> Result<Option<Value>> {
         for _ in 0..5 {
             let Some(current) = self.lookup_record(zone, record_name).await? else {
                 return Err(Error::Refused("That is no longer in iCloud.".into()));
@@ -850,7 +874,9 @@ impl ZoneClient<'_> {
             let Some(tag) = current.get("recordChangeTag").and_then(Value::as_str) else {
                 return Err(Error::Conflict);
             };
-            stamp_tokens(&mut changes, Some(&current));
+            if signed {
+                stamp_tokens(&mut changes, Some(&current));
+            }
             match self
                 .update_record_exact(zone, record_name, record_type, tag, changes)
                 .await
