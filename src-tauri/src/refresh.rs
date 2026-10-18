@@ -227,6 +227,8 @@ pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh 
     reports.push(match ctx.contacts.as_deref() {
         None => unavailable("contacts", "Contacts"),
         Some(root) => {
+            // Fetch and store as one, never across a save: see `CONTACTS_PASS`.
+            let _one = crate::CONTACTS_PASS.lock().await;
             let fetched = quince_icloud::contacts::fetch(&ctx.http, root, ctx.params.clone()).await;
             store("contacts", "Contacts", data, fetched, |library, people| {
                 let count = quince_icloud::contacts::apply(library, people)?;

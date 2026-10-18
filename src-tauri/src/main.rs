@@ -80,6 +80,11 @@ pub static REMINDERS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_ne
 /// edit failed as a conflict — and brought a just-deleted one back.
 pub static CALENDAR_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// One contacts pass or write at a time, for the reason [`CALENDAR_PASS`] gives: a refresh
+/// that read Apple before a save and stored after it put the old card back, and the next
+/// edit, made from it, was refused as a conflict.
+pub static CONTACTS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn refresh_reminders(
     http: &reqwest::Client,
     root: &str,
@@ -798,7 +803,7 @@ async fn reminder_set_repeat(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_reminders(&http, &root, params, &data).await
+    settle(resync_reminders(&http, &root, params, &data).await)
 }
 
 /// Dated reminders inside a window, for the calendar grid.
@@ -970,7 +975,7 @@ async fn reminder_list_create(
     quince_icloud::reminders::create_list_cloudkit(&http, &root, params.clone(), &title)
         .await
         .map_err(|e| e.to_string())?;
-    resync_reminders(&http, &root, params, &data).await
+    settle(resync_reminders(&http, &root, params, &data).await)
 }
 
 #[tauri::command]
@@ -990,7 +995,7 @@ async fn reminder_list_rename(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_reminders(&http, &root, params, &data).await
+    settle(resync_reminders(&http, &root, params, &data).await)
 }
 
 /// Move a reminder within its list, before another or to the end, as a drag does.
@@ -1013,7 +1018,7 @@ async fn reminder_reorder(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_reminders(&http, &root, params, &data).await
+    settle(resync_reminders(&http, &root, params, &data).await)
 }
 
 /// A list's colour, one of Apple's twelve, as Show List Info sets it.
@@ -1034,7 +1039,7 @@ async fn reminder_list_colour(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_reminders(&http, &root, params, &data).await
+    settle(resync_reminders(&http, &root, params, &data).await)
 }
 
 #[tauri::command]
@@ -1047,7 +1052,17 @@ async fn reminder_list_delete(
     quince_icloud::reminders::delete_list_cloudkit(&http, &root, params.clone(), &list_guid)
         .await
         .map_err(|e| e.to_string())?;
-    resync_reminders(&http, &root, params, &data).await
+    settle(resync_reminders(&http, &root, params, &data).await)
+}
+
+/// A refresh after a write that reached Apple. Failing, it is not the write failing: the
+/// change is made, and saying otherwise had people retry it — a second folder, a second
+/// upload. It is noted, and the next refresh brings the screen up to date.
+fn settle(refreshed: Result<(), String>) -> Result<(), String> {
+    if let Err(e) = refreshed {
+        eprintln!("refresh after a write: {e}");
+    }
+    Ok(())
 }
 
 /// Re-read notes after a write, so what is on screen is what Apple stored.
@@ -1118,7 +1133,7 @@ async fn note_paragraph(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await
+    settle(resync_notes(&http, &root, params, &data).await)
 }
 
 /// How a note's text is set — Apple's attribute runs, in order — as stored at the last sync.
@@ -1271,7 +1286,7 @@ async fn note_delete(guid: String, auth: State<'_, Auth>, data: State<'_, Data>)
     quince_icloud::notes::delete_cloudkit(&http, &root, params.clone(), &note)
         .await
         .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await
+    settle(resync_notes(&http, &root, params, &data).await)
 }
 
 /// Move a note into a folder, or out of every folder when `folder_guid` is absent.
@@ -1293,7 +1308,7 @@ async fn note_move(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await
+    settle(resync_notes(&http, &root, params, &data).await)
 }
 
 /// Pin a note to the top of its list, or unpin it.
@@ -1309,7 +1324,7 @@ async fn note_pin(
     quince_icloud::notes::pin_cloudkit(&http, &root, params.clone(), &note, pinned)
         .await
         .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await
+    settle(resync_notes(&http, &root, params, &data).await)
 }
 
 /// A new Notes folder, inside another when `parent` is given.
@@ -1330,7 +1345,7 @@ async fn note_folder_create(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await?;
+    settle(resync_notes(&http, &root, params, &data).await)?;
     Ok(guid)
 }
 
@@ -1345,7 +1360,7 @@ async fn note_folder_rename(
     quince_icloud::notes::rename_folder_cloudkit(&http, &root, params.clone(), &guid, &title)
         .await
         .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await
+    settle(resync_notes(&http, &root, params, &data).await)
 }
 
 /// Delete a folder: its notes, and those of every folder inside it, to Recently Deleted.
@@ -1374,7 +1389,7 @@ async fn note_folder_delete(
     )
     .await
     .map_err(|e| e.to_string())?;
-    resync_notes(&http, &root, params, &data).await
+    settle(resync_notes(&http, &root, params, &data).await)
 }
 
 #[tauri::command]
@@ -1464,6 +1479,7 @@ async fn contact_list_write(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
+    let _one = CONTACTS_PASS.lock().await;
     let _one = CONTACT_LISTS.lock().await;
     let (http, root, params) = contacts_context(&auth).await?;
     let add = add.unwrap_or_default();
@@ -1534,7 +1550,7 @@ async fn contact_list_write(
             Err(e) => return Err(e.to_string()),
         }
     };
-    resync_contacts(&http, &root, params, &data).await?;
+    settle(resync_contacts(&http, &root, params, &data).await)?;
     Ok(done)
 }
 
@@ -1550,6 +1566,7 @@ async fn contact_save(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
+    let _one = CONTACTS_PASS.lock().await;
     let (http, root, params) = contacts_context(&auth).await?;
     let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
         .await
@@ -1577,7 +1594,7 @@ async fn contact_save(
         contact.guid.clone()
     };
 
-    resync_contacts(&http, &root, params, &data).await?;
+    settle(resync_contacts(&http, &root, params, &data).await)?;
     Ok(guid)
 }
 
@@ -1587,6 +1604,7 @@ async fn contact_delete(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
+    let _one = CONTACTS_PASS.lock().await;
     let (http, root, params) = contacts_context(&auth).await?;
     let (people, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
         .await
@@ -1599,7 +1617,7 @@ async fn contact_delete(
     quince_icloud::contacts::delete(&http, &root, params.clone(), &tokens, &contact)
         .await
         .map_err(|e| e.to_string())?;
-    resync_contacts(&http, &root, params, &data).await
+    settle(resync_contacts(&http, &root, params, &data).await)
 }
 
 /// A path in `dir` for `name` that holds nothing yet: a number goes on the end rather than
@@ -1664,6 +1682,7 @@ async fn contacts_import(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<(usize, usize)> {
+    let _one = CONTACTS_PASS.lock().await;
     let text =
         std::fs::read_to_string(&path).map_err(|e| format!("Couldn't read that file: {e}"))?;
     let (http, root, params) = contacts_context(&auth).await?;
@@ -1674,7 +1693,7 @@ async fn contacts_import(
         quince_icloud::contacts::import_vcards(&http, &root, params.clone(), &tokens, &text)
             .await
             .map_err(|e| e.to_string())?;
-    resync_contacts(&http, &root, params, &data).await?;
+    settle(resync_contacts(&http, &root, params, &data).await)?;
     Ok((ids.len(), failed))
 }
 
@@ -1696,6 +1715,7 @@ async fn contact_set_me(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
+    let _one = CONTACTS_PASS.lock().await;
     let (http, root, params) = contacts_context(&auth).await?;
     let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
         .await
@@ -1703,7 +1723,7 @@ async fn contact_set_me(
     quince_icloud::contacts::set_me_card(&http, &root, params.clone(), &tokens, &guid)
         .await
         .map_err(|e| e.to_string())?;
-    resync_contacts(&http, &root, params, &data).await
+    settle(resync_contacts(&http, &root, params, &data).await)
 }
 
 /// The address book, optionally filtered by name or by any stored number or address.
@@ -1879,7 +1899,7 @@ async fn folder_for(
     parent: &str,
     name: &str,
 ) -> Result<String, String> {
-    resync_drive_folder(http, root, params.to_vec(), data, parent).await?;
+    settle(resync_drive_folder(http, root, params.to_vec(), data, parent).await)?;
     let existing = {
         let library = data.0.lock().await;
         library
@@ -2101,7 +2121,7 @@ async fn drive_upload(
         .await;
     failed.extend(results.into_iter().flatten());
 
-    resync_drive_folder(&http, &root, params, &data, &folder_id).await?;
+    settle(resync_drive_folder(&http, &root, params, &data, &folder_id).await)?;
     Ok(failed)
 }
 
@@ -2117,7 +2137,7 @@ async fn drive_create_folder(
     quince_icloud::drive::create_folder(&http, &root, params.clone(), &parent_id, &name)
         .await
         .map_err(|e| e.to_string())?;
-    resync_drive_folder(&http, &root, params, &data, &parent_id).await
+    settle(resync_drive_folder(&http, &root, params, &data, &parent_id).await)
 }
 
 #[tauri::command]
@@ -2142,7 +2162,7 @@ async fn drive_rename(
         .parent_id
         .as_deref()
         .unwrap_or(quince_core::drive::ROOT);
-    resync_drive_folder(&http, &root, params, &data, parent).await
+    settle(resync_drive_folder(&http, &root, params, &data, parent).await)
 }
 
 #[tauri::command]
@@ -2166,7 +2186,7 @@ async fn drive_delete(
         .parent_id
         .as_deref()
         .unwrap_or(quince_core::drive::ROOT);
-    resync_drive_folder(&http, &root, params, &data, parent).await
+    settle(resync_drive_folder(&http, &root, params, &data, parent).await)
 }
 
 /// Duplicate a file into its own folder, named as Finder names a copy.
@@ -2204,7 +2224,7 @@ async fn drive_duplicate(
         .parent_id
         .as_deref()
         .unwrap_or(quince_core::drive::ROOT);
-    resync_drive_folder(&http, &drivews, params, &data, parent).await
+    settle(resync_drive_folder(&http, &drivews, params, &data, parent).await)
 }
 
 /// Apple's thumbnails for one folder's files, as `data:` URLs keyed by drivewsid.
@@ -2395,9 +2415,9 @@ async fn drive_move(
         .parent_id
         .as_deref()
         .unwrap_or(quince_core::drive::ROOT);
-    resync_drive_folder(&http, &root, params.clone(), &data, old_parent).await?;
+    settle(resync_drive_folder(&http, &root, params.clone(), &data, old_parent).await)?;
     if old_parent != destination_id {
-        resync_drive_folder(&http, &root, params, &data, &destination_id).await?;
+        settle(resync_drive_folder(&http, &root, params, &data, &destination_id).await)?;
     }
     Ok(())
 }
