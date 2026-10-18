@@ -22,13 +22,39 @@ export function RowMenu({ at, entries, onClose }: { at: Anchor; entries: MenuEnt
   useEffect(() => {
     // Any press outside every level of this menu dismisses it.
     const down = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement | null)?.closest?.(".row-menu")) onClose();
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.(".row-menu")) return;
+      onClose();
+      // A press on a button that opens a menu — this one's ⋯, or another row's — only closes
+      // the open menu, as on the Mac, where the click that dismisses a menu is used up by it.
+      // Let through, it opened the menu again under the pointer: the menu blinked, and could
+      // not be closed from the button that opened it.
+      const opener = target?.closest?.('[aria-haspopup="menu"]');
+      if (!opener) return;
+      const swallow = (c: MouseEvent) => {
+        if (opener.contains(c.target as Node)) {
+          c.stopPropagation();
+          c.preventDefault();
+        }
+      };
+      document.addEventListener("click", swallow, { capture: true, once: true });
+      window.setTimeout(() => document.removeEventListener("click", swallow, true), 700);
     };
     const away = () => onClose();
+    // Escape closes the menu wherever the keys are: focus is not always in it — a submenu
+    // that closed under the pointer took the focus it held with it.
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || (e.target as HTMLElement | null)?.closest?.(".row-menu")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", key, true);
     document.addEventListener("mousedown", down);
     window.addEventListener("blur", away);
     window.addEventListener("resize", away);
     return () => {
+      window.removeEventListener("keydown", key, true);
       document.removeEventListener("mousedown", down);
       window.removeEventListener("blur", away);
       window.removeEventListener("resize", away);
@@ -52,6 +78,7 @@ function Panel({
   onDone,
   onBack,
   focusFirst,
+  onArrive,
 }: {
   entries: MenuEntry[];
   anchor: PanelAnchor;
@@ -61,6 +88,8 @@ function Panel({
   onBack: () => void;
   /** Opened by the keyboard: the first line is highlighted, as on the Mac. */
   focusFirst: boolean;
+  /** The pointer came into this submenu. */
+  onArrive?: () => void;
 }) {
   const box = useRef<HTMLDivElement | null>(null);
   const lines = useRef<(HTMLButtonElement | null)[]>([]);
@@ -69,6 +98,18 @@ function Panel({
   // Nothing highlighted until the pointer or a key says so, as a Mac menu opens.
   const [active, setActive] = useState(focusFirst ? 0 : -1);
   const [sub, setSub] = useState<{ index: number; byKeyboard: boolean } | null>(null);
+  /**
+   * Menu aim, as macOS has it: with a submenu open, crossing another line on the way to it
+   * does not close it at once. The switch waits a moment, and is called off if the pointer
+   * arrives in the submenu — moving diagonally from "Add to List" to its lists used to pass
+   * over "Edit Contact", close the submenu, and open it again: the flicker.
+   */
+  const aim = useRef<number | null>(null);
+  const stopAim = () => {
+    if (aim.current !== null) window.clearTimeout(aim.current);
+    aim.current = null;
+  };
+  useEffect(() => stopAim, []);
 
   useLayoutEffect(() => {
     const el = box.current;
@@ -121,6 +162,7 @@ function Panel({
         role="menu"
         tabIndex={-1}
         style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }}
+        onMouseEnter={onArrive}
         onKeyDown={(e) => {
           // Keys belong to the deepest open level.
           if (sub) return;
@@ -157,9 +199,17 @@ function Panel({
               aria-expanded={entry.submenu ? sub?.index === index : undefined}
               className={`row-menu-item${entry.danger ? " is-danger" : ""}${index === active ? " is-active" : ""}${entry.submenu ? " has-submenu" : ""}`}
               onMouseEnter={() => {
-                setActive(index);
-                // Hovering a line with a submenu opens it; any other line closes one.
-                setSub(entry.submenu ? { index, byKeyboard: false } : null);
+                const go = () => {
+                  aim.current = null;
+                  // The submenu going takes its focus with it: the keys come back here.
+                  if (sub && !entry.submenu) box.current?.focus({ preventScroll: true });
+                  setActive(index);
+                  // Hovering a line with a submenu opens it; any other line closes one.
+                  setSub(entry.submenu ? { index, byKeyboard: false } : null);
+                };
+                stopAim();
+                if (sub && sub.index !== index) aim.current = window.setTimeout(go, 280);
+                else go();
               }}
               onClick={() => choose(index, false)}
             >
@@ -178,6 +228,11 @@ function Panel({
           onBack={() => {
             setSub(null);
             box.current?.focus({ preventScroll: true });
+          }}
+          onArrive={() => {
+            // The pointer made it: the line that opened this stays the highlighted one.
+            stopAim();
+            setActive(sub.index);
           }}
           focusFirst={sub.byKeyboard}
         />

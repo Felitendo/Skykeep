@@ -110,6 +110,48 @@ for (const size of [{ width: 1280, height: 800 }, { width: 760, height: 520 }]) 
   await page.waitForTimeout(80);
   ok((await page.locator(".cx-popover").count()) === 1 && (await picker.innerText()) !== was, `${label} a choice made with the mouse keeps the popover open`);
   await page.keyboard.press("Escape");
+
+  // Menu aim: from "Add to List" to its submenu, diagonally across "Edit Contact". The
+  // submenu stays up the whole way — it used to close on the line crossed and open again.
+  await openScreen(page, "Contacts");
+  await page.waitForTimeout(300);
+  await page.locator(".contact-row").first().click({ button: "right" });
+  const parentLine = page.getByRole("menuitem", { name: "Add to List" });
+  await parentLine.hover();
+  await page.waitForTimeout(120);
+  const crossed = await page.getByRole("menuitem", { name: "Edit Contact" }).boundingBox();
+  const target = await page.locator(".row-menu").nth(1).getByRole("menuitem").last().boundingBox();
+  await page.evaluate(() => {
+    window.__subGone = false;
+    const tick = () => { if (document.querySelectorAll(".row-menu").length < 2) window.__subGone = true; if (!window.__stopAim) requestAnimationFrame(tick); };
+    window.__stopAim = false;
+    requestAnimationFrame(tick);
+  });
+  await page.mouse.move(crossed.x + crossed.width - 30, crossed.y + crossed.height / 2, { steps: 3 });
+  await page.mouse.move(target.x + 20, target.y + target.height / 2, { steps: 3 });
+  await page.waitForTimeout(400);
+  const gone = await page.evaluate(() => { window.__stopAim = true; return window.__subGone; });
+  ok(!gone && (await page.locator(".row-menu").count()) === 2, `${label} a submenu stays open while the pointer crosses a line on its way in`);
+  // Resting on another line does still switch to it, a moment later.
+  await page.getByRole("menuitem", { name: "Export vCard…" }).hover();
+  await page.waitForTimeout(450);
+  ok((await page.locator(".row-menu").count()) === 1, `${label} resting on another line closes the submenu`);
+  await page.keyboard.press("Escape");
+
+  // The ⋯ that opened a menu closes it again, in one press, and it does not blink back.
+  const listRow = page.locator(".contacts-lists .notes-folder-row").nth(1);
+  if (await listRow.isVisible()) {
+    await listRow.hover();
+    const dots = listRow.locator("button[aria-haspopup=menu]");
+    await dots.click();
+    await page.waitForTimeout(150);
+    const opened = await page.locator(".row-menu").count();
+    await watch(page);
+    await dots.click();
+    await page.waitForTimeout(250);
+    const reopened = await page.evaluate(() => window.__menus);
+    ok(opened === 1 && (await page.locator(".row-menu").count()) === 0 && reopened === 0, `${label} pressing ⋯ again closes its menu, without it opening again  [${opened} open, ${reopened} redrawn]`);
+  }
   await ctx.close();
 }
 await b.close();
