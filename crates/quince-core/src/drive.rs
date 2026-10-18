@@ -110,6 +110,20 @@ impl Library {
         Ok(())
     }
 
+    /// Forget a folder Apple no longer has — it, and everything stored beneath it, at any
+    /// depth. Only for a folder Apple has said is gone: nothing here asks Apple anything.
+    pub fn forget_drive_folder(&mut self, drivewsid: &str) -> Result<()> {
+        self.conn.execute(
+            "WITH RECURSIVE gone(id) AS (
+               SELECT ?1
+               UNION SELECT d.drivewsid FROM drive_items d JOIN gone ON d.parent_id = gone.id
+             )
+             DELETE FROM drive_items WHERE drivewsid IN (SELECT id FROM gone)",
+            params![drivewsid],
+        )?;
+        Ok(())
+    }
+
     /// What is inside a folder, folders first and then by name — how a file browser reads.
     ///
     /// Named the way Finder orders them: numbers as numbers and accents ignored, so "Scan 10"
@@ -190,6 +204,37 @@ mod tests {
             modified_at: None,
             etag: None,
         }
+    }
+
+    #[test]
+    fn a_forgotten_folder_takes_everything_beneath_it_and_nothing_else() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_drive_children(
+            ROOT,
+            &[item("F::a", "a", "FOLDER"), item("F::b", "b", "FOLDER")],
+        )
+        .unwrap();
+        lib.put_drive_children(
+            "F::a",
+            &[item("F::a1", "a1", "FOLDER"), item("D::x", "x", "FILE")],
+        )
+        .unwrap();
+        lib.put_drive_children("F::a1", &[item("D::deep", "deep", "FILE")])
+            .unwrap();
+        lib.put_drive_children("F::b", &[item("D::y", "y", "FILE")])
+            .unwrap();
+        lib.forget_drive_folder("F::a").unwrap();
+        let names = |p: &str| {
+            lib.drive_children(p)
+                .unwrap()
+                .into_iter()
+                .map(|i| i.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(ROOT), ["b"]);
+        assert!(names("F::a").is_empty() && names("F::a1").is_empty());
+        assert!(lib.drive_item("D::deep").unwrap().is_none());
+        assert_eq!(names("F::b"), ["y"]);
     }
 
     #[test]

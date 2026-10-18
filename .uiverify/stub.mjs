@@ -294,7 +294,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           window.__trash = (window.__trash ?? []).filter((i) => i.drivewsid !== args.item.drivewsid);
           (window.__trashCalls ??= []).push([cmd, args.item.drivewsid]);
           return null;
-        case "drive_sync_folder": return driveItems.length;
+        case "drive_sync_folder":
+          // A folder deleted on another device: the backend forgets it and says so.
+          if (args.folderId === window.__driveGone) throw "This folder was deleted or moved on another device.";
+          return driveItems.length;
         case "drive_download": return "/home/user/Downloads/file.pdf";
         case "drive_move": (window.__moves ??= []).push(args); await new Promise((r) => setTimeout(r, 600)); return null;
         case "drive_create_folder": case "drive_rename": case "drive_delete": return null;

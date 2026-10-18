@@ -482,10 +482,14 @@ export function DriveView() {
   // fifteen "Downloads" deep, all pointing at the one actual folder, turned out to be.
   const openToken = useRef(0);
 
+  // Why the last folder was left, kept on screen in the one stepped back to.
+  const leftBecause = useRef<string | null>(null);
+
   const open = useCallback(async (folderId: string) => {
     const token = ++openToken.current;
     setLoading(true);
-    setError(null);
+    setError(leftBecause.current);
+    leftBecause.current = null;
     try {
       // Show what is stored first, then fetch — a folder visited before opens instantly.
       const cached = await api.driveChildren(folderId);
@@ -506,7 +510,18 @@ export function DriveView() {
         () => {},
       );
     } catch (e) {
-      if (token === openToken.current) setError(messageOf(e));
+      if (token !== openToken.current) return;
+      setError(messageOf(e));
+      // Deleted or moved on another device: the backend has forgotten it, so step back out
+      // to the nearest folder still here rather than sit in one that is not.
+      if (folderId !== DRIVE_ROOT && (await api.driveItem(folderId).catch(() => undefined)) === null) {
+        if (token !== openToken.current) return;
+        leftBecause.current = messageOf(e);
+        setTrail((t) => {
+          const at = t.findIndex((c) => c.id === folderId);
+          return at > 0 ? t.slice(0, at) : t;
+        });
+      }
     } finally {
       if (token === openToken.current) {
         setLoading(false);

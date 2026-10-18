@@ -54,6 +54,35 @@ pub fn parse_folder(body: &Value) -> Vec<DriveItem> {
         .unwrap_or_default()
 }
 
+/// A folder's contents, from a `retrieveItemDetailsInFolders` answer that has been checked
+/// to be one: a stored folder is replaced by whatever this returns, so an answer that is not
+/// a listing must never read as an empty folder.
+///
+/// Measured: a folder that no longer exists comes back `200` with `"items": []` and
+/// `"status": "ID_INVALID"` — exactly what an empty folder looks like, but for the status.
+/// A real folder's status is `"OK"`.
+fn listing(body: &Value) -> Result<Vec<DriveItem>> {
+    let folder = body
+        .as_array()
+        .and_then(|folders| folders.first())
+        .ok_or_else(|| Error::Protocol("Drive answered without the folder asked for".into()))?;
+    match folder.get("status").and_then(Value::as_str) {
+        None | Some("OK") => {}
+        Some("ID_INVALID") => return Err(Error::NotFound),
+        Some(other) => {
+            return Err(Error::Protocol(format!(
+                "Drive could not list the folder: {other}"
+            )))
+        }
+    }
+    if !folder.get("items").is_some_and(Value::is_array) {
+        return Err(Error::Protocol(
+            "Drive answered without the folder's items".into(),
+        ));
+    }
+    Ok(parse_folder(body))
+}
+
 /// Fetch one folder's contents and store them.
 pub async fn sync_folder(
     http: &reqwest::Client,
@@ -110,7 +139,7 @@ pub async fn fetch_folder(
 
     let parsed: Value = serde_json::from_str(&text)
         .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
-    Ok(parse_folder(&parsed))
+    listing(&parsed)
 }
 
 /// Bare docwsid: `FILE::com.apple.CloudDocs::<uuid>` carries it after the last `::`.
@@ -325,7 +354,7 @@ async fn folder_listing(
     }
     let parsed: Value = serde_json::from_str(&text)
         .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
-    Ok(parse_folder(&parsed))
+    listing(&parsed)
 }
 
 /// The parent a write on `item` should be verified against: its own folder if it has one,
@@ -693,7 +722,7 @@ pub async fn trash_items(
         .and_then(Value::as_array)
         .map(|a| a.iter().collect())
         .unwrap_or_default();
-    Ok(parse_folder(&parsed)
+    Ok(listing(&parsed)?
         .into_iter()
         .map(|item| {
             let found = raw.iter().find(|r| {
@@ -1004,6 +1033,74 @@ mod tests {
         let children = library.drive_children(quince_core::drive::ROOT).unwrap();
         assert_eq!(children.len(), 3);
         assert_eq!(children[0].name, "Downloads", "folders sort first");
+    }
+
+    /// A folder deleted elsewhere answers like an empty one but for its status. Read as empty,
+    /// it would wipe the folder this computer holds; it must fail instead.
+    #[tokio::test]
+    async fn a_folder_apple_no_longer_has_never_empties_the_stored_one() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mut library = quince_core::Library::in_memory().unwrap();
+        let root = quince_core::drive::ROOT;
+        library
+            .put_drive_children(root, &parse_folder(&response()))
+            .unwrap();
+
+        for (answer, gone) in [
+            (
+                json!([{ "items": [], "numberOfItems": 0, "status": "ID_INVALID" }]),
+                true,
+            ),
+            (json!([{ "drivewsid": root, "status": "OK" }]), false),
+            (json!([]), false),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/retrieveItemDetailsInFolders$"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(answer))
+                .mount(&server)
+                .await;
+            let result = sync_folder(
+                &reqwest::Client::new(),
+                &server.uri(),
+                vec![],
+                &mut library,
+                root,
+            )
+            .await;
+            assert_eq!(matches!(result, Err(Error::NotFound)), gone, "{result:?}");
+            assert!(result.is_err());
+            assert_eq!(
+                library.drive_children(root).unwrap().len(),
+                3,
+                "the stored folder is kept"
+            );
+        }
+
+        // A folder that really is empty still reads as empty.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/retrieveItemDetailsInFolders$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{ "drivewsid": root, "status": "OK", "items": [] }])),
+            )
+            .mount(&server)
+            .await;
+        assert_eq!(
+            sync_folder(
+                &reqwest::Client::new(),
+                &server.uri(),
+                vec![],
+                &mut library,
+                root
+            )
+            .await
+            .unwrap(),
+            0
+        );
     }
 }
 
@@ -1865,8 +1962,27 @@ async fn upload_once(
             },
         }),
     )
-    .await?;
-    let stored = filed_document(&filed, &local, size, &name)?;
+    .await;
+    let stored = match filed {
+        Ok(filed) => filed_document(&filed, &local, size, &name)?,
+        // No answer is not "not filed": Apple may have filed it and the reply been lost. Asked
+        // again from the start, the file would go up a second time beside the first — "photo
+        // 2.jpg". The slot's document id is this file's alone, so the folder says which.
+        Err(e @ (Error::Network(_) | Error::Refused(_))) => {
+            let id = format!("FILE::{DOCUMENTS_ZONE}::{document_id}");
+            match folder_listing(http, drivews_root, &params, folder_id).await {
+                Ok(items)
+                    if items
+                        .iter()
+                        .any(|i| i.drivewsid == id && i.size == Some(size as i64)) =>
+                {
+                    id
+                }
+                _ => return Err(e),
+            }
+        }
+        Err(e) => return Err(e),
+    };
 
     // Apple answers 200 to writes it did not make. The folder is the only witness that counts.
     let after = folder_listing(http, drivews_root, &params, folder_id).await?;
@@ -2138,6 +2254,71 @@ mod app_library_tests {
             .count();
         assert_eq!(slots, 3, "three tries, each from a fresh slot");
         assert_eq!(err.to_string(), BUSY);
+        std::fs::remove_file(&file).ok();
+    }
+
+    /// Filing answered busy every time, though Apple did file it: the folder shows the slot's
+    /// document, so that is the upload — not a second copy sent from a fresh slot.
+    #[tokio::test]
+    async fn a_file_filed_without_an_answer_is_not_sent_twice() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let mut sum = AppleChecksum::default();
+        sum.update(b"hello");
+        let sum = sum.finish();
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/upload/web$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "url": format!("{}/content", server.uri()), "document_id": "D1" }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/content$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "singleFile": { "fileChecksum": sum, "size": 5, "receipt": "r" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/update/documents$"))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_json(serde_json::json!({ "retryAfter": 1 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/retrieveItemDetailsInFolders$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "drivewsid": "FOLDER::com.apple.CloudDocs::root", "status": "OK",
+                "items": [{ "drivewsid": "FILE::com.apple.CloudDocs::D1", "name": "quince-lost-reply",
+                            "extension": "txt", "type": "FILE", "size": 5 }]
+            }])))
+            .mount(&server)
+            .await;
+        let file = std::env::temp_dir().join("quince-lost-reply.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let item = upload(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &server.uri(),
+            vec![],
+            "FOLDER::com.apple.CloudDocs::root",
+            &file,
+            std::sync::Arc::new(|_, _| {}),
+        )
+        .await
+        .expect("the folder holds it, so it was uploaded");
+        assert_eq!(item.drivewsid, "FILE::com.apple.CloudDocs::D1");
+        let slots = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/upload/web"))
+            .count();
+        assert_eq!(slots, 1, "sent once, never again beside itself");
         std::fs::remove_file(&file).ok();
     }
 
