@@ -1003,9 +1003,21 @@ pub async fn delete_folder_cloudkit(
     // existed. Without a fresh answer nothing is deleted.
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
     let walk = client.all_records(ZONE, None).await?;
-    let fresh_folders: Vec<NoteFolder> = walk.records.iter().filter(|r| r["recordType"] == "Folder").filter_map(folder_from_record).collect();
-    let fresh_notes: Vec<Note> = walk.records.iter().filter(|r| r["recordType"] == "Note").filter_map(note_from_record).collect();
-    let (all, notes) = if walk.complete { (&fresh_folders[..], &fresh_notes[..]) } else {
+    let fresh_folders: Vec<NoteFolder> = walk
+        .records
+        .iter()
+        .filter(|r| r["recordType"] == "Folder")
+        .filter_map(folder_from_record)
+        .collect();
+    let fresh_notes: Vec<Note> = walk
+        .records
+        .iter()
+        .filter(|r| r["recordType"] == "Note")
+        .filter_map(note_from_record)
+        .collect();
+    let (all, notes) = if walk.complete {
+        (&fresh_folders[..], &fresh_notes[..])
+    } else {
         return Err(Error::Refused("Couldn't read all of this folder from iCloud just now, so nothing was deleted — try again.".into()));
     };
     let _ = (all_known, notes_known);

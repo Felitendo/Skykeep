@@ -10,15 +10,35 @@ async fn main() -> Result<()> {
     if !client.resume().await? {
         return Err(anyhow!("no session"));
     }
-    let root = client.session().service_url("ckdatabasews").ok_or_else(|| anyhow!("no ck"))?;
+    let root = client
+        .session()
+        .service_url("ckdatabasews")
+        .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
-    let folder = notes::create_folder_cloudkit(&http, &root, p.clone(), "Quince folder delete test", None).await?;
-    let note = notes::create_cloudkit(&http, &root, p.clone(), Some(&folder), "Quince folder delete test note\nsafe to delete", None).await?;
+    let folder =
+        notes::create_folder_cloudkit(&http, &root, p.clone(), "Quince folder delete test", None)
+            .await?;
+    let note = notes::create_cloudkit(
+        &http,
+        &root,
+        p.clone(),
+        Some(&folder),
+        "Quince folder delete test note\nsafe to delete",
+        None,
+    )
+    .await?;
     // As a screen that has not yet seen the note, nor the folder's contents.
     notes::delete_folder_cloudkit(&http, &root, p.clone(), &[], &[], &folder).await?;
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &root, "com.apple.notes", p.clone());
     let n = zc.lookup_record("Notes", &note).await?;
     let f = zc.lookup_record("Notes", &folder).await?;
-    println!("note's folder now: {:?}; folder still there: {}", n.as_ref().and_then(|r| r["fields"]["Folder"]["value"]["recordName"].as_str().map(str::to_string)), f.is_some());
+    println!(
+        "note's folder now: {:?}; folder still there: {}",
+        n.as_ref()
+            .and_then(|r| r["fields"]["Folder"]["value"]["recordName"]
+                .as_str()
+                .map(str::to_string)),
+        f.is_some()
+    );
     Ok(())
 }
