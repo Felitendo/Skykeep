@@ -1,7 +1,6 @@
 //! Live, throwaway event only: a weekly event three times, an alert set from its second
 //! occurrence for all events — every occurrence must then carry it — then deleted.
 use anyhow::{anyhow, Result};
-use serde_json::Value;
 #[tokio::main]
 async fn main() -> Result<()> {
     let dir = std::path::PathBuf::from(std::env::var("HOME")?).join(".local/share/quince-probe");
