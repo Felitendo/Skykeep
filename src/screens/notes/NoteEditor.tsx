@@ -8,6 +8,39 @@ import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror
 import type { Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
 import { fromDoc, LIST_STYLES, schema, STYLE, toDoc } from "./rich";
+import { api } from "../../lib/ipc";
+
+/**
+ * An attachment in the note: a table drawn as the grid it is, with the cells Apple holds;
+ * anything else — a picture, a sketch — as a labelled placeholder that keeps its place. Not
+ * editable here, and never written from here: the note keeps the attachment exactly.
+ */
+function attachmentView(node: PMNode) {
+  const dom = document.createElement("span");
+  dom.className = "nf-attachment";
+  dom.contentEditable = "false";
+  dom.textContent = "Attachment";
+  dom.title = "Open it on an Apple device to change it";
+  const id = node.attrs.id as string | null;
+  if (id) {
+    api.noteTable(id).then(
+      (cells) => {
+        if (!cells || !cells.length) return;
+        const table = document.createElement("table");
+        table.className = "nf-table";
+        for (const row of cells) {
+          const tr = table.insertRow();
+          for (const cell of row) tr.insertCell().textContent = cell.trimEnd();
+        }
+        dom.className = "nf-attachment is-table";
+        dom.title = "A table — edit it on an Apple device for now";
+        dom.replaceChildren(table);
+      },
+      () => {},
+    );
+  }
+  return { dom, ignoreMutation: () => true, stopEvent: () => false };
+}
 
 /** What the toolbar shows as on: the style of the line the cursor is in, and its marks. */
 export type EditorStatus = {
@@ -222,6 +255,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     });
     const v = new EditorView(host.current, {
       state,
+      nodeViews: { attachment: (node) => attachmentView(node) },
       editable: () => editable,
       attributes: {
         class: "note-rich",

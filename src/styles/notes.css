@@ -398,3 +398,8 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .fp-subheading { font-size: 15px; font-weight: 600; }
 .fp-mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 14px; }
 .fp-list-mark { width: 16px; color: var(--text-2); }
+
+/* A table in a note, as Notes draws one: hairline cells, the text set as the note's. */
+.note-rich .nf-attachment.is-table { display: block; padding: 0; margin: 6px 0; background: none; color: inherit; font-size: inherit; overflow-x: auto; }
+.nf-table { border-collapse: collapse; min-width: 50%; }
+.nf-table td { min-width: 120px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--text) 22%, transparent); vertical-align: top; white-space: pre-wrap; }

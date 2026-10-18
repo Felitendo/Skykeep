@@ -1167,6 +1167,35 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
         .unwrap_or(serde_json::Value::Array(Vec::new())))
 }
 
+/// A table's cells, row by row, as the last pass read them — `None` when none are known.
+#[tauri::command]
+async fn note_table(
+    id: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Option<Vec<Vec<String>>>> {
+    if let Some(cells) = quince_icloud::table::stored(&*data.0.lock().await, &id) {
+        return Ok(Some(cells));
+    }
+    // Not stored yet — a table made before this app read tables, which a pass of changes
+    // does not bring — so asked of Apple now, and kept.
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let client = quince_icloud::cloudkit::ZoneClient::new(&http, &root, "com.apple.notes", params);
+    let record = client.lookup_record("Notes", &id).await.map_err(|e| e.to_string())?;
+    let cells = record
+        .as_ref()
+        .and_then(|r| r.pointer("/fields/MergeableDataEncrypted/value"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(quince_icloud::table::cells_from_base64);
+    if let Some(cells) = &cells {
+        let mut library = data.0.lock().await;
+        if let Ok(json) = serde_json::to_string(cells) {
+            library.set_state(&quince_icloud::table::state_key(&id), &json).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(cells)
+}
+
 #[tauri::command]
 async fn note_save(
     guid: String,
@@ -2863,6 +2892,7 @@ fn main() {
             note_folder_delete,
             note_body,
             note_runs,
+            note_table,
             note_paragraph,
             note_save,
             note_create,

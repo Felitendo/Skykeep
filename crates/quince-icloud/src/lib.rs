@@ -13,6 +13,7 @@ pub mod notes;
 pub mod occasions;
 pub mod reminders;
 pub mod sync;
+pub mod table;
 pub mod topotext;
 
 #[derive(Debug, thiserror::Error)]

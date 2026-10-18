@@ -18,6 +18,8 @@ export type Run = {
   underline: boolean;
   strike: boolean;
   link: string | null;
+  /** The attachment this run's character stands for — a table, a picture — by id. */
+  attachment?: string | null;
 };
 
 /** Apple's paragraph styles. */

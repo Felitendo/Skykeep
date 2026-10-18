@@ -269,6 +269,8 @@ pub fn apply_cloudkit(
     // Apple names this record type outright, so locking is something we read rather than guess.
     let mut locked_notes: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    // Tables found in this pass: id and cells (None when gone or unreadable).
+    let mut tables: Vec<(String, Option<Vec<Vec<String>>>)> = Vec::new();
     for record in &records {
         let removed = record
             .get("deleted")
@@ -324,6 +326,22 @@ pub fn apply_cloudkit(
                     folders.extend(folder_from_record(record));
                 }
             }
+            // A table: its cells, kept beside the library's settings under its id, which is
+            // what the note's text names it by.
+            "Attachment" => {
+                let Some(name) = field::record_name(record) else { continue };
+                let uti = record
+                    .pointer("/fields/UTI/value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if uti == crate::table::UTI {
+                    let cells = (!removed)
+                        .then(|| record.pointer("/fields/MergeableDataEncrypted/value").and_then(Value::as_str))
+                        .flatten()
+                        .and_then(crate::table::cells_from_base64);
+                    tables.push((name, cells));
+                }
+            }
             // Per-user state. The note it refers to is what matters, not this record's name.
             "Note_UserSpecific" | "PasswordProtectedNote_UserSpecific" => {
                 if let Some(target) = field::reference(record, "Note") {
@@ -342,6 +360,10 @@ pub fn apply_cloudkit(
         }
     }
 
+    for (name, cells) in &tables {
+        let value = cells.as_ref().and_then(|c| serde_json::to_string(c).ok()).unwrap_or_default();
+        library.set_state(&crate::table::state_key(name), &value)?;
+    }
     // A note the owner deleted is still present as a Note record; only the per-user record
     // says so. Without this, deleted notes would keep showing.
     notes.retain(|n| !deleted_notes.contains(&n.guid));

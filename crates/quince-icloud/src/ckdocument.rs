@@ -1680,6 +1680,10 @@ pub struct Run {
     pub underline: bool,
     pub strike: bool,
     pub link: Option<String>,
+    /// The attachment this run's one character stands for — a table, a picture — by id.
+    /// Read only: an attachment's place is kept from Apple's own run, never written from this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<String>,
 }
 
 /// Every run of a note document, in order. Empty for anything that is not one.
@@ -1718,6 +1722,11 @@ fn parse_run(bytes: &[u8]) -> Option<Run> {
                 run.link = std::str::from_utf8(reader.take(n)?)
                     .ok()
                     .map(ToString::to_string);
+            }
+            (12, WIRE_LEN) => {
+                let n = usize::try_from(reader.varint()?).ok()?;
+                let info = reader.take(n)?;
+                run.attachment = bytes_field(info, 1).and_then(|id| String::from_utf8(id).ok());
             }
             _ => reader.skip(wire)?,
         }

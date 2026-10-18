@@ -60,6 +60,7 @@ export const schema = new Schema({
       inline: true,
       atom: true,
       selectable: true,
+      attrs: { id: { default: null as string | null } },
       toDOM: () => ["span", { class: "nf-attachment", contenteditable: "false", title: "Attachment — open it on an Apple device" }, "Attachment"],
     },
     /** Shift-Return: a new line in the same paragraph. */
@@ -128,7 +129,7 @@ export function toDoc(text: string, runs: Run[] | null): PMNode {
     while (i < end) {
       const ch = text[i];
       if (ch === ATTACHMENT) {
-        inline.push(schema.nodes.attachment.create());
+        inline.push(schema.nodes.attachment.create({ id: fits ? (units[i]?.attachment ?? null) : null }));
         i += 1;
         continue;
       }
@@ -160,7 +161,8 @@ export function toDoc(text: string, runs: Run[] | null): PMNode {
 
 const same = (a: Run, b: Run) =>
   a.style === b.style && a.indent === b.indent && a.checked === b.checked && a.bold === b.bold &&
-  a.italic === b.italic && a.underline === b.underline && a.strike === b.strike && a.link === b.link;
+  a.italic === b.italic && a.underline === b.underline && a.strike === b.strike && a.link === b.link &&
+  (a.attachment ?? null) === (b.attachment ?? null);
 
 /** A document as Apple's text and runs. */
 export function fromDoc(doc: PMNode): { text: string; runs: Run[] } {
@@ -181,7 +183,7 @@ export function fromDoc(doc: PMNode): { text: string; runs: Run[] } {
     };
     const base: Run = { ...plain(0), ...p };
     para.forEach((child) => {
-      if (child.type === schema.nodes.attachment) return push(ATTACHMENT, base);
+      if (child.type === schema.nodes.attachment) return push(ATTACHMENT, { ...base, attachment: child.attrs.id ?? null });
       if (child.type === schema.nodes.line_break) return push(LINE_BREAK, base);
       const has = (name: string) => child.marks.some((m) => m.type.name === name);
       push(child.text ?? "", {
