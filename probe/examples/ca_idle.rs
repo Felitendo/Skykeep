@@ -44,7 +44,10 @@ async fn main() -> Result<()> {
     let mut state = state;
     for round in 0..3 {
         let t = now();
-        println!("round {round}: idle sent at {t:.3} with {} collections", state.len());
+        println!(
+            "round {round}: idle sent at {t:.3} with {} collections",
+            state.len()
+        );
         let r = http.post(format!("{root}/ca/idle")).query(&q).timeout(std::time::Duration::from_secs(wait))
             .json(&serde_json::json!({ "ClientState": { "Collection": state, "alarmRange": 60, "fullState": true, "userTime": t as i64 } }))
             .send().await;
@@ -52,14 +55,32 @@ async fn main() -> Result<()> {
             Ok(r) => {
                 let st = r.status();
                 let v: serde_json::Value = r.json().await.unwrap_or_default();
-                println!("  answered after {:.1}s: {st} {}", now() - t, v.to_string().chars().take(400).collect::<String>());
-                for c in v.pointer("/ChangeSet/inserts/Collection").and_then(|c| c.as_array()).cloned().unwrap_or_default()
-                    .into_iter().chain(v.pointer("/ChangeSet/updates/Collection").and_then(|c| c.as_array()).cloned().unwrap_or_default()) {
+                println!(
+                    "  answered after {:.1}s: {st} {}",
+                    now() - t,
+                    v.to_string().chars().take(400).collect::<String>()
+                );
+                for c in v
+                    .pointer("/ChangeSet/inserts/Collection")
+                    .and_then(|c| c.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(
+                        v.pointer("/ChangeSet/updates/Collection")
+                            .and_then(|c| c.as_array())
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
+                {
                     state.retain(|s| s["guid"] != c["guid"]);
                     state.push(serde_json::json!({ "guid": c["guid"], "ctag": c["ctag"] }));
                 }
             }
-            Err(e) => { println!("  no answer after {:.1}s: {e}", now() - t); break; }
+            Err(e) => {
+                println!("  no answer after {:.1}s: {e}", now() - t);
+                break;
+            }
         }
     }
     Ok(())

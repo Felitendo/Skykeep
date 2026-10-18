@@ -49,12 +49,44 @@
   --t-28: 28px;
 
 
-  /* Liquid Glass. Apple's rules: glass is for CHROME only — never content layers, never
-     stacked on itself. Tint is reserved for the single primary action. */
-  --glass: rgba(255, 255, 255, 0.62);
-  --glass-blur: blur(28px) saturate(180%);
-  --glass-specular: inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  --glass-edge: rgba(0, 0, 0, 0.07);
+  /* Liquid Glass, as macOS 26/27 builds it (docs/macos27-kit.md). Apple's rules: glass is
+     for CHROME — sidebars, toolbars, menus, popovers, sheets — never the content beneath,
+     and never glass laid on glass. Tint is for the single primary action.
+
+     A glass surface is four things together: a thin tint that lets what is behind show,
+     a heavy blur that keeps it unreadable, a saturation lift so colours behind glow rather
+     than grey out, and a lit rim — a hairline of light all round with a brighter edge on
+     top, where the light catches it. The rim is what makes it read as a material and not
+     as a translucent rectangle. */
+  --glass: rgba(255, 255, 255, 0.58);
+  --glass-thick: rgba(250, 250, 252, 0.78);
+  --glass-blur: blur(30px) saturate(190%);
+  --glass-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.9), inset 0 0 0 0.5px rgba(255, 255, 255, 0.45);
+  --glass-edge: rgba(0, 0, 0, 0.08);
+  /* Floating glass casts a soft, wide shadow — it sits above the window, not on it. */
+  --glass-lift: 0 8px 30px rgba(0, 0, 0, 0.13), 0 1px 3px rgba(0, 0, 0, 0.08);
+  /* A menu, popover or sheet: thick glass, rim, edge and lift — the whole recipe. */
+  --glass-float: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--glass-lift);
+
+  /* Motion. Apple's interface moves on springs, not curves: these are SwiftUI's own,
+     computed from the spring itself (response and bounce) rather than eyeballed, and each
+     duration is the time the spring takes to settle. */
+  /* .smooth — no bounce: things that move a long way, a sidebar, a sheet. */
+  --spring-smooth: linear(0, 0.0139, 0.0495, 0.0995, 0.1582, 0.2215, 0.2864, 0.3507, 0.4129, 0.472, 0.5273, 0.5786, 0.6256, 0.6685, 0.7073, 0.7423, 0.7736, 0.8015, 0.8263, 0.8483, 0.8677, 0.8848, 0.8998, 0.913, 0.9246, 0.9347, 0.9435, 0.9511, 0.9578, 0.9636, 0.9686, 0.9729, 0.9767, 0.98, 0.9828, 0.9852, 0.9873, 0.9891, 0.9906, 0.992, 0.9931, 0.9941, 0.995, 0.9957, 0.9963, 0.9968, 0.9973, 0.9977, 1);
+  --spring-smooth-d: 560ms;
+  /* The same spring, quicker (response 0.25): a sidebar sliding over, which a person waits
+     on and should not watch. */
+  --spring-quick: linear(0, 0.0141, 0.0502, 0.1007, 0.16, 0.2239, 0.2893, 0.354, 0.4165, 0.4758, 0.5313, 0.5826, 0.6296, 0.6724, 0.7111, 0.7459, 0.777, 0.8048, 0.8294, 0.8512, 0.8704, 0.8873, 0.9021, 0.9151, 0.9265, 0.9364, 0.945, 0.9525, 0.9591, 0.9647, 0.9696, 0.9739, 0.9775, 0.9807, 0.9834, 0.9858, 0.9878, 0.9895, 0.991, 0.9923, 0.9934, 0.9944, 0.9952, 0.9959, 0.9965, 0.997, 0.9974, 0.9978, 1);
+  --spring-quick-d: 300ms;
+  /* .snappy — a touch of bounce: a popover growing from its button, a control settling. */
+  --spring-snappy: linear(0, 0.0129, 0.0468, 0.0957, 0.1547, 0.2197, 0.2878, 0.3564, 0.4238, 0.4885, 0.5498, 0.6068, 0.6593, 0.7072, 0.7503, 0.7888, 0.8229, 0.8529, 0.8791, 0.9017, 0.9211, 0.9376, 0.9515, 0.9632, 0.9729, 0.9808, 0.9872, 0.9923, 0.9964, 0.9995, 1.0019, 1.0036, 1.0048, 1.0056, 1.0061, 1.0063, 1.0063, 1.0061, 1.0058, 1.0055, 1.0051, 1.0047, 1.0042, 1.0038, 1.0034, 1.003, 1.0026, 1.0023, 1);
+  --spring-snappy-d: 420ms;
+  /* .bouncy — the one moment that earns it: something arriving, the library opening. */
+  --spring-bouncy: linear(0, 0.0167, 0.0609, 0.1247, 0.2015, 0.2858, 0.3731, 0.4599, 0.5437, 0.6223, 0.6945, 0.7596, 0.817, 0.8669, 0.9092, 0.9446, 0.9734, 0.9963, 1.0139, 1.0269, 1.0361, 1.0419, 1.045, 1.046, 1.0452, 1.0432, 1.0403, 1.0368, 1.0329, 1.0289, 1.0249, 1.0211, 1.0174, 1.0141, 1.0111, 1.0085, 1.0062, 1.0042, 1.0026, 1.0012, 1.0002, 0.9994, 0.9988, 0.9983, 0.9981, 0.9979, 0.9979, 0.9979, 1);
+  --spring-bouncy-d: 700ms;
+  /* A press: in fast, so the control answers the finger; out on the snappy spring. */
+  --press-scale: 0.96;
+  --press-in: 90ms;
 
   /* Tahoe moved windows from Sequoia's 4px to 12px, and radii nest concentrically:
      an inner radius is the outer radius minus the gap between them. */
@@ -65,7 +97,7 @@
 
   /* Apple's sheet-presentation curve. Decisive out, no bounce. */
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
-  /* Reserved for the one moment that earns it: the unlock. */
+  /* The library opening (kept by name; the bouncy spring is the same idea, computed). */
   --ease-spring: linear(0.0000 0.0%, 0.0230 2.5%, 0.0834 5.0%, 0.1694 7.5%, 0.2710 10.0%, 0.3800 12.5%, 0.4897 15.0%, 0.5951 17.5%, 0.6927 20.0%, 0.7800 22.5%, 0.8558 25.0%, 0.9194 27.5%, 0.9711 30.0%, 1.0115 32.5%, 1.0416 35.0%, 1.0625 37.5%, 1.0755 40.0%, 1.0821 42.5%, 1.0834 45.0%, 1.0808 47.5%, 1.0752 50.0%, 1.0677 52.5%, 1.0591 55.0%, 1.0499 57.5%, 1.0408 60.0%, 1.0321 62.5%, 1.0241 65.0%, 1.0170 67.5%, 1.0109 70.0%, 1.0058 72.5%, 1.0016 75.0%, 0.9985 77.5%, 0.9961 80.0%, 0.9945 82.5%, 0.9935 85.0%, 0.9931 87.5%, 0.9931 90.0%, 0.9933 92.5%, 0.9938 95.0%, 0.9945 97.5%, 0.9952 100.0%);
 
   --sf: "SF Pro Text", "SF Pro Display", Inter, "Inter Variable", system-ui,
@@ -96,9 +128,11 @@
     --danger: #ff6b6b;
     --shadow-sheet: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
     --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
-    --glass: rgba(44, 44, 48, 0.62);
-    --glass-specular: inset 0 1px 0 rgba(255, 255, 255, 0.10);
-    --glass-edge: rgba(255, 255, 255, 0.08);
+    --glass: rgba(40, 40, 44, 0.56);
+    --glass-thick: rgba(36, 36, 40, 0.8);
+    --glass-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+    --glass-edge: rgba(0, 0, 0, 0.5);
+    --glass-lift: 0 10px 36px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
   }
 }
 
@@ -129,6 +163,31 @@ body {
 ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text) 40%, transparent); }
 ::-webkit-scrollbar-button { display: none; }
 
+/* Where the engine has no backdrop blur, glass would be a see-through panel over text.
+   Opaque instead, as Reduce Transparency draws it. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root { --glass: var(--bg); --glass-thick: var(--sheet); }
+}
+
+/* A control gives under a press and springs back, as Apple's do — buttons, icons, pop-up
+   buttons, segments. Not a row of a list: Apple's rows take a highlight, they do not
+   shrink. Only the pressed thing moves; hovering changes nothing but colour. */
+:is(.quiet, .primary, .danger, .rx-icon-button, .notes-icon, .cx-icon, .cx-today, .cx-more,
+  .sidebar-toggle, .segment, .picker-button, .notes-aa, .notes-new-folder, .rx-add-list,
+  .info-done, .compact-back, .notice-close, .upload-tray-close, .with-glyph, .cx-toast-undo,
+  .cx-pop-delete):not(:disabled) {
+  /* `scale`, not `transform`: a control placed with a transform keeps it. */
+  transition: scale var(--spring-snappy-d) var(--spring-snappy), background-color 120ms ease,
+    background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 160ms ease;
+}
+:is(.quiet, .primary, .danger, .rx-icon-button, .notes-icon, .cx-icon, .cx-today, .cx-more,
+  .sidebar-toggle, .segment, .picker-button, .notes-aa, .notes-new-folder, .rx-add-list,
+  .info-done, .compact-back, .notice-close, .upload-tray-close, .with-glyph, .cx-toast-undo,
+  .cx-pop-delete):not(:disabled):active {
+  scale: var(--press-scale);
+  transition-duration: var(--press-in), 0ms, 0ms, 0ms, 0ms, 160ms;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -140,12 +199,13 @@ body {
    Increase Contrast. Matching that is the difference between using the design language
    and merely copying its look. */
 @media (prefers-reduced-transparency: reduce) {
-  :root { --glass: var(--bg); --glass-blur: none; --glass-specular: none; }
+  :root { --glass: var(--bg); --glass-thick: var(--sheet); --glass-blur: none; --glass-specular: none; }
 }
 
 @media (prefers-contrast: more) {
   :root {
     --glass: var(--bg);
+    --glass-thick: var(--sheet);
     --glass-blur: none;
     --field-edge: rgba(0, 0, 0, 0.55);
     --separator: rgba(0, 0, 0, 0.42);

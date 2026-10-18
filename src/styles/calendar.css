@@ -598,10 +598,11 @@
   gap: 8px;
   width: 300px;
   padding: 14px 14px 12px;
-  border: 1px solid var(--glass-edge);
-  border-radius: 12px;
-  background: var(--sheet);
-  box-shadow: var(--shadow-sheet);
+  border-radius: 14px;
+  background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-float);
   /* Opacity and a small lift only, on the compositor: scaling from the corner read as a
      jump toward the click, and re-ran on every re-anchor. */
   /* A short fade and nothing else — no movement, no layer hint — as a macOS popover. */
@@ -634,13 +635,17 @@
 .cx-when input[type="time"] { flex: 0 0 auto; }
 .cx-pop-row input[type="time"],
 .cx-pop-row input[type="date"] {
-  padding: 3px 6px;
-  border: 1px solid var(--field-edge);
-  border-radius: 6px;
-  background: var(--field);
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
   font-size: var(--t-13);
+  font-variant-numeric: tabular-nums;
   color-scheme: light dark;
 }
+.cx-pop-row input[type="time"]:focus-visible,
+.cx-pop-row input[type="date"]:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); }
 /* Drawn, not left to the engine: WebKitGTK paints its own toolkit's white box here. */
 .cx-pop-row input[type="checkbox"] {
   justify-self: start;
@@ -677,10 +682,11 @@
   gap: 14px;
   padding: 9px 10px 9px 16px;
   transform: translateX(-50%);
-  border: 1px solid var(--glass-edge);
-  border-radius: 12px;
-  background: var(--sheet);
-  box-shadow: var(--shadow-sheet);
+  border-radius: var(--r-pill);
+  background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-float);
   font-size: var(--t-13);
 }
 .cx-toast-undo {
@@ -760,3 +766,28 @@
   .cx-reminder, .cx-item.is-reminder .cx-item-title, .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 50%, #fff); }
 }
 .cx-reminder.is-done, .cx-item.is-reminder.is-done .cx-item-title { color: var(--text-3); }
+
+/* ── The toolbar in Liquid Glass ────────────────────────────────────────────────────────
+   As macOS 27's Calendar sets it: each group of controls is a capsule of glass floating
+   over the window — the view switcher, New, the ‹ Today › stepper, search — rather than
+   flat controls printed on it. Concentric: a segment's cap is the capsule's radius less
+   its inset. */
+.cx-bar .segmented,
+.cx-step,
+.cx-search,
+.cx-tools > .cx-icon {
+  height: 32px;
+  border-radius: var(--r-pill);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), 0 1px 5px rgba(0, 0, 0, 0.06);
+}
+.cx-bar .segmented { align-items: center; padding: 3px; gap: 0; }
+.cx-bar .segment { height: 26px; padding: 0 12px; border-radius: var(--r-pill); font-size: var(--t-13); }
+.cx-step { padding: 0 3px; gap: 0; }
+.cx-step .cx-icon { height: 26px; min-width: 26px; border-radius: var(--r-pill); }
+.cx-step .cx-today { height: 26px; border: 0; border-radius: var(--r-pill); background: none; padding: 0 8px; }
+.cx-step .cx-today:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.cx-tools > .cx-icon { min-width: 32px; padding: 0; color: var(--text); }
+.cx-search { padding: 0 12px; }

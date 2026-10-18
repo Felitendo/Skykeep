@@ -372,9 +372,10 @@ textarea.note-title::placeholder { color: var(--text-3); }
   width: 276px;
   padding: 10px 8px 8px;
   border-radius: 12px;
-  background: var(--sheet);
-  border: 0.5px solid var(--glass-edge, var(--separator));
-  box-shadow: 0 11px 34px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-float);
   color: var(--text);
 }
 .fp-marks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 0 4px 8px; border-bottom: 1px solid var(--separator); margin-bottom: 6px; }
