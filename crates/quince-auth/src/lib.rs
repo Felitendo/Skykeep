@@ -943,6 +943,25 @@ impl Client {
         if let Some(d) = data.pointer("/dsInfo/dsid").and_then(|v| v.as_str()) {
             self.session.dsid = Some(d.to_string());
         }
+        let text = |path: &str| {
+            data.pointer(path)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        if let Some(name) = text("/dsInfo/fullName").or_else(|| {
+            let first = text("/dsInfo/firstName")?;
+            Some(match text("/dsInfo/lastName") {
+                Some(last) => format!("{first} {last}"),
+                None => first,
+            })
+        }) {
+            self.session.account_name = Some(name);
+        }
+        if let Some(email) = text("/dsInfo/primaryEmail").or_else(|| text("/dsInfo/appleId")) {
+            self.session.account_email = Some(email);
+        }
     }
 
     /// Query parameters every iCloud service endpoint expects alongside the session cookies.

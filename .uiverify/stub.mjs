@@ -140,7 +140,18 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_sign_in":     return screen === "code" ? "needs_two_factor" : "complete";
         case "auth_submit_code": return null;
         case "account_services": return services;
-        case "calendar_events": return events;
+        case "calendar_events": {
+          window.__eventReads = (window.__eventReads ?? 0) + 1;
+          // A heavy account, for measuring: `window.__manyEvents = n` adds n events spread over
+          // the year around today, several a day.
+          const n = window.__manyEvents ?? 0;
+          if (!n) return events;
+          const extra = (window.__extra ??= Array.from({ length: n }, (_, i) => ({
+            guid: `many${i}`, calendarGuid: i % 2 ? "work" : "home", title: `Event ${i}`, location: null,
+            startsAt: base + Math.floor((i - n / 2) / 8) * DAY + (8 + (i % 8)) * HOUR, endsAt: base + Math.floor((i - n / 2) / 8) * DAY + (9 + (i % 8)) * HOUR,
+            allDay: false, timezone: "Asia/Kolkata", url: null, notes: null, etag: null })));
+          return events.concat(extra);
+        }
         case "calendar_search": {
           const words = String(args?.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
           return events.filter((e) => words.every((w) => `${e.title} ${e.location ?? ""}`.toLowerCase().includes(w)))
@@ -274,6 +285,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_thumbnails": return driveFixture ? { "FILE::d": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='60'><rect width='80' height='60' fill='%23eee'/></svg>" } : {};
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
+        case "account_info": return { name: "Asha Rao", email: "asha@example.com" };
+        case "settings_get": return { reminderAlerts: true, eventAlerts: true, ...(window.__settings ?? {}) };
+        case "settings_set":
+          if (window.__settingsFail) throw "Couldn't save that setting.";
+          (window.__settings ??= {})[args.key] = args.on;
+          return null;
         case "drive_children": return !driveFixture ? [] : driveItems;
         case "drive_recents": {
           if (!driveFixture) return [];

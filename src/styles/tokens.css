@@ -59,13 +59,19 @@
      top, where the light catches it. The rim is what makes it read as a material and not
      as a translucent rectangle. */
   --glass: rgba(255, 255, 255, 0.58);
-  --glass-thick: rgba(250, 250, 252, 0.78);
+  /* Menus, popovers and sheets: frosted nearly to opaque. Over text, anything thinner reads
+     the words beneath — and WebKitGTK, Quince's engine on Linux, does not always run the
+     blur that would hide them (measured on his machine: sharp text through a menu). */
+  --glass-thick: rgba(248, 248, 250, 0.96);
   --glass-blur: blur(30px) saturate(190%);
   --glass-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.9), inset 0 0 0 0.5px rgba(255, 255, 255, 0.45);
   --glass-edge: rgba(0, 0, 0, 0.08);
   /* Floating glass casts a soft, wide shadow — it sits above the window, not on it. */
   --glass-lift: 0 8px 30px rgba(0, 0, 0, 0.13), 0 1px 3px rgba(0, 0, 0, 0.08);
-  /* A menu, popover or sheet: thick glass, rim, edge and lift — the whole recipe. */
+  /* A menu, popover or sheet: thick glass, rim, edge and lift — the whole recipe. Menus
+     take it without the live blur: a blurred layer is a compositing layer, and WebKitGTK
+     building one on a menu's first frame is the flash that made menus open without
+     animation in the first place. */
   --glass-float: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--glass-lift);
 
   /* Motion. Apple's interface moves on springs, not curves: these are SwiftUI's own,
@@ -112,10 +118,10 @@
 :root[data-app="calendar"] { --accent: #ff383c; --accent-strong: #d70015; --accent-deep: #d70015; }
 
 @media (prefers-color-scheme: dark) {
-  :root { --accent: #0091ff; --accent-strong: #0091ff; --accent-deep: #0068d6; }
-  :root[data-app="notes"] { --accent: #ffd600; --accent-strong: #ffd600; --accent-deep: #8a6800; --on-accent: #1d1d1f; --on-accent-2: rgba(0, 0, 0, 0.62); }
-  :root[data-app="calendar"] { --accent: #ff4245; --accent-strong: #ff4245; --accent-deep: #d70015; }
-  :root {
+  :root:not([data-theme="light"]) { --accent: #0091ff; --accent-strong: #0091ff; --accent-deep: #0068d6; }
+  :root:not([data-theme="light"])[data-app="notes"] { --accent: #ffd600; --accent-strong: #ffd600; --accent-deep: #8a6800; --on-accent: #1d1d1f; --on-accent-2: rgba(0, 0, 0, 0.62); }
+  :root:not([data-theme="light"])[data-app="calendar"] { --accent: #ff4245; --accent-strong: #ff4245; --accent-deep: #d70015; }
+  :root:not([data-theme="light"]) {
     --bg: #1c1c1e;
     --sheet: #2c2c2e;
     --text: #f5f5f7;
@@ -129,12 +135,40 @@
     --shadow-sheet: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
     --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
     --glass: rgba(40, 40, 44, 0.56);
-    --glass-thick: rgba(36, 36, 40, 0.8);
+    --glass-thick: rgba(38, 38, 42, 0.96);
     --glass-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
     --glass-edge: rgba(0, 0, 0, 0.5);
     --glass-lift: 0 10px 36px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
   }
 }
+/* The same, when Settings chooses Dark whatever the system says. */
+:root[data-theme="dark"] { --accent: #0091ff; --accent-strong: #0091ff; --accent-deep: #0068d6; }
+:root[data-theme="dark"][data-app="notes"] { --accent: #ffd600; --accent-strong: #ffd600; --accent-deep: #8a6800; --on-accent: #1d1d1f; --on-accent-2: rgba(0, 0, 0, 0.62); }
+:root[data-theme="dark"][data-app="calendar"] { --accent: #ff4245; --accent-strong: #ff4245; --accent-deep: #d70015; }
+:root[data-theme="dark"] {
+    --bg: #1c1c1e;
+    --sheet: #2c2c2e;
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #8e8e93;
+    --separator: rgba(255, 255, 255, 0.13);
+    --field: #1c1c1e;
+    --field-edge: rgba(255, 255, 255, 0.16);
+    --field-edge-hover: rgba(255, 255, 255, 0.28);
+    --danger: #ff6b6b;
+    --shadow-sheet: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
+    --glass: rgba(40, 40, 44, 0.56);
+    --glass-thick: rgba(38, 38, 42, 0.96);
+    --glass-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+    --glass-edge: rgba(0, 0, 0, 0.5);
+    --glass-lift: 0 10px 36px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
+  }
+
+/* Settings can choose the appearance rather than follow the system; the engine's own
+   controls — date fields, scrollbars — follow it too. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 
@@ -166,7 +200,7 @@ body {
 /* Where the engine has no backdrop blur, glass would be a see-through panel over text.
    Opaque instead, as Reduce Transparency draws it. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  :root { --glass: var(--bg); --glass-thick: var(--sheet); }
+  :root:root:root { --glass: var(--bg); --glass-thick: var(--sheet); }
 }
 
 /* A control gives under a press and springs back, as Apple's do — buttons, icons, pop-up
@@ -199,11 +233,12 @@ body {
    Increase Contrast. Matching that is the difference between using the design language
    and merely copying its look. */
 @media (prefers-reduced-transparency: reduce) {
-  :root { --glass: var(--bg); --glass-thick: var(--sheet); --glass-blur: none; --glass-specular: none; }
+  /* Outranks the dark set, which is chosen by a theme as well as by the system. */
+  :root:root:root { --glass: var(--bg); --glass-thick: var(--sheet); --glass-blur: none; --glass-specular: none; }
 }
 
 @media (prefers-contrast: more) {
-  :root {
+  :root:root:root {
     --glass: var(--bg);
     --glass-thick: var(--sheet);
     --glass-blur: none;

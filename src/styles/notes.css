@@ -373,8 +373,6 @@ textarea.note-title::placeholder { color: var(--text-3); }
   padding: 10px 8px 8px;
   border-radius: 12px;
   background: var(--glass-thick);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
   box-shadow: var(--glass-float);
   color: var(--text);
 }

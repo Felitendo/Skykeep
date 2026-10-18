@@ -14,13 +14,20 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --sys-blue: #0091ff;
     --sys-red: #ff4245;
     --sys-gray: #98989d;
     --sys-orange: #ff9230;
   }
 }
+/* The same, when Settings chooses Dark whatever the system says. */
+:root[data-theme="dark"] {
+    --sys-blue: #0091ff;
+    --sys-red: #ff4245;
+    --sys-gray: #98989d;
+    --sys-orange: #ff9230;
+  }
 
 .content:has(.rx) { display: flex; flex-direction: column; overflow: hidden; }
 

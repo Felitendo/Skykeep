@@ -59,6 +59,13 @@ pub struct Session {
     #[serde(default)]
     pub password: Option<String>,
 
+    /// The account's name and address as Apple gives them at sign-in (`dsInfo`), for the
+    /// account shown in the sidebar and Settings.
+    #[serde(default)]
+    pub account_name: Option<String>,
+    #[serde(default)]
+    pub account_email: Option<String>,
+
     /// Failed sign-ins in a row. Drives the local backoff.
     #[serde(default)]
     pub consecutive_failures: u32,

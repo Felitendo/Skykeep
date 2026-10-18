@@ -290,10 +290,17 @@ export function CalendarView() {
   }, [selected]);
   const month = useMemo(() => monthDays(selected), [selected]);
 
-  // Each view asks for exactly what it shows.
-  const range = useMemo(() => {
-    if (view === "day") return { from: seconds(selected), to: seconds(addDays(selected, 1)) };
-    if (view === "week") return { from: seconds(week[0]), to: seconds(addDays(week[6], 1)) };
+  // What each view reads from the library. Day and Week read the month around them and a
+  // month either side: asked for one day at a time, stepping to the next day showed the last
+  // day's data — none of it on the new day — until the read came back, and the day's list
+  // flickered empty and full. Read from this computer, three months cost nothing, and moving
+  // through them waits on nothing.
+  const rawRange = useMemo(() => {
+    if (view === "day" || view === "week")
+      return {
+        from: seconds(addDays(month[0] < week[0] ? month[0] : week[0], -35)),
+        to: seconds(addDays(month[41] > week[6] ? month[41] : week[6], 36)),
+      };
     if (view === "year")
       return {
         from: seconds(new Date(selected.getFullYear(), 0, 1)),
@@ -301,6 +308,10 @@ export function CalendarView() {
       };
     return { from: seconds(month[0]), to: seconds(addDays(month[41], 1)) };
   }, [view, selected, week, month]);
+  // The same bounds are the same read: stepping a day inside them asks for nothing again.
+  const rangeKey = `${rawRange.from}-${rawRange.to}`;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const range = useMemo(() => rawRange, [rangeKey]);
 
   const read = useCallback(async () => {
     const [found, cals, reminders, lists] = await Promise.all([

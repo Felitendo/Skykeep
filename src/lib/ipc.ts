@@ -209,6 +209,11 @@ export const api = {
   driveThumbnails: (folderId: string) => invoke<Record<string, string>>("drive_thumbnails", { folderId }),
   driveDuplicate: (drivewsid: string) => invoke<void>("drive_duplicate", { drivewsid }),
   storageInfo: () => invoke<{ usedBytes: number; totalBytes: number }>("storage_info"),
+  /** Who is signed in, as Apple names them. */
+  accountInfo: () => invoke<{ name: string | null; email: string | null }>("account_info"),
+  /** Settings' switches, as the backend obeys them. */
+  settingsGet: () => invoke<{ reminderAlerts: boolean; eventAlerts: boolean }>("settings_get"),
+  settingsSet: (key: "reminderAlerts" | "eventAlerts", on: boolean) => invoke<void>("settings_set", { key, on }),
   drivePutBack: (item: DriveItem) => invoke<void>("drive_put_back", { item }),
   driveDeleteForever: (item: DriveItem) => invoke<void>("drive_delete_forever", { item }),
   driveMove: (drivewsid: string, destinationId: string) =>

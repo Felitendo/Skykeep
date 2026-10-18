@@ -264,6 +264,8 @@
   bottom: 8px;
   width: 196px;
   transition: width var(--spring-quick-d) var(--spring-quick);
+  /* Its own width changing lays out only itself. */
+  contain: layout paint;
   overflow: hidden;
   background: var(--glass);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -313,6 +315,10 @@
     background: rgba(255, 255, 255, 0.07);
   }
 }
+/* The same, when Settings chooses Dark whatever the system says. */
+:root[data-theme="dark"] .sync-row:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.07);
+  }
 
 .sync-dot {
   flex: none;
@@ -411,7 +417,6 @@
   cursor: pointer;
 }
 
-.nav-item:active { transform: scale(0.98); }
 .nav-item > svg { border-radius: 5.4px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 0 0.5px rgba(0, 0, 0, 0.2); }
 /* The icon tiles: white in light mode; Apple's graphite in dark, as icloud.com draws them. */
 .app-icon .ai-tile-top { stop-color: #ffffff; }
@@ -424,16 +429,26 @@
 .app-icon.ai-contacts .ai-tile-top { stop-color: #d8d8dc; }
 .app-icon.ai-contacts .ai-tile-bottom { stop-color: #b8b8be; }
 @media (prefers-color-scheme: dark) {
-  .app-icon .ai-tile-top { stop-color: #3a3a3e; }
-  .app-icon .ai-tile-bottom { stop-color: #1c1c1f; }
-  .app-icon .ai-edge { stroke: rgba(255, 255, 255, 0.14); }
-  .app-icon .ai-rule { fill: #5a5a60; }
-  .app-icon .ai-ink { fill: #f2f2f7; }
-  .app-icon .ai-card { fill: #636366; }
-  .app-icon .ai-person { fill: #e5e5ea; }
-  .app-icon.ai-contacts .ai-tile-top { stop-color: #3a3a3e; }
-  .app-icon.ai-contacts .ai-tile-bottom { stop-color: #1c1c1f; }
+  :root:not([data-theme="light"]) .app-icon .ai-tile-top { stop-color: #3a3a3e; }
+  :root:not([data-theme="light"]) .app-icon .ai-tile-bottom { stop-color: #1c1c1f; }
+  :root:not([data-theme="light"]) .app-icon .ai-edge { stroke: rgba(255, 255, 255, 0.14); }
+  :root:not([data-theme="light"]) .app-icon .ai-rule { fill: #5a5a60; }
+  :root:not([data-theme="light"]) .app-icon .ai-ink { fill: #f2f2f7; }
+  :root:not([data-theme="light"]) .app-icon .ai-card { fill: #636366; }
+  :root:not([data-theme="light"]) .app-icon .ai-person { fill: #e5e5ea; }
+  :root:not([data-theme="light"]) .app-icon.ai-contacts .ai-tile-top { stop-color: #3a3a3e; }
+  :root:not([data-theme="light"]) .app-icon.ai-contacts .ai-tile-bottom { stop-color: #1c1c1f; }
 }
+/* The same, when Settings chooses Dark whatever the system says. */
+:root[data-theme="dark"] .app-icon .ai-tile-top { stop-color: #3a3a3e; }
+:root[data-theme="dark"] .app-icon .ai-tile-bottom { stop-color: #1c1c1f; }
+:root[data-theme="dark"] .app-icon .ai-edge { stroke: rgba(255, 255, 255, 0.14); }
+:root[data-theme="dark"] .app-icon .ai-rule { fill: #5a5a60; }
+:root[data-theme="dark"] .app-icon .ai-ink { fill: #f2f2f7; }
+:root[data-theme="dark"] .app-icon .ai-card { fill: #636366; }
+:root[data-theme="dark"] .app-icon .ai-person { fill: #e5e5ea; }
+:root[data-theme="dark"] .app-icon.ai-contacts .ai-tile-top { stop-color: #3a3a3e; }
+:root[data-theme="dark"] .app-icon.ai-contacts .ai-tile-bottom { stop-color: #1c1c1f; }
 .nav-name { overflow: hidden; text-overflow: ellipsis; transition: opacity 120ms ease 140ms; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 6px; min-height: 28px; }
 .sidebar-head h2 { margin: 0 8px; }
@@ -456,7 +471,10 @@
 @media (max-width: 900px) { .sidebar-fold { display: none; } }
 @media (prefers-reduced-motion: reduce) { .content, .sidebar, .nav-item { transition: none; } }
 .nav-item:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.nav-item[aria-current="true"] { background: var(--accent-tint); color: var(--accent-strong); font-weight: 550; }
+/* The current app: a neutral highlight, as a Tahoe sidebar draws one, the label unchanged in
+   colour. Tinting it with the app's accent made three apps — Reminders, Drive, Contacts —
+   select in the same blue; the icon is what tells them apart. */
+.nav-item[aria-current="true"] { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); font-weight: 590; }
 .nav-item:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
 
 .nav-toggle {
@@ -495,7 +513,9 @@
   height: 100%;
   overflow-y: auto;
   padding: 28px 34px 28px var(--side, 236px);
-  transition: padding-left var(--spring-quick-d) var(--spring-quick);
+  /* No transition: folding the sidebar slides the content on the compositor instead
+     (Library's slideContent) — a padding animated here re-laid out the whole screen on
+     every frame. */
 }
 .library { --side: 236px; }
 .library.is-rail { --side: 84px; }
@@ -1327,8 +1347,6 @@
   list-style: none;
   border-radius: 12px;
   background: var(--glass-thick);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
   box-shadow: var(--glass-float);
   color: var(--text);
   /* No opening animation, as a macOS menu has none: it is simply there. Animating it in
@@ -1643,8 +1661,6 @@
   padding: 5px;
   border-radius: 12px;
   background: var(--glass-thick);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
   box-shadow: var(--glass-float);
 }
 .upload-menu button {
@@ -1800,8 +1816,6 @@
   display: flex; flex-direction: column; outline: none;
   border-radius: 12px;
   background: var(--glass-thick);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
   box-shadow: var(--glass-float);
 }
 .row-menu-item {
@@ -1917,3 +1931,82 @@
 .note-bar-actions .notes-icon { border-radius: var(--r-pill); }
 .note-bar-actions .picker-button { background: none; }
 .note-bar-actions .picker-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
+
+
+/* ── The account, at the foot of the sidebar ──────────────────────────────────────────── */
+.sidebar-account {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-height: 44px;
+  padding: 6px 8px; border: 0; border-radius: var(--r-field); background: none;
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.sidebar-account:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.sidebar-account[aria-current="true"] { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.sidebar-account:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
+.sidebar-account-text { display: flex; flex-direction: column; min-width: 0; }
+.sidebar-account-name { font-size: var(--t-13); font-weight: 590; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-account-status { display: flex; align-items: center; gap: 5px; color: var(--text-2); font-size: var(--t-11); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-account-status.is-trouble { color: var(--danger); }
+/* Apple's monogram: initials on a soft grey gradient disc. */
+.account-avatar {
+  flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+  background: linear-gradient(180deg, #a5a5ab, #85858b); color: #fff;
+  font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.35);
+}
+.account-avatar.is-large { width: 56px; height: 56px; font-size: 21px; }
+@media (min-width: 901px) {
+  .is-rail .sidebar-foot { display: flex; }
+  .is-rail .sidebar-account { justify-content: center; padding-inline: 0; }
+  .is-rail .sidebar-account-text { display: none; }
+}
+
+/* ── Settings, as System Settings lays it out ─────────────────────────────────────────── */
+.settings { max-width: 640px; margin: 0 auto; padding-bottom: 40px; }
+.settings-title { margin: 4px 0 18px; font-size: var(--t-28); font-weight: 700; letter-spacing: -0.02em; }
+.settings-heading { margin: 22px 12px 6px; font-size: var(--t-13); font-weight: 600; color: var(--text-2); }
+.settings-group {
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 8%, transparent);
+  overflow: hidden;
+}
+.settings-row {
+  display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 14px;
+  font-size: var(--t-13);
+}
+/* Separators inset past the icon, as Apple draws them between rows of a group. */
+.settings-row + .settings-row { box-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--text) 10%, transparent); }
+.settings-row.is-stacked { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 14px; }
+.settings-row-line { display: flex; justify-content: space-between; gap: 10px; }
+.settings-label { flex: 1; min-width: 0; }
+.settings-hint { color: var(--text-2); font-size: var(--t-11); line-height: 1.4; }
+.settings-value { color: var(--text-2); font-variant-numeric: tabular-nums; text-align: right; }
+.settings-value.is-trouble { color: var(--danger); max-width: 60%; }
+.settings-error { margin: 0 0 12px; color: var(--danger); }
+.settings-note { margin: 8px 12px 0; color: var(--text-2); font-size: var(--t-11); }
+.settings-account { display: flex; align-items: center; gap: 14px; padding: 14px 16px; }
+.settings-account-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-account-text strong { font-size: var(--t-17); font-weight: 600; }
+.settings-account-text span { color: var(--text-2); font-size: var(--t-13); overflow: hidden; text-overflow: ellipsis; }
+.settings-confirm { display: flex; gap: 6px; }
+.settings .segmented { padding: 2px; border-radius: var(--r-pill); }
+.settings .segment { border-radius: var(--r-pill); padding: 3px 12px; font-size: var(--t-13); }
+.storage-bar { height: 8px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--text) 10%, transparent); overflow: hidden; }
+.storage-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+
+/* The switch, as macOS 27 draws it (Toggle: track 38×22 at this size, knob inset 2): green
+   when on, the knob sliding on the snappy spring. */
+.switch {
+  position: relative; flex: none; width: 38px; height: 22px; padding: 0; border: 0;
+  border-radius: var(--r-pill); background: color-mix(in srgb, var(--text) 16%, transparent);
+  cursor: pointer; transition: background-color 180ms ease;
+}
+.switch[aria-checked="true"] { background: #34c759; }
+.switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  transition: translate var(--spring-snappy-d) var(--spring-snappy);
+}
+.switch[aria-checked="true"] .switch-knob { translate: 16px 0; }
+.switch:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 2px; }
+.switch:disabled { opacity: 0.5; }

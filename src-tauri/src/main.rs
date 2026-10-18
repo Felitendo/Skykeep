@@ -304,6 +304,55 @@ async fn auth_sign_out(auth: State<'_, Auth>) -> UiResult<()> {
 }
 
 /// Services Apple advertises for this account, for the sidebar.
+/// Who is signed in, as Apple names them: for the account in the sidebar and in Settings.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountInfo {
+    name: Option<String>,
+    email: Option<String>,
+}
+
+#[tauri::command]
+async fn account_info(auth: State<'_, Auth>) -> UiResult<AccountInfo> {
+    let client = auth.client.lock().await;
+    let s = client.session();
+    Ok(AccountInfo {
+        name: s.account_name.clone(),
+        email: s.account_email.clone().or_else(|| s.apple_id.clone()),
+    })
+}
+
+/// Settings' switches, as the backend obeys them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Settings {
+    reminder_alerts: bool,
+    event_alerts: bool,
+}
+
+#[tauri::command]
+async fn settings_get(data: State<'_, Data>) -> UiResult<Settings> {
+    let library = data.0.lock().await;
+    Ok(Settings {
+        reminder_alerts: alerts::allowed(&library, alerts::REMINDER_ALERTS),
+        event_alerts: alerts::allowed(&library, alerts::EVENT_ALERTS),
+    })
+}
+
+/// Turn a kind of alert on or off. Only the switches Settings shows can be set.
+#[tauri::command]
+async fn settings_set(key: String, on: bool, data: State<'_, Data>) -> UiResult<()> {
+    let state = match key.as_str() {
+        "reminderAlerts" => alerts::REMINDER_ALERTS,
+        "eventAlerts" => alerts::EVENT_ALERTS,
+        _ => return Err(format!("There is no setting called {key}.")),
+    };
+    let mut library = data.0.lock().await;
+    library
+        .set_state(state, if on { "on" } else { "off" })
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn account_services(auth: State<'_, Auth>) -> UiResult<Vec<String>> {
     let client = auth.client.lock().await;
@@ -2885,6 +2934,9 @@ fn main() {
             auth_submit_sms_code,
             auth_sign_out,
             account_services,
+            account_info,
+            settings_get,
+            settings_set,
             sync_all,
             sync_status,
             calendar_sync,

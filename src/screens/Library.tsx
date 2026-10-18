@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { PanelLeft } from "lucide-react";
 import { api, messageOf, OPEN_REMINDER } from "../lib/ipc";
 import { SyncProvider } from "../lib/sync";
-import { SyncStatus } from "../components/SyncStatus";
+import { AccountCard } from "../components/Account";
 
 /*
  * Each app is its own chunk, so the window opens on the code for the app it shows, not all
@@ -16,12 +16,14 @@ const loaders = {
   notes: () => import("./NotesView").then((m) => ({ default: m.NotesView })),
   contacts: () => import("./ContactsView").then((m) => ({ default: m.ContactsView })),
   drivews: () => import("./DriveView").then((m) => ({ default: m.DriveView })),
+  settings: () => import("./SettingsView").then((m) => ({ default: m.SettingsView })),
 };
 const CalendarView = lazy(loaders.calendar);
 const RemindersView = lazy(loaders.reminders);
 const NotesView = lazy(loaders.notes);
 const ContactsView = lazy(loaders.contacts);
 const DriveView = lazy(loaders.drivews);
+const SettingsView = lazy(loaders.settings);
 import { ScreenBoundary } from "../components/ScreenBoundary";
 import { AppIcon } from "../components/AppIcon";
 
@@ -60,7 +62,32 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
       return false;
     }
   });
-  const toggleRail = () =>
+  const content = useRef<HTMLElement | null>(null);
+  /**
+   * Folding the sidebar moves the content without laying it out on every frame. Animating
+   * the content's padding made the whole screen — a calendar grid, a long list — lay itself
+   * out sixty times a second, and that was the stutter. Instead it takes its new width at
+   * once and slides from where it was, which the compositor does alone.
+   */
+  const slideContent = (from: number) => {
+    const el = content.current;
+    if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    requestAnimationFrame(() => {
+      const to = el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
+      const by = from - to;
+      if (Math.abs(by) < 1) return;
+      el.animate([{ transform: `translateX(${by}px)` }, { transform: "none" }], {
+        duration: 300,
+        easing: getComputedStyle(document.documentElement).getPropertyValue("--spring-quick").trim() || "ease-out",
+      });
+    });
+  };
+  const toggleRail = () => {
+    const el = content.current;
+    if (el) slideContent(el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft));
+    setRailState();
+  };
+  const setRailState = () =>
     setRail((was) => {
       try {
         window.localStorage.setItem(RAIL_KEY, was ? "0" : "1");
@@ -82,7 +109,7 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
         } catch {
           // Without storage it opens on the first screen, which is fine.
         }
-        setSelected(last && offered.includes(last) ? last : (offered[0] ?? null));
+        setSelected(last && (offered.includes(last) || last === "settings") ? last : (offered[0] ?? null));
         setReady(true);
       })
       .catch((e) => setError(messageOf(e)));
@@ -209,15 +236,18 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
           )}
 
           <div className="sidebar-foot">
-            <SyncStatus />
-            <button className="quiet sidebar-signout" onClick={onSignOut}>
-              Sign out
-            </button>
+            <AccountCard current={selected === "settings"} onOpen={() => choose("settings")} />
           </div>
         </nav>
 
-        <main className="content">
-          {selected && SCREENS.some((s) => s.key === selected) ? (
+        <main className="content" ref={content}>
+          {selected === "settings" ? (
+            <ScreenBoundary key="settings" name="Settings">
+              <Suspense fallback={null}>
+                <SettingsView onSignOut={onSignOut} />
+              </Suspense>
+            </ScreenBoundary>
+          ) : selected && SCREENS.some((s) => s.key === selected) ? (
             // Keyed by screen, so moving to another screen also clears a failed one.
             <ScreenBoundary key={selected} name={SCREENS.find((s) => s.key === selected)?.name ?? "This screen"}>
               <Suspense fallback={null}>

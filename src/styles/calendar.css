@@ -757,14 +757,18 @@
 
 /* In the dark the calendar's colour is lifted toward white instead. */
 @media (prefers-color-scheme: dark) {
-  .cx-block, .cx-bar-event { color: color-mix(in srgb, var(--cal) 45%, #fff); }
+  :root:not([data-theme="light"]) .cx-block, :root:not([data-theme="light"]) .cx-bar-event { color: color-mix(in srgb, var(--cal) 45%, #fff); }
 }
+/* The same, when Settings chooses Dark whatever the system says. */
+:root[data-theme="dark"] .cx-block, :root[data-theme="dark"] .cx-bar-event { color: color-mix(in srgb, var(--cal) 45%, #fff); }
 
 /* Reminders' words take their list's colour, deepened to read in light and lifted in dark. */
 .cx-reminder, .cx-item.is-reminder .cx-item-title, .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 62%, #000); }
 @media (prefers-color-scheme: dark) {
-  .cx-reminder, .cx-item.is-reminder .cx-item-title, .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 50%, #fff); }
+  :root:not([data-theme="light"]) .cx-reminder, :root:not([data-theme="light"]) .cx-item.is-reminder .cx-item-title, :root:not([data-theme="light"]) .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 50%, #fff); }
 }
+/* The same, when Settings chooses Dark whatever the system says. */
+:root[data-theme="dark"] .cx-reminder, :root[data-theme="dark"] .cx-item.is-reminder .cx-item-title, :root[data-theme="dark"] .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 50%, #fff); }
 .cx-reminder.is-done, .cx-item.is-reminder.is-done .cx-item-title { color: var(--text-3); }
 
 /* ── The toolbar in Liquid Glass ────────────────────────────────────────────────────────

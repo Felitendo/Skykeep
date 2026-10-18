@@ -6,6 +6,10 @@ import "./styles/app.css";
 import "./styles/reminders.css";
 import "./styles/calendar.css";
 import "./styles/notes.css";
+import { applyTheme, storedTheme } from "./lib/theme";
+
+// Before the first paint, so the window opens in the appearance chosen.
+applyTheme(storedTheme());
 
 /*
  * Every link goes the one way out: as a navigation, which the window refuses and hands to

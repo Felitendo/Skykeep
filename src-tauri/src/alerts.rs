@@ -84,17 +84,28 @@ pub fn take_due(library: &mut quince_core::Library, now: i64) -> (Vec<DueAlarm>,
 }
 
 /// Start the task. It runs for the life of the process, window open or not.
+/// Settings' switches for each kind of alert. An alert due while its switch is off is let
+/// go, not saved for later: turned back on, it does not ring for what has passed.
+pub const REMINDER_ALERTS: &str = "settings.alerts.reminders";
+pub const EVENT_ALERTS: &str = "settings.alerts.events";
+
+/// Whether a kind of alert may ring. On unless Settings turned it off.
+pub fn allowed(library: &quince_core::Library, key: &str) -> bool {
+    library.state(key).ok().flatten().as_deref() != Some("off")
+}
+
 pub fn spawn(app: AppHandle) {
     watch_for_resume();
     tauri::async_runtime::spawn(async move {
         loop {
             let at = now();
-            let (ring, next) = {
+            let (ring, next, on) = {
                 let data = app.state::<Data>();
                 let mut library = data.0.lock().await;
-                take_due(&mut library, at)
+                let (ring, next) = take_due(&mut library, at);
+                (ring, next, allowed(&library, REMINDER_ALERTS))
             };
-            for due in ring {
+            for due in ring.into_iter().filter(|_| on) {
                 show(app.clone(), due);
             }
             let wait = next.map_or(LONGEST_SLEEP, |t| {
@@ -273,6 +284,7 @@ pub fn spawn_events(app: AppHandle) {
                         let mut library = data.0.lock().await;
                         !library.alarm_already_fired(&key, fires_at).unwrap_or(true)
                             && library.mark_alarm_fired(&key, fires_at, at).is_ok()
+                            && allowed(&library, EVENT_ALERTS)
                     };
                     if ring {
                         show_event(app.clone(), e.clone(), *minutes);
@@ -334,6 +346,21 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_alert_rings_unless_settings_turned_it_off() {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        assert!(allowed(&library, EVENT_ALERTS), "on until turned off");
+        library.set_state(EVENT_ALERTS, "off").unwrap();
+        assert!(!allowed(&library, EVENT_ALERTS));
+        assert!(
+            allowed(&library, REMINDER_ALERTS),
+            "one switch does not turn off the other"
+        );
+        library.set_state(EVENT_ALERTS, "on").unwrap();
+        assert!(allowed(&library, EVENT_ALERTS));
+    }
+
     use super::*;
     use quince_core::alarms::{Alarm, AlarmTrigger};
     use quince_core::reminders::{Reminder, ReminderList};

@@ -61,12 +61,7 @@ async fn watch_contacts(
             .get_webview_window("main")
             .and_then(|w| w.is_visible().ok())
             .unwrap_or(false);
-        tokio::time::sleep(if visible {
-            LOOK
-        } else {
-            LOOK_HIDDEN
-        })
-        .await;
+        tokio::time::sleep(if visible { LOOK } else { LOOK_HIDDEN }).await;
         let session = {
             let guard = client.lock().await;
             let s = guard.session();
@@ -135,12 +130,7 @@ async fn watch_calendar(
             .get_webview_window("main")
             .and_then(|w| w.is_visible().ok())
             .unwrap_or(false);
-        tokio::time::sleep(if visible {
-            LOOK
-        } else {
-            LOOK_HIDDEN
-        })
-        .await;
+        tokio::time::sleep(if visible { LOOK } else { LOOK_HIDDEN }).await;
         let session = {
             let guard = client.lock().await;
             let s = guard.session();
