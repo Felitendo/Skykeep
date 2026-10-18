@@ -41,14 +41,77 @@ fn service_of(container: &str) -> Option<&'static str> {
 pub fn spawn(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
     let (tx, rx) = mpsc::unbounded_channel::<&'static str>();
     tauri::async_runtime::spawn(refresher(app.clone(), Arc::clone(&client), rx));
-    tauri::async_runtime::spawn(watch_calendar(app, Arc::clone(&client), tx.clone()));
+    tauri::async_runtime::spawn(watch_calendar(app.clone(), Arc::clone(&client), tx.clone()));
+    tauri::async_runtime::spawn(watch_contacts(app, Arc::clone(&client), tx.clone()));
     tauri::async_runtime::spawn(listen(client, tx));
 }
 
-/// How often Calendar is asked whether anything changed: often while the window is open,
+/// Contacts, likewise without web push: `/co/changeset` from the last tokens answers 420
+/// within seconds of a change made anywhere. Tokens are read once, and again after each
+/// change, so the check stays against the book as it now is.
+async fn watch_contacts(
+    app: tauri::AppHandle,
+    client: Arc<Mutex<Client>>,
+    tx: mpsc::UnboundedSender<&'static str>,
+) {
+    let mut tokens: Option<quince_icloud::contacts::Tokens> = None;
+    let mut backoff = Duration::from_secs(5);
+    loop {
+        let visible = app
+            .get_webview_window("main")
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
+        tokio::time::sleep(if visible {
+            LOOK
+        } else {
+            LOOK_HIDDEN
+        })
+        .await;
+        let session = {
+            let guard = client.lock().await;
+            let s = guard.session();
+            s.webservices
+                .is_some()
+                .then(|| s.service_url("contacts"))
+                .flatten()
+                .map(|root| (guard.http().clone(), guard.service_params(), root))
+        };
+        let Some((http, params, root)) = session else {
+            tokens = None;
+            continue;
+        };
+        let result = match tokens.as_mut() {
+            None => quince_icloud::contacts::fetch_with_tokens(&http, &root, params)
+                .await
+                .map(|(_, t)| {
+                    tokens = Some(t);
+                    false
+                }),
+            Some(t) => quince_icloud::contacts::changed(&http, &root, params, t).await,
+        };
+        match result {
+            Ok(changed) => {
+                backoff = Duration::from_secs(5);
+                if changed {
+                    tx.send("contacts").ok();
+                    // Read afresh next time: a 420 means these tokens are behind for good.
+                    tokens = None;
+                }
+            }
+            Err(e) => {
+                eprintln!("contacts watch: {e}");
+                tokens = None;
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(5 * 60));
+            }
+        }
+    }
+}
+
+/// How often Calendar and Contacts are asked whether anything changed: often while the window is open,
 /// rarely from the tray, where only an alert depends on it.
-const CALENDAR_LOOK: Duration = Duration::from_secs(4);
-const CALENDAR_LOOK_HIDDEN: Duration = Duration::from_secs(30);
+const LOOK: Duration = Duration::from_secs(4);
+const LOOK_HIDDEN: Duration = Duration::from_secs(30);
 
 /// Calendar has no push for the web. Its own "has anything changed" call, `/ca/idle`, answers
 /// in a few hundred milliseconds with only the calendars whose tag moved, so it is asked every
@@ -73,9 +136,9 @@ async fn watch_calendar(
             .and_then(|w| w.is_visible().ok())
             .unwrap_or(false);
         tokio::time::sleep(if visible {
-            CALENDAR_LOOK
+            LOOK
         } else {
-            CALENDAR_LOOK_HIDDEN
+            LOOK_HIDDEN
         })
         .await;
         let session = {

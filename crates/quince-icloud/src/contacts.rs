@@ -210,6 +210,63 @@ pub async fn fetch_book_with_tokens(
     ))
 }
 
+/// Whether the address book changed since `tokens` were read, from `/co/changeset` —
+/// icloud.com's own check, which answers in a few hundred milliseconds.
+///
+/// Measured: with nothing changed it answers 200 with the same sync token and no contacts.
+/// After a change made anywhere it answers 420: the token is behind, read the book again.
+/// A 200 that carries contacts or a new token is a change too, and its tokens are kept.
+pub async fn changed(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &mut Tokens,
+) -> Result<bool> {
+    let mut query = params;
+    query.push(("clientVersion".into(), "2.1".into()));
+    query.push(("locale".into(), "en_US".into()));
+    query.push(("order".into(), "last,first".into()));
+    query.push(("prefToken".into(), tokens.pref.clone()));
+    query.push(("syncToken".into(), tokens.sync.clone()));
+    let url = format!("{}/co/changeset", root.trim_end_matches('/'));
+    let response = http.post(url).query(&query).send().await?;
+    match response.status().as_u16() {
+        420 => return Ok(true),
+        450 => return Err(Error::ReauthRequired),
+        code if !(200..300).contains(&code) => {
+            return Err(Error::Protocol(format!("/co/changeset answered {code}")));
+        }
+        _ => {}
+    }
+    let body: Value = response.json().await.unwrap_or(Value::Null);
+    Ok(changeset_moved(&body, tokens))
+}
+
+/// Whether a 200 from `/co/changeset` says something changed; its tokens are taken either way.
+fn changeset_moved(body: &Value, tokens: &mut Tokens) -> bool {
+    let carries = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+    };
+    let gone = body
+        .get("deletes")
+        .and_then(Value::as_object)
+        .is_some_and(|d| {
+            d.values()
+                .any(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+        });
+    let mut moved = carries("contacts") || carries("groups") || gone;
+    if let Some(sync) = body.get("syncToken").and_then(Value::as_str) {
+        moved |= sync != tokens.sync;
+        tokens.sync = sync.to_string();
+    }
+    if let Some(pref) = body.get("prefToken").and_then(Value::as_str) {
+        tokens.pref = pref.to_string();
+    }
+    moved
+}
+
 pub async fn fetch_with_tokens(
     http: &reqwest::Client,
     root: &str,
@@ -1045,6 +1102,32 @@ mod list_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_changeset_says_whether_anything_moved() {
+        let mut t = Tokens {
+            sync: "S1".into(),
+            pref: "P".into(),
+        };
+        assert!(!changeset_moved(
+            &serde_json::json!({"syncToken":"S1","prefToken":"P","contacts":[]}),
+            &mut t
+        ));
+        assert!(changeset_moved(
+            &serde_json::json!({"syncToken":"S2"}),
+            &mut t
+        ));
+        assert_eq!(t.sync, "S2");
+        assert!(changeset_moved(
+            &serde_json::json!({"syncToken":"S2","deletes":{"contactIds":["x"]}}),
+            &mut t
+        ));
+        assert!(changeset_moved(
+            &serde_json::json!({"contacts":[{"contactId":"y"}]}),
+            &mut t
+        ));
+    }
+
     use serde_json::json;
 
     #[test]
