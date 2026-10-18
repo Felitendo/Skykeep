@@ -243,6 +243,9 @@ pub struct Client {
     pending: Option<(String, String)>,
     /// A lapsed session tried to sign itself back in and Apple wants a code first.
     awaiting_code: bool,
+    /// The keyring would not answer when this started — locked, or not up yet. Not the same
+    /// as nothing stored: it is asked again before anything else happens.
+    keyring_error: Option<String>,
 }
 
 impl Client {
@@ -253,7 +256,10 @@ impl Client {
     /// Build a client against specific endpoints and a specific secret store.
     pub fn with(state_dir: &Path, endpoints: Endpoints, store: Store) -> Result<Self> {
         std::fs::create_dir_all(state_dir)?;
-        let session = store.load();
+        let (session, keyring_error) = match store.try_load() {
+            Ok(session) => (session, None),
+            Err(e) => (session::Session::default(), Some(e.to_string())),
+        };
 
         let jar = {
             let path = store.cookie_path();
@@ -295,6 +301,7 @@ impl Client {
             endpoints,
             pending: None,
             awaiting_code: false,
+            keyring_error,
         })
     }
 
@@ -394,15 +401,29 @@ impl Client {
     /// product promises. `Ok(false)` means Apple rejected it and a full sign-in is needed;
     /// that is an expected outcome (roughly every 60 days), not a failure.
     pub async fn resume(&mut self) -> Result<bool> {
+        // A keyring that would not answer at startup is asked again; still locked, that is
+        // what is said — never "signed out", which led to a sign-in replacing what it holds.
+        if self.keyring_error.is_some() {
+            match self.store.try_load() {
+                Ok(session) => {
+                    self.session = session;
+                    self.keyring_error = None;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         if !self.session.is_resumable() {
             return Ok(false);
         }
         // Cheap path: the cookies are still good, so nothing needs re-establishing.
-        if let Ok(data) = self.validate().await {
-            self.absorb(&data);
-            self.persist()?;
-            return Ok(true);
-        }
+        let validated = match self.validate().await {
+            Ok(data) => {
+                self.absorb(&data);
+                self.persist()?;
+                return Ok(true);
+            }
+            Err(e) => e,
+        };
 
         // The cookies are missing or stale but the tokens are not. Apple's service endpoints
         // authenticate by cookie — without X-APPLE-WEBAUTH-USER they answer 421 — so trade
@@ -410,10 +431,20 @@ impl Client {
         //
         // This is what makes staying signed in survive a lost cookie file, a copied install,
         // or cookies expiring before the trust token does.
-        if let Ok(data) = self.account_login().await {
-            self.absorb(&data);
-            self.persist()?;
-            return Ok(true);
+        let logged_in = match self.account_login().await {
+            Ok(data) => {
+                self.absorb(&data);
+                self.persist()?;
+                return Ok(true);
+            }
+            Err(e) => e,
+        };
+        // Unreachable is not rejected. Offline — no network yet after login, or a resume
+        // from sleep mid-reconnect — the session is left exactly as it is and the caller
+        // told so; signing in again here cleared the session token, failed on the network,
+        // and saved the cleared state, so every launch after showed the sign-in screen.
+        if matches!(validated, Error::Network(_)) && matches!(logged_in, Error::Network(_)) {
+            return Err(logged_in);
         }
 
         // The session token has lapsed too — Apple keeps one for days, not months. With the
@@ -423,8 +454,15 @@ impl Client {
         if let (Some(apple_id), Some(password)) =
             (self.session.apple_id.clone(), self.session.password.clone())
         {
+            let before = self.session.clone();
             match self.sign_in(&apple_id, &password).await {
                 Ok(SignInOutcome::Complete) => return Ok(true),
+                // Lost the network part way: what was kept is put back as it was.
+                Err(Error::Network(e)) => {
+                    self.session = before;
+                    let _ = self.persist();
+                    return Err(Error::Network(e));
+                }
                 Ok(SignInOutcome::NeedsTwoFactor) => {
                     self.awaiting_code = true;
                     return Ok(false);
@@ -506,7 +544,8 @@ impl Client {
                 self.session.consecutive_failures = 0;
                 self.session.retry_after = None;
             }
-            Err(Error::CoolingDown { .. }) => {}
+            // Not reaching Apple is not a failed attempt: no cooldown for being offline.
+            Err(Error::CoolingDown { .. } | Error::Network(_)) => {}
             Err(e) => {
                 self.session.consecutive_failures =
                     self.session.consecutive_failures.saturating_add(1);

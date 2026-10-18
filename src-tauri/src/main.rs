@@ -184,7 +184,14 @@ async fn auth_status(auth: State<'_, Auth>) -> UiResult<Status> {
 #[tauri::command]
 async fn auth_resume(auth: State<'_, Auth>) -> UiResult<&'static str> {
     let mut client = auth.client.lock().await;
-    let resumed = client.resume().await.map_err(|e| e.to_string())?;
+    let resumed = match client.resume().await {
+        Ok(resumed) => resumed,
+        // Offline with a session kept: the library opens on what it holds, as a local-first
+        // app should, and the next refresh — on the timer, or when the network is back —
+        // signs back in.
+        Err(quince_auth::Error::Network(_)) if client.has_stored_session() => true,
+        Err(e) => return Err(e.to_string()),
+    };
     // Back in; or back in but for the code Apple wants before trusting this computer again;
     // or out, with nothing kept to sign in with.
     Ok(if resumed {

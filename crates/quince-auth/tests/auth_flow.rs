@@ -556,6 +556,67 @@ async fn resume_rebuilds_a_session_from_tokens_alone() {
     );
 }
 
+/// Offline is not signed out. With the network down — the app opened before the network
+/// came up, or a resume from sleep mid-reconnect — resuming says so and leaves the session
+/// exactly as it was; the next launch, online, is still signed in, with no cooldown.
+#[tokio::test]
+async fn resuming_offline_keeps_the_session() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(ResponseTemplate::new(421).set_body_json(json!({ "error": 1 })))
+        .mount(&server)
+        .await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut first = client_for(&server, dir.path());
+        first
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap();
+        first.submit_two_factor("123456").await.unwrap();
+    }
+    // Nothing listening: every request fails to connect.
+    let nowhere = Endpoints {
+        auth_root: SRP_ORIGIN.into(),
+        home: WEB_ORIGIN.into(),
+        auth: "http://127.0.0.1:9/appleauth/auth".into(),
+        setup: "http://127.0.0.1:9/setup/ws/1".into(),
+    };
+    {
+        let mut offline =
+            Client::with(dir.path(), nowhere, Store::file(dir.path()).unwrap()).unwrap();
+        assert!(offline.has_stored_session());
+        let err = offline
+            .resume()
+            .await
+            .expect_err("offline is said, not hidden");
+        assert!(matches!(err, quince_auth::Error::Network(_)), "{err}");
+    }
+    let back = client_for(&server, dir.path());
+    assert!(
+        back.has_stored_session(),
+        "still signed in after a launch with no network"
+    );
+    assert!(
+        back.session().session_token.is_some(),
+        "the session token was kept"
+    );
+    assert_eq!(
+        back.session().consecutive_failures,
+        0,
+        "and being offline is no failed attempt"
+    );
+}
+
 /// A cooldown that a restart forgets is not a cooldown.
 ///
 /// It used to live only in the keyring, so on a machine with none — or one that is locked —

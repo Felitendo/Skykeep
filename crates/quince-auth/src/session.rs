@@ -125,7 +125,10 @@ impl Session {
 
     /// True when there's enough stored state to try resuming without a password.
     pub fn is_resumable(&self) -> bool {
-        self.session_token.is_some()
+        // A lapsed session token is not the end: with the trust token and the password kept,
+        // a sign-in needs no code. Requiring the session token alone meant one failed
+        // attempt that cleared it sent every later launch to the sign-in screen.
+        self.session_token.is_some() || (self.trust_token.is_some() && self.password.is_some())
     }
 }
 
@@ -257,17 +260,25 @@ impl Store {
 
     /// Load the stored session. A missing entry is normal (first run), not an error.
     pub fn load(&self) -> Session {
+        self.try_load().unwrap_or_default()
+    }
+
+    /// [`Self::load`], telling "nothing stored" apart from "the keyring would not answer" —
+    /// locked, or not started yet at login. Read as nothing stored, a locked keyring showed
+    /// the sign-in screen, and signing in then replaced the entry and its trust token.
+    pub fn try_load(&self) -> Result<Session, crate::Error> {
         let json = match &self.backend {
             Backend::Keyring(_) => match self.entry().and_then(|e| e.get_password()) {
                 Ok(j) => j,
-                Err(_) => return Session::default(),
+                Err(keyring::Error::NoEntry) => return Ok(Session::default()),
+                Err(e) => return Err(crate::Error::Keyring(e.to_string())),
             },
             Backend::File(path) => match std::fs::read_to_string(path) {
                 Ok(j) => j,
-                Err(_) => return Session::default(),
+                Err(_) => return Ok(Session::default()),
             },
         };
-        serde_json::from_str(&json).unwrap_or_default()
+        Ok(serde_json::from_str(&json).unwrap_or_default())
     }
 
     pub fn save(&self, session: &Session) -> Result<(), crate::Error> {
