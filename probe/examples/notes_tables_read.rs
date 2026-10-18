@@ -74,6 +74,10 @@ async fn main() -> Result<()> {
         println!("attachment {} uti={uti} keys={keys:?}", r["recordName"]);
         if let Some(m) = f["MergeableDataEncrypted"]["value"].as_str() {
             if let Some(raw) = quince_icloud::ckdocument::debug_inflate(m) {
+                if let Ok(out) = std::env::var("TABLE_DUMP_DIR") {
+                    let name = r["recordName"].as_str().unwrap_or("x");
+                    std::fs::write(format!("{out}/{name}.bin"), &raw).ok();
+                }
                 for line in quince_icloud::ckdocument::debug_tree(&raw, 12).iter() {
                     println!("  {line}");
                 }

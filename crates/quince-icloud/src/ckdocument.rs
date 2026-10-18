@@ -348,6 +348,80 @@ fn utf16_change(old: &str, new: &str) -> (u64, u64, u64) {
     )
 }
 
+/// The edits that turn `old` into `new`, each `(from, removed, inserted)` in UTF-16 units of
+/// `old`, in order. Text both have in common between two edits is not part of either: an edit
+/// above a table and another below it are two edits, and the table between them — and every
+/// character between, with its merge record and its formatting — stays as it was. Measured
+/// as one stretch from the first difference to the last, the table's place in the text came
+/// back as plain text and the unchanged middle as deleted and typed again.
+///
+/// Compared character by character, so no edit splits a surrogate pair; a stretch too large
+/// to compare cheaply is one edit, as before.
+fn utf16_hunks(old: &str, new: &str) -> Vec<(u64, u64, u64)> {
+    let a: Vec<char> = old.chars().collect();
+    let b: Vec<char> = new.chars().collect();
+    let pre = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let max_suf = a.len().min(b.len()) - pre;
+    let suf = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(max_suf)
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (am, bm) = (&a[pre..a.len() - suf], &b[pre..b.len() - suf]);
+    // UTF-16 offset of each character of `old`.
+    let mut at = Vec::with_capacity(a.len() + 1);
+    let mut n = 0u64;
+    for c in &a {
+        at.push(n);
+        n += c.len_utf16() as u64;
+    }
+    at.push(n);
+    let units = |cs: &[char]| cs.iter().map(|c| c.len_utf16() as u64).sum::<u64>();
+    if am.is_empty() && bm.is_empty() {
+        return Vec::new();
+    }
+    if am.len().saturating_mul(bm.len()) > 4_000_000 || am.is_empty() || bm.is_empty() {
+        return vec![(at[pre], units(am), units(bm))];
+    }
+    let w = bm.len() + 1;
+    let mut lcs = vec![0u32; (am.len() + 1) * w];
+    for i in (0..am.len()).rev() {
+        for j in (0..bm.len()).rev() {
+            lcs[i * w + j] = if am[i] == bm[j] {
+                lcs[(i + 1) * w + j + 1] + 1
+            } else {
+                lcs[(i + 1) * w + j].max(lcs[i * w + j + 1])
+            };
+        }
+    }
+    let mut hunks: Vec<(u64, u64, u64)> = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    let mut open: Option<(u64, u64, u64)> = None;
+    while i < am.len() || j < bm.len() {
+        if i < am.len() && j < bm.len() && am[i] == bm[j] {
+            if let Some(h) = open.take() {
+                hunks.push(h);
+            }
+            i += 1;
+            j += 1;
+        } else if j < bm.len() && (i == am.len() || lcs[i * w + j + 1] >= lcs[(i + 1) * w + j]) {
+            let h = open.get_or_insert((at[pre + i], 0, 0));
+            h.2 += bm[j].len_utf16() as u64;
+            j += 1;
+        } else {
+            let h = open.get_or_insert((at[pre + i], 0, 0));
+            h.1 += am[i].len_utf16() as u64;
+            i += 1;
+        }
+    }
+    if let Some(h) = open {
+        hunks.push(h);
+    }
+    hunks
+}
+
 /// The field of a run that says it holds an attachment — a table, a picture — by id.
 const ATTACHMENT_INFO: u64 = 12;
 
@@ -532,7 +606,8 @@ fn set_varint_field(message: &[u8], tag: u64, value: u64) -> Option<Vec<u8>> {
 /// each run keeps whatever styling it carried — the paragraph style, the font, the
 /// identifiers Apple uses to merge edits. Only the lengths move.
 fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> {
-    let (from, removed, inserted) = utf16_change(old_text, new_text);
+    // Each edit on its own, the last first, so the offsets of those before it still hold.
+    let hunks = utf16_hunks(old_text, new_text);
 
     // The merge records have to say what the text now says, or the phone shows what they
     // say instead: edits made here arrived as text repeated, or lines that would not go.
@@ -540,7 +615,9 @@ fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> 
         // The usual case: records that agree with the text, and the edit made to them the
         // way a device would make it.
         Some(mut topo) if topo.live_length() == utf16_len(old_text) => {
-            topo.edit(from, removed, inserted);
+            for &(from, removed, inserted) in hunks.iter().rev() {
+                topo.edit(from, removed, inserted);
+            }
             topo
         }
         // Records that already disagree with the text — left by this app's edits before it
@@ -572,7 +649,16 @@ fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> 
     }
 
     let wanted = utf16_len(new_text);
-    let mut rebuilt_runs = rebuild_runs(&runs, from, removed, inserted, wanted)?;
+    let mut rebuilt_runs = runs;
+    let mut length = utf16_len(old_text);
+    for &(from, removed, inserted) in hunks.iter().rev() {
+        length = length - removed + inserted;
+        rebuilt_runs = rebuild_runs(&rebuilt_runs, from, removed, inserted, length)?;
+    }
+    // A run set that did not add up before any of this is put right at the tail.
+    if length != wanted || rebuilt_runs.iter().map(|r| run_length(r)).sum::<u64>() != wanted {
+        rebuilt_runs = rebuild_runs(&rebuilt_runs, 0, 0, 0, wanted)?;
+    }
     if rebuilt_runs.is_empty() && wanted > 0 {
         rebuilt_runs.push(varint_field(1, wanted));
     }
@@ -1282,6 +1368,12 @@ pub fn is_rewritable(original: &[u8]) -> bool {
         !has_field(note, PROVENANCE)
             || crate::topotext::Topo::read(note).is_some_and(|t| t.live_length() == utf16_len(text))
     })
+}
+
+/// One run's length, for looking at a document's runs.
+#[must_use]
+pub fn debug_run_length(run: &[u8]) -> u64 {
+    run_length(run)
 }
 
 /// The merge graph of a note document, for looking at one that will not edit.
@@ -2629,6 +2721,51 @@ mod run_tests {
                 .map(|r| (r.length, r.style, r.bold))
                 .collect::<Vec<_>>(),
             [(2, None, false), (3, Some(1), false)]
+        );
+    }
+
+    /// One save that changes the line above a table and the line below it: two edits, and the
+    /// table between keeps its place and its attachment, its run untouched.
+    #[test]
+    fn edits_either_side_of_a_table_leave_it_attached() {
+        let mut info = Vec::new();
+        len_field(12, b"\x0a\x02id", &mut info);
+        let doc = doc_with(
+            "Above\n\u{FFFC}\nBelow",
+            &[(6, Vec::new()), (1, info), (6, Vec::new())],
+        );
+        let out = replace_text(&doc, "Above it\n\u{FFFC}\nBelow it").expect("edit");
+        let raw = debug_attribute_runs(&out);
+        let mut at = 0u64;
+        let mut attached_at = None;
+        for r in &raw {
+            if bytes_field(r, 12).is_some() {
+                attached_at = Some((at, run_length(r)));
+            }
+            at += run_length(r);
+        }
+        assert_eq!(
+            attached_at,
+            Some((9, 1)),
+            "the table is where it was, one character, still attached"
+        );
+        assert_eq!(
+            at,
+            "Above it\n\u{FFFC}\nBelow it".encode_utf16().count() as u64
+        );
+    }
+
+    #[test]
+    fn a_change_in_two_places_is_two_edits() {
+        assert_eq!(
+            utf16_hunks("Above\nX\nBelow", "Above!\nX\nBelow!"),
+            [(5, 0, 1), (13, 0, 1)]
+        );
+        assert_eq!(utf16_hunks("same", "same"), []);
+        assert_eq!(
+            utf16_hunks("a😀b", "a😀c"),
+            [(3, 1, 1)],
+            "counted in UTF-16 units, never splitting a pair"
         );
     }
 
