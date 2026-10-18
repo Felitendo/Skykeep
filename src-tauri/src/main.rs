@@ -538,10 +538,31 @@ async fn event_delete(
         .delete_event_scoped(&event, ctag.as_deref(), scope)
         .await
         .map_err(|e| e.to_string())?;
+    // What went at Apple goes here: the whole series for all of it, this day and those after
+    // for this-and-future — not just the one day, which left the rest of a deleted series on
+    // screen until the next sync.
     let mut library = data.0.lock().await;
-    library
-        .forget_events(std::slice::from_ref(&event.guid))
-        .map_err(|e| e.to_string())
+    let series = quince_icloud::calendar::series_of(&event.guid).to_string();
+    let gone: Vec<String> = match scope {
+        Some(quince_icloud::calendar::Scope::All)
+        | Some(quince_icloud::calendar::Scope::Future) => library
+            .events_starting_between(i64::MIN / 2, i64::MAX / 2)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(g, _)| g)
+            .filter(|g| quince_icloud::calendar::series_of(g) == series)
+            .filter(|g| {
+                scope == Some(quince_icloud::calendar::Scope::All)
+                    || library
+                        .event(g)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|e| e.starts_at >= event.starts_at)
+            })
+            .collect(),
+        _ => vec![event.guid.clone()],
+    };
+    library.forget_events(&gone).map_err(|e| e.to_string())
 }
 
 /// Events overlapping `[from, to]`, as unix seconds. Read straight from the library.

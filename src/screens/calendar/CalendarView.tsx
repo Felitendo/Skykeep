@@ -313,7 +313,14 @@ export function CalendarView() {
     setEvents(Array.isArray(found) ? found : []);
     setCalendars(Array.isArray(cals) ? cals : []);
     // What is done is not on the schedule any more; Calendar hides completed reminders.
-    setDue(Array.isArray(reminders) ? reminders.filter((r) => !r.completedAt) : []);
+    // An all-day reminder's date is Apple's: midnight UTC on its day. Read as an instant it
+    // landed a day early for anyone west of UTC; it is that day, on this clock.
+    const onItsDay = (r: Reminder) => {
+      if (!r.allDay || r.dueAt === null) return r;
+      const d = new Date(r.dueAt * 1000);
+      return { ...r, dueAt: Math.floor(new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()).getTime() / 1000) };
+    };
+    setDue(Array.isArray(reminders) ? reminders.filter((r) => !r.completedAt).map(onItsDay) : []);
     setLoaded(true);
   }, [range]);
 

@@ -505,6 +505,14 @@ impl<'a> CalendarClient<'a> {
             _ => event,
         };
         let mut event_value = self.event_body(event, existing.as_ref());
+        // Whose alerts and repeat these are. For all of a series, the series' — Apple's
+        // own name for an alert or repeat object carries the series id; made under one day's
+        // id, a change meant for every day belonged to that day alone.
+        let owner: String = if occurrence && scope == Some(Scope::All) {
+            series_of(&event.guid).to_string()
+        } else {
+            event.guid.clone()
+        };
         let held: Vec<Value> = detail
             .as_ref()
             .and_then(|d| d.get("Alarm"))
@@ -521,7 +529,7 @@ impl<'a> CalendarClient<'a> {
             Some(minutes) => minutes
                 .iter()
                 .take(2) // as icloud.com allows: an alert and a second alert
-                .map(|m| alarm_for(&event.guid, *m))
+                .map(|m| alarm_for(&owner, *m))
                 .collect(),
         };
         // Only a change of alerts rewrites the event's list of them; otherwise it goes back
@@ -562,10 +570,10 @@ impl<'a> CalendarClient<'a> {
                 body["Event"]["recurrence"] = Value::Null;
             }
             Some(Some(rule)) => {
-                let guid = format!("{}*MME-RID", event.guid);
+                let guid = format!("{owner}*MME-RID");
                 let mut object = serde_json::json!({
                     "guid": guid,
-                    "pGuid": event.guid,
+                    "pGuid": owner,
                     "freq": rule.freq,
                     "interval": rule.interval.max(1),
                 });

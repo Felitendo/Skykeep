@@ -220,7 +220,9 @@ pub fn spawn_events(app: AppHandle) {
                 let data = app.state::<Data>();
                 let library = data.0.lock().await;
                 library
-                    .events_starting_between(at - STILL_WORTH_SAYING, at + 2 * 86_400)
+                    // As far ahead as the earliest alert Calendar offers — a week before —
+                    // and a day more: looking two days ahead, a week-before alert never rang.
+                    .events_starting_between(at - STILL_WORTH_SAYING, at + 8 * 86_400)
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|(guid, _)| !guid.starts_with("quince:"))
