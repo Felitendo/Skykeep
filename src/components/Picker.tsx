@@ -31,7 +31,14 @@ export function Picker({
   disabled?: boolean;
   className?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
+  /** Whether the menu is open as of the last key, ahead of the render that shows it: two
+   *  keys can arrive before React has drawn the first one's answer. */
+  const isOpen = useRef(false);
+  const setOpen = useCallback((to: boolean) => {
+    isOpen.current = to;
+    setOpenState(to);
+  }, []);
   const [active, setActive] = useState(0);
   const root = useRef<HTMLDivElement | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
@@ -95,8 +102,11 @@ export function Picker({
 
   // Opening lands the highlight on what is already chosen, not at the top — the current
   // value is where someone is navigating away from.
+  /** Where the pointer was when it was last seen over the menu; none since it opened. */
+  const pointer = useRef<{ x: number; y: number } | null>(null);
   const openMenu = () => {
     if (disabled) return;
+    pointer.current = null;
     setActive(Math.max(0, options.findIndex((o) => o.value === value)));
     setOpen(true);
   };
@@ -145,15 +155,16 @@ export function Picker({
   }, [open]);
 
   const onListKey = (e: React.KeyboardEvent) => {
-    const move = (to: number) => {
+    // From the highlight as it stands after any key not yet drawn, not as last rendered.
+    const move = (to: (at: number) => number) => {
       e.preventDefault();
       byKeyboard.current = true;
-      setActive(Math.max(0, Math.min(to, options.length - 1)));
+      setActive((at) => Math.max(0, Math.min(to(at), options.length - 1)));
     };
-    if (e.key === "ArrowDown") move(active + 1);
-    else if (e.key === "ArrowUp") move(active - 1);
-    else if (e.key === "Home") move(0);
-    else if (e.key === "End") move(options.length - 1);
+    if (e.key === "ArrowDown") move((at) => at + 1);
+    else if (e.key === "ArrowUp") move((at) => at - 1);
+    else if (e.key === "Home") move(() => 0);
+    else if (e.key === "End") move(() => options.length - 1);
     else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       choose(active);
@@ -177,6 +188,9 @@ export function Picker({
         disabled={disabled}
         onClick={() => (open ? close(false) : openMenu())}
         onKeyDown={(e) => {
+          // Open already, with focus not yet moved in: a key pressed that quickly is the
+          // menu's. Opening it again put the highlight back and the key was lost.
+          if (isOpen.current) return onListKey(e);
           if (e.key === "ArrowDown" || e.key === "ArrowUp") {
             e.preventDefault();
             openMenu();
@@ -215,7 +229,15 @@ export function Picker({
               className={index === active ? "is-active" : undefined}
               onKeyDown={onListKey}
               onClick={() => choose(index)}
-              onMouseEnter={() => {
+              // The pointer highlights a row only once it moves. The menu opens over the
+              // button, under a pointer that is still: the row it lands on is not chosen by
+              // it, and taking it as chosen threw the keyboard's highlight back.
+              onMouseMove={(e) => {
+                const at = pointer.current;
+                if (at && at.x === e.clientX && at.y === e.clientY) return;
+                const first = at === null;
+                pointer.current = { x: e.clientX, y: e.clientY };
+                if (first) return;
                 byKeyboard.current = false;
                 setActive(index);
               }}

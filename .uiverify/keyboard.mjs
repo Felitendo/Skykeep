@@ -251,6 +251,33 @@ const focused = (page) =>
   const second = await page.locator(".picker-menu li.is-active").innerText();
   check("ArrowDown moves the highlight", first !== second, `${first.trim()} → ${second.trim()}`);
 
+  // Two presses in one go, before focus can have moved into the menu they open: the second
+  // is still the menu's. It used to reopen the menu and be lost.
+  await page.keyboard.press("Escape");
+  await picker.focus();
+  const quick = await page.evaluate(() => {
+    const button = document.querySelector(".rx-detail .picker-button");
+    const press = () => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    press();
+    press();
+    return new Promise((r) => setTimeout(() => {
+      const items = [...document.querySelectorAll(".picker-menu li")];
+      r({ active: items.findIndex((li) => li.classList.contains("is-active")), chosen: items.findIndex((li) => li.getAttribute("aria-selected") === "true"), dump: items.map((li) => li.className + "/" + li.getAttribute("aria-selected")).join(" ") });
+    }, 200));
+  });
+  check("a second key pressed at once still moves the highlight", quick.active === quick.chosen + 1, JSON.stringify(quick));
+  // The pointer, once it moves, still takes the highlight to the row it is over.
+  const third = page.locator(".picker-menu li").nth(2);
+  const box = await third.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+  check("a moving pointer highlights the row under it", (await third.getAttribute("class"))?.includes("is-active"), await third.innerText());
+  await page.keyboard.press("Escape");
+  await picker.focus();
+  await page.keyboard.press("ArrowDown");
+  await page.waitForSelector(".picker-menu");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowUp");
+
   await page.keyboard.press("Enter");
   await page.waitForTimeout(150);
   const dismissed = (await page.locator(".picker-menu").count()) === 0;
