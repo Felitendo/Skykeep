@@ -190,13 +190,50 @@ pub async fn download_to(
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
-    let mut file = tokio::fs::File::create(destination).await?;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        file.write_all(&chunk?).await?;
+    // Into a file of its own beside the destination, moved into place only once it is all
+    // there and only if nothing has taken the name meanwhile. Written straight to the name,
+    // a download that broke off left a truncated file under the real one.
+    let partial = destination.with_extension(match destination.extension() {
+        Some(ext) => format!("{}.part", ext.to_string_lossy()),
+        None => "part".into(),
+    });
+    let written: Result<()> = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+            .await?;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            file.write_all(&chunk?).await?;
+        }
+        file.flush().await?;
+        file.sync_all().await?;
+        Ok(())
     }
-    file.flush().await?;
-    Ok(())
+    .await;
+    if let Err(e) = written {
+        tokio::fs::remove_file(&partial).await.ok();
+        return Err(e);
+    }
+    // A link, unlike a rename, refuses an existing name: nothing already there is replaced.
+    match tokio::fs::hard_link(&partial, destination).await {
+        Ok(()) => {
+            tokio::fs::remove_file(&partial).await.ok();
+            Ok(())
+        }
+        // A filesystem without links — a FAT or exFAT drive — takes a rename, checked first.
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists && !destination.exists() => {
+            tokio::fs::rename(&partial, destination).await.map_err(|e| {
+                let _ = std::fs::remove_file(&partial);
+                e.into()
+            })
+        }
+        Err(e) => {
+            tokio::fs::remove_file(&partial).await.ok();
+            Err(e.into())
+        }
+    }
 }
 
 /// What a `createFolders` reply says happened.
@@ -346,7 +383,10 @@ pub async fn rename(
 
     let after = folder_listing(http, root, &params, parent).await?;
     match after.iter().find(|i| i.drivewsid == item.drivewsid) {
-        Some(found) if found.name == name => Ok(()),
+        // Apple keeps a file's extension apart from its name: "final.pdf" comes back as
+        // "final" and "pdf". Compared whole, every rename of a file with an extension read as
+        // refused, and the old name was put back on screen.
+        Some(found) if found.name == name || found.display_name() == name => Ok(()),
         Some(found) => Err(Error::Protocol(format!(
             "Apple answered success but the name is still {:?}, not {name:?}",
             found.name
@@ -1201,6 +1241,41 @@ mod write_tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("still"), "{err}");
+    }
+
+    /// Apple keeps the extension apart from the name: a rename to "final.pdf" reads back as
+    /// "final" + "pdf", which is the rename done — not "the name is still final".
+    #[tokio::test]
+    async fn a_rename_with_an_extension_reads_back_as_done() {
+        let server = MockServer::start().await;
+        let mut renamed = file();
+        renamed.name = "final".into();
+        renamed.extension = Some("pdf".into());
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::root",
+                &renamed,
+                "e2",
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/renameItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+        rename(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            "final.pdf",
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

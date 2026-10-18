@@ -1784,6 +1784,10 @@ pub async fn delete_list_cloudkit(
     // date — a "Daily test" ringing from a list deleted days before. Found from Apple's own
     // records, so the completed copies Apple's server made of a repeating one go too.
     let walk = client.all_records(ZONE, None).await?;
+    // Every reminder has to have been seen, or some would be left alive under a deleted list.
+    if !walk.complete {
+        return Err(Error::Refused("Apple's list of reminders didn't come back whole, so the list wasn't deleted. Try again in a moment.".into()));
+    }
     for r in walk.records.iter().filter(|r| in_list(r, list_guid)) {
         let Some(guid) = r.get("recordName").and_then(Value::as_str) else {
             continue;

@@ -75,6 +75,11 @@ async fn resync_reminders(
 /// after a newer write put the reminder back as it was before the write.
 pub static REMINDERS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// One calendar pass or write at a time. A refresh that read Apple before a save and stored
+/// after it pruned the new event, put an edited one back with its old etag — so the next
+/// edit failed as a conflict — and brought a just-deleted one back.
+pub static CALENDAR_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn refresh_reminders(
     http: &reqwest::Client,
     root: &str,
@@ -352,6 +357,7 @@ async fn calendar_sync(
     };
 
     // Asked of Apple unlocked; the library is held only to store the answer.
+    let _one = CALENDAR_PASS.lock().await;
     let fetched = quince_icloud::sync::fetch_calendar(&http, &root, params, &from, &to, &timezone)
         .await
         .map_err(|e| e.to_string())?;
@@ -453,6 +459,7 @@ async fn event_save(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
+    let _one = CALENDAR_PASS.lock().await;
     let title = draft.title.trim();
     if title.is_empty() {
         return Err("An event needs a title.".into());
@@ -512,6 +519,7 @@ async fn event_delete(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
+    let _one = CALENDAR_PASS.lock().await;
     let (http, root, params) = calendar_context(&auth).await?;
     let event = {
         let library = data.0.lock().await;

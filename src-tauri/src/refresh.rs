@@ -129,6 +129,8 @@ pub async fn all(client: &Arc<Mutex<Client>>, data: &Mutex<Library>) -> Refresh 
     reports.push(match ctx.calendar.as_deref() {
         None => unavailable("calendar", "Calendar"),
         Some(root) => {
+            // Fetch and store as one, never across a save: see `CALENDAR_PASS`.
+            let _one = crate::CALENDAR_PASS.lock().await;
             let fetched = quince_icloud::sync::fetch_calendar(
                 &ctx.http,
                 root,

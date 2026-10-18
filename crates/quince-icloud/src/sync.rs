@@ -231,6 +231,13 @@ pub async fn delete_event(
 
 /// Store a fetched window. Touches no network.
 pub fn apply_calendar(library: &mut Library, snapshot: Snapshot) -> Result<SyncSummary> {
+    // Every iCloud account has a calendar. An answer with none is a broken answer, not an
+    // account emptied: stored, it deleted every calendar here and every event with them.
+    if snapshot.calendars.is_empty() {
+        return Err(crate::Error::Protocol(
+            "Apple's calendar answer carried no calendars, so nothing was changed.".into(),
+        ));
+    }
     library.put_calendars(&snapshot.calendars)?;
 
     // Drop events belonging to calendars Apple did not report: storing them would fail the
@@ -729,5 +736,17 @@ mod window_tests {
     #[test]
     fn an_inverted_range_is_empty() {
         assert!(chunks(d("2026-06-01"), d("2026-01-01")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod empty_answer_tests {
+    /// An answer with no calendars changes nothing: it used to delete every calendar stored
+    /// here, and every event with them.
+    #[test]
+    fn an_answer_with_no_calendars_is_refused() {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        let empty = crate::calendar::Snapshot::default();
+        assert!(super::apply_calendar(&mut library, empty).is_err());
     }
 }
