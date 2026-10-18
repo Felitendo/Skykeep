@@ -962,6 +962,19 @@ impl Client {
         if let Some(email) = text("/dsInfo/primaryEmail").or_else(|| text("/dsInfo/appleId")) {
             self.session.account_email = Some(email);
         }
+        if let Some(allowed) = data
+            .pointer("/dsInfo/isWebAccessAllowed")
+            .and_then(Value::as_bool)
+        {
+            self.session.web_access_allowed = Some(allowed);
+        }
+        if let Some(on) = data
+            .get("iCDPEnabled")
+            .or_else(|| data.pointer("/dsInfo/iCDPEnabled"))
+            .and_then(Value::as_bool)
+        {
+            self.session.data_protection = Some(on);
+        }
     }
 
     /// Query parameters every iCloud service endpoint expects alongside the session cookies.

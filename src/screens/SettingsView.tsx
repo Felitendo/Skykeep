@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, messageOf } from "../lib/ipc";
+import { api, messageOf, type AccountInfo } from "../lib/ipc";
 import { freshness, useSync } from "../lib/sync";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
-import { initialsOf } from "../components/Account";
+import { AccountAvatar } from "../components/Account";
 
 /** The app each service's freshness belongs to, for its icon. */
 const ICON: Record<string, string> = {
@@ -27,7 +27,7 @@ function size(bytes: number): string {
  * from Apple or from this computer's library.
  */
 export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
-  const [account, setAccount] = useState<{ name: string | null; email: string | null } | null>(null);
+  const [account, setAccount] = useState<AccountInfo | null>(null);
   const [storage, setStorage] = useState<{ usedBytes: number; totalBytes: number } | null>(null);
   const [alerts, setAlerts] = useState<{ reminderAlerts: boolean; eventAlerts: boolean } | null>(null);
   const [theme, chooseTheme] = useState<Theme>(storedTheme);
@@ -63,7 +63,7 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
       {error && <p className="settings-error" role="alert">{error}</p>}
 
       <section className="settings-group settings-account" aria-label="Account">
-        <span className="account-avatar is-large" aria-hidden="true">{initialsOf(account?.name ?? account?.email ?? "")}</span>
+        <AccountAvatar account={account} large />
         <div className="settings-account-text">
           <strong>{account?.name ?? "Your Apple Account"}</strong>
           <span>{account?.email ?? ""}</span>
@@ -74,7 +74,7 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
             <button className="quiet danger" onClick={onSignOut}>Sign Out</button>
           </span>
         ) : (
-          <button className="quiet" onClick={() => setConfirming(true)}>Sign Out…</button>
+          <button className="quiet" onClick={() => setConfirming(true)}>Sign Out</button>
         )}
       </section>
       {confirming && (

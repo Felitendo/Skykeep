@@ -210,12 +210,15 @@ export const api = {
   driveDuplicate: (drivewsid: string) => invoke<void>("drive_duplicate", { drivewsid }),
   storageInfo: () => invoke<{ usedBytes: number; totalBytes: number }>("storage_info"),
   /** Who is signed in, as Apple names them. */
-  accountInfo: () => invoke<{ name: string | null; email: string | null }>("account_info"),
+  accountInfo: () => invoke<AccountInfo>("account_info"),
   /** Settings' switches, as the backend obeys them. */
   settingsGet: () => invoke<{ reminderAlerts: boolean; eventAlerts: boolean }>("settings_get"),
   settingsSet: (key: "reminderAlerts" | "eventAlerts", on: boolean) => invoke<void>("settings_set", { key, on }),
   drivePutBack: (item: DriveItem) => invoke<void>("drive_put_back", { item }),
   driveDeleteForever: (item: DriveItem) => invoke<void>("drive_delete_forever", { item }),
+  /** Recover, or delete for good, all of these in one request; what could not be, with why. */
+  driveTrashOut: (items: DriveItem[], recover: boolean) =>
+    invoke<{ drivewsid: string; reason: string }[]>("drive_trash_out", { items, recover }),
   driveMove: (drivewsid: string, destinationId: string) =>
     invoke<void>("drive_move", { drivewsid, destinationId }),
 };
@@ -475,8 +478,22 @@ export type Contact = {
  * it does any image, so a list of a hundred people does not push a hundred pictures through
  * a message channel every time it scrolls.
  */
+/** Who is signed in. `photoContact` is their own card, when it has a picture. */
+export type AccountInfo = {
+  name: string | null;
+  email: string | null;
+  webAccessAllowed?: boolean | null;
+  dataProtection?: boolean | null;
+  photoContact?: string | null;
+};
+
+/** The picture of the contact with this id, served by the backend. */
+export function contactPhotoSrc(guid: string): string {
+  return convertFileSrc(`photo/${guid}`, "quince");
+}
+
 export function photoSrc(c: Contact): string | null {
-  return c.photoUrl ? convertFileSrc(`photo/${c.guid}`, "quince") : null;
+  return c.photoUrl ? contactPhotoSrc(c.guid) : null;
 }
 
 export function displayName(c: Contact): string {

@@ -187,6 +187,9 @@ async fn refresher(
         let data = app.state::<Data>();
         refresh::some(&client, &data.0, &services).await;
         alerts::changed();
+        if services.contains(&"contacts") {
+            crate::warm_contact_photos(app.clone());
+        }
         // Every service's freshness, not only the ones refreshed: the window shows the whole.
         app.emit(SYNCED, refresh::status(&data.0).await).ok();
     }

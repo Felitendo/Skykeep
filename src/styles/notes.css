@@ -42,13 +42,16 @@
   text-align: left;
   cursor: default;
 }
+/* On the row, not the button alone — the ⋯ over the row took the hover off the button and
+   the highlight blinked (see .rx-list-row). */
+.notes-folder-row:hover .notes-folder, .notes-folder-row.is-menu .notes-folder,
 .notes-folder:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .notes-folder[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
 .notes-folder:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
 /* Apple's folders are drawn in the accent, which in Notes is its yellow — here, quince gold. */
 .notes-folder-glyph { flex: none; color: var(--accent); }
 .notes-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.notes-folder-count { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.notes-folder-count { min-width: 26px; text-align: right; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 /* ---- the list ------------------------------------------------------------------- */
 

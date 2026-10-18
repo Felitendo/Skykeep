@@ -22,6 +22,7 @@ export function Picker({
   label,
   disabled = false,
   className = "",
+  pullDown = true,
 }: {
   value: string;
   options: PickerOption[];
@@ -30,6 +31,10 @@ export function Picker({
   label: string;
   disabled?: boolean;
   className?: string;
+  /** Dropped below the button (the default), as a pull-down is, rather than laid over it
+   *  with the choice on the button as a Mac pop-up is. Laid over, a menu in a form covered
+   *  the rows around it, and one in a toolbar climbed over the window's top edge. */
+  pullDown?: boolean;
 }) {
   const [open, setOpenState] = useState(false);
   /** Whether the menu is open as of the last key, ahead of the render that shows it: two
@@ -71,6 +76,18 @@ export function Picker({
     const maxHeight = window.innerHeight - pad * 2;
     const height = Math.min(list.scrollHeight, maxHeight);
     const width = Math.max(b.width, list.scrollWidth);
+    if (pullDown) {
+      // Below the button, its left edge with the button's; above it only where there is not
+      // room below.
+      const below = window.innerHeight - pad - (b.bottom + 4);
+      const fitsBelow = below >= Math.min(height, 160);
+      const room = fitsBelow ? below : b.top - 4 - pad;
+      const h = Math.min(height, room);
+      const top = fitsBelow ? b.bottom + 4 : b.top - 4 - h;
+      const left = Math.max(pad, Math.min(b.left, window.innerWidth - pad - width));
+      setPlace({ left, top, width, maxHeight: room });
+      return;
+    }
     // The chosen row's label over the button's label.
     const rowTop = chosen ? chosen.offsetTop : 0;
     let top = b.top - rowTop + (b.height - (chosen?.offsetHeight ?? b.height)) / 2;
@@ -104,9 +121,20 @@ export function Picker({
   // value is where someone is navigating away from.
   /** Where the pointer was when it was last seen over the menu; none since it opened. */
   const pointer = useRef<{ x: number; y: number } | null>(null);
-  const openMenu = () => {
+  /** Whether a row is lit. On opening only the ✓ shows what is chosen, as a Mac menu opens:
+   *  lit as well, the current row read as two marks for one thing. The pointer moving or a
+   *  key lights a row. */
+  const [lit, setLitState] = useState(false);
+  const litNow = useRef(false);
+  const setLit = (to: boolean) => {
+    litNow.current = to;
+    setLitState(to);
+  };
+  const openMenu = (byKey = false) => {
     if (disabled) return;
     pointer.current = null;
+    // Opened from the keyboard, the current row is lit straight away, as on the Mac.
+    setLit(byKey);
     setActive(Math.max(0, options.findIndex((o) => o.value === value)));
     setOpen(true);
   };
@@ -159,6 +187,11 @@ export function Picker({
     const move = (to: (at: number) => number) => {
       e.preventDefault();
       byKeyboard.current = true;
+      // The first key lights the row it starts from; the next ones move.
+      if (!litNow.current) {
+        setLit(true);
+        return;
+      }
       setActive((at) => Math.max(0, Math.min(to(at), options.length - 1)));
     };
     if (e.key === "ArrowDown") move((at) => at + 1);
@@ -186,14 +219,14 @@ export function Picker({
         aria-expanded={open}
         aria-label={label}
         disabled={disabled}
-        onClick={() => (open ? close(false) : openMenu())}
+        onClick={() => (open ? close(false) : openMenu(false))}
         onKeyDown={(e) => {
           // Open already, with focus not yet moved in: a key pressed that quickly is the
           // menu's. Opening it again put the highlight back and the key was lost.
           if (isOpen.current) return onListKey(e);
           if (e.key === "ArrowDown" || e.key === "ArrowUp") {
             e.preventDefault();
-            openMenu();
+            openMenu(true);
           }
         }}
       >
@@ -226,7 +259,7 @@ export function Picker({
               role="option"
               aria-selected={option.value === value}
               tabIndex={index === active ? 0 : -1}
-              className={index === active ? "is-active" : undefined}
+              className={lit && index === active ? "is-active" : undefined}
               onKeyDown={onListKey}
               onClick={() => choose(index)}
               // The pointer highlights a row only once it moves. The menu opens over the
@@ -239,6 +272,7 @@ export function Picker({
                 pointer.current = { x: e.clientX, y: e.clientY };
                 if (first) return;
                 byKeyboard.current = false;
+                setLit(true);
                 setActive(index);
               }}
             >

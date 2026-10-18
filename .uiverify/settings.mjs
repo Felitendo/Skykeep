@@ -14,7 +14,7 @@ let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 
 const card = page.locator(".sidebar-account");
-ok((await card.innerText()).includes("Asha Rao"), "the sidebar names who is signed in");
+ok((await card.innerText()).includes("Asha") && !(await card.innerText()).includes("…"), "the sidebar names who is signed in, whole");
 await card.click();
 await page.waitForSelector(".settings");
 ok(await page.getByRole("heading", { name: "Settings" }).isVisible(), "the account opens Settings");
@@ -64,5 +64,23 @@ await page.evaluate(() => {
 await page.getByRole("button", { name: "Fold Sidebar to Icons" }).click();
 await page.waitForTimeout(400);
 ok(await page.evaluate(() => window.__slid), "folding slides the content on the compositor");
+// The account's picture is the photo on the person's own card, where it has one.
+// (A plain browser cannot load quince:// — the picture falls back to initials, as it should —
+// so what is checked is the picture asked for.)
+await ctx.addInitScript(() => {
+  window.__mePhoto = "me-card";
+  window.__imgs = [];
+  new MutationObserver((m) => {
+    for (const r of m) for (const n of r.addedNodes) {
+      if (n.nodeType !== 1) continue;
+      for (const img of [n, ...n.querySelectorAll?.("img") ?? []]) if (img.tagName === "IMG") window.__imgs.push(img.getAttribute("src"));
+    }
+  }).observe(document, { childList: true, subtree: true });
+});
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForTimeout(300);
+const asked = await page.evaluate(() => window.__imgs);
+ok(asked.some((s) => s?.includes("me-card")), `the account shows the photo on the person's own card  [${asked.join(", ")}]`);
+ok((await page.locator(".sidebar-account .account-avatar").innerText()).trim() === "AR", "and its initials hold the place where the photo cannot be had");
 await b.close();
 process.exitCode = failures ? 1 : 0;

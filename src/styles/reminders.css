@@ -179,7 +179,10 @@
   text-align: left;
   cursor: default;
 }
-.rx-list:hover,
+/* The highlight follows the row, not the list's button alone: the ⋯ sits over the row
+   beside the button, and moving onto it took the hover off the button — the highlight
+   blinked out and back. Held while the row's menu is open too. */
+.rx-list-row:hover .rx-list, .rx-list-row.is-menu .rx-list,
 .rx-group-row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .rx-list[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
 .rx-list:focus-visible,
@@ -211,7 +214,8 @@
 .rx-group-row .rx-list-name { font-weight: 600; }
 
 .rx-list-count {
-  min-width: 18px;
+  /* Wide enough for the ⋯ that takes its place, so nothing beside it moves when it does. */
+  min-width: 26px;
   color: var(--text-3);
   font-size: var(--t-13);
   font-variant-numeric: tabular-nums;
@@ -222,19 +226,14 @@
 .rx-chevron svg { width: 12px; height: 12px; }
 .rx-group-row[aria-expanded="true"] .rx-chevron { transform: rotate(90deg); }
 
-/* Rename and delete wait until a list is pointed at, over where its count sits. */
-.rx-list-actions {
-  position: absolute;
-  right: 4px;
-  display: flex;
-  gap: 2px;
-  opacity: 0;
-  pointer-events: none;
-}
-.rx-list-row:hover .rx-list-actions,
-.rx-list-row:focus-within .rx-list-actions { opacity: 1; pointer-events: auto; }
+/* The list's ⋯ waits until it is pointed at, over where its count sits — the same control
+   Notes' and Contacts' rows have (.notes-folder-more). */
+.rx-list-more { right: 8px; }
+.rx-list-row:hover .rx-list-more, .rx-list-row:focus-within .rx-list-more { opacity: 1; }
 .rx-list-row:hover .rx-list-count,
 .rx-list-row:focus-within .rx-list-count { visibility: hidden; }
+.rx-list-row.is-menu .rx-list-more { opacity: 1; }
+.rx-list-row.is-menu .rx-list-count { visibility: hidden; }
 
 .rx-rename {
   flex: 1;

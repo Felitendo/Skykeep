@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { PanelLeft } from "lucide-react";
 import { api, messageOf, OPEN_REMINDER } from "../lib/ipc";
@@ -63,28 +63,35 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
     }
   });
   const content = useRef<HTMLElement | null>(null);
+  /** Where the content began before a fold, for it to slide from. */
+  const slideFrom = useRef<number | null>(null);
+  const contentLeft = () => {
+    const el = content.current;
+    return el ? el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft) : 0;
+  };
   /**
    * Folding the sidebar moves the content without laying it out on every frame. Animating
    * the content's padding made the whole screen — a calendar grid, a long list — lay itself
    * out sixty times a second, and that was the stutter. Instead it takes its new width at
-   * once and slides from where it was, which the compositor does alone.
+   * once and slides from where it was, which the compositor does alone. Started in a layout
+   * effect — after the new layout, before it is painted — so no frame ever shows the content
+   * in its new place and then back in the old: started a frame later, that jump was the
+   * whole window glitching.
    */
-  const slideContent = (from: number) => {
+  useLayoutEffect(() => {
+    const from = slideFrom.current;
+    slideFrom.current = null;
     const el = content.current;
-    if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    requestAnimationFrame(() => {
-      const to = el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft);
-      const by = from - to;
-      if (Math.abs(by) < 1) return;
-      el.animate([{ transform: `translateX(${by}px)` }, { transform: "none" }], {
-        duration: 300,
-        easing: getComputedStyle(document.documentElement).getPropertyValue("--spring-quick").trim() || "ease-out",
-      });
+    if (from === null || !el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const by = from - contentLeft();
+    if (Math.abs(by) < 1) return;
+    el.animate([{ transform: `translateX(${by}px)` }, { transform: "none" }], {
+      duration: 300,
+      easing: getComputedStyle(document.documentElement).getPropertyValue("--spring-quick").trim() || "ease-out",
     });
-  };
+  }, [rail]);
   const toggleRail = () => {
-    const el = content.current;
-    if (el) slideContent(el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft));
+    slideFrom.current = contentLeft();
     setRailState();
   };
   const setRailState = () =>

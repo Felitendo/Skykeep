@@ -1,7 +1,6 @@
 // Every kind of menu, where menus went wrong: near the window's edges, inside a popover, in a
 // small window. Each must open whole and on screen, in one draw (no flicker), take the keys,
-// and go on Escape or a click elsewhere; a pop-up's menu lies over its button with the
-// current choice on it; a submenu opens beside its line and flips left when the right is full.
+// and go on Escape or a click elsewhere; a pop-up's menu drops from its button; a submenu opens beside its line and flips left when the right is full.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
@@ -86,9 +85,11 @@ for (const size of [{ width: 1280, height: 800 }, { width: 760, height: 520 }]) 
   await page.waitForTimeout(100);
   where = await onScreen(page, ".picker-menu");
   ok(where.ok, `${label} a pop-up's menu inside a popover is whole and on screen ${where.why ?? ""}`);
-  const chosen = await page.locator(".picker-menu [aria-selected=true]").boundingBox();
-  ok(chosen && Math.abs(chosen.y + chosen.height / 2 - (pb.y + pb.height / 2)) < 14 || where.ok && (await page.evaluate(() => document.querySelector(".picker-menu").getBoundingClientRect().bottom >= innerHeight - 9)),
-    `${label} its current choice lies over the button (or the menu is held at the window's edge)`);
+  // Dropped from the button, never laid over it: laid over, a menu in a form covered the
+  // rows around it. Below, or above where there is no room below.
+  const mb = await page.locator(".picker-menu").boundingBox();
+  ok(mb && (mb.y >= pb.y + pb.height - 1 || mb.y + mb.height <= pb.y + 1),
+    `${label} its menu drops from the button and leaves it in sight  [button ${Math.round(pb.y)}–${Math.round(pb.y + pb.height)}, menu ${Math.round(mb?.y)}–${Math.round(mb?.y + mb?.height)}]`);
   ok((await page.evaluate(() => window.__menus)) === 1, `${label} drawn once, no flicker`);
   await page.keyboard.press("Escape");
   ok((await page.locator(".picker-menu").count()) === 0, `${label} Escape closes a pop-up's menu`);

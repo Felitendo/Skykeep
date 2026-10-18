@@ -164,6 +164,22 @@ async fn cloudkit_context(
 }
 
 /// Undo percent-encoding in a path segment. Enough for the ids this scheme carries.
+/// The contact a `quince://` request asks for the photo of.
+///
+/// WebKitGTK reads `quince://photo/<id>` with "photo" as the host, while Tauri's own helper
+/// builds `quince://localhost/photo%2F<id>` — the whole path escaped, slash and all. The path
+/// is decoded before it is read: matched undecoded, no request ever found its photo, and every
+/// contact showed initials with nothing to say why.
+fn photo_guid(host: Option<&str>, path: &str) -> Option<String> {
+    let path = percent_decode(path.trim_start_matches('/'));
+    let guid = if host == Some("photo") {
+        path
+    } else {
+        path.strip_prefix("photo/")?.to_string()
+    };
+    (!guid.is_empty()).then_some(guid)
+}
+
 fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -310,15 +326,36 @@ async fn auth_sign_out(auth: State<'_, Auth>) -> UiResult<()> {
 struct AccountInfo {
     name: Option<String>,
     email: Option<String>,
+    /// `false` when the account keeps its data from the web: nothing can be read until
+    /// the person turns on "Access iCloud Data on the Web".
+    web_access_allowed: Option<bool>,
+    /// Advanced Data Protection.
+    data_protection: Option<bool>,
+    /// The person's own card, when it has a photo: theirs to show as the account's picture,
+    /// served like any contact's.
+    photo_contact: Option<String>,
 }
 
 #[tauri::command]
-async fn account_info(auth: State<'_, Auth>) -> UiResult<AccountInfo> {
+async fn account_info(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<AccountInfo> {
+    // The picture is the person's own card's — the card Contacts marks as theirs.
+    let photo_contact = {
+        let library = data.0.lock().await;
+        library
+            .state(quince_icloud::contacts::ME_KEY)
+            .ok()
+            .flatten()
+            .filter(|guid| !guid.is_empty())
+            .filter(|guid| library.contact_photo_source(guid).ok().flatten().is_some())
+    };
     let client = auth.client.lock().await;
     let s = client.session();
     Ok(AccountInfo {
         name: s.account_name.clone(),
         email: s.account_email.clone().or_else(|| s.apple_id.clone()),
+        web_access_allowed: s.web_access_allowed,
+        data_protection: s.data_protection,
+        photo_contact,
     })
 }
 
@@ -2515,6 +2552,35 @@ async fn drive_delete_forever(
         .map_err(|e| e.to_string())
 }
 
+/// Recover or delete for good every one of these, in one request, as Recover All and
+/// Delete All do on icloud.com. Answers what could not be done, each with why — the rest are
+/// done and gone from Recently Deleted.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashRefusal {
+    drivewsid: String,
+    reason: String,
+}
+
+#[tauri::command]
+async fn drive_trash_out(
+    items: Vec<quince_core::drive::DriveItem>,
+    recover: bool,
+    auth: State<'_, Auth>,
+) -> UiResult<Vec<TrashRefusal>> {
+    let (http, root, params) = drive_context(&auth).await?;
+    let failed = if recover {
+        quince_icloud::drive::put_back_many(&http, &root, params, &items).await
+    } else {
+        quince_icloud::drive::delete_forever_many(&http, &root, params, &items).await
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(failed
+        .into_iter()
+        .map(|(drivewsid, reason)| TrashRefusal { drivewsid, reason })
+        .collect())
+}
+
 /// Move an item into a different folder, refreshing both the old and new location.
 #[tauri::command]
 async fn drive_move(
@@ -2569,6 +2635,7 @@ async fn sync_all(
     keep_signed_in(&app, &client).await;
     let result = refresh::all(&client, &data.0).await;
     alerts::changed();
+    warm_contact_photos(app.clone());
     // Screens read the library, not the network, so they only need to be told to look again.
     app.emit(SYNCED, &result).ok();
     Ok(result)
@@ -2595,6 +2662,7 @@ fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
             let data = app.state::<Data>();
             let result = refresh::all(&client, &data.0).await;
             alerts::changed();
+            warm_contact_photos(app.clone());
             app.emit(SYNCED, &result).ok();
         }
     });
@@ -2636,7 +2704,9 @@ fn photo_path(dir: &std::path::Path, guid: &str, signature: &str) -> PathBuf {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     // No extension: the format is Apple's to choose, and is read back from the bytes.
-    dir.join("photos").join(format!("{guid_safe}-{safe}"))
+    // "faces": the folder before held pictures cut with the crop read upside down, and is
+    // never read again.
+    dir.join("faces").join(format!("{guid_safe}-{safe}"))
 }
 
 /// Serve a contact's picture to the interface.
@@ -2706,6 +2776,39 @@ async fn contact_photo(
         bytes: drawn,
         durable,
     })
+}
+
+/// Fetch, in the background, every contact photo not yet on disk, so a face is already here
+/// when its row is drawn rather than fetched from Apple as it scrolls into view. Three at a
+/// time; one that fails is simply tried again after the next sync.
+pub fn warm_contact_photos(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let wanted: Vec<String> = {
+            let data = app.state::<Data>();
+            let library = data.0.lock().await;
+            let dir = state_dir(&app);
+            library
+                .contacts(None)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| c.photo_url.is_some())
+                .filter(|c| match &c.photo_signature {
+                    Some(sig) => !photo_path(&dir, &c.guid, sig).exists(),
+                    None => false,
+                })
+                .map(|c| c.guid)
+                .collect()
+        };
+        use futures_util::StreamExt;
+        futures_util::stream::iter(wanted)
+            .for_each_concurrent(3, |guid| {
+                let app = app.clone();
+                async move {
+                    let _ = contact_photo(&app, &guid).await;
+                }
+            })
+            .await;
+    });
 }
 
 /// Where this installation's writer id is kept.
@@ -2844,12 +2947,9 @@ fn main() {
             // own helper produces `quince://localhost/photo/<id>`. Accept either, rather than
             // depending on which one the caller happened to build.
             let uri = request.uri();
-            let mut path = uri.path().trim_start_matches('/').to_string();
-            if uri.host() == Some("photo") {
-                path = format!("photo/{path}");
-            }
+            let wanted = photo_guid(uri.host(), uri.path());
             tauri::async_runtime::spawn(async move {
-                let Some(guid) = path.strip_prefix("photo/") else {
+                let Some(guid) = wanted else {
                     responder.respond(
                         tauri::http::Response::builder()
                             .status(404)
@@ -2858,9 +2958,6 @@ fn main() {
                     );
                     return;
                 };
-                // Percent-encoding: a contact id is a plain UUID, but the scheme should not
-                // assume what a future caller puts here.
-                let guid = percent_decode(guid);
                 match contact_photo(&app, &guid).await {
                     Ok(Photo { bytes, durable }) => responder.respond(
                         tauri::http::Response::builder()
@@ -3002,6 +3099,7 @@ fn main() {
             drive_thumbnails,
             drive_put_back,
             drive_delete_forever,
+            drive_trash_out,
             drive_move,
             drive_item,
             reminder_set_done,
@@ -3047,6 +3145,22 @@ mod tests {
     #[test]
     fn a_percent_encoded_id_comes_back_as_itself() {
         assert_eq!(percent_decode("a%2Fb"), "a/b");
+        // What convertFileSrc("photo/<id>", "quince") builds, and what WebKitGTK reads.
+        let id = "9C2B1E7A-0F4D-4E25-8A61-3C1D2E4F5A6B";
+        assert_eq!(
+            photo_guid(Some("localhost"), &format!("/photo%2F{id}")).as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            photo_guid(Some("localhost"), &format!("/photo/{id}")).as_deref(),
+            Some(id)
+        );
+        assert_eq!(
+            photo_guid(Some("photo"), &format!("/{id}")).as_deref(),
+            Some(id)
+        );
+        assert_eq!(photo_guid(Some("localhost"), "/other%2Fx"), None);
+        assert_eq!(photo_guid(Some("localhost"), "/photo%2F"), None);
         assert_eq!(percent_decode("plain-uuid"), "plain-uuid");
         assert_eq!(percent_decode("%zz"), "%zz", "malformed stays as it was");
     }

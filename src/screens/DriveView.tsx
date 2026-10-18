@@ -98,21 +98,33 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
     void read();
   }, [read]);
 
-  const out = async (gone: TrashItem[], run: (i: DriveItem) => Promise<void>) => {
+  // Every item asked for goes in one request, as icloud.com's Recover All and Delete All
+  // send them; one request each, all at once, Apple turned most away as busy. They leave the
+  // list at once; whatever Apple did not do comes back, with the reason.
+  const out = async (gone: TrashItem[], recover: boolean) => {
     const ids = new Set(gone.map((i) => i.drivewsid));
     setRows((r) => (r ?? []).filter((i) => !ids.has(i.drivewsid)));
     setError(null);
-    const failed = (await Promise.allSettled(gone.map(run))).find((r) => r.status === "rejected");
-    if (failed) {
-      setError(messageOf((failed as PromiseRejectedResult).reason));
+    try {
+      const refused = await api.driveTrashOut(gone, recover);
+      if (refused.length > 0) {
+        setError(
+          refused.length === 1
+            ? refused[0].reason
+            : `${refused.length} of ${gone.length} items could not be ${recover ? "recovered" : "deleted"}: ${refused[0].reason}`,
+        );
+        await read();
+      }
+    } catch (e) {
+      setError(messageOf(e));
       await read();
     }
   };
-  const recover = (items: TrashItem[]) => out(items, (i) => api.drivePutBack(i));
+  const recover = (items: TrashItem[]) => out(items, true);
   const destroy = (items: TrashItem[]) => {
     const what = items.length === 1 ? `\u201c${driveName(items[0])}\u201d` : `these ${items.length} items`;
     if (!window.confirm(`Delete ${what} now? You can\u2019t undo this.`)) return;
-    void out(items, (i) => api.driveDeleteForever(i));
+    void out(items, false);
   };
 
   return (
@@ -901,6 +913,7 @@ export function DriveView() {
             Recently Deleted
           </button>
           <Picker
+            pullDown
             className="drive-view"
             label="View as"
             value={grid ? "grid" : "list"}
@@ -908,6 +921,7 @@ export function DriveView() {
             options={[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]}
           />
           <Picker
+            pullDown
             className="drive-sort"
             label="Sort by"
             value={sortBy}

@@ -1,4 +1,5 @@
 import { Notice } from "../../components/Notice";
+import { usePending } from "../../lib/pending";
 import { inMenu, Portal } from "../../components/Portal";
 import { TimeField } from "../../components/TimeField";
 import { Search } from "lucide-react";
@@ -313,6 +314,7 @@ export function CalendarView() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const range = useMemo(() => rawRange, [rangeKey]);
 
+  const { hold, over } = usePending<CalendarEvent>();
   const read = useCallback(async () => {
     const [found, cals, reminders, lists] = await Promise.all([
       api.calendarEvents(range.from, range.to),
@@ -321,7 +323,7 @@ export function CalendarView() {
       api.reminderLists().catch(() => []),
     ]);
     setListColours(new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.colour && /^#[0-9a-f]{6}$/i.test(l.colour) ? l.colour : ""])));
-    setEvents(Array.isArray(found) ? found : []);
+    setEvents(over(Array.isArray(found) ? found : []));
     setCalendars(Array.isArray(cals) ? cals : []);
     // What is done is not on the schedule any more; Calendar hides completed reminders.
     // An all-day reminder's date is Apple's: midnight UTC on its day. Read as an instant it
@@ -333,7 +335,7 @@ export function CalendarView() {
     };
     setDue(Array.isArray(reminders) ? reminders.filter((r) => !r.completedAt).map(onItsDay) : []);
     setLoaded(true);
-  }, [range]);
+  }, [range, over]);
 
   useEffect(() => {
     let cancelled = false;
@@ -404,19 +406,24 @@ export function CalendarView() {
       setBusy(true);
       setError(null);
       if (predict) setEvents((rows) => predict(rows));
+      // Kept over any refresh until Apple has it; let go before the read that confirms it.
+      const release = predict ? hold(predict) : () => {};
       try {
         await run();
+        release();
         await read();
         return true;
       } catch (e) {
+        release();
         setError(messageOf(e));
         read().catch(() => {});
         return false;
       } finally {
+        release();
         setBusy(false);
       }
     },
-    [read]
+    [read, hold]
   );
 
   /**

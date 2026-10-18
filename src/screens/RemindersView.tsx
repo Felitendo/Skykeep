@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { usePending } from "../lib/pending";
 import { Notice } from "../components/Notice";
 import { Portal } from "../components/Portal";
 import { TimeField } from "../components/TimeField";
@@ -16,6 +17,7 @@ import {
 } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
+import { RowMenu } from "../components/RowMenu";
 import { Glyph, emblemGlyph, type GlyphName } from "../components/Glyph";
 import { dateText, timeText } from "../lib/when";
 
@@ -177,6 +179,8 @@ type Selection =
 
 export function RemindersView() {
   const [lists, setLists] = useState<ReminderList[]>([]);
+  /** A list's menu, from its ⋯ or a right-click. */
+  const [listMenu, setListMenu] = useState<{ list: ReminderList; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   /** The list whose Show List Info sheet is open. */
   const [infoFor, setInfoFor] = useState<ReminderList | null>(null);
   const [groups, setGroups] = useState<ReminderGroup[]>([]);
@@ -262,6 +266,7 @@ export function RemindersView() {
    */
   const [detail, setDetail] = useState(false);
 
+  const { hold, over } = usePending<Reminder>();
   const readItems = useCallback(async (): Promise<Reminder[]> => {
     // Search reaches every list, as Apple's does, whatever is open in the sidebar.
     const found = searching
@@ -269,10 +274,10 @@ export function RemindersView() {
       : selection.type === "smart"
         ? await api.remindersSmart(selection.kind, endOfToday())
         : await api.remindersIn(selection.guid, showDone);
-    const fresh = (Array.isArray(found) ? found : []).map(asShown);
+    const fresh = over((Array.isArray(found) ? found : []).map(asShown));
     setItems(fresh);
     return fresh;
-  }, [selection, showDone, query, searching]);
+  }, [selection, showDone, query, searching, over]);
 
   // Both reads come from the library. `revision` ticks when the shared refresh finishes —
   // pressed, or on the timer — so a reminder ticked on the phone appears here without this
@@ -319,14 +324,19 @@ export function RemindersView() {
       setBusy((was) => new Set(was).add(reminder.guid));
       setError(null);
       if (predict) setItems((rows) => predict(rows));
+      // Kept over any refresh until Apple has it; let go before the read that confirms it.
+      const release = predict ? hold(predict) : () => {};
       try {
         await run();
+        release();
         return await readItems();
       } catch (e) {
+        release();
         setError(messageOf(e));
         readItems().catch(() => {});
         return null;
       } finally {
+        release();
         setBusy((was) => {
           const next = new Set(was);
           next.delete(reminder.guid);
@@ -334,7 +344,7 @@ export function RemindersView() {
         });
       }
     },
-    [readItems],
+    [readItems, hold],
   );
 
   /**
@@ -806,7 +816,7 @@ export function RemindersView() {
   const inGroup = (guid: string) => lists.filter((l) => !l.pinned && l.groupGuid === guid);
 
   const listRow = (list: ReminderList, nested: boolean) => (
-    <div className={`rx-list-row${nested ? " nested" : ""}`} key={list.guid}>
+    <div className={`rx-list-row${nested ? " nested" : ""}${listMenu?.list.guid === list.guid ? " is-menu" : ""}`} key={list.guid}>
       {renaming === list.guid ? (
         <input
           className="rx-rename"
@@ -839,6 +849,10 @@ export function RemindersView() {
               setDetail(true);
             }}
             onDoubleClick={() => setRenaming(list.guid)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setListMenu({ list, at: { x: e.clientX, y: e.clientY, alignRight: false } });
+            }}
           >
             <span className="rx-badge" style={{ background: colourOf(list) }}>
               <Glyph name={emblemGlyph(list.emblem)} />
@@ -846,37 +860,19 @@ export function RemindersView() {
             <span className="rx-list-name">{list.title}</span>
             <span className="rx-list-count">{countOf(list.guid)}</span>
           </button>
-          <span className="rx-list-actions">
-            <button
-              className="rx-icon-button"
-              aria-label={`Show List Info for ${list.title}`}
-              title="Show List Info"
-              onClick={() => setInfoFor(list)}
-            >
-              ⓘ
-            </button>
-            <button
-              className="rx-icon-button"
-              aria-label={`Rename ${list.title}`}
-              title="Rename"
-              onClick={() => setRenaming(list.guid)}
-            >
-              ✎
-            </button>
-            <button
-              className="rx-icon-button danger"
-              aria-label={`Delete ${list.title}`}
-              title="Delete"
-              onClick={() => {
-                // Deleting a list takes its reminders, so ask before doing it.
-                if (window.confirm(`Delete "${list.title}" and everything in it?`)) {
-                  void listWrite(() => api.reminderListDelete(list.guid));
-                }
-              }}
-            >
-              ×
-            </button>
-          </span>
+          {/* One ⋯ over where the count sits, as Notes' and Contacts' rows have: three
+              buttons there covered the list's own name. Right-click opens the same menu. */}
+          <button
+            className="notes-folder-more rx-list-more"
+            aria-label={`Actions for ${list.title}`}
+            aria-haspopup="menu"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setListMenu({ list, at: { x: r.right, y: r.bottom + 4, alignRight: true } });
+            }}
+          >
+            <span aria-hidden="true">•••</span>
+          </button>
         </>
       )}
     </div>
@@ -1345,6 +1341,28 @@ export function RemindersView() {
           </p>
         )}
       </section>
+      {listMenu && (
+        <RowMenu
+          at={listMenu.at}
+          onClose={() => setListMenu(null)}
+          entries={[
+            { label: "Show List Info", run: () => setInfoFor(listMenu.list) },
+            { label: "Rename List", run: () => setRenaming(listMenu.list.guid) },
+            null,
+            {
+              label: "Delete List…",
+              danger: true,
+              run: () => {
+                const list = listMenu.list;
+                // Deleting a list takes its reminders, so ask before doing it.
+                if (window.confirm(`Delete "${list.title}" and everything in it?`)) {
+                  void listWrite(() => api.reminderListDelete(list.guid));
+                }
+              },
+            },
+          ]}
+        />
+      )}
       {infoFor && (
         <ListInfo
           list={infoFor}

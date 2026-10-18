@@ -65,6 +65,14 @@ pub struct Session {
     pub account_name: Option<String>,
     #[serde(default)]
     pub account_email: Option<String>,
+    /// Whether iCloud's data may be reached from the web at all (`dsInfo.isWebAccessAllowed`).
+    /// Off on an account with Advanced Data Protection until the person turns on "Access
+    /// iCloud Data on the Web" — and then nothing here can be read, whatever else is right.
+    #[serde(default)]
+    pub web_access_allowed: Option<bool>,
+    /// Advanced Data Protection, which Apple calls iCloud Data Protection (`iCDPEnabled`).
+    #[serde(default)]
+    pub data_protection: Option<bool>,
 
     /// Failed sign-ins in a row. Drives the local backoff.
     #[serde(default)]

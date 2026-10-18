@@ -132,6 +132,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
   ];
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
+    // As Tauri builds it on Linux (tauri/scripts/core.js): the whole path escaped.
+    convertFileSrc: (path, protocol = "asset") => `${protocol}://localhost/${encodeURIComponent(path)}`,
     invoke: async (cmd, args) => {
       switch (cmd) {
         case "auth_status":
@@ -238,7 +240,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (args.runs && kept === args.body) (window.__savedRuns ??= {})[args.guid] = args.runs;
           return kept;
         }
-        case "note_delete": case "note_move": return null;
+        case "note_delete": return null;
+        case "note_move":
+          if (window.__slowMove) await new Promise((r) => setTimeout(r, window.__slowMove));
+          return null;
         case "note_pin": {
           const n = noteList.find((x) => x.guid === args?.guid);
           if (n) n.pinned = args.pinned;
@@ -285,7 +290,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_thumbnails": return driveFixture ? { "FILE::d": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='60'><rect width='80' height='60' fill='%23eee'/></svg>" } : {};
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
-        case "account_info": return { name: "Asha Rao", email: "asha@example.com" };
+        case "account_info": return { name: "Asha Rao", email: "asha@example.com", photoContact: window.__mePhoto ?? null };
         case "settings_get": return { reminderAlerts: true, eventAlerts: true, ...(window.__settings ?? {}) };
         case "settings_set":
           if (window.__settingsFail) throw "Couldn't save that setting.";
@@ -307,6 +312,14 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             size: 1500000, childCount: null, createdAt: 1786000000, modifiedAt: 1786000000, etag: "t2",
             expiresAt: Math.floor(Date.now() / 1000) + 2 * 86400 - 60, restorePath: "Wallpaper.jpg" },
         ]).slice();
+        case "drive_trash_out": {
+          // One request for all of them, as Recover All / Delete All send it.
+          (window.__trashBatches ??= []).push({ recover: args.recover, ids: args.items.map((i) => i.drivewsid) });
+          const ids = new Set(args.items.map((i) => i.drivewsid));
+          window.__trash = (window.__trash ?? []).filter((i) => !ids.has(i.drivewsid));
+          for (const i of args.items) (window.__trashCalls ??= []).push([args.recover ? "drive_put_back" : "drive_delete_forever", i.drivewsid]);
+          return [];
+        }
         case "drive_put_back": case "drive_delete_forever":
           window.__trash = (window.__trash ?? []).filter((i) => i.drivewsid !== args.item.drivewsid);
           (window.__trashCalls ??= []).push([cmd, args.item.drivewsid]);
@@ -340,8 +353,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           };
         // The event plugin is how a finished refresh reaches the screens. Nothing emits in
         // a plain browser, so listening is a no-op that hands back an unsubscribe id.
-        case "plugin:event|listen":
+        case "plugin:event|listen": {
+          // Kept, so a test can play a finished refresh in: `window.__emit(event, payload)`.
+          const all = (window.__listeners ??= {});
+          (all[args.event] ??= []).push(args.handler);
+          window.__emit ??= (event, payload) => (window.__listeners[event] ?? []).forEach((h) => typeof h === "function" && h({ event, payload, id: 0 }));
           return 0;
+        }
         case "plugin:event|unlisten":
           return null;
         default: throw new Error(`unstubbed command: ${cmd}`);

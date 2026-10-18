@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePending } from "../lib/pending";
 import { Notice } from "../components/Notice";
 import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
 import { editorDate, groupNotes, listDate, mergeEdits, splitTitle } from "./notes/model";
@@ -70,6 +71,7 @@ export function NotesView() {
     per: new Map(),
   });
 
+  const { hold, over } = usePending<Note>();
   const read = useCallback(async () => {
     api
       .noteCounts()
@@ -83,9 +85,9 @@ export function NotesView() {
       searching ? api.notesSearch(query) : api.notesIn(folder === ALL ? null : folder),
     ]);
     setFolders(Array.isArray(found) ? found : []);
-    setNotes(Array.isArray(list) ? list : []);
+    setNotes(over(Array.isArray(list) ? list : []));
     setLoaded(true);
-  }, [folder, query, searching]);
+  }, [folder, query, searching, over]);
 
   // Reads the library and nothing else. `revision` ticks when a refresh finishes, whether
   // someone pressed for it or the timer came round, and that is the screen's whole
@@ -117,19 +119,24 @@ export function NotesView() {
       setBusy(true);
       setError(null);
       if (predict) setNotes((rows) => predict(rows));
+      // Kept over any refresh until Apple has it; let go before the read that confirms it.
+      const release = predict ? hold(predict) : () => {};
       try {
         await run();
+        release();
         await read();
         return true;
       } catch (e) {
+        release();
         setError(messageOf(e));
         read().catch(() => {});
         return false;
       } finally {
+        release();
         setBusy(false);
       }
     },
-    [read]
+    [read, hold]
   );
 
   /** Mirrors `composing` for effects that must not re-run when it changes. */
@@ -838,6 +845,7 @@ export function NotesView() {
                   </>
                 )}
                 {!inTrash && <Picker
+                  pullDown
                   label={`Folder for ${open.title}`}
                   value={open.folderGuid ?? ALL}
                   disabled={busy}

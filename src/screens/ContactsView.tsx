@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Face } from "../components/Face";
 import { Notice } from "../components/Notice";
 import { ChevronLeft, Plus, UsersRound, UserRound } from "lucide-react";
 import {
@@ -36,15 +37,9 @@ const KINDS = [
  * does the initials underneath are what shows, rather than a broken frame.
  */
 function Avatar({ contact, large }: { contact: Contact; large?: boolean }) {
-  const [failed, setFailed] = useState(false);
-  const src = failed ? null : photoSrc(contact);
   return (
     <span className={`avatar${large ? " large" : ""}`} aria-hidden="true">
-      {src ? (
-        <img src={src} alt="" onError={() => setFailed(true)} />
-      ) : (
-        initials(contact)
-      )}
+      <Face src={photoSrc(contact)} initials={initials(contact)} />
     </span>
   );
 }
@@ -461,8 +456,8 @@ export function ContactsView() {
       <section className="contacts-list" aria-label="Contacts">
         <header className="cal-bar">
           <div className="cal-nav">
+            {/* The count is the sidebar's, beside the list's name; said twice it was noise. */}
             <h1>{openList?.name ?? "Contacts"}</h1>
-            <span className="badge">{shown.length}</span>
           </div>
           <div className="cal-actions">
             <button className="quiet" disabled={busy} onClick={() => setDraft(blank())}>

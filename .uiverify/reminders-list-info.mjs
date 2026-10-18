@@ -11,8 +11,20 @@ await openScreen(page, "Reminders");
 await page.waitForTimeout(300);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
+// The name never runs under the ⋯ that appears over it.
 await page.locator(".rx-list", { hasText: "Daily" }).hover();
-await page.getByRole("button", { name: "Show List Info for Daily" }).click();
+const clash = await page.evaluate(() => {
+  const row = [...document.querySelectorAll(".rx-list-row")].find((r) => r.textContent.includes("Daily"));
+  const name = row.querySelector(".rx-list-name").getBoundingClientRect();
+  const more = row.querySelector(".rx-list-more").getBoundingClientRect();
+  return name.right - parseFloat(getComputedStyle(row.querySelector(".rx-list-name")).paddingRight) > more.left;
+});
+ok(!clash, "a pointed-at list's name stops short of its ⋯");
+await page.locator(".rx-list", { hasText: "Daily" }).hover();
+// One ⋯ on the row, not three buttons over its name.
+ok((await page.locator(".rx-list-row", { hasText: "Daily" }).getByRole("button").count()) === 2, "a list row has its name and one ⋯, nothing more");
+await page.getByRole("button", { name: "Actions for Daily" }).click();
+await page.getByRole("menuitem", { name: "Show List Info" }).click();
 await page.waitForTimeout(200);
 ok((await page.getByRole("radio").count()) === 12, "Apple's twelve colours are offered");
 await page.getByRole("radio", { name: "purple" }).click();

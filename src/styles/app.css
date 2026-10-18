@@ -1954,6 +1954,17 @@
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.35);
 }
 .account-avatar.is-large { width: 56px; height: 56px; font-size: 21px; }
+.account-avatar { overflow: hidden; position: relative; }
+
+/* A face over its initials (components/Face): the photo fades in once decoded, or is simply
+   there when it was already to hand. */
+.avatar { position: relative; overflow: hidden; }
+.face-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.face-photo.is-loading { opacity: 0; }
+.face-photo.is-ready { opacity: 1; animation: face-in 180ms ease-out; }
+.face-photo.is-instant { opacity: 1; }
+@keyframes face-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .face-photo.is-ready { animation: none; } }
 @media (min-width: 901px) {
   .is-rail .sidebar-foot { display: flex; }
   .is-rail .sidebar-account { justify-content: center; padding-inline: 0; }
