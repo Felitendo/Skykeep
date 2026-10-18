@@ -79,7 +79,12 @@ fn cut(image: image::DynamicImage, crop: Option<Crop>) -> image::DynamicImage {
     if cw == 0 || ch == 0 || x.saturating_add(cw) > w || y.saturating_add(ch) > h {
         return image;
     }
-    image.crop_imm(x, y, cw, ch)
+    // Apple's crop is in the Mac's coordinates: measured from the bottom-left corner, `y`
+    // rising up the picture. Read from the top, it drew the wrong band — measured on a real
+    // card, 1696×2528 with a 1279 square at y = 1249: from the top that is the bottom half,
+    // the body; from the bottom it is the top square, the face, as the phone shows it.
+    let top = h - y - ch;
+    image.crop_imm(x, top, cw, ch)
 }
 
 /// PNG where the picture needs transparency, JPEG where it does not.
@@ -107,10 +112,10 @@ mod tests {
     use super::*;
     use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 
-    /// A tall picture with a red square in the lower half — where a face would be in a portrait.
+    /// A tall picture with a red square at its top right — where a face sits in a portrait.
     fn portrait() -> Vec<u8> {
         let mut img = RgbaImage::from_pixel(100, 200, Rgba([0, 0, 255, 255]));
-        for y in 150..200 {
+        for y in 0..50 {
             for x in 50..100 {
                 img.put_pixel(x, y, Rgba([255, 0, 0, 255]));
             }
@@ -129,6 +134,8 @@ mod tests {
     }
 
     /// The whole point: a portrait photo cropped where its owner said, not through the middle.
+    /// `y` is from the bottom, as Apple measures it: 150 up a 200-tall picture, a 50 square
+    /// is the top one — the face — and read from the top it would have been the bottom.
     #[test]
     fn the_chosen_square_is_what_gets_drawn() {
         let source = portrait();

@@ -746,9 +746,105 @@ pub async fn trash_items(
         .collect())
 }
 
-/// Put an item back where it was deleted from (`putBackItemsFromTrash`), or delete it for
-/// good (`deleteItems`), as icloud.com's Recover and Delete Now do. Either way the trash is
-/// re-read afterwards and the item must have left it: a 200 alone has been seen to do nothing.
+/// Put items back where they were deleted from (`putBackItemsFromTrash`), or delete them for
+/// good (`deleteItems`), as icloud.com's Recover and Delete do — all of them in one request,
+/// as its Recover All and Delete All send them. One at a time and all at once, thirty items
+/// were thirty writes and sixty reads of the trash against Apple together; it turned them
+/// away as busy, and what was not deleted came back on the next read.
+///
+/// Apple's answer is per item, and only `"OK"` is done: a 200 can carry refusals inside it.
+/// An etag gone stale is tried once more with the one Apple sent back, as icloud.com does.
+/// The trash is read again afterwards and each item must have left it. Returns what could not
+/// be done, each with the reason.
+pub async fn out_of_trash_many(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    items: &[DriveItem],
+    endpoint: &str,
+    what: &str,
+) -> Result<Vec<(String, String)>> {
+    let current = folder_listing(http, root, &params, TRASH).await?;
+    let mut failed: Vec<(String, String)> = Vec::new();
+    // Each with the etag Apple has for it now.
+    let mut todo: Vec<(DriveItem, Option<String>)> = Vec::new();
+    for item in items {
+        match current.iter().find(|i| i.drivewsid == item.drivewsid) {
+            Some(found) => todo.push((
+                item.clone(),
+                found.etag.clone().or_else(|| item.etag.clone()),
+            )),
+            None => failed.push((
+                item.drivewsid.clone(),
+                format!("That item is no longer in Recently Deleted, so it could not be {what}."),
+            )),
+        }
+    }
+    let url = format!("{}/{endpoint}", root.trim_end_matches('/'));
+    for attempt in 0..2 {
+        if todo.is_empty() {
+            break;
+        }
+        // `deleteItems` takes each item's own id as `clientId` too (main.js, module 2231).
+        let entries: Vec<Value> = todo
+            .iter()
+            .map(|(item, etag)| {
+                if endpoint == "deleteItems" {
+                    json!({ "drivewsid": item.drivewsid, "etag": etag, "clientId": item.drivewsid })
+                } else {
+                    json!({ "drivewsid": item.drivewsid, "etag": etag })
+                }
+            })
+            .collect();
+        let reply = post_json(http, &url, &params, &json!({ "items": entries })).await?;
+        let answers: Vec<Value> = reply
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut again = Vec::new();
+        for (item, etag) in todo {
+            let answer = answers.iter().find(|a| {
+                a.get("drivewsid").and_then(Value::as_str) == Some(item.drivewsid.as_str())
+            });
+            match answer.and_then(|a| a.get("status")).and_then(Value::as_str) {
+                Some("OK") | None => {}
+                Some("ETAG_CONFLICT") if attempt == 0 => {
+                    let fresh = answer
+                        .and_then(|a| a.get("etag"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    again.push((item, fresh.or(etag)));
+                }
+                Some(other) => failed.push((
+                    item.drivewsid.clone(),
+                    format!("iCloud Drive did not let that be {what} ({other})."),
+                )),
+            }
+        }
+        todo = again;
+    }
+    for (item, _) in todo {
+        failed.push((
+            item.drivewsid,
+            format!("That item changed in iCloud Drive, so it was not {what}."),
+        ));
+    }
+    let after = folder_listing(http, root, &params, TRASH).await?;
+    for item in items {
+        if after.iter().any(|i| i.drivewsid == item.drivewsid)
+            && !failed.iter().any(|(id, _)| id == &item.drivewsid)
+        {
+            failed.push((
+                item.drivewsid.clone(),
+                format!("iCloud answered, but the item is still in Recently Deleted, so it was not {what}."),
+            ));
+        }
+    }
+    Ok(failed)
+}
+
+/// [`out_of_trash_many`] for one item, its refusal as the error.
 async fn out_of_trash(
     http: &reqwest::Client,
     root: &str,
@@ -757,37 +853,47 @@ async fn out_of_trash(
     endpoint: &str,
     what: &str,
 ) -> Result<()> {
-    let current = folder_listing(http, root, &params, TRASH).await?;
-    let Some(etag) = current
-        .iter()
-        .find(|i| i.drivewsid == item.drivewsid)
-        .map(|i| i.etag.clone().or_else(|| item.etag.clone()))
-    else {
-        return Err(Error::Refused(format!(
-            "That item is no longer in Recently Deleted, so it could not be {what}."
-        )));
-    };
-    let url = format!("{}/{endpoint}", root.trim_end_matches('/'));
-    let body = json!({ "items": [{ "drivewsid": item.drivewsid, "etag": etag }] });
-    let response = http.post(url).query(&params).json(&body).send().await?;
-    let status = response.status();
-    if status.as_u16() == 450 {
-        return Err(Error::ReauthRequired);
+    let failed = out_of_trash_many(
+        http,
+        root,
+        params,
+        std::slice::from_ref(item),
+        endpoint,
+        what,
+    )
+    .await?;
+    match failed.into_iter().next() {
+        None => Ok(()),
+        Some((_, why)) => Err(Error::Refused(why)),
     }
-    if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        return Err(Error::Protocol(format!(
-            "Drive refused that ({status}): {}",
-            text.chars().take(200).collect::<String>()
-        )));
-    }
-    let after = folder_listing(http, root, &params, TRASH).await?;
-    if after.iter().any(|i| i.drivewsid == item.drivewsid) {
-        return Err(Error::Refused(format!(
-            "iCloud answered, but the item is still in Recently Deleted, so it was not {what}."
-        )));
-    }
-    Ok(())
+}
+
+/// Recover all of these, in one request. What could not be, with why.
+pub async fn put_back_many(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    items: &[DriveItem],
+) -> Result<Vec<(String, String)>> {
+    out_of_trash_many(
+        http,
+        root,
+        params,
+        items,
+        "putBackItemsFromTrash",
+        "recovered",
+    )
+    .await
+}
+
+/// Delete all of these for good, in one request. What could not be, with why.
+pub async fn delete_forever_many(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    items: &[DriveItem],
+) -> Result<Vec<(String, String)>> {
+    out_of_trash_many(http, root, params, items, "deleteItems", "deleted").await
 }
 
 /// Recover: back to the folder it was deleted from.
@@ -1453,6 +1559,88 @@ mod write_tests {
             "FILE::com.apple.CloudDocs::ABC-123"
         );
         assert_eq!(body["items"][0]["etag"], "fresh");
+    }
+
+    /// Delete All is one request with every item, each carrying its own id as `clientId`, as
+    /// icloud.com sends it; a stale etag is tried again with Apple's; a refusal inside the 200
+    /// is reported for its item alone.
+    #[tokio::test]
+    async fn delete_all_is_one_request_and_reads_each_answer() {
+        let server = MockServer::start().await;
+        let item = |id: &str| DriveItem {
+            drivewsid: format!("FILE::com.apple.CloudDocs::{id}"),
+            ..file()
+        };
+        let (a, b, c) = (item("A"), item("B"), item("C"));
+        let trash = serde_json::json!([{ "drivewsid": TRASH, "status": "OK", "items": [
+            { "drivewsid": a.drivewsid, "name": "a", "type": "FILE", "etag": "ea" },
+            { "drivewsid": b.drivewsid, "name": "b", "type": "FILE", "etag": "eb" },
+            { "drivewsid": c.drivewsid, "name": "c", "type": "FILE", "etag": "ec" },
+        ]}]);
+        // Read before: all three. Read after: only the refused one is left.
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(trash))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!([{ "drivewsid": TRASH, "status": "OK", "items": [
+                    { "drivewsid": c.drivewsid, "name": "c", "type": "FILE", "etag": "ec" },
+                ]}]),
+            ))
+            .mount(&server)
+            .await;
+        // First: A done, B's etag stale, C refused. Then B again with the fresh etag: done.
+        Mock::given(method("POST"))
+            .and(path("/deleteItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": [
+                    { "drivewsid": a.drivewsid, "status": "OK" },
+                    { "drivewsid": b.drivewsid, "status": "ETAG_CONFLICT", "etag": "eb2" },
+                    { "drivewsid": c.drivewsid, "status": "UNKNOWN_ERROR" },
+                ]})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/deleteItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": [
+                    { "drivewsid": b.drivewsid, "status": "OK" },
+                ]})),
+            )
+            .mount(&server)
+            .await;
+        let failed = delete_forever_many(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &[a.clone(), b.clone(), c.clone()],
+        )
+        .await
+        .unwrap();
+        let deletes: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/deleteItems"))
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        assert_eq!(
+            deletes.len(),
+            2,
+            "one request for all, one more for the stale etag"
+        );
+        assert_eq!(deletes[0]["items"].as_array().unwrap().len(), 3);
+        assert_eq!(deletes[0]["items"][0]["clientId"], a.drivewsid);
+        assert_eq!(deletes[1]["items"][0]["etag"], "eb2");
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].0, c.drivewsid);
     }
 
     /// Delete Now that left the item in Recently Deleted is a failure, said so.
