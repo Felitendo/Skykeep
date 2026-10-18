@@ -490,6 +490,7 @@ pub async fn edit_cloudkit_from(
 /// [`edit_cloudkit_from`], with the note's formatting as an editor shows it: `runs` describe
 /// `body`, and are laid over the text Apple ends up holding — moved along with another
 /// device's edit when one is merged in.
+#[allow(clippy::too_many_arguments)]
 pub async fn edit_rich_cloudkit_from(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
