@@ -1526,6 +1526,8 @@ async fn contact_list_write(
 #[tauri::command]
 async fn contact_save(
     contact: Contact,
+    // The card as the form opened it: only what differs from it is written.
+    base: Option<Contact>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
@@ -1542,13 +1544,14 @@ async fn contact_save(
         let card = quince_icloud::contacts::card(&http, &root, params.clone(), &contact.guid)
             .await
             .map_err(|e| e.to_string())?;
-        quince_icloud::contacts::update(
+        quince_icloud::contacts::update_from(
             &http,
             &root,
             params.clone(),
             &tokens,
             &contact,
             card.as_ref(),
+            base.as_ref(),
         )
         .await
         .map_err(|e| e.to_string())?;

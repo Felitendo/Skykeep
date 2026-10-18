@@ -237,6 +237,15 @@ pub async fn fetch_with_tokens(
 /// not model — a card written with only the fields we understand would quietly drop
 /// everything else about the person.
 fn card_from(contact: &Contact, existing: Option<&Value>) -> Value {
+    card_merged(contact, existing, None)
+}
+
+/// The card to send: Apple's own as it stands now, with the fields this person changed —
+/// and only those — set from the form. `base` is the card as the form opened it; a field the
+/// form left as it found it keeps Apple's current value, so a name or number changed on the
+/// phone while the form was open is not put back. Without a base every modelled field is
+/// written, as a new card needs.
+fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contact>) -> Value {
     // Apple's card is the starting point, and Apple is not obliged to send an object; a
     // write that panicked on network input would take the whole window down with it.
     let mut card = existing
@@ -249,13 +258,22 @@ fn card_from(contact: &Contact, existing: Option<&Value>) -> Value {
 
     object.insert("contactId".into(), Value::String(contact.guid.clone()));
     object.insert("isCompany".into(), Value::Bool(contact.is_company));
-    for (key, value) in [
-        ("firstName", &contact.first_name),
-        ("lastName", &contact.last_name),
-        ("companyName", &contact.company),
-        ("birthday", &contact.birthday),
-        ("notes", &contact.notes),
+    let unchanged =
+        |pick: fn(&Contact) -> &Option<String>| base.is_some_and(|b| pick(b) == pick(contact));
+    for (key, value, pick) in [
+        (
+            "firstName",
+            &contact.first_name,
+            (|c: &Contact| &c.first_name) as fn(&Contact) -> &Option<String>,
+        ),
+        ("lastName", &contact.last_name, |c: &Contact| &c.last_name),
+        ("companyName", &contact.company, |c: &Contact| &c.company),
+        ("birthday", &contact.birthday, |c: &Contact| &c.birthday),
+        ("notes", &contact.notes, |c: &Contact| &c.notes),
     ] {
+        if existing.is_some() && unchanged(pick) {
+            continue;
+        }
         match value {
             Some(text) if !text.trim().is_empty() => {
                 object.insert(key.into(), Value::String(text.trim().to_string()));
@@ -285,12 +303,40 @@ fn card_from(contact: &Contact, existing: Option<&Value>) -> Value {
                 .collect(),
         )
     };
-    object.insert("phones".into(), of_kind("phone"));
-    object.insert("emailAddresses".into(), of_kind("email"));
-    object.insert("urls".into(), of_kind("url"));
+    let kind_unchanged = |kind: &str| {
+        base.is_some_and(|b| {
+            let of = |c: &Contact| {
+                c.methods
+                    .iter()
+                    .filter(|m| m.kind == kind)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            of(b) == of(contact)
+        })
+    };
+    for (key, kind) in [
+        ("phones", "phone"),
+        ("emailAddresses", "email"),
+        ("urls", "url"),
+    ] {
+        if existing.is_some() && kind_unchanged(kind) {
+            continue;
+        }
+        object.insert(key.into(), of_kind(kind));
+    }
 
-    if let Some(etag) = &contact.etag {
-        object.insert("etag".into(), Value::String(etag.clone()));
+    // Laid over Apple's current card, the write is against that card's version; otherwise
+    // against the one the form read.
+    let fresh = base
+        .is_some()
+        .then(|| existing.and_then(|e| e.get("etag")).and_then(Value::as_str))
+        .flatten();
+    if let Some(etag) = fresh
+        .map(ToString::to_string)
+        .or_else(|| contact.etag.clone())
+    {
+        object.insert("etag".into(), Value::String(etag));
     }
     card
 }
@@ -337,7 +383,12 @@ async fn write(
             text.chars().take(200).collect::<String>()
         )));
     }
-    Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    // A card Apple refused comes back as 200 with the reason in `errors` — a 409 when the
+    // card changed on the phone since it was read. Read as success, the edit was closed as
+    // saved and quietly lost.
+    refused_group(&body)?;
+    Ok(body)
 }
 
 /// Create a contact, and return the id Apple will know it by.
@@ -390,13 +441,33 @@ pub async fn update(
     contact: &Contact,
     existing: Option<&Value>,
 ) -> Result<()> {
+    update_from(http, root, params, tokens, contact, existing, None).await
+}
+
+/// [`update`], writing only what changed from `base` — the card as the form opened it — over
+/// Apple's current card. A card no longer at Apple is refused, not rebuilt from the fields
+/// this app models: that would drop its photo, addresses and everything else.
+pub async fn update_from(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    contact: &Contact,
+    existing: Option<&Value>,
+    base: Option<&Contact>,
+) -> Result<()> {
+    if existing.is_none() && base.is_some() {
+        return Err(Error::Refused(
+            "This contact was deleted on another device, so it wasn't saved.".into(),
+        ));
+    }
     write(
         http,
         root,
         params,
         tokens,
         reqwest::Method::PUT,
-        card_from(contact, existing),
+        card_merged(contact, existing, base),
     )
     .await?;
     Ok(())
@@ -580,8 +651,9 @@ async fn write_list(
     Ok(body)
 }
 
-/// Apple answers a refused group write with 200 and the reason in `errors` — a 409 when
-/// the etag sent is no longer the list's. Read as success, a lost write would look saved.
+/// Apple answers a refused write — a card or a list — with 200 and the reason in `errors`:
+/// a 409 when the etag sent is no longer the one Apple holds. Read as success, a lost write
+/// would look saved.
 fn refused_group(body: &Value) -> Result<()> {
     let Some(error) = body
         .get("errors")
@@ -889,6 +961,50 @@ pub fn apply(library: &mut quince_core::Library, book: AddressBook) -> Result<us
 
 #[cfg(test)]
 mod list_tests {
+
+    /// The phone renamed the person while the form here was open on their notes: saving
+    /// writes the notes and keeps the phone's name — and Apple's numbers, untouched here —
+    /// against the version Apple holds now.
+    #[test]
+    fn a_save_writes_only_what_the_form_changed() {
+        use quince_core::contacts::{Contact, ContactMethod};
+        let person = |last: &str, notes: Option<&str>| Contact {
+            guid: "C1".into(),
+            first_name: Some("Asha".into()),
+            middle_name: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
+            last_name: Some(last.into()),
+            company: None,
+            is_company: false,
+            birthday: None,
+            notes: notes.map(Into::into),
+            etag: Some("old".into()),
+            methods: vec![ContactMethod {
+                kind: "phone".into(),
+                label: None,
+                value: "+91 1".into(),
+            }],
+        };
+        let base = person("Rao", None);
+        let mine = person("Rao", Some("Call after 6"));
+        let apple = serde_json::json!({
+            "contactId": "C1", "etag": "new", "firstName": "Asha", "lastName": "Rao-Iyer",
+            "phones": [{ "field": "+91 1" }, { "field": "+91 2", "label": "work" }],
+            "streetAddresses": [{ "field": { "city": "Pune" } }],
+        });
+        let card = super::card_merged(&mine, Some(&apple), Some(&base));
+        assert_eq!(card["lastName"], "Rao-Iyer", "the phone's rename stands");
+        assert_eq!(card["notes"], "Call after 6", "the edit here is written");
+        assert_eq!(
+            card["phones"].as_array().unwrap().len(),
+            2,
+            "numbers not edited here keep Apple's"
+        );
+        assert_eq!(card["streetAddresses"][0]["field"]["city"], "Pune");
+        assert_eq!(card["etag"], "new", "against the version Apple holds now");
+    }
     #[test]
     fn a_refused_group_write_is_an_error_not_a_save() {
         let busy = serde_json::json!({ "errors": [{ "groupId": "G", "etag": "e", "errorCode": 409, "errorMessage": "Conflict" }] });

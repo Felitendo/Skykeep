@@ -156,7 +156,8 @@ export const api = {
   notePin: (guid: string, pinned: boolean) => invoke<void>("note_pin", { guid, pinned }),
 
   /** Create when the guid is empty, otherwise save changes. Returns Apple's id for it. */
-  contactSave: (contact: Contact) => invoke<string>("contact_save", { contact }),
+  /** `base` is the card as the form opened it: only what changed from it is written. */
+  contactSave: (contact: Contact, base: Contact | null = null) => invoke<string>("contact_save", { contact, base }),
   contactDelete: (guid: string) => invoke<void>("contact_delete", { guid }),
   contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
   /** These people as a vCard file in Downloads, written by Apple. Returns the path. */

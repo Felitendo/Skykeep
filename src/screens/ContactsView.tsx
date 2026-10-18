@@ -101,6 +101,15 @@ export function ContactsView() {
   const { revision } = useSync();
   /** The card being written, or null while simply looking. */
   const [draft, setDraft] = useState<Contact | null>(null);
+  /**
+   * The card as the form opened it. Saving writes only what differs from it, over Apple's
+   * card as it is then — so a change made on the phone while the form was open stays.
+   */
+  const draftBase = useRef<Contact | null>(null);
+  const edit = (c: Contact) => {
+    draftBase.current = c;
+    setDraft({ ...c });
+  };
   const [busy, setBusy] = useState(false);
   const [lists, setLists] = useState<ContactList[]>([]);
   /** The list being looked at, or ALL. */
@@ -303,7 +312,7 @@ export function ContactsView() {
       { label: "Add to List", submenu: contactEntries(c, true) },
       ...(openList ? [{ label: `Remove from \u201c${openList.name}\u201d`, run: () => removeFromList(openList, [c.guid]) }] : []),
       null,
-      { label: "Edit Contact", run: () => { setOpenGuid(c.guid); setDraft({ ...c }); } },
+      { label: "Edit Contact", run: () => { setOpenGuid(c.guid); edit(c); } },
       ...(me === c.guid ? [] : [{ label: "Make This My Card", run: () => void makeMine(c) }]),
       { label: "Export vCard\u2026", run: () => void exportCards([c]) },
       { label: "Delete Contact\u2026", danger: true, run: () => {
@@ -337,7 +346,7 @@ export function ContactsView() {
     const saving = draft;
     let guid = saving.guid;
     const ok = await write(async () => {
-      guid = await api.contactSave(saving);
+      guid = await api.contactSave(saving, saving.guid ? draftBase.current : null);
     });
     if (ok) {
       setDraft(null);
@@ -857,7 +866,7 @@ export function ContactsView() {
             {open.notes && <p className="contact-notes">{open.notes}</p>}
 
             <div className="cal-form-actions">
-              <button className="quiet" disabled={busy} onClick={() => setDraft({ ...open })}>
+              <button className="quiet" disabled={busy} onClick={() => edit(open)}>
                 Edit
               </button>
               <button
