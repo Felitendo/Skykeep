@@ -250,7 +250,7 @@ export function NotesView() {
    * The text Apple last confirmed for the open note: what an edit began from. Sent with each
    * save, so the save can tell an edit made on another device since and keep both.
    */
-  const base = useRef<{ guid: string; text: string } | null>(null);
+  const base = useRef<{ guid: string; text: string; runs?: Run[] | null } | null>(null);
   /** One save at a time: a second, started while the first was out, could land last with
    *  older text. Saves chain behind this. */
   const inFlight = useRef<Promise<void>>(Promise.resolve());
@@ -261,13 +261,15 @@ export function NotesView() {
       if (!next) return;
       pending.current = null;
       const from = base.current?.guid === next.guid ? base.current.text : null;
+      const fromRuns = base.current?.guid === next.guid ? (base.current.runs ?? null) : null;
       let saved: string | null = null;
       const ok = await write(async () => {
-        saved = await api.noteSave(next.guid, next.body, from, next.runs);
+        saved = await api.noteSave(next.guid, next.body, from, next.runs, next.runs ? fromRuns : null);
       });
       if (!ok || saved === null) return;
       const kept: string = saved;
-      base.current = { guid: next.guid, text: kept };
+      const keptRunsForBase = next.runs ? (kept === next.body ? next.runs : carryRuns(next.body, next.runs, kept)) : null;
+      base.current = { guid: next.guid, text: kept, runs: keptRunsForBase };
       setSaved(true);
       // What Apple now holds becomes what this note reads, text and formatting together, so
       // what is on screen and what was saved agree without a refresh.
@@ -303,7 +305,7 @@ export function NotesView() {
       // Nothing may be typed into a note whose text has not arrived.
       if (!open || body === null) return;
       // The first keystroke in a note marks what it read as the base of the edit.
-      if (base.current?.guid !== open.guid) base.current = { guid: open.guid, text: body };
+      if (base.current?.guid !== open.guid) base.current = { guid: open.guid, text: body, runs: formatSafe ? runs : null };
       draftRuns.current = typedRuns;
       setDraft(typed);
       setEdits((n) => n + 1);

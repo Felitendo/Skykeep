@@ -144,8 +144,13 @@ export const api = {
    */
   noteBody: (guid: string) => invoke<string | null>("note_body", { guid }),
   /** Answers with the text Apple now holds — ours, or ours combined with another device's. */
-  noteSave: (guid: string, body: string, base: string | null, runs: import("../screens/notes/Formatted").Run[] | null = null) =>
-    invoke<string>("note_save", { guid, body, base, runs }),
+  noteSave: (
+    guid: string,
+    body: string,
+    base: string | null,
+    runs: import("../screens/notes/Formatted").Run[] | null = null,
+    baseRuns: import("../screens/notes/Formatted").Run[] | null = null,
+  ) => invoke<string>("note_save", { guid, body, base, runs, baseRuns }),
   noteCreate: (folderGuid: string | null, body: string) =>
     invoke<string>("note_create", { folderGuid, body }),
   noteDelete: (guid: string) => invoke<void>("note_delete", { guid }),

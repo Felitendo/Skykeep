@@ -1132,6 +1132,9 @@ async fn note_save(
     base: Option<String>,
     // The note's formatting, when it is edited formatted: runs over `body`.
     runs: Option<Vec<quince_icloud::ckdocument::Run>>,
+    // The formatting the editor began from, over `base`: a line not restyled since keeps
+    // what Apple holds now, so a tick made on the phone is not undone.
+    base_runs: Option<Vec<quince_icloud::ckdocument::Run>>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
@@ -1150,6 +1153,7 @@ async fn note_save(
         base.as_deref(),
         &body,
         runs.as_deref(),
+        base_runs.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())?;

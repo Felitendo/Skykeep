@@ -1065,6 +1065,109 @@ pub fn replace_rich_in_base64(original: &str, text: &str, runs: &[Run]) -> Optio
     Some(B64.encode(gzip(&set_runs(&replaced, runs)?)))
 }
 
+/// Each paragraph of `text` — its text with its newline — and the runs over it.
+fn paragraphs_of(text: &str, runs: &[Run]) -> Vec<(String, Vec<Run>)> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut per: Vec<&Run> = Vec::with_capacity(units.len());
+    for r in runs {
+        for _ in 0..r.length {
+            per.push(r);
+        }
+    }
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for i in 0..=units.len() {
+        let end = i == units.len() || units[i] == u16::from(b'\n');
+        if !end {
+            continue;
+        }
+        let stop = if i < units.len() { i + 1 } else { i };
+        if stop == start && i == units.len() {
+            break;
+        }
+        let mut pruns: Vec<Run> = Vec::new();
+        for k in start..stop {
+            let Some(r) = per.get(k) else { break };
+            match pruns.last_mut() {
+                Some(last)
+                    if *last
+                        == Run {
+                            length: last.length,
+                            ..(*r).clone()
+                        } =>
+                {
+                    last.length += 1
+                }
+                _ => pruns.push(Run {
+                    length: 1,
+                    ..(*r).clone()
+                }),
+            }
+        }
+        out.push((String::from_utf16_lossy(&units[start..stop]), pruns));
+        start = stop;
+    }
+    out
+}
+
+/// The formatting to write: `mine` — what the editor shows over the text being saved —
+/// except on any paragraph this person did not restyle, which keeps the formatting Apple
+/// holds now. So a line ticked, unticked or made bold on the phone while the note was open
+/// here keeps that, unless it was restyled here too.
+///
+/// Paragraphs are matched by their text, in order: `base` is the formatting the editor began
+/// from, `theirs` Apple's now. A paragraph whose text is not found in both is mine as it is.
+#[must_use]
+pub fn keep_their_formatting(
+    base_text: &str,
+    base_runs: &[Run],
+    theirs_text: &str,
+    theirs_runs: &[Run],
+    text: &str,
+    mine: &[Run],
+) -> Vec<Run> {
+    let fits = |t: &str, r: &[Run]| {
+        r.iter().map(|x| x.length).sum::<u64>() == t.encode_utf16().count() as u64
+    };
+    if !fits(base_text, base_runs) || !fits(theirs_text, theirs_runs) || !fits(text, mine) {
+        return mine.to_vec();
+    }
+    let take = |list: Vec<(String, Vec<Run>)>| {
+        let mut by: std::collections::HashMap<String, std::collections::VecDeque<Vec<Run>>> =
+            std::collections::HashMap::new();
+        for (t, r) in list {
+            by.entry(t).or_default().push_back(r);
+        }
+        by
+    };
+    let mut base = take(paragraphs_of(base_text, base_runs));
+    let mut theirs = take(paragraphs_of(theirs_text, theirs_runs));
+    let mut out: Vec<Run> = Vec::new();
+    for (t, my_runs) in paragraphs_of(text, mine) {
+        let b = base.get_mut(&t).and_then(|q| q.pop_front());
+        let th = theirs.get_mut(&t).and_then(|q| q.pop_front());
+        let chosen = match (b, th) {
+            (Some(b), Some(th)) if b == my_runs && th != b => th,
+            _ => my_runs,
+        };
+        for r in chosen {
+            match out.last_mut() {
+                Some(last)
+                    if *last
+                        == Run {
+                            length: last.length,
+                            ..r.clone()
+                        } =>
+                {
+                    last.length += r.length
+                }
+                _ => out.push(r),
+            }
+        }
+    }
+    out
+}
+
 /// `runs`, which describe `from`, laid over `to` — the same text with one stretch changed,
 /// as another device's edit merged in changes it. The stretch that is new takes the setting
 /// of what is just before it.
@@ -2766,6 +2869,43 @@ mod run_tests {
             utf16_hunks("a😀b", "a😀c"),
             [(3, 1, 1)],
             "counted in UTF-16 units, never splitting a pair"
+        );
+    }
+
+    /// The phone ticked "Milk" while the note was open here; here, a line was typed at the
+    /// end. The save keeps the phone's tick — this window never restyled that line — and a
+    /// line restyled here takes this window's style.
+    #[test]
+    fn a_tick_made_elsewhere_survives_a_save_here() {
+        let item = |len: u64, done: bool| Run {
+            length: len,
+            style: Some(103),
+            checked: Some(done),
+            ..body(len)
+        };
+        let base_text = "Milk\nEggs\n";
+        let base = vec![item(5, false), item(5, false)];
+        let theirs = vec![item(5, true), item(5, false)];
+        let text = "Milk\nEggs\nJam";
+        let mine = vec![
+            item(5, false),
+            Run {
+                length: 5,
+                style: Some(1),
+                ..body(5)
+            },
+            body(3),
+        ];
+        let out = keep_their_formatting(base_text, &base, base_text, &theirs, text, &mine);
+        let read: Vec<(u64, Option<u64>, Option<bool>)> =
+            out.iter().map(|r| (r.length, r.style, r.checked)).collect();
+        assert_eq!(
+            read,
+            [
+                (5, Some(103), Some(true)),
+                (5, Some(1), None),
+                (3, None, None)
+            ]
         );
     }
 

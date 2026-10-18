@@ -83,6 +83,7 @@ async fn main() -> Result<()> {
         Some(&original),
         &edited,
         None,
+        None,
     )
     .await?;
     let back = zc.lookup_record("Notes", &guid).await?.unwrap();

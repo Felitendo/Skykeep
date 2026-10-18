@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
         Some(body),
         text,
         Some(&runs),
+        None,
     )
     .await?;
     let back = zc.lookup_record("Notes", &guid).await?.unwrap();

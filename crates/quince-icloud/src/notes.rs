@@ -474,7 +474,17 @@ pub async fn edit_cloudkit_from(
     base: Option<&str>,
     body: &str,
 ) -> Result<String> {
-    edit_rich_cloudkit_from(http, ckdatabasews_root, params, note, base, body, None).await
+    edit_rich_cloudkit_from(
+        http,
+        ckdatabasews_root,
+        params,
+        note,
+        base,
+        body,
+        None,
+        None,
+    )
+    .await
 }
 
 /// [`edit_cloudkit_from`], with the note's formatting as an editor shows it: `runs` describe
@@ -488,6 +498,7 @@ pub async fn edit_rich_cloudkit_from(
     base: Option<&str>,
     body: &str,
     runs: Option<&[crate::ckdocument::Run]>,
+    base_runs: Option<&[crate::ckdocument::Run]>,
 ) -> Result<String> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     for _ in 0..3 {
@@ -522,6 +533,18 @@ pub async fn edit_rich_cloudkit_from(
         let rewritten = match runs {
             Some(runs) => {
                 let laid = if target == body { runs.to_vec() } else { crate::ckdocument::carry_runs(body, runs, &target) };
+                // Lines not restyled here keep what Apple holds — a tick made on the phone.
+                let laid = match (base, base_runs) {
+                    (Some(base), Some(base_runs)) => crate::ckdocument::keep_their_formatting(
+                        base,
+                        base_runs,
+                        &theirs,
+                        &crate::ckdocument::runs_from_base64(encoded),
+                        &target,
+                        &laid,
+                    ),
+                    _ => laid,
+                };
                 crate::ckdocument::replace_rich_in_base64(encoded, &target, &laid)
             }
             None => crate::ckdocument::replace_text_in_base64(encoded, &target),
