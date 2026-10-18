@@ -329,14 +329,20 @@ pub fn apply_cloudkit(
             // A table: its cells, kept beside the library's settings under its id, which is
             // what the note's text names it by.
             "Attachment" => {
-                let Some(name) = field::record_name(record) else { continue };
+                let Some(name) = field::record_name(record) else {
+                    continue;
+                };
                 let uti = record
                     .pointer("/fields/UTI/value")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 if uti == crate::table::UTI {
                     let cells = (!removed)
-                        .then(|| record.pointer("/fields/MergeableDataEncrypted/value").and_then(Value::as_str))
+                        .then(|| {
+                            record
+                                .pointer("/fields/MergeableDataEncrypted/value")
+                                .and_then(Value::as_str)
+                        })
                         .flatten()
                         .and_then(crate::table::cells_from_base64);
                     tables.push((name, cells));
@@ -361,7 +367,10 @@ pub fn apply_cloudkit(
     }
 
     for (name, cells) in &tables {
-        let value = cells.as_ref().and_then(|c| serde_json::to_string(c).ok()).unwrap_or_default();
+        let value = cells
+            .as_ref()
+            .and_then(|c| serde_json::to_string(c).ok())
+            .unwrap_or_default();
         library.set_state(&crate::table::state_key(name), &value)?;
     }
     // A note the owner deleted is still present as a Note record; only the per-user record

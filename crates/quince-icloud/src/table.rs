@@ -107,8 +107,13 @@ fn inflate(data: &[u8]) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut out = Vec::new();
     if data.starts_with(&[0x1f, 0x8b]) {
-        flate2::read::GzDecoder::new(data).read_to_end(&mut out).ok()?;
-    } else if flate2::read::ZlibDecoder::new(data).read_to_end(&mut out).is_ok() {
+        flate2::read::GzDecoder::new(data)
+            .read_to_end(&mut out)
+            .ok()?;
+    } else if flate2::read::ZlibDecoder::new(data)
+        .read_to_end(&mut out)
+        .is_ok()
+    {
     } else {
         return Some(data.to_vec());
     }
@@ -152,7 +157,9 @@ impl<'a> Doc<'a> {
         let mut out = HashMap::new();
         for element in bytes(&fields(body)?, 1) {
             let e = fields(element)?;
-            let (Some(k), Some(v)) = (bytes(&e, 1).next(), bytes(&e, 2).next()) else { continue };
+            let (Some(k), Some(v)) = (bytes(&e, 1).next(), bytes(&e, 2).next()) else {
+                continue;
+            };
             if let (Some(k), Some(v)) = (object_index(k), object_index(v)) {
                 out.insert(k, v);
             }
@@ -165,7 +172,10 @@ impl<'a> Doc<'a> {
         let mut out = HashMap::new();
         for i in 0..self.objects.len() {
             if let Some(entries) = self.custom(i) {
-                if let Some(at) = entries.get("UUIDIndex").and_then(|id| int(&fields(id)?, 2).or_else(|| int(&fields(id)?, 1))) {
+                if let Some(at) = entries
+                    .get("UUIDIndex")
+                    .and_then(|id| int(&fields(id)?, 2).or_else(|| int(&fields(id)?, 1)))
+                {
                     if let Some(u) = usize::try_from(at).ok().and_then(|at| self.uuids.get(at)) {
                         out.insert(*u, i);
                     }
@@ -206,7 +216,11 @@ impl<'a> Doc<'a> {
         self.object(i)
             .filter(|(kind, _)| *kind == 10)
             .and_then(|(_, body)| fields(body))
-            .and_then(|fs| bytes(&fs, 2).next().map(|b| String::from_utf8_lossy(b).into_owned()))
+            .and_then(|fs| {
+                bytes(&fs, 2)
+                    .next()
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+            })
             .unwrap_or_default()
     }
 }
@@ -216,7 +230,9 @@ impl<'a> Doc<'a> {
 #[must_use]
 pub fn cells_from_base64(value: &str) -> Option<Vec<Vec<String>>> {
     use base64::Engine;
-    let raw = base64::engine::general_purpose::STANDARD.decode(value.trim()).ok()?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(value.trim())
+        .ok()?;
     cells(&inflate(&raw)?)
 }
 
@@ -228,7 +244,9 @@ pub fn cells(document: &[u8]) -> Option<Vec<Vec<String>>> {
     let data = fields(bytes(&version, 3).next()?)?;
     let doc = Doc {
         objects: bytes(&data, 3).collect(),
-        keys: bytes(&data, 4).map(|k| String::from_utf8_lossy(k).into_owned()).collect(),
+        keys: bytes(&data, 4)
+            .map(|k| String::from_utf8_lossy(k).into_owned())
+            .collect(),
         uuids: bytes(&data, 6).collect(),
     };
     let root = doc.custom(0)?;
