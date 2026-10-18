@@ -9,6 +9,7 @@ pub mod cloudkit;
 pub mod contacts;
 pub mod drive;
 pub mod mergeable;
+pub mod note_media;
 pub mod notes;
 pub mod occasions;
 pub mod push;
@@ -19,7 +20,9 @@ pub mod topotext;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("couldn't reach iCloud: {0}")]
+    /// Said in words, never with the address: an address carries the account's id and this
+    /// install's client id, and was shown on screen whole.
+    #[error("{}", network_words(.0))]
     Network(#[from] reqwest::Error),
     #[error("iCloud sent back something unexpected: {0}")]
     Protocol(String),
@@ -45,3 +48,16 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// What went wrong reaching Apple, in words a person can act on — the address left out.
+fn network_words(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        "iCloud took too long to answer. Check your connection and try again.".into()
+    } else if e.is_connect() {
+        "Couldn't reach iCloud. Check your connection and try again.".into()
+    } else if e.is_body() || e.is_decode() {
+        "iCloud's answer was cut off. Try again.".into()
+    } else {
+        "The connection to iCloud dropped. Try again.".into()
+    }
+}

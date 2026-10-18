@@ -181,9 +181,7 @@
   padding: 4px;
   overflow-y: auto;
   border-radius: 12px;
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
+  background: var(--glass-thick);
   box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--shadow-sheet);
 }
 .cx-found-row {
@@ -589,6 +587,9 @@
 }
 
 /* ---- the event popover --------------------------------------------------------------- */
+/* Frosted to opaque without a live blur, as the menus are: a blurred layer is one WebKitGTK
+   composites on the frame it appears, and the popover appearing is what making an event
+   is — the stutter. The sidebar and toolbars, which never appear or move, keep theirs. */
 
 .cx-popover {
   position: fixed;
@@ -600,8 +601,6 @@
   padding: 14px 14px 12px;
   border-radius: 14px;
   background: var(--glass-thick);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
   box-shadow: var(--glass-float);
   /* Opacity and a small lift only, on the compositor: scaling from the corner read as a
      jump toward the click, and re-ran on every re-anchor. */
@@ -684,8 +683,6 @@
   transform: translateX(-50%);
   border-radius: var(--r-pill);
   background: var(--glass-thick);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
   box-shadow: var(--glass-float);
   font-size: var(--t-13);
 }

@@ -712,6 +712,18 @@ fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> 
     Some(out)
 }
 
+/// A text object rewritten to say `new_text`, as a device would edit it: the merge records
+/// edited in step and every other field copied through. The same message shape serves a
+/// note's body and each cell of a Notes table, so a table's cells are edited by this too.
+/// `None` when the object is not one this can rewrite truthfully.
+pub(crate) fn rewrite_text_object(
+    object: &[u8],
+    old_text: &str,
+    new_text: &str,
+) -> Option<Vec<u8>> {
+    rebuild_note(object, old_text, new_text)
+}
+
 /// What to change about one paragraph's setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParagraphChange {

@@ -72,6 +72,12 @@ step "calendar day steps" node .uiverify/calendar-daystep.mjs
 step "sidebar fold"      node .uiverify/sidebar-fold.mjs
 step "pending writes"    node .uiverify/pending-writes.mjs
 step "row hover"         node .uiverify/row-hover.mjs
+step "reminders switch"  node .uiverify/reminders-switch.mjs
+step "upload cancel"     node .uiverify/drive-upload-cancel.mjs
+step "notes tables"      node .uiverify/notes-table.mjs
+step "reminder menu"     node .uiverify/reminders-context.mjs
+step "notes media"       node .uiverify/notes-media.mjs
+step "webkit: tables"    env ENGINE=webkit node .uiverify/notes-table.mjs
 step "webkit: row hover" env ENGINE=webkit node .uiverify/row-hover.mjs
 step "webkit: fold"      env ENGINE=webkit node .uiverify/sidebar-fold.mjs
 step "reminder colours"  node .uiverify/calendar-reminder-colour.mjs

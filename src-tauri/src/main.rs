@@ -164,6 +164,202 @@ async fn cloudkit_context(
 }
 
 /// Undo percent-encoding in a path segment. Enough for the ids this scheme carries.
+/// The note attachment, and which of its pictures, a `quince://` request asks for:
+/// `note/<attachment id>/preview` or `note/<attachment id>/file`, escaped as Tauri escapes it.
+fn note_part(path: &str) -> Option<(String, quince_icloud::note_media::Part)> {
+    let path = percent_decode(path.trim_start_matches('/'));
+    let rest = path.strip_prefix("note/")?;
+    let (id, part) = rest.rsplit_once('/')?;
+    let part = match part {
+        "preview" => quince_icloud::note_media::Part::Preview,
+        "file" => quince_icloud::note_media::Part::File,
+        _ => return None,
+    };
+    (!id.is_empty()).then(|| (id.to_string(), part))
+}
+
+/// A note attachment's picture, from disk when it has been fetched before, from Apple when
+/// not — kept, so a note opens on its pictures at once the next time.
+async fn note_media_cached(
+    app: &tauri::AppHandle,
+    id: &str,
+    part: quince_icloud::note_media::Part,
+) -> Result<Vec<u8>, String> {
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let name = match part {
+        quince_icloud::note_media::Part::Preview => "preview",
+        quince_icloud::note_media::Part::File => "file",
+    };
+    let path = state_dir(app)
+        .join("note-media")
+        .join(format!("{safe}-{name}"));
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        return Ok(bytes);
+    }
+    let (http, root, params) = {
+        let auth = app.state::<Auth>();
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("ckdatabasews")
+            .ok_or("no CloudKit")?;
+        (client.http().clone(), root, client.service_params())
+    };
+    let bytes = quince_icloud::note_media::bytes(&http, &root, params, id, part)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await.ok();
+    }
+    tokio::fs::write(&path, &bytes).await.ok();
+    Ok(bytes)
+}
+
+/// A plain report of how this install is doing, for a bug report: versions, the system, and
+/// each service's last sync and last error — never a name, an address, or anything from a
+/// note, card or file. Written to Downloads for the person to read and send themselves;
+/// Quince sends nothing anywhere.
+#[tauri::command]
+async fn diagnostics_save(app: tauri::AppHandle, data: State<'_, Data>) -> UiResult<String> {
+    let health = {
+        let library = data.0.lock().await;
+        library.sync_health().map_err(|e| e.to_string())?
+    };
+    let os = std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|t| {
+            t.lines().find(|l| l.starts_with("PRETTY_NAME=")).map(|l| {
+                l.trim_start_matches("PRETTY_NAME=")
+                    .trim_matches('"')
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| std::env::consts::OS.to_string());
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    // Addresses and ids that an error might quote are taken out.
+    let scrub = |t: &str| -> String {
+        t.split_whitespace()
+            .map(|w| {
+                if w.contains('@') || w.len() > 24 && w.chars().any(|c| c.is_ascii_digit()) {
+                    "[…]"
+                } else {
+                    w
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut out = String::new();
+    use std::fmt::Write as _;
+    let _ = writeln!(out, "Quince diagnostic report");
+    let _ = writeln!(
+        out,
+        "Quince {} · {} · {} {}",
+        app.package_info().version,
+        os,
+        std::env::consts::ARCH,
+        kernel.trim()
+    );
+    let _ = writeln!(
+        out,
+        "Desktop: {} ({})",
+        if desktop.is_empty() {
+            "unknown"
+        } else {
+            &desktop
+        },
+        if session.is_empty() {
+            "unknown"
+        } else {
+            &session
+        }
+    );
+    let _ = writeln!(out, "Written: {}", jiff::Timestamp::now());
+    let _ = writeln!(out, "\nSync, by service:");
+    for h in &health {
+        let when = h
+            .last_synced_at
+            .and_then(|t| jiff::Timestamp::from_second(t).ok())
+            .map_or_else(|| "never".into(), |t| t.to_string());
+        let _ = writeln!(
+            out,
+            "  {:10} last synced {when}{}",
+            h.service,
+            h.last_error
+                .as_deref()
+                .map(|e| format!(" — last error: {}", scrub(e)))
+                .unwrap_or_default()
+        );
+    }
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    let path = dir.join(format!(
+        "Quince diagnostics {}.txt",
+        jiff::Zoned::now().strftime("%Y-%m-%d %H.%M")
+    ));
+    tokio::fs::write(&path, out)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// What a note's attachment is, to draw it where it sits.
+#[tauri::command]
+async fn note_attachment_info(
+    id: String,
+    auth: State<'_, Auth>,
+) -> UiResult<quince_icloud::note_media::AttachmentInfo> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    quince_icloud::note_media::info(&http, &root, params, &id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Open a note's attachment in the app this computer uses for it: the file is fetched,
+/// saved beside the others under its own name, and handed over.
+#[tauri::command]
+async fn note_attachment_open(
+    id: String,
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+) -> UiResult<()> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let info = quince_icloud::note_media::info(&http, &root, params, &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let bytes = note_media_cached(&app, &id, quince_icloud::note_media::Part::File).await?;
+    let name = info
+        .filename
+        .filter(|n| !n.contains('/') && !n.starts_with('.'))
+        .unwrap_or_else(|| format!("Attachment {}", &id[..id.len().min(8)]));
+    let dir = state_dir(&app).join("note-files").join(
+        id.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>(),
+    );
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = dir.join(name);
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// The contact a `quince://` request asks for the photo of.
 ///
 /// WebKitGTK reads `quince://photo/<id>` with "photo" as the host, while Tauri's own helper
@@ -1027,6 +1223,37 @@ async fn reminder_edit(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Moved to another list, a reminder takes its subtasks with it, as on the phone: left
+    // behind, they sat in the old list nested under a parent that was no longer in it.
+    if let Some(to) = edit.list_guid.as_deref().filter(|to| *to != list_guid) {
+        let children: Vec<quince_core::reminders::Reminder> = {
+            let library = data.0.lock().await;
+            library
+                .reminders_in(&list_guid, true)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.parent_guid.as_deref() == Some(guid.as_str()))
+                .collect()
+        };
+        let follow = quince_icloud::reminders::ReminderEdit {
+            list_guid: Some(to.to_string()),
+            ..Default::default()
+        };
+        for child in &children {
+            if let Err(e) = quince_icloud::reminders::edit_cloudkit(
+                &http,
+                &root,
+                params.clone(),
+                child,
+                &follow,
+            )
+            .await
+            {
+                eprintln!("a subtask did not follow its reminder: {e}");
+            }
+        }
+    }
+
     // A due date on its own notifies nobody. Every reminder on a real account that has a
     // time carries an Alarm pointing at an AlarmTrigger, and one written here used to have
     // the date and no alarm — so a phone showed the right time and then said nothing when it
@@ -1261,6 +1488,31 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 }
 
 /// A table's cells, row by row, as the last pass read them — `None` when none are known.
+/// Change one cell of a Notes table, and keep the table as Apple now holds it.
+#[tauri::command]
+async fn note_table_set_cell(
+    id: String,
+    row: usize,
+    column: usize,
+    text: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Vec<String>>> {
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let cells = quince_icloud::notes::set_table_cell_cloudkit(
+        &http, &root, params, &id, row, column, &text,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut library = data.0.lock().await;
+    if let Ok(json) = serde_json::to_string(&cells) {
+        library
+            .set_state(&quince_icloud::table::state_key(&id), &json)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(cells)
+}
+
 #[tauri::command]
 async fn note_table(
     id: String,
@@ -2034,9 +2286,56 @@ struct UploadEvent {
     within: String,
     sent: u64,
     total: u64,
-    /// `waiting`, `sending`, `verifying`, `done` or `failed`.
+    /// `preparing` (a folder being made on Apple), `waiting`, `sending`, `verifying`, `done`,
+    /// `failed` or `cancelled`; and once per batch `planned`, when every file in it is known.
     state: &'static str,
+    /// A folder rather than a file: its row stands for making the folder, not for bytes.
+    #[serde(default)]
+    folder: bool,
     error: Option<String>,
+}
+
+/// Uploads that can still be stopped, by id: waiting, or sending their bytes.
+fn uploads_running(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, futures_util::future::AbortHandle>>
+{
+    static RUNNING: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, futures_util::future::AbortHandle>>,
+    > = std::sync::OnceLock::new();
+    RUNNING.get_or_init(Default::default)
+}
+
+/// Batches stopped as a whole: no more of their folders are made or files queued.
+fn cancelled_batches() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static CANCELLED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    CANCELLED.get_or_init(Default::default)
+}
+
+fn cancelled(batch: &str) -> bool {
+    cancelled_batches().lock().is_ok_and(|b| b.contains(batch))
+}
+
+/// Stop uploads: these files, or a whole batch. A file already being filed in iCloud is past
+/// stopping and finishes; anything waiting or still sending stops, with nothing of it kept.
+#[tauri::command]
+fn drive_upload_cancel(ids: Vec<String>, batch: Option<String>) {
+    if let Some(batch) = &batch {
+        cancelled_batches()
+            .lock()
+            .map(|mut b| b.insert(batch.clone()))
+            .ok();
+    }
+    if let Ok(running) = uploads_running().lock() {
+        for (id, handle) in running.iter() {
+            let in_batch = batch
+                .as_deref()
+                .is_some_and(|b| id.starts_with(&format!("{b}:")));
+            if in_batch || ids.contains(id) {
+                handle.abort();
+            }
+        }
+    }
 }
 
 /// One file to send, and the Drive folder it goes into.
@@ -2058,7 +2357,7 @@ async fn folder_for(
     data: &State<'_, Data>,
     parent: &str,
     name: &str,
-) -> Result<String, String> {
+) -> Result<(String, bool), String> {
     settle(resync_drive_folder(http, root, params.to_vec(), data, parent).await)?;
     let existing = {
         let library = data.0.lock().await;
@@ -2069,11 +2368,11 @@ async fn folder_for(
             .find(|i| i.is_container() && i.name.eq_ignore_ascii_case(name))
     };
     if let Some(folder) = existing {
-        return Ok(folder.drivewsid);
+        return Ok((folder.drivewsid, false));
     }
     quince_icloud::drive::create_folder(http, root, params.to_vec(), parent, name)
         .await
-        .map(|f| f.drivewsid)
+        .map(|f| (f.drivewsid, true))
         .map_err(|e| e.to_string())
 }
 
@@ -2083,6 +2382,7 @@ async fn folder_for(
 /// points outside it would upload something nobody chose.
 #[allow(clippy::too_many_arguments)]
 async fn plan_upload(
+    app: &tauri::AppHandle,
     http: &reqwest::Client,
     root: &str,
     params: &[(String, String)],
@@ -2093,18 +2393,23 @@ async fn plan_upload(
     failed: &mut Vec<String>,
 ) -> Vec<UploadJob> {
     let mut jobs = Vec::new();
+    let mut folders_made = 0;
     // (path on disk, Drive folder it goes into, folders below the drop target)
-    let mut pending: Vec<(std::path::PathBuf, String, String)> = paths
+    // (path on disk, Drive folder it goes into, folders below the drop target, and for a
+    // folder already made on Apple its id and whether this upload made it)
+    #[allow(clippy::type_complexity)]
+    let mut pending: Vec<(std::path::PathBuf, String, String, Option<(String, bool)>)> = paths
         .iter()
         .map(|p| {
             (
                 std::path::PathBuf::from(p),
                 folder_id.to_string(),
                 String::new(),
+                None,
             )
         })
         .collect();
-    while let Some((path, into, within)) = pending.pop() {
+    while let Some((path, into, within, resolved)) = pending.pop() {
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
             |n| n.to_string_lossy().into(),
@@ -2116,10 +2421,42 @@ async fn plan_upload(
                 continue;
             }
         };
+        if cancelled(batch) {
+            break;
+        }
         if meta.is_dir() {
-            let folder = match folder_for(http, root, params, data, &into, &name).await {
-                Ok(folder) => folder,
+            // Said at once, with its own row: making a folder tree on Apple takes a moment
+            // per folder, and a folder upload used to show nothing at all until every folder
+            // in it was made.
+            let mut shown = UploadEvent {
+                id: format!("{batch}:dir:{}", folders_made),
+                batch: batch.to_string(),
+                name: name.clone(),
+                within: within.clone(),
+                sent: 0,
+                total: 0,
+                state: "preparing",
+                folder: true,
+                error: None,
+            };
+            folders_made += 1;
+            app.emit(UPLOAD, &shown).ok();
+            // Made already, with its siblings in one request, when its parent was made by this
+            // upload; otherwise found or made by name — dropped into a folder that may hold one.
+            let found = match resolved {
+                Some(done) => Ok(done),
+                None => folder_for(http, root, params, data, &into, &name).await,
+            };
+            let (folder, fresh) = match found {
+                Ok(folder) => {
+                    shown.state = "done";
+                    app.emit(UPLOAD, &shown).ok();
+                    folder
+                }
                 Err(e) => {
+                    shown.state = "failed";
+                    shown.error = Some(e.to_string());
+                    app.emit(UPLOAD, &shown).ok();
                     failed.push(format!("{name}: {e}"));
                     continue;
                 }
@@ -2142,21 +2479,77 @@ async fn plan_upload(
             }
             // Popped from the end, so reversed to go in name order.
             children.sort();
+            // A folder this upload just made holds nothing yet, so its folders cannot clash
+            // with anything there: all of them are made in one request, rather than a read of
+            // the parent and a request each — hundreds of round trips for a git repository.
+            let mut made: std::collections::HashMap<String, Result<String, String>> =
+                std::collections::HashMap::new();
+            if fresh {
+                let dirs: Vec<String> = {
+                    let mut d = Vec::new();
+                    for child in &children {
+                        if tokio::fs::symlink_metadata(child)
+                            .await
+                            .is_ok_and(|m| m.is_dir())
+                        {
+                            d.push(
+                                child
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_default(),
+                            );
+                        }
+                    }
+                    d
+                };
+                if !dirs.is_empty() {
+                    match quince_icloud::drive::create_folders(
+                        http,
+                        root,
+                        params.to_vec(),
+                        &folder,
+                        &dirs,
+                    )
+                    .await
+                    {
+                        Ok(results) => made.extend(results),
+                        Err(e) => {
+                            for d in dirs {
+                                made.insert(d, Err(e.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
             for child in children.into_iter().rev() {
-                pending.push((child, folder.clone(), below.clone()));
+                let child_name = child
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match made.remove(&child_name) {
+                    Some(Ok(id)) => {
+                        pending.push((child, folder.clone(), below.clone(), Some((id, true))))
+                    }
+                    Some(Err(e)) => failed.push(format!("{child_name}: {e}")),
+                    None => pending.push((child, folder.clone(), below.clone(), None)),
+                }
             }
         } else if meta.is_file() {
+            let event = UploadEvent {
+                id: format!("{batch}:{}", jobs.len()),
+                batch: batch.to_string(),
+                name,
+                within,
+                sent: 0,
+                total: meta.len(),
+                state: "waiting",
+                folder: false,
+                error: None,
+            };
+            // Shown the moment it is found, not once the whole tree has been walked.
+            app.emit(UPLOAD, &event).ok();
             jobs.push(UploadJob {
-                event: UploadEvent {
-                    id: format!("{batch}:{}", jobs.len()),
-                    batch: batch.to_string(),
-                    name,
-                    within,
-                    sent: 0,
-                    total: meta.len(),
-                    state: "waiting",
-                    error: None,
-                },
+                event,
                 path,
                 folder: into,
             });
@@ -2201,6 +2594,7 @@ async fn drive_upload(
 
     let mut failed = Vec::new();
     let jobs = plan_upload(
+        &app,
         &http,
         &root,
         &params,
@@ -2211,9 +2605,22 @@ async fn drive_upload(
         &mut failed,
     )
     .await;
-    for job in &jobs {
-        app.emit(UPLOAD, &job.event).ok();
-    }
+    // Everything in it has been found: the window can count to a total that will not move.
+    app.emit(
+        UPLOAD,
+        &UploadEvent {
+            id: format!("{batch}:planned"),
+            batch: batch.clone(),
+            name: String::new(),
+            within: String::new(),
+            sent: 0,
+            total: jobs.iter().map(|j| j.event.total).sum(),
+            state: "planned",
+            folder: true,
+            error: None,
+        },
+    )
+    .ok();
 
     let results: Vec<Option<String>> = futures_util::stream::iter(jobs)
         .map(|job| {
@@ -2224,7 +2631,19 @@ async fn drive_upload(
                 root.clone(),
                 params.clone(),
             );
-            async move {
+            let (abort, registration) = futures_util::future::AbortHandle::new_pair();
+            uploads_running()
+                .lock()
+                .map(|mut m| m.insert(job.event.id.clone(), abort))
+                .ok();
+            let id = job.event.id.clone();
+            let cancelled_event = {
+                let mut e = job.event.clone();
+                e.state = "cancelled";
+                e
+            };
+            let app_for_cancel = app.clone();
+            let run = async move {
                 let mut event = job.event.clone();
                 event.state = "sending";
                 app.emit(UPLOAD, &event).ok();
@@ -2242,6 +2661,9 @@ async fn drive_upload(
                             let mut e = event.clone();
                             e.sent = sent;
                             e.state = if sent >= total {
+                                // Every byte is up and it is being filed: too late to stop
+                                // cleanly, so it can no longer be cancelled.
+                                uploads_running().lock().map(|mut m| m.remove(&e.id)).ok();
                                 "verifying"
                             } else {
                                 "sending"
@@ -2274,12 +2696,28 @@ async fn drive_upload(
                         Some(format!("{}: {e}", event.name))
                     }
                 }
+            };
+            async move {
+                let outcome = futures_util::future::Abortable::new(run, registration).await;
+                uploads_running().lock().map(|mut m| m.remove(&id)).ok();
+                match outcome {
+                    Ok(result) => result,
+                    // Stopped before its bytes were filed: nothing of it is in iCloud.
+                    Err(_) => {
+                        app_for_cancel.emit(UPLOAD, &cancelled_event).ok();
+                        None
+                    }
+                }
             }
         })
         .buffer_unordered(3)
         .collect()
         .await;
     failed.extend(results.into_iter().flatten());
+    cancelled_batches()
+        .lock()
+        .map(|mut b| b.remove(&batch))
+        .ok();
 
     settle(resync_drive_folder(&http, &root, params, &data, &folder_id).await)?;
     Ok(failed)
@@ -2948,7 +3386,23 @@ fn main() {
             // depending on which one the caller happened to build.
             let uri = request.uri();
             let wanted = photo_guid(uri.host(), uri.path());
+            let attachment = note_part(uri.path());
             tauri::async_runtime::spawn(async move {
+                // A note's picture, or the rendering of a document or film in it.
+                if let Some((id, part)) = attachment {
+                    let response = match note_media_cached(&app, &id, part).await {
+                        Ok(bytes) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", image_type(&bytes))
+                            .header("Cache-Control", "private, max-age=86400")
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.unwrap_or_default());
+                    return;
+                }
                 let Some(guid) = wanted else {
                     responder.respond(
                         tauri::http::Response::builder()
@@ -3067,6 +3521,10 @@ fn main() {
             note_body,
             note_runs,
             note_table,
+            note_table_set_cell,
+            note_attachment_info,
+            note_attachment_open,
+            diagnostics_save,
             note_paragraph,
             note_save,
             note_create,
@@ -3100,6 +3558,7 @@ fn main() {
             drive_put_back,
             drive_delete_forever,
             drive_trash_out,
+            drive_upload_cancel,
             drive_move,
             drive_item,
             reminder_set_done,
@@ -3161,6 +3620,15 @@ mod tests {
         );
         assert_eq!(photo_guid(Some("localhost"), "/other%2Fx"), None);
         assert_eq!(photo_guid(Some("localhost"), "/photo%2F"), None);
+        // A note's attachments, as convertFileSrc("note/<id>/preview", "quince") builds them.
+        assert!(
+            matches!(note_part("/note%2FABC-1%2Fpreview"), Some((ref id, quince_icloud::note_media::Part::Preview)) if id == "ABC-1")
+        );
+        assert!(matches!(
+            note_part("/note%2FABC-1%2Ffile"),
+            Some((_, quince_icloud::note_media::Part::File))
+        ));
+        assert!(note_part("/note%2FABC-1%2Fother").is_none());
         assert_eq!(percent_decode("plain-uuid"), "plain-uuid");
         assert_eq!(percent_decode("%zz"), "%zz", "malformed stays as it was");
     }

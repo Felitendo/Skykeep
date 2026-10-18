@@ -15,10 +15,11 @@ license=('GPL-3.0-only')
 
 # WebKitGTK is what Tauri renders through on Linux, and libsecret is where the session is
 # kept — the app will start without the second but cannot stay signed in.
-# Exactly what the built binary asks for, read off it with ldd rather than guessed: webkit2gtk
-# for the window, gtk3 under it, libsecret for the keyring. There is no tray icon, so there is
-# no libappindicator either.
-depends=('webkit2gtk-4.1' 'gtk3' 'libsecret')
+# What the built binary asks for, read off it with ldd rather than guessed — webkit2gtk for
+# the window, gtk3 under it, libsecret for the keyring — and the one it loads at run time,
+# which ldd cannot see: the tray icon is drawn through libayatana-appindicator, opened when
+# the tray is made. Without it the tray, and the alerts' way back into the window, is gone.
+depends=('webkit2gtk-4.1' 'gtk3' 'libsecret' 'libayatana-appindicator')
 makedepends=('rust' 'nodejs' 'npm' 'pkgconf')
 
 # makepkg turns link-time optimisation on for everything, which compiles the C and assembly

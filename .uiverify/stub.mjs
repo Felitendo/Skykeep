@@ -167,7 +167,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
         case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
         case "reminder_lists": return !remindersFixture ? [] : reminderLists;
-        case "reminders_in": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems;
+        case "reminders_in": {
+          if (!remindersFixture || remindersFixture === "lists") return [];
+          // Opt-in for measuring a switch: each list's own reminders, after a real read's wait.
+          if (window.__slowItems) await new Promise((r) => setTimeout(r, window.__slowItems));
+          return window.__filterLists ? reminderItems.filter((r) => r.listGuid === args.listGuid) : reminderItems;
+        }
         case "reminders_due_between": return calendarFixture ? dueReminders : [];
         case "reminder_create":
           // Kept, as Apple keeps it, with what the view implied.
@@ -206,6 +211,15 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "note_paragraph": (window.__paragraphs ??= []).push(args); return null;
         case "note_runs": {
           if (window.__savedRuns?.[args.guid]) return window.__savedRuns[args.guid];
+          if (args.guid === "nM") {
+            const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
+            return [plain(5), { ...plain(1), attachment: "M1" }, plain(1), { ...plain(1), attachment: "M2" }, plain(4)];
+          }
+          if (args.guid === "nT") {
+            // "Groceries", a table on its own line, then a last line: the table's run names it.
+            const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
+            return [plain(10), { ...plain(1), attachment: "T1" }, plain(4)];
+          }
           // Curtains, set as a phone sets one: a title, then a dashed list and a ticked item.
           if (args.guid !== "n1") return [];
           const body = (noteList.find((n) => n.guid === "n1") ?? {}).body ?? "";
@@ -251,7 +265,28 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return null;
         }
         case "note_create": return "Note/new";
-        case "notes_in": return !notesFixture ? [] : noteList.map((n) => ({ ...n }));
+        case "notes_in":
+          // Opt-in: a note holding a table, as a phone makes one.
+          if (window.__mediaNote && !noteList.some((n) => n.guid === "nM"))
+            noteList.unshift({ guid: "nM", folderGuid: "f1", title: "Trip", snippet: "", body: "Trip\n\uFFFC\n\uFFFC\nend",
+              locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789100000, etag: null });
+          if (window.__tableNote && !noteList.some((n) => n.guid === "nT"))
+            noteList.unshift({ guid: "nT", folderGuid: "f1", title: "Groceries", snippet: "", body: "Groceries\n\uFFFC\nend",
+              locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789000000, etag: null });
+          return !notesFixture ? [] : noteList.map((n) => ({ ...n }));
+        case "note_attachment_info":
+          return args.id === "M1"
+            ? { id: "M1", uti: "public.jpeg", kind: "image", filename: "beach.jpeg", title: null, width: 1200, height: 800, size: 271872, hasPreview: true }
+            : { id: "M2", uti: "org.openxmlformats.spreadsheetml.sheet", kind: "file", filename: "Budget.xlsx", title: null, width: null, height: null, size: 9100, hasPreview: false };
+        case "note_attachment_open": (window.__opened ??= []).push(args.id); return null;
+        case "note_table": if (String(args.id).startsWith("M")) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
+        case "note_table_set_cell": {
+          (window.__cellWrites ??= []).push(args);
+          await new Promise((r) => setTimeout(r, 300));
+          if (window.__cellFail) throw "Apple refused that change.";
+          window.__table[args.row][args.column] = args.text;
+          return window.__table.map((r) => r.slice());
+        }
         case "note_body": return (noteList.find((n) => n.guid === args?.guid) ?? {}).body ?? null;
         case "note_counts": {
           const per = new Map();
@@ -290,6 +325,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_thumbnails": return driveFixture ? { "FILE::d": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='60'><rect width='80' height='60' fill='%23eee'/></svg>" } : {};
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
+        case "diagnostics_save": (window.__diagnostics = (window.__diagnostics ?? 0) + 1); return "/home/user/Downloads/Quince diagnostics 2026-10-18 20.00.txt";
         case "account_info": return { name: "Asha Rao", email: "asha@example.com", photoContact: window.__mePhoto ?? null, webAccessAllowed: window.__webAccess ?? true, dataProtection: false };
         case "settings_get": return { reminderAlerts: true, eventAlerts: true, ...(window.__settings ?? {}) };
         case "settings_set":

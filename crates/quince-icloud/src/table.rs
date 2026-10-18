@@ -225,6 +225,151 @@ impl<'a> Doc<'a> {
     }
 }
 
+fn put_varint(mut v: u64, out: &mut Vec<u8>) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// `message` with the `nth` length-delimited field `tag` replaced by `payload`, every other
+/// byte copied through. `None` when there is no such field.
+fn splice(message: &[u8], tag: u64, nth: usize, payload: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(message.len() + payload.len());
+    let (mut at, mut seen, mut done) = (0usize, 0usize, false);
+    while at < message.len() {
+        let start = at;
+        let (key, next) = varint(message, at)?;
+        at = next;
+        match key & 7 {
+            0 => at = varint(message, at)?.1,
+            2 => {
+                let (n, next) = varint(message, at)?;
+                let end = next.checked_add(usize::try_from(n).ok()?)?;
+                message.get(next..end)?;
+                if key >> 3 == tag && !done {
+                    if seen == nth {
+                        put_varint(key, &mut out);
+                        put_varint(payload.len() as u64, &mut out);
+                        out.extend_from_slice(payload);
+                        done = true;
+                        at = end;
+                        continue;
+                    }
+                    seen += 1;
+                }
+                at = end;
+            }
+            1 => at = at.checked_add(8).filter(|&e| e <= message.len())?,
+            5 => at = at.checked_add(4).filter(|&e| e <= message.len())?,
+            _ => return None,
+        }
+        out.extend_from_slice(message.get(start..at)?);
+    }
+    done.then_some(out)
+}
+
+/// Where a cell's text lives: the index of its text object among the document's objects.
+fn cell_object(document: &[u8], row: usize, column: usize) -> Option<usize> {
+    let top = fields(document)?;
+    let version = fields(bytes(&top, 2).next()?)?;
+    let data = fields(bytes(&version, 3).next()?)?;
+    let doc = Doc {
+        objects: bytes(&data, 3).collect(),
+        keys: bytes(&data, 4)
+            .map(|k| String::from_utf8_lossy(k).into_owned())
+            .collect(),
+        uuids: bytes(&data, 6).collect(),
+    };
+    let root = doc.custom(0)?;
+    let at = |name: &str| root.get(name).and_then(|id| object_index(id));
+    let by_uuid = doc.uuid_objects();
+    let rows = doc.ordered(at("crRows")?, &by_uuid)?;
+    let columns = doc.ordered(at("crColumns")?, &by_uuid)?;
+    let (_, cells_body) = doc.object(at("cellColumns")?)?;
+    let by_column = Doc::dictionary(cells_body)?;
+    let inner = *by_column.get(columns.get(column)?)?;
+    let cells = Doc::dictionary(doc.object(inner)?.1)?;
+    let cell = *cells.get(rows.get(row)?)?;
+    // A text object, as a cell's is.
+    (doc.object(cell)?.0 == 10).then_some(cell)
+}
+
+/// The table's document with one cell's text changed, edited as a device edits it.
+///
+/// Only a cell already typed in is written: its text object exists, and is rewritten in
+/// place with its merge records moved in step (the same rewrite a note's body takes). A cell
+/// never typed in has no object yet, and making one is not attempted. Before anything is
+/// returned it is proven that the rewrite is exact: written back with the text it already
+/// had, the document must come out byte for byte as it was — anything this does not model
+/// would break that, and the cell is then left alone.
+#[must_use]
+pub fn with_cell(document: &[u8], row: usize, column: usize, text: &str) -> Option<Vec<u8>> {
+    let cell = cell_object(document, row, column)?;
+    let top = fields(document)?;
+    let version_bytes = bytes(&top, 2).next()?;
+    let version = fields(version_bytes)?;
+    let data_bytes = bytes(&version, 3).next()?;
+    let data = fields(data_bytes)?;
+    let object = bytes(&data, 3).nth(cell)?;
+    let string = bytes(&fields(object)?, 10).next()?;
+    let old = bytes(&fields(string)?, 2)
+        .next()
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default();
+
+    let rebuild = |new_text: &str| -> Option<Vec<u8>> {
+        let new_string = crate::ckdocument::rewrite_text_object(string, &old, new_text)?;
+        let new_object = splice(object, 10, 0, &new_string)?;
+        let new_data = splice(data_bytes, 3, cell, &new_object)?;
+        let new_version = splice(version_bytes, 3, 0, &new_data)?;
+        splice(document, 2, 0, &new_version)
+    };
+    // The proof: the splice itself, with the string as it was, changes nothing.
+    let same = splice(object, 10, 0, string)
+        .and_then(|o| splice(data_bytes, 3, cell, &o))
+        .and_then(|d| splice(version_bytes, 3, 0, &d))
+        .and_then(|v| splice(document, 2, 0, &v))?;
+    if same != document {
+        return None;
+    }
+    let out = rebuild(text)?;
+    // And what was written reads back as meant.
+    let read = cells(&out)?;
+    (read.get(row)?.get(column)? == text).then_some(out)
+}
+
+/// [`with_cell`] over the attachment's `MergeableDataEncrypted` as Apple sends it (base64,
+/// compressed), answered in the same compression it came in.
+#[must_use]
+pub fn with_cell_in_base64(value: &str, row: usize, column: usize, text: &str) -> Option<String> {
+    use base64::Engine;
+    use std::io::Write;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(value.trim())
+        .ok()?;
+    let gz = raw.starts_with(&[0x1f, 0x8b]);
+    let plain = inflate(&raw)?;
+    let edited = with_cell(&plain, row, column, text)?;
+    let packed = if gz {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(&edited).ok()?;
+        e.finish().ok()?
+    } else if plain != raw {
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(&edited).ok()?;
+        e.finish().ok()?
+    } else {
+        edited
+    };
+    Some(base64::engine::general_purpose::STANDARD.encode(packed))
+}
+
 /// The table's cells, row by row, from the attachment's `MergeableDataEncrypted` (base64).
 /// `None` for data that is not a table this understands.
 #[must_use]

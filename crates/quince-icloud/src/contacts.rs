@@ -1000,8 +1000,62 @@ async fn startup(
         )));
     }
 
-    serde_json::from_str(&text)
-        .map_err(|e| Error::Protocol(format!("/co/startup returned invalid JSON: {e}")))
+    let mut body: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("/co/startup returned invalid JSON: {e}")))?;
+
+    // `contactsOrder` names every card in the book; `contacts` may hold only the first of
+    // them, as icloud.com reads a large book a page at a time (`co/contacts/card/?offset&
+    // limit`). The rest is read the same way, so a large address book is never cut short —
+    // and stored short, the cards it missed would read as deleted.
+    let wanted = body
+        .get("contactsOrder")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let mut have = body
+        .get("contacts")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let mut pages = 0;
+    while have < wanted && pages < 200 {
+        pages += 1;
+        // As icloud.com sends every Contacts request: with the book's tokens beside the rest.
+        let mut page_query = query.clone();
+        for key in ["syncToken", "prefToken"] {
+            if let Some(token) = body.get(key).and_then(Value::as_str) {
+                page_query.push((key.into(), token.to_string()));
+            }
+        }
+        page_query.push(("offset".into(), have.to_string()));
+        page_query.push(("limit".into(), "500".into()));
+        let url = format!("{}/co/contacts/card/", root.trim_end_matches('/'));
+        let response = http.get(url).query(&page_query).send().await?;
+        if response.status().as_u16() == 450 {
+            return Err(Error::ReauthRequired);
+        }
+        if !response.status().is_success() {
+            return Err(Error::Protocol(format!(
+                "Apple stopped part-way through the address book ({}), so it was not stored short.",
+                response.status()
+            )));
+        }
+        let page: Value = response.json().await?;
+        let more = page
+            .get("contacts")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if more.is_empty() {
+            return Err(Error::Protocol(
+                "Apple listed more contacts than it would send, so the address book was not stored short."
+                    .into(),
+            ));
+        }
+        have += more.len();
+        if let Some(Value::Array(all)) = body.get_mut("contacts") {
+            all.extend(more);
+        }
+    }
+    Ok(body)
 }
 
 /// Store a fetched address book. Touches no network.
@@ -1102,6 +1156,66 @@ mod list_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A book whose startup names more cards than it holds is read to the end, a page at a
+    /// time with its tokens, as icloud.com reads one — never stored short.
+    #[tokio::test]
+    async fn a_large_book_is_read_to_the_end() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let card = |id: &str| serde_json::json!({ "contactId": id, "firstName": id });
+        Mock::given(method("GET"))
+            .and(path("/co/startup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "syncToken": "S", "prefToken": "P",
+                "contactsOrder": ["a", "b", "c"], "contacts": [card("a")], "groups": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/co/contacts/card/"))
+            .and(query_param("offset", "1"))
+            .and(query_param("syncToken", "S"))
+            .and(query_param("prefToken", "P"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "contacts": [card("b"), card("c")] })),
+            )
+            .mount(&server)
+            .await;
+        let book = fetch(&reqwest::Client::new(), &server.uri(), vec![])
+            .await
+            .unwrap();
+        let ids: Vec<_> = book.contacts.iter().map(|c| c.guid.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+    }
+
+    /// Apple naming cards it then will not send is a failure, not a smaller address book.
+    #[tokio::test]
+    async fn a_book_apple_will_not_finish_is_refused_not_stored_short() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/co/startup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "syncToken": "S", "prefToken": "P", "contactsOrder": ["a", "b"],
+                "contacts": [{ "contactId": "a" }], "groups": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/co/contacts/card/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "contacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        assert!(fetch(&reqwest::Client::new(), &server.uri(), vec![])
+            .await
+            .is_err());
+    }
 
     #[test]
     fn a_changeset_says_whether_anything_moved() {

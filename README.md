@@ -15,7 +15,8 @@ It is a native Linux application — Rust underneath, a real window, no browser 
 Everything here is read from and written to your real iCloud account, shows the moment you
 make it — before Apple has answered — and is put back with the reason if Apple refuses.
 
-**Notes** — edited formatted, as on a Mac: titles, headings, monospaced text, bulleted,
+**Notes** — pictures, scans, PDFs, recordings, films and files shown where they sit and opened
+in your own apps; tables shown as the grids they are, their cells edited in place; edited formatted, as on a Mac: titles, headings, monospaced text, bulleted,
 dashed and numbered lists, checklists you tick, bold, italic, underline and strikethrough,
 from the Aa panel, the checklist button or the Mac's keys. Folders: new, rename, nest,
 delete. Pin, move, Recently Deleted and Recover. An edit made on your phone at the same time
@@ -35,15 +36,34 @@ schedule in their list's colour; birthdays and holidays; the Mac's keyboard thro
 with people added by menu or by dragging; select several to add, remove, export or delete
 together; vCard import and export; My Card.
 
-**iCloud Drive** — browse in a list or grid with Apple's own thumbnails; sort; upload by
-button or by dropping files on the window; download, rename, duplicate, Get Info; move by
+**iCloud Drive** — browse in a list or grid with Apple's own thumbnails; sort; upload files
+or whole folders by button or by dropping them on the window, each file's progress shown and
+any of them cancellable while it is still on its way up; download, rename, duplicate, Get Info; move by
 dialog or by dragging onto a folder; Recents; Recently Deleted with the time each item has
 left, Recover and Delete Now; your storage.
 
-Each app takes its own Mac colours — Notes yellow, Calendar red, the rest blue — from
-Apple's macOS 27 design kit, in light and dark.
+**Instant, both ways.** A change made on your phone reaches Quince in about a second: Notes
+and Reminders through Apple's own push channel, Calendar and Contacts through the same quick
+"has anything changed" checks icloud.com makes, every few seconds while the window is open.
+What you change shows the moment you make it and is put back, with the reason, only if Apple
+refuses it — and a refresh landing mid-change never undoes what is still on its way.
 
-Not yet: Photos, Mail, Find My, and tables in Notes (a note with one opens and edits; the table itself shows as a placeholder until it can be edited here).
+**Settings** — your account and its picture from your own card, iCloud storage, when each app
+last synced with Sync Now, Automatic / Light / Dark, and switches for reminder and calendar
+alerts that the alerts really obey.
+
+**Designed as macOS 27 is.** Liquid Glass on the chrome — the sidebar, toolbars, menus,
+popovers and sheets — and never on your content; capsule controls; motion on Apple's own
+springs; each app in its own Mac colour, Notes yellow, Calendar red, the rest blue; light and
+dark, Reduce Transparency and Increase Contrast honoured.
+
+**Advanced Data Protection.** With it on and "Access iCloud Data on the Web" off, no app
+outside your devices can read your iCloud. Quince says exactly that, once, and names Apple's
+switch — on your iPhone, Settings, your name, iCloud, Access iCloud Data on the Web — rather
+than failing screen by screen.
+
+Not yet: Photos, Mail, Find My; typing into a table cell that has never been typed in (cells
+with text are edited in place); calendar invitations.
 
 ## Installing
 
@@ -83,7 +103,8 @@ guessed at.
 ```
 
 Formatting, lints, the Rust tests, TypeScript, the bundle, and then the built application
-driven in a real browser: every screen screenshotted and measured, the keyboard path walked,
+driven in a real browser: every screen screenshotted and measured, the keyboard path walked, motion sampled frame by
+frame (a fold that jumps, a list that flickers, a menu that blinks fails the build),
 accessibility audited, and every screen opened again as a German speaker in New York, a
 Japanese speaker in Tokyo and a New Zealander on the Chathams — because this was written in
 one place with a clock that never moves, and most people are somewhere else.
@@ -115,9 +136,9 @@ and will not be built.
 and Screen Time are encrypted end to end — Apple's own servers hold no key to them. Quince
 shows them as unavailable rather than quietly leaving them out.
 
-**Advanced Data Protection.** With it switched on, the services above are encrypted the same
-way and Quince cannot read them either. It says so rather than nudging anybody to turn a
-security feature off.
+**Advanced Data Protection.** With it switched on and web access off, iCloud's data is
+encrypted the same way and Quince cannot read it either. It says so, and how web access is
+turned on, rather than nudging anybody to turn the security feature itself off.
 
 ## Licence
 

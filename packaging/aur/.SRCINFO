@@ -1,0 +1,23 @@
+pkgbase = quince-git
+	pkgdesc = Your iCloud, on this computer — calendar, reminders, notes, contacts and Drive
+	pkgver = 0.1.0.r0.g0000000
+	pkgrel = 1
+	url = https://github.com/YashwanthKamireddi/quince
+	arch = x86_64
+	license = GPL-3.0-only
+	makedepends = rust
+	makedepends = nodejs
+	makedepends = npm
+	makedepends = pkgconf
+	makedepends = git
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	depends = libsecret
+	depends = libayatana-appindicator
+	provides = quince
+	conflicts = quince
+	options = !lto
+	source = quince::git+https://github.com/YashwanthKamireddi/quince.git
+	sha256sums = SKIP
+
+pkgname = quince-git

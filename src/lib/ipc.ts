@@ -43,7 +43,9 @@ export type UploadEvent = {
   within: string;
   sent: number;
   total: number;
-  state: "waiting" | "sending" | "verifying" | "done" | "failed";
+  state: "preparing" | "waiting" | "sending" | "verifying" | "done" | "failed" | "cancelled" | "planned";
+  /** A folder being made, rather than a file being sent. */
+  folder?: boolean;
   error: string | null;
 };
 
@@ -127,6 +129,13 @@ export const api = {
     invoke<void>("note_paragraph", { guid, start, ...change }),
   /** A table's cells, row by row, by the attachment id a note's text names it by. */
   noteTable: (id: string) => invoke<string[][] | null>("note_table", { id }),
+  /** Change one cell of a table; answers the table as Apple now holds it. */
+  /** What a note's attachment is — a picture, a document, a recording, a file. */
+  noteAttachmentInfo: (id: string) => invoke<NoteAttachment>("note_attachment_info", { id }),
+  /** Open a note's attachment in the app this computer uses for it. */
+  noteAttachmentOpen: (id: string) => invoke<void>("note_attachment_open", { id }),
+  noteTableSetCell: (id: string, row: number, column: number, text: string) =>
+    invoke<string[][]>("note_table_set_cell", { id, row, column, text }),
   noteRuns: (guid: string) => invoke<import("../screens/notes/Formatted").Run[]>("note_runs", { guid }),
   noteFolderCreate: (title: string, parent: string | null) =>
     invoke<string>("note_folder_create", { title, parent }),
@@ -198,6 +207,8 @@ export const api = {
    * read as the whole upload failing.
    */
   /** Files and folders into a Drive folder. Progress arrives as UPLOAD events. */
+  /** Stop uploads — these, or a whole batch. One already being filed finishes. */
+  driveUploadCancel: (ids: string[], batch?: string) => invoke<void>("drive_upload_cancel", { ids, batch: batch ?? null }),
   driveUpload: (batch: string, folderId: string, paths: string[]) =>
     invoke<string[]>("drive_upload", { batch, folderId, paths }),
   driveCreateFolder: (parentId: string, name: string) =>
@@ -212,6 +223,8 @@ export const api = {
   /** Who is signed in, as Apple names them. */
   accountInfo: () => invoke<AccountInfo>("account_info"),
   /** Settings' switches, as the backend obeys them. */
+  /** Write a plain diagnostic report to Downloads; answers where. Nothing is sent anywhere. */
+  diagnosticsSave: () => invoke<string>("diagnostics_save"),
   settingsGet: () => invoke<{ reminderAlerts: boolean; eventAlerts: boolean }>("settings_get"),
   settingsSet: (key: "reminderAlerts" | "eventAlerts", on: boolean) => invoke<void>("settings_set", { key, on }),
   drivePutBack: (item: DriveItem) => invoke<void>("drive_put_back", { item }),
@@ -486,6 +499,23 @@ export type AccountInfo = {
   dataProtection?: boolean | null;
   photoContact?: string | null;
 };
+
+export type NoteAttachment = {
+  id: string;
+  uti: string;
+  kind: "image" | "document" | "audio" | "video" | "file";
+  filename: string | null;
+  title: string | null;
+  width: number | null;
+  height: number | null;
+  size: number | null;
+  hasPreview: boolean;
+};
+
+/** A note attachment's picture — the file itself, or Apple's rendering of it. */
+export function noteMediaSrc(id: string, part: "file" | "preview"): string {
+  return convertFileSrc(`note/${id}/${part}`, "quince");
+}
 
 /** The picture of the contact with this id, served by the backend. */
 export function contactPhotoSrc(guid: string): string {

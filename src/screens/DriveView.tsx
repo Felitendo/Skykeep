@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSync } from "../lib/sync";
 import { Notice } from "../components/Notice";
 import { Portal } from "../components/Portal";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -555,7 +556,35 @@ export function DriveView() {
     setTrail((t) => [...t, { id: item.drivewsid, name: driveName(item) }]);
   }
 
-  const refresh = useCallback(() => open(hereRef.current), [open]);
+  /**
+   * The open folder again, quietly: after files land, and whenever a sync finishes, so what
+   * changed in it on another device shows without the folder being opened again. No
+   * "loading", and the pictures stay: re-opening the folder wiped the thumbnails and drew
+   * them back, a blink across the grid every time a file arrived.
+   */
+  const refresh = useCallback(async () => {
+    const folderId = hereRef.current;
+    const token = openToken.current;
+    try {
+      await api.driveSyncFolder(folderId);
+      if (token !== openToken.current) return;
+      const fresh = await api.driveChildren(folderId);
+      if (token !== openToken.current) return;
+      setItems(Array.isArray(fresh) ? fresh : []);
+      api.driveThumbnails(folderId).then(
+        (t) => { if (token === openToken.current && t) setThumbs((was) => ({ ...was, ...t })); },
+        () => {},
+      );
+    } catch {
+      // A quiet refresh that fails changes nothing; opening the folder says what is wrong.
+    }
+  }, []);
+  const { revision } = useSync();
+  const firstRevision = useRef(revision);
+  useEffect(() => {
+    if (revision === firstRevision.current) return;
+    void refresh();
+  }, [revision, refresh]);
 
   const download = useCallback(async (item: DriveItem) => {
     setBusyGuid(item.drivewsid);
@@ -612,6 +641,15 @@ export function DriveView() {
     async (item: DriveItem) => {
       setError(null);
       setGone((g) => new Set(g).add(item.drivewsid));
+      // A folder still being uploaded into stops taking files first: deleting it while files
+      // went on landing was what Apple would not do.
+      if (isContainer(item)) {
+        const into = [...uploadsRef.current.values()].filter(
+          (u) => !["done", "failed", "cancelled"].includes(u.state) &&
+            ((u.folder && !u.within && u.name === item.name) || u.within.split("/")[0] === item.name),
+        );
+        for (const batch of new Set(into.map((u) => u.batch))) await api.driveUploadCancel([], batch).catch(() => {});
+      }
       try {
         await api.driveDelete(item.drivewsid);
         await refresh();
@@ -714,12 +752,12 @@ export function DriveView() {
         const next = new Map(was);
         const before = next.get(u.id);
         // Events for one file can pass each other; a finished file never goes back.
-        if (before && (before.state === "done" || before.state === "failed")) return was;
+        if (before && (before.state === "done" || before.state === "failed" || before.state === "cancelled")) return was;
         next.set(u.id, u);
         return next;
       });
       // Each file that lands shows as it lands, not all at once when the batch ends.
-      if (u.state === "done") landed();
+      if (u.state === "done" && !u.folder) landed();
     })
       .then((unlisten) => {
         // Stopping may throw where there is no event system behind the page — a plain
@@ -741,6 +779,10 @@ export function DriveView() {
       stop?.();
     };
   }, []);
+
+  const uploadsRef = useRef(uploads);
+  uploadsRef.current = uploads;
+  const dismissUploads = useCallback(() => setUploads(new Map()), []);
 
   const upload = useCallback(
     async (paths: string[]) => {
@@ -766,6 +808,19 @@ export function DriveView() {
         setError(messageOf(e));
       } finally {
         settle(batch);
+        // The batch is over: the backend has said all it will. A row of it still open — a
+        // report that never came, an upload stopped part-way — is closed now, so nothing can
+        // sit at "0 of 80" for ever.
+        setUploads((was) => {
+          let changed = false;
+          const next = new Map(was);
+          for (const [id, u] of was) {
+            if (u.batch !== batch || ["done", "failed", "cancelled", "planned"].includes(u.state)) continue;
+            next.set(id, { ...u, state: u.folder ? "failed" : "cancelled", error: "Stopped before it finished" });
+            changed = true;
+          }
+          return changed ? next : was;
+        });
       }
     },
     [here.id, refresh]
@@ -932,7 +987,7 @@ export function DriveView() {
             className="quiet with-glyph"
             title="New Folder"
             onClick={() => setCreatingFolder(true)}
-            disabled={loading || creatingFolder}
+            disabled={creatingFolder}
           >
             <ActionGlyph name="newFolder" />
             New Folder
@@ -944,7 +999,7 @@ export function DriveView() {
               aria-haspopup="menu"
               aria-expanded={uploadMenu}
               onClick={() => setUploadMenu((open) => !open)}
-              disabled={loading || !acceptsUploads(here.id)}
+              disabled={!acceptsUploads(here.id)}
               title={
                 acceptsUploads(here.id)
                   ? undefined
@@ -1215,7 +1270,7 @@ export function DriveView() {
         <InfoSheet item={info} where={trail.map((c) => c.name).join(" › ")} thumb={thumbs[info.drivewsid]} onClose={() => setInfo(null)} />
       )}
 
-      <UploadTray uploads={[...uploads.values()]} onDismiss={() => setUploads(new Map())} />
+      <UploadTray uploads={[...uploads.values()]} onDismiss={dismissUploads} />
     </div>
   );
 }

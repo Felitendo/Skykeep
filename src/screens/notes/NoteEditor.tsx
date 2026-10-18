@@ -8,13 +8,97 @@ import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror
 import type { Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
 import { fromDoc, LIST_STYLES, schema, STYLE, toDoc } from "./rich";
-import { api } from "../../lib/ipc";
+import { api, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
 
 /**
  * An attachment in the note: a table drawn as the grid it is, with the cells Apple holds;
- * anything else — a picture, a sketch — as a labelled placeholder that keeps its place. Not
- * editable here, and never written from here: the note keeps the attachment exactly.
+ * anything else — a picture, a sketch — as a labelled placeholder that keeps its place.
+ *
+ * A table's cells are edited where they stand. Each cell already typed in is a plain-text
+ * field of its own — keys typed there are the cell's, never the note's — saved to Apple when
+ * it is left or Return is pressed, drawn at once, and put back with the reason if Apple
+ * refuses. A cell never typed in has nothing in Apple's table yet to change, and says so.
  */
+/** What each attachment is, asked once a session: a note re-drawn does not ask again. */
+const described = new Map<string, Promise<NoteAttachment | null>>();
+function describe(id: string): Promise<NoteAttachment | null> {
+  let known = described.get(id);
+  if (!known) {
+    known = api.noteAttachmentInfo(id).catch(() => null);
+    described.set(id, known);
+  }
+  return known;
+}
+
+function size(bytes: number | null): string {
+  if (!bytes) return "";
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/**
+ * A picture, document, recording or file where it sits in its note, as Notes shows it: a
+ * picture at its own proportions, a PDF, scan or film as Apple's rendering of it with its
+ * name, anything else as a labelled chip. Clicking one opens it in the app this computer uses
+ * for it. A picture that cannot be had falls back to the chip, never a broken frame.
+ */
+function drawMedia(dom: HTMLElement, info: NoteAttachment) {
+  const name = info.filename ?? info.title ?? (info.kind === "audio" ? "Recording" : "Attachment");
+  const open = () => void api.noteAttachmentOpen(info.id).catch(() => {});
+  const chip = () => {
+    const c = document.createElement("button");
+    c.type = "button";
+    c.className = `nf-file is-${info.kind}`;
+    const glyph = document.createElement("span");
+    glyph.className = "nf-file-glyph";
+    // The kind of file, as Finder labels a document: its extension, short.
+    const ext = name.includes(".") ? name.split(".").pop()!.slice(0, 4).toUpperCase() : "";
+    glyph.textContent = info.kind === "audio" ? "♪" : info.kind === "video" ? "▶" : ext || "FILE";
+    const label = document.createElement("span");
+    label.className = "nf-file-name";
+    label.textContent = name;
+    const meta = document.createElement("span");
+    meta.className = "nf-file-meta";
+    meta.textContent = size(info.size);
+    c.append(glyph, label, meta);
+    c.title = `Open ${name}`;
+    c.addEventListener("click", open);
+    return c;
+  };
+  const picture = (part: "file" | "preview", cls: string) => {
+    const img = document.createElement("img");
+    img.className = cls;
+    img.alt = name;
+    img.decoding = "async";
+    img.draggable = false;
+    if (info.width && info.height) img.style.aspectRatio = `${info.width} / ${info.height}`;
+    img.src = noteMediaSrc(info.id, part);
+    img.addEventListener("error", () => dom.replaceChildren(chip()));
+    return img;
+  };
+  dom.title = `Open ${name}`;
+  if (info.kind === "image") {
+    const img = picture("file", "nf-image");
+    img.addEventListener("click", open);
+    dom.className = "nf-attachment is-image";
+    dom.replaceChildren(img);
+  } else if ((info.kind === "document" || info.kind === "video") && info.hasPreview) {
+    const figure = document.createElement("button");
+    figure.type = "button";
+    figure.className = `nf-doc is-${info.kind}`;
+    const caption = document.createElement("span");
+    caption.className = "nf-doc-name";
+    caption.textContent = name;
+    figure.append(picture("preview", "nf-doc-preview"), caption);
+    figure.addEventListener("click", open);
+    dom.className = "nf-attachment is-doc";
+    dom.replaceChildren(figure);
+  } else {
+    dom.className = "nf-attachment is-file";
+    dom.replaceChildren(chip());
+  }
+}
+
 function attachmentView(node: PMNode) {
   const dom = document.createElement("span");
   dom.className = "nf-attachment";
@@ -22,24 +106,79 @@ function attachmentView(node: PMNode) {
   dom.textContent = "Attachment";
   dom.title = "Open it on an Apple device to change it";
   const id = node.attrs.id as string | null;
+
+  const draw = (cells: string[][]) => {
+    const table = document.createElement("table");
+    table.className = "nf-table";
+    cells.forEach((row, r) => {
+      const tr = table.insertRow();
+      row.forEach((cell, c) => {
+        const td = tr.insertCell();
+        const was = cell.trimEnd();
+        if (!id || was === "") {
+          td.textContent = was;
+          td.className = "nf-cell-empty";
+          td.title = "Type in this cell on an Apple device first — Quince can change cells that have text";
+          return;
+        }
+        const field = document.createElement("div");
+        field.className = "nf-cell-edit";
+        field.contentEditable = "plaintext-only";
+        field.spellcheck = true;
+        field.textContent = was;
+        let saved = was;
+        const save = () => {
+          const now = (field.textContent ?? "").replace(/\n+/g, " ");
+          if (now === saved) return;
+          const before = saved;
+          saved = now;
+          field.classList.add("is-saving");
+          api.noteTableSetCell(id, r, c, now).then(
+            () => field.classList.remove("is-saving"),
+            (e) => {
+              // Refused: back as Apple has it, and why.
+              saved = before;
+              field.textContent = before;
+              field.classList.remove("is-saving");
+              field.title = String(e);
+              field.classList.add("is-refused");
+              window.setTimeout(() => { field.classList.remove("is-refused"); field.title = ""; }, 4000);
+            },
+          );
+        };
+        field.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            field.blur();
+          } else if (e.key === "Escape") {
+            field.textContent = saved;
+            field.blur();
+          }
+        });
+        field.addEventListener("blur", save);
+        td.appendChild(field);
+      });
+    });
+    dom.className = "nf-attachment is-table";
+    dom.title = "";
+    dom.replaceChildren(table);
+  };
+
   if (id) {
     api.noteTable(id).then(
       (cells) => {
-        if (!cells || !cells.length) return;
-        const table = document.createElement("table");
-        table.className = "nf-table";
-        for (const row of cells) {
-          const tr = table.insertRow();
-          for (const cell of row) tr.insertCell().textContent = cell.trimEnd();
-        }
-        dom.className = "nf-attachment is-table";
-        dom.title = "A table — edit it on an Apple device for now";
-        dom.replaceChildren(table);
+        if (cells && cells.length) draw(cells);
+        else describe(id).then((info) => info && drawMedia(dom, info), () => {});
       },
       () => {},
     );
   }
-  return { dom, ignoreMutation: () => true, stopEvent: () => false };
+  return {
+    dom,
+    ignoreMutation: () => true,
+    // A cell's keys, clicks and typing are the cell's, not the note editor's.
+    stopEvent: (e: Event) => Boolean((e.target as HTMLElement | null)?.closest?.(".nf-cell-edit, .nf-image, .nf-doc, .nf-file")),
+  };
 }
 
 /** What the toolbar shows as on: the style of the line the cursor is in, and its marks. */

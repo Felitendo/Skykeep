@@ -12,6 +12,7 @@ const ICON: Record<string, string> = {
   reminders: "reminders",
   notes: "notes",
   contacts: "contacts",
+  drive: "drivews",
 };
 
 function size(bytes: number): string {
@@ -34,6 +35,7 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
   const [version, setVersion] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [savedReport, setSavedReport] = useState<string | null>(null);
   const { report, syncing, refresh } = useSync();
 
   useEffect(() => {
@@ -179,6 +181,19 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
           <span className="settings-label settings-hint">
             Your iCloud is kept on this computer and talks only to Apple. Quince has no servers.
           </span>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label settings-hint">
+            {savedReport
+              ? `Saved to ${savedReport.split("/").slice(-2).join("/")} — versions and sync states only, no names or contents. Attach it to a bug report.`
+              : "A plain report of how Quince is doing, for a bug report. Nothing is sent anywhere."}
+          </span>
+          <button
+            className="quiet"
+            onClick={() => api.diagnosticsSave().then(setSavedReport, (e) => setError(messageOf(e)))}
+          >
+            Save Diagnostic Report
+          </button>
         </div>
       </section>
     </div>

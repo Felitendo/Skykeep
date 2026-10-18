@@ -139,6 +139,24 @@ for (const size of [{ width: 1280, height: 800 }, { width: 760, height: 520 }]) 
   ok((await page.locator(".row-menu").count()) === 1, `${label} resting on another line closes the submenu`);
   await page.keyboard.press("Escape");
 
+  // A pop-up stays open through a scroll that leaves its button where it was — a page
+  // settling as it opened used to shut it at once — and goes when its button moves.
+  await openScreen(page, "Reminders");
+  await page.waitForTimeout(300);
+  await page.locator(".rx-rows li").first().hover();
+  await page.locator(".rx-trailing .rx-icon-button[aria-expanded]").first().click({ force: true });
+  await page.waitForTimeout(300);
+  const pop = page.locator(".rx-detail .picker-button").first();
+  if (await pop.count()) {
+    await pop.click();
+    await page.waitForTimeout(100);
+    await page.evaluate(() => document.dispatchEvent(new Event("scroll")));
+    await page.waitForTimeout(80);
+    ok((await page.locator(".picker-menu").count()) === 1, `${label} a scroll that leaves the button in place does not close its menu`);
+    await page.keyboard.press("Escape");
+  }
+  await page.keyboard.press("Escape");
+
   // The ⋯ that opened a menu closes it again, in one press, and it does not blink back.
   const listRow = page.locator(".contacts-lists .notes-folder-row").nth(1);
   if (await listRow.isVisible()) {

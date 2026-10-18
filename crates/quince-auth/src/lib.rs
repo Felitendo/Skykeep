@@ -98,7 +98,8 @@ pub enum Error {
     NoTrustToken,
     #[error("this account signs in a way Quince can't handle yet ({0})")]
     UnsupportedAccount(String),
-    #[error("couldn't reach Apple: {0}")]
+    /// Said without the address, which carries account and client ids.
+    #[error("couldn't reach Apple: {}", if .0.is_timeout() { "it took too long to answer" } else if .0.is_connect() { "check your connection" } else { "the connection dropped" })]
     Network(#[from] reqwest::Error),
     #[error("Apple sent back something unexpected: {0}")]
     Protocol(String),

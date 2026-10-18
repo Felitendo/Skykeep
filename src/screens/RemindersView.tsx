@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePending } from "../lib/pending";
 import { Notice } from "../components/Notice";
 import { Portal } from "../components/Portal";
@@ -179,6 +179,9 @@ type Selection =
 
 export function RemindersView() {
   const [lists, setLists] = useState<ReminderList[]>([]);
+  const focusedBeforePress = useRef<Element | null>(null);
+  /** A reminder's menu, from a right-click on its row. */
+  const [rowMenu, setRowMenu] = useState<{ reminder: Reminder; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   /** A list's menu, from its ⋯ or a right-click. */
   const [listMenu, setListMenu] = useState<{ list: ReminderList; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   /** The list whose Show List Info sheet is open. */
@@ -198,10 +201,17 @@ export function RemindersView() {
       return next;
     });
   }, []);
-  const [selection, setSelection] = useState<Selection>({
+  /**
+   * What was picked, and what the pane shows. The sidebar answers a click at once from
+   * `picked`; the pane moves to it only when the picked view's reminders and headings have
+   * arrived, and takes all of them in one draw. Moving the heading first left the new
+   * list's title over the old list's reminders for a moment — the flicker on every switch.
+   */
+  const [picked, setSelection] = useState<Selection>({
     type: "smart",
     kind: "today",
   });
+  const [selection, setShown] = useState<Selection>(picked);
   const [items, setItems] = useState<Reminder[]>([]);
   const [showDone, setShowDone] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -240,22 +250,7 @@ export function RemindersView() {
     setLoaded(true);
   }, []);
 
-  useEffect(() => {
-    if (selection.type !== "list") return setListSections([]);
-    let cancelled = false;
-    api
-      .reminderSections(selection.guid)
-      .then((found) => {
-        if (!cancelled) setListSections(Array.isArray(found) ? found : []);
-      })
-      .catch(() => {
-        // Without sections the list still shows every reminder, just without headings.
-        if (!cancelled) setListSections([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selection, revision]);
+  // A list's headings are read with its reminders (readItems), so they arrive together.
 
   /** What is typed in the search field. While it holds anything, the pane is the results. */
   const [query, setQuery] = useState("");
@@ -267,17 +262,30 @@ export function RemindersView() {
   const [detail, setDetail] = useState(false);
 
   const { hold, over } = usePending<Reminder>();
+  /** Each read is numbered: one overtaken by a later pick is dropped, never drawn late. */
+  const reads = useRef(0);
   const readItems = useCallback(async (): Promise<Reminder[]> => {
+    const sel = picked;
+    const seq = ++reads.current;
     // Search reaches every list, as Apple's does, whatever is open in the sidebar.
-    const found = searching
-      ? await api.remindersSearch(query)
-      : selection.type === "smart"
-        ? await api.remindersSmart(selection.kind, endOfToday())
-        : await api.remindersIn(selection.guid, showDone);
+    const [found, sections] = await Promise.all([
+      searching
+        ? api.remindersSearch(query)
+        : sel.type === "smart"
+          ? api.remindersSmart(sel.kind, endOfToday())
+          : api.remindersIn(sel.guid, showDone),
+      sel.type === "list"
+        ? api.reminderSections(sel.guid).catch(() => [] as ReminderSection[])
+        : Promise.resolve([] as ReminderSection[]),
+    ]);
     const fresh = over((Array.isArray(found) ? found : []).map(asShown));
+    if (seq !== reads.current) return fresh;
+    // The view, its reminders and its headings, together.
+    setShown(sel);
     setItems(fresh);
+    setListSections(Array.isArray(sections) ? sections : []);
     return fresh;
-  }, [selection, showDone, query, searching, over]);
+  }, [picked, showDone, query, searching, over]);
 
   // Both reads come from the library. `revision` ticks when the shared refresh finishes —
   // pressed, or on the timer — so a reminder ticked on the phone appears here without this
@@ -455,10 +463,21 @@ export function RemindersView() {
       patch(r.guid, { parentGuid: null }),
     );
 
+  // The reminder goes, and its subtasks with it — the backend moves them after it, as the
+  // phone does — at once: out of the list on screen, or re-filed where a view gathers lists.
   const moveToList = (r: Reminder, listGuid: string) =>
     listGuid === r.listGuid
       ? Promise.resolve(null)
-      : write(r, () => api.reminderEdit(r.guid, r.listGuid, { listGuid }));
+      : write(
+          r,
+          () => api.reminderEdit(r.guid, r.listGuid, { listGuid }),
+          (rows) => {
+            const moving = (x: Reminder) => x.guid === r.guid || x.parentGuid === r.guid;
+            return selection.type === "list"
+              ? rows.filter((x) => !moving(x))
+              : rows.map((x) => (moving(x) ? { ...x, listGuid } : x));
+          },
+        );
 
   /** List writes go to Apple first, then the whole set is re-read. */
   const listWrite = useCallback(
@@ -842,7 +861,7 @@ export function RemindersView() {
         <>
           <button
             className="rx-list"
-            aria-current={listGuid === list.guid}
+            aria-current={picked.type === "list" && picked.guid === list.guid}
             onClick={() => {
               setQuery("");
               setSelection({ type: "list", guid: list.guid });
@@ -963,7 +982,7 @@ export function RemindersView() {
               smart.glyph,
               smart.colour,
               counts?.[smart.kind] ?? 0,
-              !searching && selection.type === "smart" && selection.kind === smart.kind,
+              !searching && picked.type === "smart" && picked.kind === smart.kind,
               () => setSelection({ type: "smart", kind: smart.kind }),
             ),
           )}
@@ -974,7 +993,7 @@ export function RemindersView() {
               emblemGlyph(list.emblem),
               colourOf(list),
               countOf(list.guid),
-              !searching && listGuid === list.guid,
+              !searching && picked.type === "list" && picked.guid === list.guid,
               () => setSelection({ type: "list", guid: list.guid }),
             ),
           )}
@@ -1105,6 +1124,21 @@ export function RemindersView() {
                       setDragging(reminder.guid);
                     }}
                     onDragEnd={() => { setDragging(null); setDropBefore(null); }}
+                    // Right-click, as on the Mac: what can be done to this reminder, in one menu.
+                    onMouseDownCapture={() => {
+                      // What had focus before this press: the press itself focuses a title it
+                      // lands on, which is not the same as someone already typing in it.
+                      focusedBeforePress.current = document.activeElement;
+                    }}
+                    onContextMenu={(e) => {
+                      // Text being edited keeps its own menu; anywhere else on the row, the
+                      // reminder's — its title included, until someone is typing in it.
+                      const field = (e.target as HTMLElement).closest("input, textarea, [contenteditable=true]");
+                      if (field && field === focusedBeforePress.current) return;
+                      (document.activeElement as HTMLElement | null)?.blur?.();
+                      e.preventDefault();
+                      setRowMenu({ reminder, at: { x: e.clientX, y: e.clientY, alignRight: false } });
+                    }}
                     onDragOver={(e) => {
                       if (!dragging || dragging === reminder.guid || depth > 0 || reminder.completedAt) return;
                       e.preventDefault();
@@ -1341,6 +1375,35 @@ export function RemindersView() {
           </p>
         )}
       </section>
+      {rowMenu && (
+        <RowMenu
+          at={rowMenu.at}
+          onClose={() => setRowMenu(null)}
+          entries={(() => {
+            const r = rowMenu.reminder;
+            return [
+              { label: "Show Info", run: () => setOpenGuid(r.guid) },
+              { label: r.flagged ? "Unflag" : "Flag", run: () => void flag(r) },
+              { label: r.completedAt ? "Mark as Not Completed" : "Mark as Completed", run: () => void toggle(r) },
+              null,
+              r.parentGuid
+                ? { label: "Outdent", run: () => void outdent(r) }
+                : { label: "Indent", run: () => void indent(r) },
+              // Only where there is somewhere else to go: an empty submenu is a dead end.
+              ...(lists.some((l) => l.guid !== r.listGuid)
+                ? [{
+                    label: "Move to List",
+                    submenu: lists
+                      .filter((l) => l.guid !== r.listGuid)
+                      .map((l) => ({ label: l.title, run: () => void moveToList(r, l.guid) })),
+                  }]
+                : []),
+              null,
+              { label: "Delete", danger: true, run: () => void remove(r) },
+            ];
+          })()}
+        />
+      )}
       {listMenu && (
         <RowMenu
           at={listMenu.at}

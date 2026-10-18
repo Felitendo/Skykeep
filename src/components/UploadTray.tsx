@@ -1,63 +1,139 @@
-import type { UploadEvent } from "../lib/ipc";
+import { useEffect, useRef, useState } from "react";
+import { api, type UploadEvent } from "../lib/ipc";
 import { FileGlyph } from "./FileGlyph";
-
-/** What a person reads about one file, in the fewest words that are still true. */
-function status(u: UploadEvent): string {
-  switch (u.state) {
-    case "waiting":
-      return "Waiting";
-    case "sending":
-      return `${Math.floor((u.sent / Math.max(u.total, 1)) * 100)}%`;
-    case "verifying":
-      return "Checking";
-    case "done":
-      return "Uploaded";
-    case "failed":
-      return "Didn’t upload";
-  }
-}
 
 const extensionOf = (name: string) => {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1) : null;
 };
 
-/**
- * Every file going up, each with its own progress, in the corner like a download list.
- *
- * "Uploading…" on a button said nothing about which of forty photos had gone and which had
- * not. This names each one, shows how far it has got, and only calls it uploaded once iCloud
- * has been shown to hold exactly its bytes — so "Uploaded" is a statement, not a hope.
- */
-export function UploadTray({
-  uploads,
-  onDismiss,
-}: {
-  uploads: UploadEvent[];
-  onDismiss: () => void;
-}) {
-  if (uploads.length === 0) return null;
-  const finished = uploads.filter((u) => u.state === "done" || u.state === "failed");
-  const failed = uploads.filter((u) => u.state === "failed").length;
-  const active = finished.length < uploads.length;
-  const total = uploads.reduce((n, u) => n + u.total, 0);
-  const sent = uploads.reduce((n, u) => n + (u.state === "done" ? u.total : u.sent), 0);
-  const percent = total > 0 ? Math.floor((sent / total) * 100) : 100;
+const ended = (u: UploadEvent) => u.state === "done" || u.state === "failed" || u.state === "cancelled";
 
+/**
+ * One line of the tray: a file dropped on its own, or a whole folder with everything in it
+ * counted as one — as Google Drive and Finder show a folder going up. A folder of 214 files
+ * listed file by file was a scroll of names nobody could follow.
+ */
+type Item = {
+  key: string;
+  name: string;
+  folder: boolean;
+  files: UploadEvent[];
+  /** The folder's own row: being made on Apple, made, or refused. */
+  self?: UploadEvent;
+};
+
+function group(uploads: UploadEvent[]): Item[] {
+  const items: Item[] = [];
+  const byFolder = new Map<string, Item>();
+  for (const u of uploads) {
+    if (u.state === "planned") continue;
+    const top = u.within ? u.within.split("/")[0] : null;
+    if (u.folder && !u.within) {
+      const item: Item = { key: `${u.batch}/${u.name}`, name: u.name, folder: true, files: [], self: u };
+      byFolder.set(item.key, item);
+      items.push(item);
+    } else if (top) {
+      const key = `${u.batch}/${top}`;
+      let item = byFolder.get(key);
+      if (!item) {
+        item = { key, name: top, folder: true, files: [] };
+        byFolder.set(key, item);
+        items.push(item);
+      }
+      if (!u.folder) item.files.push(u);
+    } else if (!u.folder) {
+      items.push({ key: u.id, name: u.name, folder: false, files: [u] });
+    }
+  }
+  return items;
+}
+
+/** How far a line has got, and what it is doing, in the fewest words that are true. */
+function measure(item: Item, planned: boolean) {
+  const total = item.files.reduce((n, u) => n + u.total, 0);
+  const sent = item.files.reduce((n, u) => n + (u.state === "done" ? u.total : u.sent), 0);
+  const done = item.files.filter((u) => u.state === "done").length;
+  const failed = item.files.filter((u) => u.state === "failed");
+  const cancelled = item.files.filter((u) => u.state === "cancelled").length;
+  const running = item.files.some((u) => !ended(u)) || item.self?.state === "preparing" || (item.folder && !planned);
+  const percent = total > 0 ? Math.floor((sent / total) * 100) : running ? 0 : 100;
+  let status: string;
+  if (item.self?.state === "failed") status = "Couldn’t be made";
+  // Still finding what is in it: a count that would only grow is not a total yet.
+  else if (item.folder && !planned) status = item.files.length ? `Preparing… ${item.files.length} found` : "Preparing…";
+  else if (running && item.files.length === 0) status = "Preparing…";
+  else if (running && !item.folder) {
+    const u = item.files[0];
+    status = u.state === "waiting" ? "Waiting" : u.state === "verifying" ? "Checking" : `${percent}%`;
+  } else if (running) status = `${done} of ${item.files.length}`;
+  else if (failed.length > 0) status = item.folder ? `${failed.length} didn’t upload` : "Didn’t upload";
+  else if (cancelled > 0 && done === 0) status = "Cancelled";
+  else if (cancelled > 0) status = `${done} uploaded, ${cancelled} cancelled`;
+  else status = "Uploaded";
+  return { total, sent, percent, running, failed, status };
+}
+
+/**
+ * Every upload going up, in the corner as a download list sits: one line per file dropped and
+ * one per folder, each with its own progress, the whole batch summed in the head. A folder
+ * opens to show what in it did not upload, and why. When everything has gone up cleanly the
+ * tray steps aside on its own; anything that failed keeps it until it is read.
+ */
+export function UploadTray({ uploads, onDismiss }: { uploads: UploadEvent[]; onDismiss: () => void }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const items = group(uploads);
+  const planned = new Set(uploads.filter((u) => u.state === "planned").map((u) => u.batch));
+  const measured = items.map((item) => ({ item, ...measure(item, planned.has(item.files[0]?.batch ?? item.self?.batch ?? "")) }));
+  const active = measured.some((m) => m.running);
+  const anyFailed = measured.some((m) => m.failed.length > 0 || m.item.self?.state === "failed");
+  const allPlanned = [...new Set(uploads.map((u) => u.batch))].every((b) => planned.has(b));
+  const total = measured.reduce((n, m) => n + m.total, 0);
+  const sent = measured.reduce((n, m) => n + m.sent, 0);
+  // Progress only ever moves forward: three files go up at once and report out of step, and
+  // a bar that slid back on every report read as broken.
+  const highest = useRef<Map<string, number>>(new Map());
+  if (uploads.length === 0) highest.current.clear();
+  const forward = (key: string, value: number) => {
+    const was = highest.current.get(key) ?? 0;
+    const now = Math.max(was, value);
+    highest.current.set(key, now);
+    return now;
+  };
+  const percent = allPlanned && total > 0 ? forward("all", Math.floor((sent / total) * 100)) : 0;
+  const files = uploads.filter((u) => !u.folder);
+  const finishedFiles = files.filter(ended).length;
+
+  // Gone by itself a moment after a clean finish; held while anything needs reading.
+  useEffect(() => {
+    if (uploads.length === 0 || active || anyFailed) return undefined;
+    const t = window.setTimeout(onDismiss, 4000);
+    return () => window.clearTimeout(t);
+  }, [uploads.length, active, anyFailed, onDismiss]);
+
+  if (uploads.length === 0) return null;
+  const batches = [...new Set(uploads.filter((u) => !ended(u)).map((u) => u.batch))];
   const heading = active
-    ? `Uploading ${finished.length + 1 > uploads.length ? uploads.length : finished.length + 1} of ${uploads.length}`
-    : failed > 0
-      ? `${failed} of ${uploads.length} didn’t upload`
-      : uploads.length === 1
-        ? "Uploaded"
-        : `${uploads.length} uploaded`;
+    ? items.length === 1 && items[0].folder
+      ? `Uploading ${items[0].name}`
+      : `Uploading ${Math.min(finishedFiles + 1, Math.max(files.length, 1))} of ${Math.max(files.length, 1)}`
+    : anyFailed
+      ? "Some uploads didn’t finish"
+      : items.length === 1
+        ? `${items[0].name} uploaded`
+        : `${files.length} uploaded`;
 
   return (
     <section className="upload-tray" aria-label="Uploads" aria-live="polite">
       <header className="upload-tray-head">
         <span className="upload-tray-title">{heading}</span>
         {active ? (
-          <span className="upload-tray-percent">{percent}%</span>
+          <span className="upload-tray-actions">
+            {allPlanned && <span className="upload-tray-percent">{percent}%</span>}
+            <button className="upload-tray-close" onClick={() => batches.forEach((b) => void api.driveUploadCancel([], b))}>
+              Cancel
+            </button>
+          </span>
         ) : (
           <button className="upload-tray-close" onClick={onDismiss} aria-label="Close uploads">
             Done
@@ -65,32 +141,67 @@ export function UploadTray({
         )}
       </header>
       {active && (
-        <div className="upload-bar" aria-hidden="true">
-          <span style={{ width: `${percent}%` }} />
+        <div className={`upload-bar${allPlanned ? "" : " is-waiting"}`} aria-hidden="true">
+          <span style={{ width: allPlanned ? `${percent}%` : undefined }} />
         </div>
       )}
       <ul className="upload-rows">
-        {uploads.map((u) => (
-          <li key={u.id} className={`upload-row is-${u.state}`}>
-            <span className="upload-glyph" aria-hidden="true">
-              <FileGlyph kind="FILE" extension={extensionOf(u.name)} />
-            </span>
-            <span className="upload-text">
-              <span className="upload-name">{u.name}</span>
-              <span className="upload-where">
-                {u.state === "failed" && u.error ? u.error : u.within || " "}
-              </span>
-              {(u.state === "sending" || u.state === "verifying") && (
-                <span className="upload-bar small" aria-hidden="true">
-                  <span style={{ width: `${Math.floor((u.sent / Math.max(u.total, 1)) * 100)}%` }} />
+        {measured.map(({ item, percent: raw, running, failed, status }) => {
+          const p = forward(item.key, raw);
+          const stoppable = item.files.filter((u) => u.state === "waiting" || u.state === "sending");
+          const state = running ? "sending" : failed.length || item.self?.state === "failed" ? "failed" : status === "Cancelled" ? "cancelled" : "done";
+          return (
+            <li key={item.key} className={`upload-row is-${state}`}>
+              <div className="upload-line">
+                <span className="upload-glyph" aria-hidden="true">
+                  <FileGlyph kind={item.folder ? "FOLDER" : "FILE"} extension={item.folder ? null : extensionOf(item.name)} />
                 </span>
+                <span className="upload-text">
+                  <span className="upload-name">{item.name}</span>
+                  {running && (item.folder ? planned.has(item.files[0]?.batch ?? "") : true) && (
+                    <span className="upload-bar small" aria-hidden="true">
+                      <span style={{ width: `${p}%` }} />
+                    </span>
+                  )}
+                  {!running && !item.folder && failed[0]?.error && <span className="upload-where">{failed[0].error}</span>}
+                </span>
+                <span className="upload-state">
+                  {state === "done" && status === "Uploaded" ? <span aria-label="Uploaded">✓</span> : status}
+                </span>
+                {item.folder && failed.length > 0 && (
+                  <button
+                    className="upload-stop"
+                    aria-expanded={open === item.key}
+                    aria-label={open === item.key ? "Hide what didn’t upload" : "Show what didn’t upload"}
+                    onClick={() => setOpen(open === item.key ? null : item.key)}
+                  >
+                    {open === item.key ? "▾" : "▸"}
+                  </button>
+                )}
+                {/* One upload has one Cancel — the head's. */}
+                {stoppable.length > 0 && measured.length > 1 && (
+                  <button
+                    className="upload-stop"
+                    aria-label={`Cancel ${item.name}`}
+                    title="Cancel"
+                    onClick={() => void api.driveUploadCancel(stoppable.map((u) => u.id))}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              {open === item.key && (
+                <ul className="upload-failures">
+                  {failed.map((u) => (
+                    <li key={u.id}>
+                      <b>{u.within.split("/").slice(1).concat(u.name).join("/")}</b> {u.error}
+                    </li>
+                  ))}
+                </ul>
               )}
-            </span>
-            <span className="upload-state">
-              {u.state === "done" ? <span aria-label="Uploaded">✓</span> : status(u)}
-            </span>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

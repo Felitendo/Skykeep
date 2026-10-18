@@ -164,10 +164,15 @@ export function Picker({
       const t = e.target as Node;
       if (!root.current?.contains(t) && !menu.current?.contains(t)) setOpen(false);
     };
-    // A menu fixed over a page that scrolls or resizes would be left floating somewhere
-    // else; as on the Mac, it goes. Its own scrolling is not that.
+    // A menu fixed over a page that scrolls would be left floating away from its button; as
+    // on the Mac, it goes — but only when its button has really moved. Any scroll at all
+    // closed it, and a page still settling as the menu opened (a panel easing into view)
+    // closed it the moment it appeared: open, shut, a flicker. Its own scrolling is not that.
+    const at = button.current?.getBoundingClientRect();
     const onMove = (e: Event) => {
-      if (!menu.current?.contains(e.target as Node)) setOpen(false);
+      if (menu.current?.contains(e.target as Node)) return;
+      const now = button.current?.getBoundingClientRect();
+      if (!at || !now || Math.abs(now.top - at.top) > 2 || Math.abs(now.left - at.left) > 2) setOpen(false);
     };
     const onLeave = () => setOpen(false);
     document.addEventListener("mousedown", onDown);

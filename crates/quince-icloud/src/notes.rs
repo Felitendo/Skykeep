@@ -988,8 +988,8 @@ pub async fn delete_folder_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
-    all: &[NoteFolder],
-    notes: &[Note],
+    all_known: &[NoteFolder],
+    notes_known: &[Note],
     guid: &str,
 ) -> Result<()> {
     if guid == DEFAULT_FOLDER || guid == quince_core::notes::TRASH_FOLDER {
@@ -997,6 +997,18 @@ pub async fn delete_folder_cloudkit(
             "Apple's own folders can't be deleted.".into(),
         ));
     }
+    // The folders and notes as Apple holds them now, not as this computer last read them: a
+    // note filed in the folder on a phone since the last sync was not in the list this was
+    // handed, was not moved to Recently Deleted, and was left filed in a folder that no longer
+    // existed. Without a fresh answer nothing is deleted.
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
+    let walk = client.all_records(ZONE, None).await?;
+    let fresh_folders: Vec<NoteFolder> = walk.records.iter().filter(|r| r["recordType"] == "Folder").filter_map(folder_from_record).collect();
+    let fresh_notes: Vec<Note> = walk.records.iter().filter(|r| r["recordType"] == "Note").filter_map(note_from_record).collect();
+    let (all, notes) = if walk.complete { (&fresh_folders[..], &fresh_notes[..]) } else {
+        return Err(Error::Refused("Couldn't read all of this folder from iCloud just now, so nothing was deleted — try again.".into()));
+    };
+    let _ = (all_known, notes_known);
     // This folder, then every folder under it, deepest last.
     let mut doomed = vec![guid.to_string()];
     let mut i = 0;
@@ -1023,7 +1035,6 @@ pub async fn delete_folder_cloudkit(
         )
         .await?;
     }
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     for folder in doomed.iter().rev() {
         if client.lookup_record(ZONE, folder).await?.is_some() {
             client.delete_record(ZONE, folder).await?;
@@ -2394,4 +2405,49 @@ mod derived_title_tests {
         );
         assert_eq!(note_from_record(&record(None)).unwrap().title, "New Note");
     }
+}
+
+/// Change one cell of a Notes table, as a device edits it.
+///
+/// Recomputed from Apple's own current copy of the table and written against its exact
+/// version (see [`ZoneClient::edit_record`]), so an edit made on a phone meanwhile is never
+/// written over. Only a cell already typed in can be changed — see
+/// [`crate::table::with_cell`] — and a table this cannot rewrite exactly is refused, not
+/// written. Answers the cells as Apple now holds them.
+pub async fn set_table_cell_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    attachment: &str,
+    row: usize,
+    column: usize,
+    text: &str,
+) -> Result<Vec<Vec<String>>> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .edit_record(ZONE, attachment, "Attachment", |record| {
+            let current = record
+                .pointer("/fields/MergeableDataEncrypted/value")?
+                .as_str()?;
+            let edited = crate::table::with_cell_in_base64(current, row, column, text)?;
+            Some(serde_json::json!({
+                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited }
+            }))
+        })
+        .await?
+        .ok_or_else(|| {
+            Error::Refused(
+                "That cell can’t be changed here yet — only cells already typed in can.".into(),
+            )
+        })?;
+    // Apple's answer to the write does not carry the table back (measured), so what it now
+    // holds is read from it.
+    client
+        .lookup_record(ZONE, attachment)
+        .await?
+        .ok_or(Error::NotFound)?
+        .pointer("/fields/MergeableDataEncrypted/value")
+        .and_then(Value::as_str)
+        .and_then(crate::table::cells_from_base64)
+        .ok_or_else(|| Error::Protocol("Apple kept a table this cannot read back".into()))
 }

@@ -286,6 +286,66 @@ fn created_folder(body: &Value, name: &str) -> Result<DriveItem> {
         .ok_or_else(|| Error::Protocol("Drive's answer described the folder without an id".into()))
 }
 
+/// Create many folders inside `parent_id` in one request, as `createFolders` takes them — a
+/// folder of 256 folders (a git repository's `objects`) is one round trip, not 256. Each name
+/// answers with its new folder's id, or why it was not made; the answer is matched by the
+/// `clientId` each was sent with.
+pub async fn create_folders(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    parent_id: &str,
+    names: &[String],
+) -> Result<Vec<(String, std::result::Result<String, String>)>> {
+    let mut out = Vec::with_capacity(names.len());
+    for chunk in names.chunks(100) {
+        let asked: Vec<(String, String)> = chunk
+            .iter()
+            .map(|n| (n.trim().to_string(), uuid::Uuid::new_v4().to_string()))
+            .collect();
+        let body = json!({
+            "destinationDrivewsId": parent_id,
+            "folders": asked.iter().map(|(name, id)| json!({ "name": name, "clientId": id })).collect::<Vec<_>>(),
+        });
+        let url = format!("{}/createFolders", root.trim_end_matches('/'));
+        let reply = post_json(http, &url, &params, &body).await?;
+        let made: Vec<Value> = reply
+            .get("folders")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (name, client_id) in asked {
+            let folder = made
+                .iter()
+                .find(|f| f.get("clientId").and_then(Value::as_str) == Some(client_id.as_str()))
+                .or_else(|| {
+                    made.iter()
+                        .find(|f| f.get("name").and_then(Value::as_str) == Some(name.as_str()))
+                });
+            let result = match folder {
+                Some(f)
+                    if f.get("status")
+                        .and_then(Value::as_str)
+                        .is_none_or(|s| s == "OK") =>
+                {
+                    item_from(f).map(|i| i.drivewsid).ok_or_else(|| {
+                        "Drive's answer described the folder without an id".to_string()
+                    })
+                }
+                Some(f) => Err(format!(
+                    "iCloud Drive didn't create \u{201c}{name}\u{201d} ({}).",
+                    f.get("status").and_then(Value::as_str).unwrap_or("?")
+                )),
+                None => Err(format!(
+                    "iCloud Drive said nothing about \u{201c}{name}\u{201d}."
+                )),
+            };
+            out.push((name, result));
+        }
+    }
+    Ok(out)
+}
+
 /// Create a folder inside `parent_id`. Returns the item Apple stored.
 pub async fn create_folder(
     http: &reqwest::Client,
@@ -446,31 +506,71 @@ pub async fn delete(
         .and_then(|i| i.etag.clone())
         .or_else(|| item.etag.clone());
 
+    // As icloud.com sends it (main.js, module 2231): the id, the etag, and the item's own id
+    // as `clientId`; and the answer read per item — only "OK" is done. A folder still taking
+    // uploads changes its etag with every file that lands, so the etag read a moment ago is
+    // already old: Apple answered 200 and refused it inside, and the folder stayed where it
+    // was. A stale etag is tried again with the one Apple sent back.
     let url = format!("{}/moveItemsToTrash", root.trim_end_matches('/'));
-    let body = json!({
-        "items": [{ "drivewsid": item.drivewsid, "etag": etag }],
-    });
+    let mut etag = etag;
+    // Measured: deleting a folder while files went on landing in it met ETAG_CONFLICT on
+    // three tries in a row — each file landing moved the etag again within the second. The
+    // uploads into it are stopped first; the ones already being filed finish within seconds,
+    // so the delete keeps trying, spaced out, with the etag Apple says it has now.
+    let waits = [0u64, 400, 800, 1500, 2500, 3500];
+    for (attempt, wait) in waits.iter().enumerate() {
+        if *wait > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(*wait)).await;
+        }
+        let body = json!({
+            "items": [{ "drivewsid": item.drivewsid, "etag": etag, "clientId": item.drivewsid }],
+        });
+        let reply = post_json(http, &url, &params, &body).await?;
+        let answer = reply
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|i| {
+                    i.get("drivewsid").and_then(Value::as_str) == Some(item.drivewsid.as_str())
+                })
+            })
+            .cloned();
+        match answer
+            .as_ref()
+            .and_then(|a| a.get("status"))
+            .and_then(Value::as_str)
+        {
+            Some("OK") | None => break,
+            Some("ETAG_CONFLICT") if attempt + 1 < waits.len() => {
+                etag = answer
+                    .as_ref()
+                    .and_then(|a| a.get("etag"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or(etag);
+            }
+            Some(other) => {
+                return Err(Error::Refused(format!(
+                    "iCloud Drive did not let that be deleted ({other})."
+                )));
+            }
+        }
+    }
 
-    let response = http.post(url).query(&params).json(&body).send().await?;
-    let status = response.status();
-    if status.as_u16() == 450 {
-        return Err(Error::ReauthRequired);
+    // A large folder takes Apple a moment to move: looked for a few times before it is said
+    // to have stayed.
+    for wait in [0u64, 800, 1500, 2500] {
+        if wait > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        }
+        let after = folder_listing(http, root, &params, parent).await?;
+        if !after.iter().any(|i| i.drivewsid == item.drivewsid) {
+            return Ok(());
+        }
     }
-    if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        return Err(Error::Protocol(format!(
-            "Drive refused the delete ({status}): {}",
-            text.chars().take(200).collect::<String>()
-        )));
-    }
-
-    let after = folder_listing(http, root, &params, parent).await?;
-    if after.iter().any(|i| i.drivewsid == item.drivewsid) {
-        return Err(Error::Protocol(
-            "Apple answered success but the item is still in the folder".into(),
-        ));
-    }
-    Ok(())
+    Err(Error::Refused(
+        "iCloud answered, but the item is still in the folder — try again in a moment.".into(),
+    ))
 }
 
 /// Duplicate a file as icloud.com does: `POST {docws}/v1/item/copy/{item_id}` with
@@ -764,7 +864,55 @@ pub async fn out_of_trash_many(
     endpoint: &str,
     what: &str,
 ) -> Result<Vec<(String, String)>> {
+    // Fifty at a time: hundreds in one request — a Recently Deleted filled by a folder upload
+    // — was too large for the connection, and nothing was deleted at all. A dropped connection
+    // is tried once more before the rest is reported.
+    // Recently Deleted is read once before every batch and once after them all — not twice a
+    // batch: a large one takes seconds to read, and sixty items took most of a minute and a
+    // half that way.
     let current = folder_listing(http, root, &params, TRASH).await?;
+    let mut failed = Vec::new();
+    for chunk in items.chunks(50) {
+        let mut outcome =
+            out_of_trash_batch(http, root, params.clone(), chunk, endpoint, what, &current).await;
+        if matches!(outcome, Err(Error::Network(_))) {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            outcome =
+                out_of_trash_batch(http, root, params.clone(), chunk, endpoint, what, &current)
+                    .await;
+        }
+        match outcome {
+            Ok(f) => failed.extend(f),
+            Err(e) => failed.extend(
+                chunk
+                    .iter()
+                    .map(|item| (item.drivewsid.clone(), e.to_string())),
+            ),
+        }
+    }
+    let after = folder_listing(http, root, &params, TRASH).await?;
+    for item in items {
+        if after.iter().any(|i| i.drivewsid == item.drivewsid)
+            && !failed.iter().any(|(id, _)| id == &item.drivewsid)
+        {
+            failed.push((
+                item.drivewsid.clone(),
+                format!("iCloud answered, but the item is still in Recently Deleted, so it was not {what}."),
+            ));
+        }
+    }
+    Ok(failed)
+}
+
+async fn out_of_trash_batch(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    items: &[DriveItem],
+    endpoint: &str,
+    what: &str,
+    current: &[DriveItem],
+) -> Result<Vec<(String, String)>> {
     let mut failed: Vec<(String, String)> = Vec::new();
     // Each with the etag Apple has for it now.
     let mut todo: Vec<(DriveItem, Option<String>)> = Vec::new();
@@ -829,17 +977,6 @@ pub async fn out_of_trash_many(
             item.drivewsid,
             format!("That item changed in iCloud Drive, so it was not {what}."),
         ));
-    }
-    let after = folder_listing(http, root, &params, TRASH).await?;
-    for item in items {
-        if after.iter().any(|i| i.drivewsid == item.drivewsid)
-            && !failed.iter().any(|(id, _)| id == &item.drivewsid)
-        {
-            failed.push((
-                item.drivewsid.clone(),
-                format!("iCloud answered, but the item is still in Recently Deleted, so it was not {what}."),
-            ));
-        }
     }
     Ok(failed)
 }
@@ -2156,32 +2293,92 @@ async fn upload_once(
         // No answer is not "not filed": Apple may have filed it and the reply been lost. Asked
         // again from the start, the file would go up a second time beside the first — "photo
         // 2.jpg". The slot's document id is this file's alone, so the folder says which.
+        // So is "something with that name is already there": measured on a busy zone, the
+        // first try was filed, the answer to it lost, and the retry met the file itself. It is
+        // asked for by its own id, which is current the moment it is filed, where the folder's
+        // listing can lag behind it.
         Err(e @ (Error::Network(_) | Error::Refused(_))) => {
             let id = format!("FILE::{DOCUMENTS_ZONE}::{document_id}");
-            match folder_listing(http, drivews_root, &params, folder_id).await {
-                Ok(items)
-                    if items
-                        .iter()
-                        .any(|i| i.drivewsid == id && i.size == Some(size as i64)) =>
-                {
-                    id
-                }
-                _ => return Err(e),
+            match item_details(http, drivews_root, &params, &id).await {
+                Ok(Some(item)) if item.size == Some(size as i64) => id,
+                _ => match folder_listing(http, drivews_root, &params, folder_id).await {
+                    Ok(items)
+                        if items
+                            .iter()
+                            .any(|i| i.drivewsid == id && i.size == Some(size as i64)) =>
+                    {
+                        id
+                    }
+                    _ => return Err(e),
+                },
             }
         }
         Err(e) => return Err(e),
     };
 
-    // Apple answers 200 to writes it did not make. The folder is the only witness that counts.
-    let after = folder_listing(http, drivews_root, &params, folder_id).await?;
-    after
-        .into_iter()
-        .find(|i| i.drivewsid == stored)
-        .ok_or_else(|| {
-            Error::Protocol(format!(
-                "Apple accepted {name} but the folder does not hold it"
-            ))
+    // Apple answers 200 to writes it did not make, so the document is read back from Apple:
+    // itself, by id, as icloud.com reads an item (`retrieveItemDetails`) — it must be there,
+    // in this folder, at this size. Reading the whole folder back instead took six of the
+    // nine seconds "Checking" lasted for a 40 MB file in a full folder, for every file sent.
+    let found = item_details(http, drivews_root, &params, &stored).await?;
+    match found {
+        Some(item)
+            if item.parent_id.as_deref() == Some(folder_id) && item.size == Some(size as i64) =>
+        {
+            Ok(item)
+        }
+        Some(item) if item.parent_id.as_deref() != Some(folder_id) => {
+            // A parent named another way (the root by its own id) is checked against the
+            // folder itself, rather than trusted or refused on the spelling.
+            let listed = folder_listing(http, drivews_root, &params, folder_id).await?;
+            listed
+                .into_iter()
+                .find(|i| i.drivewsid == stored)
+                .ok_or_else(|| {
+                    Error::Protocol(format!(
+                        "Apple accepted {name} but the folder does not hold it"
+                    ))
+                })
+        }
+        Some(_) => Err(Error::Protocol(format!(
+            "Apple holds {name} at a different size from the file sent"
+        ))),
+        None => Err(Error::Protocol(format!(
+            "Apple accepted {name} but the folder does not hold it"
+        ))),
+    }
+}
+
+/// One item as Apple holds it now, by id (`retrieveItemDetails`, as icloud.com reads one).
+/// `None` when Apple has no such item.
+async fn item_details(
+    http: &reqwest::Client,
+    root: &str,
+    params: &[(String, String)],
+    drivewsid: &str,
+) -> Result<Option<DriveItem>> {
+    let url = format!("{}/retrieveItemDetails", root.trim_end_matches('/'));
+    let reply = post_json(
+        http,
+        &url,
+        params,
+        &json!({ "items": [{ "drivewsid": drivewsid, "includeHierarchy": false }] }),
+    )
+    .await?;
+    Ok(reply
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|i| i.get("drivewsid").and_then(Value::as_str) == Some(drivewsid))
         })
+        .filter(|i| {
+            i.get("status")
+                .and_then(Value::as_str)
+                .is_none_or(|s| s == "OK")
+        })
+        .and_then(item_from))
 }
 
 /// The id of the document an `add_file` reply describes, once it is shown to be the file sent.
@@ -2234,6 +2431,18 @@ async fn post_json(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok());
         let text = response.text().await.unwrap_or_default();
+        // A 409 is not always a name taken. Measured with three files going into one folder:
+        // `ZONE_BUSY` — "Sync zone CAS Op-Lock failed. There was a concurrent write and this
+        // operation was rejected. Retry request" — two writes to the zone at once, the second
+        // turned away and asked to come again. Read as "something with that name is already
+        // there", five of twenty-four files were reported as not uploaded. It is retried, after a
+        // short pause that differs per request so the writers stop colliding.
+        let zone_busy = status.as_u16() == 409 && text.contains("ZONE_BUSY");
+        if zone_busy && tries < 6 {
+            let jitter = u64::from(uuid::Uuid::new_v4().as_bytes()[0]) * 2;
+            tokio::time::sleep(std::time::Duration::from_millis(250 * tries + jitter)).await;
+            continue;
+        }
         if !matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504) || tries >= 3 {
             break (status, text);
         }
@@ -2252,6 +2461,9 @@ async fn post_json(
             "drive: {url} answered {status}: {}",
             text.chars().take(300).collect::<String>()
         );
+        if status.as_u16() == 409 && text.contains("ZONE_BUSY") {
+            return Err(Error::Refused(BUSY.into()));
+        }
         return Err(Error::Refused(match status.as_u16() {
             429 | 500..=599 => {
                 "iCloud Drive is busy right now — try this one again in a minute.".into()
@@ -2483,6 +2695,15 @@ mod app_library_tests {
                 "items": [{ "drivewsid": "FILE::com.apple.CloudDocs::D1", "name": "quince-lost-reply",
                             "extension": "txt", "type": "FILE", "size": 5 }]
             }])))
+            .mount(&server)
+            .await;
+        // And the document itself, read back by id as uploads now confirm it.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/retrieveItemDetails$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": [{
+                "drivewsid": "FILE::com.apple.CloudDocs::D1", "parentId": "FOLDER::com.apple.CloudDocs::root",
+                "name": "quince-lost-reply", "extension": "txt", "type": "FILE", "size": 5, "status": "OK"
+            }]})))
             .mount(&server)
             .await;
         let file = std::env::temp_dir().join("quince-lost-reply.txt");

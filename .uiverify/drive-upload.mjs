@@ -84,7 +84,7 @@ ok(rows.length === 2 && /is-done/.test(rows[0].cls) && /is-failed/.test(rows[1].
   "each file ends with its own verdict, and a failure says why",
   `rows ended as ${JSON.stringify(rows)}`);
 const head = await page.locator(".upload-tray-title").innerText();
-ok(head === "1 of 2 didn’t upload", "the tray sums it up honestly", `the tray said "${head}"`);
+ok(head === "Some uploads didn’t finish", "the tray sums it up honestly", `the tray said "${head}"`);
 
 const usable = await page.getByRole("button", { name: "Upload", exact: true }).isEnabled();
 ok(usable, "the window stays usable, and another upload can start", "Upload was left disabled");

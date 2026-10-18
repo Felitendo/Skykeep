@@ -267,9 +267,10 @@
   /* Its own width changing lays out only itself. */
   contain: layout paint;
   overflow: hidden;
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
+  /* Frosted to opaque, without a live blur: folding animates its width, and a blurred layer
+     has its blur worked out again on every frame of that — a stutter in WebKitGTK, which
+     does not draw the blur on many machines in any case. Content still passes under it. */
+  background: var(--glass-thick);
   box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge);
   border-radius: var(--r-plateau);
   padding: 12px 9px;
@@ -1521,8 +1522,6 @@
   padding: 20px 22px;
   border-radius: var(--r-window);
   background: var(--glass-thick);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
   box-shadow: var(--glass-float);
   /* A sheet arrives on the smooth spring, growing the last few percent into place. */
   animation: modal-sheet-in 360ms var(--spring-smooth) both;
@@ -1689,9 +1688,7 @@
   flex-direction: column;
   border: 1px solid var(--glass-edge);
   border-radius: 12px;
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
+  background: var(--glass-thick);
   box-shadow: var(--shadow-sheet), var(--glass-specular);
   overflow: hidden;
 }
@@ -1735,13 +1732,21 @@
 
 .upload-rows { margin: 0; padding: 0 6px 8px; list-style: none; overflow-y: auto; }
 .upload-row {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
   padding: 6px 8px;
   border-radius: 8px;
 }
+/* A file, or a whole folder counted as one: glyph, name over its bar, how far, and its
+   controls — the folder's ▸ to see what in it did not upload, and ✕ while it can stop. */
+.upload-line {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.upload-state { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.upload-failures { margin: 6px 0 2px 30px; padding: 0; list-style: none; font-size: var(--t-11); color: var(--text-2); max-height: 160px; overflow: auto; }
+.upload-failures li { padding: 2px 0; }
+.upload-failures b { color: var(--text); font-weight: 600; }
 .upload-glyph { display: grid; place-items: center; }
 .upload-text { display: flex; flex-direction: column; min-width: 0; }
 .upload-name,
@@ -2028,3 +2033,24 @@
 .web-access-off p { color: var(--text-2); font-size: var(--t-15); line-height: 1.5; margin: 0 0 12px; }
 .web-access-off b { color: var(--text); font-weight: 600; }
 .settings-gap { margin-top: 12px; }
+
+/* A new folder in the grid, named as Finder names one: the field fits its cell under the
+   icon, its text centred. At the field's own width it overflowed the 112px cell and was cut
+   off at the left. */
+.drive-rows.is-grid .drive-row-new { flex-direction: column; justify-content: flex-start; gap: 8px; padding: 10px 6px; border-bottom: 0; }
+.drive-rows.is-grid .drive-row-new input { flex: none; width: 100%; min-width: 0; text-align: center; font-size: var(--t-11); padding: 3px 4px; }
+
+/* Uploads that can still be stopped have a ✕; the tray's Cancel stops every one of them. */
+.upload-tray-actions { display: flex; align-items: center; gap: 10px; }
+.upload-stop {
+  flex: none; display: grid; place-items: center; width: 20px; height: 20px; margin-left: 6px; padding: 0;
+  border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text-2); font-size: 10px; cursor: pointer;
+}
+.upload-stop:hover { background: color-mix(in srgb, var(--text) 18%, transparent); color: var(--text); }
+.upload-row.is-cancelled .upload-name { color: var(--text-3); }
+/* Still finding what is in a folder: no total yet, so no share of one — a segment gliding
+   across instead of a number that would only shrink. */
+.upload-bar.is-waiting > span { width: 30%; animation: upload-finding 1.2s var(--ease) infinite alternate; }
+@keyframes upload-finding { from { transform: translateX(-10%); } to { transform: translateX(240%); } }
+@media (prefers-reduced-motion: reduce) { .upload-bar.is-waiting > span { animation: none; width: 100%; opacity: 0.4; } }

@@ -405,3 +405,26 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .note-rich .nf-attachment.is-table { display: block; padding: 0; margin: 6px 0; background: none; color: inherit; font-size: inherit; overflow-x: auto; }
 .nf-table { border-collapse: collapse; min-width: 50%; }
 .nf-table td { min-width: 120px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--text) 22%, transparent); vertical-align: top; white-space: pre-wrap; }
+/* A table's cells, edited in place: a typed cell is a quiet field that lights when it is the
+   one being typed in; one Apple refused flashes red while it goes back. */
+.nf-cell-edit { outline: none; min-height: 1.4em; border-radius: 3px; cursor: text; }
+.nf-cell-edit:focus { box-shadow: 0 0 0 2px var(--accent-ring); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.nf-cell-edit.is-saving { opacity: 0.7; }
+.nf-cell-edit.is-refused { box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent); }
+.nf-cell-empty { color: var(--text-3); }
+/* What a note holds besides text, drawn where it sits (NoteEditor's drawMedia): a picture at
+   its own proportions, a document or film as its rendering with its name, anything else a
+   chip. Each opens in the app this computer uses for it. */
+.nf-attachment.is-image, .nf-attachment.is-doc, .nf-attachment.is-file { display: inline-block; vertical-align: top; max-width: 100%; }
+.nf-image { display: block; max-width: min(100%, 640px); height: auto; border-radius: 10px; cursor: zoom-in; background: color-mix(in srgb, var(--text) 6%, transparent); }
+.nf-doc { display: inline-flex; flex-direction: column; gap: 6px; padding: 8px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.nf-doc:hover { background: color-mix(in srgb, var(--text) 9%, transparent); }
+.nf-doc-preview { display: block; width: 180px; max-width: 100%; height: auto; border-radius: 6px; box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--text) 16%, transparent); background: #fff; }
+.nf-doc.is-video .nf-doc-preview { background: #000; }
+.nf-doc-name { font-size: var(--t-11); color: var(--text-2); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-file { display: inline-flex; align-items: center; gap: 10px; max-width: 360px; padding: 8px 12px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); font: inherit; font-size: var(--t-13); cursor: pointer; }
+.nf-file:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.nf-file-glyph { flex: none; display: grid; place-items: center; min-width: 30px; height: 30px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-size: 9px; font-weight: 700; letter-spacing: 0.02em; }
+.nf-file.is-audio .nf-file-glyph, .nf-file.is-video .nf-file-glyph { font-size: 13px; }
+.nf-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nf-file-meta { flex: none; color: var(--text-3); font-size: var(--t-11); }

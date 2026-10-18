@@ -66,11 +66,12 @@ pub struct Refresh {
 const FULL_SYNC_EVERY: i64 = 24 * 60 * 60;
 
 /// The services one pass covers, in the order a person would notice them going stale.
-const COVERED: [(&str, &str); 4] = [
+const COVERED: [(&str, &str); 5] = [
     ("calendar", "Calendar"),
     ("reminders", "Reminders"),
     ("notes", "Notes"),
     ("contacts", "Contacts"),
+    ("drive", "iCloud Drive"),
 ];
 
 /// The calendar window a background refresh keeps warm: the month behind, so last week is
@@ -101,6 +102,7 @@ struct Context {
     calendar: Option<String>,
     contacts: Option<String>,
     cloudkit: Option<String>,
+    drive: Option<String>,
 }
 
 async fn context(client: &Arc<Mutex<Client>>) -> Context {
@@ -112,6 +114,7 @@ async fn context(client: &Arc<Mutex<Client>>) -> Context {
         calendar: session.service_url("calendar"),
         contacts: session.service_url("contacts"),
         cloudkit: session.service_url("ckdatabasews"),
+        drive: session.service_url("drivews"),
     }
 }
 
@@ -253,6 +256,34 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                 store("contacts", "Contacts", data, fetched, |library, people| {
                     let count = quince_icloud::contacts::apply(library, people)?;
                     Ok(format!("{count} contact{}", plural(count)))
+                })
+                .await
+            }
+        });
+    }
+
+    // Drive is read a folder at a time as it is opened; the pass keeps its top level current,
+    // so what changed there on another device is here before anyone looks, and its freshness
+    // is stated with the rest. Fetched and stored as one — see `DRIVE_PASS`.
+    if wanted("drive") {
+        reports.push(match ctx.drive.as_deref() {
+            None => unavailable("drive", "iCloud Drive"),
+            Some(root) => {
+                let _one = crate::DRIVE_PASS.lock().await;
+                let fetched = quince_icloud::drive::fetch_folder(
+                    &ctx.http,
+                    root,
+                    ctx.params.clone(),
+                    quince_core::drive::ROOT,
+                )
+                .await;
+                store("drive", "iCloud Drive", data, fetched, |library, items| {
+                    let n = quince_icloud::drive::store_folder(
+                        library,
+                        quince_core::drive::ROOT,
+                        &items,
+                    )?;
+                    Ok(format!("{n} item{} at the top of iCloud Drive", plural(n)))
                 })
                 .await
             }

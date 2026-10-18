@@ -64,6 +64,13 @@ await page.evaluate(() => {
 await page.getByRole("button", { name: "Fold Sidebar to Icons" }).click();
 await page.waitForTimeout(400);
 ok(await page.evaluate(() => window.__slid), "folding slides the content on the compositor");
+// A diagnostic report is written for the person to read and send, and says where.
+await page.locator(".sidebar-account").click();
+await page.waitForSelector(".settings");
+await page.getByRole("button", { name: "Save Diagnostic Report" }).click();
+await page.waitForTimeout(150);
+ok((await page.evaluate(() => window.__diagnostics)) === 1 && /Saved to Downloads\/Quince diagnostics/.test(await page.locator(".settings").innerText()), "a diagnostic report is saved, and the screen says where");
+
 // The account's picture is the photo on the person's own card, where it has one.
 // (A plain browser cannot load quince:// — the picture falls back to initials, as it should —
 // so what is checked is the picture asked for.)

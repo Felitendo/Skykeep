@@ -19,14 +19,26 @@ hmac = "0.12"
 rand = "0.9"
 reqwest_cookie_store = "0.8"
 cookie_store = { version = "0.21", features = ["serde_json"] }
-# `linux-native` selects the KERNEL keyutils backend, which is session-scoped and does not
-# survive a reboot — the trust token would quietly evaporate and the app would ask for a code
-# again, the exact failure this project exists to fix. The Secret Service backend is the
-# persistent one (gnome-keyring / kwallet).
-keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 thiserror = "2"
 
 [dev-dependencies]
 tokio = { workspace = true }
 wiremock = "0.6"
 tempfile = "3"
+
+# Each system's own keyring, behind the same `keyring` API: the Secret Service on Linux, the
+# Credential Manager on Windows, the Keychain on macOS. One set of features for all three
+# pulled D-Bus into a Windows build, which cannot link it.
+#
+# `linux-native` selects the KERNEL keyutils backend, which is session-scoped and does not
+# survive a reboot — the trust token would quietly evaporate and the app would ask for a code
+# again, the exact failure this project exists to fix. The Secret Service backend is the
+# persistent one (gnome-keyring / kwallet).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
