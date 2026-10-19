@@ -86,6 +86,18 @@ export const api = {
   calendarEvents: (from: number, to: number) =>
     invoke<CalendarEvent[]>("calendar_events", { from, to }),
   calendarList: () => invoke<Calendar[]>("calendar_list"),
+  photosList: (view: PhotoView) => invoke<Photo[]>("photos_list", { view }),
+  photosCounts: () => invoke<[PhotoView, number][]>("photos_counts"),
+  /** The albums the person made, each with how many photos it holds. */
+  photosAlbums: () => invoke<[PhotoAlbum, number][]>("photos_albums"),
+  photosInAlbum: (album: string) => invoke<Photo[]>("photos_in_album", { album }),
+  /** A video (or a Live Photo's moving part) opened in this computer's own player. */
+  photoPlay: (id: string) => invoke<void>("photo_play", { id }),
+  /** Favorite, Delete (to Recently Deleted) or Recover; answers the photo as Apple now has it. */
+  photoSetFlag: (id: string, flag: "favorite" | "deleted" | "hidden", on: boolean) =>
+    invoke<Photo>("photo_set_flag", { id, flag, on }),
+  /** The original saved to Downloads; answers where. */
+  photoDownload: (id: string) => invoke<string>("photo_download", { id }),
   /** New Calendar: Apple's next unused colour; a name already in use is refused. */
   calendarCreate: (title: string) => invoke<string>("calendar_create", { title }),
   calendarUpdate: (guid: string, change: { title?: string; colour?: string }) =>
@@ -190,7 +202,8 @@ export const api = {
   /** These people as a vCard file in Downloads, written by Apple. Returns the path. */
   contactsExport: (guids: string[], fileName: string) => invoke<string>("contacts_export", { guids, fileName }),
   /** Everyone in a vCard file, added to Contacts. Returns [added, could not be read]. */
-  contactsImport: (path: string) => invoke<[number, number]>("contacts_import", { path }),
+  /** vCard and CSV files, any number: [imported, could not be read]. */
+  contactsImport: (paths: string[]) => invoke<[number, number]>("contacts_import", { paths }),
   /** The card that is this person's own, if they have said. */
   contactMe: () => invoke<string | null>("contact_me"),
   contactSetMe: (guid: string) => invoke<void>("contact_set_me", { guid }),
@@ -527,6 +540,36 @@ export type NoteAttachment = {
 export function noteMediaSrc(id: string, part: "file" | "preview"): string {
   return convertFileSrc(`note/${id}/${part}`, "quince");
 }
+
+/** One of a photo's pictures, served from the disk cache (fetched from Apple once). */
+export function pictureSrc(id: string, size: "thumb" | "medium" | "original" | "video"): string {
+  return convertFileSrc(`pic/${id}/${size}`, "quince");
+}
+
+export type PhotoAlbum = { id: string; name: string; position: number; changeTag: string | null };
+
+export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "recents" | "recentlyDeleted";
+
+export type Photo = {
+  id: string;
+  master: string;
+  /** Unix seconds. */
+  takenAt: number;
+  addedAt: number | null;
+  kind: "image" | "video" | "live";
+  width: number;
+  height: number;
+  duration: number | null;
+  filename: string | null;
+  size: number | null;
+  uti: string | null;
+  favorite: boolean;
+  hidden: boolean;
+  deleted: boolean;
+  deletedAt: number | null;
+  subtype: number;
+  changeTag: string | null;
+};
 
 /** The picture of the contact with this id, served by the backend. */
 export function contactPhotoSrc(guid: string): string {

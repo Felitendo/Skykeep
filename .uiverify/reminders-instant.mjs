@@ -38,8 +38,8 @@ await tick.click();
 await page.waitForTimeout(150);
 const ticked = (await tick.getAttribute("aria-checked")) === "true";
 ok(ticked, "a tick shows at once");
-// Two writes at once: the first finishing must not free the second's row while it is
-// still on its way. Each row stays held until its own answer comes.
+// Two writes at once: the first finishing must not undo the second's tick while it is still
+// on its way.
 const a = page.getByRole("checkbox", { name: "Evening run" });
 await a.click();
 await page.waitForTimeout(600);
@@ -47,7 +47,10 @@ const c = page.getByRole("checkbox", { name: "Pick up the parcel" });
 if (await c.count()) {
   await c.click();
   await page.waitForTimeout(1100); // the first has answered; the second has not
-  ok(await c.isDisabled(), "a row stays held while its own write is still on its way");
+  // Ticks can be undone at once now (they queue in order), so the row is not held; what
+  // matters is that the first answer's re-read does not undo the second tick.
+  const still = (await c.count()) === 0 || (await c.getAttribute("aria-checked")) === "true";
+  ok(still, "a row's tick holds while its own write is still on its way");
 }
 await b.close();
 process.exitCode = failures ? 1 : 0;

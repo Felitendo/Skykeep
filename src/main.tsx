@@ -6,6 +6,7 @@ import "./styles/app.css";
 import "./styles/reminders.css";
 import "./styles/calendar.css";
 import "./styles/notes.css";
+import "./styles/photos.css";
 import { applyTheme, storedTheme } from "./lib/theme";
 
 // Before the first paint, so the window opens in the appearance chosen.
@@ -25,8 +26,20 @@ document.addEventListener("click", (e) => {
   // Capturing, so a link whose own handler stops the click from spreading is covered too.
 }, true);
 
+/*
+ * The engine's own menu (Back, Forward, Reload, Inspect Element) is not this app's: a reload
+ * from it flashed the whole window. Text fields keep their Cut, Copy and Paste; every menu the
+ * app draws itself has already taken its right-click.
+ */
+document.addEventListener("contextmenu", (e) => {
+  if (e.defaultPrevented) return;
+  const editable = (e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only']");
+  if (!editable) e.preventDefault();
+});
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
 );
+

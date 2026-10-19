@@ -360,8 +360,58 @@ export function RemindersView() {
    * The row therefore comes back unticked with a later date, which looks exactly like
    * nothing happened, so the new date is called out for a moment.
    */
-  const toggle = async (r: Reminder) => {
+  /**
+   * A ticked reminder leaves as on the phone: the circle fills at once, the row stays a
+   * moment (so a mistaken tick can be undone), then fades and goes, all on the screen's own
+   * clock, never waiting for Apple. Apple's answer only matters if it refuses, which brings
+   * the row back with the reason.
+   */
+  const [leaving, setLeaving] = useState<Set<string>>(() => new Set());
+  const [departed, setDeparted] = useState<Set<string>>(() => new Set());
+  const departure = useRef(new Map<string, number[]>());
+  const stay = (guid: string) => {
+    for (const t of departure.current.get(guid) ?? []) window.clearTimeout(t);
+    departure.current.delete(guid);
+    const without = (was: Set<string>) => {
+      if (!was.has(guid)) return was;
+      const next = new Set(was);
+      next.delete(guid);
+      return next;
+    };
+    setLeaving(without);
+    setDeparted(without);
+  };
+  const depart = (guid: string) => {
+    stay(guid);
+    departure.current.set(guid, [
+      window.setTimeout(() => setLeaving((was) => new Set(was).add(guid)), 900),
+      window.setTimeout(() => setDeparted((was) => new Set(was).add(guid)), 1200),
+    ]);
+  };
+  useEffect(() => {
+    const timers = departure.current;
+    return () => timers.forEach((ts) => ts.forEach((t) => window.clearTimeout(t)));
+  }, []);
+
+  /** Each reminder's ticks, sent to Apple one after another, in the order they were made. */
+  const ticks = useRef(new Map<string, Promise<unknown>>());
+  const toggle = (r: Reminder) => {
     const wasOpen = !r.completedAt;
+    // Shown at once, every time, even while an earlier tick of this one is on its way.
+    if (repeatLabel(r) === null) {
+      setItems(patch(r.guid, { completedAt: wasOpen ? Math.floor(Date.now() / 1000) : null }));
+    }
+    // Only where completed reminders are hidden, and never for a repeating one, which rolls on.
+    if (wasOpen && !showDone && repeatLabel(r) === null) depart(r.guid);
+    else stay(r.guid);
+    const before = ticks.current.get(r.guid) ?? Promise.resolve();
+    const next = before.then(() => send(r, wasOpen));
+    ticks.current.set(r.guid, next);
+    void next.finally(() => {
+      if (ticks.current.get(r.guid) === next) ticks.current.delete(r.guid);
+    });
+  };
+  const send = async (r: Reminder, wasOpen: boolean) => {
     const fresh = await write(
       r,
       () => api.reminderSetDone(r.guid, r.listGuid, wasOpen),
@@ -370,6 +420,7 @@ export function RemindersView() {
         ? patch(r.guid, { completedAt: wasOpen ? Math.floor(Date.now() / 1000) : null })
         : undefined,
     );
+    if (!fresh) stay(r.guid);
     if (!fresh || !wasOpen || repeatLabel(r) === null) return;
     const after = fresh.find((x) => x.guid === r.guid);
     if (after && after.dueAt !== null && after.dueAt !== r.dueAt) {
@@ -621,21 +672,26 @@ export function RemindersView() {
    * top level and wrong for what hangs off it: a subtask sorted away from its parent reads
    * as an unrelated fragment. This re-threads them without re-sorting either level.
    */
+  // What is on screen: the list less any ticked reminder that has already left it.
+  const shownItems = useMemo(
+    () => (departed.size ? items.filter((r) => !departed.has(r.guid)) : items),
+    [items, departed],
+  );
   const threaded = useMemo(() => {
     const children = new Map<string, Reminder[]>();
-    for (const r of items) {
+    for (const r of shownItems) {
       if (!r.parentGuid) continue;
       const bucket = children.get(r.parentGuid);
       if (bucket) bucket.push(r);
       else children.set(r.parentGuid, [r]);
     }
-    const known = new Set(items.map((r) => r.guid));
+    const known = new Set(shownItems.map((r) => r.guid));
     const out: { reminder: Reminder; depth: number }[] = [];
     // Open reminders first, in their list's own order; completed ones beneath them, the most
     // recently completed first, as Reminders shows them. In the list's stored order they came
     // out scattered among the open ones, in no order a person could follow.
-    const open = items.filter((r) => !r.completedAt);
-    const done = items
+    const open = shownItems.filter((r) => !r.completedAt);
+    const done = shownItems
       .filter((r) => r.completedAt)
       .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
     for (const r of [...open, ...done]) {
@@ -648,7 +704,7 @@ export function RemindersView() {
       }
     }
     return out;
-  }, [items]);
+  }, [shownItems]);
   /**
    * The rows arranged the way Apple arranges them.
    *
@@ -1110,7 +1166,7 @@ export function RemindersView() {
                 return (
                   <li
                     key={reminder.guid}
-                    className={`rx-row${reminder.completedAt ? " is-done" : ""}${
+                    className={`rx-row${reminder.completedAt ? " is-done" : ""}${leaving.has(reminder.guid) ? " is-leaving" : ""}${
                       depth > 0 ? " is-subtask" : ""
                     }${isOpen ? " is-open" : ""}${dropBefore === reminder.guid ? " is-drop-before" : ""}${
                       dragging === reminder.guid ? " is-dragging" : ""
@@ -1182,7 +1238,6 @@ export function RemindersView() {
                       role="checkbox"
                       aria-checked={Boolean(reminder.completedAt)}
                       aria-label={reminder.title}
-                      disabled={busy.has(reminder.guid)}
                       style={{ "--tick": colourOf(home) } as React.CSSProperties}
                       onClick={() => toggle(reminder)}
                     />

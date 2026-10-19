@@ -38,6 +38,7 @@ await ctx.addInitScript(() => {
         say({ ...a, sent: 500, state: "sending" });
         await wait(400);
         window.__midway = document.querySelector(".upload-tray")?.innerText ?? "";
+        window.__midwayBars = [...document.querySelectorAll(".upload-bar:not(.is-waiting) > span")].map((b) => [b.style.transform, b.style.width]);
         say({ ...a, sent: 1000, state: "verifying" });
         await wait(100);
         say({ ...a, sent: 1000, state: "done" });
@@ -76,6 +77,11 @@ const midway = await page.evaluate(() => window.__midway);
 ok(/a\.jpg/.test(midway) && /50%/.test(midway) && /b\.jpg/.test(midway) && /Waiting/.test(midway),
   "while going up, each file shows by name with its own progress",
   `midway the tray said ${JSON.stringify(midway)}`);
+
+// The bars grow by scale on the compositor, never by width: a width laid the tray out on every
+// step, and coming back to the window replayed every step at once as a glitch.
+const bars = await page.evaluate(() => window.__midwayBars ?? []);
+ok(bars.length > 0 && bars.every(([t, w]) => /^scaleX\(/.test(t) && !w), "progress bars grow by scale, not width", `bars were ${JSON.stringify(bars)}`);
 
 const rows = await page.locator(".upload-row").evaluateAll((els) =>
   els.map((e) => ({ cls: e.className, text: e.innerText.replace(/\s+/g, " ") })));

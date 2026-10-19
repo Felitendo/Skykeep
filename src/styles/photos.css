@@ -1,0 +1,209 @@
+/* Photos: the photos are the design. Chrome stays quiet and solid (no live blur: WebKitGTK),
+   tiles meet with a hairline gap as on a Mac, and only what answers an action moves. */
+
+.px {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+}
+
+/* ---- sidebar: the library's views, as Photos lists them ---------------------------------- */
+.px-side {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  padding: 4px 10px 10px;
+  border-right: 1px solid var(--separator);
+  overflow-y: auto;
+}
+.px-side-heading {
+  margin: 6px 8px 4px;
+  color: var(--text-3);
+  font-size: var(--t-11);
+  font-weight: 600;
+}
+.px-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  box-shadow: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: start;
+  cursor: default;
+}
+.px-source:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.px-source[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
+.px-source:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
+.px-count { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: var(--t-12, 12px); }
+
+/* ---- the library ------------------------------------------------------------------------- */
+.px-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.px-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 18px 10px;
+}
+.px-bar h1 { margin: 0; font-size: var(--t-22, 22px); font-weight: 700; letter-spacing: -0.01em; }
+.px-total { color: var(--text-3); font-size: var(--t-13); font-variant-numeric: tabular-nums; }
+.px-zoom { margin-left: auto; align-self: center; }
+.px-zoom input { width: 120px; accent-color: var(--accent); }
+.px-empty { margin: 18vh auto 0; max-width: 36ch; color: var(--text-2); text-align: center; }
+
+.px-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 2px 24px; }
+/* A month off screen is not laid out or painted until it nears it: a library of thousands
+   scrolls as lightly as one of a hundred. */
+.px-month { content-visibility: auto; contain-intrinsic-size: auto 600px; }
+.px-month-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 12px 16px 8px;
+  background: var(--bg);
+  font-size: var(--t-17, 17px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.px-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--across, 7), minmax(0, 1fr));
+  gap: 2px;
+}
+.px-tile {
+  position: relative;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  box-shadow: none;
+  overflow: hidden;
+  cursor: default;
+}
+.px-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.px-tile:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; z-index: 1; }
+.px-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+}
+.px-heart { position: absolute; left: 6px; bottom: 6px; color: #fff; filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6)); }
+
+/* ---- the viewer: a dark stage, the photo fitted to it -------------------------------------- */
+.px-viewer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
+  background: #161618;
+  color: #f5f5f7;
+}
+.px-viewer-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.px-viewer-when { flex: 1; display: flex; flex-direction: column; align-items: center; line-height: 1.25; }
+.px-viewer-when span { color: #a1a1a6; font-size: var(--t-11); }
+.px-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+}
+.px-icon:hover, .px-icon[aria-pressed="true"] { background: rgba(255, 255, 255, 0.12); }
+.px-stage { position: relative; display: grid; place-items: center; min-height: 0; padding: 8px 56px 24px; }
+.px-stage img, .px-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.px-nav {
+  position: absolute;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-top: -20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+  color: #f5f5f7;
+}
+.px-nav:hover { background: rgba(255, 255, 255, 0.2); }
+.px-nav.is-prev { left: 10px; }
+.px-nav.is-next { right: 10px; }
+.px-info {
+  grid-row: 2;
+  grid-column: 2;
+  width: 260px;
+  margin: 0;
+  padding: 14px 16px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: var(--t-13);
+  overflow-y: auto;
+}
+.px-info dt { margin-top: 10px; color: #a1a1a6; font-size: var(--t-11); }
+.px-info dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.px-saved {
+  position: absolute;
+  left: 232px;
+  bottom: 14px;
+  z-index: 6;
+  margin: 0;
+  padding: 7px 12px;
+  border-radius: 9px;
+  background: var(--glass-thick);
+  box-shadow: var(--glass-specular), var(--glass-lift);
+}
+.px-icon.is-favorite { color: #ff375f; }
+.px-video {
+  position: relative;
+  display: grid;
+  place-items: center;
+  max-width: 100%;
+  max-height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.px-video img { max-width: 100%; max-height: calc(100vh - 140px); object-fit: contain; }
+.px-play {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+}
+.px-video:hover .px-play { background: rgba(0, 0, 0, 0.65); }

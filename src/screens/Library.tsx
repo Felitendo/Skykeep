@@ -16,6 +16,7 @@ const loaders = {
   notes: () => import("./NotesView").then((m) => ({ default: m.NotesView })),
   contacts: () => import("./ContactsView").then((m) => ({ default: m.ContactsView })),
   drivews: () => import("./DriveView").then((m) => ({ default: m.DriveView })),
+  photos: () => import("./PhotosView").then((m) => ({ default: m.PhotosView })),
   settings: () => import("./SettingsView").then((m) => ({ default: m.SettingsView })),
 };
 const CalendarView = lazy(loaders.calendar);
@@ -23,6 +24,7 @@ const RemindersView = lazy(loaders.reminders);
 const NotesView = lazy(loaders.notes);
 const ContactsView = lazy(loaders.contacts);
 const DriveView = lazy(loaders.drivews);
+const PhotosView = lazy(loaders.photos);
 const SettingsView = lazy(loaders.settings);
 import { ScreenBoundary } from "../components/ScreenBoundary";
 import { AppIcon } from "../components/AppIcon";
@@ -39,6 +41,7 @@ const SCREENS: { key: string; name: string }[] = [
   { key: "reminders", name: "Reminders" },
   { key: "notes", name: "Notes" },
   { key: "drivews", name: "iCloud Drive" },
+  { key: "photos", name: "Photos" },
   { key: "calendar", name: "Calendar" },
   { key: "contacts", name: "Contacts" },
 ];
@@ -286,6 +289,8 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
                 <NotesView />
               ) : selected === "contacts" ? (
                 <ContactsView />
+              ) : selected === "photos" ? (
+                <PhotosView />
               ) : (
                 <DriveView />
               )}

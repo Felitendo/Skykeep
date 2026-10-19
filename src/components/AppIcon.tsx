@@ -116,6 +116,29 @@ export function AppIcon({ app, size = 22 }: { app: string; size?: number }) {
         </>
       );
       break;
+    case "photos":
+      // A picture in its frame: sky, the sun, two hills. Not Apple's pinwheel, which is theirs.
+      art = (
+        <>
+          <defs>
+            <linearGradient id={`${id}s`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stopColor="#5ac8fa" />
+              <stop offset="1" stopColor="#a2e1ff" />
+            </linearGradient>
+            <clipPath id={`${id}c`}>
+              <rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4" />
+            </clipPath>
+          </defs>
+          <g clipPath={`url(#${id}c)`}>
+            <rect x="3.4" y="4.6" width="17.2" height="14.8" fill={`url(#${id}s)`} />
+            <circle cx="15.9" cy="9" r="2.1" fill="#ffd60a" />
+            <path d="M3.4 17.2l5-5.6 4.2 4.4 2.4-2.6 5.6 5.8v.2H3.4z" fill="#34c759" />
+            <path d="M3.4 19.4l6.4-4.6 4.6 4.6z" fill="#248a3d" />
+          </g>
+          <rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4" fill="none" stroke="#000" strokeOpacity="0.12" strokeWidth="0.4" />
+        </>
+      );
+      break;
     default:
       return <span style={s} aria-hidden="true" />;
   }

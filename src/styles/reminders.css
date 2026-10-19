@@ -358,6 +358,11 @@
   background: var(--separator);
 }
 .rx-row:last-child::after { display: none; }
+/* A ticked reminder on its way out, as on the phone: it fades and drifts up a little, on the
+   compositor only (opacity and transform), so nothing else is laid out while it goes. */
+.rx-row { transition: opacity 260ms var(--ease, ease), transform 260ms var(--ease, ease); }
+.rx-row.is-leaving { opacity: 0; transform: translateY(-4px); pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .rx-row { transition: none; } }
 /* A row chosen from the keyboard: the selection Reminders draws, a rounded tint behind it, with
    no outline drawn around the text. */
 .rx-row:focus { outline: none; }

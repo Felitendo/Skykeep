@@ -12,6 +12,7 @@ pub mod mergeable;
 pub mod note_media;
 pub mod notes;
 pub mod occasions;
+pub mod photos;
 pub mod push;
 pub mod reminders;
 pub mod sync;

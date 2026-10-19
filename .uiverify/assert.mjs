@@ -98,7 +98,7 @@ console.log("nav items      :", JSON.stringify(names));
 console.log("page errors    :", errs.length ? errs : "none");
 const collapsed =
   JSON.stringify(names) ===
-  JSON.stringify(["Reminders", "Notes", "iCloud Drive", "Calendar", "Contacts"]);
+  JSON.stringify(["Reminders", "Notes", "iCloud Drive", "Photos", "Calendar", "Contacts"]);
 const selectsBuilt = selected === "Reminders";
 console.log(collapsed ? "PASS the sidebar holds only what works, most used first" : `FAIL the sidebar holds ${JSON.stringify(names)}`);
 console.log(selectsBuilt ? "PASS opens on the first screen" : `FAIL opened on ${selected}`);

@@ -33,11 +33,13 @@ await page.waitForTimeout(200);
 sent = await page.evaluate(() => window.__exports?.at(-1));
 ok(sent?.fileName === "iCloud vCards.vcf" && sent.guids.length === 4, `everyone goes out as iCloud vCards  ${JSON.stringify(sent?.fileName)}`);
 
-await page.evaluate(() => { window.__pick = "/home/test/people.vcf"; });
+// Mass import: several files at once, a Google Contacts CSV among them.
+await page.evaluate(() => { window.__pick = ["/home/test/people.vcf", "/home/test/google.csv"]; });
 await page.getByRole("button", { name: "More" }).click();
-await page.getByRole("menuitem", { name: "Import vCard…" }).click();
+await page.getByRole("menuitem", { name: "Import Contacts…" }).click();
 await page.waitForTimeout(300);
-ok((await page.evaluate(() => window.__imports?.at(-1)?.path)) === "/home/test/people.vcf", "a chosen file is imported");
+const paths = await page.evaluate(() => window.__imports?.at(-1)?.paths);
+ok(JSON.stringify(paths) === JSON.stringify(["/home/test/people.vcf", "/home/test/google.csv"]), `every chosen file, vCard and CSV, is imported at once  ${JSON.stringify(paths)}`);
 ok(/2 contacts imported/.test(await page.locator(".drive-saved").innerText()), "and the count is said");
 await b.close();
 process.exitCode = failures ? 1 : 0;

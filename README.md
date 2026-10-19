@@ -2,8 +2,8 @@
 
 Your iCloud, on your own computer.
 
-Quince signs into iCloud once and keeps a copy of your calendar, reminders, notes, contacts
-and Drive on your machine. Everything opens straight away and works with no connection, and
+Quince signs into iCloud once and keeps a copy of your calendar, reminders, notes, contacts,
+Drive and photos on your machine. Everything opens straight away and works with no connection, and
 what you change here reaches your phone.
 
 It is a native Linux application — Rust underneath, a real window, no browser wrapper.
@@ -16,9 +16,11 @@ Everything here is read from and written to your real iCloud account, shows the 
 make it — before Apple has answered — and is put back with the reason if Apple refuses.
 
 **Notes** — pictures, scans, PDFs, recordings, films and files shown where they sit and opened
-in your own apps; tables shown as the grids they are, their cells edited in place; edited formatted, as on a Mac: titles, headings, monospaced text, bulleted,
-dashed and numbered lists, checklists you tick, bold, italic, underline and strikethrough,
-from the Aa panel, the checklist button or the Mac's keys. Folders: new, rename, nest,
+in your own apps; tables shown as the grids they are, kept up to date as they change on your
+phone; text coloured on the phone in its colour; edited formatted, as on a Mac: titles,
+headings, monospaced text, bulleted, dashed and numbered lists (typed as on the phone: "- ",
+"* ", "1. ", "[ ] "), checklists you tick, bold, italic, underline and strikethrough, from the
+Aa panel, the checklist button or the Mac's keys. Delete opens the note below, as Notes does. Folders: new, rename, nest,
 delete. Pin, move, Recently Deleted and Recover. An edit made on your phone at the same time
 is merged in, not overwritten, and nothing either side typed is lost.
 
@@ -27,14 +29,16 @@ due dates and all-day dates, flags, priorities, alerts that ring on this compute
 reorder, Today / Scheduled / Flagged / All, and completing a repeating reminder the way your
 phone does.
 
-**Calendar** — Day, Week, Month and Year; make an event by dragging or double-clicking;
+**Calendar** — Day, Week, Month and Year; make, rename, recolour and delete calendars; Go to
+Date (⇧⌃T); make an event by dragging or double-clicking;
 move and resize by dragging, or nudge with ⌃⌥ and the arrows; alerts; repeats, with Only
 This Event, All Future Events and All Events for one day of a series; your reminders on the
 schedule in their list's colour; birthdays and holidays; the Mac's keyboard throughout.
 
 **Contacts** — cards with phones, emails, links, birthdays and notes; lists in a sidebar,
 with people added by menu or by dragging; select several to add, remove, export or delete
-together; vCard import and export; My Card.
+together; labels from Apple's own list; import many contacts at once from vCard or from a CSV
+exported by Google Contacts or Outlook, and export; My Card.
 
 **iCloud Drive** — browse in a list or grid with Apple's own thumbnails; sort; upload files
 or whole folders by button or by dropping them on the window, each file's progress shown and
@@ -42,8 +46,13 @@ any of them cancellable while it is still on its way up; download, rename, dupli
 dialog or by dragging onto a folder; Recents; Recently Deleted with the time each item has
 left, Recover and Delete Now; your storage.
 
-**Instant, both ways.** A change made on your phone reaches Quince in about a second: Notes
-and Reminders through Apple's own push channel, Calendar and Contacts through the same quick
+**Photos** — your whole library, edge to edge and by month, with a zoom; Favorites, Recents,
+Videos, Screenshots, Recently Deleted and your albums; a viewer with the arrow keys, details,
+Favorite (.), Delete to Recently Deleted and Recover, and the original downloaded. Videos open
+in your own player. Pictures are fetched once and kept, so the library scrolls from disk.
+
+**Instant, both ways.** A change made on your phone reaches Quince in about a second: Notes,
+Reminders and Photos through Apple's own push channel, Calendar and Contacts through the same quick
 "has anything changed" checks icloud.com makes, every few seconds while the window is open.
 What you change shows the moment you make it and is put back, with the reason, only if Apple
 refuses it — and a refresh landing mid-change never undoes what is still on its way.
@@ -62,8 +71,9 @@ outside your devices can read your iCloud. Quince says exactly that, once, and n
 switch — on your iPhone, Settings, your name, iCloud, Access iCloud Data on the Web — rather
 than failing screen by screen.
 
-Not yet: Photos, Mail, Find My; typing into a table cell that has never been typed in (cells
-with text are edited in place); calendar invitations.
+Not yet: Mail, Find My, calendar invitations, uploading photos. Notes tables are read-only for
+now: edits made here were stored by Apple but did not show on an iPhone, so no table is changed
+until one is seen there.
 
 ## Installing
 

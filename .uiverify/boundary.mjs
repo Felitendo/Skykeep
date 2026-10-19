@@ -33,7 +33,7 @@ const after = await page.evaluate(() => ({
   sidebar: document.querySelectorAll(".nav-item").length,
   said: document.querySelector(".screen-failed")?.textContent ?? null,
 }));
-ok(after.sidebar === 5, "a screen that fails to draw leaves the sidebar", `the app went blank: ${JSON.stringify(after)}`);
+ok(after.sidebar === 6, "a screen that fails to draw leaves the sidebar", `the app went blank: ${JSON.stringify(after)}`);
 ok(Boolean(after.said?.includes("Contacts couldn’t be shown")), "and says so in its place", `nothing said: ${JSON.stringify(after)}`);
 if (after.sidebar === 5) {
   await page.locator(".nav-item", { hasText: "Notes" }).click();

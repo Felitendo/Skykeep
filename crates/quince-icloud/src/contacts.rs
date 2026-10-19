@@ -868,6 +868,204 @@ pub async fn export_vcards(
     Ok(text)
 }
 
+/// Each `BEGIN:VCARD … END:VCARD` in a file, whole, in order.
+#[must_use]
+pub fn split_vcards(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut card = String::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let upper = line.trim().to_ascii_uppercase();
+        if upper == "BEGIN:VCARD" {
+            inside = true;
+            card.clear();
+        }
+        if inside {
+            card.push_str(line.trim_end_matches('\r'));
+            card.push_str("\r\n");
+        }
+        if inside && upper == "END:VCARD" {
+            inside = false;
+            out.push(std::mem::take(&mut card));
+        }
+    }
+    out
+}
+
+/// Cards gathered into batches Apple takes in one import: under `max_bytes` and `max_cards`.
+#[must_use]
+pub fn batch_vcards(cards: &[String], max_bytes: usize, max_cards: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let (mut batch, mut n) = (String::new(), 0);
+    for card in cards {
+        if n > 0 && (batch.len() + card.len() > max_bytes || n >= max_cards) {
+            out.push(std::mem::take(&mut batch));
+            n = 0;
+        }
+        batch.push_str(card);
+        n += 1;
+    }
+    if n > 0 {
+        out.push(batch);
+    }
+    out
+}
+
+/// One CSV record per row (RFC 4180: quoted fields, doubled quotes, line breaks in quotes).
+fn csv_rows(text: &str) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let (mut row, mut field) = (Vec::new(), String::new());
+    let (mut quoted, mut chars) = (
+        false,
+        text.trim_start_matches('\u{feff}').chars().peekable(),
+    );
+    while let Some(c) = chars.next() {
+        match (quoted, c) {
+            (true, '"') if chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            (true, '"') => quoted = false,
+            (true, c) => field.push(c),
+            (false, '"') if field.is_empty() => quoted = true,
+            (false, ',') => row.push(std::mem::take(&mut field)),
+            (false, '\r') => {}
+            (false, '\n') => {
+                row.push(std::mem::take(&mut field));
+                if row.iter().any(|f| !f.trim().is_empty()) {
+                    rows.push(std::mem::take(&mut row));
+                } else {
+                    row.clear();
+                }
+            }
+            (false, c) => field.push(c),
+        }
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(field);
+        if row.iter().any(|f| !f.trim().is_empty()) {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+fn vcard_escape(v: &str) -> String {
+    v.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace(',', "\\,")
+        .replace(';', "\\;")
+}
+
+/// Contacts exported as CSV (Google Contacts, Outlook, most address books) as vCards: names,
+/// company, every phone and email column, birthday and notes, by their usual headings.
+/// Answers the cards and how many rows held nothing to make one from.
+#[must_use]
+pub fn csv_to_vcards(text: &str) -> (Vec<String>, usize) {
+    let rows = csv_rows(text);
+    let Some((head, body)) = rows.split_first() else {
+        return (Vec::new(), 0);
+    };
+    let head: Vec<String> = head.iter().map(|h| h.trim().to_ascii_lowercase()).collect();
+    let col = |names: &[&str]| head.iter().position(|h| names.contains(&h.as_str()));
+    let given = col(&["first name", "given name", "firstname"]);
+    let middle = col(&["middle name", "additional name"]);
+    let family = col(&["last name", "family name", "surname", "lastname"]);
+    let full = col(&["name", "full name", "display name"]);
+    let company = col(&[
+        "company",
+        "organization",
+        "organization 1 - name",
+        "organization name",
+    ]);
+    let title = col(&["job title", "title", "organization 1 - title"]);
+    let birthday = col(&["birthday"]);
+    let notes = col(&["notes", "note"]);
+    let is_phone = |h: &str| {
+        (h.contains("phone") || h.contains("mobile")) && !h.contains("type") && !h.contains("label")
+    };
+    let is_email = |h: &str| {
+        (h.contains("e-mail") || h.contains("email"))
+            && !h.contains("type")
+            && !h.contains("label")
+            && !h.contains("display")
+    };
+    let (mut cards, mut skipped) = (Vec::new(), 0);
+    for row in body {
+        let get = |i: Option<usize>| {
+            i.and_then(|i| row.get(i))
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+        };
+        let (g, m, f) = (get(given), get(middle), get(family));
+        let name = get(full).map(ToString::to_string).or_else(|| {
+            let joined = [g, m, f]
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!joined.is_empty()).then_some(joined)
+        });
+        let mut phones = Vec::new();
+        let mut emails = Vec::new();
+        for (i, h) in head.iter().enumerate() {
+            let Some(v) = row.get(i).map(|v| v.trim()).filter(|v| !v.is_empty()) else {
+                continue;
+            };
+            // Google keeps several numbers in one cell, " ::: " between them.
+            for one in v.split(":::").map(str::trim).filter(|x| !x.is_empty()) {
+                if is_phone(h) {
+                    phones.push(one.to_string());
+                } else if is_email(h) {
+                    emails.push(one.to_string());
+                }
+            }
+        }
+        let org = get(company);
+        if name.is_none() && org.is_none() && phones.is_empty() && emails.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let mut card = String::from("BEGIN:VCARD\r\nVERSION:3.0\r\n");
+        card.push_str(&format!(
+            "N:{};{};{};;\r\n",
+            vcard_escape(f.unwrap_or("")),
+            vcard_escape(g.unwrap_or(if f.is_none() {
+                name.as_deref().unwrap_or("")
+            } else {
+                ""
+            })),
+            vcard_escape(m.unwrap_or(""))
+        ));
+        card.push_str(&format!(
+            "FN:{}\r\n",
+            vcard_escape(name.as_deref().or(org).unwrap_or(""))
+        ));
+        if let Some(o) = org {
+            card.push_str(&format!("ORG:{}\r\n", vcard_escape(o)));
+        }
+        if let Some(t) = get(title) {
+            card.push_str(&format!("TITLE:{}\r\n", vcard_escape(t)));
+        }
+        for p in &phones {
+            card.push_str(&format!("TEL;TYPE=CELL:{}\r\n", vcard_escape(p)));
+        }
+        for e in &emails {
+            card.push_str(&format!("EMAIL;TYPE=INTERNET:{}\r\n", vcard_escape(e)));
+        }
+        if let Some(b) = get(birthday).filter(|b| b.len() >= 8) {
+            card.push_str(&format!("BDAY:{b}\r\n"));
+        }
+        if let Some(n) = get(notes) {
+            card.push_str(&format!("NOTE:{}\r\n", vcard_escape(n)));
+        }
+        card.push_str("END:VCARD\r\n");
+        cards.push(card);
+    }
+    (cards, skipped)
+}
+
 /// Add the people in a vCard file to Contacts. Answers with the ids Apple gave them, and
 /// how many cards it could not read.
 pub async fn import_vcards(
@@ -1156,6 +1354,37 @@ mod list_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Google Contacts export: names, a company with a comma, two numbers in one cell, an
+    /// email. An empty row is not a contact; a row with only a note is skipped and counted.
+    #[test]
+    fn a_csv_export_becomes_vcards() {
+        let csv = "First Name,Last Name,Organization 1 - Name,Phone 1 - Value,E-mail 1 - Value,Notes\r\n\
+                   Zoya,Ahuja,\"Acme, Inc\",+91 90000 00001 ::: +91 80000 00000,zoya@example.com,\"Line one\nline two\"\r\n\
+                   ,,,,,\r\n\
+                   ,,,,,only a note\r\n";
+        let (cards, skipped) = csv_to_vcards(csv);
+        assert_eq!((cards.len(), skipped), (1, 1));
+        let c = &cards[0];
+        assert!(c.contains("N:Ahuja;Zoya;;;"), "{c}");
+        assert!(c.contains("FN:Zoya Ahuja"));
+        assert!(c.contains("ORG:Acme\\, Inc"));
+        assert_eq!(c.matches("TEL;TYPE=CELL:").count(), 2);
+        assert!(c.contains("EMAIL;TYPE=INTERNET:zoya@example.com"));
+        assert!(c.contains("NOTE:Line one\\nline two"));
+    }
+
+    /// A file of many cards is read card by card and sent in batches under Apple's limits.
+    #[test]
+    fn many_cards_are_split_and_batched() {
+        let one = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:A\r\nEND:VCARD\r\n";
+        let text = one.repeat(5);
+        let cards = split_vcards(&text);
+        assert_eq!(cards.len(), 5);
+        assert_eq!(batch_vcards(&cards, 1_000_000, 2).len(), 3);
+        assert_eq!(batch_vcards(&cards, one.len() * 2, 100).len(), 3);
+        assert_eq!(batch_vcards(&cards, 1_000_000, 100).concat(), text);
+    }
 
     /// A book whose startup names more cards than it holds is read to the end, a page at a
     /// time with its tokens, as icloud.com reads one — never stored short.

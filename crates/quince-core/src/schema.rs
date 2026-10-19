@@ -377,4 +377,40 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE notes ADD COLUMN runs TEXT;
     UPDATE sync_state SET token = NULL WHERE service = 'notes';
     "#,
+    // iCloud Photos: every photo's description, mirrored through the change feed, so each
+    // view is a query here. The images are cached on disk, not in here.
+    r#"
+    CREATE TABLE photos (
+        id         TEXT PRIMARY KEY,
+        master     TEXT NOT NULL,
+        taken_at   INTEGER NOT NULL,
+        added_at   INTEGER,
+        kind       TEXT NOT NULL,
+        width      INTEGER NOT NULL,
+        height     INTEGER NOT NULL,
+        duration   REAL,
+        filename   TEXT,
+        size       INTEGER,
+        uti        TEXT,
+        favorite   INTEGER NOT NULL DEFAULT 0,
+        hidden     INTEGER NOT NULL DEFAULT 0,
+        deleted    INTEGER NOT NULL DEFAULT 0,
+        deleted_at INTEGER,
+        subtype    INTEGER NOT NULL DEFAULT 0,
+        change_tag TEXT
+    ) STRICT;
+    CREATE INDEX photos_by_taken ON photos (deleted, hidden, taken_at DESC);
+    CREATE TABLE photo_albums (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        position   INTEGER NOT NULL DEFAULT 0,
+        change_tag TEXT
+    ) STRICT;
+    CREATE TABLE photo_album_items (
+        album    TEXT NOT NULL,
+        asset    TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (album, asset)
+    ) STRICT;
+    "#,
 ];

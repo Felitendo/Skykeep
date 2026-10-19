@@ -9,6 +9,20 @@ type Phase = "checking" | "signin" | "code" | "library";
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("checking");
+  // The window is shown once the first real screen (the library, or sign-in) has been drawn:
+  // never the session check before it, never a half-drawn frame (see window_ready, main.rs).
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (shown || phase === "checking") return;
+    setShown(true);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        import("@tauri-apps/api/core")
+          .then(({ invoke }) => invoke("window_ready"))
+          .catch(() => {});
+      }),
+    );
+  }, [phase, shown]);
 
   // On launch, try the stored session before showing anything. This is the whole promise:
   // a returning user should never see the sign-in screen.

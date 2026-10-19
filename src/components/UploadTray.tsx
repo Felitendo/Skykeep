@@ -111,6 +111,23 @@ export function UploadTray({ uploads, onDismiss }: { uploads: UploadEvent[]; onD
     return () => window.clearTimeout(t);
   }, [uploads.length, active, anyFailed, onDismiss]);
 
+  // Away from the window, WebKit stops drawing while the upload goes on; coming back, the
+  // bars jump to where the upload has got to instead of replaying every step at once.
+  const [instant, setInstant] = useState(false);
+  useEffect(() => {
+    const back = () => {
+      if (document.visibilityState !== "visible") return;
+      setInstant(true);
+      requestAnimationFrame(() => requestAnimationFrame(() => setInstant(false)));
+    };
+    document.addEventListener("visibilitychange", back);
+    window.addEventListener("focus", back);
+    return () => {
+      document.removeEventListener("visibilitychange", back);
+      window.removeEventListener("focus", back);
+    };
+  }, []);
+
   if (uploads.length === 0) return null;
   const batches = [...new Set(uploads.filter((u) => !ended(u)).map((u) => u.batch))];
   const heading = active
@@ -123,8 +140,9 @@ export function UploadTray({ uploads, onDismiss }: { uploads: UploadEvent[]; onD
         ? `${items[0].name} uploaded`
         : `${files.length} uploaded`;
 
+
   return (
-    <section className="upload-tray" aria-label="Uploads" aria-live="polite">
+    <section className={`upload-tray${instant ? " is-instant" : ""}`} aria-label="Uploads" aria-live="polite">
       <header className="upload-tray-head">
         <span className="upload-tray-title">{heading}</span>
         {active ? (
@@ -142,7 +160,7 @@ export function UploadTray({ uploads, onDismiss }: { uploads: UploadEvent[]; onD
       </header>
       {active && (
         <div className={`upload-bar${allPlanned ? "" : " is-waiting"}`} aria-hidden="true">
-          <span style={{ width: allPlanned ? `${percent}%` : undefined }} />
+          <span style={allPlanned ? { transform: `scaleX(${percent / 100})` } : undefined} />
         </div>
       )}
       <ul className="upload-rows">
@@ -160,7 +178,7 @@ export function UploadTray({ uploads, onDismiss }: { uploads: UploadEvent[]; onD
                   <span className="upload-name">{item.name}</span>
                   {running && (item.folder ? planned.has(item.files[0]?.batch ?? "") : true) && (
                     <span className="upload-bar small" aria-hidden="true">
-                      <span style={{ width: `${p}%` }} />
+                      <span style={{ transform: `scaleX(${p / 100})` }} />
                     </span>
                   )}
                   {!running && !item.folder && failed[0]?.error && <span className="upload-where">{failed[0].error}</span>}

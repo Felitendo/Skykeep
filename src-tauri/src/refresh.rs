@@ -66,12 +66,13 @@ pub struct Refresh {
 const FULL_SYNC_EVERY: i64 = 24 * 60 * 60;
 
 /// The services one pass covers, in the order a person would notice them going stale.
-const COVERED: [(&str, &str); 5] = [
+const COVERED: [(&str, &str); 6] = [
     ("calendar", "Calendar"),
     ("reminders", "Reminders"),
     ("notes", "Notes"),
     ("contacts", "Contacts"),
     ("drive", "iCloud Drive"),
+    ("photos", "Photos"),
 ];
 
 /// The calendar window a background refresh keeps warm: the month behind, so last week is
@@ -284,6 +285,32 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                         &items,
                     )?;
                     Ok(format!("{n} item{} at the top of iCloud Drive", plural(n)))
+                })
+                .await
+            }
+        });
+    }
+
+    // Photos: the whole library through the change feed once, then only what changed — under
+    // half a second when nothing did. Fetched and stored as one: see `PHOTOS_PASS`.
+    if wanted("photos") {
+        reports.push(match ctx.cloudkit.as_deref() {
+            None => unavailable("photos", "Photos"),
+            Some(root) => {
+                let _one = crate::PHOTOS_PASS.lock().await;
+                let since = token(data, quince_icloud::photos::SERVICE).await;
+                let fetched = quince_icloud::photos::fetch(
+                    &ctx.http,
+                    root,
+                    ctx.params.clone(),
+                    since.as_deref(),
+                )
+                .await;
+                store("photos", "Photos", data, fetched, |library, f| {
+                    let (_, links) = quince_icloud::photos::apply(library, f)?;
+                    crate::photos::remember(links);
+                    let n = library.photos(quince_core::photos::View::Library)?.len();
+                    Ok(format!("{n} photo{}", plural(n)))
                 })
                 .await
             }

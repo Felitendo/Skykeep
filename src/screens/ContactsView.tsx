@@ -199,10 +199,16 @@ export function ContactsView() {
   };
   const importCards = async () => {
     try {
-      const chosen = await openFileDialog({ multiple: false, title: "Import vCard", filters: [{ name: "vCard", extensions: ["vcf", "vcard"] }] });
-      if (!chosen || Array.isArray(chosen)) return;
+      // Any number of files at once, vCard or a CSV exported from Google Contacts or Outlook.
+      const chosen = await openFileDialog({
+        multiple: true,
+        title: "Import Contacts",
+        filters: [{ name: "Contacts", extensions: ["vcf", "vcard", "csv"] }],
+      });
+      const paths = !chosen ? [] : Array.isArray(chosen) ? chosen : [chosen];
+      if (paths.length === 0) return;
       setBusy(true);
-      const [added, failed] = await api.contactsImport(chosen);
+      const [added, failed] = await api.contactsImport(paths);
       await Promise.all([read(search), readLists()]);
       setDone(`${added} ${added === 1 ? "contact" : "contacts"} imported${failed ? `, ${failed} could not be read` : ""}.`);
     } catch (e) {
@@ -523,7 +529,7 @@ export function ContactsView() {
             at={moreMenu}
             onClose={() => setMoreMenu(null)}
             entries={[
-              { label: "Import vCard\u2026", run: () => void importCards() },
+              { label: "Import Contacts\u2026", run: () => void importCards() },
               { label: openList ? `Export \u201c${openList.name}\u201d\u2026` : "Export All Contacts\u2026", run: () => void exportCards(sortedContacts(shown), openList?.name) },
             ]}
           />

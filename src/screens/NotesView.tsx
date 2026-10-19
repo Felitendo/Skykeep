@@ -527,8 +527,14 @@ export function NotesView() {
       return;
     }
     const gone = open.guid;
+    // The note below opens in its place, or the one above at the end, as in Notes: the order
+    // is the list's as shown, pinned notes first.
+    const order = groupNotes(notes).flatMap((g) => g.notes.map((n) => n.guid));
+    const at = order.indexOf(gone);
+    const next = order[at + 1] ?? order[at - 1] ?? null;
+    setOpenGuid(next);
     await write(() => api.noteDelete(gone), (rows) => rows.filter((n) => n.guid !== gone));
-  }, [open, write]);
+  }, [open, write, notes]);
 
   /** Out of Recently Deleted and back into Notes — Apple's "Notes" folder where there is one. */
   const recover = useCallback(async () => {
@@ -892,7 +898,7 @@ export function NotesView() {
                   </button>
                 )}
                 {inTrash ? (
-                  <button className="quiet danger" onClick={() => void remove()} disabled={busy}>
+                  <button className="quiet danger" onClick={() => void remove()}>
                     Delete Now
                   </button>
                 ) : (
@@ -901,7 +907,6 @@ export function NotesView() {
                     aria-label="Delete"
                     title="Delete"
                     onClick={() => void remove()}
-                    disabled={busy}
                   >
                     <Trash2 size={17} strokeWidth={2} aria-hidden="true" />
                   </button>

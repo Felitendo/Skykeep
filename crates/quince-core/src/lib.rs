@@ -11,6 +11,7 @@ pub mod drive;
 pub mod fold;
 pub mod health;
 pub mod notes;
+pub mod photos;
 pub mod reminders;
 pub mod schema;
 

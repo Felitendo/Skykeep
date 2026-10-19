@@ -13,10 +13,12 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use tokio::sync::{mpsc, Mutex};
 
-/// The containers one connection listens to, and the service each one is.
-const CONTAINERS: [(&str, &str); 2] = [
+/// The containers one connection listens to, and the service each one is. Photos measured
+/// live (2026-10-19): a change made elsewhere arrives 0.7 to 1.5 seconds after it is written.
+const CONTAINERS: [(&str, &str); 3] = [
     ("com.apple.notes", "notes"),
     ("com.apple.reminders", "reminders"),
+    ("com.apple.photos.cloud", "photos"),
 ];
 
 /// How long one wait is left parked before it is parked afresh. Apple answers sooner when
@@ -268,6 +270,7 @@ mod tests {
     fn each_container_is_its_service() {
         assert_eq!(service_of("com.apple.notes"), Some("notes"));
         assert_eq!(service_of("com.apple.reminders"), Some("reminders"));
-        assert_eq!(service_of("com.apple.photos.cloud"), None);
+        assert_eq!(service_of("com.apple.photos.cloud"), Some("photos"));
+        assert_eq!(service_of("com.apple.clouddocs"), None);
     }
 }

@@ -200,7 +200,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             flagged: args.flagged ?? false, parentGuid: null, etag: null });
           return null;
         case "reminder_delete": return null;
-        case "reminder_set_done": (window.__done ??= []).push(args); return null;
+        case "reminder_set_done":
+          (window.__done ??= []).push(args);
+          // A slow network, when a test asks for one.
+          if (window.__doneDelay) await new Promise((r) => setTimeout(r, window.__doneDelay));
+          return null;
         case "reminder_set_repeat": return null;
         case "reminder_edit": {
           (window.__edits ??= []).push(args.edit);
@@ -274,7 +278,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (args.runs && kept === args.body) (window.__savedRuns ??= {})[args.guid] = args.runs;
           return kept;
         }
-        case "note_delete": return null;
+        case "note_delete":
+          (window.__noteDeletes ??= []).push(args.guid);
+          if (window.__slowDelete) await new Promise((r) => setTimeout(r, window.__slowDelete));
+          return null;
         case "note_move":
           if (window.__slowMove) await new Promise((r) => setTimeout(r, window.__slowMove));
           return null;
@@ -300,6 +307,39 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             : { id: "M2", uti: "org.openxmlformats.spreadsheetml.sheet", kind: "file", filename: "Budget.xlsx", title: null, width: null, height: null, size: 9100, hasPreview: false };
         case "note_attachment_open": (window.__opened ??= []).push(args.id); return null;
         case "note_table": if (String(args.id).startsWith("M")) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
+        case "photos_list": case "photos_counts": {
+          const P = (id, takenAt, extra = {}) => ({ id, master: `m${id}`, takenAt, addedAt: takenAt, kind: "image",
+            width: 4032, height: 3024, duration: null, filename: `IMG_${id}.JPG`, size: 2400000, uti: "public.jpeg",
+            favorite: false, hidden: false, deleted: false, deletedAt: null, subtype: 0, changeTag: null, ...extra });
+          const all = (window.__photos ??= [
+            P("p1", 1792500000, { favorite: true }), P("p2", 1792400000), P("p3", 1792300000, { kind: "video", duration: 12.4, uti: "public.mpeg-4", filename: "clip.mp4" }),
+            P("p4", 1789900000), P("p5", 1789800000), P("p6", 1789700000, { deleted: true, deletedAt: 1792600000 }),
+          ]);
+          const live = all.filter((p) => !p.deleted && !p.hidden);
+          const views = {
+            library: live, recents: live, favorites: live.filter((p) => p.favorite), videos: live.filter((p) => p.kind === "video"),
+            screenshots: live.filter((p) => p.uti === "public.png"), recentlyDeleted: all.filter((p) => p.deleted),
+          };
+          if (cmd === "photos_counts") return Object.entries(views).map(([k, v]) => [k, v.length]);
+          return views[args.view] ?? [];
+        }
+        case "photos_albums": return [[{ id: "AL1", name: "Trips", position: 0, changeTag: null }, 2]];
+        case "photos_in_album": {
+          const all = window.__photos ?? [];
+          return args.album === "AL1" ? all.filter((p) => p.id === "p4" || p.id === "p2") : [];
+        }
+        case "photo_set_flag": {
+          (window.__flags ??= []).push(args);
+          if (window.__flagFail) throw "iCloud didn’t accept that change.";
+          const p = (window.__photos ?? []).find((x) => x.id === args.id);
+          if (p) {
+            if (args.flag === "favorite") p.favorite = args.on;
+            if (args.flag === "deleted") { p.deleted = args.on; p.deletedAt = args.on ? 1792700000 : null; }
+          }
+          return p;
+        }
+        case "photo_play": (window.__plays ??= []).push(args); return null;
+        case "photo_download": (window.__downloads ??= []).push(args); return `/home/test/Downloads/IMG_${args.id}.JPG`;
         case "note_table_add_row": {
           const t = (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]);
           if (args.column) t.forEach((r) => r.splice(args.at, 0, ""));

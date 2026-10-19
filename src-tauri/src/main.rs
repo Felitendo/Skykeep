@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod alerts;
+mod photos;
 mod push;
 mod refresh;
 
@@ -91,6 +92,8 @@ pub static CONTACTS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new
 /// listing last and the rename looked undone. Held from fetch to store, the re-read after a
 /// write — which starts only once the write is made — always lands last.
 pub static DRIVE_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// One Photos pass at a time, from reading its sync position through storing what came back.
+pub static PHOTOS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn refresh_reminders(
     http: &reqwest::Client,
@@ -2236,23 +2239,51 @@ async fn contacts_export(
 /// Add everyone in a vCard file to Contacts. Answers how many came in and how many could not.
 #[tauri::command]
 async fn contacts_import(
-    path: String,
+    paths: Vec<String>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<(usize, usize)> {
     let _one = CONTACTS_PASS.lock().await;
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| format!("Couldn't read that file: {e}"))?;
+    // Every file chosen, vCard or CSV (Google Contacts, Outlook), read into cards first, so a
+    // file that cannot be read stops the import before anything is sent.
+    let mut cards = Vec::new();
+    let mut unreadable = 0;
+    for path in &paths {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            format!(
+                "Couldn't read {}: {e}",
+                std::path::Path::new(path)
+                    .file_name()
+                    .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned())
+            )
+        })?;
+        if path.to_ascii_lowercase().ends_with(".csv") {
+            let (from_csv, skipped) = quince_icloud::contacts::csv_to_vcards(&text);
+            cards.extend(from_csv);
+            unreadable += skipped;
+        } else {
+            cards.extend(quince_icloud::contacts::split_vcards(&text));
+        }
+    }
+    if cards.is_empty() {
+        return Err("Those files hold no contacts.".into());
+    }
     let (http, root, params) = contacts_context(&auth).await?;
     let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
         .await
         .map_err(|e| e.to_string())?;
-    let (ids, failed) =
-        quince_icloud::contacts::import_vcards(&http, &root, params.clone(), &tokens, &text)
-            .await
-            .map_err(|e| e.to_string())?;
+    // In batches Apple takes in one import: well under its 10 MB, a few hundred cards each.
+    let mut imported = 0;
+    for batch in quince_icloud::contacts::batch_vcards(&cards, 8 * 1024 * 1024, 400) {
+        let (ids, failed) =
+            quince_icloud::contacts::import_vcards(&http, &root, params.clone(), &tokens, &batch)
+                .await
+                .map_err(|e| e.to_string())?;
+        imported += ids.len();
+        unreadable += failed;
+    }
     settle(resync_contacts(&http, &root, params, &data).await)?;
-    Ok((ids.len(), failed))
+    Ok((imported, unreadable))
 }
 
 /// The card that is this person's own, as the last pass stored it.
@@ -3446,6 +3477,27 @@ fn tiling_compositor() -> bool {
     })
 }
 
+/// The window, shown once its first frame is drawn. It is made hidden, so a launch never shows
+/// an empty or half-drawn window that then flickers into the app: the page says when it has
+/// painted, and the window appears whole. Shown anyway after a few seconds, so a page that
+/// never says so still leaves a window to use.
+#[tauri::command]
+fn window_ready(app: tauri::AppHandle) {
+    show_window(&app);
+}
+
+fn show_when_ready(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if let Some(w) = app.get_webview_window("main") {
+            if !w.is_visible().unwrap_or(true) {
+                show_window(&app);
+            }
+        }
+    });
+}
+
 /// Bring the window back, wherever it went.
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -3545,7 +3597,23 @@ fn main() {
             let uri = request.uri();
             let wanted = photo_guid(uri.host(), uri.path());
             let attachment = note_part(uri.path());
+            let picture = photos::requested(uri.path());
             tauri::async_runtime::spawn(async move {
+                // A photo's picture: from the disk cache, or fetched from Apple once and kept.
+                if let Some((id, size)) = picture {
+                    let response = match photos::picture(&app, &id, size).await {
+                        Ok(bytes) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", photos::content_type(&bytes, size))
+                            .header("Cache-Control", "private, max-age=86400")
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.unwrap_or_default());
+                    return;
+                }
                 // A note's picture, or the rendering of a document or film in it.
                 if let Some((id, part)) = attachment {
                     let response = match note_media_cached(&app, &id, part).await {
@@ -3630,6 +3698,7 @@ fn main() {
             if let Err(e) = build_tray(app) {
                 eprintln!("no tray on this desktop, so closing the window quits: {e}");
             }
+            show_when_ready(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3683,6 +3752,14 @@ fn main() {
             note_runs,
             note_table,
             note_table_set_cell,
+            window_ready,
+            photos::photos_list,
+            photos::photos_counts,
+            photos::photos_albums,
+            photos::photos_in_album,
+            photos::photo_set_flag,
+            photos::photo_play,
+            photos::photo_download,
             note_table_add_row,
             note_table_remove,
             note_attachment_info,
