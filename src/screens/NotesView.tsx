@@ -36,6 +36,11 @@ const TRASH_FOLDER = "TrashFolder-CloudKit";
 /** Apple's own "Notes" folder: it can be neither renamed nor deleted. */
 const DEFAULT_FOLDER = "DefaultFolder-CloudKit";
 
+/** A note's title or snippet as words: without the marks where attachments sit (U+FFFC) or
+ *  a line breaks (U+2028), which drew as boxes. The backend strips them too; this covers
+ *  what was stored before it did. */
+const wordsOnly = (text: string) => text.replace(/[\uFFFC\u2028]/g, " ").replace(/\s+/g, " ").trim();
+
 export function NotesView() {
   const [folders, setFolders] = useState<NoteFolder[]>([]);
   const [folderMenu, setFolderMenu] = useState<{ folder: NoteFolder; x: number; y: number; alignRight: boolean } | null>(null);
@@ -762,11 +767,11 @@ export function NotesView() {
                     aria-current={openGuid === note.guid}
                     onClick={() => void selectNote(note.guid)}
                   >
-                    <span className="note-row-title">{note.title}</span>
+                    <span className="note-row-title">{wordsOnly(note.title) || "New Note"}</span>
                     <span className="note-row-meta">
                       <span className="note-row-when">{listDate(note.modifiedAt)}</span>
                       <span className="note-row-snippet">
-                        {note.locked ? "Locked" : note.snippet?.slice(0, 80) || "No additional text"}
+                        {note.locked ? "Locked" : wordsOnly(note.snippet ?? "").slice(0, 80) || "No additional text"}
                       </span>
                     </span>
                   </button>

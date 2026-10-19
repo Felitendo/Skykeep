@@ -26,6 +26,25 @@ async fn main() -> Result<()> {
         let Some(cells) = quince_icloud::table::cells_from_base64(v) else {
             continue;
         };
+        // An empty cell too: one a phone made holds an empty text object and can take text.
+        if let Some((r, c)) = cells
+            .iter()
+            .enumerate()
+            .find_map(|(r, row)| row.iter().position(String::is_empty).map(|c| (r, c)))
+        {
+            let back = quince_icloud::table::with_cell_in_base64(v, r, c, "Quince empty test")
+                .as_deref()
+                .and_then(quince_icloud::table::cells_from_base64);
+            println!(
+                "  empty cell ({r},{c}) of {}: {}",
+                a["recordName"],
+                match &back {
+                    Some(b) if b[r][c] == "Quince empty test" => "takes text, exact",
+                    Some(_) => "WRONG read-back",
+                    None => "refused (no object)",
+                }
+            );
+        }
         let typed = cells
             .iter()
             .enumerate()

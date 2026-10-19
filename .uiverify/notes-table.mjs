@@ -1,6 +1,6 @@
 // A table in a note, drawn as its grid and edited in place: a typed cell takes typing as its
 // own (the note's text is untouched), saves when left, and goes back with the reason if Apple
-// refuses; a cell never typed in says it cannot be changed here yet.
+// refuses; an empty cell takes typing like any other.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
@@ -39,6 +39,32 @@ await page.keyboard.type("0");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(500);
 ok((await qty.textContent()) === "2" && /refused/.test((await qty.getAttribute("title")) ?? ""), "a change Apple refuses goes back, and says why");
-ok((await page.locator(".nf-cell-empty").count()) === 2, "a cell never typed in is shown but not offered for editing");
+const coloured = await page.locator(".note-rich .nf-em-4").evaluateAll((e) => e.map((x) => [x.textContent, getComputedStyle(x).color]));
+ok(coloured.length === 1 && coloured[0][0] === "end" && !/rgb\(29, 29, 31\)|rgb\(0, 0, 0\)/.test(coloured[0][1]), `text coloured on a phone shows in its colour  ${JSON.stringify(coloured)}`);
+// Copying the note puts the table's cells out, never a placeholder word.
+const copied = await page.evaluate(() => {
+  const ed = document.querySelector(".note-rich");
+  ed.focus();
+  const range = document.createRange();
+  range.selectNodeContents(ed);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  return new Promise((done) => setTimeout(() => {
+    const data = new DataTransfer();
+    ed.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true }));
+    done({ text: data.getData("text/plain"), html: data.getData("text/html") });
+  }, 50));
+});
+ok(!/Attachment/.test(copied.text + copied.html) && /Item\tQty/.test(copied.text) && /<td>Milk \(oat\)<\/td>/.test(copied.html), `copying a table copies its cells  ${JSON.stringify(copied).slice(0, 300)}`);
+// An empty cell takes typing too: tables made on a phone hold an empty text for every cell.
+const empty = page.locator(".nf-table tr").nth(2).locator(".nf-cell-edit").first();
+ok((await page.locator(".nf-cell-empty").count()) === 0 && (await empty.count()) === 1, "an empty cell is offered for editing");
+await page.evaluate(() => { window.__cellFail = false; window.__cellWrites = []; });
+await empty.click();
+await page.keyboard.type("Bread");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(400);
+const w2 = await page.evaluate(() => window.__cellWrites);
+ok((await empty.textContent()) === "Bread" && w2?.length === 1 && w2[0].row === 2 && w2[0].column === 0 && w2[0].text === "Bread", `typing in an empty cell saves it  ${JSON.stringify(w2)}`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

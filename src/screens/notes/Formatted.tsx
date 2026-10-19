@@ -18,6 +18,8 @@ export type Run = {
   underline: boolean;
   strike: boolean;
   link: string | null;
+  /** Text colour set on a phone: 1 purple, 2 pink, 3 orange, 4 mint, 5 blue. */
+  emphasis?: number | null;
   /** The attachment this run's character stands for — a table, a picture — by id. */
   attachment?: string | null;
 };
@@ -106,6 +108,7 @@ function Inline({ span }: { span: Span }) {
   if (run.italic) node = <em>{node}</em>;
   if (run.underline) node = <u>{node}</u>;
   if (run.strike) node = <s>{node}</s>;
+  if (run.emphasis) node = <span className={`nf-em-${run.emphasis}`}>{node}</span>;
   if (run.link) {
     node = (
       <a href={run.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>

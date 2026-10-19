@@ -605,7 +605,8 @@
   /* Opacity and a small lift only, on the compositor: scaling from the corner read as a
      jump toward the click, and re-ran on every re-anchor. */
   /* A short fade and nothing else — no movement, no layer hint — as a macOS popover. */
-  animation: cx-pop 110ms ease-out both;
+  /* No opening animation, as a menu has none: a fade over a large shadowed layer is what
+     WebKitGTK drew with a glitch. It is simply there. */
 }
 @keyframes cx-pop { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .cx-popover { animation: none; } }

@@ -63,7 +63,8 @@ await page.evaluate(() => {
 });
 await page.getByRole("button", { name: "Fold Sidebar to Icons" }).click();
 await page.waitForTimeout(400);
-ok(await page.evaluate(() => window.__slid), "folding slides the content on the compositor");
+// Not slid either: a screen of text moved frame by frame shimmered in WebKitGTK.
+ok(!(await page.evaluate(() => window.__slid)), "folding moves the content once, without sliding a screen of text");
 // A diagnostic report is written for the person to read and send, and says where.
 await page.locator(".sidebar-account").click();
 await page.waitForSelector(".settings");

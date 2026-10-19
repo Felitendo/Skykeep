@@ -82,6 +82,7 @@ fn note_from_record(record: &Value) -> Option<Note> {
         // The stored title where there is one; otherwise the phone's rule applied to the text,
         // and "New Note" — Apple's word, not ours — only when there is no text at all.
         title: title
+            .map(|t| words_only(&t))
             .filter(|t| !t.trim().is_empty())
             .or_else(|| {
                 body.as_deref()
@@ -89,7 +90,10 @@ fn note_from_record(record: &Value) -> Option<Note> {
                     .filter(|t| !t.is_empty())
             })
             .unwrap_or_else(|| "New Note".into()),
-        snippet: field::document_text(record, "SnippetEncrypted"),
+        // Apple's own snippet of a note full of attachments is a row of their marks.
+        snippet: field::document_text(record, "SnippetEncrypted")
+            .map(|t| words_only(&t))
+            .filter(|t| !t.is_empty()),
         body,
         runs: record
             .pointer("/fields/TextDataEncrypted/value")
@@ -462,11 +466,22 @@ pub fn title_and_snippet(body: &str) -> (String, String) {
     // (`━━━━`) was sent with that rule as its title, and the phone showed none.
     let mut lines = body
         .lines()
-        .map(str::trim)
+        .map(words_only)
         .filter(|l| l.chars().any(char::is_alphanumeric));
-    let title = lines.next().unwrap_or_default().to_string();
-    let snippet = lines.next().unwrap_or_default().to_string();
+    let title = lines.next().unwrap_or_default();
+    let snippet = lines.next().unwrap_or_default();
     (title, snippet)
+}
+
+/// A line of a note as words: without the marks Apple puts in the text where an attachment
+/// sits (U+FFFC) or a line breaks inside a paragraph (U+2028). A table placed after a note's
+/// first words made the title "frfge￼", drawn as a box in every list.
+#[must_use]
+pub fn words_only(line: &str) -> String {
+    line.replace(['\u{FFFC}', '\u{2028}'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Save a new body onto an existing note.
@@ -1189,6 +1204,18 @@ pub async fn delete_cloudkit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A table on a note's first line, or a note of nothing but attachments: the title and
+    /// snippet are its words, never the marks where the attachments sit.
+    #[test]
+    fn titles_and_snippets_are_words_not_attachment_marks() {
+        assert_eq!(
+            title_and_snippet("frfge\u{FFFC}\nHello"),
+            ("frfge".into(), "Hello".into())
+        );
+        assert_eq!(words_only("\u{FFFC}\u{FFFC}\u{FFFC}"), "");
+        assert_eq!(words_only("one\u{2028}two"), "one two");
+    }
 
     #[test]
     fn a_title_is_the_first_line_with_words_on_it() {

@@ -85,12 +85,10 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
     slideFrom.current = null;
     const el = content.current;
     if (from === null || !el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const by = from - contentLeft();
-    if (Math.abs(by) < 1) return;
-    el.animate([{ transform: `translateX(${by}px)` }, { transform: "none" }], {
-      duration: 300,
-      easing: getComputedStyle(document.documentElement).getPropertyValue("--spring-quick").trim() || "ease-out",
-    });
+    // The content takes its new place at once; only the sidebar's own width moves. Sliding
+    // the whole content — a screen of text — made WebKitGTK redraw its text each frame, and
+    // it shimmered and flickered on his machine; moving its padding laid it out every frame.
+    void from;
   }, [rail]);
   const toggleRail = () => {
     slideFrom.current = contentLeft();

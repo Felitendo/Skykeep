@@ -218,7 +218,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (args.guid === "nT") {
             // "Groceries", a table on its own line, then a last line: the table's run names it.
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
-            return [plain(10), { ...plain(1), attachment: "T1" }, plain(4)];
+            // "end" coloured mint on a phone (field 14).
+            return [plain(10), { ...plain(1), attachment: "T1" }, plain(1), { ...plain(3), emphasis: 4 }];
           }
           // Curtains, set as a phone sets one: a title, then a dashed list and a ticked item.
           if (args.guid !== "n1") return [];

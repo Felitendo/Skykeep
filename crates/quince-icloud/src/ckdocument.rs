@@ -1026,6 +1026,11 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
         } else {
             without_field(&piece, 7)?
         };
+        // The text's colour as the screen has it, so a save never drops one.
+        piece = match inline.emphasis {
+            Some(e) => set_varint_field(&piece, 14, e)?,
+            None => without_field(&piece, 14)?,
+        };
         piece = without_field(&piece, 9)?;
         if let Some(link) = inline.link.as_deref().filter(|l| !l.is_empty()) {
             piece.extend(length_delimited(9, link.as_bytes()));
@@ -1696,6 +1701,10 @@ pub struct Run {
     /// Read only: an attachment's place is kept from Apple's own run, never written from this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachment: Option<String>,
+    /// Notes' text colour (iOS 18 and later), field 14: 1 purple, 2 pink, 3 orange, 4 mint,
+    /// 5 blue. Measured on a note coloured on a phone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emphasis: Option<u64>,
 }
 
 /// Every run of a note document, in order. Empty for anything that is not one.
@@ -1740,6 +1749,7 @@ fn parse_run(bytes: &[u8]) -> Option<Run> {
                 let info = reader.take(n)?;
                 run.attachment = bytes_field(info, 1).and_then(|id| String::from_utf8(id).ok());
             }
+            (14, WIRE_VARINT) => run.emphasis = Some(reader.varint()?).filter(|&e| e > 0),
             _ => reader.skip(wire)?,
         }
     }
@@ -2747,6 +2757,24 @@ mod run_tests {
             raw[2].windows(14).any(|w| w == b"attachment-ish"),
             "the unknown field went"
         );
+    }
+
+    /// Text coloured on a phone (field 14) is read, kept through a save that leaves it, and
+    /// taken off only where the editor took it off.
+    #[test]
+    fn text_colour_is_read_kept_and_removed() {
+        let mut mint = Vec::new();
+        varint(14 << 3, &mut mint);
+        varint(4, &mut mint);
+        let doc = doc_with("Hello world", &[(5, mint), (6, Vec::new())]);
+        let read = runs_from_base64(&B64.encode(&doc));
+        assert_eq!(read[0].emphasis, Some(4));
+        assert_eq!(read[1].emphasis, None);
+        let kept = runs_from_base64(&B64.encode(set_runs(&doc, &read).unwrap()));
+        assert_eq!(kept[0].emphasis, Some(4), "a save dropped the colour");
+        let plain = vec![body(11)];
+        let cleared = runs_from_base64(&B64.encode(set_runs(&doc, &plain).unwrap()));
+        assert!(cleared.iter().all(|r| r.emphasis.is_none()));
     }
 
     /// A style is the line's: one set on half a line covers all of it, from its newline.

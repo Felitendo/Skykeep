@@ -11,7 +11,7 @@
  * paragraph (U+2028, Shift-Return) travel as nodes of their own, so they cannot be typed
  * over by accident or lost.
  */
-import { Schema, type Node as PMNode, type Mark } from "prosemirror-model";
+import { Schema, type DOMOutputSpec, type Node as PMNode, type Mark } from "prosemirror-model";
 import type { Run } from "./Formatted";
 
 /** Apple's paragraph styles. */
@@ -29,6 +29,9 @@ export const STYLE = {
 
 export const LIST_STYLES: readonly number[] = [STYLE.bulleted, STYLE.dashed, STYLE.numbered, STYLE.checklist];
 const ATTACHMENT = "￼";
+
+/** Each table's cells by attachment id, as last drawn: what copying the table puts out. */
+export const tableCells = new Map<string, string[][]>();
 const LINE_BREAK = " ";
 
 export const schema = new Schema({
@@ -61,7 +64,17 @@ export const schema = new Schema({
       atom: true,
       selectable: true,
       attrs: { id: { default: null as string | null } },
-      toDOM: () => ["span", { class: "nf-attachment", contenteditable: "false", title: "Attachment — open it on an Apple device" }, "Attachment"],
+      // Copied, a table is its cells — as a table, and as tab-separated lines for plain text —
+      // never a placeholder word; anything else copies as nothing.
+      leafText: (node) => {
+        const cells = tableCells.get(node.attrs.id as string);
+        return cells ? cells.map((r) => r.map((c) => c.trimEnd()).join("\t")).join("\n") : "";
+      },
+      toDOM: (node): DOMOutputSpec => {
+        const cells = tableCells.get(node.attrs.id as string);
+        if (!cells) return ["span", { class: "nf-attachment" }];
+        return ["table", ["tbody", ...cells.map((r): DOMOutputSpec => ["tr", ...r.map((c): DOMOutputSpec => ["td", c.trimEnd()])])]];
+      },
     },
     /** Shift-Return: a new line in the same paragraph. */
     line_break: {
@@ -77,6 +90,12 @@ export const schema = new Schema({
     italic: { parseDOM: [{ tag: "em" }, { tag: "i" }], toDOM: () => ["em", 0] },
     underline: { parseDOM: [{ tag: "u" }], toDOM: () => ["u", 0] },
     strike: { parseDOM: [{ tag: "s" }, { tag: "del" }], toDOM: () => ["s", 0] },
+    /** Text colour set on a phone: 1 purple, 2 pink, 3 orange, 4 mint, 5 blue. */
+    emphasis: {
+      attrs: { color: {} },
+      parseDOM: [{ tag: "span[data-emphasis]", getAttrs: (d) => ({ color: Number((d as HTMLElement).dataset.emphasis) }) }],
+      toDOM: (m) => ["span", { class: `nf-em-${m.attrs.color}`, "data-emphasis": String(m.attrs.color) }, 0],
+    },
     link: {
       attrs: { href: {} },
       inclusive: false,
@@ -109,6 +128,7 @@ function marksOf(run: Run): Mark[] {
   if (run.italic) m.push(schema.marks.italic.create());
   if (run.underline) m.push(schema.marks.underline.create());
   if (run.strike) m.push(schema.marks.strike.create());
+  if (run.emphasis) m.push(schema.marks.emphasis.create({ color: run.emphasis }));
   if (run.link) m.push(schema.marks.link.create({ href: run.link }));
   return m;
 }
@@ -162,7 +182,7 @@ export function toDoc(text: string, runs: Run[] | null): PMNode {
 const same = (a: Run, b: Run) =>
   a.style === b.style && a.indent === b.indent && a.checked === b.checked && a.bold === b.bold &&
   a.italic === b.italic && a.underline === b.underline && a.strike === b.strike && a.link === b.link &&
-  (a.attachment ?? null) === (b.attachment ?? null);
+  (a.attachment ?? null) === (b.attachment ?? null) && (a.emphasis ?? null) === (b.emphasis ?? null);
 
 /** A document as Apple's text and runs. */
 export function fromDoc(doc: PMNode): { text: string; runs: Run[] } {
@@ -186,8 +206,10 @@ export function fromDoc(doc: PMNode): { text: string; runs: Run[] } {
       if (child.type === schema.nodes.attachment) return push(ATTACHMENT, { ...base, attachment: child.attrs.id ?? null });
       if (child.type === schema.nodes.line_break) return push(LINE_BREAK, base);
       const has = (name: string) => child.marks.some((m) => m.type.name === name);
+      const emphasis = child.marks.find((m) => m.type.name === "emphasis")?.attrs.color as number | undefined;
       push(child.text ?? "", {
         ...base,
+        ...(emphasis ? { emphasis } : {}),
         bold: has("bold"),
         italic: has("italic"),
         underline: has("underline"),

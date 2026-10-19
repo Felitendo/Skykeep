@@ -263,7 +263,9 @@
   top: 8px;
   bottom: 8px;
   width: 196px;
-  transition: width var(--spring-quick-d) var(--spring-quick);
+  /* Folding is a single step, with no animation. While the sidebar's width moved, every frame
+     laid out its rows again, and the content beside it, already in its new place, showed
+     through and then hid behind it. WebKitGTK drew that as a flicker of text on his machine. */
   /* Its own width changing lays out only itself. */
   contain: layout paint;
   overflow: hidden;
@@ -450,7 +452,7 @@
 :root[data-theme="dark"] .app-icon .ai-person { fill: #e5e5ea; }
 :root[data-theme="dark"] .app-icon.ai-contacts .ai-tile-top { stop-color: #3a3a3e; }
 :root[data-theme="dark"] .app-icon.ai-contacts .ai-tile-bottom { stop-color: #1c1c1f; }
-.nav-name { overflow: hidden; text-overflow: ellipsis; transition: opacity 120ms ease 140ms; }
+.nav-name { overflow: hidden; text-overflow: ellipsis; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 6px; min-height: 28px; }
 .sidebar-head h2 { margin: 0 8px; }
 .sidebar-fold {
@@ -463,8 +465,6 @@
 @media (min-width: 901px) {
   .is-rail .sidebar { width: 60px; }
   .is-rail .sidebar-head { flex-direction: column; }
-  /* Gone at once when folding — fading while the width closed squeezed the names into a
-     smear — and back only once the sidebar has opened (the delay on .nav-name above). */
   .is-rail .sidebar-head h2, .is-rail .nav-name { opacity: 0; width: 0; margin: 0; transition: none; }
   .is-rail .nav-item { justify-content: center; gap: 0; padding-inline: 0; }
   .is-rail .sidebar-foot { display: none; }
@@ -1523,8 +1523,8 @@
   border-radius: var(--r-window);
   background: var(--glass-thick);
   box-shadow: var(--glass-float);
-  /* A sheet arrives on the smooth spring, growing the last few percent into place. */
-  animation: modal-sheet-in 360ms var(--spring-smooth) both;
+  /* Simply there, as the menus and popovers are: grown in on a spring, the sheet glitched
+     as it came in on WebKitGTK. The window dims behind it. */
 }
 
 @keyframes modal-sheet-in {

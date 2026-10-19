@@ -411,7 +411,13 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-cell-edit:focus { box-shadow: 0 0 0 2px var(--accent-ring); background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .nf-cell-edit.is-saving { opacity: 0.7; }
 .nf-cell-edit.is-refused { box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent); }
-.nf-cell-empty { color: var(--text-3); }
+.nf-cell-empty { color: var(--text-3); height: 1.4em; }
+/* Text coloured on a phone, in the colour it has there. */
+.nf-em-1 { color: var(--note-c1); }
+.nf-em-2 { color: var(--note-c2); }
+.nf-em-3 { color: var(--note-c3); }
+.nf-em-4 { color: var(--note-c4); }
+.nf-em-5 { color: var(--note-c5); }
 /* What a note holds besides text, drawn where it sits (NoteEditor's drawMedia): a picture at
    its own proportions, a document or film as its rendering with its name, anything else a
    chip. Each opens in the app this computer uses for it. */

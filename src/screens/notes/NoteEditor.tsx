@@ -7,17 +7,18 @@ import { keymap } from "prosemirror-keymap";
 import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror-commands";
 import type { Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
-import { fromDoc, LIST_STYLES, schema, STYLE, toDoc } from "./rich";
+import { fromDoc, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
 import { api, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
 
 /**
  * An attachment in the note: a table drawn as the grid it is, with the cells Apple holds;
  * anything else — a picture, a sketch — as a labelled placeholder that keeps its place.
  *
- * A table's cells are edited where they stand. Each cell already typed in is a plain-text
- * field of its own — keys typed there are the cell's, never the note's — saved to Apple when
- * it is left or Return is pressed, drawn at once, and put back with the reason if Apple
- * refuses. A cell never typed in has nothing in Apple's table yet to change, and says so.
+ * A table's cells are edited where they stand. Each cell is a plain-text field of its own —
+ * keys typed there are the cell's, never the note's — saved to Apple when it is left or
+ * Return is pressed, drawn at once, and put back with the reason if Apple refuses. An empty
+ * cell is editable too: a table made on a phone or on icloud.com already holds an empty text
+ * object for every cell (measured on every table in his account).
  */
 /** What each attachment is, asked once a session: a note re-drawn does not ask again. */
 const described = new Map<string, Promise<NoteAttachment | null>>();
@@ -108,6 +109,7 @@ function attachmentView(node: PMNode) {
   const id = node.attrs.id as string | null;
 
   const draw = (cells: string[][]) => {
+    if (id) tableCells.set(id, cells.map((row) => [...row]));
     const table = document.createElement("table");
     table.className = "nf-table";
     cells.forEach((row, r) => {
@@ -115,10 +117,9 @@ function attachmentView(node: PMNode) {
       row.forEach((cell, c) => {
         const td = tr.insertCell();
         const was = cell.trimEnd();
-        if (!id || was === "") {
+        if (!id) {
           td.textContent = was;
           td.className = "nf-cell-empty";
-          td.title = "Type in this cell on an Apple device first — Quince can change cells that have text";
           return;
         }
         const field = document.createElement("div");
@@ -133,12 +134,15 @@ function attachmentView(node: PMNode) {
           const before = saved;
           saved = now;
           field.classList.add("is-saving");
+          const copy = tableCells.get(id);
+          if (copy?.[r]) copy[r][c] = now;
           api.noteTableSetCell(id, r, c, now).then(
             () => field.classList.remove("is-saving"),
             (e) => {
               // Refused: back as Apple has it, and why.
               saved = before;
               field.textContent = before;
+              if (copy?.[r]) copy[r][c] = before;
               field.classList.remove("is-saving");
               field.title = String(e);
               field.classList.add("is-refused");
