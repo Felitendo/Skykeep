@@ -413,4 +413,18 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (album, asset)
     ) STRICT;
     "#,
+    // Photos uploads, kept until each is done: quitting halfway resumes where it stopped, and
+    // a file is never thought sent until Apple has made the photo.
+    r#"
+    CREATE TABLE photo_uploads (
+        id       TEXT PRIMARY KEY,
+        batch    TEXT NOT NULL,
+        path     TEXT NOT NULL,
+        name     TEXT NOT NULL,
+        state    TEXT NOT NULL,
+        error    TEXT,
+        asset    TEXT,
+        added_at INTEGER NOT NULL
+    ) STRICT;
+    "#,
 ];

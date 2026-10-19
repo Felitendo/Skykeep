@@ -323,10 +323,31 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (cmd === "photos_counts") return Object.entries(views).map(([k, v]) => [k, v.length]);
           return views[args.view] ?? [];
         }
-        case "photos_albums": return [[{ id: "AL1", name: "Trips", position: 0, changeTag: null }, 2]];
+        case "photos_albums": {
+          const albums = (window.__albums ??= [{ id: "AL1", name: "Trips", position: 0, changeTag: null, items: ["p4", "p2"] }]);
+          return albums.map(({ items, ...a }) => [a, items.length]);
+        }
         case "photos_in_album": {
           const all = window.__photos ?? [];
-          return args.album === "AL1" ? all.filter((p) => p.id === "p4" || p.id === "p2") : [];
+          const a = (window.__albums ?? [{ id: "AL1", items: ["p4", "p2"] }]).find((x) => x.id === args.album);
+          return a ? a.items.map((id) => all.find((p) => p.id === id)).filter(Boolean) : [];
+        }
+        case "photos_album_create": case "photos_album_rename": case "photos_album_delete":
+        case "photos_album_add": case "photos_album_remove": {
+          (window.__albumCalls ??= []).push({ cmd, args });
+          if (window.__albumFail) throw "iCloud didn’t accept that change.";
+          const albums = (window.__albums ??= [{ id: "AL1", name: "Trips", position: 0, changeTag: null, items: ["p4", "p2"] }]);
+          const find = (id) => albums.find((x) => x.id === id);
+          if (cmd === "photos_album_create") {
+            const made = { id: `AL${albums.length + 1}`, name: args.name, position: -1, changeTag: "t1" };
+            albums.unshift({ ...made, items: [] });
+            return made;
+          }
+          if (cmd === "photos_album_rename") find(args.id).name = args.name;
+          if (cmd === "photos_album_delete") albums.splice(albums.indexOf(find(args.id)), 1);
+          if (cmd === "photos_album_add") find(args.album).items.push(...args.ids.filter((i) => !find(args.album).items.includes(i)));
+          if (cmd === "photos_album_remove") find(args.album).items = find(args.album).items.filter((i) => !args.ids.includes(i));
+          return null;
         }
         case "photo_set_flag": {
           (window.__flags ??= []).push(args);
@@ -340,6 +361,26 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "photo_play": (window.__plays ??= []).push(args); return null;
         case "photo_download": (window.__downloads ??= []).push(args); return `/home/test/Downloads/IMG_${args.id}.JPG`;
+        // Each file is answered at once with where it stands; a test plays the rest in with __emit.
+        case "photos_upload": {
+          (window.__photoUploads ??= []).push(args.paths);
+          const batch = `B${window.__photoUploads.length}`;
+          const say = (e) => window.__emit?.("quince://photo-upload", { batch, within: "", sent: 0, total: 1000, folder: false, error: null, ...e });
+          window.__photoLive = args.paths.map((path, i) => ({ id: `${batch}:${i}`, name: path.split("/").pop() }));
+          setTimeout(() => {
+            window.__photoLive.forEach((u) => say({ ...u, state: /\.txt$/.test(u.name) ? "failed" : "waiting",
+              error: /\.txt$/.test(u.name) ? "Photos can’t add this kind of file." : null }));
+            say({ ...window.__photoLive[0], state: "planned" });
+          }, 0);
+          return batch;
+        }
+        case "photos_upload_cancel": {
+          (window.__photoCancels ??= []).push(args);
+          for (const u of window.__photoLive ?? [])
+            if (args.ids.includes(u.id) || (args.batch && u.id.startsWith(`${args.batch}:`)))
+              window.__emit?.("quince://photo-upload", { ...u, batch: u.id.split(":")[0], within: "", sent: 0, total: 1000, folder: false, error: null, state: "cancelled" });
+          return null;
+        }
         case "note_table_add_row": {
           const t = (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]);
           if (args.column) t.forEach((r) => r.splice(args.at, 0, ""));

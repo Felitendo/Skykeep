@@ -80,7 +80,16 @@ function measure(item: Item, planned: boolean) {
  * opens to show what in it did not upload, and why. When everything has gone up cleanly the
  * tray steps aside on its own; anything that failed keeps it until it is read.
  */
-export function UploadTray({ uploads, onDismiss }: { uploads: UploadEvent[]; onDismiss: () => void }) {
+export function UploadTray({
+  uploads,
+  onDismiss,
+  cancel = api.driveUploadCancel,
+}: {
+  uploads: UploadEvent[];
+  onDismiss: () => void;
+  /** Stops uploads by id, or a whole batch; Drive's unless the screen says otherwise. */
+  cancel?: (ids: string[], batch?: string) => Promise<void>;
+}) {
   const [open, setOpen] = useState<string | null>(null);
   const items = group(uploads);
   const planned = new Set(uploads.filter((u) => u.state === "planned").map((u) => u.batch));
@@ -148,7 +157,7 @@ export function UploadTray({ uploads, onDismiss }: { uploads: UploadEvent[]; onD
         {active ? (
           <span className="upload-tray-actions">
             {allPlanned && <span className="upload-tray-percent">{percent}%</span>}
-            <button className="upload-tray-close" onClick={() => batches.forEach((b) => void api.driveUploadCancel([], b))}>
+            <button className="upload-tray-close" onClick={() => batches.forEach((b) => void cancel([], b))}>
               Cancel
             </button>
           </span>
@@ -202,7 +211,7 @@ export function UploadTray({ uploads, onDismiss }: { uploads: UploadEvent[]; onD
                     className="upload-stop"
                     aria-label={`Cancel ${item.name}`}
                     title="Cancel"
-                    onClick={() => void api.driveUploadCancel(stoppable.map((u) => u.id))}
+                    onClick={() => void cancel(stoppable.map((u) => u.id))}
                   >
                     ✕
                   </button>

@@ -209,6 +209,176 @@ pub async fn photos_in_album(album: String, data: State<'_, Data>) -> UiResult<V
         .map_err(|e| e.to_string())
 }
 
+/// A new album, first in the list as Photos puts one. Answers it as Apple made it.
+#[tauri::command]
+pub async fn photos_album_create(
+    name: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<quince_core::photos::Album> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("An album needs a name.".into());
+    }
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let first = data
+        .0
+        .lock()
+        .await
+        .albums()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|a| a.position)
+        .min();
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let album = quince_icloud::photos::create_album(&http, &root, params, name, first)
+        .await
+        .map_err(|e| e.to_string())?;
+    data.0
+        .lock()
+        .await
+        .put_album(&album)
+        .map_err(|e| e.to_string())?;
+    Ok(album)
+}
+
+/// An album renamed, against the change tag last seen.
+#[tauri::command]
+pub async fn photos_album_rename(
+    id: String,
+    name: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("An album needs a name.".into());
+    }
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let mut album = album_of(&data, &id).await?;
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let tag = quince_icloud::photos::rename_album(
+        &http,
+        &root,
+        params,
+        &id,
+        album.change_tag.as_deref(),
+        name,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    album.name = name.to_string();
+    album.change_tag = tag.or(album.change_tag);
+    data.0
+        .lock()
+        .await
+        .put_album(&album)
+        .map_err(|e| e.to_string())
+}
+
+/// An album deleted. Its photos stay in the library.
+#[tauri::command]
+pub async fn photos_album_delete(
+    id: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let album = album_of(&data, &id).await?;
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    quince_icloud::photos::delete_album(&http, &root, params, &id, album.change_tag.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    data.0
+        .lock()
+        .await
+        .forget_album(&id)
+        .map_err(|e| e.to_string())
+}
+
+/// Photos put in an album after what is there. One already in it is not added twice.
+#[tauri::command]
+pub async fn photos_album_add(
+    album: String,
+    ids: Vec<String>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let _one = crate::PHOTOS_PASS.lock().await;
+    album_of(&data, &album).await?;
+    let (fresh, last) = {
+        let library = data.0.lock().await;
+        let inside: std::collections::HashSet<String> = library
+            .album_photos(&album)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        let fresh: Vec<String> = ids.into_iter().filter(|i| !inside.contains(i)).collect();
+        let last = library
+            .album_last_position(&album)
+            .map_err(|e| e.to_string())?;
+        (fresh, last)
+    };
+    if fresh.is_empty() {
+        return Ok(());
+    }
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let added =
+        quince_icloud::photos::add_to_album(&http, &root, params, &album, &fresh, last).await;
+    // What went in before a failure is in the album on Apple; the library says so too.
+    let placed = match &added {
+        Ok(a) => a.clone(),
+        Err(_) => Vec::new(),
+    };
+    data.0
+        .lock()
+        .await
+        .put_album_items(
+            &placed
+                .into_iter()
+                .map(|(asset, at)| (album.clone(), asset, at))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| e.to_string())?;
+    added.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Photos taken out of an album. They stay in the library.
+#[tauri::command]
+pub async fn photos_album_remove(
+    album: String,
+    ids: Vec<String>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    quince_icloud::photos::remove_from_album(&http, &root, params, &album, &ids)
+        .await
+        .map_err(|e| e.to_string())?;
+    data.0
+        .lock()
+        .await
+        .forget_album_items(
+            &ids.into_iter()
+                .map(|i| (album.clone(), i))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| e.to_string())
+}
+
+async fn album_of(data: &State<'_, Data>, id: &str) -> UiResult<quince_core::photos::Album> {
+    data.0
+        .lock()
+        .await
+        .albums()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| "That album is no longer there.".into())
+}
+
 /// Favorite, Delete (to Recently Deleted, never for good) or Recover a photo, as icloud.com
 /// does it: the asset's one field updated against its change tag. The library takes Apple's
 /// answer at once, so every view shows it without waiting for the next pass.
@@ -300,9 +470,11 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
         .map_err(|e| format!("No app on this computer opens that video: {e}"))
 }
 
-/// How many photos each view holds.
+/// How many photos each view holds. Asked after every sync, which is also when an upload queue
+/// paused for a session coming back starts again.
 #[tauri::command]
-pub async fn photos_counts(data: State<'_, Data>) -> UiResult<Vec<(View, i64)>> {
+pub async fn photos_counts(app: AppHandle, data: State<'_, Data>) -> UiResult<Vec<(View, i64)>> {
+    work(app);
     data.0
         .lock()
         .await
@@ -334,4 +506,434 @@ pub async fn photo_download(id: String, app: AppHandle, data: State<'_, Data>) -
         .await
         .map_err(|e| e.to_string())?;
     Ok(path.display().to_string())
+}
+
+/// Where Photos uploads tell the window how they are going: the same shape Drive's tray reads.
+pub const PHOTO_UPLOAD: &str = "quince://photo-upload";
+
+#[derive(Clone, serde::Serialize)]
+struct UploadEvent {
+    id: String,
+    batch: String,
+    name: String,
+    within: String,
+    sent: u64,
+    total: u64,
+    state: &'static str,
+    folder: bool,
+    error: Option<String>,
+}
+
+fn say(
+    app: &AppHandle,
+    u: &quince_core::photos::Upload,
+    state: &'static str,
+    sent: u64,
+    total: u64,
+    error: Option<String>,
+) {
+    use tauri::Emitter;
+    app.emit(
+        PHOTO_UPLOAD,
+        UploadEvent {
+            id: u.id.clone(),
+            batch: u.batch.clone(),
+            name: u.name.clone(),
+            within: String::new(),
+            sent,
+            total,
+            state,
+            folder: false,
+            error,
+        },
+    )
+    .ok();
+}
+
+/// One worker at a time drains the queue, as icloud.com uploads one file at a time.
+static WORKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Batches, and single uploads, asked to stop.
+static CANCELLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The upload on its way, so Cancel can stop it mid-file rather than after it lands.
+static CURRENT: Mutex<Option<(String, String, futures_util::future::AbortHandle)>> =
+    Mutex::new(None);
+
+fn cancelled(u: &quince_core::photos::Upload) -> bool {
+    CANCELLED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|b| *b == u.batch || *b == u.id)
+}
+
+/// Files (and the photos and videos inside folders) added to Photos. Each is checked against
+/// Photos' limits first; a file Photos would refuse is answered at once with why, and never
+/// sent. Answers the batch, whose progress comes as `quince://photo-upload` events.
+#[tauri::command]
+pub async fn photos_upload(
+    paths: Vec<String>,
+    app: AppHandle,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    let batch = uuid::Uuid::new_v4().to_string();
+    let mut files = Vec::new();
+    for p in paths {
+        let path = PathBuf::from(&p);
+        if path.is_dir() {
+            let mut stack = vec![path];
+            while let Some(dir) = stack.pop() {
+                let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+                    continue;
+                };
+                while let Ok(Some(e)) = entries.next_entry().await {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else {
+                        files.push(p);
+                    }
+                }
+            }
+        } else {
+            files.push(path);
+        }
+    }
+    files.sort();
+    let now = jiff::Timestamp::now().as_second();
+    let mut queued = Vec::new();
+    for path in files {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let size = tokio::fs::metadata(&path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let mut u = quince_core::photos::Upload {
+            id: uuid::Uuid::new_v4().to_string(),
+            batch: batch.clone(),
+            path: path.to_string_lossy().into_owned(),
+            name: name.clone(),
+            state: "waiting".into(),
+            error: None,
+            asset: None,
+            added_at: now,
+        };
+        if let Some(r) = quince_icloud::photos_upload::refusal(&name, size) {
+            u.state = "failed".into();
+            u.error = Some(r.words());
+        }
+        queued.push((u, size));
+    }
+    if queued.is_empty() {
+        return Err("There are no photos or videos there to add.".into());
+    }
+    data.0
+        .lock()
+        .await
+        .queue_uploads(&queued.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>())
+        .map_err(|e| e.to_string())?;
+    for (u, size) in &queued {
+        say(
+            &app,
+            u,
+            if u.state == "failed" {
+                "failed"
+            } else {
+                "waiting"
+            },
+            0,
+            *size,
+            u.error.clone(),
+        );
+    }
+    if let Some((u, _)) = queued.first() {
+        say(&app, u, "planned", 0, 0, None);
+    }
+    work(app);
+    Ok(batch)
+}
+
+/// Stop uploads, by id or a whole batch: what is waiting is not sent, and the file on its way
+/// is abandoned mid-send. A photo Apple has already made stays (it is in the library, and can
+/// be deleted there).
+#[tauri::command]
+pub async fn photos_upload_cancel(
+    ids: Vec<String>,
+    batch: Option<String>,
+    app: AppHandle,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let wanted = |id: &str, b: &str| ids.iter().any(|i| i == id) || batch.as_deref() == Some(b);
+    CANCELLED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(ids.iter().cloned().chain(batch.clone()));
+    if let Some((id, b, handle)) = CURRENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+    {
+        if wanted(id, b) {
+            handle.abort();
+        }
+    }
+    let library = data.0.lock().await;
+    for u in library.unfinished_uploads().map_err(|e| e.to_string())? {
+        if wanted(&u.id, &u.batch) && u.state == "waiting" {
+            library
+                .set_upload(&u.id, "cancelled", None, None)
+                .map_err(|e| e.to_string())?;
+            say(&app, &u, "cancelled", 0, 0, None);
+        }
+    }
+    Ok(())
+}
+
+/// The queue drained, one file at a time; started on demand and at launch to resume what a
+/// quit left half done.
+pub fn work(app: AppHandle) {
+    if WORKING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let next = {
+                let data = app.state::<Data>();
+                let library = data.0.lock().await;
+                library
+                    .unfinished_uploads()
+                    .ok()
+                    .and_then(|u| u.into_iter().next())
+            };
+            let Some(u) = next else { break };
+            if !one(&app, u).await {
+                break;
+            }
+        }
+        WORKING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+/// One upload, to its end. False when the queue must pause (the session lapsed).
+async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
+    let set = |state: &str, error: Option<&str>, asset: Option<&str>| {
+        let data = app.state::<Data>();
+        let (id, state, error, asset) = (
+            u.id.clone(),
+            state.to_string(),
+            error.map(str::to_string),
+            asset.map(str::to_string),
+        );
+        async move {
+            data.0
+                .lock()
+                .await
+                .set_upload(&id, &state, error.as_deref(), asset.as_deref())
+                .ok();
+        }
+    };
+    if cancelled(&u) {
+        set("cancelled", None, None).await;
+        say(app, &u, "cancelled", 0, 0, None);
+        return true;
+    }
+    let auth = app.state::<Auth>();
+    let (http, ck, params, upload_root) = {
+        let client = auth.client.lock().await;
+        let s = client.session();
+        (
+            client.http().clone(),
+            s.service_url("ckdatabasews"),
+            client.service_params(),
+            s.service_url("photosupload"),
+        )
+    };
+    // Not signed in yet (a launch resumes before the session is back): the queue waits, and
+    // is started again by the next sync.
+    let (Some(ck), Some(upload_root)) = (ck, upload_root) else {
+        return false;
+    };
+    // Resumed after a quit: a photo Apple had already named is not made twice.
+    if let Some(asset) = u.asset.as_deref() {
+        let zc = quince_icloud::cloudkit::ZoneClient::new(
+            &http,
+            &ck,
+            quince_icloud::photos::CONTAINER,
+            params.clone(),
+        );
+        if matches!(
+            zc.lookup_record(quince_icloud::photos::ZONE, asset).await,
+            Ok(Some(_))
+        ) {
+            set("done", None, Some(asset)).await;
+            say(app, &u, "done", 1, 1, None);
+            refresh_photos(app).await;
+            return true;
+        }
+    }
+    let path = PathBuf::from(&u.path);
+    let Ok(meta) = tokio::fs::metadata(&path).await else {
+        set("failed", Some("That file is no longer there."), None).await;
+        say(
+            app,
+            &u,
+            "failed",
+            0,
+            0,
+            Some("That file is no longer there.".into()),
+        );
+        return true;
+    };
+    let size = meta.len();
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
+    let zone = jiff::tz::TimeZone::system();
+    let zone_name = zone.iana_name().unwrap_or("UTC").to_string();
+    let offset = -i64::from(jiff::Zoned::now().offset().seconds()) / 60;
+    let dsid = params
+        .iter()
+        .find(|(k, _)| k == "dsid")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    set("sending", None, None).await;
+    say(app, &u, "sending", 0, size, None);
+
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        // Cancelled while waiting to try again.
+        if attempt > 1 && cancelled(&u) {
+            set("cancelled", None, None).await;
+            say(app, &u, "cancelled", 0, size, None);
+            return true;
+        }
+        let app2 = app.clone();
+        let u2 = u.clone();
+        let last = std::sync::Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1)));
+        let progress: std::sync::Arc<dyn Fn(quince_icloud::photos_upload::Stage) + Send + Sync> =
+            std::sync::Arc::new(move |stage| {
+                use quince_icloud::photos_upload::Stage;
+                match stage {
+                    Stage::Sending(sent, total) => {
+                        // A few times a second at most: every piece would flood the window.
+                        let mut at = last
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if sent == total || at.elapsed() > Duration::from_millis(120) {
+                            *at = Instant::now();
+                            say(&app2, &u2, "sending", sent, total, None);
+                        }
+                    }
+                    Stage::Named(made) => {
+                        let (app3, id) = (app2.clone(), u2.id.clone());
+                        tauri::async_runtime::spawn(async move {
+                            let data = app3.state::<Data>();
+                            data.0
+                                .lock()
+                                .await
+                                .set_upload(&id, "verifying", None, Some(&made.asset))
+                                .ok();
+                        });
+                    }
+                    Stage::Processing(done) => {
+                        say(
+                            &app2,
+                            &u2,
+                            "verifying",
+                            (done.clamp(0.0, 100.0) as u64) * size / 100,
+                            size,
+                            None,
+                        );
+                    }
+                }
+            });
+        let (handle, registration) = futures_util::future::AbortHandle::new_pair();
+        *CURRENT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((u.id.clone(), u.batch.clone(), handle));
+        let result = futures_util::future::Abortable::new(
+            quince_icloud::photos_upload::upload(
+                &http,
+                &upload_root,
+                &dsid,
+                &path,
+                &u.name,
+                modified,
+                &zone_name,
+                offset,
+                &u.batch,
+                progress,
+            ),
+            registration,
+        )
+        .await;
+        CURRENT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Ok(result) = result else {
+            set("cancelled", None, None).await;
+            say(app, &u, "cancelled", 0, size, None);
+            // Apple may already have made it; the library shows what is true.
+            refresh_photos(app).await;
+            return true;
+        };
+        use quince_icloud::photos_upload::{Outcome, Refusal};
+        match result {
+            Ok(Outcome::Uploaded(made)) => {
+                set("done", None, Some(&made.asset)).await;
+                say(app, &u, "done", size, size, None);
+                refresh_photos(app).await;
+                return true;
+            }
+            Ok(Outcome::Refused(Refusal::Duplicate)) => {
+                set("done", Some("Already in your library."), None).await;
+                say(app, &u, "done", size, size, None);
+                return true;
+            }
+            Ok(Outcome::Refused(r)) => {
+                set("failed", Some(&r.words()), None).await;
+                say(app, &u, "failed", 0, size, Some(r.words()));
+                return true;
+            }
+            Err(quince_icloud::Error::ReauthRequired) => {
+                // Not a failure of this file: the queue waits for the session to come back.
+                set("waiting", None, None).await;
+                say(
+                    app,
+                    &u,
+                    "waiting",
+                    0,
+                    size,
+                    Some("Waiting for iCloud to sign back in.".into()),
+                );
+                return false;
+            }
+            Err(e) if attempt < 3 && !cancelled(&u) => {
+                eprintln!("photos upload of {}: try {attempt} failed: {e}", u.name);
+                tokio::time::sleep(Duration::from_secs(2 * attempt)).await;
+            }
+            Err(e) => {
+                let words = e.to_string();
+                set("failed", Some(&words), None).await;
+                say(app, &u, "failed", 0, size, Some(words));
+                return true;
+            }
+        }
+    }
+}
+
+async fn refresh_photos(app: &AppHandle) {
+    use tauri::Emitter;
+    let auth = app.state::<Auth>();
+    let data = app.state::<Data>();
+    crate::refresh::some(&auth.client, &data.0, &["photos"]).await;
+    app.emit(crate::SYNCED, crate::refresh::status(&data.0).await)
+        .ok();
 }

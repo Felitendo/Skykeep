@@ -90,5 +90,27 @@ const before = await across();
 await page.getByLabel("Zoom").fill("3");
 await page.waitForTimeout(100);
 ok((await across()) < before, `zooming in shows fewer across  ${before} → ${await across()}`);
+
+// Adding: the chosen photos go to the library, each shown in the tray as it goes; a file
+// Photos can't take says why at once; Cancel stops the rest; a clean finish clears itself.
+await page.evaluate(() => { window.__pick = ["/home/test/Pictures/beach.jpg", "/home/test/Pictures/notes.txt", "/home/test/Pictures/dog.heic"]; });
+await page.getByRole("button", { name: "Add Photos" }).click();
+await page.waitForTimeout(300);
+ok(JSON.stringify(await page.evaluate(() => window.__photoUploads?.at(-1))) === JSON.stringify(["/home/test/Pictures/beach.jpg", "/home/test/Pictures/notes.txt", "/home/test/Pictures/dog.heic"]),
+  "Add Photos sends the chosen files to the library");
+ok((await page.locator(".upload-tray").count()) === 1 && /can’t add this kind/.test(await page.locator(".upload-tray").innerText()),
+  "the tray shows the files, and why one can't be added");
+await page.evaluate(() => window.__emit("quince://photo-upload", { id: "B1:0", batch: "B1", name: "beach.jpg", within: "", folder: false, error: null, state: "sending", sent: 500, total: 1000 }));
+await page.waitForTimeout(100);
+ok(/Uploading/.test(await page.locator(".upload-tray-title").innerText()), "a file on its way shows as uploading");
+await page.locator(".upload-tray").getByRole("button", { name: "Cancel", exact: true }).click();
+await page.waitForTimeout(200);
+ok(JSON.stringify(await page.evaluate(() => window.__photoCancels?.at(-1))) === JSON.stringify({ ids: [], batch: "B1" }),
+  "Cancel stops the batch through Photos, not Drive");
+await page.evaluate(() => window.__emit("quince://photo-upload", { id: "B1:0", batch: "B1", name: "beach.jpg", within: "", folder: false, error: null, state: "cancelled", sent: 0, total: 1000 }));
+await page.waitForTimeout(100);
+ok(!/Uploading/.test(await page.locator(".upload-tray-title").innerText()), "once cancelled, nothing reads as still going");
+await page.getByRole("button", { name: "Close uploads" }).click();
+ok((await page.locator(".upload-tray").count()) === 0, "Done clears the tray");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

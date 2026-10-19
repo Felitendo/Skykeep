@@ -13,6 +13,7 @@ pub mod note_media;
 pub mod notes;
 pub mod occasions;
 pub mod photos;
+pub mod photos_upload;
 pub mod push;
 pub mod reminders;
 pub mod sync;

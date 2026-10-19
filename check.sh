@@ -55,6 +55,7 @@ step "drive names"       node .uiverify/drive-names.mjs
 step "notes autoformat"  node .uiverify/notes-autoformat.mjs
 step "reminder ticks"    node .uiverify/reminders-tick.mjs
 step "photos"            node .uiverify/photos.mjs
+step "photo albums"      node .uiverify/photos-albums.mjs
 step "notes delete"      node .uiverify/notes-delete.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs
@@ -93,6 +94,7 @@ step "webkit: drive names" env ENGINE=webkit node .uiverify/drive-names.mjs
 step "webkit: autoformat" env ENGINE=webkit node .uiverify/notes-autoformat.mjs
 step "webkit: ticks"     env ENGINE=webkit node .uiverify/reminders-tick.mjs
 step "webkit: photos"    env ENGINE=webkit node .uiverify/photos.mjs
+step "webkit: albums"    env ENGINE=webkit node .uiverify/photos-albums.mjs
 step "webkit: delete"    env ENGINE=webkit node .uiverify/notes-delete.mjs
 step "webkit: row hover" env ENGINE=webkit node .uiverify/row-hover.mjs
 step "webkit: fold"      env ENGINE=webkit node .uiverify/sidebar-fold.mjs

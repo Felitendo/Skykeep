@@ -3699,6 +3699,8 @@ fn main() {
                 eprintln!("no tray on this desktop, so closing the window quits: {e}");
             }
             show_when_ready(app.handle());
+            // Photos uploads a quit left half done carry on.
+            photos::work(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3759,6 +3761,13 @@ fn main() {
             photos::photos_in_album,
             photos::photo_set_flag,
             photos::photo_play,
+            photos::photos_upload,
+            photos::photos_upload_cancel,
+            photos::photos_album_create,
+            photos::photos_album_rename,
+            photos::photos_album_delete,
+            photos::photos_album_add,
+            photos::photos_album_remove,
             photos::photo_download,
             note_table_add_row,
             note_table_remove,

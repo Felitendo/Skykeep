@@ -33,6 +33,7 @@ export type Refresh = {
 /** Emitted by the backend whenever a refresh finishes, background ones included. */
 /** Where each uploading file's progress is announced. */
 export const UPLOAD = "quince://upload";
+export const PHOTO_UPLOAD = "quince://photo-upload";
 
 /** One file's upload, as it moves. */
 export type UploadEvent = {
@@ -98,6 +99,16 @@ export const api = {
     invoke<Photo>("photo_set_flag", { id, flag, on }),
   /** The original saved to Downloads; answers where. */
   photoDownload: (id: string) => invoke<string>("photo_download", { id }),
+  /** Photos and videos (or folders of them) into the library. Answers the batch; progress
+   * arrives as PHOTO_UPLOAD events, in the same shape as Drive's. */
+  photosUpload: (paths: string[]) => invoke<string>("photos_upload", { paths }),
+  photosAlbumCreate: (name: string) => invoke<PhotoAlbum>("photos_album_create", { name }),
+  photosAlbumRename: (id: string, name: string) => invoke<void>("photos_album_rename", { id, name }),
+  photosAlbumDelete: (id: string) => invoke<void>("photos_album_delete", { id }),
+  photosAlbumAdd: (album: string, ids: string[]) => invoke<void>("photos_album_add", { album, ids }),
+  photosAlbumRemove: (album: string, ids: string[]) => invoke<void>("photos_album_remove", { album, ids }),
+  photosUploadCancel: (ids: string[], batch?: string) =>
+    invoke<void>("photos_upload_cancel", { ids, batch: batch ?? null }),
   /** New Calendar: Apple's next unused colour; a name already in use is refused. */
   calendarCreate: (title: string) => invoke<string>("calendar_create", { title }),
   calendarUpdate: (guid: string, change: { title?: string; colour?: string }) =>

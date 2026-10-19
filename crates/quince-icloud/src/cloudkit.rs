@@ -923,6 +923,28 @@ impl ZoneClient<'_> {
         .await
     }
 
+    /// Create a record CloudKit names itself, as icloud.com creates a Photos album: no
+    /// `recordName` in the body. Answers the record made, its name with it.
+    pub async fn create_record_unnamed(
+        &self,
+        zone: &str,
+        record_type: &str,
+        fields: Value,
+    ) -> Result<Value> {
+        let answer = self
+            .modify(
+                zone,
+                json!({
+                    "operationType": "create",
+                    "record": { "recordType": record_type, "fields": fields },
+                }),
+            )
+            .await?;
+        answer.pointer("/records/0").cloned().ok_or_else(|| {
+            Error::Protocol("CloudKit made the record but did not say what it is".into())
+        })
+    }
+
     /// Remove a record outright.
     ///
     /// `forceDelete` is CloudKit's delete-regardless-of-change-tag. The alternative is to

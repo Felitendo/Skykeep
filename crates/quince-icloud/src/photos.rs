@@ -195,6 +195,9 @@ pub fn apply(
     let mut gone: Vec<String> = Vec::new();
     let mut albums: Vec<Album> = Vec::new();
     let mut albums_seen = false;
+    // Every album this pass speaks of: one deleted elsewhere arrives marked deleted, and has
+    // to leave the list rather than stay as it was.
+    let mut albums_touched: Vec<String> = Vec::new();
     // Which photo is in which album: a relation record each, named `<asset>-IN-<album>`.
     let mut in_albums: Vec<(String, String, i64)> = Vec::new();
     let mut out_of_albums: Vec<(String, String)> = Vec::new();
@@ -230,6 +233,9 @@ pub fn apply(
             }
             Some("CPLAlbum") => {
                 albums_seen = true;
+                if let Some(id) = field::record_name(r) {
+                    albums_touched.push(id);
+                }
                 // Folders and smart albums are not albums a photo is put in.
                 if field::int(r, "isDeleted") != Some(1)
                     && field::int(r, "albumType").unwrap_or(0) == 0
@@ -280,7 +286,12 @@ pub fn apply(
         library.forget_album_items(&out_of_albums)?;
         if albums_seen {
             let mut all = library.albums()?;
-            all.retain(|a| !albums.iter().any(|b| b.id == a.id) && !gone.contains(&a.id));
+            all.retain(|a| !albums_touched.contains(&a.id) && !gone.contains(&a.id));
+            for id in albums_touched.iter().chain(&gone) {
+                if !albums.iter().any(|b| &b.id == id) {
+                    library.forget_album(id)?;
+                }
+            }
             all.extend(albums);
             library.replace_albums(&all)?;
         }
@@ -328,6 +339,155 @@ pub async fn set_flag(
             serde_json::json!({ name: { "value": i64::from(on) } }),
         )
         .await
+}
+
+/// An album's name as Photos writes it: base64 of its UTF-8 bytes, untyped.
+fn album_name(name: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(name.as_bytes())
+}
+
+/// Highest position an album or an album's item may take (`MAX_SAFE_INTEGER - 1024`).
+pub const MAX_POSITION: i64 = 9_007_199_254_740_991 - 1024;
+/// Gap between items added to an album, and the first item's position.
+const ITEM_SPACING: i64 = 1024;
+
+/// A new album, made as icloud.com makes one: CloudKit names it, it sorts first (two below
+/// the first album there is), and its photos sort by date. Answers the album.
+pub async fn create_album(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    name: &str,
+    first_position: Option<i64>,
+) -> Result<Album> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let position = first_position.map_or(MAX_POSITION, |p| (p - 2).max(0));
+    let made = client
+        .create_record_unnamed(
+            ZONE,
+            "CPLAlbum",
+            serde_json::json!({
+                "albumNameEnc": { "value": album_name(name) },
+                "albumType": { "value": 0 },
+                "isDeleted": { "value": 0 },
+                "isExpunged": { "value": 0 },
+                "position": { "value": position },
+                "sortAscending": { "value": 1 },
+                "sortType": { "value": 1 },
+            }),
+        )
+        .await?;
+    Ok(Album {
+        id: field::record_name(&made).ok_or_else(|| {
+            crate::Error::Protocol("CloudKit made the album without a name".into())
+        })?,
+        name: name.to_string(),
+        position,
+        change_tag: made
+            .get("recordChangeTag")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+/// An album renamed, against its change tag. Answers the new change tag.
+pub async fn rename_album(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    album: &str,
+    change_tag: Option<&str>,
+    name: &str,
+) -> Result<Option<String>> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let now = jiff::Timestamp::now().as_millisecond();
+    let answer = client
+        .update_record(
+            ZONE,
+            album,
+            "CPLAlbum",
+            change_tag,
+            serde_json::json!({
+                "albumNameEnc": { "value": album_name(name) },
+                "userModificationDate": { "value": now },
+            }),
+        )
+        .await?;
+    Ok(answer
+        .get("recordChangeTag")
+        .and_then(Value::as_str)
+        .map(str::to_string))
+}
+
+/// An album deleted, as Photos deletes one: marked deleted. Its photos stay in the library.
+pub async fn delete_album(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    album: &str,
+    change_tag: Option<&str>,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            album,
+            "CPLAlbum",
+            change_tag,
+            serde_json::json!({ "isDeleted": { "value": 1 } }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Photos put in an album, after what is there: a `CPLContainerRelation` each, named
+/// `<asset>-IN-<album>`, 1024 apart. Answers each photo with the position it took.
+pub async fn add_to_album(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    album: &str,
+    assets: &[String],
+    last_position: Option<i64>,
+) -> Result<Vec<(String, i64)>> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let mut at = last_position.unwrap_or(ITEM_SPACING);
+    let mut added = Vec::new();
+    for asset in assets {
+        at = (at + ITEM_SPACING).min(MAX_POSITION);
+        client
+            .create_record(
+                ZONE,
+                &format!("{asset}-IN-{album}"),
+                "CPLContainerRelation",
+                serde_json::json!({
+                    "itemId": { "value": asset },
+                    "position": { "value": at },
+                    "containerId": { "value": album },
+                }),
+            )
+            .await?;
+        added.push((asset.clone(), at));
+    }
+    Ok(added)
+}
+
+/// Photos taken out of an album, as icloud.com takes them: their relation records removed
+/// outright. The photos stay in the library.
+pub async fn remove_from_album(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    album: &str,
+    assets: &[String],
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    for asset in assets {
+        client
+            .delete_record(ZONE, &format!("{asset}-IN-{album}"))
+            .await?;
+    }
+    Ok(())
 }
 
 /// The flags a photo carries that this app sets.
@@ -458,5 +618,56 @@ mod tests {
         };
         apply(&mut lib, expunged).unwrap();
         assert!(lib.photo("A1").unwrap().is_none());
+    }
+
+    /// An album deleted on another device arrives marked deleted; it leaves the list, and
+    /// its photos leave it with it (Apple leaves the relations standing), while a rename
+    /// elsewhere is taken as it comes.
+    #[test]
+    fn an_album_deleted_elsewhere_goes() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let album = |name: &str, deleted: i64| {
+            json!({"recordName": "AL", "recordType": "CPLAlbum", "fields": {
+                "albumNameEnc": {"value": base64::engine::general_purpose::STANDARD.encode(name)},
+                "albumType": {"value": 0}, "position": {"value": 5}, "isDeleted": {"value": deleted}}})
+        };
+        let relation = json!({"recordName": "A1-IN-AL", "recordType": "CPLContainerRelation", "fields": {"containerId": {"value": "AL"}, "itemId": {"value": "A1"}, "position": {"value": 1024}}});
+        let pass = |records, incremental| PhotosFetch {
+            records,
+            token: Some("T".into()),
+            incremental,
+            complete: true,
+        };
+        apply(
+            &mut lib,
+            pass(
+                vec![master(), asset(json!({})), album("Trips", 0), relation],
+                false,
+            ),
+        )
+        .unwrap();
+        assert_eq!(lib.albums().unwrap()[0].name, "Trips");
+        apply(&mut lib, pass(vec![album("Sea", 0)], true)).unwrap();
+        assert_eq!(
+            lib.albums().unwrap()[0].name,
+            "Sea",
+            "a rename elsewhere is taken"
+        );
+        apply(&mut lib, pass(vec![album("Sea", 1)], true)).unwrap();
+        assert!(
+            lib.albums().unwrap().is_empty(),
+            "a deleted album leaves the list"
+        );
+        assert!(
+            lib.album_photos("AL").unwrap().is_empty(),
+            "and its photos with it"
+        );
+        assert_eq!(
+            lib.photos(quince_core::photos::View::Library)
+                .unwrap()
+                .len(),
+            1,
+            "the photos stay in the library"
+        );
     }
 }

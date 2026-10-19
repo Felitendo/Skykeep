@@ -3,11 +3,25 @@
  * for how many across; a photo opens on a dark stage with the arrows to go through them. Everything draws from the local library at once; thumbnails come
  * from the disk cache and are fetched once.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Heart, Info, Play, RotateCcw, Trash2, X } from "lucide-react";
-import { api, messageOf, pictureSrc, type Photo, type PhotoAlbum, type PhotoView } from "../lib/ipc";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Heart, Info, Play, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import {
+  api,
+  messageOf,
+  pictureSrc,
+  PHOTO_UPLOAD,
+  type Photo,
+  type PhotoAlbum,
+  type PhotoView,
+  type UploadEvent,
+} from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Notice } from "../components/Notice";
+import { UploadTray } from "../components/UploadTray";
+import { RowMenu, type MenuEntry } from "../components/RowMenu";
 
 const VIEWS: { key: PhotoView; label: string }[] = [
   { key: "library", label: "Library" },
@@ -23,6 +37,9 @@ const ACROSS = [10, 7, 5, 3];
 
 const monthOf = (seconds: number) =>
   new Date(seconds * 1000).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+/** What Photos takes, as icloud.com's picker offers it. */
+const KINDS = ["jpg", "jpeg", "heic", "heif", "png", "gif", "tif", "tiff", "webp", "dng", "mov", "mp4", "m4v", "avi"];
 
 const clock = (s: number | null) => {
   if (!s) return "";
@@ -43,6 +60,11 @@ export function PhotosView() {
   const [open, setOpen] = useState<number | null>(null);
   const [info, setInfo] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
+  const [uploads, setUploads] = useState<Map<string, UploadEvent>>(new Map());
+  const [dropping, setDropping] = useState(false);
+  const [menu, setMenu] = useState<{ at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] } | null>(null);
+  /** An album being named in the sidebar: a new one (with the photos to put in it), or a rename. */
+  const [naming, setNaming] = useState<{ id: string | null; then: string[]; draft: string } | null>(null);
 
   const read = useCallback(async () => {
     const [list, c, a] = await Promise.all([
@@ -91,6 +113,7 @@ export function PhotosView() {
       else if (e.key.toLowerCase() === "i" && !e.metaKey && !e.ctrlKey) setInfo((v) => !v);
       // As in Photos: "." favorites, Delete sends it to Recently Deleted.
       else if (e.key === "." && current && view !== "recentlyDeleted") void change(current, "favorite", !current.favorite);
+      else if ((e.key === "Delete" || e.key === "Backspace") && current && album) void removeFrom([current]);
       else if ((e.key === "Delete" || e.key === "Backspace") && current && view !== "recentlyDeleted") void change(current, "deleted", true);
       else return;
       e.preventDefault();
@@ -135,6 +158,151 @@ export function PhotosView() {
     }
   };
 
+  /*
+   * Albums, as Photos keeps them: every change shows at once and goes to iCloud behind it; a
+   * refusal puts the list back and says why. A new album sorts first, as Photos puts it.
+   */
+  const createAlbum = async (name: string, then: string[]) => {
+    const before = albums;
+    const temp: PhotoAlbum = { id: `new:${Date.now()}`, name, position: -1, changeTag: null };
+    setAlbums((list) => [[temp, then.length], ...list]);
+    try {
+      const made = await api.photosAlbumCreate(name);
+      setAlbums((list) => list.map((x) => (x[0].id === temp.id ? [made, x[1]] : x)));
+      if (then.length) await api.photosAlbumAdd(made.id, then);
+      read().catch(() => {});
+    } catch (e) {
+      setAlbums(before);
+      setError(messageOf(e));
+    }
+  };
+
+  const renameAlbum = async (a: PhotoAlbum, name: string) => {
+    if (name === a.name) return;
+    const before = albums;
+    setAlbums((list) => list.map((x) => (x[0].id === a.id ? [{ ...x[0], name }, x[1]] : x)));
+    if (album?.id === a.id) setAlbum({ ...a, name });
+    try {
+      await api.photosAlbumRename(a.id, name);
+    } catch (e) {
+      setAlbums(before);
+      if (album?.id === a.id) setAlbum(a);
+      setError(messageOf(e));
+    }
+  };
+
+  const deleteAlbum = async (a: PhotoAlbum) => {
+    if (!window.confirm(`Delete the album “${a.name}”?\n\nThe photos in it stay in your library.`)) return;
+    const before = albums;
+    setAlbums((list) => list.filter((x) => x[0].id !== a.id));
+    if (album?.id === a.id) setAlbum(null);
+    try {
+      await api.photosAlbumDelete(a.id);
+    } catch (e) {
+      setAlbums(before);
+      setError(messageOf(e));
+    }
+  };
+
+  const addTo = async (a: PhotoAlbum, ids: string[]) => {
+    const before = albums;
+    setAlbums((list) => list.map((x) => (x[0].id === a.id ? [x[0], x[1] + ids.length] : x)));
+    try {
+      await api.photosAlbumAdd(a.id, ids);
+      setSaved(ids.length === 1 ? `Added to ${a.name}` : `${ids.length} added to ${a.name}`);
+      read().catch(() => {});
+    } catch (e) {
+      setAlbums(before);
+      setError(messageOf(e));
+    }
+  };
+
+  /** Out of the album open; the photos stay in the library. */
+  const removeFrom = async (gone: Photo[]) => {
+    if (!album) return;
+    const n = gone.length;
+    if (!window.confirm(`Remove ${n === 1 ? "this photo" : `${n} photos`} from the album?\n\n${n === 1 ? "It stays" : "They stay"} in your library.`)) return;
+    const before = photos;
+    const ids = new Set(gone.map((p) => p.id));
+    setPhotos((list) => (list ?? []).filter((x) => !ids.has(x.id)));
+    setAlbums((list) => list.map((x) => (x[0].id === album.id ? [x[0], Math.max(0, x[1] - n)] : x)));
+    setOpen((at) => {
+      if (at === null || !photos) return at;
+      const left = photos.length - n;
+      return left <= 0 ? null : Math.min(at, left - 1);
+    });
+    try {
+      await api.photosAlbumRemove(album.id, [...ids]);
+      read().catch(() => {});
+    } catch (e) {
+      setPhotos(before);
+      setError(messageOf(e));
+    }
+  };
+
+  const albumEntries = (ids: string[]): MenuEntry[] => [
+    ...albums.filter(([a]) => a.id !== album?.id && !a.id.startsWith("new:")).map(([a]) => ({ label: a.name, run: () => void addTo(a, ids) })),
+    ...(albums.length ? [null] : []),
+    { label: "New Album…", run: () => setNaming({ id: null, then: ids, draft: "" }) },
+  ];
+
+  const photoMenu = (p: Photo, at: { x: number; y: number; alignRight: boolean }) => {
+    const entries: MenuEntry[] =
+      view === "recentlyDeleted" && !album
+        ? [{ label: "Recover", run: () => void change(p, "deleted", false) }]
+        : [
+            { label: p.favorite ? "Unfavorite" : "Favorite", run: () => void change(p, "favorite", !p.favorite) },
+            { label: "Download", run: () => void download(p) },
+            null,
+            { label: "Add to Album", submenu: albumEntries([p.id]) },
+            null,
+            album
+              ? { label: "Remove from Album", danger: true, run: () => void removeFrom([p]) }
+              : { label: "Delete", danger: true, run: () => void change(p, "deleted", true) },
+          ];
+    setMenu({ at, entries });
+  };
+
+  // Enter submits and closes the field, and closing it blurs it, which would submit again
+  // with the same name still in hand: one album per name typed.
+  const namedOnce = useRef(false);
+  useEffect(() => {
+    if (naming) namedOnce.current = false;
+  }, [naming === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  const finishNaming = () => {
+    if (!naming || namedOnce.current) return;
+    namedOnce.current = true;
+    const name = naming.draft.trim();
+    setNaming(null);
+    if (!name) return;
+    if (naming.id === null) void createAlbum(name, naming.then);
+    else {
+      const a = albums.find(([x]) => x.id === naming.id)?.[0];
+      if (a) void renameAlbum(a, name);
+    }
+  };
+
+  const nameField = (
+    <input
+      className="px-source px-naming"
+      aria-label="Album name"
+      autoFocus
+      value={naming?.draft ?? ""}
+      placeholder="Untitled Album"
+      onChange={(e) => setNaming((n) => (n ? { ...n, draft: e.target.value } : n))}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") finishNaming();
+        else if (e.key === "Escape") {
+          namedOnce.current = true;
+          setNaming(null);
+        }
+        e.stopPropagation();
+      }}
+      onBlur={finishNaming}
+      onFocus={(e) => e.currentTarget.select()}
+    />
+  );
+
   const play = async (p: Photo) => {
     try {
       await api.photoPlay(p.id);
@@ -152,11 +320,94 @@ export function PhotosView() {
     }
   };
 
+  // Uploads report as they go; a finished one never goes back, as events can pass each other.
+  // The library itself is redrawn by the sync each landed photo starts.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    listen<UploadEvent>(PHOTO_UPLOAD, (event) => {
+      const u = event.payload;
+      setUploads((was) => {
+        const before = was.get(u.id);
+        if (before && (before.state === "done" || before.state === "failed" || before.state === "cancelled")) return was;
+        return new Map(was).set(u.id, u);
+      });
+    })
+      .then((unlisten) => {
+        const quietly = () => {
+          try {
+            void Promise.resolve(unlisten() as unknown).catch(() => {});
+          } catch {
+            // Nothing was listening.
+          }
+        };
+        if (cancelled) quietly();
+        else stop = quietly;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
+  const dismissUploads = useCallback(() => setUploads(new Map()), []);
+
+  const add = useCallback(async (paths: string[]) => {
+    if (paths.length === 0) return;
+    try {
+      await api.photosUpload(paths);
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  }, []);
+
+  const choose = async () => {
+    try {
+      const chosen = await openFileDialog({
+        multiple: true,
+        title: "Add to iCloud Photos",
+        filters: [{ name: "Photos and Videos", extensions: KINDS }],
+      });
+      if (chosen) await add(Array.isArray(chosen) ? chosen : [chosen]);
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  };
+
+  // Photos and videos dropped on the window go into the library. Outside the app shell there
+  // is no webview to ask; the button still works.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (event.payload.type === "over") setDropping(true);
+          else if (event.payload.type === "leave") setDropping(false);
+          else if (event.payload.type === "drop") {
+            setDropping(false);
+            void add(event.payload.paths);
+          }
+        })
+        .then((unlisten) => {
+          if (cancelled) unlisten();
+          else stop = unlisten;
+        })
+        .catch(() => {});
+    } catch {
+      // No drag and drop here.
+    }
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [add]);
+
   const title = album?.name ?? VIEWS.find((v) => v.key === view)?.label ?? "Photos";
   const across = ACROSS[zoom];
 
   return (
-    <div className="px">
+    <div className={`px${dropping ? " is-dropping" : ""}`}>
       <aside className="px-side" aria-label="Photos">
         <p className="px-side-heading">Photos</p>
         {VIEWS.map((v) => (
@@ -174,24 +425,43 @@ export function PhotosView() {
             {counts[v.key] ? <span className="px-count">{counts[v.key]}</span> : null}
           </button>
         ))}
-        {albums.length > 0 && (
-          <>
-            <p className="px-side-heading">Albums</p>
-            {albums.map(([a, n]) => (
-              <button
-                key={a.id}
-                className="px-source"
-                aria-current={album?.id === a.id}
-                onClick={() => {
-                  setAlbum(a);
-                  setOpen(null);
-                }}
-              >
-                <span>{a.name}</span>
-                {n ? <span className="px-count">{n}</span> : null}
-              </button>
-            ))}
-          </>
+        <div className="px-side-row">
+          <p className="px-side-heading">Albums</p>
+          <button className="px-side-add" aria-label="New Album" title="New Album" onClick={() => setNaming({ id: null, then: [], draft: "" })}>
+            <Plus size={14} strokeWidth={2} aria-hidden="true" />
+          </button>
+        </div>
+        {naming?.id === null && nameField}
+        {albums.map(([a, n]) =>
+          naming?.id === a.id ? (
+            <span key={a.id}>{nameField}</span>
+          ) : (
+            <button
+              key={a.id}
+              className="px-source"
+              aria-current={album?.id === a.id}
+              onClick={() => {
+                setAlbum(a);
+                setOpen(null);
+              }}
+              onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                if (a.id.startsWith("new:")) return;
+                setMenu({
+                  at: { x: e.clientX, y: e.clientY, alignRight: false },
+                  entries: [
+                    { label: "Rename Album", run: () => setNaming({ id: a.id, then: [], draft: a.name }) },
+                    null,
+                    { label: "Delete Album", danger: true, run: () => void deleteAlbum(a) },
+                  ],
+                });
+              }}
+            >
+              <span>{a.name}</span>
+              {n ? <span className="px-count">{n}</span> : null}
+            </button>
+          ),
         )}
       </aside>
 
@@ -213,6 +483,9 @@ export function PhotosView() {
               onChange={(e) => setZoom(Number(e.target.value))}
             />
           </label>
+          <button className="px-add" onClick={() => void choose()} title="Add photos and videos" aria-label="Add Photos">
+            <Plus size={16} strokeWidth={2} aria-hidden="true" />
+          </button>
         </header>
 
         {photos && photos.length === 0 && (
@@ -239,6 +512,10 @@ export function PhotosView() {
                     className="px-tile"
                     aria-label={`${photo.filename ?? "Photo"}, ${new Date(photo.takenAt * 1000).toLocaleString()}`}
                     onClick={() => setOpen(index)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      photoMenu(photo, { x: e.clientX, y: e.clientY, alignRight: false });
+                    }}
                   >
                     <img src={pictureSrc(photo.id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
                     {photo.kind === "video" && (
@@ -282,9 +559,27 @@ export function PhotosView() {
                   >
                     <Heart size={17} fill={shown.favorite ? "currentColor" : "none"} />
                   </button>
-                  <button className="px-icon" aria-label="Delete" title="Delete (Delete)" onClick={() => void change(shown, "deleted", true)}>
-                    <Trash2 size={17} />
+                  <button
+                    className="px-icon"
+                    aria-label="Add to Album"
+                    aria-haspopup="menu"
+                    title="Add to Album"
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenu({ at: { x: r.right, y: r.bottom + 4, alignRight: true }, entries: albumEntries([shown.id]) });
+                    }}
+                  >
+                    <CopyPlus size={17} />
                   </button>
+                  {album ? (
+                    <button className="px-icon" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown])}>
+                      <CopyMinus size={17} />
+                    </button>
+                  ) : (
+                    <button className="px-icon" aria-label="Delete" title="Delete (Delete)" onClick={() => void change(shown, "deleted", true)}>
+                      <Trash2 size={17} />
+                    </button>
+                  )}
                 </>
               )}
               <button className="px-icon" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
@@ -342,6 +637,8 @@ export function PhotosView() {
           {saved}
         </p>
       )}
+      {menu && <RowMenu at={menu.at} entries={menu.entries} onClose={() => setMenu(null)} />}
+      <UploadTray uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />
     </div>
   );
 }

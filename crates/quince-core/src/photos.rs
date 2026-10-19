@@ -80,6 +80,21 @@ pub struct Album {
     pub change_tag: Option<String>,
 }
 
+/// A file on its way into Photos: waiting, sending, verifying (Apple making the photo), done,
+/// failed (with why) or cancelled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Upload {
+    pub id: String,
+    pub batch: String,
+    pub path: String,
+    pub name: String,
+    pub state: String,
+    pub error: Option<String>,
+    pub asset: Option<String>,
+    pub added_at: i64,
+}
+
 /// Which photos a view shows.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -232,6 +247,65 @@ impl Library {
         Ok(out)
     }
 
+    /// Files added to the upload queue, waiting.
+    pub fn queue_uploads(&mut self, uploads: &[Upload]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for u in uploads {
+            tx.execute(
+                "INSERT OR IGNORE INTO photo_uploads (id, batch, path, name, state, error, asset, added_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![u.id, u.batch, u.path, u.name, u.state, u.error, u.asset, u.added_at],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// An upload's state set, with why it failed or the photo it made.
+    pub fn set_upload(
+        &self,
+        id: &str,
+        state: &str,
+        error: Option<&str>,
+        asset: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE photo_uploads SET state = ?2, error = ?3, asset = COALESCE(?4, asset) WHERE id = ?1",
+            params![id, state, error, asset],
+        )?;
+        Ok(())
+    }
+
+    /// Uploads not yet finished, oldest first: what a launch resumes.
+    pub fn unfinished_uploads(&self) -> Result<Vec<Upload>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, batch, path, name, state, error, asset, added_at FROM photo_uploads
+             WHERE state IN ('waiting', 'sending', 'verifying') ORDER BY added_at, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Upload {
+                id: r.get(0)?,
+                batch: r.get(1)?,
+                path: r.get(2)?,
+                name: r.get(3)?,
+                state: r.get(4)?,
+                error: r.get(5)?,
+                asset: r.get(6)?,
+                added_at: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Finished uploads forgotten once their batch is: what the tray no longer shows.
+    pub fn forget_finished_uploads(&self) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM photo_uploads WHERE state IN ('done', 'failed', 'cancelled')",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// The albums, replaced by `albums`.
     pub fn replace_albums(&mut self, albums: &[Album]) -> Result<()> {
         let tx = self.conn.transaction()?;
@@ -293,6 +367,39 @@ impl Library {
         ))?;
         let rows = stmt.query_map(params![album], row_to_photo)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// One album added or changed, as Apple answered a write.
+    pub fn put_album(&mut self, a: &Album) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO photo_albums (id, name, position, change_tag) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, position = excluded.position,
+             change_tag = excluded.change_tag",
+            params![a.id, a.name, a.position, a.change_tag],
+        )?;
+        Ok(())
+    }
+
+    /// An album gone, and which photos were in it with it. Apple leaves a deleted album's
+    /// relation records standing, so they are dropped here.
+    pub fn forget_album(&mut self, id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM photo_albums WHERE id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM photo_album_items WHERE album = ?1",
+            params![id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Where the album's last photo sits, so what is added goes after it.
+    pub fn album_last_position(&self, album: &str) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            "SELECT MAX(position) FROM photo_album_items WHERE album = ?1",
+            params![album],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn albums(&self) -> Result<Vec<Album>> {
