@@ -607,8 +607,18 @@ fn set_varint_field(message: &[u8], tag: u64, value: u64) -> Option<Vec<u8>> {
 /// identifiers Apple uses to merge edits. Only the lengths move.
 fn rebuild_note(note: &[u8], old_text: &str, new_text: &str) -> Option<Vec<u8>> {
     // Each edit on its own, the last first, so the offsets of those before it still hold.
-    let hunks = utf16_hunks(old_text, new_text);
+    rebuild_note_with(note, old_text, new_text, &utf16_hunks(old_text, new_text))
+}
 
+/// [`rebuild_note`] with the edit's place given rather than worked out from the two texts.
+/// A text of identical characters, such as a table's ordered set, says nothing about where
+/// one went in or came out; the caller does.
+fn rebuild_note_with(
+    note: &[u8],
+    old_text: &str,
+    new_text: &str,
+    hunks: &[(u64, u64, u64)],
+) -> Option<Vec<u8>> {
     // The merge records have to say what the text now says, or the phone shows what they
     // say instead: edits made here arrived as text repeated, or lines that would not go.
     let records = match crate::topotext::Topo::read(note) {
@@ -722,6 +732,33 @@ pub(crate) fn rewrite_text_object(
     new_text: &str,
 ) -> Option<Vec<u8>> {
     rebuild_note(object, old_text, new_text)
+}
+
+/// [`rewrite_text_object`] for one edit at a known place: `removed` characters from character
+/// `at` replaced by `inserted`.
+pub(crate) fn rewrite_text_object_at(
+    object: &[u8],
+    old_text: &str,
+    at: usize,
+    removed: usize,
+    inserted: &str,
+) -> Option<Vec<u8>> {
+    let chars: Vec<char> = old_text.chars().collect();
+    if at + removed > chars.len() {
+        return None;
+    }
+    let units = |cs: &[char]| cs.iter().map(|c| c.len_utf16() as u64).sum::<u64>();
+    let from = units(&chars[..at]);
+    let gone = units(&chars[at..at + removed]);
+    let mut new_text: String = chars[..at].iter().collect();
+    new_text.push_str(inserted);
+    new_text.extend(&chars[at + removed..]);
+    rebuild_note_with(
+        object,
+        old_text,
+        &new_text,
+        &[(from, gone, utf16_len(inserted))],
+    )
 }
 
 /// What to change about one paragraph's setting.
@@ -1051,6 +1088,12 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
         pieces.push(piece);
     }
 
+    // An attachment has one place in one note. Notes on a phone lagged and crashed over a note
+    // this app had saved with a table referenced twice and references to deleted tables, so
+    // nothing is written unless every reference is one the note already had, used once, on a
+    // single attachment character.
+    attachments_sound(&old, &pieces, &units)?;
+
     let mut out = Vec::with_capacity(note.len() + 64);
     let mut reader = Reader::new(note);
     let mut wrote = false;
@@ -1076,6 +1119,31 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
         }
     }
     ensure_versions(&rewrite(&plain, &TEXT_PATH[..2], &out)?)
+}
+
+/// `Some(())` when the attachment references in `new` runs (over `units`) are sound against
+/// `old`: each one already in `old`, none used twice, and each on a run of exactly one
+/// object-replacement character.
+fn attachments_sound(old: &[Vec<u8>], new: &[Vec<u8>], units: &[u16]) -> Option<()> {
+    let id_of =
+        |run: &[u8]| bytes_field(run, ATTACHMENT_INFO).and_then(|info| bytes_field(&info, 1));
+    let had: std::collections::HashSet<Vec<u8>> = old.iter().filter_map(|r| id_of(r)).collect();
+    let mut used = std::collections::HashSet::new();
+    let mut at = 0usize;
+    for run in new {
+        let length = usize::try_from(run_length(run)).ok()?;
+        if let Some(id) = id_of(run) {
+            if length != 1
+                || units.get(at) != Some(&0xFFFC)
+                || !had.contains(&id)
+                || !used.insert(id)
+            {
+                return None;
+            }
+        }
+        at += length;
+    }
+    Some(())
 }
 
 /// The text and its formatting together: the text replaced as [`replace_text`] replaces it,
@@ -2809,6 +2877,39 @@ mod run_tests {
         }];
         let cleared = runs_from_base64(&B64.encode(set_runs(&doc, &plain).unwrap()));
         assert_eq!(cleared[0].start, None, "a plain line kept a list's start");
+    }
+
+    /// A save never writes an attachment twice, one the note did not have, or one off its own
+    /// object-replacement character: the shape that made Notes on a phone lag and crash.
+    #[test]
+    fn attachment_references_stay_sound() {
+        let run = |len: u64, id: Option<&[u8]>| {
+            let mut r = Vec::new();
+            varint(1 << 3, &mut r);
+            varint(len, &mut r);
+            if let Some(id) = id {
+                let mut info = Vec::new();
+                len_field(1, id, &mut info);
+                len_field(12, &info, &mut r);
+            }
+            r
+        };
+        let old = vec![run(1, Some(b"A")), run(1, None)];
+        let units: Vec<u16> = "\u{FFFC}\u{FFFC}".encode_utf16().collect();
+        assert!(attachments_sound(&old, &[run(1, Some(b"A")), run(1, None)], &units).is_some());
+        assert!(
+            attachments_sound(&old, &[run(1, Some(b"A")), run(1, Some(b"A"))], &units).is_none(),
+            "twice"
+        );
+        assert!(
+            attachments_sound(&old, &[run(1, Some(b"B")), run(1, None)], &units).is_none(),
+            "not the note's"
+        );
+        let text: Vec<u16> = "a\u{FFFC}".encode_utf16().collect();
+        assert!(
+            attachments_sound(&old, &[run(1, Some(b"A")), run(1, None)], &text).is_none(),
+            "off its character"
+        );
     }
 
     /// A style is the line's: one set on half a line covers all of it, from its newline.

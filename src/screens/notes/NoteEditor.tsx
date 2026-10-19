@@ -5,11 +5,36 @@ import { EditorView } from "prosemirror-view";
 import { history, undo, redo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror-commands";
-import type { Node as PMNode } from "prosemirror-model";
+import { Fragment, Slice, type Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
 import { fromDoc, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
 import { api, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
 import { RowMenu, type MenuEntry } from "../../components/RowMenu";
+
+/** `content` with every attachment taken out, a table's cells kept as text in its place. */
+function withoutAttachments(content: Fragment): Fragment {
+  const kept: PMNode[] = [];
+  content.forEach((node) => {
+    if (node.type === schema.nodes.attachment) {
+      const text = node.textContent || (node.type.spec.leafText?.(node) ?? "");
+      if (text) kept.push(schema.text(text.replace(/\s*\n\s*/g, " ")));
+      return;
+    }
+    kept.push(node.isLeaf ? node : node.copy(withoutAttachments(node.content)));
+  });
+  return Fragment.fromArray(kept);
+}
+
+/** Every table on screen, by its element: how to read it again. */
+const liveTables = new Map<HTMLElement, () => void>();
+
+/** Every table on screen read again — after a sync, for a change made on another device. */
+export function refreshTables() {
+  liveTables.forEach((read) => read());
+}
+
+/** Whether tables can be edited here. Off until an edit made here is seen on an iPhone. */
+const TABLE_WRITES = false;
 
 /** A table's right-click menu: drawn by the editor that holds the table, opened by a cell. */
 type CellMenu = { at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] };
@@ -122,9 +147,11 @@ function attachmentView(node: PMNode) {
       row.forEach((cell, c) => {
         const td = tr.insertCell();
         const was = cell.trimEnd();
-        if (!id) {
+        // Read-only for now: what Quince wrote to a table was stored at Apple but did not show
+        // on his iPhone, so no table is written until a write is seen there.
+        if (!id || !TABLE_WRITES) {
           td.textContent = was;
-          td.className = "nf-cell-empty";
+          td.className = was ? "nf-cell" : "nf-cell-empty";
           return;
         }
         // Right-click, as in Notes: a row added above or below this one.
@@ -137,6 +164,13 @@ function attachmentView(node: PMNode) {
               (err) => { dom.classList.remove("is-saving"); dom.title = String(err); },
             );
           };
+          const remove = (at: number, column: boolean) => () => {
+            dom.classList.add("is-saving");
+            api.noteTableRemove(id, at, column).then(
+              (next) => { dom.classList.remove("is-saving"); draw(next); },
+              (err) => { dom.classList.remove("is-saving"); dom.title = String(err); },
+            );
+          };
           openCellMenu?.({
             at: { x: e.clientX, y: e.clientY, alignRight: false },
             entries: [
@@ -145,6 +179,10 @@ function attachmentView(node: PMNode) {
               null,
               { label: "Add Column Before", run: add(c, true) },
               { label: "Add Column After", run: add(c + 1, true) },
+              null,
+              // A table keeps at least one row and one column, as Notes does.
+              ...(cells.length > 1 ? [{ label: "Delete Row", danger: true, run: remove(r, false) }] : []),
+              ...((cells[0]?.length ?? 0) > 1 ? [{ label: "Delete Column", danger: true, run: remove(c, true) }] : []),
             ],
           });
         });
@@ -202,9 +240,21 @@ function attachmentView(node: PMNode) {
       },
       () => {},
     );
+    // Read again after every sync, so a table typed in on a phone shows its new cells here
+    // without leaving the note; drawn again only when they changed.
+    liveTables.set(dom, () => {
+      if (!dom.classList.contains("is-table")) return;
+      api.noteTable(id).then(
+        (cells) => {
+          if (cells && cells.length && JSON.stringify(cells) !== JSON.stringify(tableCells.get(id))) draw(cells);
+        },
+        () => {},
+      );
+    });
   }
   return {
     dom,
+    destroy: () => void liveTables.delete(dom),
     ignoreMutation: () => true,
     // A cell's keys, clicks and typing are the cell's, not the note editor's.
     stopEvent: (e: Event) => Boolean((e.target as HTMLElement | null)?.closest?.(".nf-cell-edit, .nf-image, .nf-doc, .nf-file")),
@@ -440,6 +490,20 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         v.updateState(next);
         if (tr.docChanged) reportSoon();
         callbacks.current.onStatus?.(statusOf(next));
+      },
+      // A paste never brings an attachment's reference: Apple keeps each table or picture in
+      // one place in one note, and a pasted copy referred to the same one twice, which made
+      // Notes on a phone lag and crash. The copy's text (a table's cells) comes instead.
+      // A pasted table, as Notes pastes one into text: a line per row, its cells by tabs.
+      transformPastedHTML(html) {
+        return html
+          .replace(/<\/t[dh]>\s*<t[dh][^>]*>/gi, "\t")
+          .replace(/<tr[^>]*>/gi, "<p>")
+          .replace(/<\/tr>/gi, "</p>")
+          .replace(/<\/?(table|tbody|thead|tfoot|td|th)[^>]*>/gi, "");
+      },
+      transformPasted(slice) {
+        return new Slice(withoutAttachments(slice.content), slice.openStart, slice.openEnd);
       },
       // Lists typed as on the phone: "- " a dashed list, "* " a bulleted one, "1. " a numbered
       // one; in a dashed line "[ ] " or "[x] " makes it a checklist item, so "- [ ] " works

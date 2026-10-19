@@ -307,6 +307,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           (window.__rowAdds ??= []).push(args);
           return t.map((r) => r.slice());
         }
+        case "note_table_remove": {
+          const t = (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]);
+          if (args.column) t.forEach((r) => r.splice(args.at, 1));
+          else t.splice(args.at, 1);
+          (window.__removes ??= []).push(args);
+          return t.map((r) => r.slice());
+        }
         case "note_table_set_cell": {
           (window.__cellWrites ??= []).push(args);
           await new Promise((r) => setTimeout(r, 300));

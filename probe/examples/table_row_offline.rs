@@ -31,6 +31,19 @@ fn main() {
                 }
             );
         }
+        // The new top row saved beside the table, for its merge records to be read.
+        if let (Some(out), Ok(dir)) = (
+            quince_icloud::table::with_row(&doc, 0),
+            std::env::var("QUINCE_DUMP"),
+        ) {
+            std::fs::write(format!("{dir}/{name}-row0.bin"), out).ok();
+        }
+        if let (Some(out), Ok(dir)) = (
+            quince_icloud::table::without_row(&doc, 0),
+            std::env::var("QUINCE_DUMP"),
+        ) {
+            std::fs::write(format!("{dir}/{name}-del0.bin"), out).ok();
+        }
         for at in [0, grid.len() / 2, grid.len()] {
             match quince_icloud::table::with_row(&doc, at) {
                 None => println!(

@@ -2505,6 +2505,44 @@ pub async fn add_table_line_cloudkit(
         .ok_or_else(|| Error::Protocol("Apple kept a table this cannot read back".into()))
 }
 
+/// A table with the row (`column` false) or column at `at` deleted, as a phone deletes one,
+/// written against Apple's exact version and read back.
+pub async fn remove_table_line_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    attachment: &str,
+    column: bool,
+    at: usize,
+) -> Result<Vec<Vec<String>>> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .edit_record(ZONE, attachment, "Attachment", |record| {
+            let current = record
+                .pointer("/fields/MergeableDataEncrypted/value")?
+                .as_str()?;
+            let edited = crate::table::without_line_in_base64(current, column, at)?;
+            Some(serde_json::json!({
+                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited }
+            }))
+        })
+        .await?
+        .ok_or_else(|| {
+            Error::Refused(format!(
+                "That {} can’t be deleted here: a table keeps at least one, or it holds something Quince can’t rewrite exactly.",
+                if column { "column" } else { "row" }
+            ))
+        })?;
+    client
+        .lookup_record(ZONE, attachment)
+        .await?
+        .ok_or(Error::NotFound)?
+        .pointer("/fields/MergeableDataEncrypted/value")
+        .and_then(Value::as_str)
+        .and_then(crate::table::cells_from_base64)
+        .ok_or_else(|| Error::Protocol("Apple kept a table this cannot read back".into()))
+}
+
 /// A table cell set to `text`.
 pub async fn set_table_cell_cloudkit(
     http: &reqwest::Client,

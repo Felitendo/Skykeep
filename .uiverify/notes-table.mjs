@@ -1,6 +1,5 @@
-// A table in a note, drawn as its grid and edited in place: a typed cell takes typing as its
-// own (the note's text is untouched), saves when left, and goes back with the reason if Apple
-// refuses; an empty cell takes typing like any other.
+// A table in a note, drawn as its grid, its text colour shown, and copied as its cells.
+// Editing is off until an edit made here is seen on an iPhone.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
@@ -18,27 +17,12 @@ await page.waitForSelector(".nf-table");
 const grid = await page.locator(".nf-table tr").evaluateAll((rows) => rows.map((r) => [...r.cells].map((c) => c.textContent)));
 ok(JSON.stringify(grid) === JSON.stringify([["Item", "Qty"], ["Milk", "2"], ["", ""]]), `the table is drawn as its grid  ${JSON.stringify(grid)}`);
 
-const milk = page.locator(".nf-cell-edit", { hasText: "Milk" });
-await milk.click();
-await page.keyboard.press("End");
-await page.keyboard.type(" (oat)");
-await page.keyboard.press("Enter");
-await page.waitForTimeout(100);
-ok((await milk.textContent()) === "Milk (oat)", "a cell takes typing and shows it at once");
-await page.waitForTimeout(400);
-const writes = await page.evaluate(() => window.__cellWrites);
-ok(writes?.length === 1 && writes[0].row === 1 && writes[0].column === 0 && writes[0].text === "Milk (oat)", `the cell, and only it, goes to Apple  ${JSON.stringify(writes)}`);
-const saves = await page.evaluate(() => window.__noteSaves?.length ?? 0);
-ok(saves === 0, "typing in a cell leaves the note's own text alone");
-
-await page.evaluate(() => { window.__cellFail = true; });
-const qty = page.locator(".nf-cell-edit", { hasText: "2" });
-await qty.click();
-await page.keyboard.press("End");
-await page.keyboard.type("0");
-await page.keyboard.press("Enter");
-await page.waitForTimeout(500);
-ok((await qty.textContent()) === "2" && /refused/.test((await qty.getAttribute("title")) ?? ""), "a change Apple refuses goes back, and says why");
+// Read-only for now: Quince's table edits were stored at Apple but did not show on the
+// iPhone, so no cell is offered for typing and no table menu opens.
+ok((await page.locator(".nf-cell-edit").count()) === 0, "no table cell is offered for typing while table writes are off");
+await page.locator(".nf-table tr").nth(1).locator("td").first().click({ button: "right" });
+ok((await page.getByRole("menuitem", { name: /Add Row|Delete Row/ }).count()) === 0, "and right-click offers no row or column changes");
+await page.keyboard.press("Escape");
 const coloured = await page.locator(".note-rich .nf-em-4").evaluateAll((e) => e.map((x) => [x.textContent, getComputedStyle(x).color]));
 ok(coloured.length === 1 && coloured[0][0] === "end" && !/rgb\(29, 29, 31\)|rgb\(0, 0, 0\)/.test(coloured[0][1]), `text coloured on a phone shows in its colour  ${JSON.stringify(coloured)}`);
 // Copying the note puts the table's cells out, never a placeholder word.
@@ -55,28 +39,46 @@ const copied = await page.evaluate(() => {
     done({ text: data.getData("text/plain"), html: data.getData("text/html") });
   }, 50));
 });
-ok(!/Attachment/.test(copied.text + copied.html) && /Item\tQty/.test(copied.text) && /<td>Milk \(oat\)<\/td>/.test(copied.html), `copying a table copies its cells  ${JSON.stringify(copied).slice(0, 300)}`);
-// An empty cell takes typing too: tables made on a phone hold an empty text for every cell.
-const empty = page.locator(".nf-table tr").nth(2).locator(".nf-cell-edit").first();
-ok((await page.locator(".nf-cell-empty").count()) === 0 && (await empty.count()) === 1, "an empty cell is offered for editing");
-await page.evaluate(() => { window.__cellFail = false; window.__cellWrites = []; });
-await empty.click();
-await page.keyboard.type("Bread");
-await page.keyboard.press("Enter");
-await page.waitForTimeout(400);
-const w2 = await page.evaluate(() => window.__cellWrites);
-ok((await empty.textContent()) === "Bread" && w2?.length === 1 && w2[0].row === 2 && w2[0].column === 0 && w2[0].text === "Bread", `typing in an empty cell saves it  ${JSON.stringify(w2)}`);
-// Right-click a cell: a row added below it, as Notes adds one.
-await page.locator(".nf-table tr").nth(1).locator("td").first().click({ button: "right" });
-await page.getByRole("menuitem", { name: "Add Row Below" }).click();
-await page.waitForTimeout(300);
-const grown = await page.locator(".nf-table tr").evaluateAll((rows) => rows.map((r) => [...r.cells].map((c) => c.textContent)));
-const asked = await page.evaluate(() => window.__rowAdds?.at(-1));
-ok(grown.length === 4 && grown[2].every((c) => c === "") && asked?.at === 2, `Add Row Below adds an empty row under the one clicked  ${JSON.stringify(grown)} ${JSON.stringify(asked)}`);
-await page.locator(".nf-table tr").first().locator("td").nth(1).click({ button: "right" });
-await page.getByRole("menuitem", { name: "Add Column Before" }).click();
-await page.waitForTimeout(300);
-const wider = await page.locator(".nf-table tr").first().evaluate((r) => [...r.cells].map((c) => c.textContent));
-ok(JSON.stringify(wider) === JSON.stringify(["Item", "", "Qty"]), `Add Column Before adds an empty column before the one clicked  ${JSON.stringify(wider)}`);
+ok(!/Attachment/.test(copied.text + copied.html) && /Item\tQty/.test(copied.text) && /<td>Milk<\/td>/.test(copied.html), `copying a table copies its cells  ${JSON.stringify(copied).slice(0, 300)}`);
+// Pasting a copied table never makes a second reference to it: the save holds it once.
+await page.evaluate(() => {
+  const ed = document.querySelector(".note-rich");
+  ed.focus();
+  const range = document.createRange();
+  range.selectNodeContents(ed);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+});
+await page.waitForTimeout(50);
+await page.evaluate(() => {
+  const ed = document.querySelector(".note-rich");
+  const data = new DataTransfer();
+  ed.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true }));
+  const last = ed.lastElementChild;
+  const range = document.createRange();
+  range.selectNodeContents(last);
+  range.collapse(false);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  window.__pasteData = data;
+});
+await page.waitForTimeout(80);
+await page.evaluate(() => {
+  const ed = document.querySelector(".note-rich");
+  ed.dispatchEvent(new ClipboardEvent("paste", { clipboardData: window.__pasteData, bubbles: true, cancelable: true }));
+});
+await page.waitForTimeout(1500);
+const pasted = await page.evaluate(() => window.__noteSaves?.at(-1));
+const refs = (pasted?.runs ?? []).filter((r) => r.attachment === "T1").length;
+ok(pasted && refs === 1 && (pasted.body.match(/\uFFFC/g) ?? []).length === 1 && /Item\tQty\nMilk\t2/.test(pasted.body), `a pasted table brings its cells as text, never a second reference  refs=${refs} ${JSON.stringify(pasted?.body)}`);
+// Typed in on a phone while the note is open: the next sync redraws the table, without
+// leaving the note.
+await page.evaluate(() => {
+  window.__table[2] = ["Bread", "1"];
+  window.__emit("quince://synced", { services: [], asOf: Date.now() / 1000, tookMs: 5 });
+});
+await page.waitForTimeout(500);
+const after = await page.locator(".nf-table tr").nth(2).evaluate((r) => [...r.cells].map((c) => c.textContent));
+ok(JSON.stringify(after) === JSON.stringify(["Bread", "1"]), `a table changed elsewhere redraws after the next sync  ${JSON.stringify(after)}`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

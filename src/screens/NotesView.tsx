@@ -7,7 +7,7 @@ import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/
 import { RowMenu } from "../components/RowMenu";
 import { FormattedBody, type Run } from "./notes/Formatted";
 import { carryRuns, runsFit } from "./notes/rich";
-import { NoteEditor, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
+import { NoteEditor, refreshTables, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
 import { FormatPanel } from "./notes/FormatPanel";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
@@ -56,6 +56,10 @@ export function NotesView() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { revision } = useSync();
+  // Tables on screen keep up with a phone's edits, as the note's text does.
+  useEffect(() => {
+    if (revision) refreshTables();
+  }, [revision]);
   /** The body being typed, held apart from the note until it is saved. */
   const [draft, setDraft] = useState<string | null>(null);
   /** `draft`, for effects that read it without re-running on every keystroke. */

@@ -323,10 +323,18 @@ pub fn with_cell(document: &[u8], row: usize, column: usize, text: &str) -> Opti
         .map(|b| String::from_utf8_lossy(b).into_owned())
         .unwrap_or_default();
 
+    let writers = bytes(&data, 7).next()?;
     let rebuild = |new_text: &str| -> Option<Vec<u8>> {
-        let new_string = crate::ckdocument::rewrite_text_object(string, &old, new_text)?;
+        let (new_string, new_writers) = edit_table_text(string, writers, |lent| {
+            crate::ckdocument::rewrite_text_object(lent, &old, new_text)
+        })?;
         let new_object = splice(object, 10, 0, &new_string)?;
-        let new_data = splice(data_bytes, 3, cell, &new_object)?;
+        let new_data = splice(
+            &splice(data_bytes, 3, cell, &new_object)?,
+            7,
+            0,
+            &new_writers,
+        )?;
         let new_version = splice(version_bytes, 3, 0, &new_data)?;
         splice(document, 2, 0, &new_version)
     };
@@ -342,6 +350,34 @@ pub fn with_cell(document: &[u8], row: usize, column: usize, text: &str) -> Opti
     // And what was written reads back as meant.
     let read = cells(&out)?;
     (read.get(row)?.get(column)? == text).then_some(out)
+}
+
+/// A table's text (a cell or an ordered set's) edited by `edit`, against the writer list
+/// the table keeps once for all its texts (document field 7, `ttTimestamp`): a phone writes
+/// none in the text itself, and ids in a table's texts count from the document's list. The
+/// list is lent to the text for the edit and taken back out, so this installation joins it
+/// as the next writer instead of claiming the phone's number. Answers the text and the
+/// document's list as they now are. A text that already carries a list of its own is
+/// refused: no device writes one, so its ids cannot be read against the document's.
+fn edit_table_text(
+    text: &[u8],
+    writers: &[u8],
+    edit: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    if bytes(&fields(text)?, 4).next().is_some() {
+        return None;
+    }
+    let mut lent = text.to_vec();
+    put_len(4, writers, &mut lent);
+    let edited = edit(&lent)?;
+    let new_writers = bytes(&fields(&edited)?, 4).next()?.to_vec();
+    let mut back = Vec::with_capacity(edited.len());
+    for (tag, raw) in raw_fields(&edited)? {
+        if tag != 4 {
+            back.extend_from_slice(raw);
+        }
+    }
+    Some((back, new_writers))
 }
 
 /// Each field of a message with its whole encoding (key, length and payload), in order.
@@ -532,14 +568,11 @@ fn with_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
     let saf = fields(string_array)?;
     let text = bytes(&saf, 1).next()?;
     let live = count;
+    // In at `at` itself: the text is all one character, so only the place says which.
     let old_text: String = std::iter::repeat_n('\u{FFFC}', live).collect();
-    let mut new_text = old_text.clone();
-    let byte_at = old_text
-        .char_indices()
-        .nth(at)
-        .map_or(old_text.len(), |(i, _)| i);
-    new_text.insert(byte_at, '\u{FFFC}');
-    let new_string = crate::ckdocument::rewrite_text_object(text, &old_text, &new_text)?;
+    let (new_string, new_writers) = edit_table_text(text, bytes(&data, 7).next()?, |lent| {
+        crate::ckdocument::rewrite_text_object_at(lent, &old_text, at, 0, "\u{FFFC}")
+    })?;
     let mut attachments: Vec<(u64, Vec<u8>)> = Vec::new();
     for a in bytes(&saf, 2) {
         let f = fields(a)?;
@@ -709,6 +742,8 @@ fn with_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
     for (i, (tag, field)) in raw.iter().enumerate() {
         match *tag {
             1 => put_len(1, &new_version_vector, &mut new_data),
+            // The table's writer list, with this installation in it.
+            7 => put_len(7, &new_writers, &mut new_data),
             3 => {
                 if object_n == rows_object {
                     put_len(3, &new_rows_object, &mut new_data);
@@ -747,6 +782,247 @@ fn with_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
     (cells(&out)? == expected).then_some(out)
 }
 
+/// A dictionary message without the one element keyed by object `key`. `None` unless exactly
+/// one element has that key.
+fn without_element(dictionary: &[u8], key: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(dictionary.len());
+    let mut removed = 0;
+    for (tag, raw) in raw_fields(dictionary)? {
+        if tag == 1 {
+            let element = bytes(&fields(raw)?, 1).next()?;
+            if object_index(bytes(&fields(element)?, 1).next()?)? == key {
+                removed += 1;
+                continue;
+            }
+        }
+        out.extend_from_slice(raw);
+    }
+    (removed == 1).then_some(out)
+}
+
+/// The table's document with the row (or column) at `at` deleted, as a phone deletes one:
+/// its character tombstoned in the ordered set's text, its attachment gone and the later
+/// ones moved up, it out of the set, and its cells out of every column (or the column out of
+/// `cellColumns`). The order dictionary keeps it, as Apple's own deletes do. Proven as
+/// [`with_row`] is: the result must read back as the grid without that line.
+#[must_use]
+pub fn without_row(document: &[u8], at: usize) -> Option<Vec<u8>> {
+    without_member(document, false, at)
+}
+
+/// [`without_row`] for a column.
+#[must_use]
+pub fn without_column(document: &[u8], at: usize) -> Option<Vec<u8>> {
+    without_member(document, true, at)
+}
+
+fn without_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
+    let before = cells(document)?;
+    let width = before.first().map_or(0, Vec::len);
+    let count = if column { width } else { before.len() };
+    // A table keeps at least one row and one column, as Notes does.
+    if at >= count || count < 2 {
+        return None;
+    }
+    let top = fields(document)?;
+    let version_bytes = bytes(&top, 2).next()?;
+    let version = fields(version_bytes)?;
+    let data_bytes = bytes(&version, 3).next()?;
+    let data = fields(data_bytes)?;
+    let objects: Vec<&[u8]> = bytes(&data, 3).collect();
+    let uuids: Vec<&[u8]> = bytes(&data, 6).collect();
+    let doc = Doc {
+        objects: objects.clone(),
+        keys: bytes(&data, 4)
+            .map(|k| String::from_utf8_lossy(k).into_owned())
+            .collect(),
+        uuids: uuids.clone(),
+    };
+    let root = doc.custom(0)?;
+    let at_key = |name: &str| root.get(name).and_then(|id| object_index(id));
+    let set_object = at_key(if column { "crColumns" } else { "crRows" })?;
+    let cells_object = at_key("cellColumns")?;
+    let by_uuid = doc.uuid_objects();
+
+    // The line being deleted: its element (by attachment position) and its identity.
+    let (kind, set_body) = doc.object(set_object)?;
+    if kind != 16 {
+        return None;
+    }
+    let sf = fields(set_body)?;
+    let array_body = bytes(&sf, 1).next()?;
+    let af = fields(array_body)?;
+    let string_array = bytes(&af, 1).next()?;
+    let saf = fields(string_array)?;
+    let mut attachments: Vec<(u64, Vec<u8>)> = Vec::new();
+    for a in bytes(&saf, 2) {
+        let f = fields(a)?;
+        attachments.push((int(&f, 1).unwrap_or(0), bytes(&f, 2).next()?.to_vec()));
+    }
+    let gone_uuid = attachments.iter().find(|(i, _)| *i == at as u64)?.1.clone();
+    let element = *by_uuid.get(gone_uuid.as_slice())?;
+    let identity = *Doc::dictionary(bytes(&af, 2).next()?)?.get(&element)?;
+
+    let me = crate::topotext::writer_bytes();
+    let mut new_uuids: Vec<Vec<u8>> = Vec::new();
+    let replica = match uuids.iter().position(|u| *u == me) {
+        Some(i) => i,
+        None => {
+            new_uuids.push(me.to_vec());
+            uuids.len()
+        }
+    };
+    let versions: Vec<(u64, u64)> = bytes(&fields(bytes(&data, 1).next()?)?, 1)
+        .filter_map(|e| {
+            let f = fields(e)?;
+            Some((int(&f, 1).unwrap_or(0), int(&f, 2).unwrap_or(0)))
+        })
+        .collect();
+    let clock = versions
+        .iter()
+        .find(|(r, _)| *r == replica as u64)
+        .map_or(1, |(_, c)| c + 1);
+
+    // The ordered set: the character tombstoned, the attachments closed up, the set without it.
+    let text = bytes(&saf, 1).next()?;
+    // Out at `at` itself: the text is all one character, so only the place says which.
+    let old_text: String = std::iter::repeat_n('\u{FFFC}', count).collect();
+    let (new_string, new_writers) = edit_table_text(text, bytes(&data, 7).next()?, |lent| {
+        crate::ckdocument::rewrite_text_object_at(lent, &old_text, at, 1, "")
+    })?;
+    let mut new_string_array = Vec::new();
+    for (tag, raw) in raw_fields(string_array)? {
+        match tag {
+            1 => put_len(1, &new_string, &mut new_string_array),
+            2 => {}
+            _ => new_string_array.extend_from_slice(raw),
+        }
+    }
+    for (index, uuid) in &attachments {
+        if *index == at as u64 {
+            continue;
+        }
+        let mut a = Vec::new();
+        put_int(
+            1,
+            if *index > at as u64 {
+                index - 1
+            } else {
+                *index
+            },
+            &mut a,
+        );
+        put_len(2, uuid, &mut a);
+        put_len(2, &a, &mut new_string_array);
+    }
+    let mut new_array = Vec::new();
+    for (tag, raw) in raw_fields(array_body)? {
+        match tag {
+            1 => put_len(1, &new_string_array, &mut new_array),
+            _ => new_array.extend_from_slice(raw),
+        }
+    }
+    let mut new_set = Vec::new();
+    for (tag, raw) in raw_fields(set_body)? {
+        match tag {
+            1 => put_len(1, &new_array, &mut new_set),
+            2 => put_len(
+                2,
+                &without_element(bytes(&fields(raw)?, 2).next()?, element)?,
+                &mut new_set,
+            ),
+            _ => new_set.extend_from_slice(raw),
+        }
+    }
+    let mut changed_objects: HashMap<usize, Vec<u8>> = HashMap::new();
+    let mut object = Vec::new();
+    put_len(16, &new_set, &mut object);
+    changed_objects.insert(set_object, object);
+
+    // The cells: a row out of every column's dictionary, or a column out of `cellColumns`.
+    let (cells_kind, cells_body) = doc.object(cells_object)?;
+    if column {
+        let mut object = Vec::new();
+        put_len(
+            cells_kind,
+            &without_element(cells_body, identity)?,
+            &mut object,
+        );
+        changed_objects.insert(cells_object, object);
+    } else {
+        for &column_dictionary in Doc::dictionary(cells_body)?.values() {
+            let (k, body) = doc.object(column_dictionary)?;
+            if k != 6 {
+                return None;
+            }
+            // A column with no cell for this row has nothing to drop.
+            if let Some(trimmed) = without_element(body, identity) {
+                let mut object = Vec::new();
+                put_len(6, &trimmed, &mut object);
+                changed_objects.insert(column_dictionary, object);
+            }
+        }
+    }
+
+    // This replica's clock raised; every other replica's entry copied as it is.
+    let mut new_version_vector = Vec::new();
+    let mut seen_me = false;
+    for (_, raw) in raw_fields(bytes(&data, 1).next()?)? {
+        let f = fields(bytes(&fields(raw)?, 1).next()?)?;
+        if int(&f, 1).unwrap_or(0) == replica as u64 {
+            let mut e = Vec::new();
+            put_int(1, replica as u64, &mut e);
+            put_int(2, clock, &mut e);
+            put_len(1, &e, &mut new_version_vector);
+            seen_me = true;
+        } else {
+            new_version_vector.extend_from_slice(raw);
+        }
+    }
+    if !seen_me {
+        let mut e = Vec::new();
+        put_int(1, replica as u64, &mut e);
+        put_int(2, clock, &mut e);
+        put_len(1, &e, &mut new_version_vector);
+    }
+    let raw = raw_fields(data_bytes)?;
+    let last_uuid = raw.iter().rposition(|(t, _)| *t == 6)?;
+    let mut new_data = Vec::with_capacity(data_bytes.len());
+    let mut object_n = 0usize;
+    for (i, (tag, field)) in raw.iter().enumerate() {
+        match *tag {
+            1 => put_len(1, &new_version_vector, &mut new_data),
+            // The table's writer list, with this installation in it.
+            7 => put_len(7, &new_writers, &mut new_data),
+            3 => {
+                match changed_objects.get(&object_n) {
+                    Some(o) => put_len(3, o, &mut new_data),
+                    None => new_data.extend_from_slice(field),
+                }
+                object_n += 1;
+            }
+            _ => new_data.extend_from_slice(field),
+        }
+        if i == last_uuid {
+            for u in &new_uuids {
+                put_len(6, u, &mut new_data);
+            }
+        }
+    }
+    let new_version = splice(version_bytes, 3, 0, &new_data)?;
+    let out = splice(document, 2, 0, &new_version)?;
+
+    let mut expected = before;
+    if column {
+        for row in &mut expected {
+            row.remove(at);
+        }
+    } else {
+        expected.remove(at);
+    }
+    (cells(&out)? == expected).then_some(out)
+}
+
 /// [`with_cell`] over the attachment's `MergeableDataEncrypted` as Apple sends it (base64,
 /// compressed), answered in the same compression it came in.
 #[must_use]
@@ -765,6 +1041,18 @@ pub fn with_row_in_base64(value: &str, at: usize) -> Option<String> {
 #[must_use]
 pub fn with_column_in_base64(value: &str, at: usize) -> Option<String> {
     edit_in_base64(value, |plain| with_column(plain, at))
+}
+
+/// [`without_row`] or [`without_column`] over the attachment's `MergeableDataEncrypted`.
+#[must_use]
+pub fn without_line_in_base64(value: &str, column: bool, at: usize) -> Option<String> {
+    edit_in_base64(value, |plain| {
+        if column {
+            without_column(plain, at)
+        } else {
+            without_row(plain, at)
+        }
+    })
 }
 
 /// A table edit made to the inflated document, packed back as it came: gzip, zlib or plain.

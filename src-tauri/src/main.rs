@@ -1575,6 +1575,12 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 }
 
 /// A table's cells, row by row, as the last pass read them — `None` when none are known.
+/// Whether Quince writes to Notes tables. Off: Apple stored what Quince wrote, but his iPhone
+/// did not show it (2026-10-19), so no table is written until a write is seen on the phone.
+const TABLE_WRITES: bool = false;
+const TABLE_WRITES_OFF: &str =
+    "Tables are read-only in Quince for now: edits made here did not show on iPhone yet.";
+
 /// Add an empty row to a Notes table at `at` (0 is the top), as Notes does, and keep the
 /// table as Apple now holds it.
 #[tauri::command]
@@ -1585,6 +1591,9 @@ async fn note_table_add_row(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Vec<String>>> {
+    if !TABLE_WRITES {
+        return Err(TABLE_WRITES_OFF.into());
+    }
     let (http, root, params) = cloudkit_context(&auth).await?;
     let cells = quince_icloud::notes::add_table_line_cloudkit(
         &http,
@@ -1606,6 +1615,34 @@ async fn note_table_add_row(
     Ok(cells)
 }
 
+/// Delete a row (or, with `column`, a column) of a Notes table, and keep the table as Apple
+/// now holds it.
+#[tauri::command]
+async fn note_table_remove(
+    id: String,
+    at: usize,
+    column: bool,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Vec<String>>> {
+    if !TABLE_WRITES {
+        return Err(TABLE_WRITES_OFF.into());
+    }
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let cells =
+        quince_icloud::notes::remove_table_line_cloudkit(&http, &root, params, &id, column, at)
+            .await
+            .map_err(|e| e.to_string())?;
+    if let Ok(json) = serde_json::to_string(&cells) {
+        data.0
+            .lock()
+            .await
+            .set_state(&quince_icloud::table::state_key(&id), &json)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(cells)
+}
+
 /// Change one cell of a Notes table, and keep the table as Apple now holds it.
 #[tauri::command]
 async fn note_table_set_cell(
@@ -1616,6 +1653,9 @@ async fn note_table_set_cell(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Vec<String>>> {
+    if !TABLE_WRITES {
+        return Err(TABLE_WRITES_OFF.into());
+    }
     let (http, root, params) = cloudkit_context(&auth).await?;
     let cells = quince_icloud::notes::set_table_cell_cloudkit(
         &http, &root, params, &id, row, column, &text,
@@ -3644,6 +3684,7 @@ fn main() {
             note_table,
             note_table_set_cell,
             note_table_add_row,
+            note_table_remove,
             note_attachment_info,
             note_attachment_open,
             diagnostics_save,
