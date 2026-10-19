@@ -181,7 +181,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             flagged: args.flagged ?? false, parentGuid: null, etag: null });
           return null;
         case "reminder_delete": return null;
-        case "reminder_set_done": return null;
+        case "reminder_set_done": (window.__done ??= []).push(args); return null;
         case "reminder_set_repeat": return null;
         case "reminder_edit": {
           (window.__edits ??= []).push(args.edit);

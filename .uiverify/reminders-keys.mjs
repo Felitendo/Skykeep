@@ -67,5 +67,24 @@ await page.getByLabel(`Rename ${last}`).click();
 await page.keyboard.press("End");
 await page.keyboard.type("!");
 ok((await page.getByLabel(`Rename ${last}`).inputValue()).endsWith("!"), "a reminder's title still takes typing");
+
+// The row takes the keyboard: Escape leaves a title for its row, arrows go row to row,
+// Space ticks the row, Return goes back into its title.
+await page.getByLabel("Rename Pick up the parcel").focus();
+await page.keyboard.press("Escape");
+const focusedRow = () => page.evaluate(() => document.activeElement?.classList.contains("rx-row") ? document.activeElement.querySelector(".rx-title")?.value : null);
+ok((await focusedRow()) === "Pick up the parcel", "Escape leaves the title for its row");
+const startRow = await focusedRow();
+await page.keyboard.press("ArrowDown");
+const below = await focusedRow();
+ok(below && below !== startRow, `Down goes to the next row  ${startRow} → ${below}`);
+await page.keyboard.press("ArrowUp");
+ok((await focusedRow()) === startRow, "and Up comes back");
+await page.keyboard.press(" ");
+await page.waitForTimeout(200);
+const done = await page.evaluate(() => window.__done?.at(-1));
+ok(done && done.done === true && done.guid === "r2", `Space ticks that row, and only it  ${JSON.stringify(done)}`);
+await page.keyboard.press("Enter");
+ok(await page.evaluate(() => document.activeElement?.classList.contains("rx-title")), "Return goes into its title");
 await b.close();
 process.exitCode = failures ? 1 : 0;

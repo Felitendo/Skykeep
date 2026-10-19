@@ -1124,6 +1124,30 @@ export function RemindersView() {
                       setDragging(reminder.guid);
                     }}
                     onDragEnd={() => { setDragging(null); setDropBefore(null); }}
+                    // The row itself takes the keyboard, as on icloud.com and the Mac: arrows go
+                    // from row to row, Space ticks it, Return edits its title. Delete is left out:
+                    // a reminder deleted here cannot be brought back.
+                    tabIndex={-1}
+                    data-guid={reminder.guid}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      const rows = [...document.querySelectorAll<HTMLElement>(".rx-rows .rx-row")];
+                      const at = rows.indexOf(e.currentTarget);
+                      const go = (i: number) => rows[Math.max(0, Math.min(rows.length - 1, i))]?.focus();
+                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                        e.preventDefault();
+                        go(at + (e.key === "ArrowDown" ? 1 : -1));
+                      } else if (e.key === "Home" || e.key === "End") {
+                        e.preventDefault();
+                        go(e.key === "Home" ? 0 : rows.length - 1);
+                      } else if (e.key === " ") {
+                        e.preventDefault();
+                        if (!busy.has(reminder.guid)) void toggle(reminder);
+                      } else if (e.key === "Enter") {
+                        e.preventDefault();
+                        e.currentTarget.querySelector<HTMLInputElement>(".rx-title")?.focus();
+                      }
+                    }}
                     // Right-click, as on the Mac: what can be done to this reminder, in one menu.
                     onMouseDownCapture={() => {
                       // What had focus before this press: the press itself focuses a title it
@@ -1191,8 +1215,9 @@ export function RemindersView() {
                               e.currentTarget.blur();
                               window.setTimeout(() => document.querySelector<HTMLInputElement>(".rx-add input")?.focus(), 0);
                             } else if (e.key === "Escape") {
+                              // Back to the row, which then takes the arrows and Space.
                               e.currentTarget.value = reminder.title;
-                              e.currentTarget.blur();
+                              e.currentTarget.closest<HTMLElement>(".rx-row")?.focus();
                             } else if (inList && (e.key === "Tab" || ((e.ctrlKey || e.metaKey) && (e.key === "]" || e.key === "[")))) {
                               // Tab and Shift-Tab, or Command-] and Command-[ as the Mac's menu has them.
                               e.preventDefault();

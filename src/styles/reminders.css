@@ -358,6 +358,13 @@
   background: var(--separator);
 }
 .rx-row:last-child::after { display: none; }
+/* A row chosen from the keyboard: the selection Reminders draws, a rounded tint behind it, with
+   no outline drawn around the text. */
+.rx-row:focus { outline: none; }
+.rx-row:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 8px;
+}
 .rx-row.is-subtask { margin-left: 30px; }
 
 .rx-tick {

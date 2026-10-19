@@ -10,7 +10,9 @@
 use crate::{Auth, Data};
 use quince_core::alarms::DueAlarm;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(all(unix, not(target_os = "macos")))]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
 /// Something that can move the next alarm has happened.
@@ -25,6 +27,7 @@ const LONGEST_SLEEP: Duration = Duration::from_secs(10 * 60);
 const STILL_WORTH_SAYING: i64 = 6 * 60 * 60;
 
 /// Snooze, as the phone offers it.
+#[cfg(all(unix, not(target_os = "macos")))]
 const SNOOZE: i64 = 60 * 60;
 
 /// The app's icon, carried in the binary so an alert shows it on any desktop. A notification
@@ -49,6 +52,7 @@ fn icon_path(app: &AppHandle) -> Option<&'static str> {
 }
 
 /// Emitted to the window to open a reminder an alert was clicked for.
+#[cfg(all(unix, not(target_os = "macos")))]
 pub const OPEN_REMINDER: &str = "quince://open-reminder";
 
 /// Tell the task to look again: the reminders or their alarms may have changed.
@@ -160,56 +164,72 @@ fn show(app: AppHandle, due: DueAlarm) {
             .map(ToString::to_string)
             .or_else(|| due.list_title.clone())
             .unwrap_or_default();
-        let shown = notify_rust::Notification::new()
-            .appname("Quince")
-            .summary(&due.title)
-            .body(&body)
-            .icon(icon_path(&app).unwrap_or("quince"))
-            .hint(notify_rust::Hint::Category("reminder".into()))
-            .hint(notify_rust::Hint::DesktopEntry("quince".into()))
-            .hint(notify_rust::Hint::Resident(true))
-            .action("default", "Open")
-            .action("complete", "Mark as Completed")
-            .action("snooze", "Remind Me in 1 Hour")
-            .timeout(notify_rust::Timeout::Never)
-            .show();
-        let Ok(handle) = shown else {
-            return;
-        };
-        handle.wait_for_action(|action| match action {
-            "complete" => {
-                let app = app.clone();
-                let due = due.clone();
-                tauri::async_runtime::block_on(async move {
-                    let auth = app.state::<Auth>();
-                    let data = app.state::<Data>();
-                    if let Err(e) =
-                        crate::set_done(&auth, &data, &due.reminder_guid, &due.list_guid, true)
-                            .await
-                    {
-                        eprintln!("could not complete {}: {e}", due.reminder_guid);
-                    }
-                    // Every open screen looks again, as after any pass.
-                    let report = crate::refresh::status(&data.0).await;
-                    app.emit(crate::SYNCED, &report).ok();
-                });
-            }
-            "snooze" => {
-                let app = app.clone();
-                let guid = due.reminder_guid.clone();
-                tauri::async_runtime::block_on(async move {
-                    let data = app.state::<Data>();
-                    let mut library = data.0.lock().await;
-                    library.snooze_reminder(&guid, now() + SNOOZE).ok();
-                });
-                changed();
-            }
-            "default" => {
-                crate::show_window(&app);
-                app.emit(OPEN_REMINDER, &due.reminder_guid).ok();
-            }
-            _ => {}
-        });
+        // The phone's choices on the alert are the freedesktop notification spec's actions. Windows
+        // and macOS take no buttons through this crate, so the alert says what is due and
+        // the reminder is completed or put off in the app.
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        {
+            notify_rust::Notification::new()
+                .appname("Quince")
+                .summary(&due.title)
+                .body(&body)
+                .icon(icon_path(&app).unwrap_or("quince"))
+                .show()
+                .ok();
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let shown = notify_rust::Notification::new()
+                .appname("Quince")
+                .summary(&due.title)
+                .body(&body)
+                .icon(icon_path(&app).unwrap_or("quince"))
+                .hint(notify_rust::Hint::Category("reminder".into()))
+                .hint(notify_rust::Hint::DesktopEntry("quince".into()))
+                .hint(notify_rust::Hint::Resident(true))
+                .action("default", "Open")
+                .action("complete", "Mark as Completed")
+                .action("snooze", "Remind Me in 1 Hour")
+                .timeout(notify_rust::Timeout::Never)
+                .show();
+            let Ok(handle) = shown else {
+                return;
+            };
+            handle.wait_for_action(|action| match action {
+                "complete" => {
+                    let app = app.clone();
+                    let due = due.clone();
+                    tauri::async_runtime::block_on(async move {
+                        let auth = app.state::<Auth>();
+                        let data = app.state::<Data>();
+                        if let Err(e) =
+                            crate::set_done(&auth, &data, &due.reminder_guid, &due.list_guid, true)
+                                .await
+                        {
+                            eprintln!("could not complete {}: {e}", due.reminder_guid);
+                        }
+                        // Every open screen looks again, as after any pass.
+                        let report = crate::refresh::status(&data.0).await;
+                        app.emit(crate::SYNCED, &report).ok();
+                    });
+                }
+                "snooze" => {
+                    let app = app.clone();
+                    let guid = due.reminder_guid.clone();
+                    tauri::async_runtime::block_on(async move {
+                        let data = app.state::<Data>();
+                        let mut library = data.0.lock().await;
+                        library.snooze_reminder(&guid, now() + SNOOZE).ok();
+                    });
+                    changed();
+                }
+                "default" => {
+                    crate::show_window(&app);
+                    app.emit(OPEN_REMINDER, &due.reminder_guid).ok();
+                }
+                _ => {}
+            });
+        }
     });
 }
 
@@ -325,21 +345,34 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
         if let Some(place) = event.location.as_deref().filter(|p| !p.trim().is_empty()) {
             body.push_str(&format!("\n{place}"));
         }
-        let shown = notify_rust::Notification::new()
-            .appname("Quince")
-            .summary(&event.title)
-            .body(&body)
-            .icon(icon_path(&app).unwrap_or("quince"))
-            .hint(notify_rust::Hint::Category("calendar".into()))
-            .hint(notify_rust::Hint::DesktopEntry("quince".into()))
-            .action("default", "Open")
-            .show();
-        if let Ok(handle) = shown {
-            handle.wait_for_action(|action| {
-                if action == "default" {
-                    crate::show_window(&app);
-                }
-            });
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        {
+            notify_rust::Notification::new()
+                .appname("Quince")
+                .summary(&event.title)
+                .body(&body)
+                .icon(icon_path(&app).unwrap_or("quince"))
+                .show()
+                .ok();
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let shown = notify_rust::Notification::new()
+                .appname("Quince")
+                .summary(&event.title)
+                .body(&body)
+                .icon(icon_path(&app).unwrap_or("quince"))
+                .hint(notify_rust::Hint::Category("calendar".into()))
+                .hint(notify_rust::Hint::DesktopEntry("quince".into()))
+                .action("default", "Open")
+                .show();
+            if let Ok(handle) = shown {
+                handle.wait_for_action(|action| {
+                    if action == "default" {
+                        crate::show_window(&app);
+                    }
+                });
+            }
         }
     });
 }
