@@ -48,6 +48,7 @@ step "coming back"       node .uiverify/resume.mjs
 step "birthdays, holidays" node .uiverify/occasions.mjs
 step "drive folders"    node .uiverify/drive-nav.mjs
 step "birthdays in contacts" node .uiverify/contact-birthday.mjs
+step "contact labels"    node .uiverify/contacts-labels.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs
 step "reminders instant" node .uiverify/reminders-instant.mjs
@@ -78,6 +79,7 @@ step "notes tables"      node .uiverify/notes-table.mjs
 step "reminder menu"     node .uiverify/reminders-context.mjs
 step "notes media"       node .uiverify/notes-media.mjs
 step "webkit: tables"    env ENGINE=webkit node .uiverify/notes-table.mjs
+step "webkit: labels"    env ENGINE=webkit node .uiverify/contacts-labels.mjs
 step "webkit: row hover" env ENGINE=webkit node .uiverify/row-hover.mjs
 step "webkit: fold"      env ENGINE=webkit node .uiverify/sidebar-fold.mjs
 step "reminder colours"  node .uiverify/calendar-reminder-colour.mjs

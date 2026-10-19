@@ -1485,12 +1485,14 @@
 /* Kind, label, value, remove — the shape of one line of a card. */
 .contact-method-rows li {
   display: grid;
-  grid-template-columns: 96px 88px minmax(0, 1fr) auto;
+  grid-template-columns: 96px 112px minmax(0, 1fr) auto;
   gap: 6px;
   align-items: center;
 }
 
-.contact-kind { width: 100%; }
+.contact-kind, .contact-label-pick { width: 100%; }
+/* Apple's label picked from a list; a custom one typed under it, in the same column. */
+.contact-label-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 
 /* ── Modal sheet ────────────────────────────────────────────────────────────────────────
    The Move dialog is the app's first modal, so this is the shape everything after it will

@@ -31,6 +31,21 @@ const KINDS = [
 ] as const;
 
 /**
+ * Apple's own labels for each kind of detail, as icloud.com's contact editor offers them
+ * (contacts2 bundle). Stored in Apple's spelling, so a label picked here reads as the phone's
+ * own "mobile" or "work" there, not as a custom label that happens to say the same thing.
+ */
+const LABELS: Record<string, string[]> = {
+  phone: ["MOBILE", "IPHONE", "APPLE WATCH", "HOME", "WORK", "SCHOOL", "MAIN", "HOME FAX", "WORK FAX", "PAGER"],
+  email: ["HOME", "WORK", "SCHOOL", "ICLOUD"],
+  url: ["HOMEPAGE", "HOME", "WORK", "SCHOOL"],
+};
+const SHOWN: Record<string, string> = { IPHONE: "iPhone", "APPLE WATCH": "Apple Watch", ICLOUD: "iCloud" };
+/** A label as Contacts writes it: Apple's names in their own case, anything else as typed. */
+const labelText = (label: string) => SHOWN[label] ?? (label === label.toUpperCase() ? label.toLowerCase() : label);
+const CUSTOM = "\u0000custom";
+
+/**
  * A contact's picture where there is one, initials where there is not.
  *
  * The image is allowed to fail — a photo Apple has moved, or no network yet — and when it
@@ -96,6 +111,8 @@ export function ContactsView() {
   const { revision } = useSync();
   /** The card being written, or null while simply looking. */
   const [draft, setDraft] = useState<Contact | null>(null);
+  /** Details whose label is being typed rather than picked, by their place on the card. */
+  const [customAt, setCustomAt] = useState<Set<number>>(() => new Set());
   /**
    * The card as the form opened it. Saving writes only what differs from it, over Apple's
    * card as it is then — so a change made on the phone while the form was open stays.
@@ -104,6 +121,7 @@ export function ContactsView() {
   const edit = (c: Contact) => {
     draftBase.current = c;
     setDraft({ ...c });
+    setCustomAt(new Set());
   };
   const [busy, setBusy] = useState(false);
   const [lists, setLists] = useState<ContactList[]>([]);
@@ -673,13 +691,43 @@ export function ContactsView() {
                     onChange={(kind) => editMethod(index, { kind })}
                     options={KINDS.map((k) => ({ value: k.value, label: k.label }))}
                   />
-                  <input
-                    className="contact-method-label"
-                    value={m.label ?? ""}
-                    placeholder="label"
-                    aria-label={`Label for detail ${index + 1}`}
-                    onChange={(e) => editMethod(index, { label: e.target.value || null })}
-                  />
+                  {(() => {
+                    const standard = LABELS[m.kind] ?? [];
+                    // Apple's names match whatever their case, so "mobile" is the phone's own.
+                    const match = standard.find((v) => v === m.label?.toUpperCase());
+                    const custom = customAt.has(index) || (m.label !== null && !match);
+                    return (
+                      <span className="contact-label-cell">
+                        <Picker
+                          label={`Label for detail ${index + 1}`}
+                          className="contact-label-pick"
+                          value={custom ? CUSTOM : (match ?? "")}
+                          onChange={(v) => {
+                            if (v === CUSTOM) {
+                              setCustomAt((was) => new Set(was).add(index));
+                              return;
+                            }
+                            setCustomAt((was) => { const next = new Set(was); next.delete(index); return next; });
+                            editMethod(index, { label: v || null });
+                          }}
+                          options={[
+                            ...(m.label === null && !custom ? [{ value: "", label: "no label" }] : []),
+                            ...standard.map((v) => ({ value: v, label: labelText(v) })),
+                            { value: CUSTOM, label: "custom…" },
+                          ]}
+                        />
+                        {custom && (
+                          <input
+                            className="contact-method-label"
+                            value={m.label ?? ""}
+                            placeholder="label"
+                            aria-label={`Custom label for detail ${index + 1}`}
+                            onChange={(e) => editMethod(index, { label: e.target.value || null })}
+                          />
+                        )}
+                      </span>
+                    );
+                  })()}
                   <input
                     className="contact-method-value"
                     value={m.value}
@@ -691,12 +739,14 @@ export function ContactsView() {
                     type="button"
                     className="quiet danger"
                     aria-label={`Remove detail ${index + 1}`}
-                    onClick={() =>
+                    onClick={() => {
                       setDraft({
                         ...draft,
                         methods: draft.methods.filter((_, i) => i !== index),
-                      })
-                    }
+                      });
+                      // Places shift up by one; which were being typed is worked out again.
+                      setCustomAt(new Set());
+                    }}
                   >
                     ✕
                   </button>
@@ -711,7 +761,7 @@ export function ContactsView() {
               onClick={() =>
                 setDraft({
                   ...draft,
-                  methods: [...draft.methods, { kind: "phone", label: null, value: "" }],
+                  methods: [...draft.methods, { kind: "phone", label: "MOBILE", value: "" }],
                 })
               }
             >
@@ -832,7 +882,7 @@ export function ContactsView() {
             <dl className="contact-methods">
               {open.methods.map((m, i) => (
                 <div key={`${m.kind}-${i}`}>
-                  <dt>{m.label?.toLowerCase() || KIND_LABEL[m.kind] || m.kind}</dt>
+                  <dt>{(m.label && labelText(m.label)) || KIND_LABEL[m.kind] || m.kind}</dt>
                   <dd>
                     {m.kind === "email" ? (
                       <a href={`mailto:${m.value}`}>{m.value}</a>
