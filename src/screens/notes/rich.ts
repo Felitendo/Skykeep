@@ -43,6 +43,8 @@ export const schema = new Schema({
         style: { default: null as number | null },
         indent: { default: 0 },
         checked: { default: null as boolean | null },
+        /** A numbered list's first number, when not 1. */
+        start: { default: null as number | null },
       },
       parseDOM: [{ tag: "p" }],
       toDOM: (node) => [
@@ -51,7 +53,11 @@ export const schema = new Schema({
           class: "nf-p",
           "data-style": node.attrs.style === null ? "none" : String(node.attrs.style),
           ...(node.attrs.checked ? { "data-checked": "true" } : {}),
-          style: node.attrs.indent ? `--indent: ${node.attrs.indent}` : "",
+          style: [
+            node.attrs.indent ? `--indent: ${node.attrs.indent}` : "",
+            // CSS sets a counter after counting the line, so this line shows the start.
+            node.attrs.style === 102 && node.attrs.start ? `counter-set: nf-num ${node.attrs.start}` : "",
+          ].filter(Boolean).join("; "),
         },
         0,
       ],
@@ -169,6 +175,7 @@ export function toDoc(text: string, runs: Run[] | null): PMNode {
           style: own?.style ?? null,
           indent: own?.indent ?? 0,
           checked: own?.style === STYLE.checklist ? Boolean(own.checked) : null,
+          start: own?.style === STYLE.numbered ? (own.start ?? null) : null,
         },
         inline,
       ),
@@ -182,7 +189,8 @@ export function toDoc(text: string, runs: Run[] | null): PMNode {
 const same = (a: Run, b: Run) =>
   a.style === b.style && a.indent === b.indent && a.checked === b.checked && a.bold === b.bold &&
   a.italic === b.italic && a.underline === b.underline && a.strike === b.strike && a.link === b.link &&
-  (a.attachment ?? null) === (b.attachment ?? null) && (a.emphasis ?? null) === (b.emphasis ?? null);
+  (a.attachment ?? null) === (b.attachment ?? null) && (a.emphasis ?? null) === (b.emphasis ?? null) &&
+  (a.start ?? null) === (b.start ?? null);
 
 /** A document as Apple's text and runs. */
 export function fromDoc(doc: PMNode): { text: string; runs: Run[] } {
@@ -200,6 +208,7 @@ export function fromDoc(doc: PMNode): { text: string; runs: Run[] } {
       style: para.attrs.style as number | null,
       indent: para.attrs.indent as number,
       checked: para.attrs.style === STYLE.checklist ? Boolean(para.attrs.checked) : null,
+      ...(para.attrs.style === STYLE.numbered && para.attrs.start ? { start: para.attrs.start as number } : {}),
     };
     const base: Run = { ...plain(0), ...p };
     para.forEach((child) => {

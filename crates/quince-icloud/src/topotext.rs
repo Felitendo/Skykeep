@@ -42,6 +42,11 @@ pub fn writer_id() -> String {
     uuid::Uuid::from_bytes(writer()).to_string().to_uppercase()
 }
 
+/// This installation's writer id as bytes, for the CRDT writers beside the text's own.
+pub(crate) fn writer_bytes() -> [u8; 16] {
+    writer()
+}
+
 fn writer() -> [u8; 16] {
     *WRITER.get_or_init(|| *uuid::Uuid::new_v4().as_bytes())
 }

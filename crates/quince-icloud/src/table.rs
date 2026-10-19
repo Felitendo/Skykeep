@@ -344,10 +344,431 @@ pub fn with_cell(document: &[u8], row: usize, column: usize, text: &str) -> Opti
     (read.get(row)?.get(column)? == text).then_some(out)
 }
 
+/// Each field of a message with its whole encoding (key, length and payload), in order.
+fn raw_fields(b: &[u8]) -> Option<Vec<(u64, &[u8])>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < b.len() {
+        let start = at;
+        let (key, next) = varint(b, at)?;
+        at = next;
+        match key & 7 {
+            0 => at = varint(b, at)?.1,
+            2 => {
+                let (n, next) = varint(b, at)?;
+                at = next.checked_add(usize::try_from(n).ok()?)?;
+                b.get(..at)?;
+            }
+            1 => at = at.checked_add(8).filter(|&e| e <= b.len())?,
+            5 => at = at.checked_add(4).filter(|&e| e <= b.len())?,
+            _ => return None,
+        }
+        out.push((key >> 3, b.get(start..at)?));
+    }
+    Some(out)
+}
+
+fn put_len(tag: u64, payload: &[u8], out: &mut Vec<u8>) {
+    put_varint((tag << 3) | 2, out);
+    put_varint(payload.len() as u64, out);
+    out.extend_from_slice(payload);
+}
+
+fn put_int(tag: u64, v: u64, out: &mut Vec<u8>) {
+    put_varint(tag << 3, out);
+    put_varint(v, out);
+}
+
+fn object_id(index: usize) -> Vec<u8> {
+    let mut id = Vec::new();
+    put_int(6, index as u64, &mut id);
+    id
+}
+
+/// A dictionary element as Apple writes one: key and value objects, stamped by one replica.
+fn dictionary_element(key: usize, value: usize, replica: u64, clock: u64) -> Vec<u8> {
+    let mut stamp_one = Vec::new();
+    put_int(1, replica, &mut stamp_one);
+    put_int(2, clock, &mut stamp_one);
+    let mut stamp = Vec::new();
+    put_len(1, &stamp_one, &mut stamp);
+    let mut e = Vec::new();
+    put_len(1, &object_id(key), &mut e);
+    put_len(2, &object_id(value), &mut e);
+    put_len(3, &stamp, &mut e);
+    e
+}
+
+/// An `NSUUID` custom object naming uuid number `uuid_index`, in the shape `template` (an
+/// existing one) has.
+fn nsuuid_object(template: &[u8], uuid_index: usize) -> Option<Vec<u8>> {
+    let custom = bytes(&fields(template)?, 13).next()?;
+    let cf = fields(custom)?;
+    let entry = bytes(&cf, 3).next()?;
+    let ef = fields(entry)?;
+    let mut value = Vec::new();
+    put_int(2, uuid_index as u64, &mut value);
+    let mut new_entry = Vec::new();
+    put_int(1, int(&ef, 1)?, &mut new_entry);
+    put_len(2, &value, &mut new_entry);
+    let mut new_custom = Vec::new();
+    put_int(1, int(&cf, 1)?, &mut new_custom);
+    put_len(3, &new_entry, &mut new_custom);
+    let mut object = Vec::new();
+    put_len(13, &new_custom, &mut object);
+    Some(object)
+}
+
+/// The table's document with an empty row added at `at` (0 is the top), as Notes adds one:
+/// a new member of the ordered row set, written as this installation's replica, and an
+/// empty text in every column so its cells can be typed in at once.
+///
+/// Nothing is returned unless it is proven: the pieces this writes are first rebuilt from
+/// the table's own and must come out byte for byte as Apple wrote them, and the result must
+/// read back as the same grid with one empty row at `at`.
+#[must_use]
+pub fn with_row(document: &[u8], at: usize) -> Option<Vec<u8>> {
+    with_member(document, false, at)
+}
+
+/// The table's document with an empty column added at `at` (0 is the leading edge), as Notes
+/// adds one: a new member of the ordered column set and an empty text in it for every row,
+/// proven as [`with_row`] is.
+#[must_use]
+pub fn with_column(document: &[u8], at: usize) -> Option<Vec<u8>> {
+    with_member(document, true, at)
+}
+
+fn with_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
+    let before = cells(document)?;
+    let width = before.first().map_or(0, Vec::len);
+    let count = if column { width } else { before.len() };
+    if at > count {
+        return None;
+    }
+    let top = fields(document)?;
+    let version_bytes = bytes(&top, 2).next()?;
+    let version = fields(version_bytes)?;
+    let data_bytes = bytes(&version, 3).next()?;
+    let data = fields(data_bytes)?;
+    let objects: Vec<&[u8]> = bytes(&data, 3).collect();
+    let uuids: Vec<&[u8]> = bytes(&data, 6).collect();
+    let doc = Doc {
+        objects: objects.clone(),
+        keys: bytes(&data, 4)
+            .map(|k| String::from_utf8_lossy(k).into_owned())
+            .collect(),
+        uuids: uuids.clone(),
+    };
+    let root = doc.custom(0)?;
+    let at_key = |name: &str| root.get(name).and_then(|id| object_index(id));
+    let rows_object = at_key(if column { "crColumns" } else { "crRows" })?;
+    let cells_object = at_key("cellColumns")?;
+
+    // This installation as a replica of the document, and the clock its writes carry.
+    let me = crate::topotext::writer_bytes();
+    let mut new_uuids: Vec<Vec<u8>> = Vec::new();
+    let replica = match uuids.iter().position(|u| *u == me) {
+        Some(i) => i,
+        None => {
+            new_uuids.push(me.to_vec());
+            uuids.len()
+        }
+    };
+    let versions: Vec<(u64, u64)> = bytes(&fields(bytes(&data, 1).next()?)?, 1)
+        .filter_map(|e| {
+            let f = fields(e)?;
+            Some((int(&f, 1).unwrap_or(0), int(&f, 2).unwrap_or(0)))
+        })
+        .collect();
+    let clock = versions
+        .iter()
+        .find(|(r, _)| *r == replica as u64)
+        .map_or(1, |(_, c)| c + 1);
+
+    // The new row's element and identity: two uuids and an NSUUID object for each.
+    let template = (0..objects.len()).find_map(|i| {
+        let entries = doc.custom(i)?;
+        entries.contains_key("UUIDIndex").then_some(objects[i])
+    })?;
+    // Proof the NSUUID shape is Apple's: an existing one rebuilt comes out the same.
+    let template_index = usize::try_from(int(
+        &fields(
+            bytes(
+                &fields(bytes(&fields(bytes(&fields(template)?, 13).next()?)?, 3).next()?)?,
+                2,
+            )
+            .next()?,
+        )?,
+        2,
+    )?)
+    .ok()?;
+    if nsuuid_object(template, template_index)? != template {
+        return None;
+    }
+    let element_uuid = *uuid::Uuid::new_v4().as_bytes();
+    let identity_uuid = *uuid::Uuid::new_v4().as_bytes();
+    let element_uuid_index = uuids.len() + new_uuids.len();
+    new_uuids.push(element_uuid.to_vec());
+    new_uuids.push(identity_uuid.to_vec());
+    let element_object = objects.len();
+    let identity_object = objects.len() + 1;
+    let mut new_objects = vec![
+        nsuuid_object(template, element_uuid_index)?,
+        nsuuid_object(template, element_uuid_index + 1)?,
+    ];
+
+    // The ordered row set: the text gains a character at `at`, the attachments make room for
+    // it, and the element joins both dictionaries.
+    let (kind, set_body) = doc.object(rows_object)?;
+    if kind != 16 {
+        return None;
+    }
+    let set_fields = raw_fields(set_body)?;
+    let sf = fields(set_body)?;
+    let array_body = bytes(&sf, 1).next()?;
+    let af = fields(array_body)?;
+    let string_array = bytes(&af, 1).next()?;
+    let saf = fields(string_array)?;
+    let text = bytes(&saf, 1).next()?;
+    let live = count;
+    let old_text: String = std::iter::repeat_n('\u{FFFC}', live).collect();
+    let mut new_text = old_text.clone();
+    let byte_at = old_text
+        .char_indices()
+        .nth(at)
+        .map_or(old_text.len(), |(i, _)| i);
+    new_text.insert(byte_at, '\u{FFFC}');
+    let new_string = crate::ckdocument::rewrite_text_object(text, &old_text, &new_text)?;
+    let mut attachments: Vec<(u64, Vec<u8>)> = Vec::new();
+    for a in bytes(&saf, 2) {
+        let f = fields(a)?;
+        let index = int(&f, 1).unwrap_or(0);
+        attachments.push((
+            if index >= at as u64 { index + 1 } else { index },
+            bytes(&f, 2).next()?.to_vec(),
+        ));
+    }
+    attachments.push((at as u64, element_uuid.to_vec()));
+    attachments.sort_by_key(|(i, _)| *i);
+    let mut new_string_array = Vec::new();
+    for (tag, raw) in raw_fields(string_array)? {
+        match tag {
+            1 => put_len(1, &new_string, &mut new_string_array),
+            2 => {}
+            _ => new_string_array.extend_from_slice(raw),
+        }
+    }
+    for (index, uuid) in &attachments {
+        let mut a = Vec::new();
+        put_int(1, *index, &mut a);
+        put_len(2, uuid, &mut a);
+        put_len(2, &a, &mut new_string_array);
+    }
+    let with_element = |dictionary: &[u8], value: usize| -> Option<Vec<u8>> {
+        // Proof the element shape is Apple's: the dictionary's last element, rebuilt from its
+        // key and value with its own stamp copied, is the same.
+        if let Some(last) = bytes(&fields(dictionary)?, 1).last() {
+            let f = fields(last)?;
+            let mut rebuilt = Vec::new();
+            put_len(
+                1,
+                &object_id(object_index(bytes(&f, 1).next()?)?),
+                &mut rebuilt,
+            );
+            put_len(
+                2,
+                &object_id(object_index(bytes(&f, 2).next()?)?),
+                &mut rebuilt,
+            );
+            put_len(3, bytes(&f, 3).next()?, &mut rebuilt);
+            if rebuilt != last {
+                return None;
+            }
+        }
+        let mut out = dictionary.to_vec();
+        put_len(
+            1,
+            &dictionary_element(element_object, value, replica as u64, clock),
+            &mut out,
+        );
+        Some(out)
+    };
+    let mut new_array = Vec::new();
+    for (tag, raw) in raw_fields(array_body)? {
+        match tag {
+            1 => put_len(1, &new_string_array, &mut new_array),
+            2 => put_len(
+                2,
+                &with_element(bytes(&fields(raw)?, 2).next()?, identity_object)?,
+                &mut new_array,
+            ),
+            _ => new_array.extend_from_slice(raw),
+        }
+    }
+    let mut new_set = Vec::new();
+    for (tag, raw) in set_fields {
+        match tag {
+            1 => put_len(1, &new_array, &mut new_set),
+            2 => put_len(
+                2,
+                &with_element(bytes(&fields(raw)?, 2).next()?, element_object)?,
+                &mut new_set,
+            ),
+            _ => new_set.extend_from_slice(raw),
+        }
+    }
+    let mut new_rows_object = Vec::new();
+    put_len(16, &new_set, &mut new_rows_object);
+
+    // An empty text in each new cell, in the shape a phone gives an empty cell.
+    let empty_cell = (0..objects.len())
+        .find(|&i| doc.object(i).is_some_and(|(k, _)| k == 10) && doc.text(i).is_empty())?;
+    let (cells_kind, cells_body) = doc.object(cells_object)?;
+    let by_column = Doc::dictionary(cells_body)?;
+    let mut changed_objects: HashMap<usize, Vec<u8>> = HashMap::new();
+    if column {
+        // A dictionary for the new column, a cell in it for every row, and the column in
+        // `cellColumns`.
+        let row_identities = doc.ordered(at_key("crRows")?, &doc.uuid_objects())?;
+        let column_dictionary = objects.len() + new_objects.len();
+        new_objects.push(Vec::new()); // filled once its cells have places
+        let mut dictionary = Vec::new();
+        for row in row_identities {
+            let cell = objects.len() + new_objects.len();
+            new_objects.push(objects[empty_cell].to_vec());
+            put_len(
+                1,
+                &dictionary_element(row, cell, replica as u64, clock),
+                &mut dictionary,
+            );
+        }
+        let mut object = Vec::new();
+        put_len(6, &dictionary, &mut object);
+        new_objects[column_dictionary - objects.len()] = object;
+        let mut grown = with_element(cells_body, column_dictionary)?;
+        // `with_element` keys the element by the new member's element object; `cellColumns`
+        // is keyed by its identity.
+        grown.truncate(cells_body.len());
+        put_len(
+            1,
+            &dictionary_element(identity_object, column_dictionary, replica as u64, clock),
+            &mut grown,
+        );
+        let mut object = Vec::new();
+        put_len(cells_kind, &grown, &mut object);
+        changed_objects.insert(cells_object, object);
+    } else {
+        for &column_dictionary in by_column.values() {
+            let (k, body) = doc.object(column_dictionary)?;
+            if k != 6 {
+                return None;
+            }
+            let cell = objects.len() + new_objects.len();
+            new_objects.push(objects[empty_cell].to_vec());
+            let mut dictionary = body.to_vec();
+            put_len(
+                1,
+                &dictionary_element(identity_object, cell, replica as u64, clock),
+                &mut dictionary,
+            );
+            let mut object = Vec::new();
+            put_len(6, &dictionary, &mut object);
+            changed_objects.insert(column_dictionary, object);
+        }
+    }
+
+    // The document: changed objects in place, new ones and new uuids after the last of their
+    // kind, and this replica's clock raised.
+    // Every other replica's entry copied as it is (some carry a subclock); this one's set.
+    let mut new_version_vector = Vec::new();
+    let mut seen_me = false;
+    for (_, raw) in raw_fields(bytes(&data, 1).next()?)? {
+        let f = fields(bytes(&fields(raw)?, 1).next()?)?;
+        if int(&f, 1).unwrap_or(0) == replica as u64 {
+            let mut e = Vec::new();
+            put_int(1, replica as u64, &mut e);
+            put_int(2, clock, &mut e);
+            put_len(1, &e, &mut new_version_vector);
+            seen_me = true;
+        } else {
+            new_version_vector.extend_from_slice(raw);
+        }
+    }
+    if !seen_me {
+        let mut e = Vec::new();
+        put_int(1, replica as u64, &mut e);
+        put_int(2, clock, &mut e);
+        put_len(1, &e, &mut new_version_vector);
+    }
+    let raw = raw_fields(data_bytes)?;
+    let last_object = raw.iter().rposition(|(t, _)| *t == 3)?;
+    let last_uuid = raw.iter().rposition(|(t, _)| *t == 6)?;
+    let mut new_data = Vec::with_capacity(data_bytes.len() + 512);
+    let mut object_n = 0usize;
+    for (i, (tag, field)) in raw.iter().enumerate() {
+        match *tag {
+            1 => put_len(1, &new_version_vector, &mut new_data),
+            3 => {
+                if object_n == rows_object {
+                    put_len(3, &new_rows_object, &mut new_data);
+                } else if let Some(o) = changed_objects.get(&object_n) {
+                    put_len(3, o, &mut new_data);
+                } else {
+                    new_data.extend_from_slice(field);
+                }
+                object_n += 1;
+            }
+            _ => new_data.extend_from_slice(field),
+        }
+        if i == last_object {
+            for o in &new_objects {
+                put_len(3, o, &mut new_data);
+            }
+        }
+        if i == last_uuid {
+            for u in &new_uuids {
+                put_len(6, u, &mut new_data);
+            }
+        }
+    }
+    let new_version = splice(version_bytes, 3, 0, &new_data)?;
+    let out = splice(document, 2, 0, &new_version)?;
+
+    // And it reads back as the same table with one empty row or column at `at`.
+    let mut expected = before;
+    if column {
+        for row in &mut expected {
+            row.insert(at, String::new());
+        }
+    } else {
+        expected.insert(at, vec![String::new(); width]);
+    }
+    (cells(&out)? == expected).then_some(out)
+}
+
 /// [`with_cell`] over the attachment's `MergeableDataEncrypted` as Apple sends it (base64,
 /// compressed), answered in the same compression it came in.
 #[must_use]
 pub fn with_cell_in_base64(value: &str, row: usize, column: usize, text: &str) -> Option<String> {
+    edit_in_base64(value, |plain| with_cell(plain, row, column, text))
+}
+
+/// [`with_row`] over the attachment's `MergeableDataEncrypted` as Apple sends it, answered in
+/// the same compression it came in.
+#[must_use]
+pub fn with_row_in_base64(value: &str, at: usize) -> Option<String> {
+    edit_in_base64(value, |plain| with_row(plain, at))
+}
+
+/// [`with_column`] over the attachment's `MergeableDataEncrypted` as Apple sends it.
+#[must_use]
+pub fn with_column_in_base64(value: &str, at: usize) -> Option<String> {
+    edit_in_base64(value, |plain| with_column(plain, at))
+}
+
+/// A table edit made to the inflated document, packed back as it came: gzip, zlib or plain.
+fn edit_in_base64(value: &str, edit: impl FnOnce(&[u8]) -> Option<Vec<u8>>) -> Option<String> {
     use base64::Engine;
     use std::io::Write;
     let raw = base64::engine::general_purpose::STANDARD
@@ -355,7 +776,7 @@ pub fn with_cell_in_base64(value: &str, row: usize, column: usize, text: &str) -
         .ok()?;
     let gz = raw.starts_with(&[0x1f, 0x8b]);
     let plain = inflate(&raw)?;
-    let edited = with_cell(&plain, row, column, text)?;
+    let edited = edit(&plain)?;
     let packed = if gz {
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         e.write_all(&edited).ok()?;

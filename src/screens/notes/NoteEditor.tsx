@@ -1,5 +1,5 @@
 import "prosemirror-view/style/prosemirror.css";
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { EditorState, TextSelection, type Command, type Transaction } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { history, undo, redo } from "prosemirror-history";
@@ -9,6 +9,11 @@ import type { Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
 import { fromDoc, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
 import { api, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
+import { RowMenu, type MenuEntry } from "../../components/RowMenu";
+
+/** A table's right-click menu: drawn by the editor that holds the table, opened by a cell. */
+type CellMenu = { at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] };
+let openCellMenu: ((menu: CellMenu) => void) | null = null;
 
 /**
  * An attachment in the note: a table drawn as the grid it is, with the cells Apple holds;
@@ -122,6 +127,27 @@ function attachmentView(node: PMNode) {
           td.className = "nf-cell-empty";
           return;
         }
+        // Right-click, as in Notes: a row added above or below this one.
+        td.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          const add = (at: number, column = false) => () => {
+            dom.classList.add("is-saving");
+            (column ? api.noteTableAddColumn(id, at) : api.noteTableAddRow(id, at)).then(
+              (next) => { dom.classList.remove("is-saving"); draw(next); },
+              (err) => { dom.classList.remove("is-saving"); dom.title = String(err); },
+            );
+          };
+          openCellMenu?.({
+            at: { x: e.clientX, y: e.clientY, alignRight: false },
+            entries: [
+              { label: "Add Row Above", run: add(r) },
+              { label: "Add Row Below", run: add(r + 1) },
+              null,
+              { label: "Add Column Before", run: add(c, true) },
+              { label: "Add Column After", run: add(c + 1, true) },
+            ],
+          });
+        });
         const field = document.createElement("div");
         field.className = "nf-cell-edit";
         field.contentEditable = "plaintext-only";
@@ -279,7 +305,8 @@ const enter: Command = (state, dispatch) => {
   return splitBlockAs((node, atEnd) => {
     const style = node.attrs.style as number | null;
     if (LIST_STYLES.includes(style as number)) {
-      return { type: schema.nodes.paragraph, attrs: { ...node.attrs, checked: style === STYLE.checklist ? false : null } };
+      // The next item counts on from this one; only a list's first item holds where it starts.
+      return { type: schema.nodes.paragraph, attrs: { ...node.attrs, checked: style === STYLE.checklist ? false : null, start: null } };
     }
     if (atEnd && (style === STYLE.title || style === STYLE.heading || style === STYLE.subheading)) {
       return { type: schema.nodes.paragraph, attrs: { style: null, indent: 0, checked: null } };
@@ -414,6 +441,33 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         if (tr.docChanged) reportSoon();
         callbacks.current.onStatus?.(statusOf(next));
       },
+      // Lists typed as on the phone: "- " a dashed list, "* " a bulleted one, "1. " a numbered
+      // one; in a dashed line "[ ] " or "[x] " makes it a checklist item, so "- [ ] " works
+      // (icloud.com's notes3 userDidInsert). The typed marker goes; one undo brings it back.
+      handleTextInput(view, from, to, text) {
+        if (text !== " " || from !== to) return false;
+        const $from = view.state.doc.resolve(from);
+        const line = $from.parent;
+        if (line.type !== schema.nodes.paragraph) return false;
+        const typed = line.textBetween(0, $from.parentOffset, undefined, "\ufffc") + " ";
+        const style = line.attrs.style as number | null;
+        const inList = style !== null && LIST_STYLES.includes(style);
+        let next: { style: number; checked: boolean | null; start?: number | null } | null = null;
+        const numbered = /^([0-9]{1,6})\. $/.exec(typed);
+        if (style === STYLE.dashed && (typed === "[ ] " || typed === "[x] ")) {
+          next = { style: STYLE.checklist, checked: typed === "[x] " };
+        } else if (!inList) {
+          if (typed === "- ") next = { style: STYLE.dashed, checked: null };
+          else if (typed === "* ") next = { style: STYLE.bulleted, checked: null };
+          // "5. " starts the list at 5, as Notes keeps it.
+          else if (numbered) next = { style: STYLE.numbered, checked: null, start: Number(numbered[1]) === 1 ? null : Number(numbered[1]) };
+        }
+        if (!next) return false;
+        const tr = view.state.tr.delete($from.start(), from);
+        tr.setNodeMarkup($from.before(), undefined, { ...line.attrs, style: next.style, checked: next.checked, start: next.start ?? null });
+        view.dispatch(tr.scrollIntoView());
+        return true;
+      },
       handleDOMEvents: {
         blur: () => {
           if (later.current !== null) report();
@@ -496,7 +550,20 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     },
   }));
 
-  return <div ref={host} className="note-rich-host" />;
+  const [cellMenu, setCellMenu] = useState<CellMenu | null>(null);
+  useEffect(() => {
+    openCellMenu = setCellMenu;
+    return () => {
+      if (openCellMenu === setCellMenu) openCellMenu = null;
+    };
+  }, []);
+
+  return (
+    <>
+      <div ref={host} className="note-rich-host" />
+      {cellMenu && <RowMenu at={cellMenu.at} entries={cellMenu.entries} onClose={() => setCellMenu(null)} />}
+    </>
+  );
 });
 
 const toggleChecklistCmd: Command = (state, dispatch) => {

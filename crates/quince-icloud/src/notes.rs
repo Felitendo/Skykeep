@@ -2453,6 +2453,59 @@ mod derived_title_tests {
 /// written over. Only a cell already typed in can be changed — see
 /// [`crate::table::with_cell`] — and a table this cannot rewrite exactly is refused, not
 /// written. Answers the cells as Apple now holds them.
+pub async fn add_table_row_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    attachment: &str,
+    at: usize,
+) -> Result<Vec<Vec<String>>> {
+    add_table_line_cloudkit(http, ckdatabasews_root, params, attachment, false, at).await
+}
+
+/// A table with an empty row (`column` false) or column added at `at`, written against Apple's
+/// exact version as a cell edit is, and read back.
+pub async fn add_table_line_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    attachment: &str,
+    column: bool,
+    at: usize,
+) -> Result<Vec<Vec<String>>> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .edit_record(ZONE, attachment, "Attachment", |record| {
+            let current = record
+                .pointer("/fields/MergeableDataEncrypted/value")?
+                .as_str()?;
+            let edited = if column {
+                crate::table::with_column_in_base64(current, at)?
+            } else {
+                crate::table::with_row_in_base64(current, at)?
+            };
+            Some(serde_json::json!({
+                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited }
+            }))
+        })
+        .await?
+        .ok_or_else(|| {
+            Error::Refused(format!(
+                "A {} can’t be added to this table here: it holds something Quince can’t rewrite exactly.",
+                if column { "column" } else { "row" }
+            ))
+        })?;
+    client
+        .lookup_record(ZONE, attachment)
+        .await?
+        .ok_or(Error::NotFound)?
+        .pointer("/fields/MergeableDataEncrypted/value")
+        .and_then(Value::as_str)
+        .and_then(crate::table::cells_from_base64)
+        .ok_or_else(|| Error::Protocol("Apple kept a table this cannot read back".into()))
+}
+
+/// A table cell set to `text`.
 pub async fn set_table_cell_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -2475,9 +2528,7 @@ pub async fn set_table_cell_cloudkit(
         })
         .await?
         .ok_or_else(|| {
-            Error::Refused(
-                "That cell can’t be changed here yet — only cells already typed in can.".into(),
-            )
+            Error::Refused("That cell can’t be changed here: this table holds something Quince can’t rewrite exactly.".into())
         })?;
     // Apple's answer to the write does not carry the table back (measured), so what it now
     // holds is read from it.

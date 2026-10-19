@@ -66,5 +66,17 @@ await page.keyboard.press("Enter");
 await page.waitForTimeout(400);
 const w2 = await page.evaluate(() => window.__cellWrites);
 ok((await empty.textContent()) === "Bread" && w2?.length === 1 && w2[0].row === 2 && w2[0].column === 0 && w2[0].text === "Bread", `typing in an empty cell saves it  ${JSON.stringify(w2)}`);
+// Right-click a cell: a row added below it, as Notes adds one.
+await page.locator(".nf-table tr").nth(1).locator("td").first().click({ button: "right" });
+await page.getByRole("menuitem", { name: "Add Row Below" }).click();
+await page.waitForTimeout(300);
+const grown = await page.locator(".nf-table tr").evaluateAll((rows) => rows.map((r) => [...r.cells].map((c) => c.textContent)));
+const asked = await page.evaluate(() => window.__rowAdds?.at(-1));
+ok(grown.length === 4 && grown[2].every((c) => c === "") && asked?.at === 2, `Add Row Below adds an empty row under the one clicked  ${JSON.stringify(grown)} ${JSON.stringify(asked)}`);
+await page.locator(".nf-table tr").first().locator("td").nth(1).click({ button: "right" });
+await page.getByRole("menuitem", { name: "Add Column Before" }).click();
+await page.waitForTimeout(300);
+const wider = await page.locator(".nf-table tr").first().evaluate((r) => [...r.cells].map((c) => c.textContent));
+ok(JSON.stringify(wider) === JSON.stringify(["Item", "", "Qty"]), `Add Column Before adds an empty column before the one clicked  ${JSON.stringify(wider)}`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

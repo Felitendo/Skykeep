@@ -52,6 +52,7 @@ step "contact labels"    node .uiverify/contacts-labels.mjs
 step "calendar go to date" node .uiverify/calendar-goto.mjs
 step "calendar calendars" node .uiverify/calendar-collections.mjs
 step "drive names"       node .uiverify/drive-names.mjs
+step "notes autoformat"  node .uiverify/notes-autoformat.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs
 step "reminders instant" node .uiverify/reminders-instant.mjs
@@ -86,6 +87,7 @@ step "webkit: labels"    env ENGINE=webkit node .uiverify/contacts-labels.mjs
 step "webkit: go to date" env ENGINE=webkit node .uiverify/calendar-goto.mjs
 step "webkit: calendars"  env ENGINE=webkit node .uiverify/calendar-collections.mjs
 step "webkit: drive names" env ENGINE=webkit node .uiverify/drive-names.mjs
+step "webkit: autoformat" env ENGINE=webkit node .uiverify/notes-autoformat.mjs
 step "webkit: row hover" env ENGINE=webkit node .uiverify/row-hover.mjs
 step "webkit: fold"      env ENGINE=webkit node .uiverify/sidebar-fold.mjs
 step "reminder colours"  node .uiverify/calendar-reminder-colour.mjs

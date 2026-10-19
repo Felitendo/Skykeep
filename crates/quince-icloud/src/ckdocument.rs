@@ -984,6 +984,11 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
         } else {
             without_field(&p, 4)?
         };
+        // Where a numbered list starts, on its line only, as Notes keeps it.
+        p = match para.start {
+            Some(n) if para.style == Some(102) && n != 1 => set_varint_field(&p, 7, n)?,
+            _ => without_field(&p, 7)?,
+        };
         if para.style == Some(103) {
             let item = match &paragraph_item {
                 Some((e, item)) if *e == end => item.clone(),
@@ -1692,6 +1697,10 @@ pub struct Run {
     pub style: Option<u64>,
     pub indent: u64,
     pub checked: Option<bool>,
+    /// The number a numbered list starts at, when not 1 (paragraph field 7,
+    /// `startingListItemNumber`, set on the list's first item).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u64>,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -1764,6 +1773,7 @@ fn parse_paragraph(bytes: &[u8], run: &mut Run) -> Option<()> {
         match (field, wire) {
             (1, WIRE_VARINT) => run.style = Some(reader.varint()?),
             (4, WIRE_VARINT) => run.indent = reader.varint()?,
+            (7, WIRE_VARINT) => run.start = Some(reader.varint()?).filter(|&n| n != 1),
             (5, WIRE_LEN) => {
                 let n = usize::try_from(reader.varint()?).ok()?;
                 let mut item = Reader::new(reader.take(n)?);
@@ -2775,6 +2785,30 @@ mod run_tests {
         let plain = vec![body(11)];
         let cleared = runs_from_base64(&B64.encode(set_runs(&doc, &plain).unwrap()));
         assert!(cleared.iter().all(|r| r.emphasis.is_none()));
+    }
+
+    /// A numbered list starting at 5 (paragraph field 7) is read, kept through a save, and
+    /// dropped when the line stops being numbered.
+    #[test]
+    fn a_numbered_lists_start_is_read_kept_and_dropped() {
+        let mut para = Vec::new();
+        varint(1 << 3, &mut para);
+        varint(102, &mut para);
+        varint(7 << 3, &mut para);
+        varint(5, &mut para);
+        let mut extra = Vec::new();
+        len_field(2, &para, &mut extra);
+        let doc = doc_with("five\n", &[(5, extra)]);
+        let read = runs_from_base64(&B64.encode(&doc));
+        assert_eq!((read[0].style, read[0].start), (Some(102), Some(5)));
+        let kept = runs_from_base64(&B64.encode(set_runs(&doc, &read).unwrap()));
+        assert_eq!(kept[0].start, Some(5), "a save dropped the start");
+        let plain = vec![Run {
+            style: None,
+            ..read[0].clone()
+        }];
+        let cleared = runs_from_base64(&B64.encode(set_runs(&doc, &plain).unwrap()));
+        assert_eq!(cleared[0].start, None, "a plain line kept a list's start");
     }
 
     /// A style is the line's: one set on half a line covers all of it, from its newline.

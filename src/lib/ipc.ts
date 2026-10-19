@@ -141,6 +141,10 @@ export const api = {
   noteAttachmentOpen: (id: string) => invoke<void>("note_attachment_open", { id }),
   noteTableSetCell: (id: string, row: number, column: number, text: string) =>
     invoke<string[][]>("note_table_set_cell", { id, row, column, text }),
+  /** An empty row added at `at` (0 the top); answers the table as Apple now holds it. */
+  noteTableAddRow: (id: string, at: number) => invoke<string[][]>("note_table_add_row", { id, at, column: false }),
+  /** An empty column added at `at` (0 the leading edge). */
+  noteTableAddColumn: (id: string, at: number) => invoke<string[][]>("note_table_add_row", { id, at, column: true }),
   noteRuns: (guid: string) => invoke<import("../screens/notes/Formatted").Run[]>("note_runs", { guid }),
   noteFolderCreate: (title: string, parent: string | null) =>
     invoke<string>("note_folder_create", { title, parent }),

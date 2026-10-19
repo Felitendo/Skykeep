@@ -13,6 +13,8 @@ export type Run = {
   style: number | null;
   indent: number;
   checked: boolean | null;
+  /** Where a numbered list starts, when not 1: set on its first item. */
+  start?: number | null;
   bold: boolean;
   italic: boolean;
   underline: boolean;
@@ -140,7 +142,7 @@ export function FormattedBody({
     <div className="note-formatted">
       {all.map((p, i) => {
         const style = p.run?.style ?? STYLE.body;
-        number = style === STYLE.numbered ? number + 1 : 0;
+        number = style === STYLE.numbered ? (p.run?.start ?? number + 1) : 0;
         const indent = { paddingInlineStart: `${(p.run?.indent ?? 0) * 1.5}em` };
         const at = { "data-start": p.start } as Record<string, number>;
         const content = p.spans.length ? p.spans.map((s, j) => <Inline key={j} span={s} />) : <br />;

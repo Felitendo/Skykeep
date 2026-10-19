@@ -300,6 +300,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             : { id: "M2", uti: "org.openxmlformats.spreadsheetml.sheet", kind: "file", filename: "Budget.xlsx", title: null, width: null, height: null, size: 9100, hasPreview: false };
         case "note_attachment_open": (window.__opened ??= []).push(args.id); return null;
         case "note_table": if (String(args.id).startsWith("M")) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
+        case "note_table_add_row": {
+          const t = (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]);
+          if (args.column) t.forEach((r) => r.splice(args.at, 0, ""));
+          else t.splice(args.at, 0, t[0].map(() => ""));
+          (window.__rowAdds ??= []).push(args);
+          return t.map((r) => r.slice());
+        }
         case "note_table_set_cell": {
           (window.__cellWrites ??= []).push(args);
           await new Promise((r) => setTimeout(r, 300));
