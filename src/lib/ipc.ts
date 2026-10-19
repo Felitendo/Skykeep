@@ -86,6 +86,11 @@ export const api = {
   calendarEvents: (from: number, to: number) =>
     invoke<CalendarEvent[]>("calendar_events", { from, to }),
   calendarList: () => invoke<Calendar[]>("calendar_list"),
+  /** New Calendar: Apple's next unused colour; a name already in use is refused. */
+  calendarCreate: (title: string) => invoke<string>("calendar_create", { title }),
+  calendarUpdate: (guid: string, change: { title?: string; colour?: string }) =>
+    invoke<void>("calendar_update", { guid, title: change.title ?? null, colour: change.colour ?? null }),
+  calendarDelete: (guid: string) => invoke<void>("calendar_delete", { guid }),
 
   reminderCounts: (until: number) => invoke<ReminderCounts>("reminder_counts", { until }),
   reminderLists: () => invoke<ReminderList[]>("reminder_lists"),

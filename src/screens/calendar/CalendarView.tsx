@@ -14,6 +14,7 @@ import {
   type Reminder, type EventScope } from "../../lib/ipc";
 import { useSync } from "../../lib/sync";
 import { Picker } from "../../components/Picker";
+import { RowMenu } from "../../components/RowMenu";
 import {
   addDays,
   clock,
@@ -262,6 +263,9 @@ export function CalendarView() {
     },
   }), [ticked, listColours]);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
+  /** A calendar being named: "new" for New Calendar, or the guid of one being renamed. */
+  const [naming, setNaming] = useState<string | null>(null);
+  const [calMenu, setCalMenu] = useState<{ cal: Calendar; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(() => readSet(HIDDEN_KEY));
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -426,6 +430,24 @@ export function CalendarView() {
     [read, hold]
   );
 
+  /** Calendars made, renamed, recoloured and removed — shown at once, put back if Apple refuses. */
+  const createCalendar = (title: string) => {
+    setNaming(null);
+    if (title.trim()) void write(async () => { await api.calendarCreate(title.trim()); });
+  };
+  const updateCalendar = (c: Calendar, change: { title?: string; colour?: string }) => {
+    setNaming(null);
+    if (change.title !== undefined && (!change.title.trim() || change.title.trim() === c.title)) return;
+    setCalendars((cs) => cs.map((x) => (x.guid === c.guid ? { ...x, ...change } : x)));
+    void write(async () => { await api.calendarUpdate(c.guid, change); });
+  };
+  const deleteCalendar = (c: Calendar) => {
+    // icloud.com's own warning: the events go with it, on every device.
+    if (!window.confirm(`Delete \u201c${c.title}\u201d?\n\nAll events in this calendar will be deleted from every device.`)) return;
+    setCalendars((cs) => cs.filter((x) => x.guid !== c.guid));
+    void write(async () => { await api.calendarDelete(c.guid); });
+  };
+
   /**
    * One occurrence of a repeating event is changed only once the person has said it is for
    * that occurrence alone, as Calendar asks — sent as though it were an event, Apple took it
@@ -587,6 +609,15 @@ export function CalendarView() {
       return new Date(d.getFullYear() + by, d.getMonth(), 1);
     });
 
+  /** Go to Date…: a day typed in, shown in the view as it is. */
+  const [goingTo, setGoingTo] = useState(false);
+  const goTo = (value: string) => {
+    const [y, m, d] = value.split("-").map(Number);
+    if (!y || !m || !d) return;
+    setSelected(new Date(y, m - 1, d));
+    setGoingTo(false);
+  };
+
   // Keyboard, as in Calendar on a Mac (Ctrl here): arrows page, T today, 1–4 the views, N an event.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -600,6 +631,12 @@ export function CalendarView() {
       if (typing || draft) return;
       const command = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
       const k = e.key.toLowerCase();
+      // ⇧⌘T, Go to Date…, as in Calendar's View menu.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && k === "t") {
+        e.preventDefault();
+        setGoingTo(true);
+        return;
+      }
       if (command && e.key === "ArrowLeft") shift(-1);
       else if (command && e.key === "ArrowRight") shift(1);
       // ⌘T, and the bare T this screen always had.
@@ -688,18 +725,46 @@ export function CalendarView() {
             .filter((g) => g.list.length > 0)
             .map((group) => (
               <Fragment key={group.heading}>
-                <p className="cx-side-heading">{group.heading}</p>
-                {group.list.map((c) => (
-                  <label className="cx-cal" key={c.guid}>
-                    <input
-                      type="checkbox"
-                      checked={!hidden.has(c.guid)}
-                      onChange={() => toggleCalendar(c.guid)}
-                      style={{ "--cal": tint(c) } as React.CSSProperties}
-                    />
-                    <span className="cx-cal-name">{c.title}</span>
-                  </label>
-                ))}
+                <p className="cx-side-heading">
+                  {group.heading}
+                  {group.heading === "iCloud" && (
+                    <button className="cx-side-add" aria-label="New Calendar" title="New Calendar" onClick={() => setNaming("new")}>
+                      +
+                    </button>
+                  )}
+                </p>
+                {group.list.map((c) =>
+                  naming === c.guid ? (
+                    <CalendarName key={c.guid} initial={c.title} label={`Rename ${c.title}`} onDone={(t) => updateCalendar(c, { title: t })} onCancel={() => setNaming(null)} />
+                  ) : (
+                    <label
+                      className="cx-cal"
+                      key={c.guid}
+                      onContextMenu={(e) => {
+                        // A calendar of this account can be renamed, recoloured or removed, as on icloud.com.
+                        if (!c.writable) return;
+                        e.preventDefault();
+                        setCalMenu({ cal: c, at: { x: e.clientX, y: e.clientY, alignRight: false } });
+                      }}
+                      onDoubleClick={(e) => {
+                        if (!c.writable) return;
+                        e.preventDefault();
+                        setNaming(c.guid);
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!hidden.has(c.guid)}
+                        onChange={() => toggleCalendar(c.guid)}
+                        style={{ "--cal": tint(c) } as React.CSSProperties}
+                      />
+                      <span className="cx-cal-name">{c.title}</span>
+                    </label>
+                  ),
+                )}
+                {group.heading === "iCloud" && naming === "new" && (
+                  <CalendarName initial="Untitled" label="New calendar name" onDone={createCalendar} onCancel={() => setNaming(null)} />
+                )}
               </Fragment>
             ))}
           {loaded && calendars.length === 0 && (
@@ -746,9 +811,38 @@ export function CalendarView() {
               <button className="cx-icon" aria-label="Previous" onClick={() => shift(-1)}>
                 ‹
               </button>
-              <button className="cx-today" onClick={() => setSelected(midnight(new Date()))}>
+              <button className="cx-today" title="Today · Shift-Ctrl-T to go to a date" onClick={() => setSelected(midnight(new Date()))}>
                 Today
               </button>
+              {goingTo && (
+                <form
+                  className="cx-goto"
+                  role="dialog"
+                  aria-label="Go to Date"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    goTo(new FormData(e.currentTarget).get("day") as string);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      setGoingTo(false);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setGoingTo(false);
+                  }}
+                >
+                  <input
+                    name="day"
+                    type="date"
+                    aria-label="Date"
+                    autoFocus
+                    defaultValue={`${selected.getFullYear()}-${String(selected.getMonth() + 1).padStart(2, "0")}-${String(selected.getDate()).padStart(2, "0")}`}
+                  />
+                  <button type="submit">Go</button>
+                </form>
+              )}
               <button className="cx-icon" aria-label="Next" onClick={() => shift(1)}>
                 ›
               </button>
@@ -799,6 +893,21 @@ export function CalendarView() {
 
         {error && (
           <Notice message={error} onDismiss={() => setError(null)} />
+        )}
+        {calMenu && (
+          <RowMenu
+            at={calMenu.at}
+            onClose={() => setCalMenu(null)}
+            entries={[
+              { label: "Rename", run: () => setNaming(calMenu.cal.guid) },
+              {
+                label: "Colour",
+                submenu: CALENDAR_COLOURS.map(([hex, name]) => ({ label: name, run: () => updateCalendar(calMenu.cal, { colour: hex }) })),
+              },
+              null,
+              ...(calMenu.cal.isDefault ? [] : [{ label: "Delete Calendar\u2026", danger: true, run: () => deleteCalendar(calMenu.cal) }]),
+            ]}
+          />
         )}
 
         {view === "month" && (
@@ -2074,5 +2183,47 @@ function DayPane({
         </ul>
       )}
     </aside>
+  );
+}
+
+/** Apple's calendar colours, in icloud.com's order (calendar bundle `r2`). */
+const CALENDAR_COLOURS: [string, string][] = [
+  ["#ff2d55", "Red"],
+  ["#ff9500", "Orange"],
+  ["#ffcc00", "Yellow"],
+  ["#65db39", "Green"],
+  ["#34aadc", "Blue"],
+  ["#cc73e1", "Purple"],
+  ["#a2845e", "Brown"],
+];
+
+/** A calendar's name being typed: Return or leaving keeps it, Escape leaves it as it was. */
+function CalendarName({ initial, label, onDone, onCancel }: {
+  initial: string;
+  label: string;
+  onDone: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const settled = useRef(false);
+  return (
+    <input
+      className="cx-cal-rename"
+      defaultValue={initial}
+      aria-label={label}
+      autoFocus
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={(e) => {
+        if (settled.current) return;
+        settled.current = true;
+        onDone(e.currentTarget.value);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          settled.current = true;
+          onCancel();
+        }
+      }}
+    />
   );
 }

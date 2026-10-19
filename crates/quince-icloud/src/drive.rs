@@ -290,6 +290,27 @@ fn created_folder(body: &Value, name: &str) -> Result<DriveItem> {
 /// folder of 256 folders (a git repository's `objects`) is one round trip, not 256. Each name
 /// answers with its new folder's id, or why it was not made; the answer is matched by the
 /// `clientId` each was sent with.
+/// A name iCloud Drive won't take, refused here in icloud.com's words: empty, hidden (a
+/// leading dot, which a Mac would never show), or holding ":" or a line break.
+pub fn unusable_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::Refused(
+            "A name can't be empty. Please choose a different name.".into(),
+        ));
+    }
+    if name.starts_with('.') {
+        return Err(Error::Refused(
+            "A name shouldn\u{2019}t begin with a \u{201c}.\u{201d} (dot). Please choose a different name.".into(),
+        ));
+    }
+    if name.contains([':', '\n', '\r']) {
+        return Err(Error::Refused(format!(
+            "The name \u{201c}{name}\u{201d} can\u{2019}t be used. Try using a name with fewer characters, or with no punctuation marks."
+        )));
+    }
+    Ok(())
+}
+
 pub async fn create_folders(
     http: &reqwest::Client,
     root: &str,
@@ -355,9 +376,7 @@ pub async fn create_folder(
     name: &str,
 ) -> Result<DriveItem> {
     let name = name.trim();
-    if name.is_empty() {
-        return Err(Error::Protocol("a folder needs a name".into()));
-    }
+    unusable_name(name)?;
 
     let url = format!("{}/createFolders", root.trim_end_matches('/'));
     let body = json!({
@@ -440,9 +459,7 @@ pub async fn rename(
     name: &str,
 ) -> Result<()> {
     let name = name.trim();
-    if name.is_empty() {
-        return Err(Error::Protocol("a name can't be empty".into()));
-    }
+    unusable_name(name)?;
 
     let parent = parent_of(item);
     let current = folder_listing(http, root, &params, parent).await?;
@@ -1192,6 +1209,17 @@ mod created_folder_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Names icloud.com refuses are refused here too, before anything is sent.
+    #[test]
+    fn hidden_empty_and_colon_names_are_refused() {
+        assert!(unusable_name("").is_err());
+        assert!(unusable_name(".env").is_err());
+        assert!(unusable_name("a:b").is_err());
+        assert!(unusable_name("two\nlines").is_err());
+        assert!(unusable_name("Semester Plan.pdf").is_ok());
+        assert!(unusable_name("v1.2 notes").is_ok());
+    }
 
     fn response() -> Value {
         json!([{

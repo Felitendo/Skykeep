@@ -159,7 +159,26 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return events.filter((e) => words.every((w) => `${e.title} ${e.location ?? ""}`.toLowerCase().includes(w)))
             .sort((a, b) => a.startsAt - b.startsAt);
         }
-        case "calendar_list": return calendars;
+        case "calendar_list": return (window.__cals ??= calendars.map((c) => ({ ...c }))).map((c) => ({ ...c }));
+        case "calendar_create": {
+          const cals = (window.__cals ??= calendars.map((c) => ({ ...c })));
+          if (cals.some((c) => c.title === args.title)) throw `A calendar with the name \u201c${args.title}\u201d already exists.`;
+          (window.__calWrites ??= []).push({ create: args.title });
+          cals.push({ guid: `cal-${cals.length + 1}`, title: args.title, colour: "#ff2d55", ctag: null, sortOrder: 9, enabled: true, writable: true, isDefault: false });
+          return `cal-${cals.length}`;
+        }
+        case "calendar_update": {
+          (window.__calWrites ??= []).push({ update: args });
+          const c = (window.__cals ??= calendars.map((c) => ({ ...c }))).find((c) => c.guid === args.guid);
+          if (c && args.title) c.title = args.title;
+          if (c && args.colour) c.colour = args.colour;
+          return null;
+        }
+        case "calendar_delete": {
+          (window.__calWrites ??= []).push({ delete: args.guid });
+          window.__cals = (window.__cals ?? calendars.map((c) => ({ ...c }))).filter((c) => c.guid !== args.guid);
+          return null;
+        }
         case "event_repeat": return String(args.guid).startsWith("SERIES__") ? { freq: "weekly", interval: 1, count: null } : null;
         case "event_alerts": return args.guid === "e2" ? [15] : [];
         case "event_save": (window.__eventSaves ??= []).push(args.draft); return "E-new";
@@ -367,7 +386,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return driveItems.length;
         case "drive_download": return "/home/user/Downloads/file.pdf";
         case "drive_move": (window.__moves ??= []).push(args); await new Promise((r) => setTimeout(r, 600)); return null;
-        case "drive_create_folder": case "drive_rename": case "drive_delete": return null;
+        case "drive_create_folder": case "drive_rename": (window.__driveNames ??= []).push(args); return null;
+        case "drive_delete": return null;
         case "drive_item": return null;
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;

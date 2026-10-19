@@ -212,6 +212,64 @@ fn client_state(calendar_guid: &str, ctag: Option<&str>) -> Value {
     })
 }
 
+/// Apple's calendar palette, in the order icloud.com offers it (calendar bundle `r2`).
+pub const PALETTE: [(&str, &str); 7] = [
+    ("#ff2d55", "red"),
+    ("#ff9500", "orange"),
+    ("#ffcc00", "yellow"),
+    ("#65db39", "green"),
+    ("#34aadc", "blue"),
+    ("#cc73e1", "purple"),
+    ("#a2845e", "brown"),
+];
+
+/// The first palette colour no calendar uses yet, as icloud.com picks one for a new
+/// calendar; the first again when all seven are taken.
+#[must_use]
+pub fn next_colour(existing: &[Calendar]) -> (&'static str, &'static str) {
+    let used: Vec<String> = existing
+        .iter()
+        .filter_map(|c| c.colour.as_deref())
+        .map(|c| c.to_lowercase().chars().take(7).collect())
+        .collect();
+    PALETTE
+        .iter()
+        .find(|(hex, _)| !used.iter().any(|u| u == hex))
+        .copied()
+        .unwrap_or(PALETTE[0])
+}
+
+/// A colour's name in Apple's palette, or "custom" for any other.
+#[must_use]
+pub fn symbolic_of(colour: &str) -> &'static str {
+    let c = colour.to_lowercase();
+    PALETTE
+        .iter()
+        .find(|(hex, _)| c.starts_with(hex))
+        .map_or("custom", |(_, name)| name)
+}
+
+/// The one collection with this guid in a `ca/collectiondetail` (or similar) answer.
+fn collection_of(body: &Value, guid: &str) -> Option<Value> {
+    let list = body.get("Collection")?;
+    let found = match list {
+        Value::Array(items) => items
+            .iter()
+            .find(|c| c.get("guid").and_then(Value::as_str) == Some(guid)),
+        Value::Object(_) => {
+            (list.get("guid").and_then(Value::as_str) == Some(guid)).then_some(list)
+        }
+        _ => None,
+    };
+    found.cloned()
+}
+
+fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
 /// What to tell someone when Apple's calendar turns a request down.
 ///
 /// The screen showed what Apple sent — `/ca/events/work/4186… returned 404 Not Found:
@@ -864,6 +922,189 @@ impl<'a> CalendarClient<'a> {
         Ok(changed_collections(&answer))
     }
 
+    /// One calendar exactly as Apple holds it (`ca/collectiondetail`), etag and all, or
+    /// `None` for one it has never heard of. Read-only.
+    pub async fn collection_detail(&self, guid: &str) -> Result<Option<Value>> {
+        let today = day_of(now_seconds(), None);
+        match self
+            .get(
+                &format!("/ca/collectiondetail/{guid}"),
+                &today,
+                &today,
+                "UTC",
+            )
+            .await
+        {
+            Ok(body) => Ok(collection_of(&body, guid)),
+            Err(Error::NotFound) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Make a calendar, as icloud.com's "New Calendar" does. The id is a fresh lowercase
+    /// UUID, and the colour is the first of Apple's seven that no calendar uses yet.
+    /// A title already in use is refused, as icloud.com refuses it, because two calendars
+    /// with one name cannot be told apart anywhere. Answers the new calendar's guid once
+    /// Apple's own record shows it.
+    pub async fn create_calendar(&self, title: &str, existing: &[Calendar]) -> Result<String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(Error::Refused("A calendar needs a name.".into()));
+        }
+        if existing.iter().any(|c| c.title.trim() == title) {
+            return Err(Error::Refused(format!(
+                "A calendar with the name \u{201c}{title}\u{201d} already exists."
+            )));
+        }
+        let (color, symbolic) = next_colour(existing);
+        let guid = uuid::Uuid::new_v4().to_string();
+        let order = existing.iter().map(|c| c.sort_order).max().unwrap_or(0) + 1;
+        let collection = serde_json::json!({
+            "guid": guid, "title": title, "color": color, "symbolicColor": symbolic,
+            "order": order, "visible": true, "shareTitle": "", "supportedType": "Event",
+            "objectType": "personal", "extendedDetailsAreIncluded": false, "readOnly": false,
+        });
+        self.save_collection(&guid, collection, None, None).await?;
+        match self.collection_detail(&guid).await? {
+            Some(_) => Ok(guid),
+            None => Err(Error::Refused(
+                "iCloud took the new calendar but does not show it, so nothing is assumed made."
+                    .into(),
+            )),
+        }
+    }
+
+    /// Rename or recolour a calendar: Apple's own record of it, with only what changed set,
+    /// sent with its etag, so a change made elsewhere meanwhile is refused rather than overwritten.
+    pub async fn update_calendar(
+        &self,
+        guid: &str,
+        title: Option<&str>,
+        colour: Option<&str>,
+        existing: &[Calendar],
+    ) -> Result<()> {
+        let Some(mut collection) = self.collection_detail(guid).await? else {
+            return Err(Error::NotFound);
+        };
+        if collection.get("readOnly").and_then(Value::as_bool) == Some(true) {
+            return Err(Error::Refused(
+                "That calendar can't be changed from here.".into(),
+            ));
+        }
+        if let Some(title) = title.map(str::trim) {
+            if title.is_empty() {
+                return Err(Error::Refused("A calendar needs a name.".into()));
+            }
+            if existing
+                .iter()
+                .any(|c| c.guid != guid && c.title.trim() == title)
+            {
+                return Err(Error::Refused(format!(
+                    "A calendar with the name \u{201c}{title}\u{201d} already exists."
+                )));
+            }
+            collection["title"] = title.into();
+        }
+        if let Some(colour) = colour {
+            collection["color"] = colour.into();
+            collection["symbolicColor"] = symbolic_of(colour).into();
+        }
+        let etag = collection
+            .get("etag")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let ctag = collection
+            .get("ctag")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        self.save_collection(
+            guid,
+            collection.clone(),
+            Some("PUT"),
+            etag.as_deref().zip(Some(ctag.as_deref())),
+        )
+        .await?;
+        let after = self.collection_detail(guid).await?.ok_or(Error::NotFound)?;
+        let took = title
+            .is_none_or(|t| after.get("title").and_then(Value::as_str) == Some(t.trim()))
+            && colour.is_none_or(|c| {
+                after
+                    .get("color")
+                    .and_then(Value::as_str)
+                    .map(str::to_lowercase)
+                    == Some(c.to_lowercase())
+            });
+        if took {
+            Ok(())
+        } else {
+            Err(Error::Refused("iCloud did not keep that change.".into()))
+        }
+    }
+
+    /// Delete a calendar and every event in it, as icloud.com does. The default calendar and
+    /// one shared to this account are refused here; Apple would refuse them in any case.
+    pub async fn delete_calendar(&self, calendar: &Calendar) -> Result<()> {
+        if calendar.is_default {
+            return Err(Error::Refused(
+                "This is the calendar new events go in. Choose another default on an Apple device first.".into(),
+            ));
+        }
+        if !calendar.writable {
+            return Err(Error::Refused(
+                "That calendar can't be deleted from here.".into(),
+            ));
+        }
+        let today = day_of(now_seconds(), None);
+        match self
+            .post(
+                &format!("/ca/collections/{}", calendar.guid),
+                &serde_json::json!({}),
+                &today,
+                &today,
+                None,
+                Some("DELETE"),
+            )
+            .await
+        {
+            Ok(_) | Err(Error::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        // Gone only once Apple's own record says so.
+        match self.collection_detail(&calendar.guid).await? {
+            None => Ok(()),
+            Some(_) => Err(Error::Refused("iCloud still has that calendar.".into())),
+        }
+    }
+
+    async fn save_collection(
+        &self,
+        guid: &str,
+        collection: Value,
+        method: Option<&str>,
+        tags: Option<(&str, Option<&str>)>,
+    ) -> Result<Value> {
+        let today = day_of(now_seconds(), None);
+        let body = serde_json::json!({
+            "Collection": collection,
+            "ClientState": { "Collection": [{ "guid": guid, "ctag": tags.and_then(|t| t.1) }], "fullState": false },
+        });
+        // icloud.com sends the etag as `ifMatch`, beside methodOverride, in the query.
+        let extra: Vec<(&str, &str)> = tags
+            .map(|(etag, _)| ("ifMatch", etag))
+            .into_iter()
+            .collect();
+        self.post_with(
+            &format!("/ca/collections/{guid}"),
+            &body,
+            &today,
+            &today,
+            None,
+            method,
+            &extra,
+        )
+        .await
+    }
+
     async fn post(
         &self,
         path: &str,
@@ -873,7 +1114,27 @@ impl<'a> CalendarClient<'a> {
         tz: Option<&str>,
         method_override: Option<&str>,
     ) -> Result<Value> {
+        self.post_with(path, body, from, to, tz, method_override, &[])
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn post_with(
+        &self,
+        path: &str,
+        body: &Value,
+        from: &str,
+        to: &str,
+        tz: Option<&str>,
+        method_override: Option<&str>,
+        extra: &[(&str, &str)],
+    ) -> Result<Value> {
         let mut query = self.params.clone();
+        query.extend(
+            extra
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string())),
+        );
         query.push(("clientVersion".into(), "5.1".into()));
         query.push(("requestID".into(), "4".into()));
         query.push(("startDate".into(), from.into()));
@@ -972,6 +1233,32 @@ pub fn changed_collections(answer: &Value) -> Vec<(String, Option<String>)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn coloured(colour: &str) -> Calendar {
+        Calendar {
+            guid: colour.into(),
+            title: colour.into(),
+            colour: Some(colour.into()),
+            ctag: None,
+            sort_order: 0,
+            enabled: true,
+            writable: true,
+            is_default: false,
+        }
+    }
+
+    /// A new calendar takes the first of Apple's colours no calendar has, as icloud.com does,
+    /// matching Apple's colours whatever their case or alpha; and red again when all are used.
+    #[test]
+    fn a_new_calendar_takes_the_first_unused_colour() {
+        assert_eq!(next_colour(&[]), ("#ff2d55", "red"));
+        let some = [coloured("#FF2D55FF"), coloured("#ff9500")];
+        assert_eq!(next_colour(&some), ("#ffcc00", "yellow"));
+        let all: Vec<Calendar> = PALETTE.iter().map(|(hex, _)| coloured(hex)).collect();
+        assert_eq!(next_colour(&all), ("#ff2d55", "red"));
+        assert_eq!(symbolic_of("#34AADC"), "blue");
+        assert_eq!(symbolic_of("#123456"), "custom");
+    }
 
     /// The shapes `/ca/idle` was measured answering with: nothing, a calendar it was not told
     /// of, a calendar whose tag moved; and a calendar gone.

@@ -396,6 +396,23 @@ function daysLeft(expiresAt: number | null): number | null {
   if (expiresAt === null) return null;
   return Math.max(0, Math.ceil((expiresAt * 1000 - Date.now()) / 86_400_000));
 }
+/**
+ * Why a name can't be used, in icloud.com's own words (iclouddrive bundle, createFolder chunk),
+ * or null: not empty, not hidden (a leading dot), no ":" or line break, and not already taken
+ * in this folder, whatever the case.
+ */
+export function nameProblem(full: string, isFile: boolean, siblings: DriveItem[], self?: DriveItem): string | null {
+  const kind = isFile ? "file" : "folder";
+  if (!full.trim()) return `The name \u201c${full}\u201d is invalid. Please choose a different name.`;
+  if (full.startsWith(".")) return `The name of your ${kind} shouldn\u2019t begin with a \u201c.\u201d (dot). Please choose a different name.`;
+  if (/[:\n\r]/.test(full)) {
+    return `The name \u201c${full}\u201d can\u2019t be used. Try using a name with fewer characters, or with no punctuation marks.`;
+  }
+  const lower = full.toLocaleLowerCase();
+  const taken = siblings.some((i) => i !== self && i.drivewsid !== self?.drivewsid && driveName(i).toLocaleLowerCase() === lower);
+  return taken ? `The name \u201c${full}\u201d is already taken. Please choose a different name.` : null;
+}
+
 /** "21 days", "1 day", "Today" — icloud.com's Time Left. */
 function timeLeft(expiresAt: number | null): string {
   const d = daysLeft(expiresAt);
@@ -610,7 +627,12 @@ export function DriveView() {
     async (item: DriveItem, name: string) => {
       setRenaming(null);
       const trimmed = name.trim();
-      if (!trimmed || trimmed === driveName(item)) return;
+      if (trimmed === driveName(item)) return;
+      const problem = nameProblem(trimmed, item.kind === "FILE", items, item);
+      if (problem) {
+        setError(problem);
+        return;
+      }
       setBusyGuid(item.drivewsid);
       setError(null);
       // The new name shows the moment Return is pressed; Apple's answer confirms or undoes it.
@@ -629,7 +651,7 @@ export function DriveView() {
         setBusyGuid(null);
       }
     },
-    [refresh]
+    [refresh, items]
   );
 
   /**
@@ -890,9 +912,10 @@ export function DriveView() {
     setCreatingFolder(false);
     setNewFolderName("");
     if (!name) return;
-    // Finder will not put two things of one name in a folder; neither will iCloud.
-    if (items.some((i) => i.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
-      setError(`There's already something called \u201c${name}\u201d here.`);
+    // Finder will not put two things of one name in a folder, nor a hidden or unusable one; neither will iCloud.
+    const problem = nameProblem(name, false, items);
+    if (problem) {
+      setError(problem);
       return;
     }
     folderPending.current = true;

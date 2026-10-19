@@ -346,7 +346,7 @@ let failures = 0;
   await page.waitForTimeout(400);
   const creates = await page.evaluate(() => window.__folderCreates ?? 0);
   const said = await page.locator(".drive .error, [role=alert]").allInnerTexts();
-  const refused = creates === 0 && said.some((t) => /already something called/.test(t));
+  const refused = creates === 0 && said.some((t) => /already taken/.test(t));
   console.log(
     refused
       ? "PASS a name already in the folder is refused, and says so"

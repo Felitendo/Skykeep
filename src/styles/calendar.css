@@ -793,3 +793,37 @@
 .cx-step .cx-today:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .cx-tools > .cx-icon { min-width: 32px; padding: 0; color: var(--text); }
 .cx-search { padding: 0 12px; }
+
+/* Go to Date… (⇧⌘T): a small date field under Today. Opaque and drawn at once, as the other
+   popovers are, because a blurred or animated layer flickers in WebKitGTK. */
+.cx-step { position: relative; }
+.cx-goto {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--glass-thick);
+  box-shadow: var(--glass-specular), var(--glass-lift);
+}
+.cx-goto input { font: inherit; }
+.cx-goto button { padding: 0 12px; border-radius: var(--r-pill); }
+
+/* New Calendar: a quiet + at the end of the iCloud heading, as the Mac's sidebar has. */
+.cx-side-heading { display: flex; align-items: center; justify-content: space-between; }
+.cx-side-add {
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px;
+  background: none; box-shadow: none; color: var(--text-2);
+  font-size: 15px; line-height: 1; cursor: pointer;
+}
+.cx-side-add:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.cx-side-add:focus-visible { outline: 3px solid var(--accent-ring); }
+/* A calendar's name being typed, in the row it will take. */
+.cx-cal-rename {
+  width: 100%; height: 26px; margin: 0; padding: 0 6px;
+  border-radius: 6px; font: inherit; font-size: var(--t-13);
+}

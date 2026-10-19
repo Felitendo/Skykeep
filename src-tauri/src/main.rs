@@ -960,6 +960,93 @@ fn spawn_holidays(app: tauri::AppHandle) {
     });
 }
 
+/// After a calendar was made, changed or removed: Apple's own list of calendars, kept here,
+/// so the sidebar shows what iCloud now holds rather than what was asked for.
+async fn calendars_from_apple(
+    client: &quince_icloud::calendar::CalendarClient<'_>,
+    data: &Data,
+) -> UiResult<()> {
+    let today = jiff::Zoned::now().date().to_string();
+    let snap = client
+        .startup(&today, &today, "UTC")
+        .await
+        .map_err(|e| e.to_string())?;
+    if snap.calendars.is_empty() {
+        // An empty answer is never taken as "every calendar is gone".
+        return Ok(());
+    }
+    data.0
+        .lock()
+        .await
+        .put_calendars(&snap.calendars)
+        .map_err(|e| e.to_string())
+}
+
+/// New Calendar, as on icloud.com: Apple's next unused colour, a name no other calendar has.
+#[tauri::command]
+async fn calendar_create(
+    title: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    let _one = CALENDAR_PASS.lock().await;
+    let (http, root, params) = calendar_context(&auth).await?;
+    let client = quince_icloud::calendar::CalendarClient::new(&http, &root, params);
+    let existing = data.0.lock().await.calendars().map_err(|e| e.to_string())?;
+    let guid = client
+        .create_calendar(&title, &existing)
+        .await
+        .map_err(|e| e.to_string())?;
+    calendars_from_apple(&client, &data).await?;
+    Ok(guid)
+}
+
+/// Rename or recolour a calendar.
+#[tauri::command]
+async fn calendar_update(
+    guid: String,
+    title: Option<String>,
+    colour: Option<String>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let _one = CALENDAR_PASS.lock().await;
+    let (http, root, params) = calendar_context(&auth).await?;
+    let client = quince_icloud::calendar::CalendarClient::new(&http, &root, params);
+    let existing = data.0.lock().await.calendars().map_err(|e| e.to_string())?;
+    client
+        .update_calendar(&guid, title.as_deref(), colour.as_deref(), &existing)
+        .await
+        .map_err(|e| e.to_string())?;
+    calendars_from_apple(&client, &data).await
+}
+
+/// Delete a calendar and its events, once the person has confirmed it in the window.
+#[tauri::command]
+async fn calendar_delete(
+    guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let _one = CALENDAR_PASS.lock().await;
+    let (http, root, params) = calendar_context(&auth).await?;
+    let client = quince_icloud::calendar::CalendarClient::new(&http, &root, params);
+    let calendar = data
+        .0
+        .lock()
+        .await
+        .calendars()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|c| c.guid == guid)
+        .ok_or("That calendar is no longer here.")?;
+    client
+        .delete_calendar(&calendar)
+        .await
+        .map_err(|e| e.to_string())?;
+    calendars_from_apple(&client, &data).await
+}
+
 #[tauri::command]
 async fn calendar_list(
     data: State<'_, Data>,
@@ -3496,6 +3583,9 @@ fn main() {
             event_alerts,
             event_repeat,
             event_delete,
+            calendar_create,
+            calendar_update,
+            calendar_delete,
             calendar_list,
             calendar_search,
             reminder_lists,
