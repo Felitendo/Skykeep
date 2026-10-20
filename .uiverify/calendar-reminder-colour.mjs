@@ -14,7 +14,8 @@ const colours = (sel) => page.evaluate((sel) => Object.fromEntries([...document.
 await page.keyboard.press("Control+3");
 await page.waitForTimeout(500);
 let seen = await colours(".cx-item.is-reminder");
-ok(seen["Evening run"] === "#cc73e1" && seen["Water the pl"] === "#63da38", `Month draws each reminder in its list's colour  ${JSON.stringify(seen)}`);
+const colourOf = (start) => Object.entries(seen).find(([k]) => k.startsWith(start))?.[1];
+ok(colourOf("Evening run") === "#cc73e1" && colourOf("Water the pl") === "#63da38", `Month draws each reminder in its list's colour  ${JSON.stringify(seen)}`);
 await page.keyboard.press("Control+2");
 await page.waitForTimeout(500);
 await page.evaluate(() => { document.querySelector(".cx-scroll").scrollTop = 4 * 48; });

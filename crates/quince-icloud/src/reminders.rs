@@ -1098,13 +1098,8 @@ mod cloudkit_tests {
 
     #[test]
     fn a_record_becomes_a_reminder_with_its_real_title() {
-        let r = reminder_from_record(&reminder_record(
-            "Reminder/1",
-            "🏃 Move more",
-            false,
-            false,
-        ))
-        .unwrap();
+        let r = reminder_from_record(&reminder_record("Reminder/1", "🏃 Move more", false, false))
+            .unwrap();
         assert_eq!(r.title, "🏃 Move more");
         assert_eq!(r.list_guid, "List/abc");
         assert!(!r.is_done());

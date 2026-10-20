@@ -2011,11 +2011,7 @@ mod tests {
     /// Real titles carry emoji and accents, so the decode must be UTF-8, not ASCII.
     #[test]
     fn keeps_emoji_and_accents_intact() {
-        for text in [
-            "🏃 Move more",
-            "Café — déjà vu",
-            "日本語のリマインダー",
-        ] {
+        for text in ["🏃 Move more", "Café — déjà vu", "日本語のリマインダー"] {
             let payload = gzipped(&document(text));
             assert_eq!(text_from_bytes(&payload).as_deref(), Some(text));
         }
