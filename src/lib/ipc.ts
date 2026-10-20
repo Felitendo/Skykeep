@@ -102,7 +102,8 @@ export const api = {
   photoSetCaption: (id: string, caption: string) => invoke<Photo>("photo_set_caption", { id, caption }),
   /** Photos and videos (or folders of them) into the library. Answers the batch; progress
    * arrives as PHOTO_UPLOAD events, in the same shape as Drive's. */
-  photosUpload: (paths: string[]) => invoke<string>("photos_upload", { paths }),
+  /** Into the library, and into `album` too when one is open. */
+  photosUpload: (paths: string[], album?: string) => invoke<string>("photos_upload", { paths, album: album ?? null }),
   photosAlbumCreate: (name: string) => invoke<PhotoAlbum>("photos_album_create", { name }),
   photosAlbumRename: (id: string, name: string) => invoke<void>("photos_album_rename", { id, name }),
   photosAlbumDelete: (id: string) => invoke<void>("photos_album_delete", { id }),

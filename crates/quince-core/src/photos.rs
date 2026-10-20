@@ -99,6 +99,9 @@ pub struct Upload {
     pub error: Option<String>,
     pub asset: Option<String>,
     pub added_at: i64,
+    /// The album open when it was added: the photo goes into it too, as in Photos.
+    #[serde(default)]
+    pub album: Option<String>,
 }
 
 /// Which photos a view shows.
@@ -280,9 +283,9 @@ impl Library {
         let tx = self.conn.transaction()?;
         for u in uploads {
             tx.execute(
-                "INSERT OR IGNORE INTO photo_uploads (id, batch, path, name, state, error, asset, added_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![u.id, u.batch, u.path, u.name, u.state, u.error, u.asset, u.added_at],
+                "INSERT OR IGNORE INTO photo_uploads (id, batch, path, name, state, error, asset, added_at, album)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![u.id, u.batch, u.path, u.name, u.state, u.error, u.asset, u.added_at, u.album],
             )?;
         }
         tx.commit()?;
@@ -307,7 +310,7 @@ impl Library {
     /// Uploads not yet finished, oldest first: what a launch resumes.
     pub fn unfinished_uploads(&self) -> Result<Vec<Upload>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, batch, path, name, state, error, asset, added_at FROM photo_uploads
+            "SELECT id, batch, path, name, state, error, asset, added_at, album FROM photo_uploads
              WHERE state IN ('waiting', 'sending', 'verifying') ORDER BY added_at, id",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -320,6 +323,7 @@ impl Library {
                 error: r.get(5)?,
                 asset: r.get(6)?,
                 added_at: r.get(7)?,
+                album: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)

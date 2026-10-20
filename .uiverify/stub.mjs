@@ -373,6 +373,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         // Each file is answered at once with where it stands; a test plays the rest in with __emit.
         case "photos_upload": {
           (window.__photoUploads ??= []).push(args.paths);
+          (window.__photoUploadAlbums ??= []).push(args.album ?? null);
           const batch = `B${window.__photoUploads.length}`;
           const say = (e) => window.__emit?.("quince://photo-upload", { batch, within: "", sent: 0, total: 1000, folder: false, error: null, ...e });
           window.__photoLive = args.paths.map((path, i) => ({ id: `${batch}:${i}`, name: path.split("/").pop() }));

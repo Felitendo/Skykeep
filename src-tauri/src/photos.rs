@@ -639,6 +639,7 @@ fn cancelled(u: &quince_core::photos::Upload) -> bool {
 #[tauri::command]
 pub async fn photos_upload(
     paths: Vec<String>,
+    album: Option<String>,
     app: AppHandle,
     data: State<'_, Data>,
 ) -> UiResult<String> {
@@ -686,6 +687,7 @@ pub async fn photos_upload(
             error: None,
             asset: None,
             added_at: now,
+            album: album.clone(),
         };
         if let Some(r) = quince_icloud::photos_upload::refusal(&name, size) {
             u.state = "failed".into();
@@ -835,6 +837,7 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
             Ok(Some(_))
         ) {
             set("done", None, Some(asset)).await;
+            into_album(app, &http, &ck, &params, &u, asset).await;
             say(app, &u, "done", 1, 1, None);
             refresh_photos(app).await;
             return true;
@@ -955,6 +958,7 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
         match result {
             Ok(Outcome::Uploaded(made)) => {
                 set("done", None, Some(&made.asset)).await;
+                into_album(app, &http, &ck, &params, &u, &made.asset).await;
                 say(app, &u, "done", size, size, None);
                 refresh_photos(app).await;
                 return true;
@@ -993,6 +997,59 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
                 return true;
             }
         }
+    }
+}
+
+/// A photo added while an album was open goes into that album too, after what is there, as
+/// Photos files an import. The upload itself has already succeeded: if the album is gone, or
+/// Apple refuses, the photo stays in the library and only this step is skipped.
+async fn into_album(
+    app: &AppHandle,
+    http: &reqwest::Client,
+    ck: &str,
+    params: &[(String, String)],
+    u: &quince_core::photos::Upload,
+    asset: &str,
+) {
+    let Some(album) = u.album.as_deref() else {
+        return;
+    };
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let data = app.state::<Data>();
+    let last = {
+        let library = data.0.lock().await;
+        if !library
+            .albums()
+            .map(|a| a.iter().any(|x| x.id == album))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        library.album_last_position(album).ok().flatten()
+    };
+    match quince_icloud::photos::add_to_album(
+        http,
+        ck,
+        params.to_vec(),
+        album,
+        &[asset.to_string()],
+        last,
+    )
+    .await
+    {
+        Ok(placed) => {
+            data.0
+                .lock()
+                .await
+                .put_album_items(
+                    &placed
+                        .into_iter()
+                        .map(|(a, at)| (album.to_string(), a, at))
+                        .collect::<Vec<_>>(),
+                )
+                .ok();
+        }
+        Err(e) => eprintln!("photos upload: {} not put in its album: {e}", u.name),
     }
 }
 

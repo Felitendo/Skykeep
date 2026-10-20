@@ -451,4 +451,8 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE photos ADD COLUMN caption TEXT;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // The album open when a photo was added to Photos, which it goes into once Apple has it.
+    r#"
+    ALTER TABLE photo_uploads ADD COLUMN album TEXT;
+    "#,
 ];

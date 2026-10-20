@@ -1064,11 +1064,12 @@ export function PhotosView() {
   const add = useCallback(async (paths: string[]) => {
     if (paths.length === 0) return;
     try {
-      await api.photosUpload(paths);
+      // With an album open, what is added goes into it too, as Photos files an import.
+      await api.photosUpload(paths, album?.id);
     } catch (e) {
       setError(messageOf(e));
     }
-  }, []);
+  }, [album]);
 
   const choose = async () => {
     try {
@@ -1191,7 +1192,7 @@ export function PhotosView() {
   );
 
   return (
-    <div className={`px${dropping ? " is-dropping" : ""}`}>
+    <div className={`px${dropping ? " is-dropping" : ""}`} data-drop-label={album ? `Add to ${album.name}` : "Add to Library"}>
       <aside className="px-side" aria-label="Photos">
         <p className="px-side-heading">Photos</p>
         {VIEWS.map(source)}

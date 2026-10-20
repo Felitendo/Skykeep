@@ -176,7 +176,7 @@
    repaints it every frame the pointer moves. */
 .px { position: relative; }
 .px.is-dropping::after {
-  content: "Add to Library";
+  content: attr(data-drop-label);
   position: absolute;
   inset: 8px;
   z-index: 3;

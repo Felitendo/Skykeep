@@ -62,6 +62,18 @@ await page.locator(".row-menu").getByText("Delete Album").click();
 await page.waitForTimeout(250);
 ok(!(await albumNames()).includes("Sea") && (await page.locator(".px-bar h1").innerText()) === "Library", "Delete Album, once agreed, removes it and goes back to the library");
 
+// With an album open, what is added goes into it too, and a drop says so.
+await page.locator(".px-albums .px-source", { hasText: "Trips" }).click();
+await page.waitForTimeout(200);
+await page.evaluate(() => { window.__pick = ["/home/test/Pictures/ferry.jpg"]; });
+await page.getByRole("button", { name: "Add Photos" }).click();
+await page.waitForTimeout(300);
+ok((await page.evaluate(() => window.__photoUploadAlbums?.at(-1))) === "AL1", "Add Photos with an album open puts them in it too");
+ok((await page.locator(".px").getAttribute("data-drop-label")) === "Add to Trips", "and a drop there reads Add to Trips");
+await page.locator(".px-source", { hasText: "Library" }).click();
+await page.waitForTimeout(200);
+ok((await page.locator(".px").getAttribute("data-drop-label")) === "Add to Library", "in the library, Add to Library");
+await page.evaluate(() => window.__emit?.("quince://photo-upload", { id: "B1:0", batch: "B1", name: "ferry.jpg", within: "", folder: false, error: null, state: "cancelled", sent: 0, total: 1 }));
 await page.evaluate(() => { window.__albumFail = true; });
 await page.getByRole("button", { name: "New Album" }).click();
 await page.getByLabel("Album name").fill("Nope");
