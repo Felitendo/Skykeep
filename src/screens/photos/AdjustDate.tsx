@@ -1,0 +1,82 @@
+/**
+ * Adjust Date and Time, as icloud.com's: the photo, the timezone the times are in, the original
+ * date, and the one to give it — to the second. Save only once it is a different, real date.
+ */
+import { useEffect, useState } from "react";
+import { X } from "lucide-react";
+import { pictureSrc, type Photo } from "../../lib/ipc";
+
+const pad = (n: number) => String(n).padStart(2, "0");
+/** A moment as the field takes it, in this computer's own time: 2026-06-30T21:26:54. */
+const local = (seconds: number) => {
+  const d = new Date(seconds * 1000);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+/** "GMT+05:30", as icloud.com names the zone. */
+const zone = () => {
+  const m = -new Date().getTimezoneOffset();
+  return `GMT${m >= 0 ? "+" : "−"}${pad(Math.floor(Math.abs(m) / 60))}:${pad(Math.abs(m) % 60)}`;
+};
+
+export function AdjustDate({ photo, onSave, onClose }: { photo: Photo; onSave: (takenAt: number) => void; onClose: () => void }) {
+  const [value, setValue] = useState(() => local(photo.takenAt));
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [onClose]);
+  const ms = Date.parse(value);
+  const next = Number.isNaN(ms) ? null : Math.floor(ms / 1000);
+  const changed = next !== null && next !== photo.takenAt && next > -2_208_988_800 && next < 253_402_300_800;
+  const shown = new Date(photo.takenAt * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
+  return (
+    <div className="px-sheet-scrim" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <form
+        className="px-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Adjust Date and Time"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (changed && next !== null) onSave(next);
+        }}
+      >
+        <button type="button" className="px-sheet-x" aria-label="Close" onClick={onClose}>
+          <X size={16} strokeWidth={2.2} aria-hidden="true" />
+        </button>
+        <h2>Adjust Date and Time</h2>
+        <div className="px-dl-pics" aria-hidden="true">
+          <img src={pictureSrc(photo.id, "thumb")} alt="" />
+        </div>
+        <p className="px-date-zone">All times are {zone()}</p>
+        <div className="px-date-grid">
+          <span>Original:</span>
+          <output className="px-date-was">{shown}</output>
+          <label htmlFor="px-adjusted">Adjusted:</label>
+          <input
+            id="px-adjusted"
+            className="px-date-field"
+            type="datetime-local"
+            step={1}
+            value={value}
+            autoFocus
+            onChange={(e) => setValue(e.target.value)}
+          />
+        </div>
+        <div className="px-sheet-buttons">
+          <button type="button" className="px-sheet-button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="px-sheet-button is-primary" disabled={!changed}>
+            Save
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}

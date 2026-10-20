@@ -108,6 +108,8 @@ export const api = {
   photoSetRating: (id: string, rating: number) => invoke<Photo>("photo_set_rating", { id, rating }),
   photoSetKeywords: (id: string, keywords: string[]) => invoke<Photo>("photo_set_keywords", { id, keywords }),
   photoOpenMap: (id: string) => invoke<void>("photo_open_map", { id }),
+  /** When it was taken, in unix seconds. */
+  photoSetDate: (id: string, takenAt: number) => invoke<Photo>("photo_set_date", { id, takenAt }),
   /** Photos and videos (or folders of them) into the library. Answers the batch; progress
    * arrives as PHOTO_UPLOAD events, in the same shape as Drive's. */
   /** Into the library, and into `album` too when one is open. */

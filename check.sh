@@ -69,6 +69,7 @@ step "viewer, real sizes" node .uiverify/photos-viewer-real.mjs
 step "filmstrip"         node .uiverify/photos-strip.mjs
 step "place & keywords"  node .uiverify/photos-info.mjs
 step "download options"  node .uiverify/photos-download.mjs
+step "adjust date"       node .uiverify/photos-date.mjs
 step "notes delete"      node .uiverify/notes-delete.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs
@@ -121,6 +122,7 @@ step "webkit: viewer sizes" env ENGINE=webkit node .uiverify/photos-viewer-real.
 step "webkit: filmstrip" env ENGINE=webkit node .uiverify/photos-strip.mjs
 step "webkit: place & keywords" env ENGINE=webkit node .uiverify/photos-info.mjs
 step "webkit: downloads" env ENGINE=webkit node .uiverify/photos-download.mjs
+step "webkit: adjust date" env ENGINE=webkit node .uiverify/photos-date.mjs
 step "webkit: delete"    env ENGINE=webkit node .uiverify/notes-delete.mjs
 step "webkit: row hover" env ENGINE=webkit node .uiverify/row-hover.mjs
 step "webkit: fold"      env ENGINE=webkit node .uiverify/sidebar-fold.mjs

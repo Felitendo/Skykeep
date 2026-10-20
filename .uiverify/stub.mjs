@@ -372,6 +372,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (p) p.keywords = args.keywords;
           return p;
         }
+        case "photo_set_date": {
+          (window.__dates ??= []).push(args);
+          const p = (window.__photos ?? []).find((x) => x.id === args.id);
+          if (p) p.takenAt = args.takenAt;
+          return p;
+        }
         case "photo_open_map": (window.__maps ??= []).push(args.id); return null;
         case "photo_set_rating": {
           (window.__ratings ??= []).push(args);

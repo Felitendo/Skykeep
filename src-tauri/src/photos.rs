@@ -682,6 +682,52 @@ pub async fn photo_set_keywords(
     Ok(photo)
 }
 
+/// When a photo was taken, as Adjust Date and Time sets it (unix seconds): Apple's answer taken
+/// at once.
+#[tauri::command]
+pub async fn photo_set_date(
+    id: String,
+    taken_at: i64,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Photo> {
+    // Photos takes nothing before 1900 or past the end of 9999 — and neither does a camera.
+    if !(-2_208_988_800..253_402_300_800).contains(&taken_at) {
+        return Err("That date is out of range.".into());
+    }
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let mut photo = data
+        .0
+        .lock()
+        .await
+        .photo(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo is no longer in the library.")?;
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let answer = quince_icloud::photos::set_date(
+        &http,
+        &root,
+        params,
+        &id,
+        photo.change_tag.as_deref(),
+        taken_at * 1000,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    photo.taken_at = taken_at;
+    photo.change_tag = answer
+        .get("recordChangeTag")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or(photo.change_tag);
+    data.0
+        .lock()
+        .await
+        .put_photos(std::slice::from_ref(&photo))
+        .map_err(|e| e.to_string())?;
+    Ok(photo)
+}
+
 /// Where a photo was taken, opened in a map in the browser: OpenStreetMap at its coordinates.
 /// Apple's place names come from Apple Maps, which is not here; the place itself is.
 #[tauri::command]

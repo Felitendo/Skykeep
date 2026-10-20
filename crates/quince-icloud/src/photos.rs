@@ -494,6 +494,29 @@ pub async fn set_keywords(
         .await
 }
 
+/// When a photo was taken, changed, as icloud.com's Adjust Date and Time changes it: `assetDate`,
+/// the moment in milliseconds, against the asset's change tag. (With Advanced Data Protection
+/// icloud.com writes `assetDateEnc` too; his account does not use it.) Answers the asset.
+pub async fn set_date(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    asset: &str,
+    change_tag: Option<&str>,
+    millis: i64,
+) -> Result<Value> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            asset,
+            "CPLAsset",
+            change_tag,
+            serde_json::json!({ "assetDate": { "value": millis } }),
+        )
+        .await
+}
+
 /// An album's name as Photos writes it: base64 of its UTF-8 bytes, untyped.
 fn album_name(name: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(name.as_bytes())

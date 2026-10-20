@@ -24,6 +24,7 @@ import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Slideshow } from "./photos/Slideshow";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
+import { AdjustDate } from "./photos/AdjustDate";
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
 const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
@@ -426,6 +427,28 @@ export function PhotosView() {
   }, [photos, sort?.by, drawn]);
 
   const shown = open !== null ? photos?.[open] ?? null : null;
+  // The viewer follows the photo, not its place: when the list moves under it — its date
+  // changed, a sync reordered the library — it finds the photo again rather than showing
+  // whichever came to stand where it was.
+  const openId = useRef<string | null>(null);
+  const lastList = useRef(photos);
+  useLayoutEffect(() => {
+    const moved = lastList.current !== photos;
+    lastList.current = photos;
+    if (open === null || !photos) {
+      openId.current = null;
+      return;
+    }
+    // Only a list that changed sends it looking; a step to another photo is a new photo.
+    if (moved && openId.current && photos[open]?.id !== openId.current) {
+      const again = photos.findIndex((p) => p.id === openId.current);
+      if (again >= 0) {
+        setOpen(again);
+        return;
+      }
+    }
+    openId.current = photos[open]?.id ?? null;
+  }, [open, photos]);
 
   /*
    * The viewer opens as Photos opens a photo: it grows out of its tile while the dark comes up
@@ -1212,6 +1235,21 @@ export function PhotosView() {
     }
   };
 
+  /** Adjust Date and Time open for this photo. */
+  const [adjusting, setAdjusting] = useState<Photo | null>(null);
+  const redate = async (p: Photo, takenAt: number) => {
+    setAdjusting(null);
+    const before = photos;
+    setPhotos((all) => (all ?? []).map((x) => (x.id === p.id ? { ...x, takenAt } : x)));
+    try {
+      await api.photoSetDate(p.id, takenAt);
+      read().catch(() => {});
+    } catch (e) {
+      setPhotos(before);
+      setError(messageOf(e));
+    }
+  };
+
   /** Download Options open for these photos. */
   const [options, setOptions] = useState<Photo[] | null>(null);
   const downloadAs = async (list: Photo[], want: Want) => {
@@ -1876,7 +1914,12 @@ export function PhotosView() {
                 <dt>Name</dt>
                 <dd>{shown.filename ?? "—"}</dd>
                 <dt>Taken</dt>
-                <dd>
+                <dd className="px-taken">
+                  {view !== "recentlyDeleted" && (
+                    <button className="px-link px-adjust" onClick={() => setAdjusting(shown)}>
+                      Adjust
+                    </button>
+                  )}
                   {new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "full" })} at{" "}
                   {new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}
                 </dd>
@@ -1956,6 +1999,7 @@ export function PhotosView() {
       )}
       {menu && <RowMenu at={menu.at} entries={menu.entries} onClose={() => setMenu(null)} />}
       {show && <Slideshow photos={show.list} start={show.start} onClose={() => setShow(null)} />}
+      {adjusting && <AdjustDate photo={adjusting} onSave={(t) => void redate(adjusting, t)} onClose={() => setAdjusting(null)} />}
       {options && <DownloadOptions photos={options} onPick={(w) => void downloadAs(options, w)} onClose={() => setOptions(null)} />}
       <UploadPanel uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />
     </div>
