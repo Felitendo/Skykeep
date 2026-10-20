@@ -10,6 +10,7 @@
 import { useActiveRef, useScreenActive } from "../../lib/screen";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { turnStyle, type Turn } from "../../lib/ipc";
 
 const clock = (s: number) => {
   if (!Number.isFinite(s) || s < 0) s = 0;
@@ -24,12 +25,18 @@ export function VideoPlayer({
   poster,
   label,
   style,
+  turn,
+  shape,
   onError,
 }: {
   src: string;
   poster: string;
   label: string;
   style?: React.CSSProperties;
+  /** How the film is turned, as its file records it; not shown until it is known. */
+  turn?: Turn;
+  /** The photo's own width and height, upright: the box the film is turned into. */
+  shape: { w: number; h: number };
   onError: () => void;
 }) {
   const film = useRef<HTMLVideoElement | null>(null);
@@ -114,6 +121,9 @@ export function VideoPlayer({
       <video
         ref={film}
         className="px-shown"
+        // Turned as it was recorded, in the photo's own box (lib/ipc turnStyle); hidden until
+        // the turn is known, so a film never shows sideways first.
+        style={turn ? turnStyle(turn, shape.w, shape.h) : { visibility: "hidden" }}
         src={src}
         poster={poster}
         aria-label={label}

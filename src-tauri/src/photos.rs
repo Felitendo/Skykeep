@@ -1254,6 +1254,25 @@ pub async fn photo_set_rating(
     Ok(photo)
 }
 
+/// How a video's picture is turned, as its file records it (`[a, b, c, d]`, see
+/// quince_media::video_matrix): the window draws the turn itself, since the film is served
+/// upright (video.rs). `which` is the film the window plays: "original" (a video) or "video"
+/// (a Live Photo's moving part). Fetched once if it is not on disk yet, as playing it would.
+#[tauri::command]
+pub async fn photo_video_turn(id: String, which: String, app: AppHandle) -> UiResult<[i32; 4]> {
+    let size = if which == "video" {
+        Size::Video
+    } else {
+        Size::Original
+    };
+    let path = cached(&app, &id, size).await?;
+    let turn = tokio::task::spawn_blocking(move || quince_media::video_matrix(&path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(turn.map_or([1, 0, 0, 1], |(_, m)| m))
+}
+
 /// A video opened in this computer's own player. WebKitGTK plays nothing without GStreamer's
 /// codec plugins, which many systems (his among them) do not have, so a video is fetched once,
 /// kept beside the other pictures under its own name, and handed to the system's player.

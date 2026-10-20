@@ -914,7 +914,7 @@
 
 /* ---- a video, as Photos plays one: the film alone, its controls in a capsule floating over
    its foot that fades while the pointer rests (always there while paused) ----------------- */
-.px-player { position: relative; display: block; max-width: none; max-height: none; background: #000 center / 100% 100% no-repeat; }
+.px-player { position: relative; display: block; overflow: hidden; max-width: none; max-height: none; background: #000 center / 100% 100% no-repeat; }
 .px-player > video { display: block; width: 100%; height: 100%; object-fit: contain; outline: none; }
 .px-player-bar {
   position: absolute;

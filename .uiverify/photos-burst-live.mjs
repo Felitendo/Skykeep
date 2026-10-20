@@ -21,6 +21,8 @@ const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null });
 await ctx.addInitScript((v) => {
   window.__videoBase = v;
+  // A selfie Live Photo's moving part: a quarter turn and a mirror, as the front camera writes it.
+  window.__turn = [0, 1, 1, 0];
   // p2 is a burst's chosen photo (of 3), p4 a Live Photo.
   window.__photoExtra = { p2: { burst: "B1", burstPick: true, burstCount: 3 }, p4: { kind: "live" } };
 }, base);
@@ -71,6 +73,16 @@ await live.hover();
 await page.waitForTimeout(200);
 const v = page.locator(".px-pan video.px-live");
 ok((await v.count()) === 1 && (await v.getAttribute("src")) === `${base}/p4/video`, `resting on LIVE plays its moving part over the still  ${await v.getAttribute("src").catch(() => "")}`);
+// Turned as its file records it (a selfie's quarter turn and mirror), in the still's own box:
+// the film laid out in its own shape and turned into the photo's, exactly over the still.
+const asked = await page.evaluate(() => window.__turnAsks?.at(-1));
+ok(asked?.id === "p4" && asked?.which === "video", `its turn is asked for the moving part itself  ${JSON.stringify(asked)}`);
+const fit = await page.evaluate(() => {
+  const v = document.querySelector("video.px-live"), p = document.querySelector(".px-pan").getBoundingClientRect(), r = v.getBoundingClientRect();
+  return { t: getComputedStyle(v).transform, vis: getComputedStyle(v).visibility, dw: Math.round(r.width - p.width), dh: Math.round(r.height - p.height), dx: Math.round(r.left - p.left), dy: Math.round(r.top - p.top) };
+});
+ok(fit.t.replace(/\s/g, "") === "matrix(0,1,1,0,0,0)" && fit.vis === "visible", `turned by the file's own matrix  ${fit.t}`);
+ok(Math.abs(fit.dw) <= 1 && Math.abs(fit.dh) <= 1 && Math.abs(fit.dx) <= 1 && Math.abs(fit.dy) <= 1, `and lying exactly over the still  ${JSON.stringify(fit)}`);
 await page.keyboard.press("z");
 await page.waitForTimeout(400);
 ok((await page.getByRole("button", { name: "Play Live Photo" }).count()) === 0, "zoomed in, the mark is not over the picture");

@@ -19,6 +19,8 @@ import {
   type PhotoAlbum,
   type PhotoView,
   type UploadEvent,
+  turnStyle,
+  type Turn,
 } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Notice } from "../components/Notice";
@@ -919,6 +921,22 @@ export function PhotosView() {
   /** A Live Photo's moving part playing over it. */
   const [moving, setMoving] = useState<string | null>(null);
   useEffect(() => setMoving(null), [shown?.id]);
+  /** How the film being played is turned, as its file records it (see turnStyle). */
+  const [turn, setTurn] = useState<{ key: string; value: Turn } | null>(null);
+  const turnFor = shown?.kind === "video" ? `${shown.id}/original` : moving && moving === shown?.id ? `${moving}/video` : null;
+  useEffect(() => {
+    if (!turnFor || turn?.key === turnFor) return undefined;
+    let live = true;
+    const [id, which] = turnFor.split("/") as [string, "original" | "video"];
+    api.photoVideoTurn(id, which).then(
+      (value) => live && setTurn({ key: turnFor, value }),
+      // Not known: drawn as served, as it was before.
+      () => live && setTurn({ key: turnFor, value: [1, 0, 0, 1] }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [turnFor]); // eslint-disable-line react-hooks/exhaustive-deps
   /** Videos this computer's engine could not play; each opens in the system's player instead. */
   const [unplayable, setUnplayable] = useState<Set<string>>(() => new Set());
   // The window's player reads only http(s): videos come from the app's own loopback server.
@@ -2658,6 +2676,8 @@ export function PhotosView() {
                 <div className="px-video">
                   <VideoPlayer
                     key={shown.id}
+                    turn={turn?.key === `${shown.id}/original` ? turn.value : undefined}
+                    shape={{ w: shown.width, h: shown.height }}
                     src={`${videoBase}/${shown.id}/original`}
                     poster={viewSrc(shown)}
                     label={shown.filename ?? "Video"}
@@ -2741,11 +2761,18 @@ export function PhotosView() {
                     }}
                   />
                   {moving === shown.id && videoBase && (
-                    // The moving part, laid exactly over the still, played once and gone.
+                    // The moving part, laid exactly over the still, played once and gone —
+                    // turned as it was recorded (a selfie's is a quarter turn and a mirror),
+                    // and not shown until that turn is known, so it never shows sideways.
                     <video
                       key={`${shown.id}-live`}
                       className="px-live"
                       src={`${videoBase}/${shown.id}/video`}
+                      style={
+                        turn?.key === `${shown.id}/video`
+                          ? turnStyle(turn.value, shown.width, shown.height)
+                          : { visibility: "hidden" }
+                      }
                       autoPlay
                       playsInline
                       onEnded={() => setMoving(null)}

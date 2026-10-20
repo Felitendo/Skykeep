@@ -94,6 +94,8 @@ export const api = {
   photosAlbums: () => invoke<[PhotoAlbum, number, string | null][]>("photos_albums"),
   photosInAlbum: (album: string) => invoke<Photo[]>("photos_in_album", { album }),
   /** A video (or a Live Photo's moving part) opened in this computer's own player. */
+  /** How a video's picture is turned, as its file records it (served upright: drawn here). */
+  photoVideoTurn: (id: string, which: "original" | "video") => invoke<Turn>("photo_video_turn", { id, which }),
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Where the window's player fetches videos from (a loopback server), or null without one. */
   videoBase: () => invoke<string | null>("video_base"),
@@ -722,4 +724,31 @@ export function messageOf(e: unknown): string {
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
   return "Something went wrong. Try again.";
+}
+
+/** A film's turn as its file records it: the matrix `[a, b, c, d]`, each -1, 0 or 1. */
+export type Turn = [number, number, number, number];
+
+/**
+ * How a film is drawn, turned as it was recorded, in a box the shape of the photo (`w` by
+ * `h`, upright). The film is served as the camera wrote it (the backend leaves its turn to
+ * the window, which WebKitGTK honoured in one way of drawing and not another); here it is
+ * laid out in its own shape and turned into the box with the file's own matrix — CSS's
+ * matrix() and the file's are the same reading — a phone's quarter turn, or the front
+ * camera's quarter turn and mirror.
+ */
+export function turnStyle(turn: Turn | null | undefined, w: number, h: number): Record<string, string> {
+  if (!turn || (turn[0] === 1 && turn[1] === 0 && turn[2] === 0 && turn[3] === 1) || !w || !h) return {};
+  const quarter = turn[0] === 0;
+  return {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    width: quarter ? `${(100 * h) / w}%` : "100%",
+    height: quarter ? `${(100 * w) / h}%` : "100%",
+    maxWidth: "none",
+    maxHeight: "none",
+    translate: "-50% -50%",
+    transform: `matrix(${turn[0]}, ${turn[1]}, ${turn[2]}, ${turn[3]}, 0, 0)`,
+  };
 }

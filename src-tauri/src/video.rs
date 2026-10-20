@@ -141,11 +141,50 @@ where
     stream.write_all(headers.as_bytes()).await?;
     if !asked.head {
         file.seek(std::io::SeekFrom::Start(first)).await?;
+        // The film's turn is drawn by the window (photo_video_turn), the same on every machine:
+        // WebKitGTK honoured it in one way of drawing and not another, and a front-camera Live
+        // Photo played sideways. So the film goes out upright — its matrix's 36 bytes, alone,
+        // replaced as they pass. The file on disk is untouched.
+        let at = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || quince_media::video_matrix(&path).ok().flatten())
+                .await
+                .ok()
+                .flatten()
+                .filter(|(_, m)| *m != [1, 0, 0, 1])
+                .map(|(at, _)| at)
+        };
         // Streamed from disk: a long film is never held in memory, and a player that stops
         // reading (a seek elsewhere) just closes the connection.
-        tokio::io::copy(&mut file.take(n), &mut stream).await?;
+        let mut pos = first;
+        let mut left = n;
+        let mut chunk = vec![0u8; 64 * 1024];
+        while left > 0 {
+            let want = usize::try_from(left.min(chunk.len() as u64)).unwrap_or(chunk.len());
+            let got = file.read(&mut chunk[..want]).await?;
+            if got == 0 {
+                break;
+            }
+            if let Some(at) = at {
+                upright(&mut chunk[..got], pos, at);
+            }
+            stream.write_all(&chunk[..got]).await?;
+            pos += got as u64;
+            left -= got as u64;
+        }
     }
     stream.shutdown().await
+}
+
+/// The part of an upright matrix that falls in `chunk`, which starts at `pos` in the file whose
+/// matrix starts at `at`.
+fn upright(chunk: &mut [u8], pos: u64, at: u64) {
+    let end = pos + chunk.len() as u64;
+    let (from, to) = (at.max(pos), (at + 36).min(end));
+    for i in from..to {
+        chunk[usize::try_from(i - pos).unwrap_or(0)] =
+            quince_media::UPRIGHT_MATRIX[usize::try_from(i - at).unwrap_or(0)];
+    }
 }
 
 async fn status(stream: &mut TcpStream, line: &str, extra: &str) -> std::io::Result<()> {
@@ -241,6 +280,33 @@ mod tests {
             assert!(head.starts_with("HTTP/1.1 404"), "{head}");
             std::fs::remove_dir_all(&dir).ok();
         });
+    }
+
+    /// A film is served upright whatever part of it is asked for: the matrix's bytes are
+    /// replaced exactly where they fall, a range that starts or ends inside them included,
+    /// and nothing else is touched.
+    #[test]
+    fn a_film_is_served_upright_in_any_range() {
+        let film = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/quince-media/tests/fixtures/flipturn.mp4");
+        let bytes = std::fs::read(&film).unwrap();
+        let (at, m) = quince_media::video_matrix(&film).unwrap().unwrap();
+        assert_eq!(m, [0, 1, 1, 0]);
+        let mut whole = bytes.clone();
+        // Served in awkward pieces: one ends 10 bytes into the matrix.
+        let cut = usize::try_from(at).unwrap() + 10;
+        upright(&mut whole[..cut], 0, at);
+        upright(&mut whole[cut..], cut as u64, at);
+        let at = usize::try_from(at).unwrap();
+        assert_eq!(&whole[at..at + 36], &quince_media::UPRIGHT_MATRIX[..]);
+        assert_eq!(&whole[..at], &bytes[..at]);
+        assert_eq!(&whole[at + 36..], &bytes[at + 36..]);
+        let served = std::env::temp_dir().join("quince-upright.mp4");
+        std::fs::write(&served, &whole).unwrap();
+        assert_eq!(
+            quince_media::video_matrix(&served).unwrap().map(|(_, m)| m),
+            Some([1, 0, 0, 1])
+        );
     }
 
     fn lines(s: &[&str]) -> Vec<String> {

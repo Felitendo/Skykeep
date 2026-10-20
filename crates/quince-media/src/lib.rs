@@ -180,6 +180,105 @@ pub fn is_blank(bytes: &[u8]) -> bool {
     brightest < 24
 }
 
+/// A video's turn as its file records it: the picture track's matrix (QuickTime/MP4 `tkhd`) as
+/// `[a, b, c, d]`, each -1, 0 or 1, and where in the file the matrix's 36 bytes are. A phone
+/// records upright video sideways and says how to turn it here; the front camera's is also a
+/// mirror (`[0, 1, 1, 0]`). `None` for a file with no picture track or no such header.
+///
+/// # Errors
+/// When the file cannot be read.
+pub fn video_matrix(path: &std::path::Path) -> std::io::Result<Option<(u64, [i32; 4])>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    // The `moov` box, wherever among the top-level boxes it is (after the film, often).
+    let mut at = 0u64;
+    let (moov_at, moov) = loop {
+        if at + 8 > len {
+            return Ok(None);
+        }
+        file.seek(SeekFrom::Start(at))?;
+        let mut head = [0u8; 16];
+        let got = file.read(&mut head)?;
+        if got < 8 {
+            return Ok(None);
+        }
+        let mut size = u64::from(u32::from_be_bytes([head[0], head[1], head[2], head[3]]));
+        let kind = &head[4..8];
+        if size == 1 && got >= 16 {
+            size = u64::from_be_bytes(head[8..16].try_into().unwrap_or_default());
+        } else if size == 0 {
+            size = len - at;
+        }
+        if size < 8 {
+            return Ok(None);
+        }
+        if kind == b"moov" {
+            // Its tables only: a few megabytes at most for the longest film.
+            if size > 64 * 1024 * 1024 {
+                return Ok(None);
+            }
+            let mut moov = vec![0u8; usize::try_from(size).unwrap_or(0)];
+            file.seek(SeekFrom::Start(at))?;
+            file.read_exact(&mut moov)?;
+            break (at, moov);
+        }
+        at += size;
+    };
+    let boxes = |from: usize, to: usize| {
+        let mut out = Vec::new();
+        let mut at = from;
+        while at + 8 <= to {
+            let size =
+                u32::from_be_bytes([moov[at], moov[at + 1], moov[at + 2], moov[at + 3]]) as usize;
+            if size < 8 || at + size > to {
+                break;
+            }
+            out.push((&moov[at + 4..at + 8], at, size));
+            at += size;
+        }
+        out
+    };
+    for (kind, trak, size) in boxes(8, moov.len()) {
+        if kind != b"trak" {
+            continue;
+        }
+        for (kind, tkhd, tsize) in boxes(trak + 8, trak + size) {
+            if kind != b"tkhd" || tsize < 92 {
+                continue;
+            }
+            let body = tkhd + 8;
+            let matrix_at = body + if moov[body] == 1 { 52 } else { 40 };
+            if matrix_at + 44 > tkhd + tsize {
+                continue;
+            }
+            let word = |i: usize| {
+                i32::from_be_bytes(
+                    moov[matrix_at + i * 4..matrix_at + i * 4 + 4]
+                        .try_into()
+                        .unwrap_or_default(),
+                )
+            };
+            // A picture track has a size; a sound track's is 0 by 0.
+            if word(9) == 0 {
+                continue;
+            }
+            let unit = |v: i32| (f64::from(v) / 65536.0).round().clamp(-1.0, 1.0) as i32;
+            let m = [unit(word(0)), unit(word(1)), unit(word(3)), unit(word(4))];
+            return Ok(Some((moov_at + matrix_at as u64, m)));
+        }
+    }
+    Ok(None)
+}
+
+/// The 36 bytes of an upright matrix: what a film is served with once its turn is drawn by the
+/// window instead (see `video_matrix`).
+pub const UPRIGHT_MATRIX: [u8; 36] = [
+    0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0,
+];
+
 /// Whether bytes are a HEIF file (HEIC and its kin): an `ftyp` box naming a HEIF brand.
 #[must_use]
 pub fn is_heif(bytes: &[u8]) -> bool {

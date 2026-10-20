@@ -414,6 +414,19 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Everything Quince keeps — the library, every photo, the session's cookies — in a folder only
+/// its owner can open. Made with the system's usual permissions it was readable by every user
+/// of the computer, and the cookies are a signed-in iCloud session. Everything inside is covered
+/// at once: nothing in a folder can be reached without opening the folder.
+fn keep_private(dir: &std::path::Path) {
+    let _ = std::fs::create_dir_all(dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+}
+
 fn state_dir(app: &tauri::AppHandle) -> PathBuf {
     app.path()
         .app_data_dir()
@@ -3803,6 +3816,7 @@ fn main() {
             video::serve(app.handle().clone());
             outbox::start(app.handle().clone());
             let dir = state_dir(app.handle());
+            keep_private(&dir);
             let client = Arc::new(Mutex::new(Client::new(&dir)?));
             app.manage(Auth {
                 client: Arc::clone(&client),
@@ -3896,6 +3910,7 @@ fn main() {
             photos::photos_in_album,
             photos::photo_set_flag,
             photos::photo_play,
+            photos::photo_video_turn,
             photos::photos_set_flag,
             photos::photos_burst,
             photos::photos_shared_albums,
