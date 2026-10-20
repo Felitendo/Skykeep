@@ -1,6 +1,7 @@
 //! Read-only: for a few videos, what Apple keeps — the original and its streaming copies — with
 //! their sizes, codecs and whether each is upright (its matrix), and how long the streaming copy
-//! takes to fetch. Prints sizes and kinds only.
+//! takes to fetch — whole, and up to its header and turn, where the player can start (the
+//! viewer streams it as it lands). Prints sizes and kinds only.
 use anyhow::{anyhow, Result};
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -45,16 +46,31 @@ async fn main() -> Result<()> {
             let Some(url) = f[key]["value"]["downloadURL"].as_str() else {
                 continue;
             };
+            use futures_util::StreamExt;
+            use std::io::Write;
             let t = std::time::Instant::now();
-            let bytes = http
+            let path = tmp.join(format!("{n}-{key}"));
+            let mut out = std::fs::File::create(&path)?;
+            let mut body = http
                 .get(url.replace("${f}", "v.mp4"))
                 .send()
                 .await?
-                .bytes()
-                .await?;
+                .bytes_stream();
+            let (mut got, mut header) = (0usize, None);
+            while let Some(chunk) = body.next().await {
+                let chunk = chunk?;
+                out.write_all(&chunk)?;
+                out.flush()?;
+                got += chunk.len();
+                if header.is_none() && quince_media::video_matrix(&path).ok().flatten().is_some() {
+                    header = Some((t.elapsed().as_millis(), got));
+                }
+            }
             let took = t.elapsed().as_millis();
-            let path = tmp.join(format!("{n}-{key}"));
-            std::fs::write(&path, &bytes)?;
+            if let Some((ms, at)) = header {
+                println!("   {key}: header and turn in {ms} ms ({at} bytes in)");
+            }
+            let bytes = std::fs::read(&path)?;
             let codec = ["avc1", "hvc1", "hev1"]
                 .into_iter()
                 .find(|c| bytes.windows(4).any(|w| w == c.as_bytes()))
