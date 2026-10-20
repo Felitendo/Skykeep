@@ -23,6 +23,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long the kernel may keep what it was told about a name or a file. Short, as rclone's
 /// is: a file changed on another device must not be read with its old length.
+/// This computer's own disk refusing, told to the app as the disk told it — "No space left on
+/// device" when it is full, never a vague input/output error that reads as a broken drive.
+fn disk(e: std::io::Error) -> Errno {
+    e.raw_os_error().map_or(Errno::EIO, Errno::from_i32)
+}
+
 const TTL: Duration = Duration::from_secs(1);
 
 /// How long a folder never opened before may take to come from Apple before the file manager
@@ -406,8 +412,8 @@ impl Inner {
                 .map_or_else(|| item.display_name(), str::to_string)
         };
         let staged = writes.staging(ino, &name);
-        std::fs::create_dir_all(staged.parent().ok_or(Errno::EIO)?).map_err(|_| Errno::EIO)?;
-        let file = std::fs::File::create(&staged).map_err(|_| Errno::EIO)?;
+        std::fs::create_dir_all(staged.parent().ok_or(Errno::EIO)?).map_err(disk)?;
+        let file = std::fs::File::create(&staged).map_err(disk)?;
         if keep {
             let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
             let (cache, remote, it) = (
@@ -423,7 +429,7 @@ impl Inner {
                     .rt
                     .block_on(async move { c.read(r.as_ref(), &i, at, len).await })
                     .map_err(|_| Errno::EIO)?;
-                file.write_all_at(&bytes, at).map_err(|_| Errno::EIO)?;
+                file.write_all_at(&bytes, at).map_err(disk)?;
                 at += len;
             }
         }
@@ -1025,12 +1031,10 @@ impl Filesystem for DriveFs {
         let staged = writes.staging(ino, name);
         let made = staged
             .parent()
-            .map(std::fs::create_dir_all)
-            .transpose()
-            .is_ok()
-            && std::fs::File::create(&staged).is_ok();
-        if !made {
-            return reply.error(Errno::EIO);
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::File::create(&staged));
+        if let Err(e) = made {
+            return reply.error(disk(e));
         }
         writes
             .items
@@ -1146,8 +1150,8 @@ impl Filesystem for DriveFs {
             .write(true)
             .open(w.staging(ino.0, &p.name))
             .and_then(|f| f.write_all_at(data, offset));
-        if written.is_err() {
-            return reply.error(Errno::EIO);
+        if let Err(e) = written {
+            return reply.error(disk(e));
         }
         inner.with_pending(ino.0, |p| {
             p.dirty = true;

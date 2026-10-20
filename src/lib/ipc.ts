@@ -73,7 +73,9 @@ export const api = {
   sendSms: (phoneId: number) => invoke<void>("auth_send_sms", { phoneId }),
   submitSmsCode: (phoneId: number, code: string) =>
     invoke<void>("auth_submit_sms_code", { phoneId, code }),
-  signOut: () => invoke<void>("auth_sign_out"),
+  signOut: (keep: boolean) => invoke<void>("auth_sign_out", { keep }),
+  /** What of the account has not reached iCloud yet: asked before a sign-out. */
+  unsent: () => invoke<{ changes: number; files: number; photos: number }>("account_unsent"),
   services: () => invoke<string[]>("account_services"),
 
   eventSave: (draft: EventWrite) => invoke<string>("event_save", { draft }),

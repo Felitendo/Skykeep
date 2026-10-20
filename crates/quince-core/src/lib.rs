@@ -29,6 +29,20 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The `app_state` keys that are this computer's, not an account's.
+const COMPUTER_KEYS: &str = "key LIKE 'settings.%' OR key IN \
+     ('drive_folder_on', 'drive_folder_path', 'photos_folder_on', 'photos_folder_path')";
+
+/// Every table holding what an account brought: all but `app_state`, which is sorted key by key.
+fn account_tables(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table'
+         AND name NOT LIKE 'sqlite_%' AND name != 'app_state'",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
 /// A handle to the local library.
 pub struct Library {
     conn: Connection,
@@ -100,6 +114,54 @@ impl Library {
         Ok(())
     }
 
+    /// Everything learned from an account let go of — every reminder, note, event, contact,
+    /// file and photo, every sync position — for another account to start clean. Kept: this
+    /// computer's own choices (`settings.*`, which folders are on and where).
+    ///
+    /// Signed out and back in as someone else, the last account's data stayed and the new
+    /// one's was laid over it, from the old account's sync positions.
+    pub fn forget_account(&mut self) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for table in account_tables(&tx)? {
+            tx.execute(&format!("DELETE FROM \"{table}\""), [])?;
+        }
+        tx.execute(
+            &format!("DELETE FROM app_state WHERE NOT ({COMPUTER_KEYS})"),
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// This computer's own choices, which go with the computer, never with an account: carried
+    /// over when one account's library is set aside for another's.
+    pub fn computer_state(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT key, value FROM app_state WHERE {COMPUTER_KEYS}"
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Whether anything of an account is here at all — a record, a sync position, a fact.
+    pub fn holds_account(&self) -> Result<bool> {
+        for table in account_tables(&self.conn)? {
+            let any: bool = self.conn.query_row(
+                &format!("SELECT EXISTS (SELECT 1 FROM \"{table}\")"),
+                [],
+                |r| r.get(0),
+            )?;
+            if any {
+                return Ok(true);
+            }
+        }
+        Ok(self.conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM app_state WHERE NOT ({COMPUTER_KEYS}))"),
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     /// What was remembered under that name, if anything.
     pub fn state(&self, key: &str) -> Result<Option<String>> {
         let mut stmt = self
@@ -116,6 +178,61 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another account signing in finds nothing of the last one's, and this computer's own
+    /// choices still where they were.
+    #[test]
+    fn an_account_is_forgotten_whole() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_drive_children(
+            "root",
+            &[crate::drive::DriveItem {
+                drivewsid: "FILE::x::1".into(),
+                parent_id: Some("root".into()),
+                name: "Plan".into(),
+                extension: Some("pdf".into()),
+                kind: "FILE".into(),
+                size: Some(1),
+                child_count: None,
+                created_at: None,
+                modified_at: None,
+                etag: None,
+            }],
+        )
+        .unwrap();
+        lib.set_state("contacts.me", "C1").unwrap();
+        lib.set_state("settings.alerts.events", "1").unwrap();
+        lib.set_state("drive_folder_on", "1").unwrap();
+        lib.mark_synced("drive", Some("token")).unwrap();
+        assert!(lib.holds_account().unwrap());
+        assert_eq!(
+            lib.computer_state().unwrap().len(),
+            2,
+            "the settings and the folder, nothing of the account's"
+        );
+        lib.forget_account().unwrap();
+        assert!(!lib.holds_account().unwrap(), "nothing left to set aside");
+        assert!(
+            lib.drive_children("root").unwrap().is_empty(),
+            "the files gone"
+        );
+        assert_eq!(
+            lib.state("contacts.me").unwrap(),
+            None,
+            "the account's own facts gone"
+        );
+        assert_eq!(
+            lib.sync_token("drive").unwrap(),
+            None,
+            "and where its sync had got to"
+        );
+        assert_eq!(
+            lib.state("settings.alerts.events").unwrap().as_deref(),
+            Some("1"),
+            "this computer's settings kept"
+        );
+        assert_eq!(lib.state("drive_folder_on").unwrap().as_deref(), Some("1"));
+    }
 
     #[test]
     fn a_new_library_is_migrated_to_the_latest_schema() {

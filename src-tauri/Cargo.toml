@@ -14,6 +14,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # already needs, so nothing new is installed.
 gstreamer = "0.25"
 quince-vfs = { path = "../crates/quince-vfs" }
+sha2 = "0.10"
 gstreamer-app = "0.25"
 gstreamer-video = "0.25"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }

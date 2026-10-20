@@ -122,7 +122,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
       writable: true, isDefault: false },
     { guid: "home", title: "Home", colour: "#0088ff", ctag: null, sortOrder: 1, enabled: true,
       writable: true, isDefault: true },
-    { guid: "personal", title: "Asha", colour: "#1badf8", ctag: null, sortOrder: 2, enabled: true,
+    { guid: "personal", title: "Personal", colour: "#1badf8", ctag: null, sortOrder: 2, enabled: true,
       writable: true, isDefault: false },
     // As the app adds them: drawn from contacts and Apple's holiday feed, read-only.
     { guid: "quince:birthdays", title: "Birthdays", colour: "#8e8e93", ctag: null, sortOrder: 900,
@@ -606,7 +606,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_resend_code":    return null;
         case "auth_send_sms":       return null;
         case "auth_submit_sms_code": return null;
-        case "auth_sign_out":    return null;
+        case "auth_sign_out":    sessionStorage.setItem("__signedOut", JSON.stringify(args)); return null;
+        case "account_unsent":   return window.__unsent ?? { changes: 0, files: 0, photos: 0 };
         // One refresh covers every service, so there is one command to stub rather than
         // a pair per screen.
         case "sync_all":

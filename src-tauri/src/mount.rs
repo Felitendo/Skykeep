@@ -103,6 +103,21 @@ impl Remote for AppRemote {
         Box::pin(async move {
             let (http, docws, params) = context(&app, "docws").await?;
             let drivews = context(&app, "drivews").await?.1;
+            // iCloud with no room for it: said as that, and tried again as the folder retries,
+            // so it goes up once space is freed — never an opaque refusal from Apple.
+            let len = tokio::fs::metadata(&path).await.map_or(0, |m| m.len());
+            let setup = app
+                .state::<Auth>()
+                .client
+                .lock()
+                .await
+                .setup_url()
+                .to_string();
+            if let Ok(s) = quince_icloud::drive::storage(&http, &setup, params.clone()).await {
+                if s.total_bytes > 0 && s.used_bytes.saturating_add(len) > s.total_bytes {
+                    return Err("Your iCloud storage is full. It uploads when there's room.".into());
+                }
+            }
             let progress: quince_icloud::drive::Progress = Arc::new(|_, _| {});
             quince_icloud::drive::upload(&http, &docws, &drivews, params, &folder, &path, progress)
                 .await
@@ -279,9 +294,10 @@ fn mounted(which: Which) -> Option<PathBuf> {
         .map(|(_, p, _)| p.clone())
 }
 
-/// The most the Drive folder's downloads may keep on this computer: 10 GB, or a fifth of the
-/// disk's free space when that is less — a full disk is never the price of a folder.
-fn budget(dir: &std::path::Path) -> u64 {
+/// The most a cache may keep on this computer — the Drive folder's downloads, Photos' pictures:
+/// 10 GB, or a fifth of the disk's free space when that is less — a full disk is never the price
+/// of a cache.
+pub(crate) fn budget(dir: &std::path::Path) -> u64 {
     const MOST: u64 = 10 * 1024 * 1024 * 1024;
     #[cfg(unix)]
     {
@@ -443,6 +459,49 @@ pub fn resume(app: &AppHandle) {
         if wanted {
             if let Err(e) = start(app, which, &place(app, which)) {
                 quiet!("a folder could not come up: {e}");
+            }
+        }
+    }
+}
+
+/// Files written in the iCloud Drive folder and not yet sent: from the folder while it is up,
+/// from what it wrote down when it went away while it is not.
+pub fn unsent_files(data_dir: &std::path::Path) -> usize {
+    if let Some(w) = WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+    {
+        return w.waiting().files as usize;
+    }
+    let dir = data_dir.join("drive-writes");
+    if !dir.exists() {
+        return 0;
+    }
+    quince_vfs::writes::Writes::new(&dir)
+        .map(|w| {
+            w.load()
+                .iter()
+                .filter(|(_, p)| !quince_vfs::writes::stays_local(&p.name))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Every thumbnail the folders left where file managers look for them, removed — with the
+/// account they pictured, on a sign-out that keeps nothing. Only Quince's own; no other app's.
+pub fn forget_thumbnails(app: &AppHandle) {
+    let Some(root) = thumbnail_cache(app) else {
+        return;
+    };
+    for size in ["normal", "large", "x-large", "xx-large"] {
+        for f in std::fs::read_dir(root.join(size))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if std::fs::read(f.path()).is_ok_and(|b| quince_media::thumbnail_is_ours(&b)) {
+                let _ = std::fs::remove_file(f.path());
             }
         }
     }

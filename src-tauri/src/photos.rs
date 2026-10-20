@@ -20,6 +20,13 @@ const LINK_LIFE: Duration = Duration::from_secs(45 * 60);
 /// Every master's links seen this run, and when.
 static LINKS: Mutex<Option<HashMap<String, (Links, Instant)>>> = Mutex::new(None);
 
+/// Every link let go of: they were the last account's.
+pub fn forget_links() {
+    *LINKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
 /// Links a pass brought, kept for the pictures it will be asked for.
 pub fn remember(links: HashMap<String, Links>) {
     let now = Instant::now();
@@ -251,6 +258,15 @@ pub async fn picture(app: &AppHandle, id: &str, size: Size) -> Result<Vec<u8>, S
 pub async fn cached(app: &AppHandle, id: &str, size: Size) -> Result<PathBuf, String> {
     let path = cache_path(app, id, size);
     if tokio::fs::metadata(&path).await.is_ok() {
+        // Seen now: the last to go when the cache is trimmed (see `trim_cache`).
+        if size != Size::Thumb {
+            let touched = path.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Ok(f) = std::fs::File::open(&touched) {
+                    let _ = f.set_modified(std::time::SystemTime::now());
+                }
+            });
+        }
         return Ok(path);
     }
     if size == Size::Full && is_heic(app, id).await {
@@ -412,6 +428,68 @@ pub async fn repair_poster(app: &AppHandle, id: &str) -> bool {
     true
 }
 
+/// Every picture the cache holds that can go — all but the grid's thumbnails, which every view
+/// draws from and which are small — with its size and when it was last seen.
+fn trimmable(root: &std::path::Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+    let mut out = Vec::new();
+    let Ok(sizes) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for dir in sizes.flatten() {
+        if dir.file_name() == Size::Thumb.name() || !dir.path().is_dir() {
+            continue;
+        }
+        for f in std::fs::read_dir(dir.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if let Ok(m) = f.metadata() {
+                // A download still being written is never cut from under it.
+                if m.is_file() && f.path().extension().is_none_or(|e| e != "part") {
+                    let seen = m.modified().unwrap_or(std::time::UNIX_EPOCH);
+                    out.push((f.path(), m.len(), seen));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The photo cache held to its budget (`mount::budget`: 10 GB, or a fifth of the free space when
+/// less), as Photos on a Mac with "Optimize Storage" keeps what was looked at last and lets the
+/// rest go: the longest unseen go first, down to four fifths of it, so a trim is not needed again
+/// at once. A picture seen in the last five minutes stays — it is on screen. Thumbnails always
+/// stay. Answers the room left under the budget.
+pub fn trim_cache(app: &AppHandle) -> u64 {
+    let root = crate::state_dir(app).join("photos");
+    if std::fs::create_dir_all(&root).is_err() {
+        return 0;
+    }
+    trim(&root, crate::mount::budget(&root))
+}
+
+fn trim(root: &std::path::Path, budget: u64) -> u64 {
+    let mut files = trimmable(root);
+    let mut used: u64 = files.iter().map(|(_, len, _)| len).sum();
+    if used > budget {
+        files.sort_by_key(|(_, _, seen)| *seen);
+        let recent = std::time::SystemTime::now() - Duration::from_secs(5 * 60);
+        for (path, len, seen) in files {
+            if used <= budget / 5 * 4 {
+                break;
+            }
+            if seen > recent {
+                continue;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                used -= len;
+            }
+        }
+    }
+    budget.saturating_sub(used)
+}
+
 /// Keeps the newest photos' whole pictures, and videos, on disk ahead of being opened — as
 /// Photos on a Mac keeps originals — so a photo opens at full quality and a video plays at once,
 /// never waiting on the network. Newest first, two at a time, at most 600 and 3 GB a pass, after
@@ -452,7 +530,15 @@ pub fn keep_ahead(app: AppHandle) {
             })
             .filter(|(id, size)| !cache_path(&app, id, *size).exists())
             .collect();
-        let budget = std::sync::atomic::AtomicU64::new(3 * 1024 * 1024 * 1024);
+        // At most 3 GB a pass, and never past the cache's budget: a computer short of space
+        // keeps fewer ahead, not a full disk.
+        let room = {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || trim_cache(&app))
+                .await
+                .unwrap_or(0)
+        };
+        let budget = std::sync::atomic::AtomicU64::new(room.min(3 * 1024 * 1024 * 1024));
         futures_util::stream::iter(wanted)
             .for_each_concurrent(2, |(id, size)| {
                 let (app, budget) = (app.clone(), &budget);
@@ -471,6 +557,8 @@ pub fn keep_ahead(app: AppHandle) {
                 }
             })
             .await;
+        let trim = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || trim_cache(&trim)).await;
         RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
     });
 }
@@ -1767,6 +1855,10 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
         say(app, &u, "cancelled", 0, 0, None);
         return true;
     }
+    // Never sent with a session that is not the library's own account's.
+    if !crate::same_account(app).await {
+        return false;
+    }
     let auth = app.state::<Auth>();
     let (http, ck, params, upload_root) = {
         let client = auth.client.lock().await;
@@ -2026,6 +2118,38 @@ async fn refresh_photos(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Over its budget, the cache lets the longest-unseen pictures go first, down to four
+    /// fifths; thumbnails and what was seen in the last minutes stay.
+    #[test]
+    fn the_cache_keeps_to_its_budget_longest_unseen_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let put = |size: &str, name: &str, ago: u64| {
+            std::fs::create_dir_all(root.join(size)).unwrap();
+            let p = root.join(size).join(name);
+            std::fs::write(&p, vec![0u8; 100]).unwrap();
+            let f = std::fs::File::options().write(true).open(&p).unwrap();
+            f.set_modified(std::time::SystemTime::now() - Duration::from_secs(ago))
+                .unwrap();
+        };
+        put("thumb", "t", 99_999);
+        put("original", "oldest", 9_000);
+        put("full", "older", 8_000);
+        put("full", "old", 7_000);
+        put("original", "now", 10);
+        // 400 bytes held against 300: down to 240 — the two longest unseen go.
+        let room = trim(root, 300);
+        assert!(!root.join("original/oldest").exists() && !root.join("full/older").exists());
+        assert!(root.join("full/old").exists(), "no more than needed");
+        assert!(
+            root.join("original/now").exists(),
+            "what is on screen stays"
+        );
+        assert!(root.join("thumb/t").exists(), "thumbnails always stay");
+        assert_eq!(room, 100);
+    }
+
     use super::*;
 
     #[test]

@@ -104,6 +104,9 @@ struct Context {
     contacts: Option<String>,
     cloudkit: Option<String>,
     drive: Option<String>,
+    /// The account it is all for (`account_tag`): nothing it brings is kept in a library that
+    /// is not that account's.
+    account: Option<String>,
 }
 
 async fn context(client: &Arc<Mutex<Client>>) -> Context {
@@ -116,6 +119,7 @@ async fn context(client: &Arc<Mutex<Client>>) -> Context {
         contacts: session.service_url("contacts"),
         cloudkit: session.service_url("ckdatabasews"),
         drive: session.service_url("drivews"),
+        account: session.dsid.as_deref().map(crate::account_tag),
     }
 }
 
@@ -160,6 +164,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     "calendar",
                     "Calendar",
                     data,
+                    ctx.account.as_deref(),
                     fetched,
                     |library, snapshot| {
                         let summary = quince_icloud::sync::apply_calendar(library, snapshot)?;
@@ -195,6 +200,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     "reminders",
                     "Reminders",
                     data,
+                    ctx.account.as_deref(),
                     fetched,
                     move |library, f| {
                         let (lists, count, _) =
@@ -230,17 +236,24 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     since.as_deref(),
                 )
                 .await;
-                store("notes", "Notes", data, fetched, move |library, f| {
-                    let (folders, notes, _) = quince_icloud::notes::apply_cloudkit(library, f)?;
-                    if full {
-                        library.mark_full_sync("notes")?;
-                    }
-                    Ok(format!(
-                        "{notes} note{} in {folders} folder{}",
-                        plural(notes),
-                        plural(folders)
-                    ))
-                })
+                store(
+                    "notes",
+                    "Notes",
+                    data,
+                    ctx.account.as_deref(),
+                    fetched,
+                    move |library, f| {
+                        let (folders, notes, _) = quince_icloud::notes::apply_cloudkit(library, f)?;
+                        if full {
+                            library.mark_full_sync("notes")?;
+                        }
+                        Ok(format!(
+                            "{notes} note{} in {folders} folder{}",
+                            plural(notes),
+                            plural(folders)
+                        ))
+                    },
+                )
                 .await
             }
         });
@@ -254,10 +267,17 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                 let _one = crate::CONTACTS_PASS.lock().await;
                 let fetched =
                     quince_icloud::contacts::fetch(&ctx.http, root, ctx.params.clone()).await;
-                store("contacts", "Contacts", data, fetched, |library, people| {
-                    let count = quince_icloud::contacts::apply(library, people)?;
-                    Ok(format!("{count} contact{}", plural(count)))
-                })
+                store(
+                    "contacts",
+                    "Contacts",
+                    data,
+                    ctx.account.as_deref(),
+                    fetched,
+                    |library, people| {
+                        let count = quince_icloud::contacts::apply(library, people)?;
+                        Ok(format!("{count} contact{}", plural(count)))
+                    },
+                )
                 .await
             }
         });
@@ -278,14 +298,21 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     quince_core::drive::ROOT,
                 )
                 .await;
-                store("drive", "iCloud Drive", data, fetched, |library, items| {
-                    let n = quince_icloud::drive::store_folder(
-                        library,
-                        quince_core::drive::ROOT,
-                        &items,
-                    )?;
-                    Ok(format!("{n} item{} at the top of iCloud Drive", plural(n)))
-                })
+                store(
+                    "drive",
+                    "iCloud Drive",
+                    data,
+                    ctx.account.as_deref(),
+                    fetched,
+                    |library, items| {
+                        let n = quince_icloud::drive::store_folder(
+                            library,
+                            quince_core::drive::ROOT,
+                            &items,
+                        )?;
+                        Ok(format!("{n} item{} at the top of iCloud Drive", plural(n)))
+                    },
+                )
                 .await
             }
         });
@@ -306,12 +333,19 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     since.as_deref(),
                 )
                 .await;
-                store("photos", "Photos", data, fetched, |library, f| {
-                    let (_, links) = quince_icloud::photos::apply(library, f)?;
-                    crate::photos::remember(links);
-                    let n = library.photos(quince_core::photos::View::Library)?.len();
-                    Ok(format!("{n} photo{}", plural(n)))
-                })
+                store(
+                    "photos",
+                    "Photos",
+                    data,
+                    ctx.account.as_deref(),
+                    fetched,
+                    |library, f| {
+                        let (_, links) = quince_icloud::photos::apply(library, f)?;
+                        crate::photos::remember(links);
+                        let n = library.photos(quince_core::photos::View::Library)?.len();
+                        Ok(format!("{n} photo{}", plural(n)))
+                    },
+                )
                 .await
             }
         });
@@ -406,6 +440,7 @@ async fn store<T, F>(
     service: &'static str,
     label: &'static str,
     data: &Mutex<Library>,
+    account: Option<&str>,
     fetched: quince_icloud::Result<T>,
     apply: F,
 ) -> ServiceReport
@@ -413,6 +448,18 @@ where
     F: FnOnce(&mut Library, T) -> quince_icloud::Result<String>,
 {
     let mut library = data.lock().await;
+    // Fetched for an account that is no longer the library's — signed out, or another signed
+    // in, while it was on the way: dropped, never laid over someone else's data.
+    let owner = library.state(crate::ACCOUNT_KEY).ok().flatten();
+    if account.is_none() || owner.as_deref() != account {
+        return ServiceReport {
+            service,
+            label,
+            outcome: Outcome::Failed,
+            detail: Some("Signed out while this was being read.".into()),
+            last_synced_at: None,
+        };
+    }
     let result = fetched.and_then(|value| apply(&mut library, value));
     match result {
         Ok(detail) => ServiceReport {

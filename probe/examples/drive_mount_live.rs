@@ -194,6 +194,10 @@ fn main() -> Result<()> {
     std::thread::sleep(std::time::Duration::from_secs(secs));
     drop(session);
     let _ = std::fs::remove_dir_all(&cache);
+    // Its journal left behind only when something is still waiting.
+    if std::fs::read(writes_dir.join("pending.json")).is_ok_and(|b| b == b"[]") {
+        let _ = std::fs::remove_dir_all(&writes_dir);
+    }
     println!("unmounted");
     // This probe's own throwaways, and nothing else, cleared from Recently Deleted.
     if std::env::var("QUINCE_PURGE_TEST").is_ok() {

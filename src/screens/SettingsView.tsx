@@ -5,6 +5,7 @@ import { freshness, useSync } from "../lib/sync";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
 import { AccountAvatar } from "../components/Account";
+import { Portal } from "../components/Portal";
 
 /** The app each service's freshness belongs to, for its icon. */
 const ICON: Record<string, string> = {
@@ -37,14 +38,87 @@ function size(bytes: number): string {
  * changes something is here — every switch is one the backend obeys, every figure is read
  * from Apple or from this computer's library.
  */
-export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
+type Unsent = { changes: number; files: number; photos: number };
+
+/** What has not reached iCloud yet, as a sentence's subject: "2 changes and 1 file". */
+function unsentPhrase(u: Unsent): string | null {
+  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+  const parts = [
+    u.changes > 0 && n(u.changes, "change", "changes"),
+    u.files > 0 && n(u.files, "file", "files"),
+    u.photos > 0 && n(u.photos, "photo", "photos"),
+  ].filter((p): p is string => Boolean(p));
+  if (parts.length === 0) return null;
+  return parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * Signing out asks what macOS asks: keep a copy here, or remove it. Kept, everything is here
+ * again on signing back in — and another Apple ID signing in meanwhile finds it set aside, never
+ * mixed with its own. What has not reached iCloud yet is said plainly, since removing loses it.
+ */
+function SignOutSheet({
+  unsent,
+  onCancel,
+  onChoose,
+}: {
+  unsent: Unsent;
+  onCancel: () => void;
+  onChoose: (keep: boolean) => void;
+}) {
+  const waiting = unsentPhrase(unsent);
+  const total = unsent.changes + unsent.files + unsent.photos;
+  return (
+    <Portal>
+      <div className="modal-veil" onClick={onCancel}>
+        <div
+          className="modal-sheet px-ask"
+          role="alertdialog"
+          aria-modal="true"
+          aria-label="Keep a copy of your iCloud data on this computer?"
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              onCancel();
+            }
+          }}
+        >
+          <h2>Keep a copy of your iCloud data on this computer?</h2>
+          <p>
+            A copy keeps your notes, photos, files and everything else here, ready when you sign back in. Nothing is
+            deleted from iCloud either way.
+          </p>
+          {waiting && (
+            <p className="signout-unsent">
+              {waiting} {total === 1 ? "hasn't" : "haven't"} reached iCloud yet. Keep a copy and{" "}
+              {total === 1 ? "it goes" : "they go"} up when you sign back in; remove it and{" "}
+              {total === 1 ? "it's" : "they're"} lost.
+            </p>
+          )}
+          <div className="px-ask-actions is-stacked">
+            <button className="is-act" autoFocus onClick={() => onChoose(true)}>
+              Keep a Copy
+            </button>
+            <button className="is-act danger" onClick={() => onChoose(false)}>
+              Remove from This Computer
+            </button>
+            <button onClick={onCancel}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    </Portal>
+  );
+}
+
+export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Promise<void> }) {
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [storage, setStorage] = useState<{ usedBytes: number; totalBytes: number } | null>(null);
   const [alerts, setAlerts] = useState<{ reminderAlerts: boolean; eventAlerts: boolean } | null>(null);
   const [theme, chooseTheme] = useState<Theme>(storedTheme);
   const [version, setVersion] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [signingOut, setSigningOut] = useState<Unsent | null>(null);
   const [savedReport, setSavedReport] = useState<string | null>(null);
   const [folder, setFolder] = useState<DriveFolder | null>(null);
   const [folderBusy, setFolderBusy] = useState(false);
@@ -96,19 +170,24 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
           <strong>{account?.name ?? "Your Apple Account"}</strong>
           <span>{account?.email ?? ""}</span>
         </div>
-        {confirming ? (
-          <span className="settings-confirm">
-            <button className="quiet" onClick={() => setConfirming(false)}>Cancel</button>
-            <button className="quiet danger" onClick={onSignOut}>Sign Out</button>
-          </span>
-        ) : (
-          <button className="quiet" onClick={() => setConfirming(true)}>Sign Out</button>
-        )}
+        <button
+          className="quiet"
+          onClick={() =>
+            api.unsent().then(setSigningOut, () => setSigningOut({ changes: 0, files: 0, photos: 0 }))
+          }
+        >
+          Sign Out
+        </button>
       </section>
-      {confirming && (
-        <p className="settings-note">
-          Signing out removes your iCloud data and sign-in from this computer. Nothing is deleted from iCloud.
-        </p>
+      {signingOut && (
+        <SignOutSheet
+          unsent={signingOut}
+          onCancel={() => setSigningOut(null)}
+          onChoose={(keep) => {
+            setSigningOut(null);
+            onSignOut(keep).catch((e) => setError(messageOf(e)));
+          }}
+        />
       )}
 
       {account?.dataProtection != null && (

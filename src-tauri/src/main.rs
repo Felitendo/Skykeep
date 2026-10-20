@@ -446,8 +446,22 @@ async fn auth_status(auth: State<'_, Auth>) -> UiResult<Status> {
 
 /// Try the stored session. `false` just means a sign-in is needed — not an error.
 #[tauri::command]
-async fn auth_resume(auth: State<'_, Auth>) -> UiResult<&'static str> {
-    let mut client = auth.client.lock().await;
+async fn auth_resume(app: tauri::AppHandle, auth: State<'_, Auth>) -> UiResult<&'static str> {
+    let outcome = {
+        let mut client = auth.client.lock().await;
+        let outcome = resume_session(&mut client).await?;
+        if outcome == "library" {
+            signed_in(&app, &mut client).await?;
+        }
+        outcome
+    };
+    if outcome == "library" {
+        folders_up(&app).await;
+    }
+    Ok(outcome)
+}
+
+async fn resume_session(client: &mut Client) -> UiResult<&'static str> {
     let resumed = match client.resume().await {
         Ok(resumed) => resumed,
         // Offline with a session kept: the library opens on what it holds, as a local-first
@@ -465,6 +479,13 @@ async fn auth_resume(auth: State<'_, Auth>) -> UiResult<&'static str> {
     } else {
         "signin"
     })
+}
+
+/// The folders on this computer brought up, once the library is the signed-in account's: they
+/// are served by the session, so they are never up without one.
+async fn folders_up(app: &tauri::AppHandle) {
+    let app = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || mount::resume(&app)).await;
 }
 
 /// Emitted when a lapsed session signed itself back in only as far as Apple's code.
@@ -485,10 +506,163 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
     }
 }
 
+/// Whose data the library holds: a hash of Apple's account id, never the id itself.
+pub const ACCOUNT_KEY: &str = "account";
+
+/// What of an account lives in the data folder beside the session: its library, and every
+/// cache and queue made from it. Moved as one when another account signs in.
+const ACCOUNT_FILES: [&str; 11] = [
+    "library.db",
+    "library.db-wal",
+    "library.db-shm",
+    "photos",
+    "photos-folder-cache",
+    "drive-cache",
+    "drive-writes",
+    "thumbnails",
+    "note-files",
+    "note-media",
+    "faces",
+];
+
+/// Where the accounts not signed in are kept, each under its own tag.
+const SET_ASIDE: &str = "accounts";
+
+/// An account as the library names it.
+pub fn account_tag(dsid: &str) -> String {
+    use sha2::Digest;
+    format!(
+        "{:x}",
+        sha2::Sha256::digest(format!("quince-account:{dsid}"))
+    )
+}
+
+/// The library made the signed-in account's, before anything else can use the session: called
+/// with the auth lock still held, so no sync, send or upload ever sees one account's session
+/// beside another's library.
+///
+/// Someone else's library here — a sign-out kept a copy, then another Apple ID signed in — is
+/// set aside whole under `accounts/`, never deleted and never mixed, and this account's own,
+/// if it was set aside before, comes back where it was: its records, its caches, what it had
+/// still to send. A library from before accounts were told apart is simply claimed.
+async fn claim_library(app: &tauri::AppHandle, client: &Client) -> Result<(), String> {
+    let Some(dsid) = client.session().dsid.as_deref() else {
+        return Ok(());
+    };
+    let tag = account_tag(dsid);
+    let data = app.state::<Data>();
+    let mut library = data.0.lock().await;
+    let known = library.state(ACCOUNT_KEY).map_err(|e| e.to_string())?;
+    if known.as_deref() == Some(tag.as_str()) {
+        return Ok(());
+    }
+    let dir = state_dir(app);
+    let home = dir.join(SET_ASIDE).join(&tag);
+    if known.is_some() || home.exists() {
+        let now = jiff::Timestamp::now().as_second();
+        let away = known.unwrap_or_else(|| format!("unclaimed-{now}"));
+        switch_library(&mut library, &dir, &away, &home)?;
+        photos::forget_links();
+    }
+    library
+        .set_state(ACCOUNT_KEY, &tag)
+        .map_err(|e| e.to_string())
+}
+
+/// One account's library and caches set aside under `away`, and the ones at `home` (if any)
+/// brought back in their place. The library is let go of while its files move and opened
+/// again after, whatever happened; this computer's settings stay with the computer.
+fn switch_library(
+    library: &mut Library,
+    dir: &std::path::Path,
+    away: &str,
+    home: &std::path::Path,
+) -> Result<(), String> {
+    let kept = library.computer_state().map_err(|e| e.to_string())?;
+    let empty = !library.holds_account().map_err(|e| e.to_string())?;
+    let shelf = dir.join(SET_ASIDE).join(away);
+    *library = Library::in_memory().map_err(|e| e.to_string())?;
+    let moved = move_account(dir, &shelf).and_then(|()| {
+        if home.exists() {
+            move_account(home, dir)?;
+            std::fs::remove_dir(home)?;
+        }
+        Ok(())
+    });
+    *library = Library::open(dir).map_err(|e| e.to_string())?;
+    for (key, value) in kept {
+        library.set_state(&key, &value).map_err(|e| e.to_string())?;
+    }
+    moved.map_err(|e| format!("The last account's data could not be set aside: {e}"))?;
+    // A library that held nothing — one emptied by a sign-out that kept nothing — is not kept.
+    if empty && away.starts_with("unclaimed-") {
+        let _ = std::fs::remove_dir_all(&shelf);
+    }
+    Ok(())
+}
+
+/// An account's files moved from one folder to another, all or none: whatever had moved goes
+/// back if one cannot, and nothing is moved over something already there.
+fn move_account(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    if let Some(taken) = ACCOUNT_FILES.iter().find(|n| to.join(n).exists()) {
+        return Err(std::io::Error::other(format!("{taken} is already there")));
+    }
+    let mut done = Vec::new();
+    for name in ACCOUNT_FILES {
+        if !from.join(name).exists() {
+            continue;
+        }
+        if let Err(e) = std::fs::rename(from.join(name), to.join(name)) {
+            for back in done {
+                let _ = std::fs::rename(to.join(back), from.join(back));
+            }
+            return Err(e);
+        }
+        done.push(name);
+    }
+    Ok(())
+}
+
+/// Whether the session and the library are the same account's — asked by everything that sends
+/// what the library holds to Apple, so that nothing of one account is ever sent with another's
+/// session (a switch that failed half-way, a session left from a crash).
+pub async fn same_account(app: &tauri::AppHandle) -> bool {
+    let session = app
+        .state::<Auth>()
+        .client
+        .lock()
+        .await
+        .session()
+        .dsid
+        .as_deref()
+        .map(account_tag);
+    let owner = app
+        .state::<Data>()
+        .0
+        .lock()
+        .await
+        .state(ACCOUNT_KEY)
+        .ok()
+        .flatten();
+    session.is_some() && session == owner
+}
+
+/// Signed in, then the library made this account's; if it could not be, signed out again with
+/// the reason, never left signed in over someone else's data.
+async fn signed_in(app: &tauri::AppHandle, client: &mut Client) -> Result<(), String> {
+    if let Err(e) = claim_library(app, client).await {
+        let _ = client.sign_out();
+        return Err(e);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn auth_sign_in(
     apple_id: String,
     password: String,
+    app: tauri::AppHandle,
     auth: State<'_, Auth>,
 ) -> UiResult<&'static str> {
     // Reject rather than queue. A second attempt would mean a second code sent to the
@@ -500,19 +674,32 @@ async fn auth_sign_in(
 
     let mut client = auth.client.lock().await;
     match client.sign_in(&apple_id, &password).await {
-        Ok(SignInOutcome::Complete) => Ok("complete"),
+        Ok(SignInOutcome::Complete) => {
+            signed_in(&app, &mut client).await?;
+            drop(client);
+            folders_up(&app).await;
+            Ok("complete")
+        }
         Ok(SignInOutcome::NeedsTwoFactor) => Ok("needs_two_factor"),
         Err(e) => Err(e.to_string()),
     }
 }
 
 #[tauri::command]
-async fn auth_submit_code(code: String, auth: State<'_, Auth>) -> UiResult<()> {
+async fn auth_submit_code(
+    code: String,
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+) -> UiResult<()> {
     let mut client = auth.client.lock().await;
     client
         .submit_two_factor(&code)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    signed_in(&app, &mut client).await?;
+    drop(client);
+    folders_up(&app).await;
+    Ok(())
 }
 
 /// Where Apple can send a code, and whether it already pushed one.
@@ -536,20 +723,88 @@ async fn auth_send_sms(phone_id: u64, auth: State<'_, Auth>) -> UiResult<()> {
 }
 
 #[tauri::command]
-async fn auth_submit_sms_code(phone_id: u64, code: String, auth: State<'_, Auth>) -> UiResult<()> {
+async fn auth_submit_sms_code(
+    phone_id: u64,
+    code: String,
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+) -> UiResult<()> {
     let mut client = auth.client.lock().await;
     client
         .submit_sms_code(phone_id, &code)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    signed_in(&app, &mut client).await?;
+    drop(client);
+    folders_up(&app).await;
+    Ok(())
+}
+
+/// What of the signed-in account's has not reached Apple yet: asked before a sign-out, so a
+/// choice to keep nothing on this computer is made knowing what it loses.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Unsent {
+    /// Changes queued for Apple (a reminder ticked offline, say).
+    changes: usize,
+    /// Files written in the iCloud Drive folder and not yet uploaded.
+    files: usize,
+    /// Photos added and not yet uploaded.
+    photos: usize,
 }
 
 #[tauri::command]
-async fn auth_sign_out(auth: State<'_, Auth>) -> UiResult<()> {
-    // The iCloud Drive folder goes with the session it was served by.
-    mount::release();
+async fn account_unsent(app: tauri::AppHandle, data: State<'_, Data>) -> UiResult<Unsent> {
+    let (changes, photos) = {
+        let library = data.0.lock().await;
+        (
+            library.outbox_count().map_err(|e| e.to_string())?,
+            library
+                .unfinished_uploads()
+                .map_err(|e| e.to_string())?
+                .len(),
+        )
+    };
+    Ok(Unsent {
+        changes,
+        photos,
+        files: mount::unsent_files(&state_dir(&app)),
+    })
+}
+
+/// Signed out, keeping a copy of the account here or not, as the person chose.
+///
+/// Kept, everything stays as it was — the library, its caches, what waits to be sent — and is
+/// there again when the account signs back in; another account signing in first finds it set
+/// aside, not mixed in (see `claim_library`). Not kept, every record and cached file of the
+/// account is removed from this computer. Either way nothing is deleted from iCloud.
+#[tauri::command]
+async fn auth_sign_out(keep: bool, app: tauri::AppHandle, auth: State<'_, Auth>) -> UiResult<()> {
+    // The folders go with the session they were served by — before the auth lock is taken,
+    // since what they are still answering may be waiting on it.
+    tauri::async_runtime::spawn_blocking(mount::release)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut client = auth.client.lock().await;
-    client.sign_out().map_err(|e| e.to_string())
+    client.sign_out().map_err(|e| e.to_string())?;
+    if !keep {
+        let data = app.state::<Data>();
+        let mut library = data.0.lock().await;
+        library.forget_account().map_err(|e| e.to_string())?;
+        let dir = state_dir(&app);
+        for name in ACCOUNT_FILES
+            .iter()
+            .filter(|n| !n.starts_with("library.db"))
+        {
+            let _ = std::fs::remove_dir_all(dir.join(name));
+        }
+        photos::forget_links();
+        drop(library);
+        drop(client);
+        let app = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || mount::forget_thumbnails(&app)).await;
+    }
+    Ok(())
 }
 
 /// Services Apple advertises for this account, for the sidebar.
@@ -3840,7 +4095,10 @@ fn main() {
             let mut library = Library::open(&dir)?;
             adopt_writer(&mut library);
             app.manage(Data(Mutex::new(library)));
-            mount::resume(app.handle());
+            // A photo cache past what this computer can spare now — the disk filled since —
+            // is brought back under its budget first thing.
+            let trim = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || photos::trim_cache(&trim));
             // Logging out or shutting down ends the app with a signal, not through its own
             // quit, and a crash ends it with neither: either way the iCloud Drive folder is
             // let go of first, never left behind answering "Transport endpoint is not
@@ -3906,6 +4164,7 @@ fn main() {
             auth_send_sms,
             auth_submit_sms_code,
             auth_sign_out,
+            account_unsent,
             account_services,
             account_info,
             settings_get,
@@ -4041,6 +4300,79 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+
+    /// Two Apple IDs on one computer: each one's library and caches set aside whole while the
+    /// other is signed in, and back exactly as they were — never mixed, never deleted — with
+    /// this computer's settings staying put through both switches.
+    #[test]
+    fn accounts_are_set_aside_and_brought_back_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let mut lib = Library::open(dir).unwrap();
+        lib.set_state(ACCOUNT_KEY, "a").unwrap();
+        lib.set_state("contacts.me", "A's card").unwrap();
+        lib.set_state("settings.alerts.events", "0").unwrap();
+        std::fs::create_dir_all(dir.join("photos")).unwrap();
+        std::fs::write(dir.join("photos").join("one"), b"A's photo").unwrap();
+
+        // B signs in: A goes aside, B starts clean.
+        switch_library(&mut lib, dir, "a", &dir.join(SET_ASIDE).join("b")).unwrap();
+        assert_eq!(
+            lib.state("contacts.me").unwrap(),
+            None,
+            "nothing of A's in B's library"
+        );
+        assert!(
+            !dir.join("photos").join("one").exists(),
+            "nor in its caches"
+        );
+        assert_eq!(
+            lib.state("settings.alerts.events").unwrap().as_deref(),
+            Some("0")
+        );
+        assert!(dir.join(SET_ASIDE).join("a").join("library.db").exists());
+        lib.set_state(ACCOUNT_KEY, "b").unwrap();
+        lib.set_state("contacts.me", "B's card").unwrap();
+        lib.set_state("settings.alerts.events", "1").unwrap();
+
+        // A again: B aside, A back as it was.
+        switch_library(&mut lib, dir, "b", &dir.join(SET_ASIDE).join("a")).unwrap();
+        assert_eq!(lib.state(ACCOUNT_KEY).unwrap().as_deref(), Some("a"));
+        assert_eq!(
+            lib.state("contacts.me").unwrap().as_deref(),
+            Some("A's card")
+        );
+        assert_eq!(
+            std::fs::read(dir.join("photos").join("one")).unwrap(),
+            b"A's photo"
+        );
+        assert_eq!(
+            lib.state("settings.alerts.events").unwrap().as_deref(),
+            Some("1"),
+            "the computer's latest setting, not the one A left"
+        );
+        assert!(
+            !dir.join(SET_ASIDE).join("a").exists(),
+            "its shelf put away"
+        );
+        assert!(dir.join(SET_ASIDE).join("b").join("library.db").exists());
+    }
+
+    /// A move that cannot finish undoes itself, and never lands over what is already there.
+    #[test]
+    fn a_move_is_all_or_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("from"), dir.path().join("to"));
+        std::fs::create_dir_all(from.join("photos")).unwrap();
+        std::fs::create_dir_all(to.join("faces")).unwrap();
+        std::fs::write(from.join("library.db"), b"mine").unwrap();
+        assert!(move_account(&from, &to).is_err(), "something already there");
+        assert!(
+            from.join("library.db").exists() && from.join("photos").exists(),
+            "nothing moved"
+        );
+    }
+
     use super::*;
 
     /// Apple serves contact pictures as PNG, which is not what the first version of this

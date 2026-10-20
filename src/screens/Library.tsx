@@ -51,7 +51,7 @@ const SCREENS: { key: string; name: string }[] = [
 const LAST_KEY = "quince.library.screen";
 const RAIL_KEY = "quince.library.rail";
 
-export function Library({ onSignOut }: { onSignOut: () => void }) {
+export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<void> }) {
   const [services, setServices] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

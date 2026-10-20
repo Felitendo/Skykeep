@@ -364,6 +364,21 @@ pub fn thumbnail_mtime(png_bytes: &[u8]) -> Option<i64> {
         .and_then(|t| t.text.trim().parse().ok())
 }
 
+/// Whether a freedesktop thumbnail was written by Quince (its `Software` chunk): the ones to
+/// remove with an account, and only those — every other app's stay.
+#[must_use]
+pub fn thumbnail_is_ours(png_bytes: &[u8]) -> bool {
+    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    let Ok(reader) = decoder.read_info() else {
+        return false;
+    };
+    reader
+        .info()
+        .uncompressed_latin1_text
+        .iter()
+        .any(|t| t.keyword == "Software" && t.text == "Quince")
+}
+
 /// Whether bytes are a HEIF file (HEIC and its kin): an `ftyp` box naming a HEIF brand.
 #[must_use]
 pub fn is_heif(bytes: &[u8]) -> bool {
@@ -498,6 +513,22 @@ mod tests {
     }
 
     use super::*;
+
+    /// Only Quince's own thumbnails are told apart as ours: another app's are never touched.
+    #[test]
+    fn our_thumbnails_are_known_by_their_software_chunk() {
+        let mut plain = Vec::new();
+        image::DynamicImage::new_rgb8(4, 4)
+            .write_to(
+                &mut std::io::Cursor::new(&mut plain),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let ours = freedesktop_thumbnail(&plain, 128, "file:///home/test/a.png", 1).unwrap();
+        assert!(thumbnail_is_ours(&ours));
+        assert!(!thumbnail_is_ours(&plain));
+        assert!(!thumbnail_is_ours(b"not a png"));
+    }
     use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 
     /// A tall picture with a red square at its top right — where a face sits in a portrait.

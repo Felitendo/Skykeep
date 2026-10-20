@@ -57,9 +57,11 @@ export default function App() {
     };
   }, []);
 
-  async function signOut() {
-    await api.signOut().catch(() => {});
-    setPhase("signin");
+  // Signed out, the window starts over: nothing of the account is left in its memory either —
+  // no picture, no list, no cached answer — for whoever signs in next.
+  async function signOut(keep: boolean) {
+    await api.signOut(keep);
+    window.location.reload();
   }
 
   // Filling the library is the library's own business now: one refresh covers every

@@ -82,7 +82,12 @@ struct Refused {
 async fn drain_reminders(app: &AppHandle) -> Outcome {
     let auth = app.state::<Auth>();
     let data = app.state::<Data>();
-    let Ok((http, root, params)) = cloudkit_context(&auth).await else {
+    let session = if crate::same_account(app).await {
+        cloudkit_context(&auth).await
+    } else {
+        Err(String::new())
+    };
+    let Ok((http, root, params)) = session else {
         // Not signed in, or the session is being renewed: nothing can go yet.
         return if data
             .0

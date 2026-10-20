@@ -62,6 +62,14 @@ impl Library {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Every change still waiting, whatever its service.
+    pub fn outbox_count(&self) -> Result<usize> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))?;
+        Ok(usize::try_from(n).unwrap_or(0))
+    }
+
     /// Apple has it (or has refused it for good): no longer waiting.
     pub fn outbox_done(&mut self, id: i64) -> Result<()> {
         self.conn
