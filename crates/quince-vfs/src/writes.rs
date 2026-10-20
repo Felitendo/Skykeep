@@ -45,6 +45,22 @@ pub struct Pending {
     /// Since when nothing has touched it: it is sent once left alone (SETTLE).
     #[serde(skip)]
     pub quiet_since: Option<std::time::Instant>,
+    /// On its way to Apple right now.
+    #[serde(skip)]
+    pub sending: bool,
+    /// Why the last try did not go, said once it has failed (cleared when it goes).
+    #[serde(skip)]
+    pub failure: Option<String>,
+}
+
+/// What is waiting to go, as a person is told it: how many files, how many on their way now,
+/// and the reason one would not go, if one would not.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Waiting {
+    pub files: u32,
+    pub sending: u32,
+    pub failure: Option<String>,
 }
 
 /// Names programs use for their own scratch files, which never leave this computer: Vim's
@@ -145,6 +161,24 @@ impl Writes {
     /// The bytes let go of, once sent or given up.
     pub fn drop_staging(&self, ino: u64) {
         let _ = std::fs::remove_dir_all(self.dir.join(ino.to_string()));
+    }
+
+    /// What is waiting to go: scratch files, which never go, are not counted.
+    #[must_use]
+    pub fn waiting(&self) -> Waiting {
+        let items = self
+            .items
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut w = Waiting::default();
+        for p in items.values().filter(|p| p.dirty && !stays_local(&p.name)) {
+            w.files += 1;
+            w.sending += u32::from(p.sending);
+            if w.failure.is_none() {
+                w.failure.clone_from(&p.failure);
+            }
+        }
+        w
     }
 
     /// The lane sends under one name wait in, one after another.
@@ -317,6 +351,8 @@ mod tests {
             modified: SystemTime::now(),
             sender: false,
             quiet_since: None,
+            sending: false,
+            failure: None,
         };
         std::fs::create_dir_all(w.staging(7, "a.txt").parent().unwrap()).unwrap();
         std::fs::write(w.staging(7, "a.txt"), b"hi").unwrap();

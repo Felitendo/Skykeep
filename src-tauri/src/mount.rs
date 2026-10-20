@@ -24,6 +24,9 @@ const LINK_LIFE: Duration = Duration::from_secs(20 * 60);
 #[cfg(target_os = "linux")]
 static SESSIONS: Mutex<Vec<(Which, PathBuf, fuser::BackgroundSession)>> = Mutex::new(Vec::new());
 
+/// What the iCloud Drive folder has written and not yet sent, while it is up.
+static WRITES: Mutex<Option<Arc<quince_vfs::writes::Writes>>> = Mutex::new(None);
+
 struct AppRemote {
     app: AppHandle,
     links: Arc<Mutex<HashMap<String, (String, Instant)>>>,
@@ -262,6 +265,8 @@ pub struct FolderStatus {
     pub on: bool,
     pub path: String,
     pub problem: Option<String>,
+    /// Files written into it and not yet at Apple (the Drive folder).
+    pub waiting: Option<quince_vfs::writes::Waiting>,
 }
 
 #[cfg(target_os = "linux")]
@@ -333,6 +338,11 @@ fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), Stri
     if let Some(thumbs) = thumbnail_cache(app) {
         fs = fs.with_thumbnails(at.to_path_buf(), thumbs);
     }
+    if which == Which::Drive {
+        *WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fs.writes();
+    }
     let session = quince_vfs::fuse::mount(fs, at)
         .map_err(|e| format!("The folder could not be mounted: {e}"))?;
     SESSIONS
@@ -352,6 +362,11 @@ fn stop(which: Which) {
         *sessions = keep;
         go
     };
+    if which == Which::Drive {
+        *WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
     for (_, at, session) in gone {
         drop(session);
         // The empty folder the mount stood on is put away too, as it was made for it.
@@ -372,10 +387,21 @@ fn mounted(_which: Which) -> Option<PathBuf> {
 
 fn status(app: &AppHandle, which: Which, problem: Option<String>) -> FolderStatus {
     let at = mounted(which).unwrap_or_else(|| place(app, which));
+    let on = mounted(which).is_some();
+    let waiting = if which == Which::Drive && on {
+        WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|w| w.waiting())
+    } else {
+        None
+    };
     FolderStatus {
-        on: mounted(which).is_some(),
+        on,
         path: at.to_string_lossy().into_owned(),
         problem,
+        waiting,
     }
 }
 

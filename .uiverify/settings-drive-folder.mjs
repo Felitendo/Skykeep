@@ -19,6 +19,16 @@ await sw.click();
 await page.waitForTimeout(200);
 ok((await sw.getAttribute("aria-checked")) === "true", "turned on");
 ok(/\/home\/test\/iCloud Drive/.test(await page.locator(".settings-row", { has: sw }).innerText()), "and says where the folder is");
+ok(/Up to date/.test(await page.locator(".settings-row", { has: sw }).innerText()), "up to date while nothing waits");
+// What the folder has still to send, told as it changes (read every two seconds).
+await page.evaluate(() => { window.__driveWaiting = { files: 2, sending: 1, failure: null }; });
+await page.waitForTimeout(2300);
+ok(/Uploading 2 files…/.test(await page.locator(".settings-row", { has: sw }).innerText()), "uploading, as it happens");
+await page.evaluate(() => { window.__driveWaiting = { files: 1, sending: 0, failure: "iCloud is busy right now. Nothing was changed — try again in a minute." }; });
+await page.waitForTimeout(2300);
+const stuck = page.locator(".settings-row", { has: sw }).locator(".settings-hint");
+ok(/1 file waiting — iCloud is busy/.test(await stuck.innerText()) && /is-trouble/.test(await stuck.getAttribute("class")), "and why something waits, marked");
+await page.evaluate(() => { window.__driveWaiting = null; });
 await page.locator(".settings-row", { has: sw }).getByRole("button", { name: "Open" }).click();
 ok((await page.evaluate(() => window.__opened)).includes("drive"), "Open shows it in the file manager");
 await sw.click();

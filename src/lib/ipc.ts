@@ -762,4 +762,10 @@ export function turnStyle(turn: Turn | null | undefined, w: number, h: number): 
 }
 
 /** The iCloud Drive folder on this computer (see src-tauri/src/mount.rs). */
-export type DriveFolder = { on: boolean; path: string; problem: string | null };
+export type DriveFolder = {
+  on: boolean;
+  path: string;
+  problem: string | null;
+  /** Files written into the folder and not yet at Apple (the Drive folder only). */
+  waiting?: { files: number; sending: number; failure: string | null } | null;
+};

@@ -517,10 +517,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contact_me": return window.__me ?? (contactsFixture ? "c1" : null);
         case "contact_set_me": await new Promise((r) => setTimeout(r, 600)); window.__me = args.guid; return null;
         case "contacts_export": (window.__exports ??= []).push(args); return `/home/test/Downloads/${args.fileName}`;
-        case "drive_folder_status": return window.__driveFolder ??= { on: false, path: "/home/test/iCloud Drive", problem: null };
+        case "drive_folder_status": {
+          const f = (window.__driveFolder ??= { on: false, path: "/home/test/iCloud Drive", problem: null });
+          return f.on && window.__driveWaiting ? { ...f, waiting: window.__driveWaiting } : f;
+        }
         case "drive_folder_set":
           if (window.__driveFolderRefuse) return { ...window.__driveFolder, on: false, problem: window.__driveFolderRefuse };
-          return (window.__driveFolder = { on: args.on, path: "/home/test/iCloud Drive", problem: null });
+          return (window.__driveFolder = { on: args.on, path: "/home/test/iCloud Drive", problem: null, waiting: args.on ? { files: 0, sending: 0, failure: null } : null });
         case "drive_folder_open": (window.__opened ??= []).push("drive"); return null;
         case "photos_folder_status": return window.__photosFolder ??= { on: false, path: "/home/test/iCloud Photos", problem: null };
         case "photos_folder_set": return (window.__photosFolder = { on: args.on, path: "/home/test/iCloud Photos", problem: null });

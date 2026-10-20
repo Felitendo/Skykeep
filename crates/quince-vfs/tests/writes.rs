@@ -17,6 +17,8 @@ struct World {
     folders: Mutex<HashMap<String, Vec<DriveItem>>>,
     bytes: Mutex<HashMap<String, Vec<u8>>>,
     uploads: Mutex<Vec<String>>,
+    /// Apple refusing every change, as when it is down.
+    refuse: Mutex<bool>,
     /// How long each step at "Apple" takes: slow, as on a real connection.
     slow: Mutex<Duration>,
     deleted: Mutex<Vec<String>>,
@@ -115,6 +117,9 @@ impl Remote for Apple {
         Box::pin(async move { Ok(b) })
     }
     fn upload(&self, folder: &DriveItem, path: &Path) -> Fut<DriveItem> {
+        if *self.0.refuse.lock().unwrap() {
+            return Box::pin(async { Err("iCloud is busy right now".to_string()) });
+        }
         let bytes = std::fs::read(path).unwrap();
         let mut name = path.file_name().unwrap().to_str().unwrap().to_string();
         // A name already taken is filed as "name 2", as Apple files it.
@@ -151,6 +156,9 @@ impl Remote for Apple {
         Box::pin(async { Ok(()) })
     }
     fn delete(&self, it: &DriveItem) -> Fut<()> {
+        if *self.0.refuse.lock().unwrap() {
+            return Box::pin(async { Err("iCloud is busy right now".to_string()) });
+        }
         let slow = *self.0.slow.lock().unwrap() / 5;
         let (world, id) = (Arc::clone(&self.0), it.drivewsid.clone());
         Box::pin(async move {
@@ -404,6 +412,82 @@ fn a_save_during_a_send_waits_its_turn() {
     assert_eq!(
         world.bytes_of(ROOT, "Note.txt").as_deref(),
         Some(&b"three\n"[..])
+    );
+    drop(session);
+}
+
+/// What is waiting is told as it is: one file on its way while Apple is slow, nothing once it
+/// is there, and Apple's reason while it refuses — so nothing ever waits unseen.
+#[test]
+fn what_is_waiting_is_told() {
+    if !Path::new("/dev/fuse").exists() {
+        return;
+    }
+    let world = Arc::new(World::default());
+    world
+        .folders
+        .lock()
+        .unwrap()
+        .insert(ROOT.into(), Vec::new());
+    *world.slow.lock().unwrap() = Duration::from_millis(1500);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (cache, staging, at) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let fs = fuse::DriveFs::new(
+        Arc::new(Apple(Arc::clone(&world))),
+        Arc::new(Library(Arc::clone(&world))),
+        Arc::new(Cache::new(cache.path()).unwrap()),
+        rt.handle().clone(),
+    )
+    .with_writes(staging.path())
+    .unwrap();
+    let writes = fs.writes().unwrap();
+    let session = fuse::mount(fs, at.path()).unwrap();
+    std::fs::write(at.path().join("a.txt"), b"a").unwrap();
+    std::fs::write(at.path().join(".a.txt.swp"), b"vim").unwrap();
+    assert_eq!(
+        writes.waiting().files,
+        1,
+        "one waiting; the scratch file is not counted"
+    );
+    let mut seen_sending = false;
+    for _ in 0..60 {
+        let w = writes.waiting();
+        seen_sending |= w.sending == 1;
+        if w.files == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(seen_sending, "told while on its way");
+    assert_eq!(
+        writes.waiting().files,
+        0,
+        "nothing waiting once Apple has it"
+    );
+    *world.refuse.lock().unwrap() = true;
+    *world.slow.lock().unwrap() = Duration::ZERO;
+    std::fs::write(at.path().join("b.txt"), b"b").unwrap();
+    let mut why = None;
+    for _ in 0..60 {
+        why = writes.waiting().failure;
+        if why.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        why.as_deref(),
+        Some("iCloud is busy right now"),
+        "Apple's reason, while it refuses"
+    );
+    assert_eq!(
+        writes.waiting().files,
+        1,
+        "and the file still waiting, not lost"
     );
     drop(session);
 }

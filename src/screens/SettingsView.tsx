@@ -15,6 +15,16 @@ const ICON: Record<string, string> = {
   drive: "drivews",
 };
 
+/** The Drive folder's line when it is up: up to date, uploading, or why something is waiting. */
+function folderState(f: DriveFolder): string {
+  const w = f.waiting;
+  const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
+  if (!w || w.files === 0) return `Up to date · ${f.path}`;
+  if (w.failure) return `${files(w.files)} waiting — ${w.failure}`;
+  if (w.sending > 0) return `Uploading ${files(w.files)}…`;
+  return `${files(w.files)} waiting to upload`;
+}
+
 function size(bytes: number): string {
   const gb = bytes / 1024 ** 3;
   if (gb >= 1) return `${gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)} GB`;
@@ -50,6 +60,16 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
     api.driveFolderStatus().then(setFolder, () => {});
     api.photosFolderStatus().then(setPhotosFolder, () => {});
   }, []);
+  // While the Drive folder is up, what it has still to send is read every two seconds (a
+  // local question; nothing asked of Apple), so nothing ever waits unseen.
+  const folderOn = folder?.on ?? false;
+  useEffect(() => {
+    if (!folderOn) return undefined;
+    const t = window.setInterval(() => {
+      api.driveFolderStatus().then(setFolder, () => {});
+    }, 2000);
+    return () => window.clearInterval(t);
+  }, [folderOn]);
 
   // A switch moves the moment it is pressed, and goes back with the reason if it could not
   // be kept.
@@ -139,8 +159,8 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
           <span className="settings-label settings-stack">
             iCloud Drive folder
             {/* Where it is, and — when it could not come up — why, in a sentence. */}
-            <span className={`settings-hint${folder?.problem ? " is-trouble" : ""}`}>
-              {folder?.problem ?? (folder?.on ? folder.path : "Your iCloud Drive in Files and every other app")}
+            <span className={`settings-hint${folder?.problem || folder?.waiting?.failure ? " is-trouble" : ""}`}>
+              {folder?.problem ?? (folder?.on ? folderState(folder) : "Your iCloud Drive in Files and every other app")}
             </span>
           </span>
           {folder?.on && (

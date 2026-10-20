@@ -98,6 +98,12 @@ impl DriveFs {
         self
     }
 
+    /// What is written here and not yet at Apple, for the app to show (before mounting).
+    #[must_use]
+    pub fn writes(&self) -> Option<Arc<Writes>> {
+        self.0.writes.clone()
+    }
+
     /// Nothing in it can be changed: every change answered "read-only file system".
     #[must_use]
     pub fn read_only(mut self) -> Self {
@@ -440,6 +446,8 @@ impl Inner {
                     modified: SystemTime::now(),
                     sender: false,
                     quiet_since: None,
+                    sending: false,
+                    failure: None,
                 },
             );
         Ok(())
@@ -524,6 +532,7 @@ impl Inner {
                 let out = out_dir.join(&p.name);
                 let copied = std::fs::create_dir_all(&out_dir).is_ok()
                     && std::fs::copy(writes.staging(ino, &p.name), &out).is_ok();
+                me.with_pending(ino, |p| p.sending = true);
                 let result = if copied {
                     let r = writes::send(
                         me.remote.as_ref(),
@@ -538,6 +547,10 @@ impl Inner {
                 } else {
                     Err("the bytes could not be read".into())
                 };
+                me.with_pending(ino, |p| {
+                    p.sending = false;
+                    p.failure = result.as_ref().err().map(|e| e.chars().take(160).collect());
+                });
                 match result {
                     Ok(sent) => {
                         if !sent.conflicted {
@@ -1035,6 +1048,8 @@ impl Filesystem for DriveFs {
                     modified: SystemTime::now(),
                     sender: false,
                     quiet_since: None,
+                    sending: false,
+                    failure: None,
                 },
             );
         inner
