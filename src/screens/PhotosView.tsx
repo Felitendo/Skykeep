@@ -50,6 +50,14 @@ const AlbumGlyph = () => (
   </svg>
 );
 
+/** "3 Photos Selected", "1 Video Selected", "5 Items Selected" — Photos' words. */
+const pickedWords = (list: Photo[]) => {
+  const videos = list.filter((p) => p.kind === "video").length;
+  const n = list.length;
+  const noun = videos === 0 ? "Photo" : videos === n ? "Video" : "Item";
+  return `${n.toLocaleString()} ${n === 1 ? noun : `${noun}s`} Selected`;
+};
+
 const clock = (s: number | null) => {
   if (!s) return "";
   const m = Math.floor(s / 60);
@@ -69,6 +77,9 @@ export function PhotosView() {
   const [open, setOpen] = useState<number | null>(null);
   const [info, setInfo] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
+  /** Photos selected in the grid, as on a Mac: a click selects, a double-click opens. */
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const anchor = useRef<number | null>(null);
   const [uploads, setUploads] = useState<Map<string, UploadEvent>>(new Map());
   const [dropping, setDropping] = useState(false);
   const [menu, setMenu] = useState<{ at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] } | null>(null);
@@ -244,35 +255,43 @@ export function PhotosView() {
    * Favorite, Delete and Recover show at once, as on the phone; Apple's answer only matters if
    * it refuses, which puts the photo back as it was and says why.
    */
-  const change = async (p: Photo, flag: "favorite" | "deleted", on: boolean) => {
+  const change = (p: Photo, flag: "favorite" | "deleted", on: boolean) => changeAll([p], flag, on);
+  const changeAll = async (list: Photo[], flag: "favorite" | "deleted", on: boolean) => {
+    if (list.length === 0) return;
+    const n = list.length;
     // Asked first, in icloud.com's words: a delete reaches every device.
     if (
       flag === "deleted" && on &&
-      !window.confirm("Delete this photo?\n\nIt will be deleted from iCloud Photos on all your devices. It stays in Recently Deleted for 30 days.")
+      !window.confirm(
+        `${n === 1 ? "Delete this photo?" : `Delete ${n} photos?`}\n\n${n === 1 ? "It" : "They"} will be deleted from iCloud Photos on all your devices. ${n === 1 ? "It stays" : "They stay"} in Recently Deleted for 30 days.`,
+      )
     ) {
       return;
     }
     const before = photos;
+    const ids = new Set(list.map((p) => p.id));
     const leaves = flag === "deleted" && (on ? view !== "recentlyDeleted" : view === "recentlyDeleted");
-    setPhotos((list) =>
+    setPhotos((all) =>
       leaves
-        ? (list ?? []).filter((x) => x.id !== p.id)
-        : (list ?? []).map((x) => (x.id === p.id ? { ...x, [flag]: on } : x)),
+        ? (all ?? []).filter((x) => !ids.has(x.id))
+        : (all ?? []).map((x) => (ids.has(x.id) ? { ...x, [flag]: on } : x)),
     );
     if (leaves) {
+      setChosen((c) => new Set([...c].filter((id) => !ids.has(id))));
       // The viewer goes on to the next photo, or the one before at the end, or closes.
       setOpen((at) => {
         if (at === null || !photos) return at;
-        const left = photos.length - 1;
-        return left === 0 ? null : Math.min(at, left - 1);
+        const left = photos.length - n;
+        return left <= 0 ? null : Math.min(at, left - 1);
       });
     }
     try {
-      await api.photoSetFlag(p.id, flag, on);
+      for (const p of list) await api.photoSetFlag(p.id, flag, on);
       read().catch(() => {});
     } catch (e) {
       setPhotos(before);
       setError(messageOf(e));
+      read().catch(() => {});
     }
   };
 
@@ -358,6 +377,105 @@ export function PhotosView() {
     }
   };
 
+  const selected = useMemo(() => (photos ?? []).filter((p) => chosen.has(p.id)), [photos, chosen]);
+
+  const openAt = (index: number) => {
+    const p = photos?.[index];
+    if (!p) return;
+    stopClosing();
+    const tile = document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(p.id)}"]`);
+    origin.current = tile?.getBoundingClientRect() ?? null;
+    setOpen(index);
+  };
+
+  // A click as Photos takes it: alone it selects that one, with Ctrl (⌘) it adds or takes
+  // away, with Shift it selects everything from the last one chosen.
+  const pick = (index: number, e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
+    const list = photos ?? [];
+    const id = list[index]?.id;
+    if (!id) return;
+    if (e.shiftKey && anchor.current !== null) {
+      const [a, b] = [Math.min(anchor.current, index), Math.max(anchor.current, index)];
+      const span = list.slice(a, b + 1).map((p) => p.id);
+      setChosen((c) => new Set([...(e.ctrlKey || e.metaKey ? c : []), ...span]));
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setChosen((c) => {
+        const next = new Set(c);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    } else {
+      setChosen(new Set([id]));
+    }
+    anchor.current = index;
+  };
+
+  // The tile to land on from another by an arrow: the nearest in that direction as laid out,
+  // so moving down from the last row of a month goes into the next month's first row.
+  const neighbour = (from: number, key: string): number | null => {
+    const tiles = [...document.querySelectorAll<HTMLElement>(".px-scroll .px-tile")];
+    const at = tiles[from]?.getBoundingClientRect();
+    if (!at) return null;
+    if (key === "ArrowLeft") return from > 0 ? from - 1 : null;
+    if (key === "ArrowRight") return from < tiles.length - 1 ? from + 1 : null;
+    const down = key === "ArrowDown";
+    let best: number | null = null;
+    let bestScore = Infinity;
+    const cx = at.left + at.width / 2;
+    tiles.forEach((t, i) => {
+      const r = t.getBoundingClientRect();
+      const ahead = down ? r.top >= at.bottom - 1 : r.bottom <= at.top + 1;
+      if (!ahead) return;
+      const score = Math.abs(down ? r.top - at.bottom : at.top - r.bottom) * 1000 + Math.abs(r.left + r.width / 2 - cx);
+      if (score < bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    });
+    return best;
+  };
+
+  // The grid's keys, while no photo is open and nothing is being typed.
+  useEffect(() => {
+    if (open !== null) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.("input, textarea, [contenteditable], .row-menu, [role=dialog]") || naming) return;
+      if (!t?.closest?.(".px") && t !== document.body) return;
+      const list = photos ?? [];
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.key.toLowerCase() === "a") {
+        setChosen(new Set(list.map((p) => p.id)));
+      } else if (e.key === "Escape" && chosen.size) {
+        setChosen(new Set());
+      } else if ((e.key === "Enter" || e.key === " ") && selected.length) {
+        openAt(list.indexOf(selected[0]));
+      } else if (e.key.startsWith("Arrow") && list.length) {
+        const from = anchor.current ?? (e.key === "ArrowLeft" || e.key === "ArrowUp" ? list.length : -1);
+        const to = from < 0 ? 0 : from >= list.length ? list.length - 1 : neighbour(from, e.key);
+        if (to === null) return e.preventDefault();
+        if (e.shiftKey && anchor.current !== null) setChosen((c) => new Set([...c, list[to].id]));
+        else setChosen(new Set([list[to].id]));
+        anchor.current = to;
+        const tile = document.querySelectorAll<HTMLElement>(".px-scroll .px-tile")[to];
+        tile?.focus({ preventScroll: true });
+        tile?.scrollIntoView({ block: "nearest" });
+      } else if ((e.key === "Delete" || e.key === "Backspace") && selected.length) {
+        if (album) void removeFrom(selected);
+        else if (view !== "recentlyDeleted") void changeAll(selected, "deleted", true);
+      } else if (e.key === "." && selected.length && view !== "recentlyDeleted") {
+        // As Photos: if any is not a favorite, all become favorites; else all stop being.
+        void changeAll(selected, "favorite", selected.some((p) => !p.favorite));
+      } else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   const albumEntries = (ids: string[]): MenuEntry[] => [
     ...albums.filter(([a]) => a.id !== album?.id && !a.id.startsWith("new:")).map(([a]) => ({ label: a.name, run: () => void addTo(a, ids) })),
     ...(albums.length ? [null] : []),
@@ -365,6 +483,33 @@ export function PhotosView() {
   ];
 
   const photoMenu = (p: Photo, at: { x: number; y: number; alignRight: boolean }) => {
+    // A right-click on a selected photo acts on the whole selection; on any other, it
+    // selects that one first, as Photos does.
+    const group = chosen.has(p.id) && selected.length > 1 ? selected : [p];
+    if (!chosen.has(p.id)) {
+      setChosen(new Set([p.id]));
+      anchor.current = photos?.findIndex((x) => x.id === p.id) ?? null;
+    }
+    if (group.length > 1) {
+      const n = group.length;
+      const anyPlain = group.some((x) => !x.favorite);
+      setMenu({
+        at,
+        entries:
+          view === "recentlyDeleted" && !album
+            ? [{ label: `Recover ${n} Photos`, run: () => void changeAll(group, "deleted", false) }]
+            : [
+                { label: anyPlain ? "Favorite" : "Unfavorite", run: () => void changeAll(group, "favorite", anyPlain) },
+                null,
+                { label: "Add to Album", submenu: albumEntries(group.map((x) => x.id)) },
+                null,
+                album
+                  ? { label: `Remove ${n} Photos from Album`, danger: true, run: () => void removeFrom(group) }
+                  : { label: `Delete ${n} Photos`, danger: true, run: () => void changeAll(group, "deleted", true) },
+              ],
+      });
+      return;
+    }
     const entries: MenuEntry[] =
       view === "recentlyDeleted" && !album
         ? [{ label: "Recover", run: () => void change(p, "deleted", false) }]
@@ -559,6 +704,10 @@ export function PhotosView() {
     });
   }, [album]);
   useEffect(() => setHere(null), [view, album]);
+  useEffect(() => {
+    setChosen(new Set());
+    anchor.current = null;
+  }, [view, album]);
 
   // Zoom from the keys as in Photos: Ctrl and + or −.
   useEffect(() => {
@@ -643,7 +792,11 @@ export function PhotosView() {
         <header className="px-bar">
           <div className="px-heading">
             <h1>{title}</h1>
-            {(here ?? span) && <p className="px-span">{here ?? span}</p>}
+            {selected.length > 0 ? (
+              <p className="px-span px-picked">{pickedWords(selected)}</p>
+            ) : (
+              (here ?? span) && <p className="px-span">{here ?? span}</p>
+            )}
           </div>
           <div className="px-capsule" role="group" aria-label="Zoom">
             <button className="px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
@@ -678,7 +831,14 @@ export function PhotosView() {
           </p>
         )}
 
-        <div className="px-scroll" ref={scroller} onScroll={onScroll} style={{ "--across": across } as React.CSSProperties}>
+        <div
+          className="px-scroll"
+          ref={scroller}
+          onScroll={onScroll}
+          onClick={(e) => {
+            // A click on the space between photos lets the selection go, as in Photos.
+            if (!(e.target as HTMLElement).closest(".px-tile")) setChosen(new Set());
+          }} style={{ "--across": across } as React.CSSProperties}>
           {months.map((m) => (
             <section key={m.label} className="px-month" aria-label={m.label}>
               {m.label && <h2 className="px-month-title">{m.label}</h2>}
@@ -690,11 +850,10 @@ export function PhotosView() {
                     className="px-tile"
                     aria-label={`${photo.filename ?? "Photo"}, ${new Date(photo.takenAt * 1000).toLocaleString()}`}
                     data-id={photo.id}
-                    onClick={(e) => {
-                      stopClosing();
-                      origin.current = e.currentTarget.getBoundingClientRect();
-                      setOpen(index);
-                    }}
+                    aria-selected={chosen.has(photo.id)}
+                    tabIndex={anchor.current === index || (anchor.current === null && index === 0) ? 0 : -1}
+                    onClick={(e) => pick(index, e)}
+                    onDoubleClick={() => openAt(index)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       photoMenu(photo, { x: e.clientX, y: e.clientY, alignRight: false });

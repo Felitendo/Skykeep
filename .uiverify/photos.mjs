@@ -33,7 +33,7 @@ ok((await page.locator(".px-tile").count()) === 2 && (await page.locator(".px-mo
 await page.locator(".px-source", { hasText: "Library" }).click();
 await page.waitForTimeout(200);
 
-await page.locator(".px-tile").first().click();
+await page.locator(".px-tile").first().dblclick();
 await page.waitForTimeout(150);
 ok((await page.locator(".px-viewer").count()) === 1, "a photo opens in the viewer");
 const first = await page.locator(".px-stage img").getAttribute("src");
@@ -68,7 +68,7 @@ await page.keyboard.press("Escape");
 await page.locator(".px-source", { hasText: "Recently Deleted" }).click();
 await page.waitForTimeout(200);
 ok((await page.locator(".px-tile").count()) === 2, "the deleted photo is in Recently Deleted");
-await page.locator(".px-tile").first().click();
+await page.locator(".px-tile").first().dblclick();
 await page.getByRole("button", { name: "Recover" }).click();
 await page.waitForTimeout(300);
 ok((await page.evaluate(() => window.__flags.at(-1))).on === false, "Recover brings it back");
@@ -76,7 +76,7 @@ await page.keyboard.press("Escape");
 await page.locator(".px-source", { hasText: "Library" }).click();
 await page.waitForTimeout(200);
 await page.evaluate(() => { window.__flagFail = true; });
-await page.locator(".px-tile").nth(1).click();
+await page.locator(".px-tile").nth(1).dblclick();
 await page.getByRole("button", { name: "Favorite", exact: true }).click();
 await page.waitForTimeout(300);
 ok((await page.getByRole("button", { name: "Favorite", exact: true }).count()) === 1 && (await page.locator(".notice").count()) === 1,
@@ -88,7 +88,7 @@ await page.waitForTimeout(650);
 ok((await page.locator(".px-viewer").count()) === 0, "Escape closes the viewer");
 
 // Opening grows the photo out of its tile: a moment in, it is still near the tile's size.
-await page.locator(".px-tile").first().click();
+await page.locator(".px-tile").first().dblclick();
 await page.waitForTimeout(40);
 const mid = await page.locator(".px-shown").evaluate((i) => i.getBoundingClientRect().width);
 await page.waitForTimeout(600);
@@ -97,17 +97,53 @@ ok(mid < end * 0.8 && end > 200, `a photo opens out of its tile  ${Math.round(mi
 await page.keyboard.press("Escape");
 await page.waitForTimeout(650);
 // Another photo opened while the last is still closing stays open, and is seen.
-await page.locator(".px-tile").nth(1).click();
+await page.locator(".px-tile").nth(1).dblclick();
 await page.waitForTimeout(500);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(60);
-await page.locator(".px-tile").nth(2).click();
+await page.locator(".px-tile").nth(2).dblclick();
 await page.waitForTimeout(800);
 ok((await page.locator(".px-viewer").count()) === 1 &&
   (await page.locator(".px-backdrop").evaluate((b) => getComputedStyle(b).opacity)) === "1",
   "a photo opened while another closes stays open, fully shown");
 await page.keyboard.press("Escape");
 await page.waitForTimeout(650);
+
+// Selecting, as on a Mac: a click selects, Ctrl-click adds, Shift-click takes the run
+// between, Ctrl+A everything; the title says how many; Escape lets go; arrows move.
+await page.locator(".px-tile").nth(0).click();
+ok((await page.locator('.px-tile[aria-selected="true"]').count()) === 1 && (await page.locator(".px-viewer").count()) === 0,
+  "a click selects a photo and does not open it");
+await page.locator(".px-tile").nth(2).click({ modifiers: ["Control"] });
+ok((await page.locator('.px-tile[aria-selected="true"]').count()) === 2, "Ctrl-click adds another");
+ok(/2 Items Selected/.test(await page.locator(".px-span").innerText()), `the title says what is selected  ${await page.locator(".px-span").innerText()}`);
+await page.locator(".px-tile").nth(3).click({ modifiers: ["Shift"] });
+ok((await page.locator('.px-tile[aria-selected="true"]').count()) === 2, "Shift-click takes the run from the last chosen");
+await page.keyboard.press("Control+a");
+ok((await page.locator('.px-tile[aria-selected="true"]').count()) === (await page.locator(".px-tile").count()), "Ctrl+A selects everything");
+await page.keyboard.press("Escape");
+ok((await page.locator('.px-tile[aria-selected="true"]').count()) === 0, "Escape lets the selection go");
+await page.locator(".px-tile").nth(0).click();
+await page.keyboard.press("ArrowRight");
+ok((await page.locator(".px-tile").nth(1).getAttribute("aria-selected")) === "true", "the right arrow moves the selection on");
+await page.keyboard.press("ArrowDown");
+const downAt = await page.locator(".px-tile").evaluateAll((t) => t.findIndex((x) => x.getAttribute("aria-selected") === "true"));
+ok(downAt > 1, `the down arrow goes to the row below, across a month  → tile ${downAt}`);
+await page.keyboard.press("Enter");
+await page.waitForTimeout(500);
+ok((await page.locator(".px-viewer").count()) === 1, "Return opens the selected photo");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(650);
+// Two favorited together with ".", each sent to iCloud.
+await page.locator(".px-tile").nth(1).click();
+await page.locator(".px-tile").nth(3).click({ modifiers: ["Control"] });
+const sentBefore = await page.evaluate(() => window.__flags.length);
+await page.keyboard.press(".");
+await page.waitForTimeout(300);
+ok((await page.evaluate(() => window.__flags.length)) - sentBefore === 2 && (await page.locator(".px-tile .px-heart").count()) >= 2,
+  '"." favorites every selected photo at once');
+await page.locator(".px-scroll").click({ position: { x: 600, y: 600 } });
+ok((await page.locator('.px-tile[aria-selected="true"]').count()) === 0, "a click on the empty space lets the selection go");
 
 const across = async () => page.locator(".px-grid").first().evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(" ").length);
 const before = await across();

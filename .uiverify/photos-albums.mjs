@@ -33,7 +33,7 @@ const add = await page.evaluate(() => window.__albumCalls.find((c) => c.cmd === 
 ok(add && add.args.ids[0] === "p1", "right-click → Add to Album puts the photo in it");
 ok(/1/.test(await page.locator(".px-source", { hasText: "Beach" }).innerText()), "and its count shows at once");
 
-await page.locator(".px-tile").nth(1).click();
+await page.locator(".px-tile").nth(1).dblclick();
 await page.getByRole("button", { name: "Add to Album" }).click();
 await page.locator(".row-menu").getByText("Beach", { exact: true }).click();
 await page.waitForTimeout(250);
