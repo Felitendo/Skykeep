@@ -279,6 +279,28 @@ fn mounted(which: Which) -> Option<PathBuf> {
         .map(|(_, p, _)| p.clone())
 }
 
+/// The most the Drive folder's downloads may keep on this computer: 10 GB, or a fifth of the
+/// disk's free space when that is less — a full disk is never the price of a folder.
+fn budget(dir: &std::path::Path) -> u64 {
+    const MOST: u64 = 10 * 1024 * 1024 * 1024;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+            return MOST;
+        };
+        // SAFETY: statvfs fills the struct it is given and reads only the path.
+        let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(path.as_ptr(), &mut s) } == 0 {
+            // 64-bit here already, narrower on some systems: the conversion is for those.
+            #[allow(clippy::useless_conversion)]
+            let free = u64::from(s.f_bavail).saturating_mul(u64::from(s.f_frsize));
+            return MOST.min(free / 5);
+        }
+    }
+    MOST
+}
+
 /// Where every file manager looks for thumbnails (~/.cache/thumbnails).
 fn thumbnail_cache(app: &AppHandle) -> Option<PathBuf> {
     std::env::var_os("XDG_CACHE_HOME")
@@ -309,8 +331,13 @@ fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), Stri
     let rt = tauri::async_runtime::handle().inner().clone();
     let mut fs = match which {
         Which::Drive => {
-            let cache = crate::state_dir(app).join("drive-cache");
-            let cache = Arc::new(quince_vfs::Cache::new(&cache).map_err(|e| e.to_string())?);
+            let dir = crate::state_dir(app).join("drive-cache");
+            let cache = quince_vfs::Cache::new(&dir)
+                .map_err(|e| e.to_string())?
+                .with_budget(budget(&dir));
+            // What earlier days left beyond the budget is let go of now, not first thing tomorrow.
+            cache.evict();
+            let cache = Arc::new(cache);
             let remote = Arc::new(AppRemote {
                 app: app.clone(),
                 links: Arc::new(Mutex::new(HashMap::new())),

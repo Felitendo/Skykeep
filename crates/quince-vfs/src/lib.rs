@@ -253,7 +253,14 @@ pub struct Cache {
     dir: PathBuf,
     have: Mutex<HashMap<PathBuf, Vec<bool>>>,
     fetching: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    /// The most disk it may use, in bytes (`u64::MAX`: no limit).
+    budget: u64,
+    /// Bytes fetched since it was last counted, to know when to count again.
+    since: std::sync::atomic::AtomicU64,
 }
+
+/// A file read in the last few minutes is never let go of: it may well be open.
+const IN_USE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 impl Cache {
     /// # Errors
@@ -264,7 +271,79 @@ impl Cache {
             dir: dir.to_path_buf(),
             have: Mutex::new(HashMap::new()),
             fetching: Mutex::new(HashMap::new()),
+            budget: u64::MAX,
+            since: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// The most disk the cache may use. Past it, the files read longest ago are let go of —
+    /// to fetch again if they are read again — down to four fifths of it (rclone's
+    /// vfs-cache-max-size, least recently used first).
+    #[must_use]
+    pub fn with_budget(mut self, bytes: u64) -> Self {
+        self.budget = bytes;
+        self
+    }
+
+    /// Bytes on disk now: what the sparse files really take, not their full sizes.
+    #[must_use]
+    pub fn used(&self) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::read_dir(&self.dir)
+            .map(|d| {
+                d.flatten()
+                    .filter_map(|e| e.metadata().ok())
+                    .map(|m| m.blocks() * 512)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Down to four fifths of the budget, the files read longest ago first; never one read in
+    /// the last few minutes. Answers how many bytes were let go of.
+    pub fn evict(&self) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        let mut used = self.used();
+        if used <= self.budget {
+            return 0;
+        }
+        let target = self.budget / 5 * 4;
+        let mut files: Vec<(std::time::SystemTime, PathBuf, u64)> = std::fs::read_dir(&self.dir)
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .is_none_or(|x| x != "have" && x != "part")
+                    })
+                    .filter_map(|e| {
+                        let m = e.metadata().ok()?;
+                        let have = std::fs::metadata(e.path().with_extension("have"))
+                            .map_or(0, |h| h.blocks() * 512);
+                        Some((m.modified().ok()?, e.path(), m.blocks() * 512 + have))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort_by_key(|(t, ..)| *t);
+        let mut freed = 0;
+        for (when, path, bytes) in files {
+            if used <= target {
+                break;
+            }
+            if when.elapsed().map_or(true, |e| e < IN_USE) {
+                continue;
+            }
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path.with_extension("have"));
+            self.have
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&path);
+            used = used.saturating_sub(bytes);
+            freed += bytes;
+        }
+        freed
     }
 
     fn path(&self, item: &DriveItem) -> PathBuf {
@@ -380,13 +459,37 @@ impl Cache {
                     .map_err(|e| e.to_string())?
                     .map_err(|e| e.to_string())?;
                 self.mark(&path, chunk, size).map_err(|e| e.to_string())?;
+                // Counted again only once a good part of the budget has come in since.
+                let came = self
+                    .since
+                    .fetch_add(want, std::sync::atomic::Ordering::Relaxed)
+                    + want;
+                if self.budget != u64::MAX && came > self.budget / 10 {
+                    self.since.store(0, std::sync::atomic::Ordering::Relaxed);
+                    // A walk of one folder's names and sizes: quick, and only now and then.
+                    self.evict();
+                }
             }
         }
         let p = path.clone();
-        tokio::task::spawn_blocking(move || get(&p, offset, end - offset))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())
+        tokio::task::spawn_blocking(move || {
+            let bytes = get(&p, offset, end - offset)?;
+            // Read now: the last to be let go of (its time moved at most once a minute).
+            if let Ok(f) = std::fs::File::options().write(true).open(&p) {
+                let stale = f
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok());
+                if stale.is_some_and(|e| e > std::time::Duration::from_secs(60)) {
+                    let _ = f.set_modified(std::time::SystemTime::now());
+                }
+            }
+            Ok::<_, std::io::Error>(bytes)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -591,6 +694,66 @@ mod tests {
             "v2",
         );
         assert!(!again.whole(&f2));
+    }
+
+    /// Past its budget, the cache lets go of the files read longest ago — never one just read
+    /// — and one let go of is fetched again when read again.
+    #[tokio::test]
+    async fn the_cache_keeps_to_its_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        // Room for about two whole files.
+        let cache = Cache::new(dir.path())
+            .unwrap()
+            .with_budget(CHUNK * 2 + CHUNK / 2);
+        let data: Vec<u8> = (0..CHUNK).map(|i| (i % 249) as u8).collect();
+        let remote = Bytes(data.clone(), Mutex::new(Vec::new()));
+        let files: Vec<DriveItem> = (0..4)
+            .map(|n| {
+                item(
+                    &format!("FILE::x::{n}"),
+                    "f",
+                    Some("bin"),
+                    "FILE",
+                    i64::try_from(CHUNK).unwrap(),
+                    "v1",
+                )
+            })
+            .collect();
+        for (n, f) in files.iter().enumerate() {
+            cache.read(&remote, f, 0, CHUNK).await.unwrap();
+            // Read long ago, oldest first — as if over days.
+            let p = cache.path(f);
+            let ago = std::time::SystemTime::now()
+                - std::time::Duration::from_secs(3600 * (10 - n as u64));
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(ago)
+                .unwrap();
+        }
+        // Let go of as the reads came in: kept to its budget all along.
+        cache.evict();
+        assert!(
+            cache.used() <= CHUNK * 2 + CHUNK / 2,
+            "kept to its budget: {} used",
+            cache.used()
+        );
+        assert!(
+            !cache.whole(&files[0]) && !cache.whole(&files[1]) && cache.whole(&files[3]),
+            "the oldest went, the newest stayed"
+        );
+        let fetched = remote.1.lock().unwrap().len();
+        assert_eq!(
+            cache.read(&remote, &files[0], 0, 10).await.unwrap(),
+            data[..10],
+            "fetched again when read again"
+        );
+        assert_eq!(remote.1.lock().unwrap().len(), fetched + 1);
+        // One read just now is never let go of, whatever the budget.
+        let tight = Cache::new(dir.path()).unwrap().with_budget(1);
+        tight.evict();
+        assert!(tight.whole(&files[0]), "just read: kept");
     }
 
     #[test]
