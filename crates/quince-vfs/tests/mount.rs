@@ -138,10 +138,26 @@ fn a_mounted_drive_reads_like_a_folder() {
         ["Film.mov", "Note.txt", "Work"],
         "the root, from the library"
     );
-    assert!(
-        apple.lists.lock().unwrap().is_empty(),
-        "nothing asked of Apple to list a known folder"
+    // Shown from the library, never waiting on Apple; asked of Apple behind it once (it may
+    // have changed on another device), and not again on a second look within ten seconds.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let asked = |id: &str| {
+        apple
+            .lists
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| *l == id)
+            .count()
+    };
+    assert_eq!(
+        asked(ROOT),
+        1,
+        "the known folder checked behind the answer, once"
     );
+    let _ = std::fs::read_dir(at.path()).unwrap().count();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(asked(ROOT), 1, "and not again within ten seconds");
 
     let meta = std::fs::metadata(at.path().join("Film.mov")).unwrap();
     assert_eq!(meta.len(), film.len() as u64);
