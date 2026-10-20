@@ -104,6 +104,9 @@ export const api = {
   driveFolderOpen: () => invoke<void>("drive_folder_open"),
   /** The iCloud Photos folder on this computer: the same, for photos (read-only for now). */
   photosFolderStatus: () => invoke<DriveFolder>("photos_folder_status"),
+  /** What the iCloud Drive folder keeps on this computer; null while the folder is off. */
+  driveKept: () => invoke<string[] | null>("drive_kept"),
+  driveKeep: (drivewsid: string, on: boolean) => invoke<string[]>("drive_keep", { drivewsid, on }),
   photosFolderSet: (on: boolean) => invoke<DriveFolder>("photos_folder_set", { on }),
   /** Open at Login: whether it is on, the command it runs, and whether this desktop runs it. */
   loginItem: () => invoke<LoginItem>("login_item_status"),

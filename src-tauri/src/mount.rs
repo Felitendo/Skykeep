@@ -27,6 +27,10 @@ static SESSIONS: Mutex<Vec<(Which, PathBuf, fuser::BackgroundSession)>> = Mutex:
 /// What the iCloud Drive folder has written and not yet sent, while it is up.
 static WRITES: Mutex<Option<Arc<quince_vfs::writes::Writes>>> = Mutex::new(None);
 
+/// What the iCloud Drive folder keeps on this computer, while it is up.
+#[cfg(target_os = "linux")]
+static KEEPER: Mutex<Option<quince_vfs::fuse::Keeper>> = Mutex::new(None);
+
 struct AppRemote {
     app: AppHandle,
     links: Arc<Mutex<HashMap<String, (String, Instant)>>>,
@@ -388,6 +392,9 @@ fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), Stri
         *WRITES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = fs.writes();
+        *KEEPER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fs.keeper());
     }
     let session = quince_vfs::fuse::mount(fs, at)
         .map_err(|e| format!("The folder could not be mounted: {e}"))?;
@@ -410,6 +417,9 @@ fn stop(which: Which) {
     };
     if which == Which::Drive {
         *WRITES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *KEEPER
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
@@ -612,4 +622,42 @@ pub async fn photos_folder_set(on: bool, app: AppHandle) -> Result<FolderStatus,
 #[tauri::command]
 pub async fn photos_folder_open(app: AppHandle) -> Result<(), String> {
     open(&app, Which::Photos)
+}
+
+/// What the iCloud Drive folder keeps on this computer (Keep on This Computer): the files and
+/// folders chosen, and the files inside a chosen folder. `None` while the folder is off —
+/// there is nothing to keep downloaded without it.
+#[tauri::command]
+pub fn drive_kept() -> Option<Vec<String>> {
+    #[cfg(target_os = "linux")]
+    {
+        KEEPER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(quince_vfs::fuse::Keeper::kept)
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+/// A file or folder kept on this computer — fetched whole behind, never trimmed — or let go
+/// of, as Finder's Keep Downloaded. Answers what is kept now.
+#[tauri::command]
+pub fn drive_keep(drivewsid: String, on: bool) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let keeper = KEEPER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or("Turn on the iCloud Drive folder in Settings to keep files on this computer.")?;
+        keeper.set(&drivewsid, on);
+        Ok(keeper.kept())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (drivewsid, on);
+        Err("Keeping files on this computer needs the iCloud Drive folder.".into())
+    }
 }

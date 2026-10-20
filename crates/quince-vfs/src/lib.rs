@@ -262,6 +262,30 @@ pub struct Cache {
     budget: u64,
     /// Bytes fetched since it was last counted, to know when to count again.
     since: std::sync::atomic::AtomicU64,
+    /// Kept on this computer: never let go of to make room. See [`Kept`].
+    kept: Mutex<Kept>,
+}
+
+/// What is kept on this computer ("Keep on This Computer", as Finder's Keep Downloaded): the
+/// files and folders the person chose, and every file inside a chosen folder (worked out by
+/// the folder, as it lists them). Written beside the bytes, so a trim at launch — before any
+/// folder is listed — already keeps them.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct Kept {
+    /// Chosen: files and folders, by Apple's id.
+    pub chosen: std::collections::BTreeSet<String>,
+    /// Files inside a chosen folder, by id.
+    pub within: std::collections::BTreeSet<String>,
+}
+
+/// The cache's own file of what is kept: a dot file, never taken for a cached file.
+const KEPT_FILE: &str = ".kept.json";
+
+/// An id as the cache names its files.
+fn safe_id(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 /// A file read in the last few minutes is never let go of: it may well be open.
@@ -278,7 +302,67 @@ impl Cache {
             fetching: Mutex::new(HashMap::new()),
             budget: u64::MAX,
             since: std::sync::atomic::AtomicU64::new(0),
+            kept: Mutex::new(
+                std::fs::read(dir.join(KEPT_FILE))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or_default(),
+            ),
         })
+    }
+
+    /// What is kept on this computer, as it stands.
+    #[must_use]
+    pub fn kept(&self) -> Kept {
+        let k = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Kept {
+            chosen: k.chosen.clone(),
+            within: k.within.clone(),
+        }
+    }
+
+    /// What is kept changed, and written down whole (or not at all).
+    pub fn set_kept(&self, change: impl FnOnce(&mut Kept)) {
+        let mut k = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        change(&mut k);
+        if let Ok(json) = serde_json::to_vec(&*k) {
+            let part = self.dir.join(".kept.json.part");
+            if std::fs::write(&part, json).is_ok() {
+                let _ = std::fs::rename(&part, self.dir.join(KEPT_FILE));
+            }
+        }
+    }
+
+    /// Whether a file's bytes are kept: chosen, or inside a chosen folder.
+    #[must_use]
+    pub fn is_kept(&self, id: &str) -> bool {
+        let k = self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        k.chosen.contains(id) || k.within.contains(id)
+    }
+
+    /// Every byte of a file fetched now, a chunk at a time, what is there already skipped:
+    /// for a file kept on this computer.
+    ///
+    /// # Errors
+    /// When Apple cannot be reached, or the disk refuses.
+    pub async fn fetch_whole(&self, remote: &dyn Remote, item: &DriveItem) -> Result<(), String> {
+        let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
+        let mut at = 0;
+        while at < size {
+            let len = CHUNK.min(size - at);
+            self.read(remote, item, at, len).await?;
+            at += len;
+        }
+        Ok(())
     }
 
     /// The most disk the cache may use. Past it, the files read longest ago are let go of —
@@ -297,6 +381,7 @@ impl Cache {
         std::fs::read_dir(&self.dir)
             .map(|d| {
                 d.flatten()
+                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
                     .filter_map(|e| e.metadata().ok())
                     .map(|m| m.blocks() * 512)
                     .sum()
@@ -313,6 +398,17 @@ impl Cache {
             return 0;
         }
         let target = self.budget / 5 * 4;
+        let held: std::collections::HashSet<String> = {
+            let k = self
+                .kept
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            k.chosen
+                .iter()
+                .chain(&k.within)
+                .map(|i| safe_id(i))
+                .collect()
+        };
         let mut files: Vec<(std::time::SystemTime, PathBuf, u64)> = std::fs::read_dir(&self.dir)
             .map(|d| {
                 d.flatten()
@@ -320,6 +416,12 @@ impl Cache {
                         e.path()
                             .extension()
                             .is_none_or(|x| x != "have" && x != "part")
+                    })
+                    // Its own files, and what is kept on this computer, are never let go of.
+                    .filter(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        let id = name.split('~').next().unwrap_or_default().to_string();
+                        !name.starts_with('.') && !held.contains(&id)
                     })
                     .filter_map(|e| {
                         let m = e.metadata().ok()?;
@@ -352,15 +454,10 @@ impl Cache {
     }
 
     fn path(&self, item: &DriveItem) -> PathBuf {
-        let safe = |s: &str| -> String {
-            s.chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect()
-        };
         self.dir.join(format!(
             "{}~{}",
-            safe(&item.drivewsid),
-            safe(item.etag.as_deref().unwrap_or("-"))
+            safe_id(&item.drivewsid),
+            safe_id(item.etag.as_deref().unwrap_or("-"))
         ))
     }
 

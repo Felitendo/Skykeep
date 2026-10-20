@@ -12,7 +12,7 @@ use fuser::{
     BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
     Generation, INodeNo, LockOwner, MountOption, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
     ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs,
-    ReplyWrite, Request, TimeOrNow, WriteFlags,
+    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use quince_core::drive::DriveItem;
 use std::ffi::OsStr;
@@ -60,6 +60,9 @@ struct Inner {
     filled: Mutex<std::collections::HashSet<String>>,
     /// Files written here and not yet at Apple as written. `None`: the folder is read-only.
     writes: Option<Arc<Writes>>,
+    /// A walk of what is kept is under way; asked again meanwhile, it walks once more after.
+    keeping: std::sync::atomic::AtomicBool,
+    again: std::sync::atomic::AtomicBool,
     /// When each folder was last asked of Apple, by id.
     looked: Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// The account's storage as last asked, `(used, total)`.
@@ -72,6 +75,35 @@ struct Inner {
 }
 
 pub struct DriveFs(Arc<Inner>);
+
+/// The attribute that keeps a file or folder on this computer: `setfattr -n user.quince.keep
+/// -v 1 <path>` keeps it, `-x` lets it go — what the window's "Keep on This Computer" does.
+const KEEP_ATTR: &str = "user.quince.keep";
+
+/// What is kept on this computer, for the app (the window's "Keep on This Computer").
+#[derive(Clone)]
+pub struct Keeper(Arc<Inner>);
+
+impl Keeper {
+    /// A file or folder kept on this computer, or let go of: kept, its bytes (every file in it,
+    /// for a folder, and any added later) are fetched behind and never trimmed.
+    pub fn set(&self, id: &str, on: bool) {
+        Inner::keep(&self.0, id, on);
+    }
+
+    /// The files and folders chosen to be kept.
+    #[must_use]
+    pub fn chosen(&self) -> Vec<String> {
+        self.0.cache.kept().chosen.into_iter().collect()
+    }
+
+    /// Everything kept: what was chosen, and every file inside a chosen folder.
+    #[must_use]
+    pub fn kept(&self) -> Vec<String> {
+        let k = self.0.cache.kept();
+        k.chosen.into_iter().chain(k.within).collect()
+    }
+}
 
 impl DriveFs {
     #[must_use]
@@ -97,6 +129,8 @@ impl DriveFs {
             writes: None,
             space: Mutex::new(None),
             looked: Mutex::new(std::collections::HashMap::new()),
+            keeping: std::sync::atomic::AtomicBool::new(false),
+            again: std::sync::atomic::AtomicBool::new(false),
             read_only: false,
             add_only: false,
         }))
@@ -112,6 +146,12 @@ impl DriveFs {
     pub fn with_thumbnails(mut self, mount: std::path::PathBuf, cache: std::path::PathBuf) -> Self {
         self.inner_mut().thumbs = Some((mount, cache));
         self
+    }
+
+    /// What is kept on this computer, for the app to change and show.
+    #[must_use]
+    pub fn keeper(&self) -> Keeper {
+        Keeper(Arc::clone(&self.0))
     }
 
     /// What is written here and not yet at Apple, for the app to show (before mounting).
@@ -244,6 +284,135 @@ impl Inner {
         Ok(done)
     }
 
+    /// Whether an item is kept on this computer: chosen, inside a chosen folder (as far up as
+    /// its folders are known), or noted as inside one by the last walk.
+    fn kept_under(&self, item: &DriveItem) -> bool {
+        if self.cache.is_kept(&item.drivewsid) {
+            return true;
+        }
+        let chosen = self.cache.kept().chosen;
+        let inodes = self
+            .inodes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut parent = item.parent_id.clone();
+        for _ in 0..64 {
+            let Some(p) = parent else { break };
+            if chosen.contains(&p) {
+                return true;
+            }
+            parent = inodes
+                .ino_of(&p)
+                .and_then(|i| inodes.item(i))
+                .and_then(|it| it.parent_id.clone());
+        }
+        false
+    }
+
+    fn keep(me: &Arc<Self>, id: &str, on: bool) {
+        me.cache.set_kept(|k| {
+            if on {
+                k.chosen.insert(id.to_string());
+            } else {
+                k.chosen.remove(id);
+            }
+        });
+        Self::settle_kept(me);
+    }
+
+    /// A folder's items for a walk: as stored, or asked of Apple when never listed.
+    fn items_of(&self, folder: &str) -> Vec<DriveItem> {
+        if let Some(stored) = self.store.children(folder).filter(|s| !s.is_empty()) {
+            return stored;
+        }
+        let (remote, id) = (Arc::clone(&self.remote), folder.to_string());
+        self.rt
+            .block_on(async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await })
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    }
+
+    fn walk(&self, folder: &str, files: &mut Vec<DriveItem>, depth: u32) {
+        if depth > 64 {
+            return;
+        }
+        for item in self.items_of(folder) {
+            if item.is_container() {
+                self.walk(&item.drivewsid, files, depth + 1);
+            } else {
+                files.push(item);
+            }
+        }
+    }
+
+    /// Everything kept made whole, behind everything else: each chosen folder walked for the
+    /// files in it (noted, so no trim lets them go), and every kept file's missing parts
+    /// fetched. One walk at a time; asked again meanwhile, it walks once more after. Run when
+    /// the folder comes up, when what is kept changes, and after a kept folder is looked at
+    /// (a file added on another device is kept too).
+    fn settle_kept(me: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if me.cache.kept().chosen.is_empty() {
+            return;
+        }
+        if me.keeping.swap(true, Ordering::SeqCst) {
+            me.again.store(true, Ordering::SeqCst);
+            return;
+        }
+        let me = Arc::clone(me);
+        std::thread::spawn(move || loop {
+            me.again.store(false, Ordering::SeqCst);
+            let chosen = me.cache.kept().chosen;
+            // Files inside a chosen folder (noted as such), and files chosen themselves (kept by
+            // being chosen, never noted as inside: let go of, they must not stay kept).
+            let mut files = Vec::new();
+            let mut alone = Vec::new();
+            let mut unknown = false;
+            for id in &chosen {
+                if id.starts_with("FOLDER::") {
+                    me.walk(id, &mut files, 0);
+                } else {
+                    let found = {
+                        let inodes = me
+                            .inodes
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        inodes.ino_of(id).and_then(|i| inodes.item(i)).cloned()
+                    };
+                    match found {
+                        Some(item) => alone.push(item),
+                        // Not seen yet this run: fetched once its folder is looked at.
+                        None => unknown = true,
+                    }
+                }
+            }
+            let within: std::collections::BTreeSet<String> =
+                files.iter().map(|f| f.drivewsid.clone()).collect();
+            me.cache.set_kept(|k| {
+                if unknown {
+                    k.within.extend(within);
+                } else {
+                    k.within = within;
+                }
+            });
+            for file in files.into_iter().chain(alone) {
+                if me.cache.whole(&file) {
+                    continue;
+                }
+                let (cache, remote) = (Arc::clone(&me.cache), Arc::clone(&me.remote));
+                let _ = me
+                    .rt
+                    .block_on(async move { cache.fetch_whole(remote.as_ref(), &file).await });
+            }
+            me.keeping.store(false, Ordering::SeqCst);
+            if !(me.again.swap(false, Ordering::SeqCst) && !me.keeping.swap(true, Ordering::SeqCst))
+            {
+                break;
+            }
+        });
+    }
+
     /// Whether a folder was asked of Apple within `FRESH`; if not, it is marked asked now (so
     /// many looks at once ask once).
     fn stale(&self, folder: &str) -> bool {
@@ -264,13 +433,28 @@ impl Inner {
 
     /// A folder looked at: shown from what is stored, and asked of Apple behind that when its
     /// listing is older than `FRESH` — a file saved on the phone is there on the next look.
-    fn revalidate(&self, folder: &str) {
-        if self.stale(folder) {
-            let (remote, id) = (Arc::clone(&self.remote), folder.to_string());
-            self.rt.spawn(async move {
+    fn revalidate(me: &Arc<Self>, folder: &str) {
+        if me.stale(folder) {
+            let (remote, id) = (Arc::clone(&me.remote), folder.to_string());
+            // A kept folder walked again after: what was added on another device is kept too.
+            let kept = me.cache.kept().chosen.contains(folder)
+                || me.item_by_id(folder).is_some_and(|f| me.kept_under(&f));
+            let again = Arc::clone(me);
+            me.rt.spawn(async move {
                 let _ = tokio::time::timeout(LIST_WAIT, remote.list(&id)).await;
+                if kept {
+                    Self::settle_kept(&again);
+                }
             });
         }
+    }
+
+    fn item_by_id(&self, id: &str) -> Option<DriveItem> {
+        let inodes = self
+            .inodes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inodes.ino_of(id).and_then(|i| inodes.item(i)).cloned()
     }
 
     fn relist(&self, folder: &str) {
@@ -875,7 +1059,7 @@ impl Filesystem for DriveFs {
         // and Apple's first answer can take seconds.
         if matches!(found, Err(Errno::ENOENT)) {
             if let Some(folder) = inner.item(parent.0) {
-                inner.revalidate(&folder.drivewsid);
+                Inner::revalidate(inner, &folder.drivewsid);
             }
         }
         match found {
@@ -960,7 +1144,7 @@ impl Filesystem for DriveFs {
         if offset == 0 {
             if let Some(folder) = inner.item(ino.0) {
                 inner.fill_thumbnails(&folder, &children);
-                inner.revalidate(&folder.drivewsid);
+                Inner::revalidate(inner, &folder.drivewsid);
             }
         }
         let parent = inner
@@ -1370,6 +1554,87 @@ impl Filesystem for DriveFs {
         }
     }
 
+    /// `user.quince.keep`: "1" on a file or folder kept on this computer (chosen, or inside a
+    /// chosen folder); no such attribute otherwise. The only attribute these folders keep.
+    fn getxattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, size: u32, reply: ReplyXattr) {
+        let inner = &self.0;
+        let Some(item) = inner.item(ino.0) else {
+            return reply.error(Errno::ENOENT);
+        };
+        if name != OsStr::new(KEEP_ATTR) || !inner.kept_under(&item) {
+            return reply.error(Errno::NO_XATTR);
+        }
+        match size {
+            0 => reply.size(1),
+            n if n < 1 => reply.error(Errno::ERANGE),
+            _ => reply.data(b"1"),
+        }
+    }
+
+    fn listxattr(&self, _req: &Request, ino: INodeNo, size: u32, reply: ReplyXattr) {
+        let inner = &self.0;
+        let Some(item) = inner.item(ino.0) else {
+            return reply.error(Errno::ENOENT);
+        };
+        let names: &[u8] = if inner.kept_under(&item) {
+            b"user.quince.keep\0"
+        } else {
+            b""
+        };
+        let len = u32::try_from(names.len()).unwrap_or(u32::MAX);
+        if size == 0 {
+            reply.size(len)
+        } else if size < len {
+            reply.error(Errno::ERANGE)
+        } else {
+            reply.data(names)
+        }
+    }
+
+    /// Kept on this computer (any value but "0"), or let go of ("0"), as the window's Keep on
+    /// This Computer does.
+    fn setxattr(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        name: &OsStr,
+        value: &[u8],
+        _flags: i32,
+        _position: u32,
+        reply: ReplyEmpty,
+    ) {
+        let inner = &self.0;
+        if name != OsStr::new(KEEP_ATTR) {
+            return reply.error(Errno::ENOTSUP);
+        }
+        // Only what the folder can fetch is kept: a file still being written here is already
+        // on this computer, and the Photos folder reads from the app's own photo cache.
+        if inner.add_only || inner.read_only || inner.writes.is_none() {
+            return reply.error(Errno::ENOTSUP);
+        }
+        let Some(item) = inner.item(ino.0) else {
+            return reply.error(Errno::ENOENT);
+        };
+        if item.drivewsid.starts_with("LOCAL::") {
+            return reply.error(Errno::ENOTSUP);
+        }
+        Inner::keep(inner, &item.drivewsid, value != b"0");
+        reply.ok();
+    }
+
+    fn removexattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let inner = &self.0;
+        let Some(item) = inner.item(ino.0) else {
+            return reply.error(Errno::ENOENT);
+        };
+        // Only what was chosen itself can be let go of; a file kept by its folder stays kept.
+        if name != OsStr::new(KEEP_ATTR) || !inner.cache.kept().chosen.contains(&item.drivewsid) {
+            return reply.error(Errno::NO_XATTR);
+        }
+        Inner::keep(inner, &item.drivewsid, false);
+        reply.ok();
+    }
+
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
         let inner = &self.0;
         // The account's own storage, asked at most once a minute: a file manager checks there
@@ -1436,5 +1701,10 @@ pub fn mount(fs: DriveFs, at: &Path) -> std::io::Result<fuser::BackgroundSession
         MountOption::DefaultPermissions,
     ];
     config.n_threads = Some(4);
-    fuser::spawn_mount(fs, at, &config)
+    let inner = Arc::clone(&fs.0);
+    let session = fuser::spawn_mount(fs, at, &config)?;
+    // What was kept here before is made whole again, behind (a file may have changed on
+    // another device since).
+    Inner::settle_kept(&inner);
+    Ok(session)
 }

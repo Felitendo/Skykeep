@@ -784,6 +784,27 @@ export function DriveView() {
    * seconds later — so a press seemed to do nothing, and then a folder appeared from nowhere.
    */
   const [pending, setPending] = useState<{ key: string; folder: string; name: string; doing: string }[]>([]);
+  // What is kept on this computer — null while the iCloud Drive folder is off.
+  const [kept, setKept] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    api.driveKept().then((k) => setKept(k ? new Set(k) : null), () => setKept(null));
+  }, [here.id]);
+  /** Kept or let go of at once on screen; put back with the reason if it cannot be. */
+  const keep = async (item: DriveItem, on: boolean) => {
+    const was = kept;
+    setKept((k) => {
+      const next = new Set(k ?? []);
+      if (on) next.add(item.drivewsid);
+      else next.delete(item.drivewsid);
+      return next;
+    });
+    try {
+      setKept(new Set(await api.driveKeep(item.drivewsid, on)));
+    } catch (e) {
+      setKept(was);
+      setError(messageOf(e));
+    }
+  };
   const settle = (key: string) => setPending((p) => p.filter((x) => !x.key.startsWith(key)));
   const writingRef = useRef(false);
   writingRef.current = busyGuid !== null || renaming !== null || pending.length > 0;
@@ -1319,6 +1340,18 @@ export function DriveView() {
           at={menu}
           onClose={() => setMenu(null)}
           entries={[
+            // Keep on This Computer, as Finder's Keep Downloaded: only where the iCloud Drive
+            // folder is up, which is where a kept file lives.
+            ...(kept
+              ? [
+                  {
+                    label: "Keep on This Computer",
+                    checked: kept.has(menu.item.drivewsid),
+                    run: () => void keep(menu.item, !kept.has(menu.item.drivewsid)),
+                  },
+                  null,
+                ]
+              : []),
             { label: isContainer(menu.item) ? "Open" : "Download a Copy", run: () => (isContainer(menu.item) ? enter(menu.item) : void download(menu.item)) },
             { label: "Get Info", run: () => setInfo(menu.item) },
             null,

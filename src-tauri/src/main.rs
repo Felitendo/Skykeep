@@ -4267,6 +4267,8 @@ fn main() {
             auth_sign_out,
             account_unsent,
             login::login_item_status,
+            mount::drive_kept,
+            mount::drive_keep,
             login::login_item_set,
             account_services,
             account_info,

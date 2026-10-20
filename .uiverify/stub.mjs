@@ -631,6 +631,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_send_sms":       return null;
         case "auth_submit_sms_code": return null;
         case "auth_sign_out":    sessionStorage.setItem("__signedOut", JSON.stringify(args)); return null;
+        case "drive_kept": return window.__driveFolder?.on ? [...(window.__kept ??= [])] : null;
+        case "drive_keep":
+          if (!window.__driveFolder?.on) throw "Turn on the iCloud Drive folder in Settings to keep files on this computer.";
+          window.__kept = (window.__kept ??= []).filter((k) => k !== args.drivewsid).concat(args.on ? [args.drivewsid] : []);
+          return [...window.__kept];
         case "login_item_status": return { on: false, command: "\"/usr/bin/quince-app\" --background", honoured: true, ...(window.__login ?? {}) };
         case "login_item_set":
           if (window.__loginRefuse) throw window.__loginRefuse;
