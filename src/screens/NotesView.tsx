@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePending } from "../lib/pending";
 import { Notice } from "../components/Notice";
-import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
+import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
+import { save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { editorDate, groupNotes, listDate, mergeEdits, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
 import { RowMenu } from "../components/RowMenu";
@@ -690,6 +691,29 @@ export function NotesView() {
     }
   }, [open, body, runs, formatSafe]);
 
+  /** The note as it is on screen, typing not yet sent included, saved as a Markdown file. */
+  const exportNote = async () => {
+    if (!open || body === null) return;
+    // Read off the editor itself: the very text on screen, with its formatting.
+    const shown = editorRef.current?.current();
+    const text = shown?.text ?? draft ?? body;
+    const set = shown?.runs ?? runs ?? [];
+    const name = (text.split("\n")[0].trim() || "Note").replace(/[\\/:*?"<>|]/g, "-").slice(0, 80);
+    let path: string | null;
+    try {
+      path = await saveFileDialog({ defaultPath: `${name}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
+    } catch (e) {
+      setError(messageOf(e));
+      return;
+    }
+    if (!path) return;
+    try {
+      await api.noteExportMarkdown(text, set, path);
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  };
+
   const leave = () => {
     editorRef.current?.flushChange();
     void (composingRef.current ? commitComposing() : flush());
@@ -997,6 +1021,17 @@ export function NotesView() {
                       .map((f) => ({ value: f.guid, label: f.title })),
                   ]}
                 />}
+                {!inTrash && !open.locked && (
+                  <button
+                    className="notes-icon"
+                    aria-label="Export as Markdown"
+                    title="Export as Markdown"
+                    onClick={() => void exportNote()}
+                    disabled={body === null}
+                  >
+                    <Share size={17} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                )}
                 {!inTrash && (
                   <button
                     className="notes-icon"

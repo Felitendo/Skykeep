@@ -322,6 +322,8 @@ export type EditorHandle = {
   focus: () => void;
   /** Hand over any change not yet reported, now. */
   flushChange: () => void;
+  /** What the editor holds this moment: its text and how it is set. */
+  current: () => { text: string; runs: Run[] } | null;
 };
 
 type Props = {
@@ -677,6 +679,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     flushChange: () => {
       if (later.current !== null) report();
     },
+    current: () => (view.current ? fromDoc(view.current.state.doc) : null),
   }));
 
   const [cellMenu, setCellMenu] = useState<CellMenu | null>(null);

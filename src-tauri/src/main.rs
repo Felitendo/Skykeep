@@ -1921,6 +1921,21 @@ async fn note_body(guid: String, data: State<'_, Data>) -> UiResult<Option<Strin
     library.note_body(&guid).map_err(|e| e.to_string())
 }
 
+/// A note written out as Markdown at `path` (chosen in the save dialog): its text as it is on
+/// screen, typing not yet sent included, set as it is in Notes — headings, lists,
+/// checklists, code, quotes, bold, italic, links.
+#[tauri::command]
+async fn note_export_markdown(
+    body: String,
+    runs: Vec<quince_icloud::ckdocument::Run>,
+    path: String,
+) -> UiResult<()> {
+    let text = quince_icloud::markdown::note_to_markdown(&body, &runs);
+    tokio::fs::write(&path, text)
+        .await
+        .map_err(|e| format!("Could not save it there: {e}"))
+}
+
 /// Set one paragraph of a note: `style` from the Aa menu, or `checked` for a checklist tick.
 #[tauri::command]
 async fn note_paragraph(
@@ -4332,6 +4347,7 @@ fn main() {
             note_folder_rename,
             note_folder_delete,
             note_body,
+            note_export_markdown,
             note_runs,
             note_table,
             note_table_set_cell,

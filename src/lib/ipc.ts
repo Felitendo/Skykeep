@@ -239,6 +239,8 @@ export const api = {
    * of thousands slow.
    */
   noteBody: (guid: string) => invoke<string | null>("note_body", { guid }),
+  noteExportMarkdown: (body: string, runs: unknown[], path: string) =>
+    invoke<void>("note_export_markdown", { body, runs, path }),
   /** Answers with the text Apple now holds — ours, or ours combined with another device's. */
   noteSave: (
     guid: string,

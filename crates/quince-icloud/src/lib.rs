@@ -19,6 +19,7 @@ pub mod ckdocument;
 pub mod cloudkit;
 pub mod contacts;
 pub mod drive;
+pub mod markdown;
 pub mod mergeable;
 pub mod note_media;
 pub mod notes;

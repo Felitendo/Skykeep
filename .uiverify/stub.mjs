@@ -555,6 +555,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "photo_video_turn": (window.__turnAsks ??= []).push(args); return window.__turn ?? [1, 0, 0, 1];
         case "contacts_import": (window.__imports ??= []).push(args); return window.__importAnswer ?? [2, 0, 0];
         case "plugin:dialog|open": return window.__pick ?? null;
+        case "plugin:dialog|save": window.__saveAsked = args; return window.__savePath ?? null;
+        case "note_export_markdown": (window.__exported ??= []).push(args); return null;
         case "contact_lists": return !contactsFixture ? [] : (window.__lists ??= [
           { guid: "L1", name: "Family", members: ["c2"], etag: "e1" },
         ]).map((l) => ({ ...l, members: [...l.members] }));
