@@ -1021,6 +1021,12 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
         } else {
             without_field(&p, 4)?
         };
+        // A block quote line, or not.
+        p = if para.quote {
+            set_varint_field(&p, 8, 1)?
+        } else {
+            without_field(&p, 8)?
+        };
         // Where a numbered list starts, on its line only, as Notes keeps it.
         p = match para.start {
             Some(n) if para.style == Some(102) && n != 1 => set_varint_field(&p, 7, n)?,
@@ -1782,6 +1788,10 @@ pub struct Run {
     /// 5 blue. Measured on a note coloured on a phone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emphasis: Option<u64>,
+    /// A block quote line, paragraph field 8 (Format › Block Quote; measured on a note quoted
+    /// on a phone: 1 on every quoted line).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quote: bool,
 }
 
 /// Every run of a note document, in order. Empty for anything that is not one.
@@ -1842,6 +1852,7 @@ fn parse_paragraph(bytes: &[u8], run: &mut Run) -> Option<()> {
             (1, WIRE_VARINT) => run.style = Some(reader.varint()?),
             (4, WIRE_VARINT) => run.indent = reader.varint()?,
             (7, WIRE_VARINT) => run.start = Some(reader.varint()?).filter(|&n| n != 1),
+            (8, WIRE_VARINT) => run.quote = reader.varint()? != 0,
             (5, WIRE_LEN) => {
                 let n = usize::try_from(reader.varint()?).ok()?;
                 let mut item = Reader::new(reader.take(n)?);

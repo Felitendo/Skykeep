@@ -521,4 +521,10 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE photos ADD COLUMN live_size INTEGER;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // Notes read once more from the start, so every stored note knows its block quotes
+    // (paragraph field 8): a note stored before would hand back its quoted lines unquoted on
+    // its next edit, and the quotes would be lost at Apple.
+    r#"
+    UPDATE sync_state SET token = NULL, last_full_at = NULL WHERE service = 'notes';
+    "#,
 ];

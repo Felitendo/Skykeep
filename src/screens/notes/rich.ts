@@ -45,6 +45,8 @@ export const schema = new Schema({
         checked: { default: null as boolean | null },
         /** A numbered list's first number, when not 1. */
         start: { default: null as number | null },
+        /** A block quote line. */
+        quote: { default: false },
       },
       parseDOM: [{ tag: "p" }],
       toDOM: (node) => [
@@ -53,6 +55,7 @@ export const schema = new Schema({
           class: "nf-p",
           "data-style": node.attrs.style === null ? "none" : String(node.attrs.style),
           ...(node.attrs.checked ? { "data-checked": "true" } : {}),
+          ...(node.attrs.quote ? { "data-quote": "true" } : {}),
           style: [
             node.attrs.indent ? `--indent: ${node.attrs.indent}` : "",
             // CSS sets a counter after counting the line, so this line shows the start.
@@ -176,6 +179,7 @@ export function toDoc(text: string, runs: Run[] | null): PMNode {
           indent: own?.indent ?? 0,
           checked: own?.style === STYLE.checklist ? Boolean(own.checked) : null,
           start: own?.style === STYLE.numbered ? (own.start ?? null) : null,
+          quote: Boolean(own?.quote),
         },
         inline,
       ),
@@ -190,7 +194,7 @@ const same = (a: Run, b: Run) =>
   a.style === b.style && a.indent === b.indent && a.checked === b.checked && a.bold === b.bold &&
   a.italic === b.italic && a.underline === b.underline && a.strike === b.strike && a.link === b.link &&
   (a.attachment ?? null) === (b.attachment ?? null) && (a.emphasis ?? null) === (b.emphasis ?? null) &&
-  (a.start ?? null) === (b.start ?? null);
+  (a.start ?? null) === (b.start ?? null) && Boolean(a.quote) === Boolean(b.quote);
 
 /** A document as Apple's text and runs. */
 export function fromDoc(doc: PMNode): { text: string; runs: Run[] } {
@@ -209,6 +213,7 @@ export function fromDoc(doc: PMNode): { text: string; runs: Run[] } {
       indent: para.attrs.indent as number,
       checked: para.attrs.style === STYLE.checklist ? Boolean(para.attrs.checked) : null,
       ...(para.attrs.style === STYLE.numbered && para.attrs.start ? { start: para.attrs.start as number } : {}),
+      ...(para.attrs.quote ? { quote: true } : {}),
     };
     const base: Run = { ...plain(0), ...p };
     para.forEach((child) => {

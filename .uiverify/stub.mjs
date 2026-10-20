@@ -247,6 +247,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
             return [plain(5), { ...plain(1), attachment: "M1" }, plain(1), { ...plain(1), attachment: "M2" }, plain(4)];
           }
+          if (args.guid === "nL") {
+            // "Links", then the address line, then the last line quoted (Block Quote, field 8).
+            const body = (noteList.find((n) => n.guid === "nL") ?? {}).body ?? "";
+            const lines = body.split("\n");
+            return lines.map((l, i) => ({ length: l.length + (i < lines.length - 1 ? 1 : 0), style: i === 0 ? 0 : null, indent: 0,
+              checked: null, bold: false, italic: false, underline: false, strike: false, link: null, ...(i === 2 ? { quote: true } : {}) }));
+          }
           if (args.guid === "nT") {
             // "Groceries", a table on its own line, then a last line: the table's run names it.
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });

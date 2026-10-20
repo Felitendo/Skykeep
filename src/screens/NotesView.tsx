@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePending } from "../lib/pending";
 import { Notice } from "../components/Notice";
 import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, Pin, PinOff, SquarePen, Trash2 } from "lucide-react";
@@ -42,8 +42,54 @@ const DEFAULT_FOLDER = "DefaultFolder-CloudKit";
  *  what was stored before it did. */
 const wordsOnly = (text: string) => text.replace(/[\uFFFC\u2028]/g, " ").replace(/\s+/g, " ").trim();
 
+const FOLDERS_KEY = "quince.notes.foldersWidth";
+const clampFolders = (w: number) => Math.round(Math.max(160, Math.min(420, w)));
+function keptFoldersWidth(): number | null {
+  try {
+    const n = Number(window.localStorage.getItem(FOLDERS_KEY));
+    return n > 0 ? clampFolders(n) : null;
+  } catch {
+    return null;
+  }
+}
+function keepFoldersWidth(w: number) {
+  try {
+    window.localStorage.setItem(FOLDERS_KEY, String(w));
+  } catch {
+    /* a width not kept is only a width not kept */
+  }
+}
+/** The width that shows every folder's whole name: the widest row's name as it would run
+ * untruncated, with the row's icon, count and padding around it. */
+function fitFolders(aside: HTMLElement | null): number | null {
+  if (!aside) return null;
+  let widest = 0;
+  aside.querySelectorAll<HTMLElement>(".notes-folder").forEach((row) => {
+    const name = row.querySelector<HTMLElement>(".notes-folder-name");
+    if (!name) return;
+    const others = row.scrollWidth - name.clientWidth;
+    widest = Math.max(widest, others + name.scrollWidth);
+  });
+  if (!widest) return null;
+  const pad = parseFloat(getComputedStyle(aside).paddingLeft) + parseFloat(getComputedStyle(aside).paddingRight);
+  return clampFolders(widest + pad + 2);
+}
+
 export function NotesView() {
+  // The folders' column: as wide as it was left, or — the first time — as wide as the longest
+  // folder name needs, within reason.
+  const notesRef = useRef<HTMLDivElement | null>(null);
+  const foldersRef = useRef<HTMLElement | null>(null);
+  const [foldersWidth, setFoldersWidth] = useState<number | null>(keptFoldersWidth);
+
   const [folders, setFolders] = useState<NoteFolder[]>([]);
+  const kept = useRef(foldersWidth !== null);
+  useLayoutEffect(() => {
+    if (kept.current) return;
+    const fit = fitFolders(foldersRef.current);
+    // Never narrower than the column was made, and never more than a third of a wide window.
+    if (fit) setFoldersWidth(Math.max(208, Math.min(fit, 320)));
+  }, [folders]);
   const [folderMenu, setFolderMenu] = useState<{ folder: NoteFolder; x: number; y: number; alignRight: boolean } | null>(null);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [folder, setFolder] = useState<string>(ALL);
@@ -625,9 +671,45 @@ export function NotesView() {
   const saveFailed = error !== null;
 
   return (
-    <div className={`notes${detail ? " is-detail" : ""}`}>
+    <div
+      className={`notes${detail ? " is-detail" : ""}`}
+      ref={notesRef}
+      style={foldersWidth ? ({ "--folders-w": `${foldersWidth}px` } as React.CSSProperties) : undefined}
+    >
       <NotePicture />
-      <aside className="notes-folders" aria-label="Note folders">
+      <div
+        className="notes-folders-edge"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Folder column width"
+        title="Drag to resize. Double-click to fit the names."
+        onPointerDown={(e) => {
+          const box = notesRef.current?.getBoundingClientRect();
+          if (!box) return;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          const move = (m: PointerEvent) => setFoldersWidth(clampFolders(m.clientX - box.left));
+          const up = () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+            kept.current = true;
+            setFoldersWidth((w) => {
+              if (w) keepFoldersWidth(w);
+              return w;
+            });
+          };
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", up);
+        }}
+        onDoubleClick={() => {
+          const w = fitFolders(foldersRef.current);
+          if (w) {
+            kept.current = true;
+            setFoldersWidth(w);
+            keepFoldersWidth(w);
+          }
+        }}
+      />
+      <aside className="notes-folders" aria-label="Note folders" ref={foldersRef}>
         <p className="notes-side-heading">iCloud</p>
         <button className="notes-folder" aria-current={folder === ALL} onClick={() => setFolder(ALL)}>
           <FolderOpen className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
@@ -675,7 +757,7 @@ export function NotesView() {
                   style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
                 >
                   <Folder className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
-                  <span className="notes-folder-name">{f.title}</span>
+                  <span className="notes-folder-name" title={f.title}>{f.title}</span>
                   <span className="notes-folder-count">{counts.per.get(f.guid) || ""}</span>
                 </button>
                 {own && (
@@ -857,6 +939,7 @@ export function NotesView() {
                         onClose={() => setFormatAt(null)}
                         onStyle={(style) => editorRef.current?.setStyle(style)}
                         onMark={(mark) => editorRef.current?.toggleMark(mark)}
+                        onQuote={() => editorRef.current?.toggleQuote()}
                       />
                     )}
                   </>

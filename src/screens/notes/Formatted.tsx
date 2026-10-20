@@ -25,6 +25,8 @@ export type Run = {
   emphasis?: number | null;
   /** The attachment this run's character stands for — a table, a picture — by id. */
   attachment?: string | null;
+  /** A block quote line (Format › Block Quote). */
+  quote?: boolean;
 };
 
 /** Apple's paragraph styles. */
@@ -164,7 +166,7 @@ export function FormattedBody({
         const style = p.run?.style ?? STYLE.body;
         number = style === STYLE.numbered ? (p.run?.start ?? number + 1) : 0;
         const indent = { paddingInlineStart: `${(p.run?.indent ?? 0) * 1.5}em` };
-        const at = { "data-start": p.start } as Record<string, number>;
+        const at = { "data-start": p.start, ...(p.run?.quote ? { "data-quote": "true" } : {}) } as Record<string, number | string>;
         const content = p.spans.length ? p.spans.map((s, j) => <Inline key={j} span={s} />) : <br />;
         if (style === STYLE.title) return <h2 key={i} className="nf-title" style={indent} {...at}>{content}</h2>;
         if (style === STYLE.heading) return <h3 key={i} className="nf-heading" style={indent} {...at}>{content}</h3>;

@@ -6,7 +6,14 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 208px minmax(250px, 320px) minmax(0, 1fr);
+  grid-template-columns: var(--folders-w, 208px) minmax(250px, 320px) minmax(0, 1fr);
+  position: relative;
+}
+/* The folders' edge, dragged to make them wider or narrower, as on the Mac; a double-click
+   fits the longest name. Over the hairline, wider than it, so it is easy to catch. */
+.notes-folders-edge {
+  position: absolute; top: 0; bottom: 0; left: calc(var(--folders-w, 208px) - 4px); width: 8px;
+  cursor: col-resize; z-index: 2; touch-action: none;
 }
 
 /* ---- folders -------------------------------------------------------------------- */
@@ -455,3 +462,16 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-picture-close { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; border: 0;
   background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); cursor: pointer; flex: none; }
 .nf-picture-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* A block quote, as Notes draws one: a grey bar down the left of every quoted line, one
+   unbroken bar down a run of them; a quoted list keeps its marks, inside the bar. */
+.note-rich .nf-p[data-quote="true"], .note-formatted [data-quote="true"] {
+  border-inline-start: 3px solid color-mix(in srgb, var(--text) 26%, transparent);
+}
+.note-rich .nf-p[data-quote="true"]:not([data-style="100"], [data-style="101"], [data-style="102"], [data-style="103"]),
+.note-formatted .nf-body[data-quote="true"] {
+  padding-inline-start: calc(11px + var(--indent, 0) * 1.5em);
+}
+.fp-extra { border-top: 1px solid var(--separator); margin-top: 6px; padding-top: 6px; }
+.fp-quote-bar { width: 3px; height: 16px; border-radius: 2px; margin: 0 6px 0 4px;
+  background: color-mix(in srgb, var(--text) 30%, transparent); }

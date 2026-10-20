@@ -35,12 +35,14 @@ export function FormatPanel({
   onClose,
   onStyle,
   onMark,
+  onQuote,
 }: {
   at: { x: number; y: number };
   status: EditorStatus | null;
   onClose: () => void;
   onStyle: (style: number | null) => void;
   onMark: (mark: "bold" | "italic" | "underline" | "strike") => void;
+  onQuote: () => void;
 }) {
   const box = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ left: at.x, top: at.y });
@@ -117,6 +119,24 @@ export function FormatPanel({
               <span>{label}</span>
             </button>
           ))}
+        </div>
+        {/* Not a style but a setting on top of one, as Notes keeps it: a quoted heading or
+            list stays a heading or a list. */}
+        <div className="fp-styles fp-extra" role="group" aria-label="Block quote">
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={Boolean(status?.quote)}
+            className="fp-style fp-quote"
+            onClick={() => {
+              onQuote();
+              onClose();
+            }}
+          >
+            <span className="fp-check" aria-hidden="true">{status?.quote && <Check size={15} strokeWidth={2} />}</span>
+            <span className="fp-quote-bar" aria-hidden="true" />
+            <span>Block Quote</span>
+          </button>
         </div>
       </div>
     </Portal>

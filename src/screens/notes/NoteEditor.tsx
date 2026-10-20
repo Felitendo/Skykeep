@@ -277,9 +277,12 @@ export type EditorStatus = {
   underline: boolean;
   strike: boolean;
   checklist: boolean;
+  quote: boolean;
 };
 
 export type EditorHandle = {
+  /** Block Quote on the lines the selection touches, or off. */
+  toggleQuote: () => void;
   /** Set every line the selection touches to one of Notes' styles. */
   setStyle: (style: number | null) => void;
   /** Lines to checklist items, or — when they all are — back to plain lines. */
@@ -333,6 +336,17 @@ function restyle(style: number | null, tick?: (was: PMNode) => boolean | null): 
   };
 }
 
+/** Block Quote on every line the selection touches, or — when they all are — off, as
+ * Format › Block Quote (Command-') does in Notes. */
+const toggleQuote: Command = (state, dispatch) => {
+  const lines = linesIn(state);
+  const on = !lines.every(({ node }) => node.attrs.quote);
+  const tr = state.tr;
+  for (const { node, pos } of lines) tr.setNodeMarkup(pos, undefined, { ...node.attrs, quote: on });
+  dispatch?.(tr.scrollIntoView());
+  return true;
+};
+
 /** Indent or outdent the lines in a list, as Tab and Command-] do. */
 function shift(by: 1 | -1, onlyLists: boolean): Command {
   return (state, dispatch) => {
@@ -359,6 +373,10 @@ const enter: Command = (state, dispatch) => {
   const p = parentOf(state);
   if (inList(state) && p.content.size === 0 && state.selection.empty) {
     return restyle(null)(state, dispatch);
+  }
+  // Return on an empty quoted line ends the quote, as it ends a list.
+  if (p.attrs.quote && p.content.size === 0 && state.selection.empty) {
+    return toggleQuote(state, dispatch);
   }
   return splitBlockAs((node, atEnd) => {
     const style = node.attrs.style as number | null;
@@ -406,6 +424,7 @@ function statusOf(state: EditorState): EditorStatus {
     underline: has("underline"),
     strike: has("strike"),
     checklist: p.attrs.style === STYLE.checklist,
+    quote: Boolean(p.attrs.quote),
   };
 }
 
@@ -461,6 +480,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           "Mod-b": toggleMark(schema.marks.bold),
           "Mod-i": toggleMark(schema.marks.italic),
           "Mod-u": toggleMark(schema.marks.underline),
+          "Mod-'": toggleQuote,
           "Mod-]": shift(1, false),
           "Mod-[": shift(-1, false),
           Tab: tab,
@@ -594,6 +614,12 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       const v = view.current;
       if (!v) return;
       toggleChecklistCmd(v.state, v.dispatch);
+      v.focus();
+    },
+    toggleQuote: () => {
+      const v = view.current;
+      if (!v) return;
+      toggleQuote(v.state, v.dispatch);
       v.focus();
     },
     toggleMark: (mark) => {
