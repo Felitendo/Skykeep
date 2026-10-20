@@ -3743,6 +3743,7 @@ dependencies = [
  "quince-vfs",
  "reqwest 0.12.28",
  "rpassword",
+ "rusqlite",
  "serde_json",
  "sha1",
  "sha2",

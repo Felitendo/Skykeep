@@ -349,6 +349,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
             Some(root) => {
                 let _one = crate::PHOTOS_PASS.lock().await;
                 let since = token(data, quince_icloud::photos::SERVICE).await;
+                let full = since.is_none();
                 let fetched = quince_icloud::photos::fetch(
                     &ctx.http,
                     root,
@@ -362,8 +363,13 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     data,
                     ctx.account.as_deref(),
                     fetched,
-                    |library, f| {
+                    move |library, f| {
                         let (_, links) = quince_icloud::photos::apply(library, f)?;
+                        // Marked, or every pass after walked the whole library again: the
+                        // daily full read is due when none was ever recorded.
+                        if full {
+                            library.mark_full_sync(quince_icloud::photos::SERVICE)?;
+                        }
                         crate::photos::remember(links);
                         let n = library.photos(quince_core::photos::View::Library)?.len();
                         Ok(format!("{n} photo{}", plural(n)))
