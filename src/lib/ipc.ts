@@ -90,7 +90,8 @@ export const api = {
   photosList: (view: PhotoView) => invoke<Photo[]>("photos_list", { view }),
   photosCounts: () => invoke<[PhotoView, number][]>("photos_counts"),
   /** The albums the person made, each with how many photos it holds. */
-  photosAlbums: () => invoke<[PhotoAlbum, number][]>("photos_albums"),
+  /** Each album, how many it shows, and its cover — the first photo it shows. */
+  photosAlbums: () => invoke<[PhotoAlbum, number, string | null][]>("photos_albums"),
   photosInAlbum: (album: string) => invoke<Photo[]>("photos_in_album", { album }),
   /** A video (or a Live Photo's moving part) opened in this computer's own player. */
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),

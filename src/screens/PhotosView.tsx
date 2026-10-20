@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -258,7 +258,25 @@ export function PhotosView() {
   const [view, setView] = useState<PhotoView>("library");
   /** An album open instead of a view. */
   const [album, setAlbum] = useState<PhotoAlbum | null>(null);
-  const [albums, setAlbums] = useState<[PhotoAlbum, number][]>([]);
+  const [albums, setAlbums] = useState<[PhotoAlbum, number, (string | null)?][]>([]);
+  // Which of the sidebar's branches are open — Albums and Media Types — kept on this machine.
+  const [branches, setBranches] = useState<{ albums: boolean; media: boolean }>(() => {
+    try {
+      return { albums: true, media: true, ...JSON.parse(window.localStorage.getItem("quince.photos.branches") ?? "{}") };
+    } catch {
+      return { albums: true, media: true };
+    }
+  });
+  const branch = (which: "albums" | "media") =>
+    setBranches((b) => {
+      const next = { ...b, [which]: !b[which] };
+      try {
+        window.localStorage.setItem("quince.photos.branches", JSON.stringify(next));
+      } catch {
+        // For this run only.
+      }
+      return next;
+    });
   /** The view's photos as read; `photos`, below, is them in the order chosen to show. */
   const [raw, setPhotos] = useState<Photo[] | null>(null);
   const [counts, setCounts] = useState<Partial<Record<PhotoView, number>>>({});
@@ -1292,52 +1310,75 @@ export function PhotosView() {
       <aside className="px-side" aria-label="Photos">
         <p className="px-side-heading">Photos</p>
         {VIEWS.map(source)}
-        <p className="px-side-heading px-side-gap">Media Types</p>
-        {MEDIA.map(source)}
-        <div className="px-side-row">
-          <p className="px-side-heading">Albums</p>
-          <button className="px-side-add" aria-label="New Album" title="New Album" onClick={() => setNaming({ id: null, then: [], draft: "" })}>
+        {/* Collections, as icloud.com lists them: Albums and Media Types open to what they
+            hold, then Rated, Hidden and Recently Deleted. */}
+        <p className="px-side-heading px-side-gap">Collections</p>
+        <div className="px-parent-row">
+          <button className="px-source px-parent" aria-expanded={branches.albums} onClick={() => branch("albums")}>
+            <ChevronRight className="px-chevron" size={12} strokeWidth={2.4} aria-hidden="true" />
+            <AlbumGlyph />
+            <span className="px-label">Albums</span>
+          </button>
+          <button className="px-side-add" aria-label="New Album" title="New Album" onClick={() => {
+            if (!branches.albums) branch("albums");
+            setNaming({ id: null, then: [], draft: "" });
+          }}>
             <Plus size={14} strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
-        <div className="px-albums" role="group" aria-label="Albums">
-        {naming?.id === null && nameField}
-        {albums.map(([a, n]) =>
-          naming?.id === a.id ? (
-            <span key={a.id}>{nameField}</span>
-          ) : (
-            <button
-              key={a.id}
-              className="px-source"
-              aria-current={album?.id === a.id}
-              onClick={() => {
-                setAlbum(a);
-                setOpen(null);
-              }}
-              onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
-              {...dropTarget(a)}
-              data-drop={dropOn === a.id || undefined}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                if (a.id.startsWith("new:")) return;
-                setMenu({
-                  at: { x: e.clientX, y: e.clientY, alignRight: false },
-                  entries: [
-                    { label: "Rename Album", run: () => setNaming({ id: a.id, then: [], draft: a.name }) },
-                    null,
-                    { label: "Delete Album", danger: true, run: () => void deleteAlbum(a) },
-                  ],
-                });
-              }}
-            >
-              <AlbumGlyph />
-              <span className="px-label">{a.name}</span>
-              {n ? <span className="px-count">{n}</span> : null}
-            </button>
-          ),
+        {branches.albums && (
+          <div className="px-albums px-children" role="group" aria-label="Albums">
+            {naming?.id === null && nameField}
+        {albums.map(([a, n, cover]) =>
+              naming?.id === a.id ? (
+                <span key={a.id}>{nameField}</span>
+              ) : (
+                <button
+                  key={a.id}
+                  className="px-source"
+                  aria-current={album?.id === a.id}
+                  onClick={() => {
+                    setAlbum(a);
+                    setOpen(null);
+                  }}
+                  onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
+                  {...dropTarget(a)}
+                  data-drop={dropOn === a.id || undefined}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (a.id.startsWith("new:")) return;
+                    setMenu({
+                      at: { x: e.clientX, y: e.clientY, alignRight: false },
+                      entries: [
+                        { label: "Rename Album", run: () => setNaming({ id: a.id, then: [], draft: a.name }) },
+                        null,
+                        { label: "Delete Album", danger: true, run: () => void deleteAlbum(a) },
+                      ],
+                    });
+                  }}
+                >
+                  {cover ? (
+                    <img className="px-cover" src={pictureSrc(cover, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+                  ) : (
+                    <AlbumGlyph />
+                  )}
+                  <span className="px-label">{a.name}</span>
+                  {n ? <span className="px-count">{n}</span> : null}
+                </button>
+              ),
+            )}
+          </div>
         )}
-        </div>
-        <p className="px-side-heading px-side-gap">Utilities</p>
+        <button className="px-source px-parent" aria-expanded={branches.media} onClick={() => branch("media")}>
+          <ChevronRight className="px-chevron" size={12} strokeWidth={2.4} aria-hidden="true" />
+          <Layers size={16} strokeWidth={1.8} className="px-glyph" aria-hidden="true" />
+          <span className="px-label">Media Types</span>
+        </button>
+        {branches.media && (
+          <div className="px-children" role="group" aria-label="Media Types">
+            {MEDIA.map(source)}
+          </div>
+        )}
         {UTILITIES.map(source)}
       </aside>
 

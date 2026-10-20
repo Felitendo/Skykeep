@@ -507,3 +507,15 @@
 .px-star:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .px-star:active:not(:disabled) { transform: scale(0.88); }
 .px-star:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
+
+/* ---- the sidebar's branches: Albums and Media Types open to what they hold ---------------- */
+.px-parent-row { position: relative; display: flex; align-items: center; }
+.px-parent-row .px-parent { flex: 1; min-width: 0; }
+.px-parent-row .px-side-add { position: absolute; right: 6px; }
+.px-parent { padding-left: 2px; }
+.px-chevron { flex: none; color: var(--text-3); transition: transform 180ms var(--spring-quick); }
+.px-parent[aria-expanded="true"] .px-chevron { transform: rotate(90deg); }
+.px-children { display: flex; flex-direction: column; gap: 1px; }
+.px-children .px-source, .px-children .px-naming { padding-left: 30px; }
+/* An album's cover in the sidebar, where a symbol stands for the others. */
+.px-cover { flex: none; width: 18px; height: 18px; border-radius: 4px; object-fit: cover; box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--text) 18%, transparent); }

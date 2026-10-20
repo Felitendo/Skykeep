@@ -443,13 +443,17 @@ impl Library {
         Ok(())
     }
 
-    /// Every album with how many photos it shows (deleted and hidden ones not counted), in
-    /// the order the albums are listed.
-    pub fn albums_counted(&self) -> Result<Vec<(Album, i64)>> {
+    /// Every album with how many photos it shows (deleted and hidden ones not counted) and
+    /// the first of them — its cover, as the sidebar and the albums page show it — in the
+    /// order the albums are listed.
+    pub fn albums_counted(&self) -> Result<Vec<(Album, i64, Option<String>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT a.id, a.name, a.position, a.change_tag,
                     (SELECT COUNT(*) FROM photo_album_items i JOIN photos p ON p.id = i.asset
-                      WHERE i.album = a.id AND p.deleted = 0 AND p.hidden = 0)
+                      WHERE i.album = a.id AND p.deleted = 0 AND p.hidden = 0),
+                    (SELECT i.asset FROM photo_album_items i JOIN photos p ON p.id = i.asset
+                      WHERE i.album = a.id AND p.deleted = 0 AND p.hidden = 0
+                      ORDER BY i.position, p.taken_at DESC, p.id LIMIT 1)
              FROM photo_albums a ORDER BY a.position, a.name",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -461,6 +465,7 @@ impl Library {
                     change_tag: r.get(3)?,
                 },
                 r.get(4)?,
+                r.get(5)?,
             ))
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -585,6 +590,11 @@ mod tests {
             lib.albums_counted().unwrap()[0].1,
             2,
             "an album's count is what it shows"
+        );
+        assert_eq!(
+            lib.albums_counted().unwrap()[0].2.as_deref(),
+            Some("a"),
+            "and its cover is the first it shows"
         );
         lib.forget_album_items(&[("AL".into(), "a".into())])
             .unwrap();

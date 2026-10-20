@@ -189,7 +189,7 @@ pub async fn photos_list(view: View, data: State<'_, Data>) -> UiResult<Vec<Phot
 #[tauri::command]
 pub async fn photos_albums(
     data: State<'_, Data>,
-) -> UiResult<Vec<(quince_core::photos::Album, usize)>> {
+) -> UiResult<Vec<(quince_core::photos::Album, usize, Option<String>)>> {
     let counted = data
         .0
         .lock()
@@ -198,7 +198,7 @@ pub async fn photos_albums(
         .map_err(|e| e.to_string())?;
     Ok(counted
         .into_iter()
-        .map(|(a, n)| (a, usize::try_from(n).unwrap_or(0)))
+        .map(|(a, n, cover)| (a, usize::try_from(n).unwrap_or(0), cover))
         .collect())
 }
 
