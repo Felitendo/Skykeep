@@ -8,9 +8,11 @@ import "./styles/calendar.css";
 import "./styles/notes.css";
 import "./styles/photos.css";
 import { applyTheme, storedTheme } from "./lib/theme";
+import { keepTinted } from "./lib/tint";
 
 // Before the first paint, so the window opens in the appearance chosen.
 applyTheme(storedTheme());
+keepTinted();
 
 /*
  * Every link goes the one way out: as a navigation, which the window refuses and hands to

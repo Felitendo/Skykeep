@@ -3488,6 +3488,15 @@ fn smooth_video() {
     }
 }
 
+/// The window's own colour, set to what the page paints at its edges (see src/lib/tint.ts):
+/// what shows for the frames a resize runs ahead of the page.
+#[tauri::command]
+fn window_tint(window: tauri::WebviewWindow, rgb: [u8; 3]) -> UiResult<()> {
+    window
+        .set_background_color(Some(tauri::window::Color(rgb[0], rgb[1], rgb[2], 255)))
+        .map_err(|e| e.to_string())
+}
+
 /// Whether this session runs under a tiling Wayland compositor, which manages windows itself.
 fn tiling_compositor() -> bool {
     let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
@@ -3808,6 +3817,7 @@ fn main() {
             photos::photo_play,
             photos::photos_set_flag,
             video::video_base,
+            window_tint,
             photos::photos_upload,
             photos::photos_upload_cancel,
             photos::photos_album_create,

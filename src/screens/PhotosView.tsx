@@ -25,6 +25,7 @@ import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
 import { Slideshow } from "./photos/Slideshow";
 import { useAsk } from "./photos/Ask";
+import { tintFrom } from "../lib/tint";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
 
@@ -603,6 +604,8 @@ export function PhotosView() {
     const from = origin.current;
     origin.current = null;
     const el = viewer.current;
+    // A viewer hidden as its last close ended, opened again before it went: shown again.
+    if (el) el.style.visibility = "";
     if (!from || !el || still() || typeof el.animate !== "function") return;
     // The photo's whole frame moves — the screen-sized picture and the whole one over it
     // together. Moving the one alone, the whole one (already on disk) stood full size over
@@ -610,9 +613,17 @@ export function PhotosView() {
     const img = el.querySelector<HTMLElement>(".px-pan, .px-video");
     const t = img && toTile(img, from);
     if (img && t) img.animate([{ transform: t }, { transform: "none" }], { duration: 460, easing: spring() });
-    for (const part of el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info")) {
+    for (const part of el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info, .px-strip")) {
       part.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
     }
+  }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The window takes the viewer's near-black while it is open, and the app's colour again
+  // after: a resize then never shows a lighter band beside the photo.
+  useLayoutEffect(() => {
+    if (open === null) return undefined;
+    tintFrom(viewer.current?.querySelector(".px-backdrop") ?? null);
+    return () => tintFrom(document.body);
   }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const close = useCallback(() => {
@@ -630,13 +641,27 @@ export function PhotosView() {
     }
     closing.current = true;
     const done = () => {
-      if (!closingRun.current) return;
+      const run = closingRun.current;
+      if (!run) return;
       closingRun.current = null;
       closing.current = false;
+      // Hidden in the same moment the animations end, with their last frame kept as real
+      // styles: an ended animation let WebKit draw the photo at full size for one frame
+      // before the viewer went — a whole-window flash on every close.
+      if (el) {
+        for (const a of run.anims) {
+          try {
+            a.commitStyles();
+          } catch {
+            // An element already gone has nothing to keep.
+          }
+        }
+        el.style.visibility = "hidden";
+      }
       setOpen(null);
     };
     const t = seen && img ? toTile(img, box) : null;
-    const parts = [...el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info")];
+    const parts = [...el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info, .px-strip")];
     const anims = parts.map((part) => part.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, easing: "ease-in", fill: "forwards" }));
     const last = t && img
       ? img.animate([{ transform: "none" }, { transform: t }], { duration: 340, easing: spring(), fill: "forwards" })

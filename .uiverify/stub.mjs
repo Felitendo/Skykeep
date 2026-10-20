@@ -429,6 +429,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "photo_play": (window.__plays ??= []).push(args); return null;
         case "video_base": return window.__videoBase ?? null;
+        case "window_tint": (window.__tints ??= []).push(args.rgb.join(",")); return null;
         case "photo_download": (window.__downloads ??= []).push(args); return `/home/test/Downloads/IMG_${args.id}.JPG`;
         // Each file is answered at once with where it stands; a test plays the rest in with __emit.
         case "photos_upload": {
