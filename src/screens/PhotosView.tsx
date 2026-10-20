@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -22,6 +22,7 @@ import { useSync } from "../lib/sync";
 import { Notice } from "../components/Notice";
 import { UploadTray } from "../components/UploadTray";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
+import { Slideshow } from "./photos/Slideshow";
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
 const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
@@ -245,6 +246,8 @@ export function PhotosView() {
   const [open, setOpen] = useState<number | null>(null);
   const [info, setInfo] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
+  /** A slideshow playing: what it shows, and where it begins. */
+  const [show, setShow] = useState<{ list: Photo[]; start: number } | null>(null);
   /** Photos selected in the grid, as on a Mac: a click selects, a double-click opens. */
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const anchor = useRef<number | null>(null);
@@ -809,6 +812,14 @@ export function PhotosView() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  // A slideshow of what is selected when that is more than one photo, else of the whole view
+  // from this photo on, as Photos starts one.
+  const startShow = (from: Photo) => {
+    const list = selected.length > 1 && chosen.has(from.id) ? selected : (photos ?? []);
+    setMenu(null);
+    setShow({ list, start: Math.max(0, list.findIndex((p) => p.id === from.id)) });
+  };
+
   const albumEntries = (ids: string[]): MenuEntry[] => [
     ...albums.filter(([a]) => a.id !== album?.id && !a.id.startsWith("new:")).map(([a]) => ({ label: a.name, run: () => void addTo(a, ids) })),
     ...(albums.length ? [null] : []),
@@ -838,6 +849,7 @@ export function PhotosView() {
             : [
                 { label: anyPlain ? "Favorite" : "Unfavorite", run: () => void changeAll(group, "favorite", anyPlain) },
                 null,
+                { label: "Start Slideshow", run: () => startShow(p) },
                 { label: "Add to Album", submenu: albumEntries(group.map((x) => x.id)) },
                 null,
                 view === "hidden" && !album
@@ -860,6 +872,7 @@ export function PhotosView() {
         : [
             { label: p.favorite ? "Unfavorite" : "Favorite", run: () => void change(p, "favorite", !p.favorite) },
             { label: "Download", run: () => void download(p) },
+            { label: "Start Slideshow", run: () => startShow(p) },
             null,
             { label: "Add to Album", submenu: albumEntries([p.id]) },
             null,
@@ -1391,6 +1404,9 @@ export function PhotosView() {
               )}
               </div>
               <div className="px-capsule">
+                <button className="px-cap" aria-label="Start Slideshow" title="Start Slideshow" onClick={() => startShow(shown)}>
+                  <MonitorPlay size={17} />
+                </button>
                 <button className="px-cap" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
                   <Download size={17} />
                 </button>
@@ -1486,6 +1502,7 @@ export function PhotosView() {
         </p>
       )}
       {menu && <RowMenu at={menu.at} entries={menu.entries} onClose={() => setMenu(null)} />}
+      {show && <Slideshow photos={show.list} start={show.start} onClose={() => setShow(null)} />}
       <UploadTray uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />
     </div>
   );
