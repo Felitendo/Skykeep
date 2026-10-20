@@ -7,7 +7,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -30,6 +30,10 @@ const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
   { key: "recents", label: "Recents", Icon: Clock },
   { key: "videos", label: "Videos", Icon: Video },
   { key: "screenshots", label: "Screenshots", Icon: Scan },
+];
+/** Photos' Utilities: what is kept out of the library. */
+const UTILITIES: typeof VIEWS = [
+  { key: "hidden", label: "Hidden", Icon: EyeOff },
   { key: "recentlyDeleted", label: "Recently Deleted", Icon: Trash2 },
 ];
 
@@ -57,6 +61,8 @@ const pickedWords = (list: Photo[]) => {
   const noun = videos === 0 ? "Photo" : videos === n ? "Video" : "Item";
   return `${n.toLocaleString()} ${n === 1 ? noun : `${noun}s`} Selected`;
 };
+
+type Flag = "favorite" | "deleted" | "hidden";
 
 const clock = (s: number | null) => {
   if (!s) return "";
@@ -242,6 +248,7 @@ export function PhotosView() {
       else if (e.key.toLowerCase() === "i" && !e.metaKey && !e.ctrlKey) setInfo((v) => !v);
       // As in Photos: "." favorites, Delete sends it to Recently Deleted.
       else if (e.key === "." && current && view !== "recentlyDeleted") void change(current, "favorite", !current.favorite);
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l" && current && view !== "recentlyDeleted") void change(current, "hidden", view !== "hidden");
       else if ((e.key === "Delete" || e.key === "Backspace") && current && album) void removeFrom([current]);
       else if ((e.key === "Delete" || e.key === "Backspace") && current && view !== "recentlyDeleted") void change(current, "deleted", true);
       else return;
@@ -255,8 +262,8 @@ export function PhotosView() {
    * Favorite, Delete and Recover show at once, as on the phone; Apple's answer only matters if
    * it refuses, which puts the photo back as it was and says why.
    */
-  const change = (p: Photo, flag: "favorite" | "deleted", on: boolean) => changeAll([p], flag, on);
-  const changeAll = async (list: Photo[], flag: "favorite" | "deleted", on: boolean) => {
+  const change = (p: Photo, flag: Flag, on: boolean) => changeAll([p], flag, on);
+  const changeAll = async (list: Photo[], flag: Flag, on: boolean) => {
     if (list.length === 0) return;
     const n = list.length;
     // Asked first, in icloud.com's words: a delete reaches every device.
@@ -268,9 +275,21 @@ export function PhotosView() {
     ) {
       return;
     }
+    // Hiding asks too, in Photos' words: where the photos go.
+    if (
+      flag === "hidden" && on &&
+      !window.confirm(`${n === 1 ? "Hide this photo?" : `Hide ${n} photos?`}\n\n${n === 1 ? "It" : "They"} will be hidden from your library, and can be found in the Hidden album.`)
+    ) {
+      return;
+    }
     const before = photos;
     const ids = new Set(list.map((p) => p.id));
-    const leaves = flag === "deleted" && (on ? view !== "recentlyDeleted" : view === "recentlyDeleted");
+    // Which changes take a photo out of the view it is in.
+    const leaves =
+      album ? flag !== "favorite" && on
+      : flag === "deleted" ? (on ? view !== "recentlyDeleted" : view === "recentlyDeleted")
+      : flag === "hidden" ? (on ? view !== "hidden" : view === "hidden")
+      : !on && view === "favorites";
     setPhotos((all) =>
       leaves
         ? (all ?? []).filter((x) => !ids.has(x.id))
@@ -466,6 +485,9 @@ export function PhotosView() {
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected.length) {
         if (album) void removeFrom(selected);
         else if (view !== "recentlyDeleted") void changeAll(selected, "deleted", true);
+      } else if (ctrl && e.key.toLowerCase() === "l" && selected.length && view !== "recentlyDeleted") {
+        // ⌘L in Photos: hide, or in Hidden, unhide.
+        void changeAll(selected, "hidden", view !== "hidden");
       } else if (e.key === "." && selected.length && view !== "recentlyDeleted") {
         // As Photos: if any is not a favorite, all become favorites; else all stop being.
         void changeAll(selected, "favorite", selected.some((p) => !p.favorite));
@@ -503,6 +525,9 @@ export function PhotosView() {
                 null,
                 { label: "Add to Album", submenu: albumEntries(group.map((x) => x.id)) },
                 null,
+                view === "hidden" && !album
+                  ? { label: `Unhide ${n} Photos`, run: () => void changeAll(group, "hidden", false) }
+                  : { label: `Hide ${n} Photos`, run: () => void changeAll(group, "hidden", true) },
                 album
                   ? { label: `Remove ${n} Photos from Album`, danger: true, run: () => void removeFrom(group) }
                   : { label: `Delete ${n} Photos`, danger: true, run: () => void changeAll(group, "deleted", true) },
@@ -519,6 +544,9 @@ export function PhotosView() {
             null,
             { label: "Add to Album", submenu: albumEntries([p.id]) },
             null,
+            view === "hidden" && !album
+              ? { label: "Unhide Photo", run: () => void change(p, "hidden", false) }
+              : { label: "Hide Photo", run: () => void change(p, "hidden", true) },
             album
               ? { label: "Remove from Album", danger: true, run: () => void removeFrom([p]) }
               : { label: "Delete", danger: true, run: () => void change(p, "deleted", true) },
@@ -725,32 +753,35 @@ export function PhotosView() {
   const title = album?.name ?? VIEWS.find((v) => v.key === view)?.label ?? "Photos";
   const across = ACROSS[zoom];
 
+  const source = (v: (typeof VIEWS)[number]) => (
+    <button
+      key={v.key}
+      className="px-source"
+      aria-current={!album && view === v.key}
+      onClick={() => {
+        setView(v.key);
+        setAlbum(null);
+        setOpen(null);
+      }}
+    >
+      <v.Icon className="px-glyph" size={16} strokeWidth={1.8} aria-hidden="true" />
+      <span className="px-label">{v.label}</span>
+      {counts[v.key] ? <span className="px-count">{counts[v.key]}</span> : null}
+    </button>
+  );
+
   return (
     <div className={`px${dropping ? " is-dropping" : ""}`}>
       <aside className="px-side" aria-label="Photos">
         <p className="px-side-heading">Photos</p>
-        {VIEWS.map((v) => (
-          <button
-            key={v.key}
-            className="px-source"
-            aria-current={!album && view === v.key}
-            onClick={() => {
-              setView(v.key);
-              setAlbum(null);
-              setOpen(null);
-            }}
-          >
-            <v.Icon className="px-glyph" size={16} strokeWidth={1.8} aria-hidden="true" />
-            <span className="px-label">{v.label}</span>
-            {counts[v.key] ? <span className="px-count">{counts[v.key]}</span> : null}
-          </button>
-        ))}
+        {VIEWS.map(source)}
         <div className="px-side-row">
           <p className="px-side-heading">Albums</p>
           <button className="px-side-add" aria-label="New Album" title="New Album" onClick={() => setNaming({ id: null, then: [], draft: "" })}>
             <Plus size={14} strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
+        <div className="px-albums" role="group" aria-label="Albums">
         {naming?.id === null && nameField}
         {albums.map(([a, n]) =>
           naming?.id === a.id ? (
@@ -784,6 +815,9 @@ export function PhotosView() {
             </button>
           ),
         )}
+        </div>
+        <p className="px-side-heading px-side-gap">Utilities</p>
+        {UTILITIES.map(source)}
       </aside>
 
       <section className="px-main" aria-label={title}>

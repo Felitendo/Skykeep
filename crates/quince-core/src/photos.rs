@@ -105,6 +105,8 @@ pub enum View {
     Screenshots,
     /// Newest added first.
     Recents,
+    /// Hidden from every other view, as Photos' Hidden album.
+    Hidden,
     RecentlyDeleted,
 }
 
@@ -214,6 +216,7 @@ impl Library {
                 "deleted = 0 AND hidden = 0",
                 "COALESCE(added_at, taken_at) DESC",
             ),
+            View::Hidden => ("deleted = 0 AND hidden = 1", "taken_at DESC"),
             View::RecentlyDeleted => ("deleted = 1", "COALESCE(deleted_at, taken_at) DESC"),
         };
         let mut stmt = self.conn.prepare(&format!(
@@ -240,6 +243,7 @@ impl Library {
             View::Favorites,
             View::Videos,
             View::Screenshots,
+            View::Hidden,
             View::RecentlyDeleted,
         ] {
             out.push((view, self.photos(view)?.len() as i64));
@@ -469,6 +473,11 @@ mod tests {
         assert_eq!(ids(&lib, View::Favorites), ["b"]);
         assert_eq!(ids(&lib, View::Videos), ["c"]);
         assert_eq!(ids(&lib, View::RecentlyDeleted), ["d"]);
+        assert_eq!(
+            ids(&lib, View::Hidden),
+            ["e"],
+            "the hidden one, and only there"
+        );
         // An album holds what was put in it, in its order; a deleted photo leaves it.
         lib.put_photos(&[photo("a", 100)]).unwrap();
         lib.put_album_items(&[

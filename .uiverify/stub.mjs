@@ -319,6 +319,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const views = {
             library: live, recents: live, favorites: live.filter((p) => p.favorite), videos: live.filter((p) => p.kind === "video"),
             screenshots: live.filter((p) => p.uti === "public.png"), recentlyDeleted: all.filter((p) => p.deleted),
+            hidden: all.filter((p) => !p.deleted && p.hidden),
           };
           if (cmd === "photos_counts") return Object.entries(views).map(([k, v]) => [k, v.length]);
           return views[args.view] ?? [];
@@ -355,6 +356,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const p = (window.__photos ?? []).find((x) => x.id === args.id);
           if (p) {
             if (args.flag === "favorite") p.favorite = args.on;
+            if (args.flag === "hidden") p.hidden = args.on;
             if (args.flag === "deleted") { p.deleted = args.on; p.deletedAt = args.on ? 1792700000 : null; }
           }
           return p;

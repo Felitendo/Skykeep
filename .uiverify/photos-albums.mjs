@@ -15,7 +15,7 @@ await openScreen(page, "Photos");
 await page.waitForTimeout(400);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
-const albumNames = () => page.locator(".px-side .px-source").evaluateAll((els) => els.map((e) => e.querySelector("span")?.textContent ?? "").slice(6));
+const albumNames = () => page.locator(".px-albums .px-source").evaluateAll((els) => els.map((e) => e.querySelector(".px-label")?.textContent ?? ""));
 
 await page.getByRole("button", { name: "New Album" }).click();
 await page.getByLabel("Album name").fill("Beach");

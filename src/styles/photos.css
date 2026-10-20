@@ -50,6 +50,8 @@
 .px-source:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .px-source[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
 .px-source:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
+.px-albums { display: flex; flex-direction: column; gap: 1px; }
+.px-side-gap { margin-top: 14px; }
 .px-side-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
 .px-side-row .px-side-heading { margin-bottom: 4px; }
 .px-side-add {

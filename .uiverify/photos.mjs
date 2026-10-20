@@ -145,6 +145,24 @@ ok((await page.evaluate(() => window.__flags.length)) - sentBefore === 2 && (awa
 await page.locator(".px-scroll").click({ position: { x: 600, y: 600 } });
 ok((await page.locator('.px-tile[aria-selected="true"]').count()) === 0, "a click on the empty space lets the selection go");
 
+// Hide, as Photos hides: asked, out of the library, into Hidden (under Utilities), and back.
+page.once("dialog", (d) => void d.accept());
+await page.locator(".px-tile").nth(1).click({ button: "right" });
+await page.locator(".row-menu").getByText("Hide Photo").click();
+await page.waitForTimeout(300);
+ok((await page.locator(".px-tile").count()) === 4, "Hide Photo takes it out of the library at once");
+await page.locator(".px-source", { hasText: "Hidden" }).click();
+await page.waitForTimeout(250);
+ok((await page.locator(".px-tile").count()) === 1, "and it is in Hidden");
+await page.locator(".px-tile").first().click();
+await page.keyboard.press("Control+l");
+await page.waitForTimeout(300);
+ok((await page.locator(".px-tile").count()) === 0 && (await page.evaluate(() => window.__flags.at(-1))).flag === "hidden",
+  "Ctrl+L in Hidden unhides it");
+await page.locator(".px-source", { hasText: "Library" }).click();
+await page.waitForTimeout(250);
+ok((await page.locator(".px-tile").count()) === 5, "and it is back in the library");
+
 const across = async () => page.locator(".px-grid").first().evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(" ").length);
 const before = await across();
 await page.getByRole("button", { name: "Zoom In" }).click();
