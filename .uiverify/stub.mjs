@@ -133,7 +133,9 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
     // As Tauri builds it on Linux (tauri/scripts/core.js): the whole path escaped.
-    convertFileSrc: (path, protocol = "asset") => `${protocol}://localhost/${encodeURIComponent(path)}`,
+    // A test that needs real pictures sets __picBase and serves them there (page.route).
+    convertFileSrc: (path, protocol = "asset") =>
+      window.__picBase ? `${window.__picBase}/${encodeURIComponent(path)}` : `${protocol}://localhost/${encodeURIComponent(path)}`,
     invoke: async (cmd, args) => {
       switch (cmd) {
         case "auth_status":

@@ -11,7 +11,18 @@ await ctx.addInitScript(() => {
     filename: `IMG_${id}.JPG`, size: 1, uti: "public.jpeg", favorite: false, hidden: false, deleted: false, deletedAt: null, subtype: 0, changeTag: null });
   window.__photos = Array.from({ length: 2000 }, (_, i) => P(`q${i}`, 1792600000 - i * 40000));
 });
+await ctx.addInitScript(() => { window.__picBase = "http://pics.test"; });
 const page = await ctx.newPage();
+// Real pictures throughout, each a different colour, the screen-sized ones slow to come (as a
+// photo not yet made at that size is), so a step has to wait for its picture.
+await page.route("http://pics.test/**", async (route) => {
+  const path = decodeURIComponent(route.request().url().split("/").pop());
+  const n = Number(/q(\d+)/.exec(path)?.[1] ?? 0);
+  if (/fit(\d+)/.test(path) && Number(/fit(\d+)/.exec(path)[1]) > 256) await new Promise((r) => setTimeout(r, 700));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200"><rect width="1600" height="1200" fill="hsl(${(n * 47) % 360} 60% 50%)"/></svg>`;
+  await route.fulfill({ status: 200, contentType: "image/svg+xml", body: svg });
+});
+
 page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Photos");
@@ -54,5 +65,29 @@ ok(await page.evaluate(() => [...document.querySelectorAll(".px-slip, .px-strip-
 }) && document.getAnimations().filter((a) => a.playState === "running").length === 0),
   "the strip and its slips move at once — nothing in it animates (animated, it flickered)");
 ok((await page.locator(".px-slip img[loading=lazy]").count()) === 0, "and every slip's picture is fetched at once, never lazily");
+// Stepping fast, frame by frame: every frame has a picture on the stage — the new one decoded,
+// or the last one painted held under it — and a step never shows the soft thumbnail.
+const seen = await page.evaluate(async () => {
+  const bad = [];
+  let frames = 0, held = 0;
+  const look = () => {
+    frames++;
+    const top = document.querySelector(".px-pan > .px-shown");
+    const under = document.querySelector(".px-stage > .px-under");
+    const underOn = under && under.style.visibility !== "hidden";
+    if (underOn) held++;
+    if (underOn && getComputedStyle(top).backgroundImage !== "none") bad.push("thumbnail under a step");
+    if (!underOn && !(top.complete && top.naturalWidth > 0) && getComputedStyle(top).backgroundImage === "none") bad.push("nothing on the stage");
+  };
+  for (let i = 0; i < 12; i++) {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    for (let f = 0; f < 4; f++) { await new Promise((r) => requestAnimationFrame(r)); look(); }
+  }
+  await new Promise((r) => setTimeout(r, 600));
+  const under = document.querySelector(".px-stage > .px-under");
+  return { bad: [...new Set(bad)], frames, held, left: !!under && under.style.visibility !== "hidden" };
+});
+ok(seen.bad.length === 0 && seen.held > 0, `stepping, every frame has a picture and never the thumbnail  (${seen.frames} frames, ${seen.held} holding the last; ${seen.bad.join(", ")})`);
+ok(!seen.left, "and once the new picture is decoded, the one held under it is gone");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

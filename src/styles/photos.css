@@ -1104,3 +1104,71 @@ img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }
   box-shadow: inset 0 0 0 1px var(--field-edge, var(--separator));
 }
 .px-shared-name:focus { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-ring); }
+/* The last picture painted, in the same place as the frame over it (the stage's one cell). */
+.px-stage > .px-under, .px-stage > .px-pan { grid-area: 1 / 1; }
+.px-under { background-size: 100% 100%; }
+
+/* Full screen: the photo alone, black to every edge, over the whole window — as icloud.com's.
+   Its bar lies over the top and is out of sight until the pointer goes there; the thumbnails,
+   when asked for, take a band along the bottom and the photo fits above them. */
+.px-viewer.is-full { position: fixed; inset: 0; z-index: 40; color: #f5f5f7; }
+.px-viewer.is-full .px-backdrop { background: #000; }
+.px-viewer.is-full .px-stage { padding: 0; }
+.px-viewer.is-full.has-thumbs { grid-template-rows: minmax(0, 1fr) 64px; }
+.px-viewer.is-full .px-strip {
+  position: relative;
+  bottom: auto;
+  grid-row: 2;
+  height: 64px;
+  background: #1c1c1e;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.px-viewer.is-full .px-strip-run { top: 10px; }
+.px-full-bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 10px;
+  /* Solid, not a live blur (WebKitGTK repaints a blur every frame under it). */
+  background: rgba(40, 36, 34, 0.92);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+/* Away: out of sight at once (an animated hide is the compositor's, and flickered). */
+.px-full-bar.is-away { visibility: hidden; }
+.px-full-bar .px-viewer-when strong { color: #f5f5f7; }
+.px-full-bar .px-viewer-when span { color: rgba(245, 245, 247, 0.6); }
+.px-full-side { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.px-full-side.is-end { justify-content: flex-end; }
+.px-full-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: #f5f5f7;
+  cursor: pointer;
+}
+.px-full-btn:hover { background: rgba(255, 255, 255, 0.1); }
+.px-full-btn[aria-pressed="true"] { background: rgba(255, 255, 255, 0.16); }
+.px-full-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.px-full-btn.is-small { width: 22px; height: 24px; color: rgba(245, 245, 247, 0.75); }
+.px-zoom { display: flex; align-items: center; gap: 2px; margin-left: 6px; }
+.px-zoom input[type="range"] {
+  width: 84px;
+  height: 16px;
+  margin: 0;
+  background: none;
+  accent-color: #f5f5f7;
+  cursor: pointer;
+}
+.px-viewer.is-full .px-nav { background: rgba(60, 60, 64, 0.85); color: #f5f5f7; }
+.px-viewer.is-full .px-nav:hover { background: rgba(80, 80, 86, 0.95); }
+.px-viewer.is-full .px-info { top: 54px; }

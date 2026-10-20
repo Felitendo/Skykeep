@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Ellipsis, GalleryThumbnails, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -159,7 +159,7 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
         {/* At once, never lazily: a slip coming into the strip showed empty for a moment. */}
         {/* One size for every slip, shown or not, so a step never asks for a new picture; decoded
             before it is drawn (they are small), so none appears blank first. */}
-        <img src={fitSrc(p.id, SHOWN * 2 * (window.devicePixelRatio || 1))} alt="" decoding="sync" draggable={false} />
+        <img src={fitSrc(p.id, SHOWN * 2 * (window.devicePixelRatio || 1))} alt="" decoding="async" draggable={false} />
       </button>,
     );
   }
@@ -582,24 +582,35 @@ export function PhotosView() {
 
   const shown = open !== null ? photos?.[open] ?? null : null;
   /**
-   * The photo whose picture is on the stage. A step changes `shown` at once (its date, its
-   * place, its info) but the picture changes only once the next one is decoded — at once when
-   * it already is, as the photos either side are made to be — so a step never shows a blank or
-   * the soft thumbnail before the sharp picture: the flicker on every switch.
+   * The picture last painted on the stage, kept beneath the next one until that one is decoded:
+   * a step never shows a blank, nor the soft thumbnail before the sharp picture (the flicker on
+   * every switch). The next is decoded where it stands, by the engine, as it would be anyway —
+   * holding the step back until a copy off the page was decoded cost a fifth of its frames.
    */
-  const [pictured, setPictured] = useState<Photo | null>(null);
-  useLayoutEffect(() => {
-    if (!shown) return setPictured(null);
-    if (shown.kind === "video" || decoded.has(viewSrc(shown))) return setPictured(shown);
-    let live = true;
-    const take = () => live && setPictured(shown);
-    void warm(shown).then(take);
-    const t = window.setTimeout(take, 250);
-    return () => {
-      live = false;
-      window.clearTimeout(t);
-    };
-  }, [shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The viewer's date, time and place among the photos, as its bar shows them.
+  const when = shown && (
+    <div className="px-viewer-when">
+      <strong>{new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "long" })}</strong>
+      {view === "recentlyDeleted" && !album && timeLeft(shown, false) ? (
+        <span className={timeLeft(shown, false)!.soon ? "is-soon" : undefined}>{timeLeft(shown, false)!.words}</span>
+      ) : (
+        <span>
+          {new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}
+          {/* Where it is among them, as icloud.com says it: "133 of 169". */}
+          {photos && photos.length > 1 && open !== null && !inBurst && (
+            <span className="px-viewer-place">
+              {" · "}
+              {(open + 1).toLocaleString()} of {photos.length.toLocaleString()}
+            </span>
+          )}
+        </span>
+      )}
+    </div>
+  );
+  const painted = useRef<Photo | null>(null);
+  const underEl = useRef<HTMLImageElement | null>(null);
+  const under = shown && shown.kind !== "video" && painted.current && painted.current.id !== shown.id && painted.current.kind !== "video" && !decoded.has(viewSrc(shown)) ? painted.current : null;
+  if (!shown || shown.kind === "video") painted.current = null;
   // The viewer follows the photo, not its place: when the list moves under it — its date
   // changed, a sync reordered the library — it finds the photo again rather than showing
   // whichever came to stand where it was.
@@ -760,6 +771,7 @@ export function PhotosView() {
     drawn_.current = l;
     const el = pan.current;
     if (el) el.style.transform = l.k > 1 || l.x || l.y ? `translate(${l.x}px, ${l.y}px) scale(${l.k})` : "";
+    if (zoomSlider.current && zoomSlider.current !== document.activeElement) zoomSlider.current.value = String(l.k);
   };
   const paint = (next: { k: number; x: number; y: number }, glide = false) => {
     lensRef.current = next;
@@ -855,6 +867,54 @@ export function PhotosView() {
   useEffect(() => {
     if (open === null && fullscreen) void toggleFullscreen(false);
   }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  /**
+   * Full screen is the photo alone, as icloud.com's: black to every edge, its bar out of sight
+   * until the pointer goes to the top (or a key's focus lands in it), the thumbnails along the
+   * bottom only when asked for — remembered for next time.
+   */
+  const [thumbs, setThumbs] = useState(() => {
+    try {
+      return localStorage.getItem("quince.photos.fullThumbs") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleThumbs = () =>
+    setThumbs((v) => {
+      try {
+        localStorage.setItem("quince.photos.fullThumbs", v ? "0" : "1");
+      } catch {
+        /* a convenience only */
+      }
+      return !v;
+    });
+  const [barUp, setBarUp] = useState(true);
+  const barTimer = useRef<number | undefined>(undefined);
+  const fullBar = useRef<HTMLElement | null>(null);
+  // Shown as full screen begins, then away after a moment unless the pointer is on it.
+  const barAway = (after = 1600) => {
+    window.clearTimeout(barTimer.current);
+    barTimer.current = window.setTimeout(() => {
+      if (fullBar.current?.matches(":hover") || fullBar.current?.querySelector(":focus-visible")) return;
+      setBarUp(false);
+    }, after);
+  };
+  useEffect(() => {
+    if (!fullscreen) return window.clearTimeout(barTimer.current);
+    setBarUp(true);
+    barAway();
+    return () => window.clearTimeout(barTimer.current);
+  }, [fullscreen]); // eslint-disable-line react-hooks/exhaustive-deps
+  // It comes back with a page-drawn fade, never the compositor's (see lib/fade).
+  useLayoutEffect(() => {
+    if (fullscreen && barUp) fadeIn(fullBar.current, { duration: 120 });
+  }, [barUp, fullscreen]);
+  const zoomSlider = useRef<HTMLInputElement | null>(null);
+  /** Zoom about the stage's middle, as the bar's slider and its − and + do. */
+  const zoomMiddle = (k: number, glide = true) => {
+    const box = stage.current?.getBoundingClientRect();
+    if (box) zoomAt(k, box.left + box.width / 2, box.top + box.height / 2, glide);
+  };
   /** A Live Photo's moving part playing over it. */
   const [moving, setMoving] = useState<string | null>(null);
   useEffect(() => setMoving(null), [shown?.id]);
@@ -907,13 +967,18 @@ export function PhotosView() {
         h: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom),
       };
       if (shown && shown.kind !== "video") setStep(viewSrc(shown));
-      // Where the photo itself sits on the stage, for the marks laid on its corner (LIVE,
-      // BURST): read a frame later, once the picture has its box.
+      // Where the photo itself sits on the stage, for the LIVE mark laid on its corner: read a
+      // frame later, once the picture has its box. Only for a Live Photo, and written only when
+      // it moved — read and set on every step, it restyled the whole stage each time and cost
+      // the stepping a fifth of its frames.
+      if (shown?.kind !== "live") return;
       requestAnimationFrame(() => {
-        const p = el.querySelector<HTMLElement>(".px-pan, .px-video");
+        const p = el.querySelector<HTMLElement>(".px-pan");
         if (!p) return;
-        el.style.setProperty("--photo-x", `${p.offsetLeft}px`);
-        el.style.setProperty("--photo-y", `${p.offsetTop}px`);
+        const x = `${p.offsetLeft}px`;
+        const y = `${p.offsetTop}px`;
+        if (el.style.getPropertyValue("--photo-x") !== x) el.style.setProperty("--photo-x", x);
+        if (el.style.getPropertyValue("--photo-y") !== y) el.style.setProperty("--photo-y", y);
       });
     };
     measure();
@@ -951,7 +1016,9 @@ export function PhotosView() {
     const current = photos?.[open] ?? null;
     const onKey = (e: KeyboardEvent) => {
       // Keys typed into a field — the caption — are words, not commands.
-      if ((e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable]")) return;
+      if ((e.target as HTMLElement | null)?.closest?.("input:not([type=range]), textarea, [contenteditable]")) return;
+      // The zoom slider's own arrows move it; every other key still works with it focused.
+      if ((e.target as HTMLElement | null)?.matches?.("input[type=range]") && e.key.startsWith("Arrow")) return;
       if (e.key === "ArrowRight") step(1);
       else if (e.key === "ArrowLeft") step(-1);
       else if (e.key === "Escape" && lensRef.current.k > 1) unzoom();
@@ -2371,9 +2438,128 @@ export function PhotosView() {
         </div>
 
         {shown && (
-          <div className="px-viewer" ref={viewer} role="dialog" aria-label={shown.filename ?? "Photo"}>
+          <div
+            className={`px-viewer${fullscreen ? " is-full" : ""}${fullscreen && thumbs ? " has-thumbs" : ""}`}
+            ref={viewer}
+            role="dialog"
+            aria-label={shown.filename ?? "Photo"}
+            onPointerMove={
+              fullscreen
+                ? (e) => {
+                    // The bar comes up as the pointer reaches the top, as icloud.com's does.
+                    if (e.clientY < 56) {
+                      if (!barUp) setBarUp(true);
+                      window.clearTimeout(barTimer.current);
+                    } else if (barUp) barAway(700);
+                  }
+                : undefined
+            }
+          >
             <div className="px-backdrop" aria-hidden="true" />
-            <header className="px-viewer-bar">
+            {fullscreen ? (
+            <header
+              key="full"
+              className={`px-full-bar${barUp ? "" : " is-away"}`}
+              ref={fullBar}
+              // Kept up while a key's focus is in it; a click's focus does not hold it.
+              onFocus={(e) => {
+                if (!(e.target as HTMLElement).matches(":focus-visible")) return;
+                setBarUp(true);
+                window.clearTimeout(barTimer.current);
+              }}
+              onBlur={() => barAway()}
+            >
+              <div className="px-full-side">
+                <button className="px-full-btn" aria-label="Exit Full Screen" title="Exit Full Screen (Esc)" onClick={() => void toggleFullscreen(false)}>
+                  <Minimize2 size={16} />
+                </button>
+                {photos && photos.length > 1 && (
+                  <button
+                    className="px-full-btn"
+                    aria-label={thumbs ? "Hide Thumbnails" : "Show Thumbnails"}
+                    aria-pressed={thumbs}
+                    title={thumbs ? "Hide Thumbnails" : "Show Thumbnails"}
+                    onClick={toggleThumbs}
+                  >
+                    <GalleryThumbnails size={17} />
+                  </button>
+                )}
+                {shown.kind !== "video" && (
+                  <div className="px-zoom">
+                    <button className="px-full-btn is-small" aria-label="Zoom Out" title="Zoom Out" onClick={() => zoomMiddle(lensRef.current.k / 1.5)}>
+                      <Minus size={13} />
+                    </button>
+                    <input
+                      ref={zoomSlider}
+                      type="range"
+                      min={1}
+                      max={5}
+                      step={0.01}
+                      defaultValue={lensRef.current.k}
+                      aria-label="Zoom"
+                      onInput={(e) => zoomMiddle(Number(e.currentTarget.value), false)}
+                    />
+                    <button className="px-full-btn is-small" aria-label="Zoom In" title="Zoom In" onClick={() => zoomMiddle(lensRef.current.k * 1.5)}>
+                      <Plus size={13} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              {when}
+              <div className="px-full-side is-end">
+                <button className="px-full-btn" aria-label="Info" aria-pressed={info} title="Info (I)" onClick={() => setInfo((v) => !v)}>
+                  <Info size={17} />
+                </button>
+                {view === "recentlyDeleted" && !album ? (
+                  <>
+                    <button className="px-full-btn" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
+                      <RotateCcw size={17} />
+                    </button>
+                    <button className="px-full-btn" aria-label="Delete Permanently" title="Delete permanently (Delete)" onClick={() => void change(shown, "expunged", true)}>
+                      <Trash2 size={17} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      className="px-full-btn"
+                      aria-label={shown.favorite ? "Unfavorite" : "Favorite"}
+                      aria-pressed={shown.favorite}
+                      title={shown.favorite ? "Unfavorite (.)" : "Favorite (.)"}
+                      onClick={() => void change(shown, "favorite", !shown.favorite)}
+                    >
+                      <Heart size={17} fill={shown.favorite ? "currentColor" : "none"} />
+                    </button>
+                    <button className="px-full-btn" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
+                      <Download size={17} />
+                    </button>
+                    {album ? (
+                      <button className="px-full-btn" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown])}>
+                        <CopyMinus size={17} />
+                      </button>
+                    ) : (
+                      <button className="px-full-btn" aria-label="Delete" title="Delete (Delete)" onClick={() => void change(shown, "deleted", true)}>
+                        <Trash2 size={17} />
+                      </button>
+                    )}
+                  </>
+                )}
+                <button
+                  className="px-full-btn"
+                  aria-label="More"
+                  aria-haspopup="menu"
+                  title="More"
+                  onClick={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    photoMenu(shown, { x: r.right, y: r.bottom + 4, alignRight: true });
+                  }}
+                >
+                  <Ellipsis size={17} />
+                </button>
+              </div>
+            </header>
+            ) : (
+            <header key="bar" className="px-viewer-bar">
               <div className="px-capsule">
                 <button className="px-cap" aria-label="Close" title="Close (Esc)" onClick={close}>
                   <X size={17} strokeWidth={2} />
@@ -2388,23 +2574,7 @@ export function PhotosView() {
                   {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
                 </button>
               </div>
-              <div className="px-viewer-when">
-                <strong>{new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "long" })}</strong>
-                {view === "recentlyDeleted" && !album && timeLeft(shown, false) ? (
-                  <span className={timeLeft(shown, false)!.soon ? "is-soon" : undefined}>{timeLeft(shown, false)!.words}</span>
-                ) : (
-                  <span>
-                    {new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}
-                    {/* Where it is among them, as icloud.com says it: "133 of 169". */}
-                    {photos && photos.length > 1 && open !== null && !inBurst && (
-                      <span className="px-viewer-place">
-                        {" · "}
-                        {(open + 1).toLocaleString()} of {photos.length.toLocaleString()}
-                      </span>
-                    )}
-                  </span>
-                )}
-              </div>
+              {when}
               <div className="px-capsule">
               {view === "recentlyDeleted" && !album ? (
                 <>
@@ -2462,6 +2632,7 @@ export function PhotosView() {
                 </button>
               </div>
             </header>
+            )}
             <div
               className="px-stage"
               ref={stage}
@@ -2494,6 +2665,21 @@ export function PhotosView() {
                   </span>
                 </button>
               ) : (
+                <>
+                {under && (
+                  // The last picture painted, held until the next one over it is decoded.
+                  <img
+                    key={`${under.id}-under`}
+                    ref={underEl}
+                    className="px-under"
+                    src={viewSrc(under)}
+                    alt=""
+                    aria-hidden="true"
+                    decoding="async"
+                    draggable={false}
+                    style={fitted(under)}
+                  />
+                )}
                 <div
                   ref={pan}
                   className={`px-pan${zoomed ? " is-zoomed" : ""}`}
@@ -2512,34 +2698,38 @@ export function PhotosView() {
                   onPointerCancel={() => (dragging.current = null)}
                 >
                   {/* The picture made the size the stage draws it at — every pixel used, none
-                      thrown away by the engine — over the thumbnail until it is decoded. */}
-                  {/* The picture on the stage is `pictured`'s: the next one takes its place
-                      only once decoded (see pictured). */}
-                  {(() => {
-                    const pic = pictured && pictured.kind !== "video" ? pictured : shown;
-                    return (
+                      thrown away by the engine — over the last one painted, or on first opening
+                      over the grid's thumbnail, until it is decoded. */}
                   <img
-                    key={pic.id}
+                    key={shown.id}
                     className="px-shown"
-                    src={viewSrc(pic)}
+                    src={viewSrc(shown)}
                     // What was asked for, kept whatever the fallback below does to `src`.
-                    data-picture={viewSrc(pic)}
-                    alt={pic.filename ?? ""}
+                    data-picture={viewSrc(shown)}
+                    alt={shown.filename ?? ""}
                     decoding="async"
                     draggable={false}
-                    style={fitted(pic)}
+                    style={under ? { ...fitted(shown), backgroundImage: "none" } : fitted(shown)}
+                    onLoad={(e) => {
+                      const img = e.currentTarget;
+                      const url = viewSrc(shown);
+                      const done = () => {
+                        decoded.add(url);
+                        painted.current = shown;
+                        if (underEl.current) underEl.current.style.visibility = "hidden";
+                      };
+                      img.decode().then(done, done);
+                    }}
                     // Never the engine's broken-picture box (a white frame, a question mark, the
                     // file's name): a picture that will not come falls back to the thumbnail,
                     // and past that shows nothing over the thumbnail already painted under it.
                     onError={(e) => {
                       const img = e.currentTarget;
-                      const thumb = pictureSrc(pic.id, "thumb");
+                      const thumb = pictureSrc(shown.id, "thumb");
                       if (!img.src.includes("thumb")) img.src = thumb;
                       else img.dataset.failed = "";
                     }}
                   />
-                    );
-                  })()}
                   {moving === shown.id && videoBase && (
                     // The moving part, laid exactly over the still, played once and gone.
                     <video
@@ -2569,6 +2759,7 @@ export function PhotosView() {
                     />
                   )}
                 </div>
+                </>
               )}
               {/* What kind of photo it is, as Photos marks it at the stage's corner: a Live
                   Photo plays its moving part while the pointer rests on LIVE; a burst's BURST
@@ -2616,7 +2807,7 @@ export function PhotosView() {
                 </button>
               )}
             </div>
-            {open !== null && photos && photos.length > 1 && (
+            {open !== null && photos && photos.length > 1 && (!fullscreen || thumbs) && (
               <Filmstrip photos={photos} at={open} onPick={(i) => step(i - open)} />
             )}
             {info && (
