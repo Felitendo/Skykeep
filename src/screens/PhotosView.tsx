@@ -108,6 +108,46 @@ const fitFrame = (p: Photo): React.CSSProperties =>
     ? { width: "100%", height: `${(100 * p.height) / p.width}%` }
     : { height: "100%", width: `${(100 * p.width) / p.height}%` };
 
+/**
+ * The viewer's filmstrip, as icloud.com's: the photos either side as narrow slips, the one shown
+ * wider in the middle; a click goes to it. Only the sixty or so nearest are built, and the
+ * strip glides on the compositor to keep the one shown in the middle.
+ */
+const SLIP = 26;
+const SHOWN = 54;
+const GAP = 2;
+const REACH = 30;
+function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick: (index: number) => void }) {
+  const from = Math.max(0, at - REACH);
+  const to = Math.min(photos.length - 1, at + REACH);
+  // Each slip has its place by its index in the whole library, so the slips built as the
+  // window moves along never jump; the strip glides to put the shown one's centre in the middle.
+  const shift = -(at * (SLIP + GAP) + SHOWN / 2);
+  const slips = [];
+  for (let i = from; i <= to; i++) {
+    const p = photos[i];
+    slips.push(
+      <button
+        key={p.id}
+        className={`px-slip${i === at ? " is-shown" : ""}`}
+        style={{ left: i * (SLIP + GAP) + (i > at ? SHOWN - SLIP : 0) }}
+        aria-label={p.filename ?? "Photo"}
+        aria-current={i === at}
+        onClick={() => i !== at && onPick(i)}
+      >
+        <img src={pictureSrc(p.id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+      </button>,
+    );
+  }
+  return (
+    <div className="px-strip" role="toolbar" aria-label="Photos">
+      <div className="px-strip-run" style={{ transform: `translateX(${shift}px)` }}>
+        {slips}
+      </div>
+    </div>
+  );
+}
+
 /** What a tile can ask of the screen; one object, kept the same, so tiles need not redraw. */
 type Acts = {
   pick: (index: number, e: React.MouseEvent) => void;
@@ -1742,6 +1782,9 @@ export function PhotosView() {
                 </button>
               )}
             </div>
+            {open !== null && photos && photos.length > 1 && (
+              <Filmstrip photos={photos} at={open} onPick={(i) => step(i - open)} />
+            )}
             {info && (
               <dl className="px-info">
                 {/* As in Photos' Info: the caption first, typed in place, and kept on every
