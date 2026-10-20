@@ -269,7 +269,6 @@ export function CalendarView() {
   const [hidden, setHidden] = useState<Set<string>>(() => readSet(HIDDEN_KEY));
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const draftRef = useRef<Draft | null>(null);
   draftRef.current = draft;
@@ -407,7 +406,6 @@ export function CalendarView() {
    */
   const write = useCallback(
     async (run: () => Promise<void>, predict?: (rows: CalendarEvent[]) => CalendarEvent[]) => {
-      setBusy(true);
       setError(null);
       if (predict) setEvents((rows) => predict(rows));
       // Kept over any refresh until Apple has it; let go before the read that confirms it.
@@ -424,7 +422,6 @@ export function CalendarView() {
         return false;
       } finally {
         release();
-        setBusy(false);
       }
     },
     [read, hold]
@@ -469,11 +466,14 @@ export function CalendarView() {
     new Promise<EventScope | null>((answer) => setAsking({ verb, answer: (scope) => { setAsking(null); answer(scope); } }));
 
   const save = useCallback(
-    async (d: Draft) => {
+    async (d: Draft, close = false) => {
       const occurrence = Boolean(d.guid && d.guid.includes("__"));
       // A repeat belongs to the series, so changing it is a change to all of it.
       const scope = occurrence ? (d.repeatChanged ? "all" : await whichEvents("change")) : null;
       if (occurrence && !scope) return false;
+      // Closed the moment it is saved, drawn as saved, never waiting on Apple: kept open until
+      // Apple answered, the popover hung for a second or two on every Done.
+      if (close) setDraft(null);
       return write(async () => {
         await api.eventSave({
           ...(scope ? { scope } : {}),
@@ -492,7 +492,15 @@ export function CalendarView() {
         });
       }, (rows) => {
         // Shown where it now sits at once; a new one is drawn by its draft until Apple names it.
-        if (!d.guid) return rows;
+        if (!d.guid) {
+          return [...rows, {
+            guid: `pending:${d.startsAt}:${d.title}`, calendarGuid: d.calendarGuid,
+            title: d.title.trim() || "New Event", location: d.location.trim() || null,
+            startsAt: d.startsAt, endsAt: Math.max(d.endsAt, d.startsAt + (d.allDay ? 86_400 : 900)),
+            allDay: d.allDay, timezone: d.allDay ? ZONE : (d.timezone ?? ZONE),
+            url: d.url?.trim() || null, notes: d.notes.trim() || null, etag: null,
+          }];
+        }
         // Future and All carry the words to the other days too; their times Apple settles.
         const series = d.guid.split("__")[0];
         const from = events.find((e) => e.guid === d.guid)?.startsAt ?? d.startsAt;
@@ -992,12 +1000,9 @@ export function CalendarView() {
           draft={draft}
           at={anchor}
           calendars={calendars}
-          busy={busy}
           onChange={setDraft}
           onClose={() => setDraft(null)}
-          onSave={async () => {
-            if (await save(draft)) setDraft(null);
-          }}
+          onSave={() => void save(draft, true)}
           onDelete={draft.guid ? () => void remove(draft.guid as string) : undefined}
           onNudge={draft.guid ? (by) => {
             // Calendar's Control-Option-arrows: the open event moves, stays open, and is saved.
@@ -1834,7 +1839,6 @@ function EventPopover({
   draft,
   at,
   calendars,
-  busy,
   onChange,
   onClose,
   onSave,
@@ -1845,7 +1849,6 @@ function EventPopover({
   draft: Draft;
   at: Anchor;
   calendars: Calendar[];
-  busy: boolean;
   onChange: (d: Draft) => void;
   onClose: () => void;
   onSave: () => void;
@@ -2096,7 +2099,7 @@ function EventPopover({
       />
       <div className="cx-pop-actions">
         {onDelete && editable ? (
-          <button type="button" className="cx-pop-delete" onClick={onDelete} disabled={busy}>
+          <button type="button" className="cx-pop-delete" onClick={onDelete}>
             Delete
           </button>
         ) : (
@@ -2107,7 +2110,7 @@ function EventPopover({
             {editable ? "Cancel" : "Close"}
           </button>
           {editable && (
-            <button type="submit" className="primary" disabled={busy}>
+            <button type="submit" className="primary">
               {draft.guid ? "Save" : "Add"}
             </button>
           )}

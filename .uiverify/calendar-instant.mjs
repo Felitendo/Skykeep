@@ -38,7 +38,8 @@ await page.waitForTimeout(300);
 const title = page.locator('input[placeholder="New Event"]').first();
 await title.fill("Dentist, again");
 await title.press("Enter");
-await page.waitForTimeout(150);
+await page.waitForTimeout(100);
+ok((await page.locator(".cx-popover").count()) === 0, "Done closes the event at once, while Apple is still answering");
 ok(await page.locator(".cx-block", { hasText: "Dentist, again" }).count() > 0, "a retitled event shows its new title at once");
 await page.waitForTimeout(1800);
 const sent = await page.evaluate(() => window.__saves.at(-1));
@@ -58,6 +59,16 @@ await page.locator('input[placeholder="New Event"]').first().press("Enter");
 await page.waitForTimeout(1800);
 const linked = await page.evaluate(() => window.__saves.at(-1)?.draft?.url);
 ok(linked === "https://example.com/new", `a URL typed into the event is saved  [${linked}]`);
+
+// A new event is on the calendar the moment it is saved, before Apple has named it.
+await page.getByRole("button", { name: "New event" }).click();
+await page.waitForTimeout(250);
+await page.locator('input[placeholder="New Event"]').first().fill("Coffee with Ana");
+await page.locator('input[placeholder="New Event"]').first().press("Enter");
+await page.waitForTimeout(100);
+ok((await page.locator(".cx-popover").count()) === 0 && (await page.locator(".cx-block, .cx-chip, .cx-allday-chip", { hasText: "Coffee with Ana" }).count()) > 0,
+  "a new event closes and is drawn at once, before Apple has answered");
+await page.waitForTimeout(1800);
 
 // A delete takes the event off the calendar at once.
 await page.locator(".cx-block", { hasText: "Design review" }).first().click();

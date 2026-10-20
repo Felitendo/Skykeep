@@ -216,7 +216,6 @@ export function RemindersView() {
   const [showDone, setShowDone] = useState(false);
   const [syncing, setSyncing] = useState(false);
   /** Every reminder with a write still on its way — a set, since several can be at once. */
-  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [openGuid, setOpenGuid] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [newList, setNewList] = useState("");
@@ -323,18 +322,26 @@ export function RemindersView() {
    * tap made every add, tick and delete feel a second behind. A refusal re-reads, which
    * puts the row back as it was, and says why.
    */
+  const queue = useRef(new Map<string, Promise<void>>());
   const write = useCallback(
     async (
       reminder: Reminder,
       run: () => Promise<void>,
       predict?: (rows: Reminder[]) => Reminder[],
     ): Promise<Reminder[] | null> => {
-      setBusy((was) => new Set(was).add(reminder.guid));
       setError(null);
       if (predict) setItems((rows) => predict(rows));
       // Kept over any refresh until Apple has it; let go before the read that confirms it.
       const release = predict ? hold(predict) : () => {};
+      // One reminder's changes reach Apple in the order they were made, each after the last —
+      // so nothing on the row is ever disabled while one is on its way. (Disabled, the title
+      // greyed out for the whole round trip, and a ticked reminder looked stuck.)
+      const before = queue.current.get(reminder.guid) ?? Promise.resolve();
+      let done = () => {};
+      const mine = new Promise<void>((r) => (done = r));
+      queue.current.set(reminder.guid, mine);
       try {
+        await before;
         await run();
         release();
         return await readItems();
@@ -344,12 +351,9 @@ export function RemindersView() {
         readItems().catch(() => {});
         return null;
       } finally {
+        done();
+        if (queue.current.get(reminder.guid) === mine) queue.current.delete(reminder.guid);
         release();
-        setBusy((was) => {
-          const next = new Set(was);
-          next.delete(reminder.guid);
-          return next;
-        });
       }
     },
     [readItems, hold],
@@ -383,9 +387,28 @@ export function RemindersView() {
   };
   const depart = (guid: string) => {
     stay(guid);
+    // A moment to see the tick land (and undo a mistaken one), then the row folds away: its
+    // height closes as it fades, so the ones below glide up instead of jumping.
     departure.current.set(guid, [
-      window.setTimeout(() => setLeaving((was) => new Set(was).add(guid)), 900),
-      window.setTimeout(() => setDeparted((was) => new Set(was).add(guid)), 1200),
+      window.setTimeout(() => {
+        setLeaving((was) => new Set(was).add(guid));
+        const row = document.querySelector<HTMLElement>(`.rx-row[data-guid="${CSS.escape(guid)}"]`);
+        const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        if (!row || still || typeof row.animate !== "function") {
+          setDeparted((was) => new Set(was).add(guid));
+          return;
+        }
+        const h = row.getBoundingClientRect().height;
+        const cs = getComputedStyle(row);
+        const fold = row.animate(
+          [
+            { height: `${h}px`, paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom, opacity: 1 },
+            { height: "0px", paddingTop: "0px", paddingBottom: "0px", opacity: 0 },
+          ],
+          { duration: 240, easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "forwards" },
+        );
+        fold.onfinish = () => setDeparted((was) => new Set(was).add(guid));
+      }, 600),
     ]);
   };
   useEffect(() => {
@@ -1198,7 +1221,7 @@ export function RemindersView() {
                         go(e.key === "Home" ? 0 : rows.length - 1);
                       } else if (e.key === " ") {
                         e.preventDefault();
-                        if (!busy.has(reminder.guid)) void toggle(reminder);
+                        void toggle(reminder);
                       } else if (e.key === "Enter") {
                         e.preventDefault();
                         e.currentTarget.querySelector<HTMLInputElement>(".rx-title")?.focus();
@@ -1260,7 +1283,7 @@ export function RemindersView() {
                           defaultValue={reminder.title}
                           key={`${reminder.guid}-${reminder.title}`}
                           aria-label={`Rename ${reminder.title}`}
-                          disabled={busy.has(reminder.guid)}
+                          
                           onBlur={(e) => void rename(reminder, e.target.value)}
                           onKeyDown={(e) => {
                             // As in Reminders on a Mac: Return finishes it and starts the next,
@@ -1332,7 +1355,7 @@ export function RemindersView() {
                             <Picker
                               label={`Repeat for ${reminder.title}`}
                               value={repeatKey(reminder)}
-                              disabled={busy.has(reminder.guid) || reminder.dueAt === null}
+                              disabled={reminder.dueAt === null}
                               onChange={(key) => void setRepeat(reminder, key)}
                               options={
                                 repeatKey(reminder) === "custom"
@@ -1354,7 +1377,7 @@ export function RemindersView() {
                             <Picker
                               label={`Priority for ${reminder.title}`}
                               value={String(reminder.priority)}
-                              disabled={busy.has(reminder.guid)}
+                              
                               onChange={(v) => void setPriority(reminder, Number(v))}
                               options={PRIORITIES.map((p) => ({
                                 value: String(p.value),
@@ -1367,7 +1390,7 @@ export function RemindersView() {
                             <Picker
                               label={`List for ${reminder.title}`}
                               value={reminder.listGuid}
-                              disabled={busy.has(reminder.guid)}
+                              
                               onChange={(guid) => void moveToList(reminder, guid)}
                               options={lists.map((l) => ({ value: l.guid, label: l.title }))}
                             />
@@ -1384,7 +1407,7 @@ export function RemindersView() {
                             {depth > 0 ? (
                               <button
                                 className="rx-link"
-                                disabled={busy.has(reminder.guid)}
+                                
                                 onClick={() => void outdent(reminder)}
                               >
                                 Move Out of Subtasks
@@ -1392,7 +1415,7 @@ export function RemindersView() {
                             ) : (
                               <button
                                 className="rx-link"
-                                disabled={busy.has(reminder.guid)}
+                                
                                 onClick={() => void indent(reminder)}
                               >
                                 Make Subtask
@@ -1401,7 +1424,7 @@ export function RemindersView() {
                             <button
                               className="rx-link danger"
                               aria-label={`Delete ${reminder.title}`}
-                              disabled={busy.has(reminder.guid)}
+                              
                               onClick={() => remove(reminder)}
                             >
                               Delete
@@ -1428,7 +1451,7 @@ export function RemindersView() {
                           reminder.flagged ? `Unflag ${reminder.title}` : `Flag ${reminder.title}`
                         }
                         aria-pressed={reminder.flagged}
-                        disabled={busy.has(reminder.guid)}
+                        
                         onClick={() => flag(reminder)}
                       >
                         <Glyph name="flagged" />

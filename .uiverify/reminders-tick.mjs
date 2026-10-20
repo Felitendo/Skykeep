@@ -16,11 +16,28 @@ const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failu
 await page.evaluate(() => { window.__doneDelay = 4000; });
 const row = (t) => page.locator(".rx-row", { has: page.getByLabel(`Rename ${t}`) });
 
+// Heights of the row frame by frame from the tick: it must fold (shrink over frames), not vanish.
+await page.evaluate(() => {
+  const r = [...document.querySelectorAll(".rx-row")].find((x) => x.querySelector('[aria-label="Rename Pick up the parcel"]'));
+  window.__fold = [];
+  const t0 = performance.now();
+  const tick = () => {
+    const h = r.isConnected ? Math.round(r.getBoundingClientRect().height) : -1;
+    window.__fold.push([Math.round(performance.now() - t0), h]);
+    if (h !== -1 && performance.now() - t0 < 2000) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+});
 await row("Pick up the parcel").locator(".rx-tick").click();
 await page.waitForTimeout(80);
 ok((await row("Pick up the parcel").locator(".rx-tick").getAttribute("aria-checked")) === "true", "the circle fills at once, while Apple is still answering");
-await page.waitForTimeout(1500);
-ok((await row("Pick up the parcel").count()) === 0, "and the row leaves after a moment, before Apple has answered");
+ok(!(await row("Pick up the parcel").locator(".rx-title").isDisabled()), "and nothing on the row is greyed out while Apple answers");
+await page.waitForTimeout(900);
+ok((await row("Pick up the parcel").count()) === 0, "the row is gone within a moment, before Apple has answered");
+const fold = await page.evaluate(() => window.__fold);
+const full = fold[0][1];
+const between = fold.filter(([, h]) => h > 0 && h < full - 2);
+ok(between.length >= 3, `it folds away over several frames, not all at once  ${JSON.stringify(fold.filter(([, h]) => h !== full))}`);
 
 await row("Plan tomorrow").locator(".rx-tick").click();
 await page.waitForTimeout(300);
