@@ -573,7 +573,7 @@ export function pictureSrc(id: string, size: "thumb" | "medium" | "full" | "orig
 
 export type PhotoAlbum = { id: string; name: string; position: number; changeTag: string | null };
 
-export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "recents" | "hidden" | "rated" | "recentlyDeleted";
+export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "panoramas" | "recents" | "hidden" | "rated" | "recentlyDeleted";
 
 export type Photo = {
   id: string;

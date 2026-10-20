@@ -35,6 +35,7 @@ const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
 /** Photos' Media Types: the library by what kind of picture each is. */
 const MEDIA: typeof VIEWS = [
   { key: "videos", label: "Videos", Icon: Video },
+  { key: "panoramas", label: "Panoramas", Icon: RectangleHorizontal },
   { key: "screenshots", label: "Screenshots", Icon: Scan },
 ];
 /** Photos' Utilities: what is kept out of the library. */
@@ -1545,7 +1546,8 @@ export function PhotosView() {
         </button>
         {branches.media && (
           <div className="px-children" role="group" aria-label="Media Types">
-            {MEDIA.map(source)}
+            {/* As icloud.com lists them: only the kinds the library has. */}
+            {MEDIA.filter((m) => (counts[m.key] ?? 0) > 0 || (!album && !albumsPage && view === m.key)).map(source)}
           </div>
         )}
         {UTILITIES.map(source)}

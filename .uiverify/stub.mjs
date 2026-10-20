@@ -318,7 +318,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const live = all.filter((p) => !p.deleted && !p.hidden);
           const views = {
             library: live, recents: live, favorites: live.filter((p) => p.favorite), videos: live.filter((p) => p.kind === "video"),
-            screenshots: live.filter((p) => p.uti === "public.png"), recentlyDeleted: all.filter((p) => p.deleted),
+            screenshots: live.filter((p) => p.subtype === 3), panoramas: live.filter((p) => p.subtype === 1), recentlyDeleted: all.filter((p) => p.deleted),
             hidden: all.filter((p) => !p.deleted && p.hidden),
             rated: live.filter((p) => (p.rating ?? 0) > 0).sort((a, b) => b.rating - a.rating || b.takenAt - a.takenAt),
           };

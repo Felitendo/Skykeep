@@ -64,5 +64,17 @@ await page.keyboard.press("Escape");
 await page.locator(".px-tile").nth(1).dblclick();
 await page.waitForTimeout(500);
 ok(/full/.test((await page.locator(".px-sharp").getAttribute("src")) ?? ""), "an opened photo fetches the whole picture at once, not only when zoomed");
+// Media types as icloud.com lists them: only the kinds the library has — a panorama appears
+// once there is one (Apple's assetSubtypeV2 1); no empty ones.
+ok((await page.locator(".px-source", { hasText: "Panoramas" }).count()) === 0, "no Panoramas in the sidebar while there are none");
+await page.evaluate(() => { window.__photos.find((p) => p.id === "p4").subtype = 1; });
+await page.locator(".px-source", { hasText: "Recents" }).first().click();
+await page.waitForTimeout(300);
+await page.locator(".px-source", { hasText: "Library" }).first().click();
+await page.waitForTimeout(400);
+ok(/Panoramas\s*1/.test(await page.locator(".px-source", { hasText: "Panoramas" }).innerText()), "and there it is once there is one, with its count");
+await page.locator(".px-source", { hasText: "Panoramas" }).click();
+await page.waitForTimeout(300);
+ok((await page.locator(".px-tile").evaluateAll((t) => t.map((x) => x.dataset.id).join())) === "p4", "holding the panorama");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

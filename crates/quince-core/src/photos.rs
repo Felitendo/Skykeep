@@ -126,6 +126,8 @@ pub enum View {
     Favorites,
     Videos,
     Screenshots,
+    /// Wide photos made by sweeping: assetSubtypeV2 1.
+    Panoramas,
     /// Newest added first.
     Recents,
     /// Hidden from every other view, as Photos' Hidden album.
@@ -317,8 +319,15 @@ impl Library {
                 "deleted = 0 AND hidden = 0 AND kind = 'video'",
                 "taken_at DESC",
             ),
+            // Apple's own rule, read from its smart albums on his library: assetSubtypeV2 3 is a
+            // screenshot, 1 a panorama. (Counting any PNG, and 1, as screenshots put 43 there
+            // against Apple's 4.)
             View::Screenshots => (
-                "deleted = 0 AND hidden = 0 AND (subtype IN (1, 3) OR uti = 'public.png')",
+                "deleted = 0 AND hidden = 0 AND subtype = 3",
+                "taken_at DESC",
+            ),
+            View::Panoramas => (
+                "deleted = 0 AND hidden = 0 AND subtype = 1",
                 "taken_at DESC",
             ),
             View::Recents => (
@@ -351,6 +360,7 @@ impl Library {
             View::Favorites,
             View::Videos,
             View::Screenshots,
+            View::Panoramas,
             View::Hidden,
             View::Rated,
             View::RecentlyDeleted,
@@ -720,5 +730,28 @@ mod tests {
         assert_eq!(lib.album_photos("AL").unwrap().len(), 1);
         lib.forget_photos(&["a".into()]).unwrap();
         assert_eq!(ids(&lib, View::Library), ["c", "b"]);
+    }
+
+    /// Media types as Apple decides them (read from its smart albums on his library): a
+    /// screenshot is assetSubtypeV2 3 and a panorama 1 — not every PNG.
+    #[test]
+    fn media_types_follow_apple() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut png = photo("png", 100);
+        png.uti = Some("public.png".into());
+        let mut shot = photo("shot", 200);
+        shot.subtype = 3;
+        let mut wide = photo("wide", 300);
+        wide.subtype = 1;
+        lib.put_photos(&[png, shot, wide]).unwrap();
+        let ids = |v| {
+            lib.photos(v)
+                .unwrap()
+                .into_iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(View::Screenshots), ["shot"]);
+        assert_eq!(ids(View::Panoramas), ["wide"]);
     }
 }
