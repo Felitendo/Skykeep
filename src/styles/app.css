@@ -2130,7 +2130,12 @@
   font-weight: 600; color: var(--text-2);
 }
 .gsearch-group h3 .app-icon { width: 16px; height: 16px; }
-.gsearch-count { margin-left: auto; font-weight: 400; color: var(--text-3); }
+.gsearch-more {
+  margin-left: auto; padding: 1px 6px; border: 0; border-radius: 5px; background: none;
+  font: inherit; font-weight: 500; color: var(--accent); cursor: default;
+}
+.gsearch-more:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.gsearch-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gsearch-row {
   display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 4px 8px; border: 0;
   border-radius: 7px; background: none; color: inherit; font: inherit; text-align: start; cursor: default;

@@ -809,11 +809,13 @@ async fn auth_submit_sms_code(
 #[tauri::command]
 async fn search_everything(
     query: String,
+    each: Option<usize>,
     data: State<'_, Data>,
 ) -> UiResult<quince_core::search::Everything> {
     let library = data.0.lock().await;
+    // A few of each kind, or more of one when its section is shown whole.
     library
-        .search_everything(&query, 5)
+        .search_everything(&query, each.unwrap_or(5).clamp(1, 200))
         .map_err(|e| e.to_string())
 }
 

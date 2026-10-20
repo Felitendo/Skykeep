@@ -5,7 +5,8 @@
  * there are, and a choice opens that very thing in its own app.
  *
  * The keys, as Spotlight's: typing searches, Up and Down move through what was found, Return
- * opens it, Escape puts the results away (and a second Escape clears the field).
+ * opens it, Escape puts the results away (and a second Escape clears the field). A section with
+ * more than it shows has Show All, which shows that one whole, in place.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
@@ -34,6 +35,10 @@ type Everything = {
   photos: Photo[];
   counts: [number, number, number, number, number, number];
 };
+
+/** How many of a kind a section shows, and the most it shows whole. */
+const SHORT = 5;
+const WHOLE = 200;
 
 type Row = {
   key: string;
@@ -119,6 +124,8 @@ export function GlobalSearch({ onOpen, available }: { onOpen: (screen: string) =
   const [found, setFound] = useState<Everything | null>(null);
   const [open, setOpen] = useState(false);
   const [at, setAt] = useState(0);
+  /** The one section shown whole, if any. */
+  const [whole, setWhole] = useState<string | null>(null);
   const field = useRef<HTMLInputElement | null>(null);
   const box = useRef<HTMLDivElement | null>(null);
   const panel = useRef<HTMLDivElement | null>(null);
@@ -134,11 +141,11 @@ export function GlobalSearch({ onOpen, available }: { onOpen: (screen: string) =
     }
     let current = true;
     const t = window.setTimeout(() => {
-      api.searchEverything(q).then(
+      api.searchEverything(q, whole ? WHOLE : undefined).then(
         (f) => {
           if (!current) return;
           setFound(f as Everything);
-          setAt(0);
+          if (!whole) setAt(0);
         },
         () => current && setFound(null),
       );
@@ -147,7 +154,10 @@ export function GlobalSearch({ onOpen, available }: { onOpen: (screen: string) =
       current = false;
       window.clearTimeout(t);
     };
-  }, [query]);
+  }, [query, whole]);
+
+  // A new search starts with every section short again.
+  useEffect(() => setWhole(null), [query]);
 
   // Away when the window is clicked anywhere else.
   useEffect(() => {
@@ -161,8 +171,11 @@ export function GlobalSearch({ onOpen, available }: { onOpen: (screen: string) =
   }, [open]);
 
   const groups = useMemo(
-    () => (found ? sections(found).filter((s) => available.includes(s.screen)) : []),
-    [found, available],
+    () =>
+      (found ? sections(found).filter((s) => available.includes(s.screen)) : []).map((s) =>
+        s.screen === whole ? s : { ...s, rows: s.rows.slice(0, SHORT) },
+      ),
+    [found, available, whole],
   );
   const rows = useMemo(() => groups.flatMap((g) => g.rows), [groups]);
 
@@ -249,7 +262,17 @@ export function GlobalSearch({ onOpen, available }: { onOpen: (screen: string) =
               <h3>
                 <AppIcon app={g.screen} />
                 <span>{g.name}</span>
-                {g.count > g.rows.length && <span className="gsearch-count">{g.rows.length} of {g.count}</span>}
+                {whole === g.screen ? (
+                  <button className="gsearch-more" onClick={() => setWhole(null)}>Show Less</button>
+                ) : g.count > g.rows.length ? (
+                  <button
+                    className="gsearch-more"
+                    aria-label={`Show all ${g.count} in ${g.name}`}
+                    onClick={() => setWhole(g.screen)}
+                  >
+                    Show All {g.count}
+                  </button>
+                ) : null}
               </h3>
               {g.rows.map((r) => {
                 const i = rows.indexOf(r);

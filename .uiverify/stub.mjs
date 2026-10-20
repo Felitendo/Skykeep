@@ -636,10 +636,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const q = String(args.query).toLowerCase().split(/\s+/).filter(Boolean);
           const has = (t) => q.every((w) => String(t ?? "").toLowerCase().includes(w));
           const notes = noteList.filter((n) => has(`${n.title} ${n.body ?? ""}`));
-          const contacts = contactList.filter((c) => has(`${c.firstName ?? ""} ${c.lastName ?? ""} ${c.company ?? ""}`));
+          const contacts = contactList.concat(window.__moreContacts ?? []).filter((c) => has(`${c.firstName ?? ""} ${c.lastName ?? ""} ${c.company ?? ""}`));
           const files = (driveFixture ? driveItems : []).filter((f) => has(`${f.name}.${f.extension ?? ""}`));
-          return { notes: notes.slice(0, 5), reminders: [], events: [], contacts: contacts.slice(0, 5), files: files.slice(0, 5), photos: [],
-            counts: [notes.length, 0, 0, contacts.length, files.length, 0] };
+          const found = events.filter((e) => has(`${e.title} ${e.location ?? ""}`));
+          const each = args.each ?? 5;
+          return { notes: notes.slice(0, each), reminders: [], events: found.slice(0, each), contacts: contacts.slice(0, each), files: files.slice(0, each), photos: [],
+            counts: [notes.length, 0, found.length, contacts.length, files.length, 0] };
         }
         case "drive_kept": return window.__driveFolder?.on ? [...(window.__kept ??= [])] : null;
         case "drive_keep":

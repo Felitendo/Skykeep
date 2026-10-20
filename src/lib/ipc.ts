@@ -107,7 +107,7 @@ export const api = {
   /** What the iCloud Drive folder keeps on this computer; null while the folder is off. */
   driveKept: () => invoke<string[] | null>("drive_kept"),
   /** One search across every app's library: the first few of each, and how many in all. */
-  searchEverything: (query: string) => invoke<unknown>("search_everything", { query }),
+  searchEverything: (query: string, each?: number) => invoke<unknown>("search_everything", { query, each }),
   driveKeep: (drivewsid: string, on: boolean) => invoke<string[]>("drive_keep", { drivewsid, on }),
   photosFolderSet: (on: boolean) => invoke<DriveFolder>("photos_folder_set", { on }),
   /** Open at Login: whether it is on, the command it runs, and whether this desktop runs it. */

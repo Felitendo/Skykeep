@@ -269,12 +269,16 @@ export function CalendarView() {
   const [naming, setNaming] = useState<string | null>(null);
   const [calMenu, setCalMenu] = useState<{ cal: Calendar; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(() => readSet(HIDDEN_KEY));
-  // An event found by the search across everything: its day shown, and its calendar too if
-  // it was hidden — never a found event that cannot be seen.
+  // An event found by the search across everything: its day shown, its calendar too if it
+  // was hidden (and kept shown, as its tick in the list says) — never a found event that
+  // cannot be seen — and the event itself opened, as Calendar opens one found.
+  const [finding, setFinding] = useState<string | null>(null);
   useReveal("calendar", (r) => {
     if (r.at) setSelected(midnight(new Date(r.at * 1000)));
+    if (view === "year") setView("day");
     const cal = r.within;
-    if (cal) setHidden((h) => (h.has(cal) ? new Set([...h].filter((g) => g !== cal)) : h));
+    if (cal && hidden.has(cal)) toggleCalendar(cal);
+    setFinding(r.id);
   });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -588,6 +592,23 @@ export function CalendarView() {
       );
     }
   };
+  // Opened once it is drawn: its day and calendar may take a render or two to come up. One
+  // that never shows (gone since it was found) is let go of rather than opened later.
+  useLayoutEffect(() => {
+    if (!finding) return;
+    const event = events.find((e) => e.guid === finding);
+    const block = document.querySelector(`[data-event="${CSS.escape(finding)}"]`);
+    if (!event || !block) return;
+    setFinding(null);
+    block.scrollIntoView({ block: "nearest" });
+    const r = block.getBoundingClientRect();
+    openDraft(draftOf(event), { x: r.right, y: r.top, left: r.left });
+  });
+  useEffect(() => {
+    if (!finding) return undefined;
+    const t = window.setTimeout(() => setFinding(null), 3000);
+    return () => window.clearTimeout(t);
+  }, [finding]);
   const newAt = (startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => {
     if (!target) return;
     openDraft(

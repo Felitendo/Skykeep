@@ -10,6 +10,11 @@ for (const scheme of ["light", "dark"]) {
   const ctx = await b.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: scheme });
   await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null,
     notesFixture: true, contactsFixture: true, driveFixture: true });
+  // Enough people named alike that their section has more than it shows.
+  await ctx.addInitScript(() => {
+    window.__moreContacts = Array.from({ length: 8 }, (_, i) => ({ guid: `m${i}`, firstName: "Marlowe", lastName: `Test ${i + 1}`,
+      company: null, isCompany: false, birthday: null, notes: null, etag: null, methods: [] }));
+  });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
@@ -33,6 +38,26 @@ for (const scheme of ["light", "dark"]) {
   ok(!(await panel.isVisible()), `${scheme}: Escape puts the results away`);
   await page.keyboard.press("Escape");
   ok((await field.inputValue()) === "", `${scheme}: and a second clears the field`);
+  // A section with more than it shows: Show All shows that one whole, in place; Show Less
+  // puts it back; the keys reach every row of it.
+  await field.fill("marlowe");
+  await page.waitForTimeout(300);
+  const more = panel.getByRole("button", { name: /^Show all \d+ in / }).first();
+  const label = await more.getAttribute("aria-label").catch(() => null);
+  if (!label) ok(false, `${scheme}: some section has more than it shows`);
+  else {
+    const [, total, name] = /Show all (\d+) in (.+)/.exec(label);
+    const region = panel.getByRole("region", { name });
+    const short = await region.getByRole("option").count();
+    await more.click();
+    await page.waitForTimeout(300);
+    const all = await region.getByRole("option").count();
+    ok(short === 5 && all === Number(total), `${scheme}: Show All shows ${name} whole  (${short} → ${all} of ${total})`);
+    ok(await field.evaluate((f) => f === document.activeElement), `${scheme}: and the field keeps the keys`);
+    await region.getByRole("button", { name: "Show Less" }).click();
+    await page.waitForTimeout(300);
+    ok((await region.getByRole("option").count()) === 5, `${scheme}: Show Less puts it back`);
+  }
   await field.fill("qqqzzz");
   await page.waitForTimeout(300);
   ok(/Nothing in your iCloud holds/.test(await panel.innerText()), `${scheme}: nothing found says so`);
