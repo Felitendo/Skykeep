@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -101,6 +101,12 @@ const clock = (s: number | null) => {
   return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 };
 
+/** A photo's frame when fitted: its own shape, as large as the square cell lets it be. */
+const fitFrame = (p: Photo): React.CSSProperties =>
+  p.width >= p.height
+    ? { width: "100%", height: `${(100 * p.height) / p.width}%` }
+    : { height: "100%", width: `${(100 * p.width) / p.height}%` };
+
 /** What a tile can ask of the screen; one object, kept the same, so tiles need not redraw. */
 type Acts = {
   pick: (index: number, e: React.MouseEvent) => void;
@@ -121,6 +127,7 @@ const Tile = memo(function Tile({
   tabbable,
   left,
   soon,
+  fit,
   act,
 }: {
   photo: Photo;
@@ -129,6 +136,7 @@ const Tile = memo(function Tile({
   tabbable: boolean;
   left: string | null;
   soon: boolean;
+  fit: boolean;
   act: Acts;
 }) {
   return (
@@ -156,15 +164,19 @@ const Tile = memo(function Tile({
         act.menu(photo, e);
       }}
     >
-      <img src={pictureSrc(photo.id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
-      {photo.kind === "video" && (
-        <span className="px-badge px-duration">
-          <Play size={10} strokeWidth={0} fill="currentColor" aria-hidden="true" />
-          {clock(photo.duration)}
-        </span>
-      )}
-      {left && <span className={`px-badge px-left${soon ? " is-soon" : ""}`}>{left}</span>}
-      {photo.favorite && <Heart className="px-heart" size={13} strokeWidth={0} fill="currentColor" aria-label="Favorite" />}
+      {/* The picture's own frame: the whole tile when squares, the photo's own shape when
+          fitted — what the badges and the selection sit on. */}
+      <span className="px-pic" style={fit && photo.width && photo.height ? fitFrame(photo) : undefined}>
+        <img src={pictureSrc(photo.id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+        {photo.kind === "video" && (
+          <span className="px-badge px-duration">
+            <Play size={10} strokeWidth={0} fill="currentColor" aria-hidden="true" />
+            {clock(photo.duration)}
+          </span>
+        )}
+        {left && <span className={`px-badge px-left${soon ? " is-soon" : ""}`}>{left}</span>}
+        {photo.favorite && <Heart className="px-heart" size={13} strokeWidth={0} fill="currentColor" aria-label="Favorite" />}
+      </span>
     </button>
   );
 });
@@ -182,6 +194,7 @@ const Month = memo(function Month({
   deleted,
   eager,
   across,
+  fit,
   act,
 }: {
   label: string;
@@ -191,6 +204,7 @@ const Month = memo(function Month({
   deleted: boolean;
   eager: boolean;
   across: number;
+  fit: boolean;
   act: Acts;
 }) {
   const ref = useRef<HTMLElement | null>(null);
@@ -224,6 +238,7 @@ const Month = memo(function Month({
                 tabbable={anchor === index || (anchor === null && index === 0)}
                 left={t?.words ?? null}
                 soon={t?.soon ?? false}
+                fit={fit}
                 act={act}
               />
             );
@@ -247,6 +262,24 @@ export function PhotosView() {
   const [counts, setCounts] = useState<Partial<Record<PhotoView, number>>>({});
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
+  // Squares that fill each cell, or each photo whole in its own shape — icloud.com's toggle,
+  // kept on this machine.
+  const [fit, setFit] = useState(() => {
+    try {
+      return window.localStorage.getItem("quince.photos.fit") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleFit = () =>
+    setFit((f) => {
+      try {
+        window.localStorage.setItem("quince.photos.fit", f ? "0" : "1");
+      } catch {
+        // For this run only.
+      }
+      return !f;
+    });
   const [open, setOpen] = useState<number | null>(null);
   const [info, setInfo] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
@@ -945,8 +978,11 @@ export function PhotosView() {
       if (dropOn !== a.id) setDropOn(a.id);
     },
     onDragLeave: (e: React.DragEvent) => {
-      // Passing over the row's own symbol or name is not leaving it.
+      // Passing over the row's own symbol or name is not leaving it. Where the engine does not
+      // say where the pointer went, the row's own bounds do.
       if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+      const box = e.currentTarget.getBoundingClientRect();
+      if (e.clientX > box.left && e.clientX < box.right && e.clientY > box.top && e.clientY < box.bottom) return;
       setDropOn((d) => (d === a.id ? null : d));
     },
     onDrop: (e: React.DragEvent) => {
@@ -1318,6 +1354,17 @@ export function PhotosView() {
               )}
             </div>
           )}
+          <div className="px-capsule">
+            <button
+              className="px-cap"
+              aria-label={fit ? "Show Square Photos" : "Show Whole Photos"}
+              aria-pressed={fit}
+              title={fit ? "Square photos" : "Whole photos"}
+              onClick={toggleFit}
+            >
+              {fit ? <Square size={15} strokeWidth={1.9} aria-hidden="true" /> : <RectangleHorizontal size={16} strokeWidth={1.9} aria-hidden="true" />}
+            </button>
+          </div>
           {sort && (
             <div className="px-capsule">
               <button
@@ -1383,7 +1430,7 @@ export function PhotosView() {
           onClick={(e) => {
             // A click on the space between photos lets the selection go, as in Photos.
             if (!(e.target as HTMLElement).closest(".px-tile")) setChosen(new Set());
-          }} style={{ "--across": across } as React.CSSProperties}>
+          }} data-fit={fit || undefined} style={{ "--across": across } as React.CSSProperties}>
           {months.map((m, k) => (
             <Month
               key={`${view}/${album?.id ?? ""}/${k}/${m.label}`}
@@ -1394,6 +1441,7 @@ export function PhotosView() {
               deleted={view === "recentlyDeleted" && !album}
               eager={k < 3}
               across={across}
+              fit={fit}
               act={act}
             />
           ))}

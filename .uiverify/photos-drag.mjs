@@ -33,6 +33,8 @@ const row = await trips.boundingBox();
 await page.mouse.move(tile.x + 20, tile.y + 20);
 await page.mouse.down();
 await page.mouse.move(row.x + 30, row.y + row.height / 2, { steps: 8 });
+// Resting over the row a moment, as a hand does: the engine reports the pointer over it.
+await page.mouse.move(row.x + 40, row.y + row.height / 2, { steps: 3 });
 await page.waitForTimeout(100);
 const lit = await trips.getAttribute("data-drop");
 await page.mouse.up();

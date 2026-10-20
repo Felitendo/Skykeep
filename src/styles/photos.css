@@ -240,9 +240,18 @@
   overflow: hidden;
   cursor: default;
 }
-.px-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.px-tile { display: grid; place-items: center; }
+/* The picture's frame: the whole cell as a square, the photo's own shape when fitted. */
+.px-pic { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; }
+.px-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Whole photos, as icloud.com shows them: each in its own shape, with room around it. */
+.px-scroll[data-fit] .px-grid { gap: 14px; padding: 0 14px; }
+.px-scroll[data-fit] .px-later { column-gap: 14px; padding: 0 14px; }
+.px-scroll[data-fit] .px-later::before { margin-bottom: calc((var(--rows) - 1) * 14px); }
+.px-scroll[data-fit] .px-tile { background: transparent; overflow: visible; }
+.px-scroll[data-fit] .px-pic { background: color-mix(in srgb, var(--text) 7%, transparent); }
 /* Selected, as Photos marks it: an accent frame drawn inside the photo, over the picture. */
-.px-tile::after {
+.px-pic::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -251,10 +260,10 @@
   pointer-events: none;
   transition: opacity 90ms ease;
 }
-.px-tile[aria-selected="true"]::after { opacity: 1; }
+.px-tile[aria-selected="true"] .px-pic::after { opacity: 1; }
 .px-tile:focus-visible { outline: none; }
-.px-tile:focus-visible::after { opacity: 1; border-color: var(--accent-ring); }
-.px-tile[aria-selected="true"]:focus-visible::after { border-color: var(--accent); }
+.px-tile:focus-visible .px-pic::after { opacity: 1; border-color: var(--accent-ring); }
+.px-tile[aria-selected="true"]:focus-visible .px-pic::after { border-color: var(--accent); }
 .px-badge {
   position: absolute;
   right: 6px;

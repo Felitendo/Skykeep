@@ -34,6 +34,22 @@ const sizes = await page.evaluate(async () => {
 ok(sizes.built && Math.abs(sizes.before - sizes.after) < 1,
   `a month is as tall before it is built as after  ${sizes.before.toFixed(1)} → ${sizes.after.toFixed(1)}px`);
 
+// The same with whole photos, whose rows sit further apart.
+await page.locator(".px-scroll").evaluate((e) => (e.scrollTop = 0));
+await page.getByRole("button", { name: "Show Whole Photos" }).click();
+await page.waitForTimeout(400);
+const fitted = await page.evaluate(async () => {
+  const months = [...document.querySelectorAll(".px-month")];
+  const later = months.find((s) => s.querySelector(".px-later"));
+  const before = later.getBoundingClientRect().height;
+  later.scrollIntoView();
+  await new Promise((r) => setTimeout(r, 400));
+  return { before, after: later.getBoundingClientRect().height, built: !later.querySelector(".px-later") };
+});
+ok(fitted.built && Math.abs(fitted.before - fitted.after) < 1,
+  `with whole photos too  ${fitted.before.toFixed(1)} → ${fitted.after.toFixed(1)}px`);
+await page.getByRole("button", { name: "Show Square Photos" }).click();
+await page.waitForTimeout(200);
 await page.locator(".px-scroll").evaluate((e) => (e.scrollTop = 0));
 await page.waitForTimeout(300);
 const ms = await page.evaluate(async () => {
