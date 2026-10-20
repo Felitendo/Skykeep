@@ -158,6 +158,7 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
             .filter(|&d| d == 1)
             .and(millis(asset, "recordModificationDate")),
         subtype: field::int(asset, "assetSubtypeV2").unwrap_or(0),
+        caption: decoded(asset, "captionEnc"),
         expunge_at: (field::int(asset, "isDeleted") == Some(1))
             .then(|| millis(asset, "dateExpunged"))
             .flatten(),
@@ -183,6 +184,7 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     } else {
         None
     };
+    p.caption = decoded(asset, "captionEnc");
     p.expunge_at = if p.deleted {
         millis(asset, "dateExpunged").or(p.expunge_at)
     } else {
@@ -361,6 +363,28 @@ pub async fn set_flag(
             "CPLAsset",
             change_tag,
             serde_json::json!({ name: { "value": i64::from(on) } }),
+        )
+        .await
+}
+
+/// A photo's caption set, as icloud.com sets it: `captionEnc`, base64 of its UTF-8 bytes,
+/// against the asset's change tag. An empty caption clears it. Answers the asset as it now is.
+pub async fn set_caption(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    asset: &str,
+    change_tag: Option<&str>,
+    caption: &str,
+) -> Result<Value> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            asset,
+            "CPLAsset",
+            change_tag,
+            serde_json::json!({ "captionEnc": { "value": album_name(caption) } }),
         )
         .await
 }

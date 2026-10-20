@@ -457,6 +457,48 @@ pub async fn photo_set_flag(
     Ok(updated)
 }
 
+/// A photo's caption, as typed in its Info: Apple's answer taken at once. Empty clears it.
+#[tauri::command]
+pub async fn photo_set_caption(
+    id: String,
+    caption: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Photo> {
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let mut photo = data
+        .0
+        .lock()
+        .await
+        .photo(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo is no longer in the library.")?;
+    let caption = caption.trim().to_string();
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let answer = quince_icloud::photos::set_caption(
+        &http,
+        &root,
+        params,
+        &id,
+        photo.change_tag.as_deref(),
+        &caption,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    photo.caption = (!caption.is_empty()).then_some(caption);
+    photo.change_tag = answer
+        .get("recordChangeTag")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or(photo.change_tag);
+    data.0
+        .lock()
+        .await
+        .put_photos(std::slice::from_ref(&photo))
+        .map_err(|e| e.to_string())?;
+    Ok(photo)
+}
+
 /// A video opened in this computer's own player. WebKitGTK plays nothing without GStreamer's
 /// codec plugins, which many systems (his among them) do not have, so a video is fetched once,
 /// kept beside the other pictures under its own name, and handed to the system's player.

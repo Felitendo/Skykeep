@@ -502,6 +502,8 @@ export function PhotosView() {
     if (open === null) return undefined;
     const current = photos?.[open] ?? null;
     const onKey = (e: KeyboardEvent) => {
+      // Keys typed into a field — the caption — are words, not commands.
+      if ((e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable]")) return;
       if (e.key === "ArrowRight") step(1);
       else if (e.key === "ArrowLeft") step(-1);
       else if (e.key === "Escape" && lensRef.current.k > 1) unzoom();
@@ -997,6 +999,19 @@ export function PhotosView() {
     />
   );
 
+  const caption = async (p: Photo, words: string) => {
+    const next = words.trim();
+    if (next === (p.caption ?? "")) return;
+    const before = photos;
+    setPhotos((all) => (all ?? []).map((x) => (x.id === p.id ? { ...x, caption: next || null } : x)));
+    try {
+      await api.photoSetCaption(p.id, next);
+    } catch (e) {
+      setPhotos(before);
+      setError(messageOf(e));
+    }
+  };
+
   const play = async (p: Photo) => {
     try {
       await api.photoPlay(p.id);
@@ -1472,6 +1487,28 @@ export function PhotosView() {
             </div>
             {info && (
               <dl className="px-info">
+                {/* As in Photos' Info: the caption first, typed in place, and kept on every
+                    device; Return or leaving the field saves it, Escape puts it back. */}
+                <dd className="px-caption-row">
+                  <input
+                    key={shown.id}
+                    className="px-caption"
+                    aria-label="Caption"
+                    placeholder="Add a Caption"
+                    defaultValue={shown.caption ?? ""}
+                    maxLength={2000}
+                    readOnly={view === "recentlyDeleted"}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") e.currentTarget.blur();
+                      else if (e.key === "Escape") {
+                        e.currentTarget.value = shown.caption ?? "";
+                        e.currentTarget.blur();
+                        e.stopPropagation();
+                      }
+                    }}
+                    onBlur={(e) => void caption(shown, e.currentTarget.value)}
+                  />
+                </dd>
                 <dt>Name</dt>
                 <dd>{shown.filename ?? "—"}</dd>
                 <dt>Taken</dt>

@@ -439,3 +439,22 @@
 .px-show-bar .px-cap { color: #fff; }
 .px-show-bar .px-cap:hover { background: rgba(255, 255, 255, 0.14); }
 .px-show-count { padding: 0 10px; font-size: var(--t-13); font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.75); }
+
+/* The caption, typed in place at the head of Info, as Photos has it. */
+.px-caption-row { margin: 0 0 4px; }
+.px-caption {
+  padding: 6px 8px;
+  margin: 0 -8px;
+  width: calc(100% + 16px);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-15, 15px);
+  font-weight: 600;
+  outline: none;
+}
+.px-caption::placeholder { color: var(--text-3); font-weight: 500; }
+.px-caption:hover:not(:read-only) { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.px-caption:focus { background: var(--field, transparent); box-shadow: 0 0 0 2px var(--accent-ring); }

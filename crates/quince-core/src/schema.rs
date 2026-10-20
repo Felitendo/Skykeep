@@ -445,4 +445,10 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE photos ADD COLUMN expunge_at INTEGER;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // A photo's caption, as typed in Photos on any device; Photos is read again so every
+    // photo has its own.
+    r#"
+    ALTER TABLE photos ADD COLUMN caption TEXT;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

@@ -362,6 +362,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           }
           return p;
         }
+        case "photo_set_caption": {
+          (window.__captions ??= []).push(args);
+          const p = (window.__photos ?? []).find((x) => x.id === args.id);
+          if (p) p.caption = args.caption || null;
+          return p;
+        }
         case "photo_play": (window.__plays ??= []).push(args); return null;
         case "photo_download": (window.__downloads ??= []).push(args); return `/home/test/Downloads/IMG_${args.id}.JPG`;
         // Each file is answered at once with where it stands; a test plays the rest in with __emit.
