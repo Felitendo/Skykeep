@@ -364,6 +364,76 @@ pub fn thumbnail_mtime(png_bytes: &[u8]) -> Option<i64> {
         .and_then(|t| t.text.trim().parse().ok())
 }
 
+/// A drawing's ink, for a page of either look: Apple renders a drawing as ink on white
+/// (its fallback image), and a note is not white. The white is taken back out exactly
+/// ("un-multiplied" over white: each pixel's ink and how much of it there is), leaving the
+/// ink alone on a transparent page. For `dark`, each colour's lightness is turned and its hue
+/// and saturation kept, as a phone shows a drawing in dark mode: black ink white, a yellow
+/// still the yellow it was.
+///
+/// # Errors
+/// When the image cannot be read or written.
+pub fn drawing_ink(png: &[u8], dark: bool) -> Result<Vec<u8>, String> {
+    let mut img = image::load_from_memory(png)
+        .map_err(|e| e.to_string())?
+        .to_rgba8();
+    for px in img.pixels_mut() {
+        let [r, g, b, a0] = px.0.map(|c| f32::from(c) / 255.0);
+        // How much ink: none on white, all of it wherever a channel is fully dark.
+        let ink = 1.0 - r.min(g).min(b);
+        if ink <= 1.0 / 255.0 {
+            px.0 = [0, 0, 0, 0];
+            continue;
+        }
+        let un = |c: f32| ((c - (1.0 - ink)) / ink).clamp(0.0, 1.0);
+        let (mut r, mut g, mut b) = (un(r), un(g), un(b));
+        if dark {
+            let (h, s, l) = to_hsl(r, g, b);
+            (r, g, b) = from_hsl(h, s, 1.0 - l);
+        }
+        let byte = |c: f32| (c * 255.0).round().clamp(0.0, 255.0) as u8;
+        px.0 = [byte(r), byte(g), byte(b), byte(ink * a0)];
+    }
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+fn to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = if (max - r).abs() < f32::EPSILON {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if (max - g).abs() < f32::EPSILON {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h * 60.0, s.clamp(0.0, 1.0), l)
+}
+
+fn from_hsl(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (r + m, g + m, b + m)
+}
+
 /// Whether a freedesktop thumbnail was written by Quince (its `Software` chunk): the ones to
 /// remove with an account, and only those — every other app's stay.
 #[must_use]
@@ -513,6 +583,43 @@ mod tests {
     }
 
     use super::*;
+
+    /// A drawing's white goes, its ink stays; in dark, black ink turns white and a mid-tone
+    /// colour keeps its hue and lightness (yellow stays yellow), as on a phone.
+    #[test]
+    fn a_drawing_is_its_ink_on_either_page() {
+        let mut page = image::RgbImage::from_pixel(3, 1, image::Rgb([255, 255, 255]));
+        page.put_pixel(1, 0, image::Rgb([0, 0, 0]));
+        page.put_pixel(2, 0, image::Rgb([255, 204, 0]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(page)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let read = |b: Vec<u8>| image::load_from_memory(&b).unwrap().to_rgba8();
+        let light = read(drawing_ink(&png, false).unwrap());
+        assert_eq!(light.get_pixel(0, 0).0[3], 0, "the white is gone");
+        assert_eq!(
+            light.get_pixel(1, 0).0,
+            [0, 0, 0, 255],
+            "black ink stays black"
+        );
+        assert_eq!(
+            light.get_pixel(2, 0).0,
+            [255, 204, 0, 255],
+            "a colour stays itself"
+        );
+        let dark = read(drawing_ink(&png, true).unwrap());
+        assert_eq!(
+            dark.get_pixel(1, 0).0,
+            [255, 255, 255, 255],
+            "black ink turns white"
+        );
+        let y = dark.get_pixel(2, 0).0;
+        assert!(
+            y[0] > y[2] && y[1] > y[2] && y[3] == 255,
+            "yellow stays yellow: {y:?}"
+        );
+    }
 
     /// Only Quince's own thumbnails are told apart as ours: another app's are never touched.
     #[test]

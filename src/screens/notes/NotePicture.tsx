@@ -43,15 +43,24 @@ export function NotePicture() {
           aria-label={shown.name}
           onClick={(e) => e.stopPropagation()}
         >
-          <img src={shown.src} alt={shown.name} draggable={false} />
+          {shown.drawing ? (
+            <>
+              <img src={shown.src} alt={shown.name} draggable={false} className="nf-drawing nf-ink-light" />
+              <img src={shown.srcDark} alt={shown.name} draggable={false} className="nf-drawing nf-ink-dark" />
+            </>
+          ) : (
+            <img src={shown.src} alt={shown.name} draggable={false} />
+          )}
           <figcaption>
             <span className="nf-picture-name">{problem ?? shown.name}</span>
-            <button
-              className="quiet"
-              onClick={() => void api.noteAttachmentOpen(shown.id).catch((e) => setProblem(messageOf(e)))}
-            >
-              Open in Default App
-            </button>
+            {!shown.drawing && (
+              <button
+                className="quiet"
+                onClick={() => void api.noteAttachmentOpen(shown.id).catch((e) => setProblem(messageOf(e)))}
+              >
+                Open in Default App
+              </button>
+            )}
             <button className="nf-picture-close" aria-label="Close" autoFocus onClick={() => setShown(null)}>
               <X size={16} strokeWidth={2} />
             </button>

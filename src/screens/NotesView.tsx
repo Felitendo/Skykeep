@@ -10,6 +10,7 @@ import { carryRuns, runsFit } from "./notes/rich";
 import { NoteEditor, refreshTables, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
 import { FormatPanel } from "./notes/FormatPanel";
 import { NotePicture } from "./notes/NotePicture";
+import { OPEN_NOTE_EVENT } from "./notes/links";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
@@ -207,6 +208,36 @@ export function NotesView() {
       current && notes.some((n) => n.guid === current) ? current : notes[0].guid
     );
   }, [notes]);
+
+  // A link to another note, followed: that note opened — from All iCloud when the folder in
+  // front does not hold it — or, when it is not in this account's notes, said so.
+  const following = useRef<string | null>(null);
+  useEffect(() => {
+    const follow = (e: Event) => {
+      const guid = (e as CustomEvent<string>).detail;
+      if (notes.some((n) => n.guid === guid)) {
+        setOpenGuid(guid);
+        setDetail(true);
+        return;
+      }
+      following.current = guid;
+      if (folder !== ALL) setFolder(ALL);
+      else void read();
+    };
+    window.addEventListener(OPEN_NOTE_EVENT, follow);
+    return () => window.removeEventListener(OPEN_NOTE_EVENT, follow);
+  }, [notes, folder, read]);
+  useEffect(() => {
+    const guid = following.current;
+    if (!guid || folder !== ALL || notes.length === 0) return;
+    following.current = null;
+    if (notes.some((n) => n.guid === guid)) {
+      setOpenGuid(guid);
+      setDetail(true);
+    } else {
+      setError("That note isn’t in your notes. It may have been deleted, or it belongs to someone else.");
+    }
+  }, [notes, folder]);
 
   const open = useMemo(
     () => notes.find((n) => n.guid === openGuid) ?? null,

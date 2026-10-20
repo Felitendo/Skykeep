@@ -247,6 +247,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
             return [plain(5), { ...plain(1), attachment: "M1" }, plain(1), { ...plain(1), attachment: "M2" }, plain(4)];
           }
+          if (args.guid === "nD") {
+            const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
+            // "Sketch\n", "See " then "The plan" linked to that note (lower-cased, as a phone links), "\n", the drawing, "\nend".
+            return [{ ...plain(7), style: 0 }, plain(4), { ...plain(8), link: "applenotes:note/1a2b3c4d-0000-4000-8000-00000000ab12?ownerIdentifier=_x" }, plain(1), { ...plain(1), attachment: "D1" }, plain(4)];
+          }
           if (args.guid === "nL") {
             // "Links", then the address line, then the last line quoted (Block Quote, field 8).
             const body = (noteList.find((n) => n.guid === "nL") ?? {}).body ?? "";
@@ -313,6 +318,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__mediaNote && !noteList.some((n) => n.guid === "nM"))
             noteList.unshift({ guid: "nM", folderGuid: "f1", title: "Trip", snippet: "", body: "Trip\n\uFFFC\n\uFFFC\nend",
               locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789100000, etag: null });
+          // Opt-in: a note linking to another note, with a drawing in it, as a phone makes them.
+          if (window.__drawNote && !noteList.some((n) => n.guid === "nD"))
+            noteList.unshift({ guid: "nD", folderGuid: "f1", title: "Sketch", snippet: "", body: "Sketch\nSee The plan\n\uFFFC\nend",
+              locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789300000, etag: null },
+              // The note it links to: a made-up record name, in another folder.
+              { guid: "1A2B3C4D-0000-4000-8000-00000000AB12", folderGuid: "f3", title: "The plan", snippet: "Step one", body: "The plan\nStep one",
+              locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1781000000, etag: null });
           // Opt-in: a note with web addresses in its text and no links of its own.
           if (window.__linkNote && !noteList.some((n) => n.guid === "nL"))
             noteList.unshift({ guid: "nL", folderGuid: "f1", title: "Links", snippet: "", body: "Links\nYashps://www.youtube.com/watch?v=5vVh0ZGx8aU\nRead https://example.org/a. Done",
@@ -322,11 +334,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
               locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789000000, etag: null });
           return !notesFixture ? [] : noteList.map((n) => ({ ...n }));
         case "note_attachment_info":
+          if (args.id === "D1") return { id: "D1", uti: "com.apple.paper", kind: "drawing", filename: null, title: null, width: 768, height: 621, size: null, hasPreview: true };
           return args.id === "M1"
             ? { id: "M1", uti: "public.jpeg", kind: "image", filename: "beach.jpeg", title: null, width: 1200, height: 800, size: 271872, hasPreview: true }
             : { id: "M2", uti: "org.openxmlformats.spreadsheetml.sheet", kind: "file", filename: "Budget.xlsx", title: null, width: null, height: null, size: 9100, hasPreview: false };
         case "note_attachment_open": (window.__opened ??= []).push(args.id); return null;
-        case "note_table": if (String(args.id).startsWith("M")) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
+        case "note_table": if (/^[MD]/.test(String(args.id))) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
         case "photos_list": case "photos_counts": {
           const P = (id, takenAt, extra = {}) => ({ id, master: `m${id}`, takenAt, addedAt: takenAt, kind: "image",
             width: 4032, height: 3024, duration: null, filename: `IMG_${id}.JPG`, size: 2400000, uti: "public.jpeg",

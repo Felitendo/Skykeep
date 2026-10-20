@@ -29,7 +29,7 @@
     --sys-orange: #ff9230;
   }
 
-.content:has(.rx) { display: flex; flex-direction: column; overflow: hidden; }
+.content:has(> .screen-slot:not([hidden]) .rx) { display: flex; flex-direction: column; overflow: hidden; }
 
 .rx {
   flex: 1;

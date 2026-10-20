@@ -1,6 +1,6 @@
 /* Notes, laid out the way Apple Notes is: folders, the list, the note. */
 
-.content:has(.notes) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
+.content:has(> .screen-slot:not([hidden]) .notes) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
 
 .notes {
   flex: 1;
@@ -475,3 +475,15 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .fp-extra { border-top: 1px solid var(--separator); margin-top: 6px; padding-top: 6px; }
 .fp-quote-bar { width: 3px; height: 16px; border-radius: 2px; margin: 0 6px 0 4px;
   background: color-mix(in srgb, var(--text) 30%, transparent); }
+
+/* A drawing made in a note: its ink alone, made for a light page and for a dark one
+   (quince_media::drawing_ink); the look in force shows its own. */
+.nf-drawing { display: block; max-width: min(100%, 640px); height: auto; cursor: zoom-in; }
+.nf-picture img.nf-drawing { background: none; box-shadow: none; }
+.nf-ink-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .nf-ink-light { display: none; }
+  :root:not([data-theme="light"]) .nf-ink-dark { display: block; }
+}
+:root[data-theme="dark"] .nf-ink-light { display: none; }
+:root[data-theme="dark"] .nf-ink-dark { display: block; }

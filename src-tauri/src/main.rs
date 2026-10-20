@@ -196,6 +196,7 @@ fn note_part(path: &str) -> Option<(String, quince_icloud::note_media::Part)> {
     let part = match part {
         "preview" => quince_icloud::note_media::Part::Preview,
         "file" => quince_icloud::note_media::Part::File,
+        "drawing" | "drawing-dark" => quince_icloud::note_media::Part::Drawing,
         _ => return None,
     };
     (!id.is_empty()).then(|| (id.to_string(), part))
@@ -221,6 +222,7 @@ async fn note_media_cached(
     let name = match part {
         quince_icloud::note_media::Part::Preview => "preview",
         quince_icloud::note_media::Part::File => "file",
+        quince_icloud::note_media::Part::Drawing => "drawing",
     };
     let path = state_dir(app)
         .join("note-media")
@@ -250,13 +252,18 @@ async fn note_media_cached(
 /// A note's picture as the window can draw it: a HEIC original (what an iPhone takes) made a
 /// JPEG on this computer once and kept beside it — the engine draws no HEIC, and the picture
 /// fell back to a file chip. Opening it elsewhere still hands over the original.
+///
+/// A drawing is shown as its ink alone, for the page's look (`dark`): see
+/// `quince_media::drawing_ink`.
 async fn note_media_shown(
     app: &tauri::AppHandle,
     id: &str,
     part: quince_icloud::note_media::Part,
+    dark: bool,
 ) -> Result<Vec<u8>, String> {
     let bytes = note_media_cached(app, id, part).await?;
-    if !quince_media::is_heif(&bytes) {
+    let drawing = part == quince_icloud::note_media::Part::Drawing;
+    if !drawing && !quince_media::is_heif(&bytes) {
         return Ok(bytes);
     }
     let safe: String = id
@@ -269,15 +276,24 @@ async fn note_media_shown(
             }
         })
         .collect();
-    let shown = state_dir(app)
-        .join("note-media")
-        .join(format!("{safe}-shown.jpg"));
-    if let Ok(jpeg) = tokio::fs::read(&shown).await {
-        return Ok(jpeg);
+    let name = match (drawing, dark) {
+        (true, true) => format!("{safe}-ink-dark.png"),
+        (true, false) => format!("{safe}-ink.png"),
+        _ => format!("{safe}-shown.jpg"),
+    };
+    let shown = state_dir(app).join("note-media").join(name);
+    if let Ok(made) = tokio::fs::read(&shown).await {
+        return Ok(made);
     }
-    let jpeg = crate::cpu::run(move || quince_media::heic_to_jpeg(&bytes))
-        .await
-        .map_err(|e| e.to_string())??;
+    let jpeg = crate::cpu::run(move || {
+        if drawing {
+            quince_media::drawing_ink(&bytes, dark)
+        } else {
+            quince_media::heic_to_jpeg(&bytes)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let part_path = shown.with_extension("part");
     if tokio::fs::write(&part_path, &jpeg).await.is_ok() {
         let _ = tokio::fs::rename(&part_path, &shown).await;
@@ -4053,6 +4069,8 @@ fn main() {
             let uri = request.uri();
             let wanted = photo_guid(uri.host(), uri.path());
             let attachment = note_part(uri.path());
+            // A drawing's ink for a dark page, rather than a light one.
+            let ink_dark = uri.path().ends_with("drawing-dark");
             let picture = photos::requested(uri.path());
             let fit = photos::requested_fit(uri.path());
             let queued = photos::requested_upload(uri.path());
@@ -4103,7 +4121,7 @@ fn main() {
                 }
                 // A note's picture, or the rendering of a document or film in it.
                 if let Some((id, part)) = attachment {
-                    let response = match note_media_shown(&app, &id, part).await {
+                    let response = match note_media_shown(&app, &id, part, ink_dark).await {
                         Ok(bytes) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", image_type(&bytes))

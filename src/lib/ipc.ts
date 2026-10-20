@@ -585,7 +585,7 @@ export type AccountInfo = {
 export type NoteAttachment = {
   id: string;
   uti: string;
-  kind: "image" | "document" | "audio" | "video" | "file";
+  kind: "image" | "drawing" | "document" | "audio" | "video" | "file";
   filename: string | null;
   title: string | null;
   width: number | null;
@@ -595,7 +595,7 @@ export type NoteAttachment = {
 };
 
 /** A note attachment's picture — the file itself, or Apple's rendering of it. */
-export function noteMediaSrc(id: string, part: "file" | "preview"): string {
+export function noteMediaSrc(id: string, part: "file" | "preview" | "drawing" | "drawing-dark"): string {
   return convertFileSrc(`note/${id}/${part}`, "quince");
 }
 

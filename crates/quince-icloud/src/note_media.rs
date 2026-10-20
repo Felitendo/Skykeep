@@ -40,6 +40,14 @@ pub struct AttachmentInfo {
 #[must_use]
 pub fn kind_of(uti: &str) -> &'static str {
     let u = uti.to_ascii_lowercase();
+    // A drawing made in the note (iOS 17's inline drawings, and the older drawing kinds):
+    // shown as Apple renders it, never as a file.
+    if matches!(
+        u.as_str(),
+        "com.apple.paper" | "com.apple.drawing" | "com.apple.drawing.2"
+    ) {
+        return "drawing";
+    }
     if matches!(
         u.as_str(),
         "public.jpeg"
@@ -157,6 +165,9 @@ pub enum Part {
     File,
     /// Apple's largest rendering of it.
     Preview,
+    /// A drawing as Apple renders it: its fallback image (twice its size, ink on white), or
+    /// its largest preview when it has none.
+    Drawing,
 }
 
 async fn download(http: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
@@ -184,8 +195,16 @@ pub async fn bytes(
         .lookup_record(ZONE, id)
         .await?
         .ok_or(Error::NotFound)?;
+    if part == Part::Drawing {
+        if let Some(url) = record
+            .pointer("/fields/FallbackImage/value/downloadURL")
+            .and_then(Value::as_str)
+        {
+            return download(http, url).await;
+        }
+    }
     match part {
-        Part::Preview => {
+        Part::Preview | Part::Drawing => {
             let previews = record
                 .pointer("/fields/PreviewImages/value")
                 .and_then(Value::as_array)
@@ -249,6 +268,10 @@ mod tests {
         assert_eq!(kind_of("public.jpeg"), "image");
         assert_eq!(kind_of("com.apple.paper.doc.pdf"), "document");
         assert_eq!(kind_of("com.apple.paper.doc.scan"), "document");
+        // Measured: an iOS 17 drawing in his "Colors" note is com.apple.paper, with a
+        // FallbackImage (1536×1242 for a 768×621 drawing) and two previews.
+        assert_eq!(kind_of("com.apple.paper"), "drawing");
+        assert_eq!(kind_of("com.apple.drawing.2"), "drawing");
         assert_eq!(kind_of("com.apple.m4a-audio"), "audio");
         assert_eq!(kind_of("public.mpeg-4-audio"), "audio");
         assert_eq!(kind_of("com.apple.quicktime-movie"), "video");

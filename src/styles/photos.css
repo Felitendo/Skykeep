@@ -3,7 +3,7 @@
 
 /* The screen fills the window as Notes does, so the sidebar's divider runs the full height
    and only the library scrolls. */
-.content:has(.px) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
+.content:has(> .screen-slot:not([hidden]) .px) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
 
 .px {
   /* An app's own words are not text to select, as in Photos; a field still takes typing. */

@@ -748,7 +748,7 @@
 .cal-empty { margin-top: 14px; color: var(--text-2); max-width: 54ch; }
 
 /* The content pane holds the grid, so it must not scroll independently. */
-.content:has(.cal) { display: flex; flex-direction: column; overflow: hidden; }
+.content:has(> .screen-slot:not([hidden]) .cal) { display: flex; flex-direction: column; overflow: hidden; }
 
 .rem-lists {
   overflow-y: auto;
@@ -999,7 +999,7 @@
 
 .contact-notes { margin-top: 20px; color: var(--text-2); white-space: pre-wrap; }
 
-.content:has(.contacts) { display: flex; flex-direction: column; overflow: hidden; }
+.content:has(> .screen-slot:not([hidden]) .contacts) { display: flex; flex-direction: column; overflow: hidden; }
 
 /* ---- iCloud Drive ---------------------------------------------------------------
    A file browser: a path you can walk back along, then rows of what is here. */
@@ -1220,7 +1220,7 @@
 .drive-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drive-meta { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
 
-.content:has(.drive) { display: flex; flex-direction: column; overflow: hidden; }
+.content:has(> .screen-slot:not([hidden]) .drive) { display: flex; flex-direction: column; overflow: hidden; }
 
 /*
  * A narrow window, as Files on iPhone sets a row: the name gets the width, with its size and

@@ -76,7 +76,7 @@ function size(bytes: number | null): string {
  */
 /** A note's picture asked to be shown large: the viewer (NotePicture) listens for it. */
 export const PICTURE_EVENT = "quince:note-picture";
-export type PictureShown = { id: string; name: string; src: string };
+export type PictureShown = { id: string; name: string; src: string; srcDark?: string; drawing?: boolean };
 
 function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   const name = info.filename ?? info.title ?? (info.kind === "audio" ? "Recording" : "Attachment");
@@ -101,7 +101,7 @@ function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     c.addEventListener("click", open);
     return c;
   };
-  const picture = (part: "file" | "preview", cls: string) => {
+  const picture = (part: "file" | "preview" | "drawing" | "drawing-dark", cls: string) => {
     const img = document.createElement("img");
     img.className = cls;
     img.alt = name;
@@ -121,6 +121,21 @@ function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     );
     dom.className = "nf-attachment is-image";
     dom.replaceChildren(img);
+  } else if (info.kind === "drawing") {
+    // A drawing made in the note, as its ink alone (made on this computer from Apple's
+    // rendering): one for a light page, one for a dark — the look in force shows its own.
+    const light = picture("drawing", "nf-drawing nf-ink-light");
+    const dark = picture("drawing-dark", "nf-drawing nf-ink-dark");
+    const show = () =>
+      window.dispatchEvent(
+        new CustomEvent<PictureShown>(PICTURE_EVENT, {
+          detail: { id: info.id, name: info.title ?? "Drawing", src: light.src, srcDark: dark.src, drawing: true },
+        }),
+      );
+    light.addEventListener("click", show);
+    dark.addEventListener("click", show);
+    dom.className = "nf-attachment is-image is-drawing";
+    dom.replaceChildren(light, dark);
   } else if ((info.kind === "document" || info.kind === "video") && info.hasPreview) {
     const figure = document.createElement("button");
     figure.type = "button";
