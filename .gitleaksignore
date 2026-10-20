@@ -1,0 +1,4 @@
+# Synthetic SRP test vectors (fictional account, example.invalid) — not secrets.
+7b3fa60cf2d29c017c05998f560c22251ef95d26:crates/quince-auth/testdata/srp_vectors.json:generic-api-key:10
+7b3fa60cf2d29c017c05998f560c22251ef95d26:crates/quince-auth/testdata/srp_vectors.json:generic-api-key:17
+7b3fa60cf2d29c017c05998f560c22251ef95d26:crates/quince-auth/testdata/srp_vectors.json:generic-api-key:25
