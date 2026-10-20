@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, type DriveFolder, messageOf, type AccountInfo } from "../lib/ipc";
+import { api, type DriveFolder, type LoginItem, messageOf, type AccountInfo } from "../lib/ipc";
 import { freshness, useSync } from "../lib/sync";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
@@ -124,6 +124,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
   const [folderBusy, setFolderBusy] = useState(false);
   const [photosFolder, setPhotosFolder] = useState<DriveFolder | null>(null);
   const [photosBusy, setPhotosBusy] = useState(false);
+  const [login, setLogin] = useState<LoginItem | null>(null);
+  const [loginBusy, setLoginBusy] = useState(false);
   const { report, syncing, refresh } = useSync();
 
   useEffect(() => {
@@ -133,6 +135,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
     getVersion().then(setVersion, () => {});
     api.driveFolderStatus().then(setFolder, () => {});
     api.photosFolderStatus().then(setPhotosFolder, () => {});
+    api.loginItem().then(setLogin, () => {});
   }, []);
   // While the Drive folder is up, what it has still to send is read every two seconds (a
   // local question; nothing asked of Apple), so nothing ever waits unseen.
@@ -299,6 +302,39 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
                 .photosFolderSet(on)
                 .then(setPhotosFolder, (e) => setPhotosFolder({ ...photosFolder, problem: messageOf(e) }))
                 .finally(() => setPhotosBusy(false));
+            }}
+          >
+            <span className="switch-knob" />
+          </button>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label settings-stack">
+            Open at Login
+            <span className="settings-hint">
+              {login?.on && !login.honoured
+                ? "This desktop doesn't open apps at login by itself. Add this to its startup:"
+                : "Starts in the background, so reminders ring and changes sync without the window"}
+            </span>
+            {login?.on && !login.honoured && <code className="settings-command">{login.command}</code>}
+          </span>
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={login?.on ?? false}
+            aria-label="Open at Login"
+            disabled={!login || loginBusy}
+            onClick={() => {
+              if (!login) return;
+              const was = login;
+              setLogin({ ...login, on: !login.on });
+              setLoginBusy(true);
+              api
+                .loginItemSet(!was.on)
+                .then(setLogin, (e) => {
+                  setLogin(was);
+                  setError(messageOf(e));
+                })
+                .finally(() => setLoginBusy(false));
             }}
           >
             <span className="switch-knob" />

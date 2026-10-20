@@ -14,6 +14,7 @@ macro_rules! quiet {
 
 mod alerts;
 mod cpu;
+mod login;
 mod mount;
 mod mount_photos;
 mod outbox;
@@ -3864,11 +3865,21 @@ fn tiling_compositor() -> bool {
 /// painted, and the window appears whole. Shown anyway after a few seconds, so a page that
 /// never says so still leaves a window to use.
 #[tauri::command]
-fn window_ready(app: tauri::AppHandle) {
+fn window_ready(app: tauri::AppHandle, needs_you: Option<bool>) {
+    // Started at login, with nothing for the person to do: everything runs, the window waits
+    // in the tray.
+    // Never without the tray to come back from.
+    if app.tray_by_id("quince").is_some() && login::stay_hidden(needs_you.unwrap_or(true)) {
+        return;
+    }
     show_window(&app);
 }
 
 fn show_when_ready(app: &tauri::AppHandle) {
+    // Started at login: the window is the first window_ready's to show, or not.
+    if login::background() {
+        return;
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -3924,6 +3935,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn main() {
+    login::note_launch();
     steady_drawing();
     smooth_video();
     tauri::Builder::default()
@@ -4166,6 +4178,8 @@ fn main() {
             auth_submit_sms_code,
             auth_sign_out,
             account_unsent,
+            login::login_item_status,
+            login::login_item_set,
             account_services,
             account_info,
             settings_get,

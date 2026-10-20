@@ -18,7 +18,8 @@ export default function App() {
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         import("@tauri-apps/api/core")
-          .then(({ invoke }) => invoke("window_ready"))
+          // Started at login, the window stays in the tray unless the person is needed here.
+          .then(({ invoke }) => invoke("window_ready", { needsYou: phase !== "library" }))
           .catch(() => {});
       }),
     );

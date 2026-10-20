@@ -105,6 +105,9 @@ export const api = {
   /** The iCloud Photos folder on this computer: the same, for photos (read-only for now). */
   photosFolderStatus: () => invoke<DriveFolder>("photos_folder_status"),
   photosFolderSet: (on: boolean) => invoke<DriveFolder>("photos_folder_set", { on }),
+  /** Open at Login: whether it is on, the command it runs, and whether this desktop runs it. */
+  loginItem: () => invoke<LoginItem>("login_item_status"),
+  loginItemSet: (on: boolean) => invoke<LoginItem>("login_item_set", { on }),
   photosFolderOpen: () => invoke<void>("photos_folder_open"),
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Where the window's player fetches videos from (a loopback server), or null without one. */
@@ -764,6 +767,8 @@ export function turnStyle(turn: Turn | null | undefined, w: number, h: number): 
 }
 
 /** The iCloud Drive folder on this computer (see src-tauri/src/mount.rs). */
+export type LoginItem = { on: boolean; command: string; honoured: boolean };
+
 export type DriveFolder = {
   on: boolean;
   path: string;

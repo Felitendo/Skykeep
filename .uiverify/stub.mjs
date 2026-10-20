@@ -607,6 +607,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_send_sms":       return null;
         case "auth_submit_sms_code": return null;
         case "auth_sign_out":    sessionStorage.setItem("__signedOut", JSON.stringify(args)); return null;
+        case "login_item_status": return { on: false, command: "\"/usr/bin/quince-app\" --background", honoured: true, ...(window.__login ?? {}) };
+        case "login_item_set":
+          if (window.__loginRefuse) throw window.__loginRefuse;
+          return (window.__login = { ...(window.__login ?? {}), on: args.on, command: "\"/usr/bin/quince-app\" --background", honoured: window.__login?.honoured ?? true });
         case "account_unsent":   return window.__unsent ?? { changes: 0, files: 0, photos: 0 };
         // One refresh covers every service, so there is one command to stub rather than
         // a pair per screen.
