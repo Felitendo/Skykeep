@@ -186,14 +186,22 @@ async fn refresher(
                 services.push(more);
             }
         }
-        let data = app.state::<Data>();
-        refresh::some(&client, &data.0, &services).await;
-        alerts::changed();
-        if services.contains(&"contacts") {
-            crate::warm_contact_photos(app.clone());
+        // Each service refreshed on its own, side by side: one taken in turn kept a note
+        // edited on the phone waiting behind a long Photos pass (measured: a deletion took 54 s
+        // to show). Two refreshes of one service still take turns (its pass lock).
+        for service in services {
+            let (app, client) = (app.clone(), Arc::clone(&client));
+            tauri::async_runtime::spawn(async move {
+                let data = app.state::<Data>();
+                refresh::some(&client, &data.0, &[service]).await;
+                alerts::changed();
+                if service == "contacts" {
+                    crate::warm_contact_photos(app.clone());
+                }
+                // Every service's freshness, not only this one: the window shows the whole.
+                app.emit(SYNCED, refresh::status(&data.0).await).ok();
+            });
         }
-        // Every service's freshness, not only the ones refreshed: the window shows the whole.
-        app.emit(SYNCED, refresh::status(&data.0).await).ok();
     }
 }
 
