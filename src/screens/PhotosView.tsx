@@ -3,7 +3,7 @@
  * for how many across; a photo opens on a dark stage with the arrows to go through them. Everything draws from the local library at once; thumbnails come
  * from the disk cache and are fetched once.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -81,6 +81,136 @@ const clock = (s: number | null) => {
   const m = Math.floor(s / 60);
   return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 };
+
+/** What a tile can ask of the screen; one object, kept the same, so tiles need not redraw. */
+type Acts = {
+  pick: (index: number, e: React.MouseEvent) => void;
+  open: (index: number) => void;
+  menu: (photo: Photo, e: React.MouseEvent) => void;
+};
+
+/**
+ * One photo in the grid. It redraws only when its own photo, its selection or its place
+ * changes: a click that selects one of twenty thousand redraws two tiles, not all of them.
+ */
+const Tile = memo(function Tile({
+  photo,
+  index,
+  selected,
+  tabbable,
+  left,
+  soon,
+  act,
+}: {
+  photo: Photo;
+  index: number;
+  selected: boolean;
+  tabbable: boolean;
+  left: string | null;
+  soon: boolean;
+  act: Acts;
+}) {
+  return (
+    <button
+      role="listitem"
+      className="px-tile"
+      aria-label={`${photo.filename ?? "Photo"}, ${new Date(photo.takenAt * 1000).toLocaleString()}`}
+      data-id={photo.id}
+      data-index={index}
+      aria-selected={selected}
+      tabIndex={tabbable ? 0 : -1}
+      onClick={(e) => {
+        // The keys follow the click, as in Photos: WebKit does not focus a button it clicks,
+        // and the arrows went on to whatever had the focus before — the app list, which they
+        // moved through instead of the photos.
+        e.currentTarget.focus({ preventScroll: true });
+        act.pick(index, e);
+      }}
+      onDoubleClick={() => act.open(index)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        act.menu(photo, e);
+      }}
+    >
+      <img src={pictureSrc(photo.id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+      {photo.kind === "video" && (
+        <span className="px-badge px-duration">
+          <Play size={10} strokeWidth={0} fill="currentColor" aria-hidden="true" />
+          {clock(photo.duration)}
+        </span>
+      )}
+      {left && <span className={`px-badge px-left${soon ? " is-soon" : ""}`}>{left}</span>}
+      {photo.favorite && <Heart className="px-heart" size={13} strokeWidth={0} fill="currentColor" aria-label="Favorite" />}
+    </button>
+  );
+});
+
+/**
+ * A month of the grid. Only months near the view are built: one further off is an empty
+ * block exactly as tall as its rows will be (worked out in CSS from the grid's own width),
+ * so a library of tens of thousands opens at once and scrolls without the bar jumping.
+ */
+const Month = memo(function Month({
+  label,
+  items,
+  chosen,
+  anchor,
+  deleted,
+  eager,
+  across,
+  act,
+}: {
+  label: string;
+  items: { photo: Photo; index: number }[];
+  chosen: Set<string>;
+  anchor: number | null;
+  deleted: boolean;
+  eager: boolean;
+  across: number;
+  act: Acts;
+}) {
+  const ref = useRef<HTMLElement | null>(null);
+  const [live, setLive] = useState(eager);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setLive(true);
+      return undefined;
+    }
+    const watch = new IntersectionObserver(([e]) => setLive(e.isIntersecting), {
+      root: el.closest(".px-scroll"),
+      rootMargin: "1600px 0px",
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
+  return (
+    <section ref={ref} className="px-month" aria-label={label || undefined}>
+      {label && <h2 className="px-month-title">{label}</h2>}
+      {live ? (
+        <div className="px-grid" role="list">
+          {items.map(({ photo, index }) => {
+            const t = deleted ? timeLeft(photo, true) : null;
+            return (
+              <Tile
+                key={photo.id}
+                photo={photo}
+                index={index}
+                selected={chosen.has(photo.id)}
+                tabbable={anchor === index || (anchor === null && index === 0)}
+                left={t?.words ?? null}
+                soon={t?.soon ?? false}
+                act={act}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <div className="px-later" style={{ "--rows": Math.ceil(items.length / across) } as React.CSSProperties} aria-hidden="true" />
+      )}
+    </section>
+  );
+});
 
 export function PhotosView() {
   const { revision } = useSync();
@@ -539,26 +669,47 @@ export function PhotosView() {
   // The tile to land on from another by an arrow: the nearest in that direction as laid out,
   // so moving down from the last row of a month goes into the next month's first row.
   const neighbour = (from: number, key: string): number | null => {
-    const tiles = [...document.querySelectorAll<HTMLElement>(".px-scroll .px-tile")];
-    const at = tiles[from]?.getBoundingClientRect();
-    if (!at) return null;
+    const count = photos?.length ?? 0;
     if (key === "ArrowLeft") return from > 0 ? from - 1 : null;
-    if (key === "ArrowRight") return from < tiles.length - 1 ? from + 1 : null;
-    const down = key === "ArrowDown";
-    let best: number | null = null;
-    let bestScore = Infinity;
-    const cx = at.left + at.width / 2;
-    tiles.forEach((t, i) => {
-      const r = t.getBoundingClientRect();
-      const ahead = down ? r.top >= at.bottom - 1 : r.bottom <= at.top + 1;
-      if (!ahead) return;
-      const score = Math.abs(down ? r.top - at.bottom : at.top - r.bottom) * 1000 + Math.abs(r.left + r.width / 2 - cx);
-      if (score < bestScore) {
-        bestScore = score;
-        best = i;
+    if (key === "ArrowRight") return from < count - 1 ? from + 1 : null;
+    // Up and down follow the grid as laid out: the same column a row away, and across a
+    // month's edge into the next month's first row or the last month's last. Worked out
+    // from the months themselves, so it reaches months that are not built yet.
+    const k = months.findIndex((m) => m.items.length && from >= m.items[0].index && from <= m.items[m.items.length - 1].index);
+    if (k < 0) return null;
+    const m = months[k];
+    const at = from - m.items[0].index;
+    const col = at % across;
+    if (key === "ArrowDown") {
+      if (at + across < m.items.length) return from + across;
+      // Still a row below in this month, but shorter: its last photo.
+      if (Math.floor(at / across) < Math.floor((m.items.length - 1) / across)) return m.items[m.items.length - 1].index;
+      const next = months[k + 1];
+      return next ? next.items[Math.min(col, next.items.length - 1)].index : null;
+    }
+    if (at - across >= 0) return from - across;
+    const last = months[k - 1];
+    if (!last) return null;
+    const lastRow = Math.floor((last.items.length - 1) / across) * across;
+    return last.items[Math.min(lastRow + col, last.items.length - 1)].index;
+  };
+
+  // The tile at an index, focused and in view; built first if its month is not yet.
+  const reach = (to: number) => {
+    const sel = `.px-scroll .px-tile[data-index="${to}"]`;
+    let tries = 0;
+    const go = () => {
+      const tile = document.querySelector<HTMLElement>(sel);
+      if (tile) {
+        tile.focus({ preventScroll: true });
+        tile.scrollIntoView({ block: "nearest" });
+        return;
       }
-    });
-    return best;
+      const k = months.findIndex((m) => m.items.some((x) => x.index === to));
+      document.querySelectorAll<HTMLElement>(".px-scroll .px-month")[k]?.scrollIntoView({ block: "nearest" });
+      if (++tries < 12) requestAnimationFrame(go);
+    };
+    go();
   };
 
   // The grid's keys, while no photo is open and nothing is being typed.
@@ -583,9 +734,7 @@ export function PhotosView() {
         if (e.shiftKey && anchor.current !== null) setChosen((c) => new Set([...c, list[to].id]));
         else setChosen(new Set([list[to].id]));
         anchor.current = to;
-        const tile = document.querySelectorAll<HTMLElement>(".px-scroll .px-tile")[to];
-        tile?.focus({ preventScroll: true });
-        tile?.scrollIntoView({ block: "nearest" });
+        reach(to);
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected.length) {
         if (album) void removeFrom(selected);
         else if (view !== "recentlyDeleted") void changeAll(selected, "deleted", true);
@@ -666,6 +815,18 @@ export function PhotosView() {
           ];
     setMenu({ at, entries });
   };
+
+  // The tiles' handlers, one object for the life of the screen; each call reaches the newest.
+  const acts = useRef({ pick, openAt, photoMenu });
+  acts.current = { pick, openAt, photoMenu };
+  const act = useMemo<Acts>(
+    () => ({
+      pick: (i, e) => acts.current.pick(i, e),
+      open: (i) => acts.current.openAt(i),
+      menu: (p, e) => acts.current.photoMenu(p, { x: e.clientX, y: e.clientY, alignRight: false }),
+    }),
+    [],
+  );
 
   // Enter submits and closes the field, and closing it blurs it, which would submit again
   // with the same name still in hand: one album per name typed.
@@ -1006,43 +1167,18 @@ export function PhotosView() {
             // A click on the space between photos lets the selection go, as in Photos.
             if (!(e.target as HTMLElement).closest(".px-tile")) setChosen(new Set());
           }} style={{ "--across": across } as React.CSSProperties}>
-          {months.map((m) => (
-            <section key={m.label} className="px-month" aria-label={m.label}>
-              {m.label && <h2 className="px-month-title">{m.label}</h2>}
-              <div className="px-grid" role="list">
-                {m.items.map(({ photo, index }) => (
-                  <button
-                    key={photo.id}
-                    role="listitem"
-                    className="px-tile"
-                    aria-label={`${photo.filename ?? "Photo"}, ${new Date(photo.takenAt * 1000).toLocaleString()}`}
-                    data-id={photo.id}
-                    aria-selected={chosen.has(photo.id)}
-                    tabIndex={anchor.current === index || (anchor.current === null && index === 0) ? 0 : -1}
-                    onClick={(e) => pick(index, e)}
-                    onDoubleClick={() => openAt(index)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      photoMenu(photo, { x: e.clientX, y: e.clientY, alignRight: false });
-                    }}
-                  >
-                    <img src={pictureSrc(photo.id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
-                    {photo.kind === "video" && (
-                      <span className="px-badge px-duration">
-                        <Play size={10} strokeWidth={0} fill="currentColor" aria-hidden="true" />
-                        {clock(photo.duration)}
-                      </span>
-                    )}
-                    {view === "recentlyDeleted" && !album && timeLeft(photo, true) && (
-                      <span className={`px-badge px-left${timeLeft(photo, true)!.soon ? " is-soon" : ""}`}>{timeLeft(photo, true)!.words}</span>
-                    )}
-                    {photo.favorite && (
-                      <Heart className="px-heart" size={13} strokeWidth={0} fill="currentColor" aria-label="Favorite" />
-                    )}
-                  </button>
-                ))}
-              </div>
-            </section>
+          {months.map((m, k) => (
+            <Month
+              key={`${view}/${album?.id ?? ""}/${m.label}`}
+              label={m.label}
+              items={m.items}
+              chosen={chosen}
+              anchor={anchor.current}
+              deleted={view === "recentlyDeleted" && !album}
+              eager={k < 3}
+              across={across}
+              act={act}
+            />
           ))}
           {tally && <p className="px-tally">{tally}</p>}
         </div>

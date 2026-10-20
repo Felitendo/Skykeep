@@ -202,9 +202,18 @@
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent 44px, #000 104px);
   mask-image: linear-gradient(to bottom, transparent 0, transparent 44px, #000 104px);
 }
-/* A month off screen is not laid out or painted until it nears it: a library of thousands
-   scrolls as lightly as one of a hundred. */
-.px-month { content-visibility: auto; contain-intrinsic-size: auto 600px; }
+/* A month not yet built: one cell laid out on the very grid its photos will use, as tall as
+   all its rows — square tiles, 2px between — so nothing moves when it is built. */
+.px-later {
+  display: grid;
+  grid-template-columns: repeat(var(--across, 7), minmax(0, 1fr));
+  column-gap: 2px;
+}
+.px-later::before {
+  content: "";
+  aspect-ratio: 1 / var(--rows);
+  margin-bottom: calc((var(--rows) - 1) * 2px);
+}
 .px-month-title {
   margin: 0;
   padding: 12px 16px 8px;
