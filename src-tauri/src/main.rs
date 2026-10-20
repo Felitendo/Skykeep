@@ -247,6 +247,44 @@ async fn note_media_cached(
     Ok(bytes)
 }
 
+/// A note's picture as the window can draw it: a HEIC original (what an iPhone takes) made a
+/// JPEG on this computer once and kept beside it — the engine draws no HEIC, and the picture
+/// fell back to a file chip. Opening it elsewhere still hands over the original.
+async fn note_media_shown(
+    app: &tauri::AppHandle,
+    id: &str,
+    part: quince_icloud::note_media::Part,
+) -> Result<Vec<u8>, String> {
+    let bytes = note_media_cached(app, id, part).await?;
+    if !quince_media::is_heif(&bytes) {
+        return Ok(bytes);
+    }
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let shown = state_dir(app)
+        .join("note-media")
+        .join(format!("{safe}-shown.jpg"));
+    if let Ok(jpeg) = tokio::fs::read(&shown).await {
+        return Ok(jpeg);
+    }
+    let jpeg = crate::cpu::run(move || quince_media::heic_to_jpeg(&bytes))
+        .await
+        .map_err(|e| e.to_string())??;
+    let part_path = shown.with_extension("part");
+    if tokio::fs::write(&part_path, &jpeg).await.is_ok() {
+        let _ = tokio::fs::rename(&part_path, &shown).await;
+    }
+    Ok(jpeg)
+}
+
 /// A plain report of how this install is doing, for a bug report: versions, the system, and
 /// each service's last sync and last error — never a name, an address, or anything from a
 /// note, card or file. Written to Downloads for the person to read and send themselves;
@@ -4043,7 +4081,7 @@ fn main() {
                 }
                 // A note's picture, or the rendering of a document or film in it.
                 if let Some((id, part)) = attachment {
-                    let response = match note_media_cached(&app, &id, part).await {
+                    let response = match note_media_shown(&app, &id, part).await {
                         Ok(bytes) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", image_type(&bytes))

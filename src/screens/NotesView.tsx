@@ -9,6 +9,7 @@ import { FormattedBody, type Run } from "./notes/Formatted";
 import { carryRuns, runsFit } from "./notes/rich";
 import { NoteEditor, refreshTables, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
 import { FormatPanel } from "./notes/FormatPanel";
+import { NotePicture } from "./notes/NotePicture";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
@@ -625,6 +626,7 @@ export function NotesView() {
 
   return (
     <div className={`notes${detail ? " is-detail" : ""}`}>
+      <NotePicture />
       <aside className="notes-folders" aria-label="Note folders">
         <p className="notes-side-heading">iCloud</p>
         <button className="notes-folder" aria-current={folder === ALL} onClick={() => setFolder(ALL)}>

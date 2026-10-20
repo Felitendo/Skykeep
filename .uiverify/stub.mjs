@@ -306,6 +306,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__mediaNote && !noteList.some((n) => n.guid === "nM"))
             noteList.unshift({ guid: "nM", folderGuid: "f1", title: "Trip", snippet: "", body: "Trip\n\uFFFC\n\uFFFC\nend",
               locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789100000, etag: null });
+          // Opt-in: a note with web addresses in its text and no links of its own.
+          if (window.__linkNote && !noteList.some((n) => n.guid === "nL"))
+            noteList.unshift({ guid: "nL", folderGuid: "f1", title: "Links", snippet: "", body: "Links\nYashps://www.youtube.com/watch?v=5vVh0ZGx8aU\nRead https://example.org/a. Done",
+              locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789200000, etag: null });
           if (window.__tableNote && !noteList.some((n) => n.guid === "nT"))
             noteList.unshift({ guid: "nT", folderGuid: "f1", title: "Groceries", snippet: "", body: "Groceries\n\uFFFC\nend",
               locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789000000, etag: null });

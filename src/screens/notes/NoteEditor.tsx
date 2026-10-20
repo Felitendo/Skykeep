@@ -10,6 +10,7 @@ import type { Run } from "./Formatted";
 import { fromDoc, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
 import { api, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
 import { RowMenu, type MenuEntry } from "../../components/RowMenu";
+import { autolink, openLinkAt } from "./links";
 
 /** `content` with every attachment taken out, a table's cells kept as text in its place. */
 function withoutAttachments(content: Fragment): Fragment {
@@ -73,6 +74,10 @@ function size(bytes: number | null): string {
  * name, anything else as a labelled chip. Clicking one opens it in the app this computer uses
  * for it. A picture that cannot be had falls back to the chip, never a broken frame.
  */
+/** A note's picture asked to be shown large: the viewer (NotePicture) listens for it. */
+export const PICTURE_EVENT = "quince:note-picture";
+export type PictureShown = { id: string; name: string; src: string };
+
 function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   const name = info.filename ?? info.title ?? (info.kind === "audio" ? "Recording" : "Attachment");
   const open = () => void api.noteAttachmentOpen(info.id).catch(() => {});
@@ -110,7 +115,10 @@ function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   dom.title = `Open ${name}`;
   if (info.kind === "image") {
     const img = picture("file", "nf-image");
-    img.addEventListener("click", open);
+    // Shown here at once, from the picture already drawn — never a wait on another app.
+    img.addEventListener("click", () =>
+      window.dispatchEvent(new CustomEvent<PictureShown>(PICTURE_EVENT, { detail: { id: info.id, name, src: img.src } })),
+    );
     dom.className = "nf-attachment is-image";
     dom.replaceChildren(img);
   } else if ((info.kind === "document" || info.kind === "video") && info.hasPreview) {
@@ -444,6 +452,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     const state = EditorState.create({
       doc: toDoc(text, runs),
       plugins: [
+        autolink,
         history(),
         keymap({
           "Mod-z": undo,
@@ -533,6 +542,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         return true;
       },
       handleDOMEvents: {
+        click: (_vw, event) => openLinkAt(event),
         blur: () => {
           if (later.current !== null) report();
           callbacks.current.onBlur?.();

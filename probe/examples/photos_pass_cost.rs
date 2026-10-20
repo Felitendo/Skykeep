@@ -8,13 +8,24 @@ async fn main() -> Result<()> {
     if !client.resume().await? {
         return Err(anyhow!("no session"));
     }
-    let ck = client.session().service_url("ckdatabasews").ok_or_else(|| anyhow!("no ck"))?;
+    let ck = client
+        .session()
+        .service_url("ckdatabasews")
+        .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let t = Instant::now();
     let whole = quince_icloud::photos::fetch(&http, &ck, p.clone(), None).await?;
-    println!("whole library: {} records in {:.1} s", whole.records.len(), t.elapsed().as_secs_f64());
+    println!(
+        "whole library: {} records in {:.1} s",
+        whole.records.len(),
+        t.elapsed().as_secs_f64()
+    );
     let t = Instant::now();
     let since = quince_icloud::photos::fetch(&http, &ck, p, whole.token.as_deref()).await?;
-    println!("changes since: {} records in {:.2} s", since.records.len(), t.elapsed().as_secs_f64());
+    println!(
+        "changes since: {} records in {:.2} s",
+        since.records.len(),
+        t.elapsed().as_secs_f64()
+    );
     Ok(())
 }

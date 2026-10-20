@@ -8,6 +8,7 @@
  * lay over the text directly. Runs that do not add up to the text — a note edited here since
  * the last sync — are not guessed at: the caller shows the plain text instead.
  */
+import { addressesIn, openLinkAt } from "./links";
 export type Run = {
   length: number;
   style: number | null;
@@ -103,9 +104,28 @@ function paragraphs(text: string, runs: Run[]): Paragraph[] {
   return out;
 }
 
+/** Text with its web addresses made links, as the editor draws them (notes/links.ts). */
+function withAddresses(text: string): React.ReactNode {
+  const found = addressesIn(text);
+  if (found.length === 0) return text;
+  const out: React.ReactNode[] = [];
+  let at = 0;
+  for (const a of found) {
+    if (a.from > at) out.push(text.slice(at, a.from));
+    out.push(
+      <a key={a.from} className="nf-autolink" href={a.href} rel="noreferrer" onClick={(e) => { e.stopPropagation(); openLinkAt(e.nativeEvent); }}>
+        {text.slice(a.from, a.to)}
+      </a>,
+    );
+    at = a.to;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return out;
+}
+
 function Inline({ span }: { span: Span }) {
   const { run, text } = span;
-  let node: React.ReactNode = text;
+  let node: React.ReactNode = run.link ? text : withAddresses(text);
   if (run.bold) node = <strong>{node}</strong>;
   if (run.italic) node = <em>{node}</em>;
   if (run.underline) node = <u>{node}</u>;
@@ -113,7 +133,7 @@ function Inline({ span }: { span: Span }) {
   if (run.emphasis) node = <span className={`nf-em-${run.emphasis}`}>{node}</span>;
   if (run.link) {
     node = (
-      <a href={run.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+      <a href={run.link} rel="noreferrer" onClick={(e) => { e.stopPropagation(); openLinkAt(e.nativeEvent); }}>
         {node}
       </a>
     );
