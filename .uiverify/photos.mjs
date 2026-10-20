@@ -83,7 +83,31 @@ ok((await page.getByRole("button", { name: "Favorite", exact: true }).count()) =
   "a change iCloud refuses goes back, and says why");
 await page.keyboard.press("Escape");
 await page.evaluate(() => { window.__flagFail = false; });
+// It goes back into its tile first, then is gone.
+await page.waitForTimeout(650);
 ok((await page.locator(".px-viewer").count()) === 0, "Escape closes the viewer");
+
+// Opening grows the photo out of its tile: a moment in, it is still near the tile's size.
+await page.locator(".px-tile").first().click();
+await page.waitForTimeout(40);
+const mid = await page.locator(".px-shown").evaluate((i) => i.getBoundingClientRect().width);
+await page.waitForTimeout(600);
+const end = await page.locator(".px-shown").evaluate((i) => i.getBoundingClientRect().width);
+ok(mid < end * 0.8 && end > 200, `a photo opens out of its tile  ${Math.round(mid)} → ${Math.round(end)}px`);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(650);
+// Another photo opened while the last is still closing stays open, and is seen.
+await page.locator(".px-tile").nth(1).click();
+await page.waitForTimeout(500);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(60);
+await page.locator(".px-tile").nth(2).click();
+await page.waitForTimeout(800);
+ok((await page.locator(".px-viewer").count()) === 1 &&
+  (await page.locator(".px-backdrop").evaluate((b) => getComputedStyle(b).opacity)) === "1",
+  "a photo opened while another closes stays open, fully shown");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(650);
 
 const across = async () => page.locator(".px-grid").first().evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(" ").length);
 const before = await across();

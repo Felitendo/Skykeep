@@ -3,11 +3,11 @@
  * for how many across; a photo opens on a dark stage with the arrows to go through them. Everything draws from the local library at once; thumbnails come
  * from the disk cache and are fetched once.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Heart, ImagePlus, Info, Minus, Play, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -23,13 +23,14 @@ import { Notice } from "../components/Notice";
 import { UploadTray } from "../components/UploadTray";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 
-const VIEWS: { key: PhotoView; label: string }[] = [
-  { key: "library", label: "Library" },
-  { key: "favorites", label: "Favorites" },
-  { key: "recents", label: "Recents" },
-  { key: "videos", label: "Videos" },
-  { key: "screenshots", label: "Screenshots" },
-  { key: "recentlyDeleted", label: "Recently Deleted" },
+/** The sidebar, in Photos' order, each with the symbol Photos gives it. */
+const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
+  { key: "library", label: "Library", Icon: Images },
+  { key: "favorites", label: "Favorites", Icon: Heart },
+  { key: "recents", label: "Recents", Icon: Clock },
+  { key: "videos", label: "Videos", Icon: Video },
+  { key: "screenshots", label: "Screenshots", Icon: Scan },
+  { key: "recentlyDeleted", label: "Recently Deleted", Icon: Trash2 },
 ];
 
 /** How many across at each step of the zoom, as Photos steps it. */
@@ -40,6 +41,14 @@ const monthOf = (seconds: number) =>
 
 /** What Photos takes, as icloud.com's picker offers it. */
 const KINDS = ["jpg", "jpeg", "heic", "heif", "png", "gif", "tif", "tiff", "webp", "dng", "mov", "mp4", "m4v", "avi"];
+
+/** Photos' album symbol: a card with the cards behind it showing above, as a stack. */
+const AlbumGlyph = () => (
+  <svg className="px-glyph" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+    <rect x="3" y="9" width="18" height="12" rx="2.5" />
+    <path d="M5.5 5.5h13M8 2.5h8" />
+  </svg>
+);
 
 const clock = (s: number | null) => {
   if (!s) return "";
@@ -96,6 +105,115 @@ export function PhotosView() {
   }, [photos, view, album]);
 
   const shown = open !== null ? photos?.[open] ?? null : null;
+
+  /*
+   * The viewer opens as Photos opens a photo: it grows out of its tile while the dark comes up
+   * behind it, and closing sends it back into the tile of the photo now shown. Transform and
+   * opacity only, so the compositor does it all; with reduced motion it simply appears.
+   */
+  const viewer = useRef<HTMLDivElement | null>(null);
+  const stage = useRef<HTMLDivElement | null>(null);
+  const origin = useRef<DOMRect | null>(null);
+  const closing = useRef(false);
+  // A close still running: its animations and its fallback, so a photo opened in the middle
+  // of it is not shut by the close finishing, nor left faded out by it.
+  const closingRun = useRef<{ anims: Animation[]; timer: number } | null>(null);
+  const stopClosing = () => {
+    const run = closingRun.current;
+    if (!run) return;
+    closingRun.current = null;
+    closing.current = false;
+    window.clearTimeout(run.timer);
+    run.anims.forEach((a) => {
+      a.onfinish = null;
+      a.cancel();
+    });
+  };
+  const [room, setRoom] = useState<{ w: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = stage.current;
+    if (!el) return undefined;
+    const measure = () => {
+      const cs = getComputedStyle(el);
+      setRoom({
+        w: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+        h: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom),
+      });
+    };
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The photo's own box, worked out before it loads, so its thumbnail fills that box at once
+  // and the sharper picture lands on top of it without anything moving.
+  const fitted = (p: Photo): React.CSSProperties | undefined => {
+    if (!room || !p.width || !p.height) return undefined;
+    const k = Math.min(room.w / p.width, room.h / p.height, 1.5);
+    return {
+      width: Math.round(p.width * k),
+      height: Math.round(p.height * k),
+      maxWidth: "none",
+      maxHeight: "none",
+      backgroundImage: `url("${pictureSrc(p.id, "thumb")}")`,
+    };
+  };
+  const still = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const spring = () => getComputedStyle(document.documentElement).getPropertyValue("--spring-smooth").trim() || "ease-out";
+  // From the shown picture's box to a tile's: the transform that lays one on the other.
+  const toTile = (img: HTMLElement, tile: DOMRect) => {
+    const r = img.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const k = Math.max(tile.width / r.width, tile.height / r.height);
+    const dx = tile.left + tile.width / 2 - (r.left + r.width / 2);
+    const dy = tile.top + tile.height / 2 - (r.top + r.height / 2);
+    return `translate(${dx}px, ${dy}px) scale(${k})`;
+  };
+  useLayoutEffect(() => {
+    if (open === null || !room) return;
+    const from = origin.current;
+    origin.current = null;
+    const el = viewer.current;
+    if (!from || !el || still() || typeof el.animate !== "function") return;
+    const img = el.querySelector<HTMLElement>(".px-shown");
+    const t = img && toTile(img, from);
+    if (img && t) img.animate([{ transform: t }, { transform: "none" }], { duration: 460, easing: spring() });
+    for (const part of el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info")) {
+      part.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: "ease-out" });
+    }
+  }, [open !== null && room !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const close = useCallback(() => {
+    const el = viewer.current;
+    const current = open !== null ? photos?.[open] : null;
+    const tile = current ? document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(current.id)}"]`) : null;
+    const img = el?.querySelector<HTMLElement>(".px-shown");
+    const box = tile?.getBoundingClientRect();
+    const scroller = tile?.closest(".px-scroll")?.getBoundingClientRect();
+    // Only back into a tile that is on screen; otherwise the viewer just fades.
+    const seen = box && scroller && box.bottom > scroller.top && box.top < scroller.bottom;
+    if (!el || closing.current || still() || typeof el.animate !== "function") {
+      setOpen(null);
+      return;
+    }
+    closing.current = true;
+    const done = () => {
+      if (!closingRun.current) return;
+      closingRun.current = null;
+      closing.current = false;
+      setOpen(null);
+    };
+    const t = seen && img ? toTile(img, box) : null;
+    const parts = [...el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info")];
+    const anims = parts.map((part) => part.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 220, easing: "ease-in", fill: "forwards" }));
+    const last = t && img
+      ? img.animate([{ transform: "none" }, { transform: t }], { duration: 340, easing: spring(), fill: "forwards" })
+      : el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, easing: "ease-in", fill: "forwards" });
+    anims.push(last);
+    last.onfinish = done;
+    // A finish that never comes (a hidden window stops the clock) must not leave it open.
+    closingRun.current = { anims, timer: window.setTimeout(done, 600) };
+  }, [open, photos]);
   const step = useCallback(
     (by: number) => setOpen((at) => (at === null || !photos ? at : Math.max(0, Math.min(photos.length - 1, at + by)))),
     [photos],
@@ -108,7 +226,7 @@ export function PhotosView() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "ArrowRight") step(1);
       else if (e.key === "ArrowLeft") step(-1);
-      else if (e.key === "Escape") setOpen(null);
+      else if (e.key === "Escape") close();
       else if (e.key === " " && current?.kind === "video") void play(current);
       else if (e.key.toLowerCase() === "i" && !e.metaKey && !e.ctrlKey) setInfo((v) => !v);
       // As in Photos: "." favorites, Delete sends it to Recently Deleted.
@@ -473,7 +591,8 @@ export function PhotosView() {
               setOpen(null);
             }}
           >
-            <span>{v.label}</span>
+            <v.Icon className="px-glyph" size={16} strokeWidth={1.8} aria-hidden="true" />
+            <span className="px-label">{v.label}</span>
             {counts[v.key] ? <span className="px-count">{counts[v.key]}</span> : null}
           </button>
         ))}
@@ -510,7 +629,8 @@ export function PhotosView() {
                 });
               }}
             >
-              <span>{a.name}</span>
+              <AlbumGlyph />
+              <span className="px-label">{a.name}</span>
               {n ? <span className="px-count">{n}</span> : null}
             </button>
           ),
@@ -569,7 +689,12 @@ export function PhotosView() {
                     role="listitem"
                     className="px-tile"
                     aria-label={`${photo.filename ?? "Photo"}, ${new Date(photo.takenAt * 1000).toLocaleString()}`}
-                    onClick={() => setOpen(index)}
+                    data-id={photo.id}
+                    onClick={(e) => {
+                      stopClosing();
+                      origin.current = e.currentTarget.getBoundingClientRect();
+                      setOpen(index);
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       photoMenu(photo, { x: e.clientX, y: e.clientY, alignRight: false });
@@ -594,9 +719,10 @@ export function PhotosView() {
         </div>
 
         {shown && (
-          <div className="px-viewer" role="dialog" aria-label={shown.filename ?? "Photo"}>
+          <div className="px-viewer" ref={viewer} role="dialog" aria-label={shown.filename ?? "Photo"}>
+            <div className="px-backdrop" aria-hidden="true" />
             <header className="px-viewer-bar">
-              <button className="px-icon" aria-label="Close" title="Close (Esc)" onClick={() => setOpen(null)}>
+              <button className="px-icon" aria-label="Close" title="Close (Esc)" onClick={close}>
                 <X size={18} />
               </button>
               <div className="px-viewer-when">
@@ -648,18 +774,18 @@ export function PhotosView() {
                 <Info size={17} />
               </button>
             </header>
-            <div className="px-stage">
+            <div className="px-stage" ref={stage}>
               {shown.kind === "video" ? (
                 // A still of the video, and Play opens it in this computer's own player: the
                 // window's engine plays nothing without codec plugins many systems lack.
                 <button className="px-video" aria-label="Play in your video player" onClick={() => void play(shown)}>
-                  <img key={shown.id} src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" />
+                  <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" style={fitted(shown)} />
                   <span className="px-play" aria-hidden="true">
                     <Play size={28} strokeWidth={0} fill="currentColor" />
                   </span>
                 </button>
               ) : (
-                <img key={shown.id} src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" />
+                <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" style={fitted(shown)} />
               )}
               {open !== null && open > 0 && (
                 <button className="px-nav is-prev" aria-label="Previous" onClick={() => step(-1)}>
