@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod alerts;
+mod cpu;
 mod outbox;
 mod photos;
 mod push;
@@ -3867,6 +3868,8 @@ fn main() {
             photos::photo_set_flag,
             photos::photo_play,
             photos::photos_set_flag,
+            photos::photos_burst,
+            photos::photos_prepare,
             video::video_base,
             window_tint,
             photos::photos_upload,

@@ -16,13 +16,13 @@ await openScreen(page, "Photos");
 await page.waitForTimeout(400);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
-const shown = () => page.locator(".px-stage .px-shown").getAttribute("src");
+const shown = () => page.locator(".px-stage .px-shown").getAttribute("data-picture");
 
 await page.locator(".px-tile").nth(0).dblclick();
 await page.waitForTimeout(80);
 const enough = () => page.evaluate(() => {
   const img = document.querySelector(".px-stage .px-shown");
-  const step = Number(/fit(\d+)/.exec(decodeURIComponent(img.getAttribute("src")))?.[1] ?? 0);
+  const step = Number(/fit(\d+)/.exec(decodeURIComponent(img.getAttribute("data-picture")))?.[1] ?? 0);
   // Its laid-out size, not its box on screen: that is still growing as the viewer opens.
   const long = Math.max(img.offsetWidth, img.offsetHeight) * devicePixelRatio;
   return step >= long - 1 && step < long * 2;

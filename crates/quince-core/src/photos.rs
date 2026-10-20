@@ -89,6 +89,15 @@ pub struct Photo {
     pub rendered: i64,
     /// Photos' subtype: 1 and 3 mark screenshots and the like (`assetSubtypeV2`).
     pub subtype: i64,
+    /// The burst it was shot in (`burstId`): a burst shows as its one chosen photo.
+    #[serde(default)]
+    pub burst: Option<String>,
+    /// The burst's chosen photo — the one Photos shows for it (`burstFlags` 16).
+    #[serde(default)]
+    pub burst_pick: bool,
+    /// How many photos its burst holds (filled when read; not stored).
+    #[serde(default)]
+    pub burst_count: i64,
     /// The asset's change tag, for writing back to it.
     pub change_tag: Option<String>,
 }
@@ -150,7 +159,14 @@ pub enum View {
 
 const COLUMNS: &str = "id, master, taken_at, added_at, kind, width, height, duration, filename, \
                        size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag, expunge_at, title, caption, rating, \
-                       keywords, latitude, longitude, rendered";
+                       keywords, latitude, longitude, rendered, burst, burst_pick";
+
+/// A burst shows as its chosen photo, as Photos shows it (Apple's library says as much: its
+/// `burstsExcludedFromPhotosCount` is every burst's photos less one each). A burst whose chosen
+/// photo is not in the library shows whole rather than not at all.
+const ONE_PER_BURST: &str =
+    "(burst IS NULL OR burst_pick = 1 OR NOT EXISTS (SELECT 1 FROM photos k \
+                             WHERE k.burst = photos.burst AND k.burst_pick = 1 AND k.deleted = 0))";
 
 fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
     Ok(Photo {
@@ -182,6 +198,9 @@ fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
         latitude: r.get(22)?,
         longitude: r.get(23)?,
         rendered: r.get(24)?,
+        burst: r.get(25)?,
+        burst_pick: r.get::<_, i64>(26)? != 0,
+        burst_count: 0,
     })
 }
 
@@ -194,9 +213,9 @@ impl Library {
                 "INSERT INTO photos (id, master, taken_at, added_at, kind, width, height, duration,
                                      filename, size, uti, favorite, hidden, deleted, deleted_at,
                                      subtype, change_tag, expunge_at, title, caption, rating,
-                                     keywords, latitude, longitude, rendered)
+                                     keywords, latitude, longitude, rendered, burst, burst_pick)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
-                         ?22, ?23, ?24, ?25)
+                         ?22, ?23, ?24, ?25, ?26, ?27)
                  ON CONFLICT(id) DO UPDATE SET
                    master = excluded.master, taken_at = excluded.taken_at,
                    added_at = excluded.added_at, kind = excluded.kind, width = excluded.width,
@@ -208,7 +227,8 @@ impl Library {
                    expunge_at = excluded.expunge_at, title = excluded.title,
                    caption = excluded.caption, rating = excluded.rating,
                    keywords = excluded.keywords, latitude = excluded.latitude,
-                   longitude = excluded.longitude, rendered = excluded.rendered",
+                   longitude = excluded.longitude, rendered = excluded.rendered,
+                   burst = excluded.burst, burst_pick = excluded.burst_pick",
             )?;
             for p in photos {
                 stmt.execute(params![
@@ -237,7 +257,9 @@ impl Library {
                         .then(|| serde_json::to_string(&p.keywords).unwrap_or_default()),
                     p.latitude,
                     p.longitude,
-                    p.rendered
+                    p.rendered,
+                    p.burst,
+                    i64::from(p.burst_pick)
                 ])?;
             }
         }
@@ -264,11 +286,44 @@ impl Library {
     /// A view's photos, newest first.
     pub fn photos(&self, view: View) -> Result<Vec<Photo>> {
         let (filter, order) = Self::view_query(view);
+        let bursts = if view == View::RecentlyDeleted {
+            "1"
+        } else {
+            ONE_PER_BURST
+        };
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM photos WHERE {filter} ORDER BY {order}, id"
+            "SELECT {COLUMNS} FROM photos WHERE {filter} AND {bursts} ORDER BY {order}, id"
         ))?;
         let rows = stmt.query_map([], row_to_photo)?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        self.with_bursts(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Each photo's burst size, from one count over the library.
+    fn with_bursts(&self, mut photos: Vec<Photo>) -> Result<Vec<Photo>> {
+        if !photos.iter().any(|p| p.burst.is_some()) {
+            return Ok(photos);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT burst, COUNT(*) FROM photos WHERE burst IS NOT NULL AND deleted = 0 GROUP BY burst",
+        )?;
+        let sizes: std::collections::HashMap<String, i64> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        for p in &mut photos {
+            if let Some(b) = &p.burst {
+                p.burst_count = sizes.get(b).copied().unwrap_or(1);
+            }
+        }
+        Ok(photos)
+    }
+
+    /// Every photo of one burst, in the order they were shot.
+    pub fn burst_photos(&self, burst: &str) -> Result<Vec<Photo>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM photos WHERE burst = ?1 AND deleted = 0 ORDER BY taken_at, id"
+        ))?;
+        let rows = stmt.query_map(params![burst], row_to_photo)?;
+        self.with_bursts(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Photos found by what is typed, as Photos' search finds them: every word must match the
@@ -300,7 +355,7 @@ impl Library {
             .map(|n| one.replace("{n}", &n.to_string()))
             .collect();
         let sql = format!(
-            "SELECT {COLUMNS} FROM photos WHERE deleted = 0 AND hidden = 0 AND {}
+            "SELECT {COLUMNS} FROM photos WHERE deleted = 0 AND hidden = 0 AND {ONE_PER_BURST} AND {}
              ORDER BY taken_at DESC, id LIMIT {}",
             conditions.join(" AND "),
             limit.min(50_000)
@@ -317,7 +372,7 @@ impl Library {
             .collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(patterns.iter()), row_to_photo)?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        self.with_bursts(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Which photos a view holds, and in what order.
@@ -367,7 +422,11 @@ impl Library {
             .conn
             .prepare(&format!("SELECT {COLUMNS} FROM photos WHERE id = ?1"))?;
         let mut rows = stmt.query_map(params![id], row_to_photo)?;
-        Ok(rows.next().transpose()?)
+        let one: Option<Photo> = rows.next().transpose()?;
+        Ok(match one {
+            Some(p) => self.with_bursts(vec![p])?.pop(),
+            None => None,
+        })
     }
 
     /// How many photos each view holds.
@@ -387,8 +446,13 @@ impl Library {
             // Counted where the rows are: a library of twenty thousand is not read seven times
             // over to say how many each view holds.
             let (filter, _) = Self::view_query(view);
+            let bursts = if view == View::RecentlyDeleted {
+                "1"
+            } else {
+                ONE_PER_BURST
+            };
             let n: i64 = self.conn.query_row(
-                &format!("SELECT COUNT(*) FROM photos WHERE {filter}"),
+                &format!("SELECT COUNT(*) FROM photos WHERE {filter} AND {bursts}"),
                 [],
                 |r| r.get(0),
             )?;
@@ -550,7 +614,7 @@ impl Library {
              ORDER BY i.position, p.taken_at DESC, p.id"
         ))?;
         let rows = stmt.query_map(params![album], row_to_photo)?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        self.with_bursts(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// One album added or changed, as Apple answered a write.
@@ -695,7 +759,43 @@ mod tests {
             latitude: None,
             longitude: None,
             rendered: 0,
+            burst: None,
+            burst_pick: false,
+            burst_count: 0,
         }
+    }
+
+    /// A burst shows as its chosen photo in every view and count, carrying how many it holds;
+    /// all of it is there to look through; with its chosen photo gone it shows whole.
+    #[test]
+    fn a_burst_shows_as_its_chosen_photo() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut shots: Vec<Photo> = (0..5)
+            .map(|i| Photo {
+                burst: Some("B".into()),
+                burst_pick: i == 2,
+                ..photo(&format!("b{i}"), 100 + i)
+            })
+            .collect();
+        shots.push(photo("alone", 50));
+        lib.put_photos(&shots).unwrap();
+        let shown = lib.photos(View::Library).unwrap();
+        assert_eq!(
+            shown.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["b2", "alone"]
+        );
+        assert_eq!(shown[0].burst_count, 5);
+        let counts = lib.photo_counts().unwrap();
+        assert_eq!(
+            counts.iter().find(|(v, _)| *v == View::Library).unwrap().1,
+            2
+        );
+        assert_eq!(lib.burst_photos("B").unwrap().len(), 5);
+        // The chosen one deleted: the rest show, rather than the burst vanishing.
+        let mut gone = lib.photo("b2").unwrap().unwrap();
+        gone.deleted = true;
+        lib.put_photos(&[gone]).unwrap();
+        assert_eq!(lib.photos(View::Library).unwrap().len(), 5);
     }
 
     /// Each view is the right photos, newest first; Recently Deleted holds only the deleted.

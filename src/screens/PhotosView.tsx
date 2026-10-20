@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, CalendarDays, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -27,8 +27,8 @@ import { Portal } from "../components/Portal";
 import { Slideshow } from "./photos/Slideshow";
 import { useAsk } from "./photos/Ask";
 import { VideoPlayer } from "./photos/VideoPlayer";
+import { JumpTo, type MonthCover } from "./photos/JumpTo";
 import { tintFrom } from "../lib/tint";
-import { glide } from "../lib/motion";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
 
@@ -124,7 +124,7 @@ const fitFrame = (p: Photo): React.CSSProperties =>
 /**
  * The viewer's filmstrip, as icloud.com's: the photos either side as narrow slips, the one shown
  * wider in the middle; a click goes to it. Only the sixty or so nearest are built, and the
- * strip glides on the compositor to keep the one shown in the middle.
+ * strip moves at once to keep the one shown in the middle (animated, it flickered on his screen).
  */
 const SLIP = 26;
 const SHOWN = 54;
@@ -134,7 +134,7 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
   const from = Math.max(0, at - REACH);
   const to = Math.min(photos.length - 1, at + REACH);
   // Each slip has its place by its index in the whole library, so the slips built as the
-  // window moves along never jump; the strip glides to put the shown one's centre in the middle.
+  // window moves along never jump; the strip is placed to put the shown one's centre in the middle.
   const shift = -(at * (SLIP + GAP) + SHOWN / 2);
   const slips = [];
   for (let i = from; i <= to; i++) {
@@ -150,7 +150,8 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
         aria-current={i === at}
         onClick={() => i !== at && onPick(i)}
       >
-        <img src={fitSrc(p.id, (i === at ? SHOWN : SLIP * 2) * (window.devicePixelRatio || 1))} alt="" loading="lazy" decoding="async" draggable={false} />
+        {/* At once, never lazily: a slip coming into the strip showed empty for a moment. */}
+        <img src={fitSrc(p.id, (i === at ? SHOWN : SLIP * 2) * (window.devicePixelRatio || 1))} alt="" decoding="async" draggable={false} />
       </button>,
     );
   }
@@ -258,6 +259,7 @@ const Tile = memo(function Tile({
   cell: number;
   act: Acts;
 }) {
+  const born = useRef(performance.now());
   return (
     <button
       role="listitem"
@@ -305,7 +307,18 @@ const Tile = memo(function Tile({
         {/* Fetched as soon as its month is built, well ahead of the screen — not left to the
             engine's own lazy margin, which a fast scroll outran — and made the size it is
             drawn at, so the engine never shrinks it. */}
-        <img src={tileSrc(photo, cell, fit)} alt="" decoding="async" draggable={false} />
+        <img
+          src={tileSrc(photo, cell, fit)}
+          alt=""
+          decoding="async"
+          draggable={false}
+          // Already made (as it nearly always is, see photos_prepare): there at once. Still on
+          // its way: it fades in over the thumbnail rather than snapping from soft to sharp.
+          // Never made: the thumbnail stays.
+          onLoad={(e) => {
+            e.currentTarget.dataset.in = performance.now() - born.current > 80 ? "fade" : "now";
+          }}
+        />
         {photo.kind === "video" && (
           <span className="px-badge px-duration">
             <Play size={10} strokeWidth={0} fill="currentColor" aria-hidden="true" />
@@ -332,7 +345,6 @@ const Month = memo(function Month({
   anchor,
   deleted,
   eager,
-  across,
   fit,
   cell,
   act,
@@ -343,7 +355,6 @@ const Month = memo(function Month({
   anchor: number | null;
   deleted: boolean;
   eager: boolean;
-  across: number;
   fit: boolean;
   cell: number;
   act: Acts;
@@ -393,7 +404,13 @@ const Month = memo(function Month({
           })}
         </div>
       ) : (
-        <div className="px-later" style={{ "--rows": Math.ceil(items.length / across) } as React.CSSProperties} aria-hidden="true" />
+        // Not built yet (far from the screen): its tiles as plain boxes on the very grid the photos
+        // will use, so a fast scroll shows photos on their way — never an empty page.
+        <div className="px-grid px-later" aria-hidden="true">
+          {items.map(({ photo }) => (
+            <div key={photo.id} className="px-ph" />
+          ))}
+        </div>
       )}
     </section>
   );
@@ -427,6 +444,12 @@ export function PhotosView() {
     });
   /** The view's photos as read; `photos`, below, is them in the order chosen to show. */
   const [raw, setPhotos] = useState<Photo[] | null>(null);
+  /**
+   * A burst opened from its chosen photo, as Photos' "View all": the viewer goes through the
+   * burst's photos in the order they were shot, counted "3 of 64", until Done (or the viewer
+   * closes) brings the library back where it was. `from` is the chosen photo to come back to.
+   */
+  const [inBurst, setInBurst] = useState<{ from: string; count: number } | null>(null);
   const [counts, setCounts] = useState<Partial<Record<PhotoView, number>>>({});
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -500,14 +523,17 @@ export function PhotosView() {
   // render instead, a view's first frame grouped one order by another's dates: months came
   // twice ("December 2025" four times over), and the repeated keys left stale months on screen.
   const photos = useMemo(
-    () => (raw && sort ? sortList(raw, sort) : raw),
-    [raw, sort?.by, sort?.oldest], // eslint-disable-line react-hooks/exhaustive-deps
+    () => (raw && sort && !inBurst ? sortList(raw, sort) : raw),
+    [raw, sort?.by, sort?.oldest, inBurst !== null], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // Reads can pass each other: a sync's read of one view can land after another view was
   // chosen. Only the newest read may draw, or a view shows another's photos under its title.
   const reads = useRef(0);
+  /** A burst is being gone through: the library's reads wait until it is left (see viewBurst). */
+  const burstOpen = useRef(false);
   const read = useCallback(async () => {
+    if (burstOpen.current) return;
     const mine = ++reads.current;
     const [list, c, a] = await Promise.all([
       searching ? api.photosSearch(searching) : album ? api.photosInAlbum(album.id) : api.photosList(view),
@@ -529,7 +555,10 @@ export function PhotosView() {
   // Grouped by month, as the library reads; an album is one grid in its own order.
   const months = useMemo(() => {
     const out: { label: string; items: { photo: Photo; index: number }[] }[] = [];
-    if (drawn.album) return [{ label: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
+    // An album keeps its own order, and Recently Deleted is in the order things were deleted:
+    // grouped by the month they were taken, the same month came back again and again. Both are
+    // one grid, as icloud.com shows them.
+    if (drawn.album || drawn.view === "recentlyDeleted") return [{ label: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
     (photos ?? []).forEach((photo, index) => {
       // Rated is grouped by how many stars, as icloud.com's Rated page is.
       const stars = photo.rating ?? 0;
@@ -575,18 +604,29 @@ export function PhotosView() {
   const origin = useRef<DOMRect | null>(null);
   const closing = useRef(false);
   /**
-   * While a photo is open the grid behind it is not drawn at all (content-visibility): each
-   * step to the next photo moved the selection in it, and the engine laid out and painted
-   * thousands of tiles no one could see — 80 ms a step, the stutter in going through photos.
-   * It keeps its place and state, and is back the moment the viewer starts to close.
+   * The grid behind a photo that has finished opening is not painted (visibility): WebKit
+   * painted every tile under the opaque viewer on each step to the next photo, 80 ms a step.
+   * Only while the photo rests — never while it opens or closes. Hidden with content-visibility
+   * instead, the grid was dropped from the page: an open showed it one frame and then an empty
+   * background under the fading backdrop, and a close brought it back over several frames,
+   * dropping out again in one (his recording: 26 → 61 → 118 → 33 → 145) — the flicker on every
+   * open and close. Visibility keeps its layout and its decoded pictures, so it is back whole in
+   * the very frame the close begins.
    */
-  const [leaving, setLeaving] = useState(false);
+  const gridBehind = (on: boolean) => {
+    const grid = scroller.current;
+    if (!grid) return;
+    if (on) grid.setAttribute("data-behind", "");
+    else grid.removeAttribute("data-behind");
+  };
   useEffect(() => {
-    if (open === null) setLeaving(false);
+    if (open === null) gridBehind(false);
   }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
   // A close still running: its animations and its fallback, so a photo opened in the middle
   // of it is not shut by the close finishing, nor left faded out by it.
   const closingRun = useRef<{ anims: Animation[]; timer: number } | null>(null);
+  /** Every tile lifted for a photo's flight put back. */
+  const land = () => document.querySelectorAll(".px-tile[data-lifted]").forEach((t) => t.removeAttribute("data-lifted"));
   const stopClosing = () => {
     const run = closingRun.current;
     if (!run) return;
@@ -629,33 +669,16 @@ export function PhotosView() {
     };
   };
   const still = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const spring = () => getComputedStyle(document.documentElement).getPropertyValue("--spring-smooth").trim() || "ease-out";
-  // From the shown picture's box to a tile's: the transform that lays one on the other.
-  const toTile = (img: HTMLElement, tile: DOMRect) => {
-    const r = img.getBoundingClientRect();
-    if (!r.width || !r.height) return null;
-    const k = Math.max(tile.width / r.width, tile.height / r.height);
-    const dx = tile.left + tile.width / 2 - (r.left + r.width / 2);
-    const dy = tile.top + tile.height / 2 - (r.top + r.height / 2);
-    return `translate(${dx}px, ${dy}px) scale(${k})`;
-  };
+  // A photo opens and closes at once, with no animation: every way of animating it — the photo
+  // growing out of its tile, the backdrop fading, the bars fading, the grid behind it hidden or
+  // shown during the move — still showed him a flicker in WebKitGTK on Hyprland. Opened, the
+  // grid behind it is left unpainted (gridBehind); it is painted again before the viewer goes.
   useLayoutEffect(() => {
     if (open === null) return;
-    const from = origin.current;
     origin.current = null;
     const el = viewer.current;
-    // A viewer hidden as its last close ended, opened again before it went: shown again.
     if (el) el.style.visibility = "";
-    if (!from || !el || still() || typeof el.animate !== "function") return;
-    // The photo's whole frame moves — the screen-sized picture and the whole one over it
-    // together. Moving the one alone, the whole one (already on disk) stood full size over
-    // it as it grew: two photos, torn.
-    const img = el.querySelector<HTMLElement>(".px-pan, .px-video");
-    const t = img && toTile(img, from);
-    if (img && t) glide(img, [{ transform: t }, { transform: "none" }], { duration: 460, easing: spring() });
-    for (const part of el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info, .px-strip")) {
-      glide(part, [{ opacity: "0" }, { opacity: "1" }], { duration: 160, easing: "ease-out" });
-    }
+    gridBehind(true);
   }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The window takes the viewer's near-black while it is open, and the app's colour again
@@ -667,54 +690,10 @@ export function PhotosView() {
   }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const close = useCallback(() => {
-    // The grid back in the page first (see `behind`): the photo goes back into its tile, which
-    // must be laid out to be found.
-    document.querySelector(".px-scroll")?.removeAttribute("data-behind");
-    setLeaving(true);
-    const el = viewer.current;
-    const current = open !== null ? photos?.[open] : null;
-    const tile = current ? document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(current.id)}"]`) : null;
-    const img = el?.querySelector<HTMLElement>(".px-pan, .px-video");
-    const box = tile?.getBoundingClientRect();
-    const scroller = tile?.closest(".px-scroll")?.getBoundingClientRect();
-    // Only back into a tile that is on screen; otherwise the viewer just fades.
-    const seen = box && scroller && box.bottom > scroller.top && box.top < scroller.bottom;
-    if (!el || closing.current || still() || typeof el.animate !== "function") {
-      setOpen(null);
-      return;
-    }
-    closing.current = true;
-    const done = () => {
-      const run = closingRun.current;
-      if (!run) return;
-      closingRun.current = null;
-      closing.current = false;
-      // Hidden in the same moment the animations end, with their last frame kept as real
-      // styles: an ended animation let WebKit draw the photo at full size for one frame
-      // before the viewer went — a whole-window flash on every close.
-      if (el) {
-        for (const a of run.anims) {
-          try {
-            a.commitStyles();
-          } catch {
-            // An element already gone has nothing to keep.
-          }
-        }
-        el.style.visibility = "hidden";
-      }
-      setOpen(null);
-    };
-    const t = seen && img ? toTile(img, box) : null;
-    const parts = [...el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info, .px-strip")];
-    const anims = parts.map((part) => glide(part, [{ opacity: "1" }, { opacity: "0" }], { duration: 140, easing: "ease-in" }));
-    const last = t && img
-      ? glide(img, [{ transform: "none" }, { transform: t }], { duration: 340, easing: spring() })
-      : glide(el, [{ opacity: "1" }, { opacity: "0" }], { duration: 200, easing: "ease-in" });
-    anims.push(last);
-    last.onfinish = done;
-    // A finish that never comes (a hidden window stops the clock) must not leave it open.
-    closingRun.current = { anims, timer: window.setTimeout(done, 600) };
-  }, [open, photos]);
+    gridBehind(false);
+    land();
+    setOpen(null);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const step = useCallback(
     (by: number) =>
       setOpen((at) => {
@@ -759,6 +738,62 @@ export function PhotosView() {
       }, glide ? 340 : 160);
     });
   };
+  const viewBurst = async (p: Photo) => {
+    if (!p.burst) return;
+    try {
+      const list = await api.photosBurst(p.burst);
+      reads.current++; // a sync's read landing now must not put the library back over it
+      setPhotos(list);
+      setInBurst({ from: p.id, count: list.length });
+      // Opened by the photo, not a place: the list is drawn as it is shown.
+      setReopen(p.id);
+      burstOpen.current = true;
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  };
+  const leaveBurst = async (keepOpen: boolean) => {
+    const back = inBurst?.from;
+    setInBurst(null);
+    burstOpen.current = false;
+    await read().catch(() => {});
+    if (keepOpen && back) setReopen(back);
+  };
+  /** A photo to open again once the library is back (after a burst). */
+  const [reopen, setReopen] = useState<string | null>(null);
+  useEffect(() => {
+    if (!reopen || !photos) return;
+    const at = photos.findIndex((x) => x.id === reopen);
+    setReopen(null);
+    if (at >= 0) setOpen(at);
+  }, [reopen, photos]);
+  // No picture anywhere in Photos — tile, slip, cover — ever shows the engine's broken box: one
+  // listener (errors do not bubble, so it listens on the way down) marks any that fails, and the
+  // style draws nothing for it; what is under it shows. The viewer tries the thumbnail first.
+  useEffect(() => {
+    const failed = (e: Event) => {
+      const img = e.target;
+      if (img instanceof HTMLImageElement && img.closest(".px, .px-viewer, .px-jump, .px-show") && !img.classList.contains("px-shown")) {
+        img.dataset.failed = "";
+      }
+    };
+    document.addEventListener("error", failed, true);
+    return () => document.removeEventListener("error", failed, true);
+  }, []);
+  // However the viewer went (closed, its last photo deleted, another view chosen), no tile is
+  // left lifted out after it.
+  useEffect(() => {
+    if (open !== null) return undefined;
+    const id = requestAnimationFrame(land);
+    return () => cancelAnimationFrame(id);
+  }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Closing the viewer inside a burst brings the library back.
+  useEffect(() => {
+    if (open === null && inBurst) void leaveBurst(false);
+  }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** A Live Photo's moving part playing over it. */
+  const [moving, setMoving] = useState<string | null>(null);
+  useEffect(() => setMoving(null), [shown?.id]);
   /** Videos this computer's engine could not play; each opens in the system's player instead. */
   const [unplayable, setUnplayable] = useState<Set<string>>(() => new Set());
   // The window's player reads only http(s): videos come from the app's own loopback server.
@@ -1078,9 +1113,9 @@ export function PhotosView() {
     // its thumbnail and screen-sized picture, and the whole one follows.
     if (p.kind !== "video") await Promise.race([warm(p), new Promise((r) => window.setTimeout(r, 150))]);
     stopClosing();
-    setLeaving(false);
     const tile = document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(p.id)}"]`);
     origin.current = tile?.getBoundingClientRect() ?? null;
+    land();
     setOpen(index);
   };
 
@@ -1616,6 +1651,30 @@ export function PhotosView() {
   // Scrolled, the line under the title names the month at the top of the view, as Photos
   // does; read once a frame at most, and set only when it changes.
   const [here, setHere] = useState<string | null>(null);
+  /** The month picker, open under its button. */
+  const [jumping, setJumping] = useState<DOMRect | null>(null);
+  // Each month the grid shows, with a photo from it, for the picker: the grid's own months, so
+  // the two always agree.
+  const monthCovers = useMemo<MonthCover[]>(() => {
+    if (drawn.album || drawn.view === "rated") return [];
+    return months
+      .filter((m) => m.label && m.items.length)
+      .map((m) => {
+        const cover = m.items[0].photo;
+        const d = new Date(sortKey(cover, sort?.by ?? "taken") * 1000);
+        return { label: m.label, year: d.getFullYear(), month: d.getMonth(), cover };
+      });
+  }, [months, drawn, sort?.by]);
+  const goToMonth = (label: string) => {
+    const el = scroller.current;
+    const at = el?.querySelector<HTMLElement>(`.px-month[aria-label="${CSS.escape(label)}"]`);
+    // Measured against the scroller itself: offsetTop counts from whatever positioned box
+    // happens to hold the month, which is not always the scroller.
+    if (el && at) {
+      const top = at.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 4;
+      el.scrollTo({ top, behavior: still() ? "auto" : "smooth" });
+    }
+  };
   const scroller = useRef<HTMLDivElement | null>(null);
   const looking = useRef(false);
   // Read a few times a second, not every frame, and by halving rather than going down every
@@ -1663,11 +1722,26 @@ export function PhotosView() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const title = drawn.query
-    ? `“${drawn.query}”`
-    : drawn.album
-    ? (album?.id === drawn.album.id ? album.name : drawn.album.name)
-    : [...VIEWS, ...MEDIA, ...UTILITIES].find((v) => v.key === drawn.view)?.label ?? "Photos";
+  // A view chosen whose photos have not come yet. Nearly always they come within a frame or
+  // two and nothing in between is shown; when the app is busy and they take longer, the new
+  // view's title is up at once with its tiles as plain boxes — never the last view lingering
+  // under the new choice, which read as the app not having heard the click.
+  const switching = drawn.view !== view || (drawn.album?.id ?? null) !== (album?.id ?? null) || drawn.query !== searching;
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (!switching) return undefined;
+    const t = window.setTimeout(() => setSlow(true), 120);
+    return () => window.clearTimeout(t);
+  }, [switching, view, album?.id, searching]);
+  const waiting = switching && slow;
+  const shownAs = waiting ? { view, album, query: searching } : drawn;
+  const title = shownAs.query
+    ? `“${shownAs.query}”`
+    : shownAs.album
+    ? (album?.id === shownAs.album.id ? album.name : shownAs.album.name)
+    : [...VIEWS, ...MEDIA, ...UTILITIES].find((v) => v.key === shownAs.view)?.label ?? "Photos";
+  const waitingFor = waiting ? Math.min(84, album ? (albums.find(([a]) => a.id === album.id)?.[1] ?? 21) : (counts[view] ?? 21)) : 0;
   // A view arrives at its top, not wherever the last one was scrolled to.
   useLayoutEffect(() => {
     if (scroller.current) scroller.current.scrollTop = 0;
@@ -1676,6 +1750,31 @@ export function PhotosView() {
   // A cell's width in device pixels, for the size each tile's picture is made at; in steps of
   // 32, so a window being resized does not redraw every tile on every frame.
   const [gridWidth, setGridWidth] = useState(0);
+  // The header's height, for the room the grid leaves under it: one row in a wide window, two
+  // when the controls go under the title.
+  const bar = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const el = bar.current;
+    const main = el?.parentElement;
+    if (!el || !main) return undefined;
+    // Written only when it changes, and a frame later: the room it makes changes the grid's own
+    // box, which its own watcher sees — in the same frame, a loop the engine reports.
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const h = `${Math.ceil(el.getBoundingClientRect().height)}px`;
+        if (main.style.getPropertyValue("--bar") !== h) main.style.setProperty("--bar", h);
+      });
+    };
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      watch.disconnect();
+    };
+  }, []);
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return undefined;
@@ -1686,6 +1785,16 @@ export function PhotosView() {
     return () => watch.disconnect();
   }, []);
   const cell = Math.round(((gridWidth || 1200) / across) * (window.devicePixelRatio || 1));
+  // The app makes, ahead, every picture the grid and the viewer are about to show at these
+  // sizes (photos_prepare): the first look at a photo is as sharp as the hundredth. Told again
+  // when they change, once the window has settled.
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      const box = stageBox.w ? stageBox : { w: Math.max(320, window.innerWidth - 400), h: Math.max(240, window.innerHeight - 140) };
+      api.photosPrepare({ cell, fit, stageW: box.w, stageH: box.h, dpr: window.devicePixelRatio || 1 }).catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [cell, fit, open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A new album or folder, at the top or in a folder: named in place in the sidebar.
   const startNew = (parent: string | null, folder: boolean) => {
@@ -1978,7 +2087,7 @@ export function PhotosView() {
         )}
         {/* As in Photos on macOS 26: the title and the controls float over the library, which
             scrolls beneath them and fades out at the top edge. */}
-        <header className="px-bar">
+        <header className="px-bar" ref={bar}>
           <div className="px-heading">
             <h1>{title}</h1>
             {selected.length > 0 ? (
@@ -1991,6 +2100,7 @@ export function PhotosView() {
               )
             )}
           </div>
+          <div className="px-tools">
           {view === "recentlyDeleted" && !album && photos && photos.length > 0 && (
             // Recently Deleted's own toolbar, in Photos' words: Recover and Delete for what is
             // selected, Delete All when nothing is.
@@ -2047,6 +2157,21 @@ export function PhotosView() {
               </button>
             </div>
           )}
+          {monthCovers.length > 1 && (
+            <div className="px-capsule">
+              <button
+                className="px-cap"
+                aria-label="Go to a Month"
+                aria-haspopup="dialog"
+                aria-expanded={jumping !== null}
+                title="Go to a month"
+                onClick={(e) => setJumping(jumping ? null : e.currentTarget.getBoundingClientRect())}
+              >
+                <CalendarDays size={16} strokeWidth={1.9} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+          {jumping && <JumpTo months={monthCovers} at={jumping} current={here ?? monthCovers[0]?.label ?? null} onPick={goToMonth} onClose={() => setJumping(null)} />}
           <div className="px-capsule" role="group" aria-label="Zoom">
             <button className="px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
               <Minus size={15} strokeWidth={2.2} aria-hidden="true" />
@@ -2086,6 +2211,7 @@ export function PhotosView() {
               </button>
             )}
           </label>
+          </div>
         </header>
 
         {error && (
@@ -2115,8 +2241,18 @@ export function PhotosView() {
           onClick={(e) => {
             // A click on the space between photos lets the selection go, as in Photos.
             if (!(e.target as HTMLElement).closest(".px-tile")) setChosen(new Set());
-          }} data-fit={fit || undefined} data-behind={(open !== null && !leaving) || undefined} style={{ "--across": across } as React.CSSProperties}>
-          {months.map((m, k) => (
+          }} data-fit={fit || undefined} style={{ "--across": across } as React.CSSProperties}>
+          {waiting && (
+            <div className="px-month" aria-busy="true">
+              <h2 className="px-month-title px-month-title-ph" aria-hidden="true">&nbsp;</h2>
+              <div className="px-grid px-later" aria-hidden="true">
+                {Array.from({ length: waitingFor }, (_, i) => (
+                  <div key={i} className="px-ph" />
+                ))}
+              </div>
+            </div>
+          )}
+          {!waiting && months.map((m, k) => (
             <Month
               key={`${k}/${m.label}`}
               label={m.label}
@@ -2125,7 +2261,6 @@ export function PhotosView() {
               anchor={anchor.current}
               deleted={drawn.view === "recentlyDeleted" && !drawn.album}
               eager={k < 3}
-              across={across}
               fit={fit}
               cell={cell}
               act={act}
@@ -2259,7 +2394,38 @@ export function PhotosView() {
                 >
                   {/* The picture made the size the stage draws it at — every pixel used, none
                       thrown away by the engine — over the thumbnail until it is decoded. */}
-                  <img key={shown.id} className="px-shown" src={viewSrc(shown)} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
+                  <img
+                    key={shown.id}
+                    className="px-shown"
+                    src={viewSrc(shown)}
+                    // What was asked for, kept whatever the fallback below does to `src`.
+                    data-picture={viewSrc(shown)}
+                    alt={shown.filename ?? ""}
+                    decoding="async"
+                    draggable={false}
+                    style={fitted(shown)}
+                    // Never the engine's broken-picture box (a white frame, a question mark, the
+                    // file's name): a picture that will not come falls back to the thumbnail,
+                    // and past that shows nothing over the thumbnail already painted under it.
+                    onError={(e) => {
+                      const img = e.currentTarget;
+                      const thumb = pictureSrc(shown.id, "thumb");
+                      if (!img.src.includes("thumb")) img.src = thumb;
+                      else img.dataset.failed = "";
+                    }}
+                  />
+                  {moving === shown.id && videoBase && (
+                    // The moving part, laid exactly over the still, played once and gone.
+                    <video
+                      key={`${shown.id}-live`}
+                      className="px-live"
+                      src={`${videoBase}/${shown.id}/video`}
+                      autoPlay
+                      playsInline
+                      onEnded={() => setMoving(null)}
+                      onError={() => setMoving(null)}
+                    />
+                  )}
                   {/* Zoomed in, the whole picture: only then are its own pixels the ones seen. */}
                   {zoomed && (
                     <img
@@ -2273,6 +2439,41 @@ export function PhotosView() {
                       onLoad={(e) => e.currentTarget.classList.add("is-in")}
                     />
                   )}
+                </div>
+              )}
+              {/* What kind of photo it is, as Photos marks it at the stage's corner: a Live
+                  Photo plays its moving part while the pointer rests on LIVE; a burst's BURST
+                  goes through all of it. */}
+              {shown.kind === "live" && videoBase && (
+                <button
+                  className={`px-mark${moving === shown.id ? " is-on" : ""}`}
+                  aria-label="Play Live Photo"
+                  onPointerEnter={() => setMoving(shown.id)}
+                  onFocus={() => setMoving(shown.id)}
+                  onClick={() => setMoving(shown.id)}
+                >
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <circle cx="8" cy="8" r="2.2" fill="currentColor" />
+                    <circle cx="8" cy="8" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                    <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" strokeWidth="1.1" strokeDasharray="1.2 1.6" />
+                  </svg>
+                  LIVE
+                </button>
+              )}
+              {shown.burst && (shown.burstCount ?? 0) > 1 && !inBurst && (
+                <button className="px-mark" aria-label={`View all ${shown.burstCount} photos in this burst`} onClick={() => void viewBurst(shown)}>
+                  <Layers size={13} aria-hidden="true" />
+                  BURST
+                  <span className="px-mark-count">{shown.burstCount}</span>
+                </button>
+              )}
+              {inBurst && (
+                <div className="px-mark is-burst" role="status">
+                  <Layers size={13} aria-hidden="true" />
+                  Burst · {(open ?? 0) + 1} of {inBurst.count}
+                  <button className="px-mark-done" onClick={() => void leaveBurst(true)}>
+                    Done
+                  </button>
                 </div>
               )}
               {open !== null && open > 0 && (

@@ -48,7 +48,11 @@ const after = await which();
 const ids = await page.evaluate(() => window.__photos.map((p) => p.id));
 ok(ids.indexOf(after) - ids.indexOf(before) === 4, `scrolling over the strip skims through the photos  (${ids.indexOf(before)} → ${ids.indexOf(after)})`);
 ok((await centred()) <= 1, "and the strip keeps the shown one in the middle");
-ok(await page.locator(".px-slip").first().evaluate((e) => getComputedStyle(e).transform !== "none" && /transform/.test(getComputedStyle(e).transitionProperty)),
-  "slips are placed and eased by transform");
+ok(await page.evaluate(() => [...document.querySelectorAll(".px-slip, .px-strip-run")].every((e) => {
+  const cs = getComputedStyle(e);
+  return cs.transitionDuration.split(",").every((d) => parseFloat(d) === 0);
+}) && document.getAnimations().filter((a) => a.playState === "running").length === 0),
+  "the strip and its slips move at once — nothing in it animates (animated, it flickered)");
+ok((await page.locator(".px-slip img[loading=lazy]").count()) === 0, "and every slip's picture is fetched at once, never lazily");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

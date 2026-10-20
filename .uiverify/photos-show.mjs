@@ -29,11 +29,23 @@ ok((await count()) === "3 of 5", `and goes on by itself  "${await count()}"`);
 await page.keyboard.press(" ");
 await page.waitForTimeout(4400);
 ok((await count()) === "3 of 5" && (await page.getByRole("button", { name: "Play" }).count()) === 1, "Space pauses it");
+// A step waits for the next picture to be decoded — never half shown — so a moment passes.
 await page.keyboard.press("ArrowRight");
+await page.waitForTimeout(150);
 ok((await count()) === "4 of 5", "the right arrow steps on");
 await page.keyboard.press("ArrowLeft");
+await page.waitForTimeout(150);
 await page.keyboard.press("ArrowLeft");
+await page.waitForTimeout(150);
 ok((await count()) === "2 of 5", "and the left back");
+// The one leaving dissolves away above the next (never left whole behind it), then is gone.
+await page.keyboard.press("ArrowRight");
+await page.waitForTimeout(250);
+const mid = await page.locator(".px-slide.is-leaving").evaluate((e) => Number(getComputedStyle(e).opacity)).catch(() => -1);
+await page.waitForTimeout(900);
+ok(mid > 0 && mid < 1 && (await page.locator(".px-slide.is-leaving").count()) === 0, `the photo leaving fades out over the next, then goes  (opacity ${mid.toFixed?.(2)} mid-way)`);
+await page.keyboard.press("ArrowLeft");
+await page.waitForTimeout(150);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
 ok((await page.locator(".px-show").count()) === 0 && (await page.locator(".px-tile").count()) === 5, "Escape ends it, the library as it was");

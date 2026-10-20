@@ -97,6 +97,11 @@ export const api = {
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Where the window's player fetches videos from (a loopback server), or null without one. */
   videoBase: () => invoke<string | null>("video_base"),
+  /** What the window shows pictures at, so the app makes them before they are shown. */
+  photosPrepare: (shown: { cell: number; fit: boolean; stageW: number; stageH: number; dpr: number }) =>
+    invoke<void>("photos_prepare", { shown }),
+  /** Every photo of one burst, in the order they were shot. */
+  photosBurst: (burst: string) => invoke<Photo[]>("photos_burst", { burst }),
   /** Favorite, Delete (to Recently Deleted) or Recover; answers the photo as Apple now has it. */
   photosSetFlag: (ids: string[], flag: "favorite" | "deleted" | "hidden" | "expunged", on: boolean) =>
     invoke<Photo[]>("photos_set_flag", { ids, flag, on }),
@@ -622,6 +627,11 @@ export type Photo = {
   deletedAt: number | null;
   /** In Recently Deleted: when Apple deletes it for good, unix seconds. */
   expungeAt?: number | null;
+  /** The burst it was shot in; a burst shows as its chosen photo. */
+  burst?: string | null;
+  burstPick?: boolean;
+  /** How many photos its burst holds. */
+  burstCount?: number;
   /** Its title and caption, as typed in Photos' Info. */
   title?: string | null;
   caption?: string | null;

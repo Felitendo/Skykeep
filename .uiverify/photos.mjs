@@ -36,10 +36,10 @@ await page.waitForTimeout(200);
 await page.locator(".px-tile").first().dblclick();
 await page.waitForTimeout(150);
 ok((await page.locator(".px-viewer").count()) === 1, "a photo opens in the viewer");
-const first = await page.locator(".px-stage .px-shown").getAttribute("src");
+const first = await page.locator(".px-stage .px-shown").getAttribute("data-picture");
 await page.keyboard.press("ArrowRight");
 await page.waitForTimeout(100);
-const second = await page.locator(".px-stage .px-shown").getAttribute("src");
+const second = await page.locator(".px-stage .px-shown").getAttribute("data-picture");
 ok(first && second && first !== second && /fit\d+/.test(second), "the right arrow goes to the next photo, made the size the screen shows it");
 await page.getByRole("button", { name: "Download" }).click();
 await page.waitForTimeout(200);
@@ -56,7 +56,7 @@ ok(JSON.stringify(flags) === JSON.stringify(["p2:favorite:true", "p2:favorite:fa
 await page.getByRole("button", { name: "Delete", exact: true }).click();
 await page.locator(".px-ask .is-act").click();
 await page.waitForTimeout(300);
-const next = await page.locator(".px-stage .px-shown").first().getAttribute("src");
+const next = await page.locator(".px-stage .px-shown").first().evaluate((i) => i.getAttribute("data-picture") ?? i.getAttribute("src"));
 ok(/p3|p4/.test(next ?? "") && (await page.locator(".px-tile").count()) === 4, "Delete, once agreed, takes it out and shows the next");
 // A video shows its still; Play opens it in the computer's own player.
 if (await page.getByRole("button", { name: "Play in your video player" }).count()) {
@@ -87,8 +87,8 @@ await page.evaluate(() => { window.__flagFail = false; });
 await page.waitForTimeout(650);
 ok((await page.locator(".px-viewer").count()) === 0, "Escape closes the viewer");
 
-// Opening grows the photo out of its tile: a moment in, it is still near the tile's size.
-// The width in the very frame the photo first appears, caught in the page, not after a round trip.
+// Opening is at once — no growing out of the tile, which flickered on his screen: the photo is
+// its whole size in the very frame it first appears (caught in the page, not after a round trip).
 await page.evaluate(() => {
   window.__firstWidth = null;
   const watch = new MutationObserver(() => {
@@ -104,7 +104,7 @@ await page.waitForFunction(() => window.__firstWidth !== null);
 const mid = await page.evaluate(() => window.__firstWidth);
 await page.waitForTimeout(600);
 const end = await page.locator(".px-shown").evaluate((i) => i.getBoundingClientRect().width);
-ok(mid < end * 0.8 && end > 200, `a photo opens out of its tile  ${Math.round(mid)} → ${Math.round(end)}px`);
+ok(Math.abs(mid - end) <= 1 && end > 200, `a photo opens at once, its whole size from its first frame  ${Math.round(mid)} → ${Math.round(end)}px`);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(650);
 // Another photo opened while the last is still closing stays open, and is seen.
@@ -207,7 +207,7 @@ ok((await scaleOf()) > 1.2 && (await page.evaluate(() => getComputedStyle(docume
 await page.keyboard.press("Control+0");
 await page.keyboard.press("ArrowLeft");
 await page.waitForTimeout(60);
-ok(/p1/.test((await page.locator(".px-shown").getAttribute("src")) ?? ""), "the left arrow goes to the photo before, at once");
+ok(/p1/.test((await page.locator(".px-shown").getAttribute("data-picture")) ?? ""), "the left arrow goes to the photo before, at once");
 await page.keyboard.press("ArrowRight");
 await page.keyboard.press("ArrowRight");
 await page.waitForTimeout(60);

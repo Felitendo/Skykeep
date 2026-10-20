@@ -140,6 +140,24 @@ fn millis(record: &Value, name: &str) -> Option<i64> {
 
 /// A photo from its asset and the master it shows.
 #[must_use]
+/// The burst a photo was shot in (`burstId`).
+fn burst_of(asset: &Value) -> Option<String> {
+    asset
+        .pointer("/fields/burstId/value")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether it is its burst's chosen photo, the one Photos shows: read on his library, each
+/// burst has exactly one with `burstFlags` 20 (16 set) and `burstFlagsExt` 32; the rest are 2
+/// or 4 — and Apple's own count of photos kept out of the library (67) is the bursts' 70 less
+/// those three.
+fn burst_pick_of(asset: &Value) -> bool {
+    field::int(asset, "burstFlags").is_some_and(|f| f & 16 != 0)
+        || field::int(asset, "burstFlagsExt").is_some_and(|f| f & 32 != 0)
+}
+
 pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
     let id = field::record_name(asset)?;
     let master_id = field::record_name(master)?;
@@ -205,6 +223,9 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
         rating: field::int(asset, "rating").unwrap_or(0).clamp(0, 5),
         keywords: keywords_of(asset),
         rendered: field::int(asset, "customRenderedValue").unwrap_or(0),
+        burst: burst_of(asset),
+        burst_pick: burst_pick_of(asset),
+        burst_count: 0,
         latitude: location_of(asset).map(|l| l.0),
         longitude: location_of(asset).map(|l| l.1),
         expunge_at: (field::int(asset, "isDeleted") == Some(1))
@@ -237,6 +258,10 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     p.rating = field::int(asset, "rating").unwrap_or(0).clamp(0, 5);
     p.keywords = keywords_of(asset);
     p.rendered = field::int(asset, "customRenderedValue").unwrap_or(p.rendered);
+    if asset.pointer("/fields/burstId").is_some() {
+        p.burst = burst_of(asset);
+        p.burst_pick = burst_pick_of(asset);
+    }
     if let Some((lat, lon)) = location_of(asset) {
         (p.latitude, p.longitude) = (Some(lat), Some(lon));
     }
@@ -953,6 +978,21 @@ mod tests {
             l.original.as_deref(),
             Some("https://cvws.example/orig/original")
         );
+    }
+
+    /// A burst's photos know their burst; the chosen one (flags 20 / 32) says so.
+    #[test]
+    fn a_burst_and_its_chosen_photo() {
+        let pick = photo_of(
+            &asset(json!({"burstId": "B1", "burstFlags": 20, "burstFlagsExt": 32})),
+            &master(),
+        )
+        .unwrap();
+        let other = photo_of(&asset(json!({"burstId": "B1", "burstFlags": 2})), &master()).unwrap();
+        let four = photo_of(&asset(json!({"burstId": "B1", "burstFlags": 4})), &master()).unwrap();
+        assert_eq!(pick.burst.as_deref(), Some("B1"));
+        assert!(pick.burst_pick && !other.burst_pick && !four.burst_pick);
+        assert_eq!(photo_of(&asset(json!({})), &master()).unwrap().burst, None);
     }
 
     /// A video's length: Apple's milliseconds, kept as seconds (a 62.18 s clip, not 1036 minutes).

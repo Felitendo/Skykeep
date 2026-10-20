@@ -91,6 +91,52 @@ fn cut(image: image::DynamicImage, crop: Option<Crop>) -> image::DynamicImage {
 ///
 /// A photograph re-encoded as PNG is several times the size for no visible gain, and these are
 /// read back on every scroll.
+/// A HEIC (or HEIF) original as a high-quality JPEG, turned, cropped and mirrored as the file
+/// says. Apple keeps no full-size JPEG of any HEIC photo (none of 495 in his library) and, for
+/// screenshots and the like, often nothing larger than a thumbnail: without this, the sharpest a
+/// HEIC photo could be shown was 2048 pixels, and some only a thumbnail stretched — or a broken
+/// picture where none could be made. Decoded here from the original, as Photos on a Mac does.
+///
+/// # Errors
+/// When the bytes are not a HEIF image libheif can decode.
+pub fn heic_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
+    let lib = LibHeif::new();
+    let ctx = HeifContext::read_from_bytes(bytes).map_err(|e| e.to_string())?;
+    let handle = ctx.primary_image_handle().map_err(|e| e.to_string())?;
+    let image = lib
+        .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), None)
+        .map_err(|e| e.to_string())?;
+    let plane = image
+        .planes()
+        .interleaved
+        .ok_or("the picture had no colour plane")?;
+    let (w, h, stride) = (plane.width, plane.height, plane.stride);
+    let row = w as usize * 3;
+    let mut rgb = Vec::with_capacity(row * h as usize);
+    for y in 0..h as usize {
+        rgb.extend_from_slice(&plane.data[y * stride..y * stride + row]);
+    }
+    let picture = image::RgbImage::from_raw(w, h, rgb).ok_or("the picture had the wrong size")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92)
+        .encode_image(&picture)
+        .map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
+/// Whether bytes are a HEIF file (HEIC and its kin): an `ftyp` box naming a HEIF brand.
+#[must_use]
+pub fn is_heif(bytes: &[u8]) -> bool {
+    bytes.get(4..8) == Some(b"ftyp")
+        && bytes.get(8..12).is_some_and(|b| {
+            matches!(
+                b,
+                b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+            )
+        })
+}
+
 /// A picture's longer side, read from its header alone (nothing decoded).
 #[must_use]
 pub fn long_side(bytes: &[u8]) -> Option<u32> {

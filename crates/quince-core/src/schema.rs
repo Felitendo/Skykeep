@@ -507,4 +507,12 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     UPDATE photos SET duration = duration / 1000.0 WHERE duration IS NOT NULL;
     "#,
+    // The burst each photo was shot in, and whether it is the burst's chosen one; Photos read
+    // again so every photo has them.
+    r#"
+    ALTER TABLE photos ADD COLUMN burst TEXT;
+    ALTER TABLE photos ADD COLUMN burst_pick INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX photos_by_burst ON photos (burst) WHERE burst IS NOT NULL;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

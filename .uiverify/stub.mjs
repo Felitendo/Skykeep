@@ -310,7 +310,9 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "photos_list": case "photos_counts": {
           const P = (id, takenAt, extra = {}) => ({ id, master: `m${id}`, takenAt, addedAt: takenAt, kind: "image",
             width: 4032, height: 3024, duration: null, filename: `IMG_${id}.JPG`, size: 2400000, uti: "public.jpeg",
-            favorite: false, hidden: false, deleted: false, deletedAt: null, subtype: 0, changeTag: null, ...extra });
+            favorite: false, hidden: false, deleted: false, deletedAt: null, subtype: 0, changeTag: null, ...extra,
+            // A test's own marks on a photo (a burst, a Live Photo), set before the first read.
+            ...(window.__photoExtra?.[id] ?? {}) });
           const all = (window.__photos ??= [
             P("p1", 1792500000, { favorite: true }), P("p2", 1792400000, { keywords: ["beach"], latitude: 17.7653751, longitude: 83.357605 }), P("p3", 1792300000, { kind: "video", duration: 12.4, uti: "public.mpeg-4", filename: "clip.mp4" }),
             P("p4", 1789900000, { addedAt: 1792700000 }), P("p5", 1789800000, { rating: 5 }), P("p6", 1789700000, { deleted: true, deletedAt: 1792600000, expungeAt: Math.floor(Date.now() / 1000) + 2 * 86400 + 600 }),
@@ -327,6 +329,14 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const answer = (views[args.view] ?? []).map((p) => ({ ...p }));
           if (window.__slowView === args.view) return new Promise((r) => setTimeout(() => r(answer), 600));
           return answer;
+        }
+        case "photos_prepare": (window.__prepared ??= []).push(args.shown); return null;
+        case "photos_burst": {
+          // Three shots; the library's own photo is the chosen one, in the middle.
+          const pick = (window.__photos ?? []).find((p) => p.burst === args.burst);
+          if (!pick) return [];
+          const shot = (n) => ({ ...pick, id: `${pick.id}-s${n}`, burstPick: false, takenAt: pick.takenAt - 1 + n, filename: `IMG_burst_${n}.JPG` });
+          return [shot(0), { ...pick }, shot(2)].map((p) => ({ ...p, burstCount: 3 }));
         }
         case "photos_albums": {
           const albums = (window.__albums ??= [{ id: "AL1", name: "Trips", position: 0, changeTag: null, items: ["p4", "p2"] }]);

@@ -92,13 +92,19 @@
   inset: 0 0 auto 0;
   z-index: 4;
   display: flex;
+  /* A narrow window puts the controls on a row of their own, under the title, rather than
+     squeezing the title to a letter and folding its dates down over the photos. */
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
   padding: 12px 16px 0 18px;
   pointer-events: none;
 }
 .px-bar > * { pointer-events: auto; }
-.px-heading { margin-right: auto; min-width: 0; }
+.px-heading { margin-right: auto; min-width: 0; flex: 1 1 200px; }
+/* The controls, as one: beside the title in a wide window, all together under it in a narrow
+   one — never split between the two rows. */
+.px-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-start; gap: 8px; max-width: 100%; }
 .px-bar h1 {
   margin: 0;
   font-size: var(--t-22, 22px);
@@ -109,7 +115,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.px-span { margin: 1px 0 0; color: var(--text-2); font-size: var(--t-13); font-weight: 500; }
+.px-span { margin: 1px 0 0; color: var(--text-2); font-size: var(--t-13); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Liquid Glass, as Photos' toolbar has it: small capsules floating over the photos. The live
    blur is kept to these few small, still surfaces — never to what moves, which WebKitGTK
@@ -203,7 +209,8 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 80px 2px 24px;
+  /* Room for the header floating over it, however many rows it takes (--bar, measured). */
+  padding: calc(var(--bar, 68px) + 12px) 2px 24px;
 }
 .px-bar { isolation: isolate; }
 .px-bar::before {
@@ -214,18 +221,8 @@
   background: linear-gradient(to bottom, var(--bg) 0, var(--bg) 58%, color-mix(in srgb, var(--bg) 0%, transparent) 100%);
   pointer-events: none;
 }
-/* A month not yet built: one cell laid out on the very grid its photos will use, as tall as
-   all its rows — square tiles, 2px between — so nothing moves when it is built. */
-.px-later {
-  display: grid;
-  grid-template-columns: repeat(var(--across, 7), minmax(0, 1fr));
-  column-gap: 2px;
-}
-.px-later::before {
-  content: "";
-  aspect-ratio: 1 / var(--rows);
-  margin-bottom: calc((var(--rows) - 1) * 2px);
-}
+/* A month not yet built: its tiles as plain boxes in the photos' own tone, on the same grid. */
+.px-ph { aspect-ratio: 1; background: color-mix(in srgb, var(--text) 7%, transparent); }
 .px-month-title {
   margin: 0;
   padding: 12px 16px 8px;
@@ -252,11 +249,13 @@
 .px-tile { display: grid; place-items: center; }
 /* The picture's frame: the whole cell as a square, the photo's own shape when fitted. */
 .px-pic { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; }
-.px-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.px-pic img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; }
+/* The thumbnail (the frame's background) shows until the picture made for the tile is in. */
+.px-pic { background-size: cover; background-position: center; }
+.px-pic img[data-in] { opacity: 1; }
+.px-pic img[data-in="fade"] { transition: opacity 160ms ease-out; }
 /* Whole photos, as icloud.com shows them: each in its own shape, with room around it. */
 .px-scroll[data-fit] .px-grid { gap: 14px; padding: 0 14px; }
-.px-scroll[data-fit] .px-later { column-gap: 14px; padding: 0 14px; }
-.px-scroll[data-fit] .px-later::before { margin-bottom: calc((var(--rows) - 1) * 14px); }
 .px-scroll[data-fit] .px-tile { background: transparent; overflow: visible; }
 .px-scroll[data-fit] .px-pic { background: color-mix(in srgb, var(--text) 7%, transparent); }
 /* Selected, as Photos marks it: an accent frame drawn inside the photo, over the picture. */
@@ -267,9 +266,13 @@
   border: 3px solid var(--accent);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 90ms ease;
 }
+/* At once, as Photos marks a selection: a fade begun as a photo opened was frozen half way
+   while the grid was not drawn, and finished as the photo flew back into it. */
 .px-tile[aria-selected="true"] .px-pic::after { opacity: 1; }
+/* The tile a photo is flying out of or back into is lifted out while it flies, as Photos
+   does: the picture is in one place at a time, never the tile and the photo both. */
+.px-tile[data-lifted] .px-pic { visibility: hidden; }
 .px-tile:focus-visible { outline: none; }
 .px-tile:focus-visible .px-pic::after { opacity: 1; border-color: var(--accent-ring); }
 .px-tile[aria-selected="true"]:focus-visible .px-pic::after { border-color: var(--accent); }
@@ -457,13 +460,17 @@
   transform-origin: 50% 45%;
   animation: px-arrive 900ms ease-out both, px-drift 4900ms linear both;
 }
-.px-slide.is-leaving { animation: none; transform: scale(1.06); z-index: -1; }
+/* The one leaving dissolves away from where its drift ended, over the next fading in. */
+.px-slide.is-leaving { animation: px-leave 900ms ease-in-out both; transform: scale(1.06); z-index: 1; pointer-events: none; }
+@keyframes px-leave { from { opacity: 1; } to { opacity: 0; } }
+.px-show.is-still .px-slide.is-leaving { animation: none; opacity: 0; }
 .px-slide.is-paused { animation-play-state: paused; }
 @keyframes px-arrive { from { opacity: 0; } to { opacity: 1; } }
 @keyframes px-drift { from { transform: scale(1); } to { transform: scale(1.06); } }
 .px-show.is-still .px-slide { animation: none; }
 .px-show-bar {
   position: absolute;
+  z-index: 2;
   left: 50%;
   bottom: 28px;
   transform: translateX(-50%);
@@ -678,14 +685,13 @@
   left: 50%;
   top: 0;
   height: 44px;
-  transition: transform 260ms var(--spring-smooth);
-  will-change: transform;
+  /* No glide: the strip and its slips move to their places at once. Animated, they flickered on
+     his screen as the viewer's own open and close had (WebKitGTK on Hyprland). */
 }
 .px-slip {
   position: absolute;
   left: 0;
   top: 2px;
-  transition: transform 260ms var(--spring-smooth), width 260ms var(--spring-smooth), height 260ms var(--spring-smooth), top 260ms var(--spring-smooth), opacity 160ms ease;
   width: 26px;
   height: 40px;
   padding: 0;
@@ -710,7 +716,6 @@
   box-shadow: inset 0 0 0 2px var(--accent), inset 0 0 0 3px rgba(0, 0, 0, 0.35);
   pointer-events: none;
 }
-@media (prefers-reduced-motion: reduce) { .px-strip-run, .px-slip { transition: none; } }
 
 /* Info's place and keywords. */
 .px-place { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-variant-numeric: tabular-nums; }
@@ -988,5 +993,102 @@
 .px-player-bar .px-scrub-fill, .px-player-bar .px-scrub-knob { background: #fff; }
 .px-player-bar .px-scrub-tip { color: #fff; background: rgba(28, 28, 30, 0.9); }
 
-/* Behind an open photo the grid is kept but not drawn (see `leaving` in PhotosView). */
-.px-scroll[data-behind] { content-visibility: hidden; }
+/* Behind a photo at rest the grid is kept, laid out and decoded, but not painted (see
+   gridBehind in PhotosView) — never while a photo opens or closes. */
+.px-scroll[data-behind] { visibility: hidden; }
+
+/* What kind of photo it is, at the stage's corner, as Photos marks it: LIVE, BURST. */
+.px-mark {
+  position: absolute;
+  z-index: 3;
+  top: 62px;
+  left: 64px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+  font: 600 11px/1 var(--sf, system-ui);
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: rgba(28, 28, 30, 0.62);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.14);
+  cursor: default;
+}
+.px-mark:hover, .px-mark.is-on { background: rgba(28, 28, 30, 0.82); }
+.px-mark-count { font-weight: 500; opacity: 0.7; letter-spacing: 0; }
+.px-mark.is-burst { letter-spacing: 0; font-weight: 600; padding-right: 4px; }
+.px-mark-done {
+  margin-left: 6px;
+  height: 18px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 9px;
+  font: 600 11px/1 var(--sf, system-ui);
+  color: #fff;
+  background: var(--accent);
+}
+/* A Live Photo's moving part, exactly over its still. */
+.px-live { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; pointer-events: none; }
+
+/* ---- going to a month: the years down the side, a year's months as tiles with a photo -- */
+.px-jump {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  width: 400px;
+  max-height: min(460px, 70vh);
+  border-radius: 14px;
+  background: var(--sheet);
+  box-shadow: var(--glass-float);
+  overflow: hidden;
+  outline: none;
+  animation: px-jump-in 160ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+@keyframes px-jump-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+@media (prefers-reduced-motion: reduce) { .px-jump { animation: none; } }
+.px-jump-years { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; border-right: 1px solid var(--separator); overflow-y: auto; }
+.px-jump-year {
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  font: 500 var(--t-13, 13px)/1 var(--sf, system-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: transparent;
+}
+.px-jump-year:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.px-jump-year.is-on { background: color-mix(in srgb, var(--text) 12%, transparent); font-weight: 600; }
+.px-jump-body { padding: 12px 14px 14px; overflow-y: auto; }
+.px-jump-title { margin: 0 0 10px; font-size: var(--t-17, 17px); font-weight: 700; }
+.px-jump-months { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.px-jump-month {
+  position: relative;
+  aspect-ratio: 1.12;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.px-jump-month img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.px-jump-month span {
+  position: absolute;
+  left: 7px;
+  bottom: 5px;
+  font: 600 12px/1 var(--sf, system-ui);
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+.px-jump-month::after { content: ""; position: absolute; inset: 0; background: linear-gradient(transparent 55%, rgba(0, 0, 0, 0.38)); }
+.px-jump-month span { z-index: 1; }
+.px-jump-month:hover img { filter: brightness(1.08); }
+.px-jump-month.is-here { box-shadow: inset 0 0 0 2px var(--accent); }
+.px-jump-month:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* A picture that could not be had at all draws nothing — never the engine's broken box (a
+   white frame, a question mark, the file's name); what is under it shows. */
+img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }

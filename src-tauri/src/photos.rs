@@ -192,10 +192,20 @@ pub async fn fitted(app: &AppHandle, id: &str, long: u32) -> Result<Vec<u8>, Str
     });
     let mut last = None;
     for size in [Size::Thumb, Size::Medium, Size::Full] {
-        let source = picture(app, id, size).await?;
+        // A picture Apple has not got (a HEIC whose original cannot be read, a screenshot with
+        // no screen-sized copy) is passed over: the largest there is serves, never an error
+        // where a picture could be shown.
+        let Ok(source) = picture(app, id, size).await else {
+            continue;
+        };
         let src = source.clone();
-        let _turn = MAKING.acquire().await.map_err(|e| e.to_string())?;
-        let made = tokio::task::spawn_blocking(move || {
+        // On-screen work takes a core each; work ahead has its own one low-priority thread.
+        let _turn = if crate::cpu::is_ahead() {
+            None
+        } else {
+            Some(MAKING.acquire().await.map_err(|e| e.to_string())?)
+        };
+        let made = crate::cpu::run(move || {
             let big = quince_media::long_side(&src).is_some_and(|l| l >= long);
             if !big && size != Size::Full {
                 return Ok(None);
@@ -243,6 +253,69 @@ pub async fn cached(app: &AppHandle, id: &str, size: Size) -> Result<PathBuf, St
     if tokio::fs::metadata(&path).await.is_ok() {
         return Ok(path);
     }
+    if size == Size::Full && is_heic(app, id).await {
+        return heic_full(app, id, &path).await;
+    }
+    from_apple(app, id, size, path).await
+}
+
+/// Whether a photo's original is HEIC (or another HEIF).
+async fn is_heic(app: &AppHandle, id: &str) -> bool {
+    let data = app.state::<Data>();
+    let library = data.0.lock().await;
+    library
+        .photo(id)
+        .ok()
+        .flatten()
+        .and_then(|p| p.uti)
+        .is_some_and(|u| {
+            let u = u.to_ascii_lowercase();
+            u.contains("heic") || u.contains("heif")
+        })
+}
+
+/// A HEIC photo's whole picture: Apple keeps no full-size JPEG of one, so its original is
+/// fetched and decoded here (quince_media::heic_to_jpeg), once, and kept like any other.
+async fn heic_full(app: &AppHandle, id: &str, path: &std::path::Path) -> Result<PathBuf, String> {
+    let original = from_apple(app, id, Size::Original, cache_path(app, id, Size::Original)).await?;
+    let bytes = tokio::fs::read(&original)
+        .await
+        .map_err(|e| e.to_string())?;
+    let jpeg = crate::cpu::run(move || {
+        if quince_media::is_heif(&bytes) {
+            quince_media::heic_to_jpeg(&bytes)
+        } else {
+            // Said HEIC, sent as something the engine shows as it is.
+            Ok(bytes)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let part = path.with_extension("part");
+    tokio::fs::write(&part, &jpeg)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::rename(&part, path)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_path_buf())
+}
+
+/// A picture (or video) fetched from Apple once and kept: see `cached`.
+async fn from_apple(
+    app: &AppHandle,
+    id: &str,
+    size: Size,
+    path: PathBuf,
+) -> Result<PathBuf, String> {
+    if tokio::fs::metadata(&path).await.is_ok() {
+        return Ok(path);
+    }
     let photo = {
         let data = app.state::<Data>();
         let library = data.0.lock().await;
@@ -277,6 +350,8 @@ pub async fn cached(app: &AppHandle, id: &str, size: Size) -> Result<PathBuf, St
 /// never waiting on the network. Newest first, two at a time, at most 600 and 3 GB a pass, after
 /// each sync; one pass at a time; what is on disk already is skipped.
 pub fn keep_ahead(app: AppHandle) {
+    // The pictures the window shows, for whatever the sync brought.
+    prepare(app.clone());
     static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
@@ -309,7 +384,7 @@ pub fn keep_ahead(app: AppHandle) {
                     if budget.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                         return;
                     }
-                    if let Ok(path) = cached(&app, &id, size).await {
+                    if let Ok(path) = crate::cpu::ahead(cached(&app, &id, size)).await {
                         let len = tokio::fs::metadata(&path).await.map_or(0, |m| m.len());
                         let _ = budget.fetch_update(
                             std::sync::atomic::Ordering::Relaxed,
@@ -321,6 +396,109 @@ pub fn keep_ahead(app: AppHandle) {
             })
             .await;
         RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+/// What the window is showing pictures at: a grid cell's width in device pixels, whether the
+/// grid shows whole photos or squares, and the viewer's stage in CSS pixels with the screen's
+/// pixel density. See `prepare`.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Shown {
+    pub cell: f64,
+    pub fit: bool,
+    pub stage_w: f64,
+    pub stage_h: f64,
+    pub dpr: f64,
+}
+
+/// The step a picture is made at for a longer side of `long` device pixels — the window's own
+/// rule (fitSrc), so the picture made ahead is the one it will ask for.
+fn step_for(long: f64) -> u32 {
+    FITS.iter()
+        .copied()
+        .find(|&f| f64::from(f) >= long)
+        .unwrap_or(FITS[FITS.len() - 1])
+}
+
+/// The steps one photo is shown at: in the grid (the whole cell when fitted, cropped to fill a
+/// square otherwise) and in the viewer (as large as the stage allows, never past 1.5×).
+fn steps_of(p: &Photo, s: Shown) -> (u32, u32) {
+    let (w, h) = (p.width.max(1) as f64, p.height.max(1) as f64);
+    let r = w / h;
+    let tile = if s.fit {
+        s.cell
+    } else {
+        s.cell * (w.max(h) / w.min(h))
+    };
+    let vw = s.stage_w.min(s.stage_h * r).min(w * 1.5);
+    (step_for(tile), step_for(vw.max(vw / r) * s.dpr))
+}
+
+/// Which `prepare` is current: a newer one (the window resized, zoomed) stops the older.
+static PREPARING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LAST_SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
+
+/// Makes every picture the window is about to show before it is shown, as Photos keeps its
+/// thumbnails ready: the grid's for the whole library, the viewer's for the newest 600 — newest
+/// first, what is on disk skipped, one core each. Made the first time a photo was seen, a tile
+/// came in soft and turned sharp, and a photo opened on its thumbnail and snapped to the sharp
+/// picture: the glitch in both. Started again whenever what is shown changes, and after a sync.
+#[tauri::command]
+pub fn photos_prepare(shown: Shown, app: AppHandle) {
+    {
+        let mut last = LAST_SHOWN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *last == Some(shown) {
+            return;
+        }
+        *last = Some(shown);
+    }
+    prepare(app);
+}
+
+/// Prepare again with what the window last said it shows (after a sync brought new photos).
+pub fn prepare(app: AppHandle) {
+    let Some(shown) = *LAST_SHOWN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    else {
+        return;
+    };
+    let mine = PREPARING.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    tauri::async_runtime::spawn(async move {
+        use futures_util::StreamExt;
+        let photos = {
+            let data = app.state::<Data>();
+            let library = data.0.lock().await;
+            library.photos(View::Library).unwrap_or_default()
+        };
+        let fit_dir = crate::state_dir(&app).join("photos").join("fit");
+        let wanted: Vec<(String, u32)> = photos
+            .iter()
+            .filter(|p| p.kind != quince_core::photos::Kind::Video)
+            .map(|p| (p.id.clone(), steps_of(p, shown).0))
+            .chain(
+                photos
+                    .iter()
+                    .filter(|p| p.kind != quince_core::photos::Kind::Video)
+                    .take(600)
+                    .map(|p| (p.id.clone(), steps_of(p, shown).1)),
+            )
+            .filter(|(id, step)| !fit_dir.join(step.to_string()).join(id).exists())
+            .collect();
+        futures_util::stream::iter(wanted)
+            .for_each_concurrent(4, |(id, step)| {
+                let app = app.clone();
+                async move {
+                    if PREPARING.load(std::sync::atomic::Ordering::SeqCst) != mine {
+                        return;
+                    }
+                    let _ = crate::cpu::ahead(fitted(&app, &id, step)).await;
+                }
+            })
+            .await;
     });
 }
 
@@ -393,6 +571,16 @@ pub fn content_type(bytes: &[u8], size: Size) -> &'static str {
 #[tauri::command]
 pub async fn photos_list(view: View, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
     data.0.lock().await.photos(view).map_err(|e| e.to_string())
+}
+
+/// Every photo of one burst, in the order they were shot — what "View all" shows.
+#[tauri::command]
+pub async fn photos_burst(burst: String, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
+    data.0
+        .lock()
+        .await
+        .burst_photos(&burst)
+        .map_err(|e| e.to_string())
 }
 
 /// The albums the person made, each with how many photos it holds.
@@ -1719,6 +1907,29 @@ mod tests {
         assert_eq!(byte_range(Some("bytes=-0"), 100, all), None);
         assert_eq!(byte_range(Some("items=0-1"), 100, all), None);
         assert_eq!(byte_range(None, 0, all), None);
+    }
+
+    /// The steps made ahead are the ones the window asks for (fitSrc, tileSrc, viewSrc).
+    #[test]
+    fn steps_are_the_window_s() {
+        let p: Photo = serde_json::from_value(serde_json::json!({
+            "id": "a", "master": "m", "takenAt": 0, "kind": "image", "width": 4032, "height": 3024,
+            "favorite": false, "hidden": false, "deleted": false, "subtype": 0
+        }))
+        .unwrap();
+        let shown = Shown {
+            cell: 180.0,
+            fit: false,
+            stage_w: 1300.0,
+            stage_h: 800.0,
+            dpr: 1.0,
+        };
+        // A square crop of a 4:3 photo reaches 240 along its long side; the stage draws it
+        // 1066 wide (800 high × 4/3).
+        assert_eq!(steps_of(&p, shown), (256, 1536));
+        assert_eq!(steps_of(&p, Shown { fit: true, ..shown }).0, 256);
+        assert_eq!(step_for(5000.0), 3840);
+        assert_eq!(step_for(100.0), 128);
     }
 
     #[test]
