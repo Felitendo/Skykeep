@@ -206,7 +206,7 @@ fn show(app: AppHandle, due: DueAlarm) {
                             crate::set_done(&auth, &data, &due.reminder_guid, &due.list_guid, true)
                                 .await
                         {
-                            eprintln!("could not complete {}: {e}", due.reminder_guid);
+                            quiet!("an alert's reminder could not be completed: {e}");
                         }
                         // Every open screen looks again, as after any pass.
                         let report = crate::refresh::status(&data.0).await;

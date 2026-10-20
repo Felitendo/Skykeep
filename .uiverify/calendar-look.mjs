@@ -2,7 +2,8 @@
 //   ENGINE=webkit node .uiverify/calendar-look.mjs <out-dir> [width] [height]
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub } from "./stub.mjs";
-const [out, w = "1920", h = "1040"] = process.argv.slice(2);
+// Never into the repository: with no folder given, the system's temporary one.
+const [out = (await import("node:os")).tmpdir(), w = "1920", h = "1040"] = process.argv.slice(2);
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: +w, height: +h }, colorScheme: "dark" });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null,

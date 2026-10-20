@@ -245,7 +245,8 @@ export const api = {
   contactsExport: (guids: string[], fileName: string) => invoke<string>("contacts_export", { guids, fileName }),
   /** Everyone in a vCard file, added to Contacts. Returns [added, could not be read]. */
   /** vCard and CSV files, any number: [imported, could not be read]. */
-  contactsImport: (paths: string[]) => invoke<[number, number]>("contacts_import", { paths }),
+  /** How many came in, could not be read, and were in Contacts already. */
+  contactsImport: (paths: string[]) => invoke<[number, number, number]>("contacts_import", { paths }),
   /** The card that is this person's own, if they have said. */
   contactMe: () => invoke<string | null>("contact_me"),
   contactSetMe: (guid: string) => invoke<void>("contact_set_me", { guid }),

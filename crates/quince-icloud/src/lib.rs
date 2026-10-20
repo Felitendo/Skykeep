@@ -3,6 +3,17 @@
 //! These are reverse-engineered endpoints, not a published API. Every response is treated as
 //! untrusted: a missing field or a malformed date returns an error, never a panic.
 
+/// What went wrong, said on the terminal in a development build only, and never with anything
+/// of the person's in it — no names, record ids, addresses or Apple's answers. A release build
+/// says nothing at all: Quince keeps no diagnostics and sends none anywhere.
+macro_rules! quiet {
+    ($($t:tt)*) => {
+        if cfg!(debug_assertions) {
+            eprintln!($($t)*);
+        }
+    };
+}
+
 pub mod calendar;
 pub mod ckdocument;
 pub mod cloudkit;
@@ -33,6 +44,10 @@ pub enum Error {
     ReauthRequired,
     #[error("this changed on another device first — refresh and try again")]
     Conflict,
+    /// The zone was mid-write for someone else and the change was not applied; it is sent
+    /// again (cloudkit's modify), and only reaches a person as Refused if it stays busy.
+    #[error("iCloud is busy right now. Nothing was changed — try again in a minute.")]
+    Busy,
     /// Apple turned a request down, said in words a person can act on. What Apple actually
     /// sent goes to the log, not the screen: a path and a JSON body told nobody anything.
     #[error("{0}")]

@@ -7,6 +7,7 @@
  * The scrubber follows the film every frame (the engine's own timeupdate comes four times a
  * second, and a progress bar that jumps reads as a stutter), and dragging it seeks as it goes.
  */
+import { useActiveRef, useScreenActive } from "../../lib/screen";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, Volume2, VolumeX } from "lucide-react";
 
@@ -41,6 +42,11 @@ export function VideoPlayer({
   const [awake, setAwake] = useState(true);
   const [hover, setHover] = useState<{ x: number; t: number } | null>(null);
   const dragging = useRef(false);
+  // Another screen brought to the front pauses it, as leaving a film does on a Mac.
+  const active = useScreenActive();
+  useEffect(() => {
+    if (!active) film.current?.pause();
+  }, [active]);
 
   // Where it is, drawn straight to the scrubber and the clocks once a frame — never through
   // React, so a playing film redraws nothing else.
@@ -81,8 +87,10 @@ export function VideoPlayer({
     else v.pause();
   }, []);
   // Space plays and pauses, before the viewer's own keys.
+  const live = useActiveRef();
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key !== " " || (e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable]")) return;
       e.preventDefault();
       e.stopPropagation();

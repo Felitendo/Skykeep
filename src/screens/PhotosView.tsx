@@ -3,6 +3,7 @@
  * for how many across; a photo opens on a dark stage with the arrows to go through them. Everything draws from the local library at once; thumbnails come
  * from the disk cache and are fetched once.
  */
+import { useActiveRef } from "../lib/screen";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -961,6 +962,8 @@ export function PhotosView() {
     const el = stage.current;
     if (!el) return undefined;
     const measure = () => {
+      // Out of sight (another screen in front) it has no box: nothing to measure.
+      if (!el.clientWidth) return;
       const cs = getComputedStyle(el);
       stageBox = {
         w: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
@@ -1011,10 +1014,12 @@ export function PhotosView() {
   }, [open, photos]);
 
   // The viewer's keys: arrows to go through, Escape to close, I for the details.
+  const live = useActiveRef();
   useEffect(() => {
     if (open === null) return undefined;
     const current = photos?.[open] ?? null;
     const onKey = (e: KeyboardEvent) => {
+      if (!live.current) return;
       // Keys typed into a field — the caption — are words, not commands.
       if ((e.target as HTMLElement | null)?.closest?.("input:not([type=range]), textarea, [contenteditable]")) return;
       // The zoom slider's own arrows move it; every other key still works with it focused.
@@ -1334,6 +1339,7 @@ export function PhotosView() {
   useEffect(() => {
     if (open !== null) return undefined;
     const onKey = (e: KeyboardEvent) => {
+      if (!live.current) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest?.("input, textarea, [contenteditable], .row-menu, [role=dialog]") || naming) return;
       const list = photos ?? [];
@@ -1852,6 +1858,7 @@ export function PhotosView() {
   // Zoom from the keys as in Photos: Ctrl and + or −.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (!(e.ctrlKey || e.metaKey) || e.altKey || viewer.current) return;
       if (e.key === "=" || e.key === "+") setZoom((z) => Math.min(ACROSS.length - 1, z + 1));
       else if (e.key === "-") setZoom((z) => Math.max(0, z - 1));
@@ -1911,6 +1918,7 @@ export function PhotosView() {
     const measure = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
+        if (!el.clientWidth) return;
         const h = `${Math.ceil(el.getBoundingClientRect().height)}px`;
         if (main.style.getPropertyValue("--bar") !== h) main.style.setProperty("--bar", h);
       });
@@ -1926,7 +1934,9 @@ export function PhotosView() {
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return undefined;
-    const measure = () => setGridWidth(Math.ceil(el.clientWidth / 32) * 32);
+    // Never measured while out of sight: with no width, the grid laid itself out empty and lost
+    // its place.
+    const measure = () => el.clientWidth && setGridWidth(Math.ceil(el.clientWidth / 32) * 32);
     measure();
     const watch = new ResizeObserver(measure);
     watch.observe(el);

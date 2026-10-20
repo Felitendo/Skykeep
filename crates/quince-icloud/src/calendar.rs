@@ -276,10 +276,8 @@ fn now_seconds() -> i64 {
 /// {"ChangeSet":…}` — which says nothing to a person about what happened or what to do. The
 /// sentence says that; the path, status and body go to the log for whoever has to look.
 fn refusal(path: &str, status: reqwest::StatusCode, body: &str) -> Error {
-    eprintln!(
-        "calendar: {path} answered {status}: {}",
-        body.chars().take(300).collect::<String>()
-    );
+    let _ = (path, body);
+    quiet!("calendar: a request was refused ({status})");
     match status.as_u16() {
         409 | 412 => Error::Conflict,
         400 | 422 => Error::Refused("iCloud didn't accept that change, so nothing was saved.".into()),

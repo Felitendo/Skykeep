@@ -3,6 +3,7 @@
  * as captured or imported — and, including edits, Highest Resolution or Most Compatible. Each
  * row downloads at once; Escape or × closes.
  */
+import { useActiveRef } from "../../lib/screen";
 import { useEffect } from "react";
 import { Download, X } from "lucide-react";
 import { pictureSrc, type Photo } from "../../lib/ipc";
@@ -10,8 +11,10 @@ import { pictureSrc, type Photo } from "../../lib/ipc";
 export type Want = "originals" | "highestQuality" | "mostCompatible";
 
 export function DownloadOptions({ photos, onPick, onClose }: { photos: Photo[]; onPick: (want: Want) => void; onClose: () => void }) {
+  const live = useActiveRef();
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopPropagation();

@@ -1,4 +1,5 @@
 import { Notice } from "../../components/Notice";
+import { useActiveRef } from "../../lib/screen";
 import { usePending } from "../../lib/pending";
 import { inMenu, Portal } from "../../components/Portal";
 import { TimeField } from "../../components/TimeField";
@@ -451,9 +452,11 @@ export function CalendarView() {
    * as the whole series.
    */
   const [asking, setAsking] = useState<{ verb: "change" | "delete"; answer: (scope: EventScope | null) => void } | null>(null);
+  const live = useActiveRef();
   useEffect(() => {
     if (!asking) return undefined;
     const onKey = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         asking.answer(null);
@@ -629,6 +632,7 @@ export function CalendarView() {
   // Keyboard, as in Calendar on a Mac (Ctrl here): arrows page, T today, 1–4 the views, N an event.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!live.current) return;
       const typing = (e.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable]");
       // Find, as everywhere on a Mac: ⌘F (Ctrl+F here) goes to the search field.
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
@@ -1180,6 +1184,9 @@ function MonthView({
     const el = grid.current;
     if (!el) return undefined;
     const measure = () => {
+      // Out of sight (another screen in front) it has no box: kept as it was, so it comes
+      // back as it was rather than with one row a day for a frame.
+      if (!el.clientWidth) return;
       const week = el.firstElementChild as HTMLElement | null;
       const height = week?.getBoundingClientRect().height ?? 0;
       const width = (week?.firstElementChild as HTMLElement | null)?.getBoundingClientRect().width ?? 0;
@@ -1450,6 +1457,7 @@ function TimeGrid({
   const handlers = useRef({ follow, finish });
   handlers.current = { follow, finish };
   const dragging = drag !== null;
+  const live = useActiveRef();
   useEffect(() => {
     if (!dragging) return undefined;
     const move = (e: PointerEvent) => {
@@ -1458,7 +1466,7 @@ function TimeGrid({
     };
     const up = (e: PointerEvent | MouseEvent) => handlers.current.finish(e.clientX, e.clientY);
     const drop = () => setDragNow(null);
-    const key = (e: KeyboardEvent) => e.key === "Escape" && drop();
+    const key = (e: KeyboardEvent) => live.current && e.key === "Escape" && drop();
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("mouseup", up);
@@ -1877,8 +1885,10 @@ function EventPopover({
     setPos({ left, top });
   }, [at]);
 
+  const live = useActiveRef();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key === "Escape") return onClose();
       // Up/Down: fifteen minutes in Day and Week, a week in Month. Left/Right: a day.
       if (e.ctrlKey && e.altKey && onNudge && editable && e.key.startsWith("Arrow")) {

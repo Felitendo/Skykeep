@@ -1,10 +1,22 @@
 // Quince — desktop shell.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+/// What went wrong, said on the terminal in a development build only, and never with anything
+/// of the person's in it — no names, record ids, addresses or Apple's answers. A release build
+/// says nothing at all: Quince keeps no diagnostics and sends none anywhere.
+macro_rules! quiet {
+    ($($t:tt)*) => {
+        if cfg!(debug_assertions) {
+            eprintln!($($t)*);
+        }
+    };
+}
+
 mod alerts;
 mod cpu;
 mod outbox;
 mod photos;
+mod poster;
 mod push;
 mod refresh;
 mod video;
@@ -1364,7 +1376,7 @@ async fn reminder_edit(
             )
             .await
             {
-                eprintln!("a subtask did not follow its reminder: {e}");
+                quiet!("a subtask did not follow its reminder: {e}");
             }
         }
     }
@@ -1516,7 +1528,7 @@ async fn reminder_list_delete(
 /// upload. It is noted, and the next refresh brings the screen up to date.
 fn settle(refreshed: Result<(), String>) -> Result<(), String> {
     if let Err(e) = refreshed {
-        eprintln!("refresh after a write: {e}");
+        quiet!("refresh after a write: {e}");
     }
     Ok(())
 }
@@ -1768,7 +1780,7 @@ async fn note_save(
     .map_err(|e| e.to_string())?;
     // Apple has it; a refresh failing now must not read as the save failing.
     if let Err(e) = resync_notes(&http, &root, params, &data).await {
-        eprintln!("notes refresh after a save: {e}");
+        quiet!("notes refresh after a save: {e}");
     }
 
     // Apple accepted the body, but its change feed does not always carry our own write back
@@ -1830,7 +1842,7 @@ async fn note_create(
     // Apple has made it. A refresh failing now must not read as the create failing — the
     // editor would try again, and the person would have the note twice.
     if let Err(e) = resync_notes(&http, &root, params, &data).await {
-        eprintln!("notes refresh after a create: {e}");
+        quiet!("notes refresh after a create: {e}");
     }
 
     // Apple's change feed does not always carry a new record back on the very next pass.
@@ -2261,13 +2273,14 @@ async fn contacts_export(
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Add everyone in a vCard file to Contacts. Answers how many came in and how many could not.
+/// Add everyone in a vCard file to Contacts. Answers how many came in, how many could not be
+/// read, and how many were left out because they are in Contacts already.
 #[tauri::command]
 async fn contacts_import(
     paths: Vec<String>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
-) -> UiResult<(usize, usize)> {
+) -> UiResult<(usize, usize, usize)> {
     let _one = CONTACTS_PASS.lock().await;
     // Every file chosen, vCard or CSV (Google Contacts, Outlook), read into cards first, so a
     // file that cannot be read stops the import before anything is sent.
@@ -2294,9 +2307,17 @@ async fn contacts_import(
         return Err("Those files hold no contacts.".into());
     }
     let (http, root, params) = contacts_context(&auth).await?;
-    let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
+    let (book, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
         .await
         .map_err(|e| e.to_string())?;
+    // Someone already in Contacts is left out, as Apple's Contacts leaves them: an export of
+    // this same book imported back once doubled every person in it.
+    let before = cards.len();
+    cards.retain(|card| !quince_icloud::contacts::already_in(card, &book));
+    let known = before - cards.len();
+    if cards.is_empty() {
+        return Ok((0, unreadable, known));
+    }
     // In batches Apple takes in one import: well under its 10 MB, a few hundred cards each.
     let mut imported = 0;
     for batch in quince_icloud::contacts::batch_vcards(&cards, 8 * 1024 * 1024, 400) {
@@ -2308,7 +2329,7 @@ async fn contacts_import(
         unreadable += failed;
     }
     settle(resync_contacts(&http, &root, params, &data).await)?;
-    Ok((imported, unreadable))
+    Ok((imported, unreadable, known))
 }
 
 /// The card that is this person's own, as the last pass stored it.
@@ -3650,7 +3671,7 @@ fn main() {
                             .opener()
                             .open_url(url.as_str(), None::<&str>)
                         {
-                            eprintln!("could not open {url}: {e}");
+                            quiet!("a link could not be opened: {e}");
                         }
                     }
                     inside
@@ -3810,7 +3831,7 @@ fn main() {
                 }
             }
             if let Err(e) = build_tray(app) {
-                eprintln!("no tray on this desktop, so closing the window quits: {e}");
+                quiet!("no tray on this desktop, so closing the window quits: {e}");
             }
             show_when_ready(app.handle());
             // Photos uploads a quit left half done carry on.

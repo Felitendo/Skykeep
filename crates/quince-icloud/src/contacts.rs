@@ -892,6 +892,79 @@ pub fn split_vcards(text: &str) -> Vec<String> {
     out
 }
 
+/// Whether a vCard is someone already in the book — the same names and nothing the book's
+/// card lacks (each phone and email on it already there). Importing an export of the same
+/// book once added a copy of every person (2026-10-20, 123 of them); Apple's own Contacts
+/// leaves such a card out, and so does this.
+#[must_use]
+pub fn already_in(card: &str, book: &[Contact]) -> bool {
+    let unfold = card.replace("\r\n ", "").replace("\n ", "");
+    let mut name = (String::new(), String::new(), String::new());
+    let mut org = String::new();
+    let mut reach: Vec<String> = Vec::new();
+    for line in unfold.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let field = key.split(';').next().unwrap_or("").to_ascii_uppercase();
+        let field = field.rsplit('.').next().unwrap_or("").to_string();
+        let value = value.trim().replace("\\,", ",").replace("\\;", ";");
+        match field.as_str() {
+            "N" => {
+                let mut parts = line[line.find(':').unwrap_or(0) + 1..].split(';');
+                let last = parts.next().unwrap_or("").trim().to_string();
+                let first = parts.next().unwrap_or("").trim().to_string();
+                let middle = parts.next().unwrap_or("").trim().to_string();
+                name = (first, middle, last);
+            }
+            "ORG" => org = value.split(';').next().unwrap_or("").trim().to_string(),
+            "TEL" => reach.push(phone_key(&value)),
+            "EMAIL" => reach.push(value.to_lowercase()),
+            _ => {}
+        }
+    }
+    reach.retain(|r| !r.is_empty());
+    let same = |a: &Option<String>, b: &str| {
+        a.as_deref()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case(b.trim())
+    };
+    book.iter().any(|c| {
+        let named = same(&c.first_name, &name.0)
+            && same(&c.middle_name, &name.1)
+            && same(&c.last_name, &name.2)
+            && same(&c.company, &org);
+        if !named {
+            return false;
+        }
+        let theirs: Vec<String> = c
+            .methods
+            .iter()
+            .filter(|m| m.kind == "phone" || m.kind == "email")
+            .map(|m| {
+                if m.kind == "phone" {
+                    phone_key(&m.value)
+                } else {
+                    m.value.to_lowercase()
+                }
+            })
+            .collect();
+        // A card with nothing to tell it apart is the same only if the book's has nothing too.
+        if reach.is_empty() {
+            return theirs.is_empty()
+                && !(name.0.is_empty() && name.2.is_empty() && org.is_empty());
+        }
+        reach.iter().all(|r| theirs.contains(r))
+    })
+}
+
+/// A phone number as digits only, its last ten: "+91 90000 00002" and "090000 00002" are one.
+fn phone_key(v: &str) -> String {
+    let digits: String = v.chars().filter(char::is_ascii_digit).collect();
+    digits[digits.len().saturating_sub(10)..].to_string()
+}
+
 /// Cards gathered into batches Apple takes in one import: under `max_bytes` and `max_cards`.
 #[must_use]
 pub fn batch_vcards(cards: &[String], max_bytes: usize, max_cards: usize) -> Vec<String> {
@@ -1353,6 +1426,49 @@ mod list_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_card_already_in_the_book_is_known() {
+        use quince_core::contacts::{Contact, ContactMethod};
+        let person = |first: &str, last: &str, phones: &[&str]| Contact {
+            guid: "G".into(),
+            first_name: Some(first.into()),
+            middle_name: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
+            last_name: Some(last.into()),
+            company: None,
+            is_company: false,
+            birthday: None,
+            notes: None,
+            etag: None,
+            methods: phones
+                .iter()
+                .map(|p| ContactMethod {
+                    kind: "phone".into(),
+                    label: Some("mobile".into()),
+                    value: (*p).into(),
+                })
+                .collect(),
+        };
+        let book = vec![person("Asha", "Rao", &["+91 90000 00002"])];
+        let card = |n: &str, tel: &str| {
+            format!("BEGIN:VCARD\r\nVERSION:3.0\r\nN:{n}\r\nFN:x\r\nTEL;type=CELL:{tel}\r\nEND:VCARD\r\n")
+        };
+        assert!(
+            super::already_in(&card("Rao;Asha;;;", "090000 00002"), &book),
+            "the same person, the number written another way"
+        );
+        assert!(
+            !super::already_in(&card("Rao;Asha;;;", "+91 90000 00004"), &book),
+            "a number the book lacks is news"
+        );
+        assert!(
+            !super::already_in(&card("Rao;Ashwin;;;", "+91 90000 00002"), &book),
+            "another name is someone else"
+        );
+    }
+
     use super::*;
 
     /// A Google Contacts export: names, a company with a comma, two numbers in one cell, an

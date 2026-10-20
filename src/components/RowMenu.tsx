@@ -1,4 +1,5 @@
 import { Portal } from "./Portal";
+import { useActiveRef } from "../lib/screen";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
@@ -27,6 +28,7 @@ type Anchor = { x: number; y: number; alignRight: boolean };
  * Choosing anything, at any depth, closes every level.
  */
 export function RowMenu({ at, entries, onClose }: { at: Anchor; entries: MenuEntry[]; onClose: () => void }) {
+  const live = useActiveRef();
   useEffect(() => {
     // Any press outside every level of this menu dismisses it.
     const down = (e: MouseEvent) => {
@@ -52,6 +54,7 @@ export function RowMenu({ at, entries, onClose }: { at: Anchor; entries: MenuEnt
     // Escape closes the menu wherever the keys are: focus is not always in it — a submenu
     // that closed under the pointer took the focus it held with it.
     const key = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key !== "Escape" || (e.target as HTMLElement | null)?.closest?.(".row-menu")) return;
       e.preventDefault();
       e.stopPropagation();

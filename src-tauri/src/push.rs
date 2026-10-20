@@ -96,7 +96,7 @@ async fn watch_contacts(
                 }
             }
             Err(e) => {
-                eprintln!("contacts watch: {e}");
+                quiet!("contacts watch: {e}");
                 tokens = None;
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(5 * 60));
@@ -164,7 +164,7 @@ async fn watch_calendar(
                 seeded = true;
             }
             Err(e) => {
-                eprintln!("calendar watch: {e}");
+                quiet!("calendar watch: {e}");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(5 * 60));
             }
@@ -222,7 +222,7 @@ async fn listen(client: Arc<Mutex<Client>>, tx: mpsc::UnboundedSender<&'static s
             match quince_icloud::push::open(&http, &root, &params, &client_id, &containers).await {
                 Ok(channel) => channel,
                 Err(e) => {
-                    eprintln!("push: could not open the channel: {e}");
+                    quiet!("push: could not open the channel: {e}");
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(5 * 60));
                     continue;
@@ -250,7 +250,7 @@ async fn listen(client: Arc<Mutex<Client>>, tx: mpsc::UnboundedSender<&'static s
                 Ok(None) => failures = 0,
                 Err(e) => {
                     failures += 1;
-                    eprintln!("push: the wait failed ({failures}): {e}");
+                    quiet!("push: the wait failed ({failures}): {e}");
                     if failures >= 3 {
                         // Three in a row is a channel gone bad, not a blip: make a new one.
                         break;

@@ -2,6 +2,7 @@
  * Adjust Date and Time, as icloud.com's: the photo, the timezone the times are in, the original
  * date, and the one to give it — to the second. Save only once it is a different, real date.
  */
+import { useActiveRef } from "../../lib/screen";
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { pictureSrc, type Photo } from "../../lib/ipc";
@@ -20,8 +21,10 @@ const zone = () => {
 
 export function AdjustDate({ photo, onSave, onClose }: { photo: Photo; onSave: (takenAt: number) => void; onClose: () => void }) {
   const [value, setValue] = useState(() => local(photo.takenAt));
+  const live = useActiveRef();
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopPropagation();

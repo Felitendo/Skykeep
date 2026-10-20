@@ -262,7 +262,9 @@ textarea.note-title::placeholder { color: var(--text-3); }
   position: absolute; right: 6px; display: grid; place-items: center; width: 22px; height: 22px;
   padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 12%, transparent);
   box-shadow: none; color: var(--text); font-size: 8px; letter-spacing: 1px; opacity: 0; cursor: pointer;
-  transition: opacity 120ms ease;
+  /* Shown and hidden at once, never faded: a fade here is the compositor's, and flickered on
+     his screen as the pointer crossed the rows. (Opacity, not visibility: hidden, it could
+     not be reached with Tab.) */
 }
 .notes-folder-row:hover .notes-folder-more, .notes-folder-row.is-menu .notes-folder-more,
 .notes-folder-more:focus-visible { opacity: 1; }

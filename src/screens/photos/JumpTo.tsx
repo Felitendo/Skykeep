@@ -3,6 +3,7 @@
  * year's months as tiles with a photo from each, in the calendar's order. A tile takes the grid
  * to that month. Only months the library has photos in are offered.
  */
+import { useActiveRef } from "../../lib/screen";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { fitSrc, type Photo } from "../../lib/ipc";
 import { Portal } from "../../components/Portal";
@@ -36,12 +37,14 @@ export function JumpTo({
   // Once, before its first frame is painted: run after it, the picker showed whole for a frame
   // and then began its fade from nothing — a flash.
   useLayoutEffect(() => fadeIn(box.current, { duration: 140 }), []);
+  const live = useActiveRef();
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
     const down = (e: MouseEvent) => {
       if (!box.current?.contains(e.target as Node)) onClose();
     };
     const key = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopPropagation();

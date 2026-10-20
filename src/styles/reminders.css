@@ -563,7 +563,6 @@
 .rx-info-name:focus { border-color: currentColor; }
 .rx-info-colours { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
 .rx-info-swatch { width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; cursor: pointer; transition: transform 120ms ease; }
-.rx-info-swatch:hover { transform: scale(1.08); }
 .rx-info-swatch.is-on { box-shadow: 0 0 0 2px var(--sheet, var(--bg)), 0 0 0 4px var(--text-3); }
 .rx-info-actions { display: flex; justify-content: space-between; width: 100%; margin-top: 4px; }
 

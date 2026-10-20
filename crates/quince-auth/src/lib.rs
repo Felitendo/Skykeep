@@ -10,6 +10,17 @@
 //!    A webview never asks for one, so it has nothing to persist and signs you out. We store
 //!    it in the OS keyring.
 
+/// What went wrong, said on the terminal in a development build only, and never with anything
+/// of the person's in it — no names, record ids, addresses or Apple's answers. A release build
+/// says nothing at all: Quince keeps no diagnostics and sends none anywhere.
+macro_rules! quiet {
+    ($($t:tt)*) => {
+        if cfg!(debug_assertions) {
+            eprintln!($($t)*);
+        }
+    };
+}
+
 pub mod session;
 pub mod srp;
 
@@ -688,7 +699,7 @@ impl Client {
                 // Settings, or pressing "Send again". Not fatal if it fails: the code screen
                 // still offers sending it again, and a text.
                 if let Err(e) = self.resend_to_devices().await {
-                    eprintln!("asking Apple to send the code: {e}");
+                    quiet!("asking Apple to send the code: {e}");
                 }
                 Ok(SignInOutcome::NeedsTwoFactor)
             }

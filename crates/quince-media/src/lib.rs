@@ -125,6 +125,61 @@ pub fn heic_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out.into_inner())
 }
 
+/// RGB rows (`stride` bytes apart) made a JPEG, as heic_to_jpeg makes one.
+///
+/// # Errors
+/// When the rows are shorter than the size says.
+pub fn rgb_to_jpeg(data: &[u8], w: u32, h: u32, stride: usize) -> Result<Vec<u8>, String> {
+    let row = w as usize * 3;
+    let mut rgb = Vec::with_capacity(row * h as usize);
+    for y in 0..h as usize {
+        rgb.extend_from_slice(
+            data.get(y * stride..y * stride + row)
+                .ok_or("the frame was cut short")?,
+        );
+    }
+    let picture = image::RgbImage::from_raw(w, h, rgb).ok_or("the picture had the wrong size")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)
+        .encode_image(&picture)
+        .map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
+/// How light RGB rows are, 0–255 on average: a frame of nothing (a recording's black first
+/// frame) is near 0.
+#[must_use]
+pub fn rgb_lightness(data: &[u8], w: u32, h: u32, stride: usize) -> f64 {
+    let (mut sum, mut n) = (0u64, 0u64);
+    // Every fourth pixel of every fourth row is plenty to tell a picture from black.
+    for y in (0..h as usize).step_by(4) {
+        let Some(line) = data.get(y * stride..y * stride + w as usize * 3) else {
+            break;
+        };
+        for px in line.as_chunks::<3>().0.iter().step_by(4) {
+            sum += u64::from(px[0]) * 3 + u64::from(px[1]) * 6 + u64::from(px[2]);
+            n += 10;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        sum as f64 / n as f64
+    }
+}
+
+/// Whether a picture shows nothing: every part of it black, as Apple's poster for a video
+/// whose first frame is black (a screen recording's) is — 0.0 on average, to the last pixel.
+#[must_use]
+pub fn is_blank(bytes: &[u8]) -> bool {
+    let Ok(picture) = image::load_from_memory(bytes) else {
+        return false;
+    };
+    let gray = picture.to_luma8();
+    let brightest = gray.pixels().map(|p| p.0[0]).max().unwrap_or(0);
+    brightest < 24
+}
+
 /// Whether bytes are a HEIF file (HEIC and its kin): an `ftyp` box naming a HEIF brand.
 #[must_use]
 pub fn is_heif(bytes: &[u8]) -> bool {

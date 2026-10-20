@@ -70,6 +70,17 @@ fn trouble_with(zone_result: &Value) -> Option<ZoneTrouble> {
 
 /// How many times a busy CloudKit is asked before saying so.
 const BUSY_TRIES: u32 = 3;
+
+/// A record refused only because the zone was mid-write for someone else — Apple's
+/// "Sync zone CAS Op-Lock failed. There was a concurrent write … Retry request", coded
+/// ZONE_BUSY or TRY_AGAIN_LATER — measured deleting notes one after another. Nothing was
+/// applied; the same change, sent again, goes through.
+fn zone_was_busy(code: &str, reason: &str) -> bool {
+    matches!(code, "ZONE_BUSY" | "TRY_AGAIN_LATER")
+        || reason
+            .to_ascii_lowercase()
+            .contains("sync zone cas op-lock failed")
+}
 /// The longest single wait a busy CloudKit is given, whatever it asks for.
 const LONGEST_WAIT: u64 = 30;
 
@@ -123,13 +134,17 @@ impl<'a> ZoneClient<'a> {
             let text = response.text().await.unwrap_or_default();
             // A zone busy with another write answers 409 ZONE_BUSY — "rejected, retry", the
             // whole request not applied — measured when a phone and this app wrote at once.
-            // It is a wait like 503's, not a conflict over the record.
-            let zone_busy = status.as_u16() == 409 && text.contains("\"ZONE_BUSY\"");
+            // Two of this app's own writes to one zone close together (notes deleted one after
+            // another in Recently Deleted) answer 409 TRY_AGAIN_LATER, "Sync zone CAS Op-Lock
+            // failed. There was a concurrent write" — the same: nothing applied, ask again.
+            // Each is a wait like 503's, not a conflict over the record.
+            let zone_busy = status.as_u16() == 409
+                && (text.contains("\"ZONE_BUSY\"") || text.contains("\"TRY_AGAIN_LATER\""));
             if !matches!(status.as_u16(), 429 | 503) && !zone_busy {
                 return Ok((status, text));
             }
             if tries >= BUSY_TRIES {
-                eprintln!("cloudkit: still busy after {tries} tries ({status}): {text}");
+                quiet!("cloudkit: still busy after {tries} tries ({status})");
                 return Err(Error::Refused(
                     "iCloud is busy right now. Nothing was changed — try again in a minute.".into(),
                 ));
@@ -503,6 +518,63 @@ mod tests {
             .unwrap();
     }
 
+    /// Two of this app's own writes close together: Apple's answer, word for word as he met it
+    /// deleting notes in Recently Deleted, is waited out the same way.
+    #[tokio::test]
+    async fn a_concurrent_write_is_tried_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "uuid": "d1fdc23f-b3c5-4537-8ab2-75e2ec1606f9", "serverErrorCode": "TRY_AGAIN_LATER",
+                "reason": "Sync zone CAS Op-Lock failed. There was a concurrent write and this operation was rejected."
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "N", "recordChangeTag": "t2" }]
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.notes", vec![]);
+        client
+            .update_record("Notes", "N", "Note", Some("t1"), json!({}))
+            .await
+            .unwrap();
+    }
+
+    /// The same refusal carried per record in a 200, as Apple also sends it: tried again too.
+    #[tokio::test]
+    async fn a_record_refused_for_a_busy_zone_is_tried_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "N", "serverErrorCode": "TRY_AGAIN_LATER",
+                  "reason": "Sync zone CAS Op-Lock failed. There was a concurrent write and this operation was rejected. Retry request..." }]
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "N", "recordChangeTag": "t2" }]
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.notes", vec![]);
+        client
+            .update_record("Notes", "N", "Note", Some("t1"), json!({}))
+            .await
+            .unwrap();
+    }
+
     /// And one still busy after that is said in a sentence, not Apple's JSON.
     #[tokio::test]
     async fn a_cloudkit_that_stays_busy_says_so_plainly() {
@@ -749,6 +821,30 @@ impl ZoneClient<'_> {
     }
 
     async fn modify(&self, zone: &str, operation: Value) -> Result<Value> {
+        // A record refused because the zone was busy with another write was not applied: the
+        // same request goes again after a moment, as a busy server's is.
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            match self.modify_once(zone, &operation).await {
+                Err(Error::Busy) if tries < BUSY_TRIES => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        400 * u64::from(tries) * u64::from(tries),
+                    ))
+                    .await;
+                }
+                Err(Error::Busy) => {
+                    return Err(Error::Refused(
+                        "iCloud is busy right now. Nothing was changed — try again in a minute."
+                            .into(),
+                    ))
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn modify_once(&self, zone: &str, operation: &Value) -> Result<Value> {
         let body = json!({
             "operations": [operation],
             "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
@@ -779,6 +875,9 @@ impl ZoneClient<'_> {
                 .pointer("/records/0/serverErrorCode")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            if zone_was_busy(code, reason) {
+                return Err(Error::Busy);
+            }
             // Apple signals a stale change tag as CONFLICT, and sometimes as an "oplock"
             // message with a different code; both mean the same thing.
             let stale = code == "CONFLICT" || reason.to_ascii_lowercase().contains("oplock");
@@ -1067,8 +1166,11 @@ impl ZoneClient<'_> {
                             .get("serverErrorCode")
                             .and_then(Value::as_str)
                             .unwrap_or("");
+                        // A busy zone is retried as a moved tag is, once more on a fresh read.
                         Err(
-                            if code == "CONFLICT" || reason.to_ascii_lowercase().contains("oplock")
+                            if code == "CONFLICT"
+                                || reason.to_ascii_lowercase().contains("oplock")
+                                || zone_was_busy(code, reason)
                             {
                                 Error::Conflict
                             } else {

@@ -2485,10 +2485,7 @@ async fn post_json(
         return Err(Error::ReauthRequired);
     }
     if !status.is_success() {
-        eprintln!(
-            "drive: {url} answered {status}: {}",
-            text.chars().take(300).collect::<String>()
-        );
+        quiet!("drive: a request was refused ({status})");
         if status.as_u16() == 409 && text.contains("ZONE_BUSY") {
             return Err(Error::Refused(BUSY.into()));
         }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useActiveRef } from "../lib/screen";
 import { useSync } from "../lib/sync";
 import { Notice } from "../components/Notice";
 import { Portal } from "../components/Portal";
@@ -335,9 +336,10 @@ function kindName(item: DriveItem) {
 /** File Info, as icloud.com shows it: the mark, the name, then what it is and where. */
 function InfoSheet({ item, where, thumb, onClose }: { item: DriveItem; where: string; thumb?: string; onClose: () => void }) {
   const done = useRef<HTMLButtonElement | null>(null);
+  const live = useActiveRef();
   useEffect(() => {
     const id = window.setTimeout(() => done.current?.focus(), 0);
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => live.current && e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => { window.clearTimeout(id); window.removeEventListener("keydown", onKey); };
   }, [onClose]);
@@ -939,6 +941,9 @@ export function DriveView() {
   return (
     <div className={`drive${dropping ? " is-dropping" : ""}`}>
       <header className="cal-bar">
+        {/* The folder's name with what is in it under it, as icloud.com writes them: one block
+            whose size never depends on when the count arrives, so the bar is laid out once. */}
+        <div className="drive-title">
         <nav className="crumbs" aria-label="Folder path">
           {trail.map((crumb, i) => (
             <span key={crumb.id}>
@@ -972,15 +977,16 @@ export function DriveView() {
             </span>
           ))}
         </nav>
-        {loaded && (
-          // As icloud.com writes it under a folder's name: how much is in it.
-          <p className="drive-count" aria-live="polite">
-            {(() => {
-              const n = items.filter((x) => !gone.has(x.drivewsid)).length;
-              return `${n} item${n === 1 ? "" : "s"}${available ? `, ${available} available` : ""}`;
-            })()}
-          </p>
-        )}
+        {/* How much is in it; its line is kept while it loads, so nothing moves when it comes. */}
+        <p className="drive-count" aria-live="polite">
+          {loaded
+            ? (() => {
+                const n = items.filter((x) => !gone.has(x.drivewsid)).length;
+                return `${n} item${n === 1 ? "" : "s"}${available ? `, ${available} available` : ""}`;
+              })()
+            : "\u00a0"}
+        </p>
+        </div>
         <div className="cal-actions">
           <button className="quiet with-glyph" title="Recents" onClick={() => setInRecents(true)}>
             <Clock size={15} strokeWidth={1.6} aria-hidden="true" />
@@ -1350,8 +1356,10 @@ function MoveDialog({
 
   // A sheet is modal: Escape leaves it exactly as Cancel would, and it must not be possible
   // to tab out into the page still open underneath.
+  const live = useActiveRef();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key === "Escape") onCancel();
     };
     document.addEventListener("keydown", onKey);

@@ -192,7 +192,9 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (!remindersFixture || remindersFixture === "lists") return [];
           // Opt-in for measuring a switch: each list's own reminders, after a real read's wait.
           if (window.__slowItems) await new Promise((r) => setTimeout(r, window.__slowItems));
-          return window.__filterLists ? reminderItems.filter((r) => r.listGuid === args.listGuid) : reminderItems;
+          // A test's own extra reminders (__extraReminders), kept as Apple keeps them.
+          const every = [...reminderItems, ...(window.__extraReminders ?? [])];
+          return window.__filterLists ? every.filter((r) => r.listGuid === args.listGuid) : every;
         }
         case "reminders_due_between": return calendarFixture ? dueReminders : [];
         case "reminder_create":
@@ -206,6 +208,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           (window.__done ??= []).push(args);
           // A slow network, when a test asks for one.
           if (window.__doneDelay) await new Promise((r) => setTimeout(r, window.__doneDelay));
+          {
+            // A repeating one rolls on, as Apple rolls it: open again, a day (or its unit) on.
+            const r = (window.__extraReminders ?? []).find((x) => x.guid === args.guid);
+            if (r && r.recurFrequency !== null && r.recurFrequency !== undefined && args.done) r.dueAt += 86400 * (r.recurInterval ?? 1);
+          }
           return null;
         case "reminder_set_repeat": return null;
         case "reminder_edit": {
@@ -510,7 +517,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contact_me": return window.__me ?? (contactsFixture ? "c1" : null);
         case "contact_set_me": await new Promise((r) => setTimeout(r, 600)); window.__me = args.guid; return null;
         case "contacts_export": (window.__exports ??= []).push(args); return `/home/test/Downloads/${args.fileName}`;
-        case "contacts_import": (window.__imports ??= []).push(args); return [2, 0];
+        case "contacts_import": (window.__imports ??= []).push(args); return window.__importAnswer ?? [2, 0, 0];
         case "plugin:dialog|open": return window.__pick ?? null;
         case "contact_lists": return !contactsFixture ? [] : (window.__lists ??= [
           { guid: "L1", name: "Family", members: ["c2"], etag: "e1" },
@@ -543,7 +550,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__settingsFail) throw "Couldn't save that setting.";
           (window.__settings ??= {})[args.key] = args.on;
           return null;
-        case "drive_children": return !driveFixture ? [] : driveItems;
+        case "drive_children":
+          // A slow read, when a test asks for one.
+          if (window.__slowDrive) await new Promise((r) => setTimeout(r, window.__slowDrive));
+          return !driveFixture ? [] : driveItems;
         case "drive_recents": {
           if (!driveFixture) return [];
           const now = Math.floor(Date.now() / 1000);

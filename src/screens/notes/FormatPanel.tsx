@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useActiveRef } from "../../lib/screen";
 import { Check } from "lucide-react";
 import { inMenu, Portal } from "../../components/Portal";
 import type { EditorStatus } from "./NoteEditor";
@@ -51,12 +52,13 @@ export function FormatPanel({
     const top = at.y + height > window.innerHeight - 8 ? Math.max(8, window.innerHeight - height - 8) : at.y;
     setPos({ left, top });
   }, [at]);
+  const live = useActiveRef();
   useEffect(() => {
     const down = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
       if (!box.current?.contains(t) && !t.closest(".notes-aa") && !inMenu(t)) onClose();
     };
-    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const key = (e: KeyboardEvent) => live.current && e.key === "Escape" && onClose();
     document.addEventListener("mousedown", down);
     window.addEventListener("keydown", key);
     window.addEventListener("resize", onClose);

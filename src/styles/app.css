@@ -407,7 +407,7 @@
   gap: 10px;
   min-height: 34px;
   white-space: nowrap;
-  transition: background 120ms ease, transform 120ms ease;
+  transition: background 120ms ease;
   width: 100%;
   border: 0;
   background: none;
@@ -1227,7 +1227,7 @@
  * date beneath it, and the row's actions float over its far end when it is pointed at rather
  * than holding a strip of the width empty when it is not.
  */
-@media (max-width: 720px) {
+@container (max-width: 560px) {
   .drive-row { position: relative; }
   .drive-row-hit {
     grid-template-columns: 28px auto minmax(0, 1fr);
@@ -1239,12 +1239,12 @@
     padding: 7px 8px;
   }
   .drive-row-hit > .drive-badge { margin-right: 10px; }
-  .drive-row-hit > .drive-meta:nth-of-type(3):not(:empty) { margin-right: 4px; }
+  .drive-row-hit > .drive-meta:not(.drive-kind):not(:last-child):not(:empty) { margin-right: 4px; }
   .drive-row-hit > .drive-badge { grid-area: badge; }
   .drive-row-hit > .drive-name { grid-area: name; }
-  .drive-row-hit > .drive-meta:nth-of-type(3) { grid-area: size; }
+  .drive-row-hit > .drive-meta:not(.drive-kind):not(:last-child) { grid-area: size; }
   .drive-row-hit > .drive-meta:last-child { grid-area: date; }
-  .drive-row-hit > .drive-meta:nth-of-type(3):not(:empty)::after { content: " ·"; }
+  .drive-row-hit > .drive-meta:not(.drive-kind):not(:last-child):not(:empty)::after { content: " ·"; }
   .drive-row-actions {
     width: auto;
     position: absolute;
@@ -1893,19 +1893,36 @@
 .drive-col.is-on { color: var(--text-2); font-weight: 600; }
 .drive-col:hover { color: var(--text); }
 .drive-kind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 900px) { .drive-kind, .drive-col:nth-of-type(2) { display: none; } .drive-row-hit { grid-template-columns: 40px minmax(0, 1fr) 80px 110px; } }
 /* Drive's bar: the path and its count stay one line and give way first; the controls wrap
    beneath only when the window is too narrow for both. At 760px the title broke in two and
    ran into its own count. */
 .drive > .cal-bar { flex-wrap: wrap; row-gap: 10px; }
 .drive > .cal-bar .crumbs { flex-wrap: nowrap; overflow: hidden; }
 .drive > .cal-bar .crumb { white-space: nowrap; }
-.drive > .cal-bar .drive-count { flex: 1 1 auto; margin-left: 10px; }
-.drive > .cal-bar .cal-actions { flex-wrap: wrap; justify-content: flex-end; }
-@media (max-width: 900px) {
-  /* Icons alone, their names kept for anyone who cannot see them. */
-  .drive > .cal-bar .with-glyph:not(.primary) { font-size: 0; gap: 0; padding-inline: 8px; }
+.drive > .cal-bar .drive-title { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+/* The name's first letter in line with its count's. */
+.drive > .cal-bar .drive-title .crumbs { margin-left: -5px; }
+.drive > .cal-bar .drive-count { margin: 0; overflow: hidden; text-overflow: ellipsis; }
+.drive > .cal-bar .cal-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+/* Sized by Drive's own width, not the window's: half a screen, a folded sidebar, a wide
+   one — each lays out the same for the same room. */
+.drive { container-type: inline-size; }
+@container (max-width: 880px) {
+  /* Too narrow for the named controls beside the name: icons alone, their names kept for
+     anyone who cannot see them (title, aria). */
+  .drive > .cal-bar .with-glyph:not(.primary) { font-size: 0; gap: 0; padding-inline: 9px; }
   .drive > .cal-bar .with-glyph:not(.primary) svg { font-size: initial; }
+}
+/* Narrower, the kind column goes (above the narrowest, which sets rows as Files on iPhone). */
+@container (min-width: 561px) and (max-width: 640px) {
+  .drive-kind, .drive-col:nth-of-type(2) { display: none; }
+  .drive-row-hit { grid-template-columns: 40px minmax(0, 1fr) 80px 110px; }
+}
+@container (max-width: 560px) {
+  /* Too narrow for both: the controls go under the name, starting at its edge. */
+  .drive > .cal-bar .cal-actions { width: 100%; justify-content: flex-start; }
+  /* Rows set as Files on iPhone sets them have no columns to head; the sort menu stays. */
+  .drive-head { display: none; }
 }
 
 .drive-meta.is-soon { color: var(--sys-red, #ff453a); }
@@ -2069,3 +2086,8 @@
 @keyframes upload-finding { from { transform: translateX(-10%); } to { transform: translateX(240%); } }
 .upload-bar.is-waiting > span { transform: none; }
 @media (prefers-reduced-motion: reduce) { .upload-bar.is-waiting > span { animation: none; width: 100%; opacity: 0.4; } }
+
+/* A kept screen's box is the screen's own (it lays out as before, straight in the content);
+   one out of sight is not drawn at all. */
+.screen-slot { display: contents; }
+.screen-slot[hidden] { display: none !important; }

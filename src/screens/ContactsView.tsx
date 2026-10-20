@@ -208,9 +208,18 @@ export function ContactsView() {
       const paths = !chosen ? [] : Array.isArray(chosen) ? chosen : [chosen];
       if (paths.length === 0) return;
       setBusy(true);
-      const [added, failed] = await api.contactsImport(paths);
+      const [added, failed, known] = await api.contactsImport(paths);
       await Promise.all([read(search), readLists()]);
-      setDone(`${added} ${added === 1 ? "contact" : "contacts"} imported${failed ? `, ${failed} could not be read` : ""}.`);
+      const people = (n: number) => `${n} ${n === 1 ? "contact" : "contacts"}`;
+      setDone(
+        [
+          `${people(added)} imported`,
+          known ? `${people(known)} already in Contacts ${known === 1 ? "was" : "were"} left out` : "",
+          failed ? `${failed} could not be read` : "",
+        ]
+          .filter(Boolean)
+          .join(", ") + ".",
+      );
     } catch (e) {
       setError(messageOf(e));
     } finally {

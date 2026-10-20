@@ -50,3 +50,31 @@ export function fadeSheetsIn() {
     }
   }).observe(document.body, { childList: true, subtree: true });
 }
+
+/**
+ * A row folding away, drawn by the page the same way: each frame its height, padding and
+ * opacity set from here, so the rows below glide up. Then `done`.
+ */
+export function foldAway(el: HTMLElement, done: () => void, duration = 240) {
+  if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    done();
+    return;
+  }
+  const cs = getComputedStyle(el);
+  const h = el.getBoundingClientRect().height;
+  const [pt, pb] = [parseFloat(cs.paddingTop), parseFloat(cs.paddingBottom)];
+  el.style.overflow = "hidden";
+  const start = performance.now();
+  const step = (now: number) => {
+    const t = Math.min(1, (now - start) / duration);
+    // Quick at first, settling: Apple's own curve for things leaving.
+    const k = 1 - (1 - t) ** 3;
+    el.style.height = `${h * (1 - k)}px`;
+    el.style.paddingTop = `${pt * (1 - k)}px`;
+    el.style.paddingBottom = `${pb * (1 - k)}px`;
+    el.style.opacity = String(1 - k);
+    if (t < 1) requestAnimationFrame(step);
+    else done();
+  };
+  requestAnimationFrame(step);
+}

@@ -342,7 +342,74 @@ async fn from_apple(
     if !done && !fetch(new_link(&http, &root, params, &photo, size).await?).await? {
         return Err("Apple did not send that picture.".into());
     }
+    // A video's poster that is black (Apple makes it from the first frame) is made again from
+    // the first frame that shows something, before anyone sees it.
+    if photo.kind == quince_core::photos::Kind::Video && matches!(size, Size::Thumb | Size::Medium)
+    {
+        repair_poster(app, id).await;
+    }
     Ok(path)
+}
+
+/// When a video's thumbnail is black, its first frame that is not (see `crate::poster`) made
+/// its thumbnail and screen-sized picture instead, at the sizes Apple's were, and every size
+/// made from the black one let go. Answers whether it was remade.
+pub async fn repair_poster(app: &AppHandle, id: &str) -> bool {
+    let thumb = cache_path(app, id, Size::Thumb);
+    let Ok(bytes) = tokio::fs::read(&thumb).await else {
+        return false;
+    };
+    if !crate::cpu::run(move || quince_media::is_blank(&bytes))
+        .await
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    // The original when it is on disk already; otherwise the small rendition, a few megabytes.
+    let original = cache_path(app, id, Size::Original);
+    let film = if original.exists() {
+        original
+    } else {
+        match Box::pin(cached(app, id, Size::Video)).await {
+            Ok(path) => path,
+            Err(_) => return false,
+        }
+    };
+    let Ok(Ok(Some(frame))) = crate::cpu::run(move || crate::poster::first_seen_frame(&film)).await
+    else {
+        return false;
+    };
+    for size in [Size::Thumb, Size::Medium] {
+        let path = cache_path(app, id, size);
+        let old = tokio::fs::read(&path).await.unwrap_or_default();
+        let src = frame.clone();
+        // Apple's own sizes: the thumbnail's long side, and the screen-sized one's.
+        let long =
+            quince_media::long_side(&old).unwrap_or(if size == Size::Thumb { 512 } else { 2048 });
+        let Ok(Ok(made)) =
+            crate::cpu::run(move || quince_media::fit(&src, long).map(|m| m.unwrap_or(src))).await
+        else {
+            continue;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = tokio::fs::create_dir_all(dir).await;
+        }
+        let part = path.with_extension("part");
+        if tokio::fs::write(&part, &made).await.is_ok() {
+            let _ = tokio::fs::rename(&part, &path).await;
+        }
+    }
+    for step in FITS {
+        let _ = tokio::fs::remove_file(
+            crate::state_dir(app)
+                .join("photos")
+                .join("fit")
+                .join(step.to_string())
+                .join(id),
+        )
+        .await;
+    }
+    true
 }
 
 /// Keeps the newest photos' whole pictures, and videos, on disk ahead of being opened — as
@@ -363,6 +430,15 @@ pub fn keep_ahead(app: AppHandle) {
             let library = data.0.lock().await;
             library.photos(View::Library).unwrap_or_default()
         };
+        // Videos whose black poster was kept before posters were remade: remade now, once.
+        for p in newest
+            .iter()
+            .filter(|p| p.kind == quince_core::photos::Kind::Video)
+        {
+            if cache_path(&app, &p.id, Size::Thumb).exists() {
+                crate::cpu::ahead(repair_poster(&app, &p.id)).await;
+            }
+        }
         let wanted: Vec<(String, Size)> = newest
             .into_iter()
             .take(600)
@@ -1854,7 +1930,7 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
                 return false;
             }
             Err(e) if attempt < 3 && !cancelled(&u) => {
-                eprintln!("photos upload of {}: try {attempt} failed: {e}", u.name);
+                quiet!("photos upload: try {attempt} failed: {e}");
                 tokio::time::sleep(Duration::from_secs(2 * attempt)).await;
             }
             Err(e) => {
@@ -1916,7 +1992,7 @@ async fn into_album(
                 )
                 .ok();
         }
-        Err(e) => eprintln!("photos upload: {} not put in its album: {e}", u.name),
+        Err(e) => quiet!("photos upload: not put in its album: {e}"),
     }
 }
 

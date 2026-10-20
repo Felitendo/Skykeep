@@ -41,5 +41,12 @@ await page.waitForTimeout(300);
 const paths = await page.evaluate(() => window.__imports?.at(-1)?.paths);
 ok(JSON.stringify(paths) === JSON.stringify(["/home/test/people.vcf", "/home/test/google.csv"]), `every chosen file, vCard and CSV, is imported at once  ${JSON.stringify(paths)}`);
 ok(/2 contacts imported/.test(await page.locator(".drive-saved").innerText()), "and the count is said");
+// Importing an export of the same book: everyone already there is left out, and said so.
+await page.evaluate(() => { window.__importAnswer = [0, 0, 123]; });
+await page.getByRole("button", { name: "More" }).click();
+await page.getByRole("menuitem", { name: "Import Contacts…" }).click();
+await page.waitForTimeout(300);
+const said = await page.locator(".drive-saved").innerText();
+ok(/0 contacts imported, 123 contacts already in Contacts were left out/.test(said), `people already in Contacts are left out, and that is said  "${said}"`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

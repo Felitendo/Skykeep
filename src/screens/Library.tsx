@@ -27,6 +27,7 @@ const DriveView = lazy(loaders.drivews);
 const PhotosView = lazy(loaders.photos);
 const SettingsView = lazy(loaders.settings);
 import { ScreenBoundary } from "../components/ScreenBoundary";
+import { ScreenActive } from "../lib/screen";
 import { AppIcon } from "../components/AppIcon";
 
 /**
@@ -146,6 +147,27 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
     }, 300);
     return () => window.clearTimeout(t);
   }, [ready]);
+
+  // The screens opened so far, in the order they were first opened.
+  const keptRef = useRef<string[]>([]);
+  if (webAccess !== false && selected && SCREENS.some((s) => s.key === selected) && !keptRef.current.includes(selected)) {
+    keptRef.current = [...keptRef.current, selected];
+  }
+  const kept = keptRef.current;
+  const screenFor = (key: string) =>
+    key === "calendar" ? (
+      <CalendarView />
+    ) : key === "reminders" ? (
+      <RemindersView />
+    ) : key === "notes" ? (
+      <NotesView />
+    ) : key === "contacts" ? (
+      <ContactsView />
+    ) : key === "photos" ? (
+      <PhotosView />
+    ) : (
+      <DriveView />
+    );
 
   const choose = (key: string) => {
     setSelected(key);
@@ -271,39 +293,38 @@ export function Library({ onSignOut }: { onSignOut: () => void }) {
                 again.
               </p>
             </div>
-          ) : selected === "settings" ? (
-            <ScreenBoundary key="settings" name="Settings">
-              <Suspense fallback={null}>
-                <SettingsView onSignOut={onSignOut} />
-              </Suspense>
-            </ScreenBoundary>
-          ) : selected && SCREENS.some((s) => s.key === selected) ? (
-            // Keyed by screen, so moving to another screen also clears a failed one.
-            <ScreenBoundary key={selected} name={SCREENS.find((s) => s.key === selected)?.name ?? "This screen"}>
-              <Suspense fallback={null}>
-              {selected === "calendar" ? (
-                <CalendarView />
-              ) : selected === "reminders" ? (
-                <RemindersView />
-              ) : selected === "notes" ? (
-                <NotesView />
-              ) : selected === "contacts" ? (
-                <ContactsView />
-              ) : selected === "photos" ? (
-                <PhotosView />
-              ) : (
-                <DriveView />
-              )}
-              </Suspense>
-            </ScreenBoundary>
           ) : (
-            ready &&
-            services.length === 0 && (
-              <p className="cal-empty">
-                Apple hasn’t offered Reminders, Notes, iCloud Drive, Calendar or Contacts to
-                this account yet.
-              </p>
-            )
+            <>
+              {selected === "settings" && (
+                <ScreenBoundary key="settings" name="Settings">
+                  <Suspense fallback={null}>
+                    <SettingsView onSignOut={onSignOut} />
+                  </Suspense>
+                </ScreenBoundary>
+              )}
+              {/* Each screen is kept once opened, out of sight while another is in front:
+                  coming back is instant, and finds it as it was left — its place, its
+                  selection, its scroll — as a Mac app's windows are. Out of sight it is inert,
+                  draws no menus and answers no keys (lib/screen). */}
+              {kept.map((key) => {
+                const on = key === selected;
+                return (
+                  <div key={key} className="screen-slot" hidden={!on} {...(on ? {} : { inert: "" })}>
+                    <ScreenActive.Provider value={on}>
+                      <ScreenBoundary name={SCREENS.find((s) => s.key === key)?.name ?? "This screen"}>
+                        <Suspense fallback={null}>{screenFor(key)}</Suspense>
+                      </ScreenBoundary>
+                    </ScreenActive.Provider>
+                  </div>
+                );
+              })}
+            </>
+          )}
+          {ready && services.length === 0 && (
+            <p className="cal-empty">
+              Apple hasn’t offered Reminders, Notes, iCloud Drive, Calendar or Contacts to
+              this account yet.
+            </p>
           )}
         </main>
       </div>

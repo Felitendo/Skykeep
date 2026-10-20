@@ -9,6 +9,7 @@
  * one leaving fades out as the next fades in — before, it stood whole behind the next for the
  * length of the fade, its edges showing round a narrower photo, and then vanished at once.
  */
+import { useActiveRef } from "../../lib/screen";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Pause, Play, X } from "lucide-react";
 import { fitSrc, type Photo } from "../../lib/ipc";
@@ -83,8 +84,10 @@ export function Slideshow({ photos, start, onClose }: { photos: Photo[]; start: 
     if (next) void decode(screenSrc(next));
   }, [at, list]);
 
+  const live = useActiveRef();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!live.current) return;
       if (e.key === "Escape") onClose();
       else if (e.key === " ") setPlaying((p) => !p);
       else if (e.key === "ArrowRight") go(1);

@@ -11,5 +11,5 @@ await p.locator(".rx-list", { hasText: "GYM" }).click();
 await p.waitForTimeout(300);
 await p.getByRole("button", { name: "Details for Evening run" }).click();
 await p.waitForTimeout(300);
-await p.screenshot({ path: process.argv[2] });
+await p.screenshot({ path: process.argv[2] ?? `${(await import("node:os")).tmpdir()}/reminder.png` });
 await b.close();

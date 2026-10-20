@@ -1,4 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { foldAway } from "../lib/fade";
+import { useActiveRef } from "../lib/screen";
 import { listen } from "@tauri-apps/api/event";
 import { usePending } from "../lib/pending";
 import { Notice } from "../components/Notice";
@@ -408,21 +410,11 @@ export function RemindersView() {
       window.setTimeout(() => {
         setLeaving((was) => new Set(was).add(guid));
         const row = document.querySelector<HTMLElement>(`.rx-row[data-guid="${CSS.escape(guid)}"]`);
-        const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-        if (!row || still || typeof row.animate !== "function") {
-          setDeparted((was) => new Set(was).add(guid));
-          return;
-        }
-        const h = row.getBoundingClientRect().height;
-        const cs = getComputedStyle(row);
-        const fold = row.animate(
-          [
-            { height: `${h}px`, paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom, opacity: 1 },
-            { height: "0px", paddingTop: "0px", paddingBottom: "0px", opacity: 0 },
-          ],
-          { duration: 240, easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "forwards" },
-        );
-        fold.onfinish = () => setDeparted((was) => new Set(was).add(guid));
+        const gone = () => setDeparted((was) => new Set(was).add(guid));
+        // Folded by the page, frame by frame (lib/fade): handed to the compositor, as the Web
+        // Animations API hands it, an animation flickered on his screen.
+        if (!row) gone();
+        else foldAway(row, gone);
       }, 600),
     ]);
   };
@@ -435,10 +427,10 @@ export function RemindersView() {
   const ticks = useRef(new Map<string, Promise<unknown>>());
   const toggle = (r: Reminder) => {
     const wasOpen = !r.completedAt;
-    // Shown at once, every time, even while an earlier tick of this one is on its way.
-    if (repeatLabel(r) === null) {
-      setItems(patch(r.guid, { completedAt: wasOpen ? Math.floor(Date.now() / 1000) : null }));
-    }
+    // Shown at once, every time, even while an earlier tick of this one is on its way — a
+    // repeating one too: its circle fills now, and it rolls on to its next date when Apple
+    // has made it (waiting for that, a tick on one showed nothing at all for a second or two).
+    setItems(patch(r.guid, { completedAt: wasOpen ? Math.floor(Date.now() / 1000) : null }));
     // Only where completed reminders are hidden, and never for a repeating one, which rolls on.
     if (wasOpen && !showDone && repeatLabel(r) === null) depart(r.guid);
     else stay(r.guid);
@@ -453,10 +445,9 @@ export function RemindersView() {
     const fresh = await write(
       r,
       () => api.reminderSetDone(r.guid, r.listGuid, wasOpen),
-      // A repeating one rolls on rather than closing, so only Apple's answer can show it.
-      repeatLabel(r) === null
-        ? patch(r.guid, { completedAt: wasOpen ? Math.floor(Date.now() / 1000) : null })
-        : undefined,
+      // Held over any refresh until Apple has it. A repeating one then comes back from Apple
+      // rolled on, open again with its next date.
+      patch(r.guid, { completedAt: wasOpen ? Math.floor(Date.now() / 1000) : null }),
     );
     if (!fresh) stay(r.guid);
     if (!fresh || !wasOpen || repeatLabel(r) === null) return;
@@ -1584,8 +1575,9 @@ function ListInfo({ list, onClose, onDone }: {
   const current = LIST_COLOURS.find((c) => c.hex.toLowerCase() === (list.colour ?? "").toLowerCase())?.key ?? null;
   const [colour, setColour] = useState<string | null>(current);
   const shown = LIST_COLOURS.find((c) => c.key === colour)?.hex ?? list.colour ?? "#007AFF";
+  const live = useActiveRef();
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => live.current && e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);

@@ -1,7 +1,7 @@
 // Not a check: renders the sidebar's icons large, in both themes, to look at.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub } from "./stub.mjs";
-const out = process.argv[2] ?? ".";
+const out = process.argv[2] ?? (await import("node:os")).tmpdir();
 const b = await engine.launch();
 for (const scheme of ["dark", "light"]) {
   const ctx = await b.newContext({ viewport: { width: 1100, height: 420 }, colorScheme: scheme, deviceScaleFactor: 3 });
