@@ -34,6 +34,9 @@ const TTL: Duration = Duration::from_secs(1);
 /// How long a folder never opened before may take to come from Apple before the file manager
 /// is told it could not be read (and can ask again).
 const LIST_WAIT: Duration = Duration::from_secs(30);
+/// How long a folder's listing is taken as current before a look at it asks Apple again (in
+/// the background: what is stored is shown at once). Apple pushes nothing for iCloud Drive.
+const FRESH: Duration = Duration::from_secs(10);
 
 /// How long a change (a new folder, a rename, a delete) may take at Apple.
 const CHANGE_WAIT: Duration = Duration::from_secs(60);
@@ -57,6 +60,8 @@ struct Inner {
     filled: Mutex<std::collections::HashSet<String>>,
     /// Files written here and not yet at Apple as written. `None`: the folder is read-only.
     writes: Option<Arc<Writes>>,
+    /// When each folder was last asked of Apple, by id.
+    looked: Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// The account's storage as last asked, `(used, total)`.
     space: Mutex<Option<((u64, u64), std::time::Instant)>>,
     /// Nothing in it can be changed.
@@ -91,6 +96,7 @@ impl DriveFs {
             filled: Mutex::new(std::collections::HashSet::new()),
             writes: None,
             space: Mutex::new(None),
+            looked: Mutex::new(std::collections::HashMap::new()),
             read_only: false,
             add_only: false,
         }))
@@ -236,6 +242,35 @@ impl Inner {
             self.relist(&folder.drivewsid);
         }
         Ok(done)
+    }
+
+    /// Whether a folder was asked of Apple within `FRESH`; if not, it is marked asked now (so
+    /// many looks at once ask once).
+    fn stale(&self, folder: &str) -> bool {
+        let mut looked = self
+            .looked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        if looked
+            .get(folder)
+            .is_some_and(|at| now.duration_since(*at) < FRESH)
+        {
+            return false;
+        }
+        looked.insert(folder.to_string(), now);
+        true
+    }
+
+    /// A folder looked at: shown from what is stored, and asked of Apple behind that when its
+    /// listing is older than `FRESH` — a file saved on the phone is there on the next look.
+    fn revalidate(&self, folder: &str) {
+        if self.stale(folder) {
+            let (remote, id) = (Arc::clone(&self.remote), folder.to_string());
+            self.rt.spawn(async move {
+                let _ = tokio::time::timeout(LIST_WAIT, remote.list(&id)).await;
+            });
+        }
     }
 
     fn relist(&self, folder: &str) {
@@ -832,8 +867,19 @@ fn quiet_note(e: &str) {
 
 impl Filesystem for DriveFs {
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        match self.0.child(parent.0, name) {
-            Ok((ino, item)) => reply.entry(&TTL, &self.0.attr(ino, &item), Generation(0)),
+        let inner = &self.0;
+        let found = inner.child(parent.0, name);
+        // A name not there in a listing gone stale — a file just saved on the phone, asked for
+        // by its path — has its folder asked of Apple behind the answer, never in front of it:
+        // file managers ask after names that are not there all the time (.hidden, desktop.ini),
+        // and Apple's first answer can take seconds.
+        if matches!(found, Err(Errno::ENOENT)) {
+            if let Some(folder) = inner.item(parent.0) {
+                inner.revalidate(&folder.drivewsid);
+            }
+        }
+        match found {
+            Ok((ino, item)) => reply.entry(&TTL, &inner.attr(ino, &item), Generation(0)),
             Err(e) => reply.error(e),
         }
     }
@@ -914,6 +960,7 @@ impl Filesystem for DriveFs {
         if offset == 0 {
             if let Some(folder) = inner.item(ino.0) {
                 inner.fill_thumbnails(&folder, &children);
+                inner.revalidate(&folder.drivewsid);
             }
         }
         let parent = inner
