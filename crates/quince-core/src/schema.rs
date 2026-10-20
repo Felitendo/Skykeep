@@ -515,4 +515,10 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX photos_by_burst ON photos (burst) WHERE burst IS NOT NULL;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // A Live Photo's moving part, its size: what the Photos folder lists it at. Photos read
+    // again so every Live Photo has it.
+    r#"
+    ALTER TABLE photos ADD COLUMN live_size INTEGER;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

@@ -58,6 +58,8 @@ pub enum Size {
     /// The whole picture, displayable: for a photo zoomed in.
     Full,
     Video,
+    /// A Live Photo's moving part as shot, the original `.MOV`.
+    Live,
 }
 
 impl Size {
@@ -68,6 +70,7 @@ impl Size {
             Size::Original => "original",
             Size::Full => "full",
             Size::Video => "video",
+            Size::Live => "live",
         }
     }
     fn pick(self, l: &Links) -> Option<String> {
@@ -77,6 +80,7 @@ impl Size {
             Size::Original => l.original.clone(),
             Size::Full => l.full.clone().or_else(|| l.medium.clone()),
             Size::Video => l.video.clone(),
+            Size::Live => l.live.clone(),
         }
     }
 }

@@ -98,6 +98,9 @@ pub struct Photo {
     /// How many photos its burst holds (filled when read; not stored).
     #[serde(default)]
     pub burst_count: i64,
+    /// A Live Photo's moving part, its original `.MOV`, in bytes.
+    #[serde(default)]
+    pub live_size: Option<i64>,
     /// The asset's change tag, for writing back to it.
     pub change_tag: Option<String>,
 }
@@ -159,7 +162,7 @@ pub enum View {
 
 const COLUMNS: &str = "id, master, taken_at, added_at, kind, width, height, duration, filename, \
                        size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag, expunge_at, title, caption, rating, \
-                       keywords, latitude, longitude, rendered, burst, burst_pick";
+                       keywords, latitude, longitude, rendered, burst, burst_pick, live_size";
 
 /// A burst shows as its chosen photo, as Photos shows it (Apple's library says as much: its
 /// `burstsExcludedFromPhotosCount` is every burst's photos less one each). A burst whose chosen
@@ -201,6 +204,7 @@ fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
         burst: r.get(25)?,
         burst_pick: r.get::<_, i64>(26)? != 0,
         burst_count: 0,
+        live_size: r.get(27)?,
     })
 }
 
@@ -213,9 +217,10 @@ impl Library {
                 "INSERT INTO photos (id, master, taken_at, added_at, kind, width, height, duration,
                                      filename, size, uti, favorite, hidden, deleted, deleted_at,
                                      subtype, change_tag, expunge_at, title, caption, rating,
-                                     keywords, latitude, longitude, rendered, burst, burst_pick)
+                                     keywords, latitude, longitude, rendered, burst, burst_pick,
+                                     live_size)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
-                         ?22, ?23, ?24, ?25, ?26, ?27)
+                         ?22, ?23, ?24, ?25, ?26, ?27, ?28)
                  ON CONFLICT(id) DO UPDATE SET
                    master = excluded.master, taken_at = excluded.taken_at,
                    added_at = excluded.added_at, kind = excluded.kind, width = excluded.width,
@@ -228,7 +233,8 @@ impl Library {
                    caption = excluded.caption, rating = excluded.rating,
                    keywords = excluded.keywords, latitude = excluded.latitude,
                    longitude = excluded.longitude, rendered = excluded.rendered,
-                   burst = excluded.burst, burst_pick = excluded.burst_pick",
+                   burst = excluded.burst, burst_pick = excluded.burst_pick,
+                   live_size = excluded.live_size",
             )?;
             for p in photos {
                 stmt.execute(params![
@@ -259,7 +265,8 @@ impl Library {
                     p.longitude,
                     p.rendered,
                     p.burst,
-                    i64::from(p.burst_pick)
+                    i64::from(p.burst_pick),
+                    p.live_size
                 ])?;
             }
         }
@@ -762,6 +769,7 @@ mod tests {
             burst: None,
             burst_pick: false,
             burst_count: 0,
+            live_size: None,
         }
     }
 

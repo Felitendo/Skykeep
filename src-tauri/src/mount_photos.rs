@@ -5,7 +5,9 @@
 //!   Albums/Trips/Goa/IMG_0042.JPG
 //!   Favorites/…   Videos/…
 //!
-//! Each file is the original, under its own name and dated when it was taken. Its bytes are
+//! Each file is the original, under its own name and dated when it was taken; a Live Photo is
+//! its still and, beside it under the same name, its moving part as shot (IMG_1234.MOV) — as
+//! Image Capture brings them off an iPhone. Its bytes are
 //! read from the app's own photo cache (fetched once if they are not there), never copied a
 //! second time; thumbnails are the app's own, so a file manager browsing downloads nothing.
 //! Hidden and Recently Deleted are never shown.
@@ -24,6 +26,8 @@ const ALBUMS: &str = "PH::albums";
 const FAVORITES: &str = "PH::favorites";
 const VIDEOS: &str = "PH::videos";
 const FILE: &str = "PHOTO::";
+/// A Live Photo's moving part, beside its still.
+const LIVE: &str = "LIVE::";
 
 const MONTHS: [&str; 12] = [
     "January",
@@ -83,6 +87,29 @@ fn file(p: &Photo, parent: &str) -> DriveItem {
     }
 }
 
+/// A photo's files in a folder: the photo, and for a Live Photo its `.MOV` too.
+fn files(p: &Photo, parent: &str) -> Vec<DriveItem> {
+    let still = file(p, parent);
+    let live = (p.kind == quince_core::photos::Kind::Live)
+        .then_some(p.live_size)
+        .flatten()
+        .map(|size| DriveItem {
+            drivewsid: format!("{LIVE}{}", p.id),
+            extension: Some("MOV".into()),
+            size: Some(size),
+            ..still.clone()
+        });
+    std::iter::once(still).chain(live).collect()
+}
+
+/// The photo a file in the folder is of, and whether it is a Live Photo's moving part.
+fn photo_of(item: &DriveItem) -> Option<(&str, bool)> {
+    item.drivewsid
+        .strip_prefix(FILE)
+        .map(|id| (id, false))
+        .or_else(|| item.drivewsid.strip_prefix(LIVE).map(|id| (id, true)))
+}
+
 /// (year, month 1–12) a photo was taken in, in this computer's time zone.
 fn taken(p: &Photo) -> (i16, i8) {
     let zone = jiff::tz::TimeZone::system();
@@ -115,11 +142,11 @@ fn children(app: &AppHandle, id: &str) -> Option<Vec<DriveItem>> {
         }
         FAVORITES => photos(View::Favorites)
             .iter()
-            .map(|p| file(p, FAVORITES))
+            .flat_map(|p| files(p, FAVORITES))
             .collect(),
         VIDEOS => photos(View::Videos)
             .iter()
-            .map(|p| file(p, VIDEOS))
+            .flat_map(|p| files(p, VIDEOS))
             .collect(),
         ALBUMS => albums_in(&library, None, ALBUMS),
         _ => {
@@ -146,7 +173,7 @@ fn children(app: &AppHandle, id: &str) -> Option<Vec<DriveItem>> {
                 photos(View::Library)
                     .iter()
                     .filter(|p| taken(p) == (y, m))
-                    .map(|p| file(p, id))
+                    .flat_map(|p| files(p, id))
                     .collect()
             } else {
                 let album = id.strip_prefix("PH::album:")?;
@@ -163,7 +190,7 @@ fn children(app: &AppHandle, id: &str) -> Option<Vec<DriveItem>> {
                         .ok()?
                         .iter()
                         .filter(|p| !p.hidden && !p.deleted)
-                        .map(|p| file(p, id))
+                        .flat_map(|p| files(p, id))
                         .collect()
                 }
             }
@@ -215,17 +242,19 @@ impl Remote for PhotosRemote {
     }
 
     fn file(&self, item: &DriveItem) -> Option<Fut<PathBuf>> {
-        let id = item.drivewsid.strip_prefix(FILE)?.to_string();
+        let (id, live) = photo_of(item)?;
+        let (id, size) = (
+            id.to_string(),
+            if live { Size::Live } else { Size::Original },
+        );
         let app = self.0.clone();
-        Some(Box::pin(
-            async move { cached(&app, &id, Size::Original).await },
-        ))
+        Some(Box::pin(async move { cached(&app, &id, size).await }))
     }
 
     fn is_local(&self, item: &DriveItem) -> bool {
-        item.drivewsid
-            .strip_prefix(FILE)
-            .is_some_and(|id| cache_path(&self.0, id, Size::Original).exists())
+        photo_of(item).is_some_and(|(id, live)| {
+            cache_path(&self.0, id, if live { Size::Live } else { Size::Original }).exists()
+        })
     }
 
     fn thumbnails(&self, folder: &str) -> Fut<HashMap<String, Vec<u8>>> {
@@ -238,7 +267,8 @@ impl Remote for PhotosRemote {
                     .map_err(|e| e.to_string())?;
             let mut out = HashMap::new();
             for item in files.iter().filter(|i| i.kind == "FILE") {
-                let Some(id) = item.drivewsid.strip_prefix(FILE) else {
+                // A Live Photo's .MOV is pictured by its still, as Photos shows it.
+                let Some((id, _)) = photo_of(item) else {
                     continue;
                 };
                 if let Ok(path) = cached(&app, id, Size::Thumb).await {
@@ -249,5 +279,49 @@ impl Remote for PhotosRemote {
             }
             Ok(out)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Live Photo is two files under one name — the still and its .MOV, at the moving part's
+    /// own size — and each knows which picture it is.
+    #[test]
+    fn a_live_photo_is_its_still_and_its_mov() {
+        let mut p: Photo = serde_json::from_value(serde_json::json!({
+            "id": "A1", "master": "M1", "takenAt": 1_789_640_832, "kind": "live",
+            "width": 4032, "height": 3024, "filename": "IMG_0001.HEIC", "size": 2_400_000,
+            "favorite": false, "hidden": false, "deleted": false, "subtype": 0,
+            "liveSize": 3_500_000
+        }))
+        .unwrap();
+        let both = files(&p, "PH::m:2026-9");
+        let named: Vec<_> = both
+            .iter()
+            .map(|f| (f.display_name(), f.size, photo_of(f)))
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                (
+                    "IMG_0001.HEIC".to_string(),
+                    Some(2_400_000),
+                    Some(("A1", false))
+                ),
+                (
+                    "IMG_0001.MOV".to_string(),
+                    Some(3_500_000),
+                    Some(("A1", true))
+                ),
+            ]
+        );
+        p.kind = quince_core::photos::Kind::Image;
+        assert_eq!(
+            files(&p, "PH::m:2026-9").len(),
+            1,
+            "a still photo is one file"
+        );
     }
 }

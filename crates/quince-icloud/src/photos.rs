@@ -55,6 +55,8 @@ pub struct Links {
     pub full: Option<String>,
     /// A video's playable rendition, or a Live Photo's moving part.
     pub video: Option<String>,
+    /// A Live Photo's moving part as it was shot: the original `.MOV`.
+    pub live: Option<String>,
 }
 
 fn link(fields: &Value, key: &str, name: &str) -> Option<String> {
@@ -83,6 +85,7 @@ pub fn links_of(master: &Value) -> Links {
         video: link(f, "resVidMedRes", "video.mp4")
             .or_else(|| link(f, "resVidSmallRes", "video.mp4"))
             .or_else(|| link(f, "resOriginalVidComplRes", "live.mov")),
+        live: link(f, "resOriginalVidComplRes", "live.mov"),
     }
 }
 
@@ -226,6 +229,9 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
         burst: burst_of(asset),
         burst_pick: burst_pick_of(asset),
         burst_count: 0,
+        live_size: (kind == Kind::Live)
+            .then(|| size("resOriginalVidComplFileSize"))
+            .flatten(),
         latitude: location_of(asset).map(|l| l.0),
         longitude: location_of(asset).map(|l| l.1),
         expunge_at: (field::int(asset, "isDeleted") == Some(1))
@@ -1004,6 +1010,24 @@ mod tests {
             photo_of(&asset(json!({})), &master()).unwrap().duration,
             None
         );
+    }
+
+    /// A Live Photo knows its moving part: the original .MOV's link and size, for the Photos
+    /// folder to list it beside the still. A still photo has neither.
+    #[test]
+    fn a_live_photo_knows_its_moving_part() {
+        let mut m = master();
+        m["fields"]["resOriginalVidComplRes"] =
+            json!({"value": {"downloadURL": "https://cvws.example/live/${f}"}});
+        m["fields"]["resOriginalVidComplFileSize"] = json!({"value": 3_500_000});
+        let p = photo_of(&asset(json!({})), &m).unwrap();
+        assert_eq!((p.kind, p.live_size), (Kind::Live, Some(3_500_000)));
+        assert_eq!(
+            links_of(&m).live.as_deref(),
+            Some("https://cvws.example/live/live.mov")
+        );
+        let still = photo_of(&asset(json!({})), &master()).unwrap();
+        assert_eq!((still.live_size, links_of(&master()).live), (None, None));
     }
 
     /// A full pass replaces the library; a later asset-only change (deleted) is laid over the
