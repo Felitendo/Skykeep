@@ -20,7 +20,7 @@ import {
 } from "../lib/ipc";
 import { useSync } from "../lib/sync";
 import { Notice } from "../components/Notice";
-import { UploadTray } from "../components/UploadTray";
+import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Slideshow } from "./photos/Slideshow";
 
@@ -1158,6 +1158,9 @@ export function PhotosView() {
     let cancelled = false;
     listen<UploadEvent>(PHOTO_UPLOAD, (event) => {
       const u = event.payload;
+      // "planned" says a batch is all listed; it rides on its first file's id, and kept, it
+      // took that file's place — the first photo of each batch went missing from the panel.
+      if (u.state === "planned") return;
       setUploads((was) => {
         const before = was.get(u.id);
         if (before && (before.state === "done" || before.state === "failed" || before.state === "cancelled")) return was;
@@ -1730,7 +1733,7 @@ export function PhotosView() {
       )}
       {menu && <RowMenu at={menu.at} entries={menu.entries} onClose={() => setMenu(null)} />}
       {show && <Slideshow photos={show.list} start={show.start} onClose={() => setShow(null)} />}
-      <UploadTray uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />
+      <UploadPanel uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />
     </div>
   );
 }

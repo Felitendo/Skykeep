@@ -45,12 +45,13 @@ impl Refusal {
     #[must_use]
     pub fn words(&self) -> String {
         match self {
-            Refusal::Kind(ext) => format!("Photos doesn’t take .{ext} files."),
-            Refusal::TooSmall => "That file is too small to be a photo.".into(),
-            Refusal::TooLarge => "That file is larger than the 500 MB Photos takes.".into(),
-            Refusal::NameTooLong => "That file’s name is longer than Photos takes.".into(),
-            Refusal::Duplicate => "Already in your library.".into(),
-            Refusal::OverQuota => "Your iCloud storage is full.".into(),
+            // icloud.com's own words, from its uploader (Uploader.* in ui.main.js).
+            Refusal::Kind(_) => "This item’s file type isn’t supported.".into(),
+            Refusal::TooSmall => "This item is too small to upload.".into(),
+            Refusal::TooLarge => "Item is too large to upload.".into(),
+            Refusal::NameTooLong => "File name too long.".into(),
+            Refusal::Duplicate => "Duplicate item.".into(),
+            Refusal::OverQuota => "Not enough space to upload item.".into(),
         }
     }
 }

@@ -532,3 +532,63 @@
 .px-children .px-source, .px-children .px-naming { padding-left: 30px; }
 /* An album's cover in the sidebar, where a symbol stands for the others. */
 .px-cover { flex: none; width: 18px; height: 18px; border-radius: 4px; object-fit: cover; box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--text) 18%, transparent); }
+
+/* ---- uploads: a panel at the right, as icloud.com shows them --------------------------------- */
+.px-up {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 7;
+  width: min(340px, 88%);
+  display: flex;
+  flex-direction: column;
+  /* Solid, as icloud.com's: the toolbar's controls must not show through the words. */
+  background: var(--sheet);
+  box-shadow: inset 0.5px 0 0 var(--separator), -18px 0 40px rgba(0, 0, 0, 0.18);
+  animation: px-up-in 320ms var(--spring-smooth) both;
+}
+.px-up.is-leaving { animation: px-up-out 240ms ease-in both; }
+@keyframes px-up-in { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes px-up-out { from { transform: none; opacity: 1; } to { transform: translateX(100%); opacity: 0.6; } }
+@media (prefers-reduced-motion: reduce) { .px-up, .px-up.is-leaving { animation: none; } }
+.px-up-head { padding: 12px 16px 0; }
+.px-up-link { padding: 4px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: var(--t-13); font-weight: 500; cursor: default; }
+.px-up-link:hover { text-decoration: underline; }
+.px-up-hero { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 22px 16px; text-align: center; }
+.px-up-icon { color: var(--accent); }
+.px-up-title { margin: 0; font-size: var(--t-15, 15px); font-weight: 700; }
+.px-up-bar { width: 100%; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }
+.px-up-bar span { display: block; height: 100%; background: var(--accent); transform-origin: left; transition: transform 240ms ease-out; }
+.px-up-rows { flex: 1; min-height: 0; margin: 0; padding: 0 8px 12px; list-style: none; overflow-y: auto; }
+.px-up-row { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; }
+.px-up-thumb { flex: none; width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: color-mix(in srgb, var(--text) 8%, transparent); }
+.px-up-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.px-up-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-13); }
+.px-up-sub { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
+.px-up-row.is-failed .px-up-sub { color: var(--text-2); }
+.px-up-end { flex: none; display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--t-12, 12px); }
+.px-up-stop {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-3);
+  color: var(--bg);
+  cursor: default;
+}
+.px-up-stop:hover { background: var(--text-2); }
+.px-up-ok { color: #30d158; }
+.px-up-why { color: var(--text-3); }
+.px-up-spin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  animation: px-spin 800ms linear infinite;
+}
+@keyframes px-spin { to { transform: rotate(360deg); } }

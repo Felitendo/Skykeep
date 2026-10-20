@@ -3598,7 +3598,22 @@ fn main() {
             let wanted = photo_guid(uri.host(), uri.path());
             let attachment = note_part(uri.path());
             let picture = photos::requested(uri.path());
+            let queued = photos::requested_upload(uri.path());
             tauri::async_runtime::spawn(async move {
+                // A file on its way into Photos, small, for the upload panel.
+                if let Some(id) = queued {
+                    let response = match photos::upload_picture(&app, &id).await {
+                        Ok(bytes) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", image_type(&bytes))
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.unwrap_or_default());
+                    return;
+                }
                 // A photo's picture: from the disk cache, or fetched from Apple once and kept.
                 if let Some((id, size)) = picture {
                     let response = match photos::picture(&app, &id, size).await {

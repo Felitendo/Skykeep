@@ -239,26 +239,44 @@ await page.waitForTimeout(100);
 ok((await page.getByRole("button", { name: "Zoom In" }).isEnabled()), "Ctrl − zooms back out, as in Photos");
 ok(/Photos?, 1 Video/.test(await page.locator(".px-tally").innerText()), `the foot of the library says what it holds  ${await page.locator(".px-tally").innerText()}`);
 
-// Adding: the chosen photos go to the library, each shown in the tray as it goes; a file
-// Photos can't take says why at once; Cancel stops the rest; a clean finish clears itself.
+// Adding, as icloud.com shows it: a panel at the right — "Uploading 3 Items to iCloud", each
+// file with how much has gone, Pending with a way to stop it; a file Photos can't take says why
+// at once; Stop Upload stops the rest; at the end what did not go, and why, until Done.
+const say = (e) => page.evaluate((x) => window.__emit("quince://photo-upload", { batch: "B1", within: "", folder: false, error: null, sent: 0, total: 1000, ...x }), e);
 await page.evaluate(() => { window.__pick = ["/home/test/Pictures/beach.jpg", "/home/test/Pictures/notes.txt", "/home/test/Pictures/dog.heic"]; });
 await page.getByRole("button", { name: "Add Photos" }).click();
-await page.waitForTimeout(300);
+await page.waitForTimeout(400);
 ok(JSON.stringify(await page.evaluate(() => window.__photoUploads?.at(-1))) === JSON.stringify(["/home/test/Pictures/beach.jpg", "/home/test/Pictures/notes.txt", "/home/test/Pictures/dog.heic"]),
   "Add Photos sends the chosen files to the library");
-ok((await page.locator(".upload-tray").count()) === 1 && /can’t add this kind/.test(await page.locator(".upload-tray").innerText()),
-  "the tray shows the files, and why one can't be added");
-await page.evaluate(() => window.__emit("quince://photo-upload", { id: "B1:0", batch: "B1", name: "beach.jpg", within: "", folder: false, error: null, state: "sending", sent: 500, total: 1000 }));
+const panel = page.locator(".px-up");
+ok((await panel.count()) === 1 && (await page.locator(".px-up-title").innerText()) === "Uploading 3 Items to iCloud",
+  `the panel slides in: ${await page.locator(".px-up-title").innerText()}`);
+await say({ id: "B1:0", name: "beach.jpg", state: "sending", sent: 500 });
 await page.waitForTimeout(100);
-ok(/Uploading/.test(await page.locator(".upload-tray-title").innerText()), "a file on its way shows as uploading");
-await page.locator(".upload-tray").getByRole("button", { name: "Cancel", exact: true }).click();
-await page.waitForTimeout(200);
-ok(JSON.stringify(await page.evaluate(() => window.__photoCancels?.at(-1))) === JSON.stringify({ ids: [], batch: "B1" }),
-  "Cancel stops the batch through Photos, not Drive");
-await page.evaluate(() => window.__emit("quince://photo-upload", { id: "B1:0", batch: "B1", name: "beach.jpg", within: "", folder: false, error: null, state: "cancelled", sent: 0, total: 1000 }));
+ok(/500 B of 1000 B/.test(await panel.locator(".px-up-row", { hasText: "beach.jpg" }).innerText()), "a file on its way shows how much has gone");
+ok(/Pending/.test(await panel.locator(".px-up-row", { hasText: "dog.heic" }).innerText()), "one waiting reads Pending");
+await panel.getByRole("button", { name: "Stop dog.heic" }).click();
 await page.waitForTimeout(100);
-ok(!/Uploading/.test(await page.locator(".upload-tray-title").innerText()), "once cancelled, nothing reads as still going");
-await page.getByRole("button", { name: "Close uploads" }).click();
-ok((await page.locator(".upload-tray").count()) === 0, "Done clears the tray");
+ok(JSON.stringify(await page.evaluate(() => window.__photoCancels?.at(-1))) === JSON.stringify({ ids: ["B1:2"], batch: null }), "its own ✕ stops just that one");
+await say({ id: "B1:0", name: "beach.jpg", state: "verifying", sent: 1000 });
+await page.waitForTimeout(100);
+ok((await page.locator(".px-up-title").innerText()) === "Finalizing Uploads", "while Apple makes the photo: Finalizing Uploads");
+await say({ id: "B1:0", name: "beach.jpg", state: "done", sent: 1000 });
+await page.waitForTimeout(150);
+ok((await page.locator(".px-up-title").innerText()) === "2 of 3 Items Not Uploaded" || (await page.locator(".px-up-title").innerText()) === "1 of 3 Items Not Uploaded",
+  `at the end, what did not go: ${await page.locator(".px-up-title").innerText()}`);
+ok(/can’t add this kind/.test(await panel.innerText()), "and why");
+await panel.getByRole("button", { name: "Done" }).click();
+await page.waitForTimeout(60);
+ok(/is-leaving/.test((await panel.getAttribute("class")) ?? ""), "Done slides it away");
+await page.waitForTimeout(400);
+ok((await page.locator(".px-up").count()) === 0, "and it is gone");
+// Stop Upload, for a batch still going.
+await page.evaluate(() => { window.__pick = ["/home/test/Pictures/ferry.jpg"]; });
+await page.getByRole("button", { name: "Add Photos" }).click();
+await page.waitForTimeout(300);
+await page.getByRole("button", { name: "Stop Upload" }).click();
+await page.waitForTimeout(150);
+ok((await page.evaluate(() => window.__photoCancels?.at(-1)))?.batch === "B2", "Stop Upload stops the whole batch");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

@@ -74,6 +74,55 @@ impl Size {
     }
 }
 
+/// A file on its way into Photos, as `quince://localhost/up/<upload id>` asks for it: the
+/// upload panel's picture of it. Only a file in the upload queue is ever read — the id is
+/// looked up there, never taken as a path.
+pub fn requested_upload(path: &str) -> Option<String> {
+    let path = crate::percent_decode(path.trim_start_matches('/'));
+    let id = path.strip_prefix("up/")?;
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .then(|| id.to_string())
+}
+
+/// A small square of a queued file, made once and kept for the run: decoding a large photo
+/// costs, so it is done off the async threads and never twice.
+pub async fn upload_picture(app: &AppHandle, id: &str) -> UiResult<Vec<u8>> {
+    static MADE: std::sync::OnceLock<Mutex<HashMap<String, Vec<u8>>>> = std::sync::OnceLock::new();
+    let made = MADE.get_or_init(Default::default);
+    if let Some(b) = made
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(id)
+    {
+        return Ok(b.clone());
+    }
+    let u = app
+        .state::<Data>()
+        .0
+        .lock()
+        .await
+        .upload(id)
+        .map_err(|e| e.to_string())?
+        .ok_or("No such upload.")?;
+    let size = tokio::fs::metadata(&u.path)
+        .await
+        .map_err(|e| e.to_string())?
+        .len();
+    // Past this it is a video or something that would cost too much to decode for a row.
+    if size > 80 * 1024 * 1024 {
+        return Err("Too large to show.".into());
+    }
+    let bytes = tokio::fs::read(&u.path).await.map_err(|e| e.to_string())?;
+    let small = tokio::task::spawn_blocking(move || quince_media::avatar(&bytes, None, 120))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    made.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(id.to_string(), small.clone());
+    Ok(small)
+}
+
 /// The photo and picture a `quince://` request asks for: `pic/<asset id>/<size>`, escaped as
 /// Tauri escapes it.
 pub fn requested(path: &str) -> Option<(String, Size)> {
@@ -1010,9 +1059,12 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
                 refresh_photos(app).await;
                 return true;
             }
+            // Already in the library: finished — never sent again — but not uploaded, which is
+            // how icloud.com lists it ("Duplicate item.").
             Ok(Outcome::Refused(Refusal::Duplicate)) => {
-                set("done", Some("Already in your library."), None).await;
-                say(app, &u, "done", size, size, None);
+                let words = Refusal::Duplicate.words();
+                set("done", Some(&words), None).await;
+                say(app, &u, "failed", 0, size, Some(words));
                 return true;
             }
             Ok(Outcome::Refused(r)) => {

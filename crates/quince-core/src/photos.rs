@@ -6,7 +6,7 @@
 //! seen, and their download links, which expire, are never stored.
 
 use crate::{Library, Result};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 /// What a photo is, as Photos sorts it.
@@ -345,6 +345,31 @@ impl Library {
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// One upload, by id, whatever its state: what the upload panel shows a picture of.
+    pub fn upload(&self, id: &str) -> Result<Option<Upload>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, batch, path, name, state, error, asset, added_at, album FROM photo_uploads
+                 WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok(Upload {
+                        id: r.get(0)?,
+                        batch: r.get(1)?,
+                        path: r.get(2)?,
+                        name: r.get(3)?,
+                        state: r.get(4)?,
+                        error: r.get(5)?,
+                        asset: r.get(6)?,
+                        added_at: r.get(7)?,
+                        album: r.get(8)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     /// Finished uploads forgotten once their batch is: what the tray no longer shows.
