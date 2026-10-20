@@ -36,10 +36,10 @@ await page.waitForTimeout(200);
 await page.locator(".px-tile").first().dblclick();
 await page.waitForTimeout(150);
 ok((await page.locator(".px-viewer").count()) === 1, "a photo opens in the viewer");
-const first = await page.locator(".px-stage img").getAttribute("src");
+const first = await page.locator(".px-stage .px-shown").getAttribute("src");
 await page.keyboard.press("ArrowRight");
 await page.waitForTimeout(100);
-const second = await page.locator(".px-stage img").getAttribute("src");
+const second = await page.locator(".px-stage .px-shown").getAttribute("src");
 ok(first && second && first !== second && /medium/.test(second), "the right arrow goes to the next photo, at screen size");
 await page.getByRole("button", { name: "Download" }).click();
 await page.waitForTimeout(200);
@@ -56,7 +56,7 @@ ok(JSON.stringify(flags) === JSON.stringify(["p2:favorite:true", "p2:favorite:fa
 page.once("dialog", (d) => void d.accept());
 await page.getByRole("button", { name: "Delete", exact: true }).click();
 await page.waitForTimeout(300);
-const next = await page.locator(".px-stage img, .px-stage video").first().getAttribute("src");
+const next = await page.locator(".px-stage .px-shown").first().getAttribute("src");
 ok(/p3|p4/.test(next ?? "") && (await page.locator(".px-tile").count()) === 4, "Delete, once agreed, takes it out and shows the next");
 // A video shows its still; Play opens it in the computer's own player.
 if (await page.getByRole("button", { name: "Play in your video player" }).count()) {

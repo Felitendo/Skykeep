@@ -322,7 +322,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             hidden: all.filter((p) => !p.deleted && p.hidden),
           };
           if (cmd === "photos_counts") return Object.entries(views).map(([k, v]) => [k, v.length]);
-          return views[args.view] ?? [];
+          // A read that takes its time, so a test can have it land after another view is chosen.
+          const answer = (views[args.view] ?? []).map((p) => ({ ...p }));
+          if (window.__slowView === args.view) return new Promise((r) => setTimeout(() => r(answer), 600));
+          return answer;
         }
         case "photos_albums": {
           const albums = (window.__albums ??= [{ id: "AL1", name: "Trips", position: 0, changeTag: null, items: ["p4", "p2"] }]);

@@ -6,6 +6,9 @@
 .content:has(.px) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
 
 .px {
+  /* An app's own words are not text to select, as in Photos; a field still takes typing. */
+  -webkit-user-select: none;
+  user-select: none;
   flex: 1;
   min-height: 0;
   display: grid;
@@ -458,3 +461,4 @@
 .px-caption::placeholder { color: var(--text-3); font-weight: 500; }
 .px-caption:hover:not(:read-only) { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .px-caption:focus { background: var(--field, transparent); box-shadow: 0 0 0 2px var(--accent-ring); }
+.px input, .px textarea { -webkit-user-select: text; user-select: text; }

@@ -62,6 +62,7 @@ step "photos keys"       node .uiverify/photos-keys.mjs
 step "photos sort"       node .uiverify/photos-sort.mjs
 step "slideshow"         node .uiverify/photos-show.mjs
 step "photo captions"    node .uiverify/photos-caption.mjs
+step "photos real faults" node .uiverify/photos-real.mjs
 step "notes delete"      node .uiverify/notes-delete.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs
@@ -107,6 +108,7 @@ step "webkit: keys"      env ENGINE=webkit node .uiverify/photos-keys.mjs
 step "webkit: sort"      env ENGINE=webkit node .uiverify/photos-sort.mjs
 step "webkit: slideshow" env ENGINE=webkit node .uiverify/photos-show.mjs
 step "webkit: captions"  env ENGINE=webkit node .uiverify/photos-caption.mjs
+step "webkit: real faults" env ENGINE=webkit node .uiverify/photos-real.mjs
 step "webkit: delete"    env ENGINE=webkit node .uiverify/notes-delete.mjs
 step "webkit: row hover" env ENGINE=webkit node .uiverify/row-hover.mjs
 step "webkit: fold"      env ENGINE=webkit node .uiverify/sidebar-fold.mjs

@@ -239,7 +239,8 @@ export function PhotosView() {
   /** An album open instead of a view. */
   const [album, setAlbum] = useState<PhotoAlbum | null>(null);
   const [albums, setAlbums] = useState<[PhotoAlbum, number][]>([]);
-  const [photos, setPhotos] = useState<Photo[] | null>(null);
+  /** The view's photos as read; `photos`, below, is them in the order chosen to show. */
+  const [raw, setPhotos] = useState<Photo[] | null>(null);
   const [counts, setCounts] = useState<Partial<Record<PhotoView, number>>>({});
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -262,8 +263,6 @@ export function PhotosView() {
   const [sorts, setSorts] = useState(readSorts);
   const sortable = !album && view !== "recentlyDeleted";
   const sort = sortable ? (sorts[view] ?? defaultSort(view)) : null;
-  const sortRef = useRef(sort);
-  sortRef.current = sort;
   const chooseSort = (next: Sort) => {
     setSorts((all) => {
       const was = { ...all, [view]: next };
@@ -275,17 +274,26 @@ export function PhotosView() {
       return was;
     });
   };
-  useEffect(() => {
-    if (sort) setPhotos((list) => (list ? sortList(list, sort) : list));
-  }, [sort?.by, sort?.oldest]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Sorted where it is drawn, in the same render as the months made from it. Sorted after the
+  // render instead, a view's first frame grouped one order by another's dates: months came
+  // twice ("December 2025" four times over), and the repeated keys left stale months on screen.
+  const photos = useMemo(
+    () => (raw && sort ? sortList(raw, sort) : raw),
+    [raw, sort?.by, sort?.oldest], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
+  // Reads can pass each other: a sync's read of one view can land after another view was
+  // chosen. Only the newest read may draw, or a view shows another's photos under its title.
+  const reads = useRef(0);
   const read = useCallback(async () => {
+    const mine = ++reads.current;
     const [list, c, a] = await Promise.all([
       album ? api.photosInAlbum(album.id) : api.photosList(view),
       api.photosCounts(),
       api.photosAlbums(),
     ]);
-    setPhotos(sortRef.current ? sortList(list, sortRef.current) : list);
+    if (mine !== reads.current) return;
+    setPhotos(list);
     setCounts(Object.fromEntries(c));
     setAlbums(a);
     // An album deleted elsewhere is not left open, empty.
@@ -469,9 +477,11 @@ export function PhotosView() {
     unzoom();
     setSharp(null);
   }, [shown?.id]);
+  // The whole picture, not the screen-sized one, as Photos shows a photo: fetched as soon as
+  // it opens (once, then from disk) and laid over the quick one when it has arrived.
   useEffect(() => {
-    if (lens.k > 1.15 && shown && shown.kind !== "video") setSharp(shown.id);
-  }, [lens.k > 1.15, shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (shown && shown.kind !== "video") setSharp(shown.id);
+  }, [shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // A pinch or Ctrl + wheel: the page must not zoom too, so this listener is not passive.
   useEffect(() => {
     const el = stage.current;
@@ -773,9 +783,12 @@ export function PhotosView() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t?.closest?.("input, textarea, [contenteditable], .row-menu, [role=dialog]") || naming) return;
-      if (!t?.closest?.(".px") && t !== document.body) return;
       const list = photos ?? [];
       const ctrl = e.ctrlKey || e.metaKey;
+      // Ctrl+A is the photos' wherever the focus rests on this screen — the app list keeps it
+      // after Photos is chosen there — never the page's text.
+      const selectAll = ctrl && e.key.toLowerCase() === "a";
+      if (!selectAll && !t?.closest?.(".px") && t !== document.body) return;
       if (ctrl && e.key.toLowerCase() === "a") {
         setChosen(new Set(list.map((p) => p.id)));
       } else if (e.key === "Escape" && chosen.size) {
@@ -1343,7 +1356,7 @@ export function PhotosView() {
           }} style={{ "--across": across } as React.CSSProperties}>
           {months.map((m, k) => (
             <Month
-              key={`${view}/${album?.id ?? ""}/${m.label}`}
+              key={`${view}/${album?.id ?? ""}/${k}/${m.label}`}
               label={m.label}
               items={m.items}
               chosen={chosen}
