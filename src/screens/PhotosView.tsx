@@ -29,6 +29,9 @@ const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
   { key: "library", label: "Library", Icon: Images },
   { key: "favorites", label: "Favorites", Icon: Heart },
   { key: "recents", label: "Recents", Icon: Clock },
+];
+/** Photos' Media Types: the library by what kind of picture each is. */
+const MEDIA: typeof VIEWS = [
   { key: "videos", label: "Videos", Icon: Video },
   { key: "screenshots", label: "Screenshots", Icon: Scan },
 ];
@@ -1184,7 +1187,7 @@ export function PhotosView() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const title = album?.name ?? VIEWS.find((v) => v.key === view)?.label ?? "Photos";
+  const title = album?.name ?? [...VIEWS, ...MEDIA, ...UTILITIES].find((v) => v.key === view)?.label ?? "Photos";
   const across = ACROSS[zoom];
 
   const source = (v: (typeof VIEWS)[number]) => (
@@ -1209,6 +1212,8 @@ export function PhotosView() {
       <aside className="px-side" aria-label="Photos">
         <p className="px-side-heading">Photos</p>
         {VIEWS.map(source)}
+        <p className="px-side-heading px-side-gap">Media Types</p>
+        {MEDIA.map(source)}
         <div className="px-side-row">
           <p className="px-side-heading">Albums</p>
           <button className="px-side-add" aria-label="New Album" title="New Album" onClick={() => setNaming({ id: null, then: [], draft: "" })}>
