@@ -87,9 +87,15 @@ ok((await page.locator(".px-viewer").count()) === 0, "Escape closes the viewer")
 
 const across = async () => page.locator(".px-grid").first().evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(" ").length);
 const before = await across();
-await page.getByLabel("Zoom").fill("3");
+await page.getByRole("button", { name: "Zoom In" }).click();
+await page.getByRole("button", { name: "Zoom In" }).click();
 await page.waitForTimeout(100);
-ok((await across()) < before, `zooming in shows fewer across  ${before} → ${await across()}`);
+ok((await across()) < before, `Zoom In shows fewer across  ${before} → ${await across()}`);
+ok(await page.getByRole("button", { name: "Zoom In" }).isDisabled(), "and stops at the closest");
+await page.keyboard.press("Control+-");
+await page.waitForTimeout(100);
+ok((await page.getByRole("button", { name: "Zoom In" }).isEnabled()), "Ctrl − zooms back out, as in Photos");
+ok(/Photos?, 1 Video/.test(await page.locator(".px-tally").innerText()), `the foot of the library says what it holds  ${await page.locator(".px-tally").innerText()}`);
 
 // Adding: the chosen photos go to the library, each shown in the tray as it goes; a file
 // Photos can't take says why at once; Cancel stops the rest; a clean finish clears itself.

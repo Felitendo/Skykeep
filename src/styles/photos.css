@@ -77,33 +77,71 @@
 .px-count { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: var(--t-12, 12px); }
 
 /* ---- the library ------------------------------------------------------------------------- */
-.px-notice { padding: 0 18px; }
+.px-notice { position: absolute; z-index: 5; top: 62px; left: 18px; right: 18px; max-width: 420px; }
 .px-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .px-bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 4;
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 14px 18px 10px;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px 0 18px;
+  pointer-events: none;
 }
-.px-bar h1 { margin: 0; font-size: var(--t-22, 22px); font-weight: 700; letter-spacing: -0.01em; }
-.px-total { color: var(--text-3); font-size: var(--t-13); font-variant-numeric: tabular-nums; }
-.px-zoom { margin-left: auto; align-self: center; }
-.px-zoom input { width: 120px; accent-color: var(--accent); }
-.px-add {
-  align-self: center;
+.px-bar > * { pointer-events: auto; }
+.px-heading { margin-right: auto; min-width: 0; }
+.px-bar h1 {
+  margin: 0;
+  font-size: var(--t-22, 22px);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.px-span { margin: 1px 0 0; color: var(--text-2); font-size: var(--t-13); font-weight: 500; }
+
+/* Liquid Glass, as Photos' toolbar has it: small capsules floating over the photos. The live
+   blur is kept to these few small, still surfaces — never to what moves, which WebKitGTK
+   would re-blur on every frame of a scroll. */
+.px-capsule {
+  display: flex;
+  height: 34px;
+  padding: 0 3px;
+  border-radius: 17px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-float);
+}
+.px-cap {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 17px;
   background: transparent;
-  color: var(--text-2);
+  color: var(--text);
   cursor: default;
+  transition: background-color 120ms ease, transform 160ms var(--spring-quick);
 }
-.px-add:hover { background: color-mix(in srgb, currentColor 9%, transparent); color: var(--text); }
-.px-add:active { transform: scale(0.94); }
-.px-add:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
+.px-cap:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.px-cap:active:not(:disabled) { transform: scale(0.9); }
+.px-cap:disabled { color: var(--text-3); opacity: 0.55; }
+.px-cap:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
+
+.px-tally {
+  margin: 18px 0 8px;
+  color: var(--text-2);
+  font-size: var(--t-13);
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 
 /* A drop into the library: the whole window answers, as Photos does. No live blur — WebKitGTK
    repaints it every frame the pointer moves. */
@@ -125,17 +163,22 @@
 }
 .px-empty { margin: 18vh auto 0; max-width: 36ch; color: var(--text-2); text-align: center; }
 
-.px-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 2px 24px; }
+/* The library runs up under the floating bar and fades out against the top edge — Apple's
+   scroll edge effect, done with a mask, which costs nothing per frame. */
+.px-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 80px 2px 24px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent 44px, #000 104px);
+  mask-image: linear-gradient(to bottom, transparent 0, transparent 44px, #000 104px);
+}
 /* A month off screen is not laid out or painted until it nears it: a library of thousands
    scrolls as lightly as one of a hundred. */
 .px-month { content-visibility: auto; contain-intrinsic-size: auto 600px; }
 .px-month-title {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   margin: 0;
   padding: 12px 16px 8px;
-  background: var(--bg);
   font-size: var(--t-17, 17px);
   font-weight: 700;
   letter-spacing: -0.01em;

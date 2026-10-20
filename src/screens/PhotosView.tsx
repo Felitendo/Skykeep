@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Heart, Info, Play, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Heart, ImagePlus, Info, Minus, Play, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import {
   api,
   messageOf,
@@ -403,6 +403,58 @@ export function PhotosView() {
     };
   }, [add]);
 
+  // Under the title, the stretch of time shown — "September – October 2026" — as Photos has it.
+  const span = useMemo(() => {
+    if (!photos || photos.length === 0) return null;
+    const times = photos.map((p) => p.takenAt);
+    const [a, b] = [new Date(Math.min(...times) * 1000), new Date(Math.max(...times) * 1000)];
+    const month = (d: Date, year: boolean) => d.toLocaleDateString(undefined, year ? { month: "long", year: "numeric" } : { month: "long" });
+    if (a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()) return month(b, true);
+    return `${month(a, a.getFullYear() !== b.getFullYear())} – ${month(b, true)}`;
+  }, [photos]);
+  // At the foot of the library, what it holds: "132 Photos, 2 Videos".
+  const tally = useMemo(() => {
+    if (!photos || photos.length === 0) return null;
+    const videos = photos.filter((p) => p.kind === "video").length;
+    const stills = photos.length - videos;
+    const part = (n: number, one: string) => `${n.toLocaleString()} ${n === 1 ? one : `${one}s`}`;
+    return [stills && part(stills, "Photo"), videos && part(videos, "Video")].filter(Boolean).join(", ");
+  }, [photos]);
+
+  // Scrolled, the line under the title names the month at the top of the view, as Photos
+  // does; read once a frame at most, and set only when it changes.
+  const [here, setHere] = useState<string | null>(null);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const looking = useRef(false);
+  const onScroll = useCallback(() => {
+    if (looking.current) return;
+    looking.current = true;
+    requestAnimationFrame(() => {
+      looking.current = false;
+      const el = scroller.current;
+      if (!el || album) return setHere(null);
+      if (el.scrollTop < 24) return setHere(null);
+      const edge = el.getBoundingClientRect().top + 96;
+      for (const m of el.querySelectorAll<HTMLElement>(".px-month")) {
+        if (m.getBoundingClientRect().bottom > edge) return setHere(m.getAttribute("aria-label"));
+      }
+    });
+  }, [album]);
+  useEffect(() => setHere(null), [view, album]);
+
+  // Zoom from the keys as in Photos: Ctrl and + or −.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (e.key === "=" || e.key === "+") setZoom((z) => Math.min(ACROSS.length - 1, z + 1));
+      else if (e.key === "-") setZoom((z) => Math.max(0, z - 1));
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const title = album?.name ?? VIEWS.find((v) => v.key === view)?.label ?? "Photos";
   const across = ACROSS[zoom];
 
@@ -466,26 +518,26 @@ export function PhotosView() {
       </aside>
 
       <section className="px-main" aria-label={title}>
+        {/* As in Photos on macOS 26: the title and the controls float over the library, which
+            scrolls beneath them and fades out at the top edge. */}
         <header className="px-bar">
-          <h1>{title}</h1>
-          <span className="px-total">
-            {photos ? `${photos.length} ${photos.length === 1 ? "item" : "items"}` : ""}
-          </span>
-          <label className="px-zoom">
-            <span className="visually-hidden">Zoom</span>
-            <input
-              type="range"
-              min={0}
-              max={ACROSS.length - 1}
-              step={1}
-              value={zoom}
-              aria-label="Zoom"
-              onChange={(e) => setZoom(Number(e.target.value))}
-            />
-          </label>
-          <button className="px-add" onClick={() => void choose()} title="Add photos and videos" aria-label="Add Photos">
-            <Plus size={16} strokeWidth={2} aria-hidden="true" />
-          </button>
+          <div className="px-heading">
+            <h1>{title}</h1>
+            {(here ?? span) && <p className="px-span">{here ?? span}</p>}
+          </div>
+          <div className="px-capsule" role="group" aria-label="Zoom">
+            <button className="px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
+              <Minus size={15} strokeWidth={2.2} aria-hidden="true" />
+            </button>
+            <button className="px-cap" aria-label="Zoom In" title="Zoom In (Ctrl +)" disabled={zoom === ACROSS.length - 1} onClick={() => setZoom((z) => Math.min(ACROSS.length - 1, z + 1))}>
+              <Plus size={15} strokeWidth={2.2} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="px-capsule">
+            <button className="px-cap px-add" onClick={() => void choose()} title="Add photos and videos" aria-label="Add Photos">
+              <ImagePlus size={16} strokeWidth={1.9} aria-hidden="true" />
+            </button>
+          </div>
         </header>
 
         {error && (
@@ -506,7 +558,7 @@ export function PhotosView() {
           </p>
         )}
 
-        <div className="px-scroll" style={{ "--across": across } as React.CSSProperties}>
+        <div className="px-scroll" ref={scroller} onScroll={onScroll} style={{ "--across": across } as React.CSSProperties}>
           {months.map((m) => (
             <section key={m.label} className="px-month" aria-label={m.label}>
               {m.label && <h2 className="px-month-title">{m.label}</h2>}
@@ -538,6 +590,7 @@ export function PhotosView() {
               </div>
             </section>
           ))}
+          {tally && <p className="px-tally">{tally}</p>}
         </div>
 
         {shown && (
