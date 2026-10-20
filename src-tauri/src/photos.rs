@@ -157,9 +157,17 @@ fn cache_path(app: &AppHandle, id: &str, size: Size) -> PathBuf {
 
 /// One picture of a photo: from the disk cache, or fetched from Apple once and kept.
 pub async fn picture(app: &AppHandle, id: &str, size: Size) -> Result<Vec<u8>, String> {
+    let path = cached(app, id, size).await?;
+    tokio::fs::read(&path).await.map_err(|e| e.to_string())
+}
+
+/// One picture (or video) of a photo in the disk cache, fetched from Apple once if it is not
+/// there, and its path. Streamed to a part file and moved into place: a large video is never
+/// held whole in memory, and a half-written file is never served.
+pub async fn cached(app: &AppHandle, id: &str, size: Size) -> Result<PathBuf, String> {
     let path = cache_path(app, id, size);
-    if let Ok(bytes) = tokio::fs::read(&path).await {
-        return Ok(bytes);
+    if tokio::fs::metadata(&path).await.is_ok() {
+        return Ok(path);
     }
     let photo = {
         let data = app.state::<Data>();
@@ -173,35 +181,73 @@ pub async fn picture(app: &AppHandle, id: &str, size: Size) -> Result<Vec<u8>, S
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     // A cached link first; a fresh one from Apple when it has none or Apple refuses the old.
     let fetch = |url: String| {
-        let http = http.clone();
+        let (http, path) = (http.clone(), path.clone());
         async move {
-            let r = http.get(&url).send().await.map_err(|e| e.to_string())?;
-            if !r.status().is_success() {
-                return Err(format!("Apple answered {}", r.status()));
-            }
-            r.bytes()
+            quince_icloud::photos::fetch_to_file(&http, &url, &path)
                 .await
-                .map(|b| b.to_vec())
                 .map_err(|e| e.to_string())
         }
     };
-    let cached = fresh_links(&photo.master).and_then(|l| size.pick(&l));
-    let bytes = match cached {
-        Some(url) => match fetch(url).await {
-            Ok(b) => b,
-            Err(_) => fetch(new_link(&http, &root, params, &photo, size).await?).await?,
-        },
-        None => fetch(new_link(&http, &root, params, &photo, size).await?).await?,
+    let done = match fresh_links(&photo.master).and_then(|l| size.pick(&l)) {
+        Some(url) => fetch(url).await.unwrap_or(false),
+        None => false,
     };
-    if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir).await.ok();
+    if !done && !fetch(new_link(&http, &root, params, &photo, size).await?).await? {
+        return Err("Apple did not send that picture.".into());
     }
-    // Written beside and moved into place, so a half-written picture is never served.
-    let partial = path.with_extension("part");
-    if tokio::fs::write(&partial, &bytes).await.is_ok() {
-        tokio::fs::rename(&partial, &path).await.ok();
+    Ok(path)
+}
+
+/// Keeps the newest photos' whole pictures, and videos, on disk ahead of being opened — as
+/// Photos on a Mac keeps originals — so a photo opens at full quality and a video plays at once,
+/// never waiting on the network. Newest first, two at a time, at most 600 and 3 GB a pass, after
+/// each sync; one pass at a time; what is on disk already is skipped.
+pub fn keep_ahead(app: AppHandle) {
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
     }
-    Ok(bytes)
+    tauri::async_runtime::spawn(async move {
+        use futures_util::StreamExt;
+        let newest = {
+            let data = app.state::<Data>();
+            let library = data.0.lock().await;
+            library.photos(View::Library).unwrap_or_default()
+        };
+        let wanted: Vec<(String, Size)> = newest
+            .into_iter()
+            .take(600)
+            .map(|p| {
+                let size = if p.kind == quince_core::photos::Kind::Video {
+                    Size::Original
+                } else {
+                    Size::Full
+                };
+                (p.id, size)
+            })
+            .filter(|(id, size)| !cache_path(&app, id, *size).exists())
+            .collect();
+        let budget = std::sync::atomic::AtomicU64::new(3 * 1024 * 1024 * 1024);
+        futures_util::stream::iter(wanted)
+            .for_each_concurrent(2, |(id, size)| {
+                let (app, budget) = (app.clone(), &budget);
+                async move {
+                    if budget.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                        return;
+                    }
+                    if let Ok(path) = cached(&app, &id, size).await {
+                        let len = tokio::fs::metadata(&path).await.map_or(0, |m| m.len());
+                        let _ = budget.fetch_update(
+                            std::sync::atomic::Ordering::Relaxed,
+                            std::sync::atomic::Ordering::Relaxed,
+                            |b| Some(b.saturating_sub(len)),
+                        );
+                    }
+                }
+            })
+            .await;
+        RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
 }
 
 async fn new_link(
@@ -663,7 +709,7 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
     } else {
         Size::Video
     };
-    let bytes = picture(&app, &id, size).await?;
+    let source = cached(&app, &id, size).await?;
     let name = photo
         .filename
         .filter(|n| !n.contains('/') && !n.starts_with('.'))
@@ -673,8 +719,11 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
         .await
         .map_err(|e| e.to_string())?;
     let path = dir.join(name);
-    if tokio::fs::metadata(&path).await.is_err() {
-        tokio::fs::write(&path, bytes)
+    // Under its own name for the player, linked to the cached file rather than copied.
+    if tokio::fs::metadata(&path).await.is_err()
+        && tokio::fs::hard_link(&source, &path).await.is_err()
+    {
+        tokio::fs::copy(&source, &path)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -806,7 +855,8 @@ pub async fn photo_open_map(id: String, app: AppHandle, data: State<'_, Data>) -
 /// paused for a session coming back starts again.
 #[tauri::command]
 pub async fn photos_counts(app: AppHandle, data: State<'_, Data>) -> UiResult<Vec<(View, i64)>> {
-    work(app);
+    work(app.clone());
+    keep_ahead(app);
     data.0
         .lock()
         .await

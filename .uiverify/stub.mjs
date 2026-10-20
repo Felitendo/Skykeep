@@ -318,7 +318,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const live = all.filter((p) => !p.deleted && !p.hidden);
           const views = {
             library: live, recents: live, favorites: live.filter((p) => p.favorite), videos: live.filter((p) => p.kind === "video"),
-            screenshots: live.filter((p) => p.subtype === 3), panoramas: live.filter((p) => p.subtype === 1), recentlyDeleted: all.filter((p) => p.deleted),
+            screenshots: live.filter((p) => p.subtype === 3), panoramas: live.filter((p) => p.subtype === 1), portrait: live.filter((p) => p.rendered === 8), recentlyDeleted: all.filter((p) => p.deleted),
             hidden: all.filter((p) => !p.deleted && p.hidden),
             rated: live.filter((p) => (p.rating ?? 0) > 0).sort((a, b) => b.rating - a.rating || b.takenAt - a.takenAt),
           };
@@ -344,12 +344,20 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const albums = (window.__albums ??= [{ id: "AL1", name: "Trips", position: 0, changeTag: null, items: ["p4", "p2"] }]);
           const find = (id) => albums.find((x) => x.id === id);
           if (cmd === "photos_album_create") {
-            const made = { id: `AL${albums.length + 1}`, name: args.name, position: -1, changeTag: "t1" };
+            const made = { id: `AL${albums.length + 1}`, name: args.name, position: -1, changeTag: "t1", folder: !!args.folder, parent: args.parent ?? null };
             albums.unshift({ ...made, items: [] });
             return made;
           }
           if (cmd === "photos_album_rename") find(args.id).name = args.name;
-          if (cmd === "photos_album_delete") albums.splice(albums.indexOf(find(args.id)), 1);
+          if (cmd === "photos_album_delete") {
+            // A folder goes with everything in it, as the app's own backend deletes it.
+            const gone = new Set([args.id]);
+            for (let grew = true; grew; ) {
+              grew = false;
+              for (const x of albums) if (x.parent && gone.has(x.parent) && !gone.has(x.id)) { gone.add(x.id); grew = true; }
+            }
+            for (let i = albums.length - 1; i >= 0; i--) if (gone.has(albums[i].id)) albums.splice(i, 1);
+          }
           if (cmd === "photos_album_add") find(args.album).items.push(...args.ids.filter((i) => !find(args.album).items.includes(i)));
           if (cmd === "photos_album_remove") find(args.album).items = find(args.album).items.filter((i) => !args.ids.includes(i));
           return null;

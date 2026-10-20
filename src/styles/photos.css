@@ -870,3 +870,10 @@
   cursor: default;
 }
 @media (max-width: 1000px) { .px-search { width: 140px; } }
+
+/* Folders nest: each level a step in, as the Mac sidebar steps them. */
+.px-albums .px-depth.px-source,
+.px-albums .px-depth .px-naming { padding-left: calc(30px + var(--depth, 0) * 14px); }
+.px-albums .px-parent-row.px-depth .px-twisty { left: calc(10px + var(--depth, 0) * 14px); }
+.px-albums .px-parent-row.px-depth .px-parent { padding-left: calc(30px + var(--depth, 0) * 14px); }
+.px-card.is-folder .px-card-pic { color: var(--accent); }

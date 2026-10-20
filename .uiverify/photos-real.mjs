@@ -76,5 +76,12 @@ ok(/Panoramas\s*1/.test(await page.locator(".px-source", { hasText: "Panoramas" 
 await page.locator(".px-source", { hasText: "Panoramas" }).click();
 await page.waitForTimeout(300);
 ok((await page.locator(".px-tile").evaluateAll((t) => t.map((x) => x.dataset.id).join())) === "p4", "holding the panorama");
+// A Portrait (Apple's customRenderedValue 8) the same way.
+await page.evaluate(() => { window.__photos.find((p) => p.id === "p2").rendered = 8; });
+await page.locator(".px-source", { hasText: "Recents" }).first().click();
+await page.waitForTimeout(300);
+await page.locator(".px-source", { hasText: "Portrait" }).click();
+await page.waitForTimeout(300);
+ok((await page.locator(".px-tile").evaluateAll((t) => t.map((x) => x.dataset.id).join())) === "p2", "Portrait holds the portrait");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

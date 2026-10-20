@@ -116,7 +116,9 @@ export const api = {
    * arrives as PHOTO_UPLOAD events, in the same shape as Drive's. */
   /** Into the library, and into `album` too when one is open. */
   photosUpload: (paths: string[], album?: string) => invoke<string>("photos_upload", { paths, album: album ?? null }),
-  photosAlbumCreate: (name: string) => invoke<PhotoAlbum>("photos_album_create", { name }),
+  /** An album — or a folder — at the top or in the folder `parent`. */
+  photosAlbumCreate: (name: string, parent?: string, folder?: boolean) =>
+    invoke<PhotoAlbum>("photos_album_create", { name, parent: parent ?? null, folder: folder ?? false }),
   photosAlbumRename: (id: string, name: string) => invoke<void>("photos_album_rename", { id, name }),
   photosAlbumDelete: (id: string) => invoke<void>("photos_album_delete", { id }),
   photosAlbumAdd: (album: string, ids: string[]) => invoke<void>("photos_album_add", { album, ids }),
@@ -571,9 +573,18 @@ export function pictureSrc(id: string, size: "thumb" | "medium" | "full" | "orig
   return convertFileSrc(`pic/${id}/${size}`, "quince");
 }
 
-export type PhotoAlbum = { id: string; name: string; position: number; changeTag: string | null };
+export type PhotoAlbum = {
+  id: string;
+  name: string;
+  position: number;
+  changeTag: string | null;
+  /** A folder of albums, not an album of photos. */
+  folder?: boolean;
+  /** The folder it sits in; none at the top. */
+  parent?: string | null;
+};
 
-export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "panoramas" | "recents" | "hidden" | "rated" | "recentlyDeleted";
+export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "panoramas" | "portrait" | "recents" | "hidden" | "rated" | "recentlyDeleted";
 
 export type Photo = {
   id: string;

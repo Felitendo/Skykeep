@@ -21,7 +21,7 @@ const albumNames = () => page.locator(".px-albums .px-source").evaluateAll((els)
 // while the chevron only opens the list in the sidebar; a card opens its album.
 await page.locator(".px-parent", { hasText: "Albums" }).click();
 await page.waitForTimeout(200);
-ok((await page.locator(".px-albums-head h1").innerText()) === "Albums" && (await page.locator(".px-albums-head .px-span").innerText()) === "1 Album",
+ok((await page.locator(".px-albums-head h1").innerText()) === "Albums" && (await page.locator(".px-albums-head .px-span").innerText()) === "1 Item",
   "Albums opens the Albums page");
 ok((await page.locator(".px-card").count()) === 1 && /Trips[\s\S]*2 items/.test(await page.locator(".px-card").innerText()),
   `each album a card with its name and count  ${JSON.stringify(await page.locator(".px-card").innerText())}`);
@@ -35,7 +35,8 @@ ok((await page.locator(".px-bar h1").innerText()) === "Trips" && (await page.loc
 await page.locator(".px-source", { hasText: "Library" }).first().click();
 await page.waitForTimeout(250);
 
-await page.getByRole("button", { name: "New Album" }).click();
+await page.locator(".px-side").getByRole("button", { name: "New Album" }).click();
+await page.locator(".row-menu").getByText("New Album", { exact: true }).click();
 await page.getByLabel("Album name").fill("Beach");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(250);
@@ -93,10 +94,40 @@ await page.waitForTimeout(200);
 ok((await page.locator(".px").getAttribute("data-drop-label")) === "Add to Library", "in the library, Add to Library");
 await page.evaluate(() => window.__emit?.("quince://photo-upload", { id: "B1:0", batch: "B1", name: "ferry.jpg", within: "", folder: false, error: null, state: "cancelled", sent: 0, total: 1 }));
 await page.evaluate(() => { window.__albumFail = true; });
-await page.getByRole("button", { name: "New Album" }).click();
+await page.locator(".px-side").getByRole("button", { name: "New Album" }).click();
+await page.locator(".row-menu").getByText("New Album", { exact: true }).click();
 await page.getByLabel("Album name").fill("Nope");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(300);
 ok(!(await albumNames()).includes("Nope") && (await page.locator(".notice").count()) === 1, "an album iCloud refuses goes away again, and says why");
+
+// Folders, as icloud.com has them: New Folder, named in place; an album made in it sits in it;
+// the folder's page shows what it holds; deleting it takes what it holds with it.
+await page.evaluate(() => { window.__albumFail = false; });
+await page.locator(".px-side").getByRole("button", { name: "New Album" }).click();
+await page.locator(".row-menu").getByText("New Folder", { exact: true }).click();
+await page.getByLabel("Album name").fill("Holidays");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(300);
+const made = await page.evaluate(() => window.__albumCalls.filter((c) => c.cmd === "photos_album_create").at(-1).args);
+ok(made.name === "Holidays" && made.folder === true, `New Folder makes a folder  ${JSON.stringify(made)}`);
+const folderRow = page.locator(".px-parent", { hasText: "Holidays" });
+ok((await folderRow.count()) === 1, "and it stands in the sidebar as a folder");
+await folderRow.click({ button: "right" });
+await page.locator(".row-menu").getByText("New Album", { exact: true }).click();
+await page.getByLabel("Album name").fill("Goa");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(300);
+const inner = await page.evaluate(() => window.__albumCalls.filter((c) => c.cmd === "photos_album_create").at(-1).args);
+ok(inner.name === "Goa" && typeof inner.parent === "string" && inner.parent.startsWith("AL"), `an album made in it is made in it  ${JSON.stringify(inner)}`);
+await folderRow.click();
+await page.waitForTimeout(250);
+ok((await page.locator(".px-albums-head h1").innerText()) === "Holidays" && /Goa/.test(await page.locator(".px-cards").innerText()),
+  "the folder's page shows what it holds");
+await folderRow.click({ button: "right" });
+await page.locator(".row-menu").getByText("Delete Folder").click();
+await page.waitForTimeout(300);
+ok((await page.locator(".px-parent", { hasText: "Holidays" }).count()) === 0 && (await page.locator(".px-source", { hasText: "Goa" }).count()) === 0,
+  "deleting the folder takes what it holds with it");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

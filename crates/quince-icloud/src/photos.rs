@@ -689,6 +689,54 @@ pub async fn remove_from_album(
     Ok(())
 }
 
+/// A file fetched from `url` to `path`, streamed: written to a part file of its own and moved
+/// into place only once whole, so a large video is never held in memory and a half-written file
+/// is never where a whole one is looked for. A refused fetch leaves nothing behind. Answers false
+/// when Apple refused the link (so the caller may ask for a fresh one), true when it is there.
+pub async fn fetch_to_file(
+    http: &reqwest::Client,
+    url: &str,
+    path: &std::path::Path,
+) -> Result<bool> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let response =
+        http.get(url).send().await.map_err(|e| {
+            crate::Error::Protocol(format!("the picture could not be fetched: {e}"))
+        })?;
+    if !response.status().is_success() {
+        return Ok(false);
+    }
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await.ok();
+    }
+    let partial = path.with_extension(format!("{}.part", uuid::Uuid::new_v4().simple()));
+    let mut out = tokio::fs::File::create(&partial)
+        .await
+        .map_err(|e| crate::Error::Protocol(e.to_string()))?;
+    let mut body = response.bytes_stream();
+    let written: std::result::Result<(), String> = async {
+        while let Some(chunk) = body.next().await {
+            out.write_all(&chunk.map_err(|e| e.to_string())?)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        out.flush().await.map_err(|e| e.to_string())
+    }
+    .await;
+    drop(out);
+    if let Err(e) = written {
+        tokio::fs::remove_file(&partial).await.ok();
+        return Err(crate::Error::Protocol(format!(
+            "the picture broke off: {e}"
+        )));
+    }
+    tokio::fs::rename(&partial, path)
+        .await
+        .map_err(|e| crate::Error::Protocol(e.to_string()))?;
+    Ok(true)
+}
+
 /// Which file a download takes, as icloud.com's Download Options offer them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1112,5 +1160,55 @@ mod tests {
             lib.albums().unwrap().is_empty(),
             "the folder deleted takes the album inside with it"
         );
+    }
+
+    /// A picture fetched to disk arrives whole under its name, through a part file; a refused
+    /// link leaves nothing, and says so, so a fresh link can be asked for.
+    #[tokio::test]
+    async fn pictures_are_fetched_whole_to_disk() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+        Mock::given(path("/ok"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(path("/gone"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let dir =
+            std::env::temp_dir().join(format!("quince-fetch-{}", uuid::Uuid::new_v4().simple()));
+        let http = reqwest::Client::new();
+        let target = dir.join("full").join("A1");
+        assert!(
+            fetch_to_file(&http, &format!("{}/ok", server.uri()), &target)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            body,
+            "every byte, in order"
+        );
+        let other = dir.join("full").join("A2");
+        assert!(
+            !fetch_to_file(&http, &format!("{}/gone", server.uri()), &other)
+                .await
+                .unwrap()
+        );
+        assert!(!other.exists(), "a refused link leaves nothing");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.join("full"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|x| x.to_string_lossy().ends_with("part"))
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "no part file left behind");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

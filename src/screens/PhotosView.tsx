@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -36,6 +36,7 @@ const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
 /** Photos' Media Types: the library by what kind of picture each is. */
 const MEDIA: typeof VIEWS = [
   { key: "videos", label: "Videos", Icon: Video },
+  { key: "portrait", label: "Portrait", Icon: Aperture },
   { key: "panoramas", label: "Panoramas", Icon: RectangleHorizontal },
   { key: "screenshots", label: "Screenshots", Icon: Scan },
 ];
@@ -161,6 +162,8 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
  * cache (and on disk); this is only which are known to be ready.
  */
 const decodedFull = new Set<string>();
+/** The rest on a tile before its whole picture is fetched (see Tile). */
+let resting: number | undefined;
 const warming = new Map<string, Promise<boolean>>();
 function warm(id: string): Promise<boolean> {
   if (decodedFull.has(id)) return Promise.resolve(true);
@@ -233,6 +236,18 @@ const Tile = memo(function Tile({
         act.pick(index, e);
       }}
       onDoubleClick={() => act.open(index)}
+      // A pointer that rests on a photo starts its whole picture on the way, so opening it is
+      // instant: by the double-click it is decoded. Only after a moment's rest — passing over
+      // the grid fetches nothing.
+      onPointerEnter={() => {
+        if (photo.kind === "video") return;
+        window.clearTimeout(resting);
+        resting = window.setTimeout(() => void warm(photo.id), 140);
+      }}
+      onPointerLeave={() => window.clearTimeout(resting)}
+      onPointerDown={() => {
+        if (photo.kind !== "video") void warm(photo.id);
+      }}
       draggable
       onDragStart={(e) => act.drag(photo, e)}
       onDragEnd={act.dragEnd}
@@ -390,7 +405,10 @@ export function PhotosView() {
   const [dropping, setDropping] = useState(false);
   const [menu, setMenu] = useState<{ at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] } | null>(null);
   /** An album being named in the sidebar: a new one (with the photos to put in it), or a rename. */
-  const [naming, setNaming] = useState<{ id: string | null; then: string[]; draft: string } | null>(null);
+  const [naming, setNaming] = useState<{ id: string | null; then: string[]; draft: string; folder?: boolean; parent?: string | null } | null>(null);
+  /** Folders open in the sidebar, and the folder whose page is showing (none: the top). */
+  const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
+  const [folderPage, setFolderPage] = useState<string | null>(null);
 
   // Each view keeps the sort chosen for it, on this machine. Albums keep their own order, and
   // Recently Deleted its own, as in Photos.
@@ -789,12 +807,12 @@ export function PhotosView() {
    * Albums, as Photos keeps them: every change shows at once and goes to iCloud behind it; a
    * refusal puts the list back and says why. A new album sorts first, as Photos puts it.
    */
-  const createAlbum = async (name: string, then: string[]) => {
+  const createAlbum = async (name: string, then: string[], folder = false, parent: string | null = null) => {
     const before = albums;
-    const temp: PhotoAlbum = { id: `new:${Date.now()}`, name, position: -1, changeTag: null };
+    const temp: PhotoAlbum = { id: `new:${Date.now()}`, name, position: -1, changeTag: null, folder, parent };
     setAlbums((list) => [[temp, then.length], ...list]);
     try {
-      const made = await api.photosAlbumCreate(name);
+      const made = await api.photosAlbumCreate(name, parent ?? undefined, folder);
       setAlbums((list) => list.map((x) => (x[0].id === temp.id ? [made, x[1]] : x)));
       if (then.length) await api.photosAlbumAdd(made.id, then);
       read().catch(() => {});
@@ -819,9 +837,25 @@ export function PhotosView() {
   };
 
   const deleteAlbum = async (a: PhotoAlbum) => {
-    if (!window.confirm(`Delete the album “${a.name}”?\n\nThe photos in it stay in your library.`)) return;
+    // A folder, in icloud.com's words: it goes with every album in it.
+    const words = a.folder
+      ? `Delete the folder “${a.name}”?\n\nThis will also delete all albums inside this folder. The photos in them stay in your library.`
+      : `Delete the album “${a.name}”?\n\nThe photos in it stay in your library.`;
+    if (!window.confirm(words)) return;
     const before = albums;
-    setAlbums((list) => list.filter((x) => x[0].id !== a.id));
+    // Everything under a folder goes with it, here as on iCloud.
+    const gone = new Set([a.id]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const [x] of albums) {
+        if (x.parent && gone.has(x.parent) && !gone.has(x.id)) {
+          gone.add(x.id);
+          grew = true;
+        }
+      }
+    }
+    setAlbums((list) => list.filter((x) => !gone.has(x[0].id)));
+    if (folderPage && gone.has(folderPage)) setFolderPage(a.parent ?? null);
     if (album?.id === a.id) setAlbum(null);
     try {
       await api.photosAlbumDelete(a.id);
@@ -1011,7 +1045,7 @@ export function PhotosView() {
   };
 
   const albumEntries = (ids: string[]): MenuEntry[] => [
-    ...albums.filter(([a]) => a.id !== album?.id && !a.id.startsWith("new:")).map(([a]) => ({ label: a.name, run: () => void addTo(a, ids) })),
+    ...albums.filter(([a]) => !a.folder && a.id !== album?.id && !a.id.startsWith("new:")).map(([a]) => ({ label: a.name, run: () => void addTo(a, ids) })),
     ...(albums.length ? [null] : []),
     { label: "New Album…", run: () => setNaming({ id: null, then: ids, draft: "" }) },
   ];
@@ -1113,7 +1147,7 @@ export function PhotosView() {
       window.setTimeout(() => ghost.remove(), 0);
     }
   };
-  const dropTarget = (a: PhotoAlbum) => ({
+  const dropTarget = (a: PhotoAlbum) => (a.folder ? {} : {
     onDragOver: (e: React.DragEvent) => {
       if (!dragging2.current || a.id.startsWith("new:") || album?.id === a.id) return;
       e.preventDefault();
@@ -1166,7 +1200,7 @@ export function PhotosView() {
     const name = naming.draft.trim();
     setNaming(null);
     if (!name) return;
-    if (naming.id === null) void createAlbum(name, naming.then);
+    if (naming.id === null) void createAlbum(name, naming.then, naming.folder ?? false, naming.parent ?? null);
     else {
       const a = albums.find(([x]) => x.id === naming.id)?.[0];
       if (a) void renameAlbum(a, name);
@@ -1471,6 +1505,129 @@ export function PhotosView() {
   }, [drawn]);
   const across = ACROSS[zoom];
 
+  // A new album or folder, at the top or in a folder: named in place in the sidebar.
+  const startNew = (parent: string | null, folder: boolean) => {
+    if (!branches.albums) branch("albums");
+    if (parent) setOpenFolders((open) => new Set(open).add(parent));
+    setNaming({ id: null, then: [], draft: "", folder, parent });
+  };
+  const newIn = (parent: string | null, at: { x: number; y: number; alignRight: boolean }) =>
+    setMenu({
+      at,
+      entries: [
+        { label: "New Album", run: () => startNew(parent, false) },
+        { label: "New Folder", run: () => startNew(parent, true) },
+      ],
+    });
+  const openFolder = (id: string | null) => {
+    setAlbumsPage(true);
+    setFolderPage(id);
+    endSearch();
+    setOpen(null);
+  };
+
+  /** The albums and folders in one folder (or at the top), folders open to theirs, nested. */
+  const albumRows = (parent: string | null, depth: number): React.ReactNode[] => {
+    const rows: React.ReactNode[] = [];
+    const indent = { "--depth": depth } as React.CSSProperties;
+    if (naming?.id === null && (naming.parent ?? null) === parent) {
+      rows.push(<span key="new" className="px-depth" style={indent}>{nameField}</span>);
+    }
+    for (const [a, n, cover] of albums) {
+      if ((a.parent ?? null) !== parent) continue;
+      if (naming?.id === a.id) {
+        rows.push(<span key={a.id} className="px-depth" style={indent}>{nameField}</span>);
+        continue;
+      }
+      if (a.folder) {
+        const isOpen = openFolders.has(a.id);
+        rows.push(
+          <div key={a.id} className="px-parent-row px-depth" style={indent}>
+            <button
+              className="px-twisty"
+              aria-label={isOpen ? `Hide ${a.name}` : `Show ${a.name}`}
+              aria-expanded={isOpen}
+              onClick={() =>
+                setOpenFolders((open) => {
+                  const next = new Set(open);
+                  if (next.has(a.id)) next.delete(a.id);
+                  else next.add(a.id);
+                  return next;
+                })
+              }
+            >
+              <ChevronRight className="px-chevron" size={12} strokeWidth={2.4} aria-hidden="true" />
+            </button>
+            <button
+              className="px-source px-parent"
+              aria-current={albumsPage && folderPage === a.id}
+              onClick={() => openFolder(a.id)}
+              onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                if (a.id.startsWith("new:")) return;
+                setMenu({
+                  at: { x: e.clientX, y: e.clientY, alignRight: false },
+                  entries: [
+                    { label: "New Album", run: () => startNew(a.id, false) },
+                    { label: "New Folder", run: () => startNew(a.id, true) },
+                    null,
+                    { label: "Rename Folder", run: () => setNaming({ id: a.id, then: [], draft: a.name }) },
+                    null,
+                    { label: "Delete Folder", danger: true, run: () => void deleteAlbum(a) },
+                  ],
+                });
+              }}
+            >
+              <FolderIcon size={16} strokeWidth={1.8} className="px-glyph" aria-hidden="true" />
+              <span className="px-label">{a.name}</span>
+            </button>
+          </div>,
+        );
+        if (isOpen) rows.push(...albumRows(a.id, depth + 1));
+        continue;
+      }
+      rows.push(
+        <button
+          key={a.id}
+          className="px-source px-depth"
+          style={indent}
+          aria-current={!albumsPage && album?.id === a.id}
+          onClick={() => {
+            setAlbum(a);
+            setAlbumsPage(false);
+            endSearch();
+            setOpen(null);
+          }}
+          onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
+          {...dropTarget(a)}
+          data-drop={dropOn === a.id || undefined}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            if (a.id.startsWith("new:")) return;
+            setMenu({
+              at: { x: e.clientX, y: e.clientY, alignRight: false },
+              entries: [
+                { label: "Rename Album", run: () => setNaming({ id: a.id, then: [], draft: a.name }) },
+                null,
+                { label: "Delete Album", danger: true, run: () => void deleteAlbum(a) },
+              ],
+            });
+          }}
+        >
+          {cover ? (
+            <img className="px-cover" src={pictureSrc(cover, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+          ) : (
+            <AlbumGlyph />
+          )}
+          <span className="px-label">{a.name}</span>
+          {n ? <span className="px-count">{n}</span> : null}
+        </button>,
+      );
+    }
+    return rows;
+  };
+
   const source = (v: (typeof VIEWS)[number]) => (
     <button
       key={v.key}
@@ -1505,9 +1662,10 @@ export function PhotosView() {
           </button>
           <button
             className="px-source px-parent"
-            aria-current={albumsPage}
+            aria-current={albumsPage && folderPage === null}
             onClick={() => {
               setAlbumsPage(true);
+              setFolderPage(null);
               endSearch();
               setOpen(null);
             }}
@@ -1515,56 +1673,16 @@ export function PhotosView() {
             <AlbumGlyph />
             <span className="px-label">Albums</span>
           </button>
-          <button className="px-side-add" aria-label="New Album" title="New Album" onClick={() => {
-            if (!branches.albums) branch("albums");
-            setNaming({ id: null, then: [], draft: "" });
+          <button className="px-side-add" aria-label="New Album" title="New Album or Folder" aria-haspopup="menu" onClick={(e) => {
+            const b = e.currentTarget.getBoundingClientRect();
+            newIn(null, { x: b.left, y: b.bottom + 4, alignRight: false });
           }}>
             <Plus size={14} strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
         {branches.albums && (
           <div className="px-albums px-children" role="group" aria-label="Albums">
-            {naming?.id === null && nameField}
-        {albums.map(([a, n, cover]) =>
-              naming?.id === a.id ? (
-                <span key={a.id}>{nameField}</span>
-              ) : (
-                <button
-                  key={a.id}
-                  className="px-source"
-                  aria-current={!albumsPage && album?.id === a.id}
-                  onClick={() => {
-                    setAlbum(a);
-                    setAlbumsPage(false);
-                    endSearch();
-                    setOpen(null);
-                  }}
-                  onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
-                  {...dropTarget(a)}
-                  data-drop={dropOn === a.id || undefined}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    if (a.id.startsWith("new:")) return;
-                    setMenu({
-                      at: { x: e.clientX, y: e.clientY, alignRight: false },
-                      entries: [
-                        { label: "Rename Album", run: () => setNaming({ id: a.id, then: [], draft: a.name }) },
-                        null,
-                        { label: "Delete Album", danger: true, run: () => void deleteAlbum(a) },
-                      ],
-                    });
-                  }}
-                >
-                  {cover ? (
-                    <img className="px-cover" src={pictureSrc(cover, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
-                  ) : (
-                    <AlbumGlyph />
-                  )}
-                  <span className="px-label">{a.name}</span>
-                  {n ? <span className="px-count">{n}</span> : null}
-                </button>
-              ),
-            )}
+            {albumRows(null, 0)}
           </div>
         )}
         <button className="px-source px-parent" aria-expanded={branches.media} onClick={() => branch("media")}>
@@ -1584,64 +1702,96 @@ export function PhotosView() {
       <section className="px-main" aria-label={albumsPage ? "Albums" : title} data-page={albumsPage ? "albums" : undefined}>
         {albumsPage && (
           <div className="px-albums-page">
-            <header className="px-albums-head">
-              <div className="px-heading">
-                <h1>Albums</h1>
-                <p className="px-span">{albums.length === 1 ? "1 Album" : `${albums.length} Albums`}</p>
-              </div>
-              <div className="px-capsule">
-                <button className="px-cap" aria-label="New Album" title="New Album" onClick={() => {
-                  if (!branches.albums) branch("albums");
-                  setNaming({ id: null, then: [], draft: "" });
-                }}>
-                  <Plus size={16} strokeWidth={2} aria-hidden="true" />
-                </button>
-              </div>
-            </header>
-            {albums.length === 0 ? (
-              <p className="px-empty">No albums yet. Make one with +, then add photos to it from their menu or by dragging them onto it.</p>
-            ) : (
-              <div className="px-cards" role="list">
-                {albums.map(([a, n, cover]) => (
-                  <button
-                    key={a.id}
-                    role="listitem"
-                    className="px-card"
-                    onClick={() => {
-                      setAlbum(a);
-                      setAlbumsPage(false);
-                    }}
-                    {...dropTarget(a)}
-                    data-drop={dropOn === a.id || undefined}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      if (a.id.startsWith("new:")) return;
-                      setMenu({
-                        at: { x: e.clientX, y: e.clientY, alignRight: false },
-                        entries: [
-                          { label: "Rename Album", run: () => {
-                            if (!branches.albums) branch("albums");
-                            setNaming({ id: a.id, then: [], draft: a.name });
-                          } },
-                          null,
-                          { label: "Delete Album", danger: true, run: () => void deleteAlbum(a) },
-                        ],
-                      });
-                    }}
-                  >
-                    <span className="px-card-pic">
-                      {cover ? (
-                        <img src={pictureSrc(cover, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
-                      ) : (
-                        <AlbumGlyph />
-                      )}
-                    </span>
-                    <span className="px-card-name">{a.name}</span>
-                    <span className="px-card-count">{n === 1 ? "1 item" : `${n} items`}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            {(() => {
+              // This page's level: the top, or a folder's own albums and folders.
+              const here = albums.filter(([a]) => (a.parent ?? null) === folderPage);
+              const folder = folderPage ? albums.find(([a]) => a.id === folderPage)?.[0] : undefined;
+              const held = (id: string) => albums.filter(([a]) => a.parent === id).length;
+              return (
+                <>
+                  <header className="px-albums-head">
+                    {folder && (
+                      <div className="px-capsule">
+                        <button className="px-cap" aria-label="Back" title="Back" onClick={() => openFolder(folder.parent ?? null)}>
+                          <ChevronLeft size={17} strokeWidth={2} aria-hidden="true" />
+                        </button>
+                      </div>
+                    )}
+                    <div className="px-heading">
+                      <h1>{folder ? folder.name : "Albums"}</h1>
+                      <p className="px-span">{here.length === 1 ? "1 Item" : `${here.length} Items`}</p>
+                    </div>
+                    <div className="px-capsule">
+                      <button
+                        className="px-cap"
+                        aria-label="New Album or Folder"
+                        title="New Album or Folder"
+                        aria-haspopup="menu"
+                        onClick={(e) => {
+                          const b = e.currentTarget.getBoundingClientRect();
+                          newIn(folderPage, { x: b.right, y: b.bottom + 6, alignRight: true });
+                        }}
+                      >
+                        <Plus size={16} strokeWidth={2} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </header>
+                  {here.length === 0 ? (
+                    <p className="px-empty">
+                      {folder ? "This folder is empty. Make an album in it with +." : "No albums yet. Make one with +, then add photos to it from their menu or by dragging them onto it."}
+                    </p>
+                  ) : (
+                    <div className="px-cards" role="list">
+                      {here.map(([a, n, cover]) => (
+                        <button
+                          key={a.id}
+                          role="listitem"
+                          className={`px-card${a.folder ? " is-folder" : ""}`}
+                          onClick={() => {
+                            if (a.folder) return openFolder(a.id);
+                            setAlbum(a);
+                            setAlbumsPage(false);
+                          }}
+                          {...dropTarget(a)}
+                          data-drop={dropOn === a.id || undefined}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            if (a.id.startsWith("new:")) return;
+                            const kind = a.folder ? "Folder" : "Album";
+                            setMenu({
+                              at: { x: e.clientX, y: e.clientY, alignRight: false },
+                              entries: [
+                                { label: `Rename ${kind}`, run: () => {
+                                  if (!branches.albums) branch("albums");
+                                  if (a.parent) setOpenFolders((open) => new Set(open).add(a.parent!));
+                                  setNaming({ id: a.id, then: [], draft: a.name });
+                                } },
+                                null,
+                                { label: `Delete ${kind}`, danger: true, run: () => void deleteAlbum(a) },
+                              ],
+                            });
+                          }}
+                        >
+                          <span className="px-card-pic">
+                            {a.folder ? (
+                              <FolderIcon className="px-glyph" size={44} strokeWidth={1.4} aria-hidden="true" />
+                            ) : cover ? (
+                              <img src={pictureSrc(cover, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+                            ) : (
+                              <AlbumGlyph />
+                            )}
+                          </span>
+                          <span className="px-card-name">{a.name}</span>
+                          <span className="px-card-count">
+                            {a.folder ? (held(a.id) === 1 ? "1 album" : `${held(a.id)} albums`) : n === 1 ? "1 item" : `${n} items`}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
         {/* As in Photos on macOS 26: the title and the controls float over the library, which
