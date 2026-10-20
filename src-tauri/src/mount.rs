@@ -1,6 +1,7 @@
 //! iCloud Drive as a folder on this computer (quince-vfs), served by the app itself: its
 //! signed-in session, its library, and what it learns kept in the library for the window too.
-//! Off until it is turned on in Settings; read-only for now. See docs/mount-design.md.
+//! Off until it is turned on in Settings. Folders can be made, items renamed, moved and deleted
+//! (into Recently Deleted); a file's own bytes are not written yet. See docs/mount-design.md.
 
 use crate::{Auth, Data};
 use quince_core::drive::DriveItem;
@@ -56,6 +57,46 @@ impl Remote for AppRemote {
             quince_icloud::drive::store_folder(&mut library, &folder, &items)
                 .map_err(|e| e.to_string())?;
             Ok(items)
+        })
+    }
+
+    fn mkdir(&self, parent: &DriveItem, name: &str) -> Fut<DriveItem> {
+        let (app, parent, name) = (self.app.clone(), parent.drivewsid.clone(), name.to_string());
+        Box::pin(async move {
+            let (http, root, params) = context(&app, "drivews").await?;
+            quince_icloud::drive::create_folder(&http, &root, params, &parent, &name)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn rename(&self, item: &DriveItem, name: &str) -> Fut<()> {
+        let (app, item, name) = (self.app.clone(), item.clone(), name.to_string());
+        Box::pin(async move {
+            let (http, root, params) = context(&app, "drivews").await?;
+            quince_icloud::drive::rename(&http, &root, params, &item, &name)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn move_to(&self, item: &DriveItem, folder: &DriveItem) -> Fut<()> {
+        let (app, item, to) = (self.app.clone(), item.clone(), folder.drivewsid.clone());
+        Box::pin(async move {
+            let (http, root, params) = context(&app, "drivews").await?;
+            quince_icloud::drive::move_to(&http, &root, params, &item, &to)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn delete(&self, item: &DriveItem) -> Fut<()> {
+        let (app, item) = (self.app.clone(), item.clone());
+        Box::pin(async move {
+            let (http, root, params) = context(&app, "drivews").await?;
+            quince_icloud::drive::delete(&http, &root, params, &item)
+                .await
+                .map_err(|e| e.to_string())
         })
     }
 

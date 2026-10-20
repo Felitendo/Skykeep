@@ -34,6 +34,61 @@ impl Remote for Apple {
             Ok(items)
         })
     }
+    fn mkdir(&self, parent: &DriveItem, name: &str) -> Fut<DriveItem> {
+        let (http, root, p, parent, name) = (
+            self.http.clone(),
+            self.drivews.clone(),
+            self.params.clone(),
+            parent.drivewsid.clone(),
+            name.to_string(),
+        );
+        Box::pin(async move {
+            quince_icloud::drive::create_folder(&http, &root, p, &parent, &name)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn rename(&self, item: &DriveItem, name: &str) -> Fut<()> {
+        let (http, root, p, item, name) = (
+            self.http.clone(),
+            self.drivews.clone(),
+            self.params.clone(),
+            item.clone(),
+            name.to_string(),
+        );
+        Box::pin(async move {
+            quince_icloud::drive::rename(&http, &root, p, &item, &name)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn move_to(&self, item: &DriveItem, folder: &DriveItem) -> Fut<()> {
+        let (http, root, p, item, to) = (
+            self.http.clone(),
+            self.drivews.clone(),
+            self.params.clone(),
+            item.clone(),
+            folder.drivewsid.clone(),
+        );
+        Box::pin(async move {
+            quince_icloud::drive::move_to(&http, &root, p, &item, &to)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+    fn delete(&self, item: &DriveItem) -> Fut<()> {
+        let (http, root, p, item) = (
+            self.http.clone(),
+            self.drivews.clone(),
+            self.params.clone(),
+            item.clone(),
+        );
+        Box::pin(async move {
+            quince_icloud::drive::delete(&http, &root, p, &item)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
     fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>> {
         let known = self.links.lock().unwrap().get(&item.drivewsid).cloned();
         let (http, docws, p, item) = (
@@ -98,6 +153,7 @@ fn main() -> Result<()> {
             client.service_params(),
         ))
     })?;
+    let (apple_http, apple_drivews, apple_params) = (http.clone(), drivews.clone(), params.clone());
     let library = Arc::new(Mutex::new(HashMap::new()));
     let apple = Arc::new(Apple {
         http,
@@ -120,6 +176,22 @@ fn main() -> Result<()> {
     drop(session);
     let _ = std::fs::remove_dir_all(&cache);
     println!("unmounted");
+    // This probe's own throwaways, and nothing else, cleared from Recently Deleted.
+    if std::env::var("QUINCE_PURGE_TEST").is_ok() {
+        let (http, drivews, params) = (apple_http, apple_drivews, apple_params);
+        rt.block_on(async {
+            let trash = quince_icloud::drive::trash(&http, &drivews, params.clone()).await?;
+            let mine: Vec<_> = trash
+                .into_iter()
+                .filter(|i| i.name.starts_with("Quince mount test"))
+                .collect();
+            println!("throwaways in Recently Deleted: {}", mine.len());
+            if !mine.is_empty() {
+                quince_icloud::drive::delete_forever_many(&http, &drivews, params, &mine).await?;
+            }
+            anyhow::Ok(())
+        })?;
+    }
     Ok(())
 }
 

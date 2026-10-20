@@ -191,7 +191,11 @@ fn a_mounted_drive_reads_like_a_folder() {
 
     // Read-only, for now: a write is refused, never half-done.
     let err = std::fs::write(at.path().join("Note.txt"), b"x").unwrap_err();
-    assert_eq!(err.raw_os_error(), Some(libc::EROFS), "{err}");
+    // Refused by the file's own permissions (read-only until writes are kept), never half-done.
+    assert!(
+        matches!(err.raw_os_error(), Some(libc::EROFS | libc::EACCES)),
+        "{err}"
+    );
     assert_eq!(std::fs::read(at.path().join("Note.txt")).unwrap(), note);
 
     // Apple's picture of the film is in the thumbnail cache, named and stamped so that GLib —

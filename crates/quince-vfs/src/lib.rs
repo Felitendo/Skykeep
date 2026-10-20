@@ -25,6 +25,22 @@ pub trait Remote: Send + Sync + 'static {
     fn list(&self, folder: &str) -> Fut<Vec<DriveItem>>;
     /// `len` bytes of a file from `offset` (fewer only at its end).
     fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>>;
+    /// A new folder in `parent`, as Apple made it. Read-only by default.
+    fn mkdir(&self, _parent: &DriveItem, _name: &str) -> Fut<DriveItem> {
+        Box::pin(async { Err("read-only".to_string()) })
+    }
+    /// An item given a new name in its folder.
+    fn rename(&self, _item: &DriveItem, _name: &str) -> Fut<()> {
+        Box::pin(async { Err("read-only".to_string()) })
+    }
+    /// An item moved into another folder, its name kept.
+    fn move_to(&self, _item: &DriveItem, _folder: &DriveItem) -> Fut<()> {
+        Box::pin(async { Err("read-only".to_string()) })
+    }
+    /// An item deleted — into Apple's Recently Deleted, where it can be put back for 30 days.
+    fn delete(&self, _item: &DriveItem) -> Fut<()> {
+        Box::pin(async { Err("read-only".to_string()) })
+    }
     /// Apple's own pictures of a folder's files, by item id: for a file manager's thumbnails,
     /// so it never downloads a file to draw one. None by default.
     fn thumbnails(&self, _folder: &str) -> Fut<HashMap<String, Vec<u8>>> {

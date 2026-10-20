@@ -7,8 +7,8 @@
 use crate::{is_thumbnailer, named, Cache, Inodes, Remote, Store};
 use fuser::{
     Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
-    LockOwner, MountOption, OpenAccMode, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory,
-    ReplyEntry, ReplyOpen, ReplyStatfs, Request,
+    LockOwner, MountOption, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyData,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, Request,
 };
 use quince_core::drive::DriveItem;
 use std::ffi::OsStr;
@@ -23,6 +23,9 @@ const TTL: Duration = Duration::from_secs(1);
 /// How long a folder never opened before may take to come from Apple before the file manager
 /// is told it could not be read (and can ask again).
 const LIST_WAIT: Duration = Duration::from_secs(30);
+
+/// How long a change (a new folder, a rename, a delete) may take at Apple.
+const CHANGE_WAIT: Duration = Duration::from_secs(60);
 
 pub struct DriveFs {
     remote: Arc<dyn Remote>,
@@ -113,6 +116,39 @@ impl DriveFs {
         });
     }
 
+    /// A change made at Apple, waited for (the file manager waits on it too), then the folders
+    /// it touched read again so the library — and so the next listing — is Apple's.
+    fn change<T: Send + 'static>(
+        &self,
+        work: crate::Fut<T>,
+        touched: &[&DriveItem],
+    ) -> Result<T, Errno> {
+        let done = self
+            .rt
+            .block_on(async { tokio::time::timeout(CHANGE_WAIT, work).await })
+            .map_err(|_| Errno::ETIMEDOUT)?
+            .map_err(|e| {
+                quiet_note(&e);
+                Errno::EIO
+            })?;
+        for folder in touched {
+            let (remote, id) = (Arc::clone(&self.remote), folder.drivewsid.clone());
+            let _ = self
+                .rt
+                .block_on(async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await });
+        }
+        Ok(done)
+    }
+
+    /// The item called `name` in folder `parent`.
+    fn child(&self, parent: INodeNo, name: &OsStr) -> Result<(u64, DriveItem), Errno> {
+        self.children(parent)?
+            .into_iter()
+            .find(|(n, ..)| OsStr::new(n) == name)
+            .map(|(_, ino, item)| (ino, item))
+            .ok_or(Errno::ENOENT)
+    }
+
     fn item(&self, ino: INodeNo) -> Option<DriveItem> {
         self.inodes
             .lock()
@@ -149,7 +185,7 @@ impl DriveFs {
             } else {
                 FileType::RegularFile
             },
-            perm: if dir { 0o555 } else { 0o444 },
+            perm: if dir { 0o755 } else { 0o444 },
             nlink: if dir { 2 } else { 1 },
             uid: self.uid,
             gid: self.gid,
@@ -194,6 +230,50 @@ impl DriveFs {
                 (name, child, it)
             })
             .collect())
+    }
+}
+
+impl DriveFs {
+    /// A file or (an empty) folder deleted, into Apple's Recently Deleted.
+    fn remove(&self, parent: INodeNo, name: &OsStr, folder: bool, reply: ReplyEmpty) {
+        let Some(from) = self.item(parent) else {
+            return reply.error(Errno::ENOENT);
+        };
+        let (ino, item) = match self.child(parent, name) {
+            Ok(c) => c,
+            Err(e) => return reply.error(e),
+        };
+        if folder != item.is_container() {
+            return reply.error(if folder {
+                Errno::ENOTDIR
+            } else {
+                Errno::EISDIR
+            });
+        }
+        // A folder goes only when empty, as on any disk: Apple would take everything in it,
+        // and a file manager or `rm -r` empties it first, file by file.
+        if folder
+            && !self
+                .children(INodeNo(ino))
+                .map(|c| c.is_empty())
+                .unwrap_or(false)
+        {
+            return reply.error(Errno::ENOTEMPTY);
+        }
+        match self.change(self.remote.delete(&item), &[&from]) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+}
+
+/// Why a change failed, said in a development build (see the app's quiet!): never a name.
+fn quiet_note(e: &str) {
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "drive folder: a change was refused: {}",
+            e.chars().take(120).collect::<String>()
+        );
     }
 }
 
@@ -313,6 +393,84 @@ impl Filesystem for DriveFs {
         });
     }
 
+    fn mkdir(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        let Some(folder) = self.item(parent) else {
+            return reply.error(Errno::ENOENT);
+        };
+        let Some(name) = name.to_str() else {
+            return reply.error(Errno::EINVAL);
+        };
+        if self.child(parent, OsStr::new(name)).is_ok() {
+            return reply.error(Errno::EEXIST);
+        }
+        match self.change(self.remote.mkdir(&folder, name), &[&folder]) {
+            Ok(_) => match self.child(parent, OsStr::new(name)) {
+                Ok((ino, item)) => reply.entry(&TTL, &self.attr(ino, &item), Generation(0)),
+                Err(e) => reply.error(e),
+            },
+            Err(e) => reply.error(e),
+        }
+    }
+
+    fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        self.remove(parent, name, false, reply);
+    }
+
+    fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        self.remove(parent, name, true, reply);
+    }
+
+    fn rename(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        newparent: INodeNo,
+        newname: &OsStr,
+        _flags: RenameFlags,
+        reply: ReplyEmpty,
+    ) {
+        let (Some(from), Some(to)) = (self.item(parent), self.item(newparent)) else {
+            return reply.error(Errno::ENOENT);
+        };
+        let (_, item) = match self.child(parent, name) {
+            Ok(c) => c,
+            Err(e) => return reply.error(e),
+        };
+        let Some(newname) = newname.to_str() else {
+            return reply.error(Errno::EINVAL);
+        };
+        // Over something already there is not done yet: replacing a file is a write, and
+        // nothing is ever overwritten before writes keep a copy of what they replace.
+        if self.child(newparent, OsStr::new(newname)).is_ok() {
+            return reply.error(Errno::EEXIST);
+        }
+        if parent != newparent {
+            if let Err(e) = self.change(self.remote.move_to(&item, &to), &[&from, &to]) {
+                return reply.error(e);
+            }
+        }
+        if name != OsStr::new(newname) {
+            // Moved, it is found again in its new folder under its old name, then renamed.
+            let moved = match self.child(newparent, name) {
+                Ok((_, i)) => i,
+                Err(e) => return reply.error(e),
+            };
+            if let Err(e) = self.change(self.remote.rename(&moved, newname), &[&to]) {
+                return reply.error(e);
+            }
+        }
+        reply.ok();
+    }
+
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
         // Read-only: nothing free to write into, as a mounted disc says.
         reply.statfs(0, 0, 0, 0, 0, 4096, 255, 4096);
@@ -339,7 +497,6 @@ pub fn mount(fs: DriveFs, at: &Path) -> std::io::Result<fuser::BackgroundSession
     config.mount_options = vec![
         MountOption::FSName("quince".into()),
         MountOption::Subtype("quince".into()),
-        MountOption::RO,
         MountOption::NoSuid,
         MountOption::NoDev,
         MountOption::NoAtime,
