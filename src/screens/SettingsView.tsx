@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, messageOf, type AccountInfo } from "../lib/ipc";
+import { api, type DriveFolder, messageOf, type AccountInfo } from "../lib/ipc";
 import { freshness, useSync } from "../lib/sync";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
@@ -36,6 +36,8 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [savedReport, setSavedReport] = useState<string | null>(null);
+  const [folder, setFolder] = useState<DriveFolder | null>(null);
+  const [folderBusy, setFolderBusy] = useState(false);
   const { report, syncing, refresh } = useSync();
 
   useEffect(() => {
@@ -43,6 +45,7 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
     api.storageInfo().then(setStorage, () => {});
     api.settingsGet().then(setAlerts, (e) => setError(messageOf(e)));
     getVersion().then(setVersion, () => {});
+    api.driveFolderStatus().then(setFolder, () => {});
   }, []);
 
   // A switch moves the moment it is pressed, and goes back with the reason if it could not
@@ -122,6 +125,47 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
           <span className="settings-label settings-hint">Changes made on your other devices arrive here within seconds.</span>
           <button className="quiet" onClick={() => void refresh()} disabled={syncing}>
             {syncing ? "Syncing…" : "Sync Now"}
+          </button>
+        </div>
+      </section>
+
+      <h2 className="settings-heading">On This Computer</h2>
+      <section className="settings-group">
+        <div className="settings-row">
+          <AppIcon app="drivews" />
+          <span className="settings-label settings-stack">
+            iCloud Drive folder
+            {/* Where it is, and — when it could not come up — why, in a sentence. */}
+            <span className={`settings-hint${folder?.problem ? " is-trouble" : ""}`}>
+              {folder?.problem ?? (folder?.on ? folder.path : "Your iCloud Drive in Files and every other app")}
+            </span>
+          </span>
+          {folder?.on && (
+            <button className="quiet" onClick={() => api.driveFolderOpen().catch((e) => setError(messageOf(e)))}>
+              Open
+            </button>
+          )}
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={folder?.on ?? false}
+            aria-label="iCloud Drive folder"
+            disabled={!folder || folderBusy}
+            onClick={() => {
+              if (!folder) return;
+              const on = !folder.on;
+              // Moves at once; Apple's answer only matters when the folder could not come up.
+              setFolder({ ...folder, on, problem: null });
+              setFolderBusy(true);
+              api
+                .driveFolderSet(on)
+                .then(setFolder, (e) => {
+                  setFolder({ ...folder, problem: messageOf(e) });
+                })
+                .finally(() => setFolderBusy(false));
+            }}
+          >
+            <span className="switch-knob" />
           </button>
         </div>
       </section>

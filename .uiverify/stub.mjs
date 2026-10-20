@@ -517,6 +517,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contact_me": return window.__me ?? (contactsFixture ? "c1" : null);
         case "contact_set_me": await new Promise((r) => setTimeout(r, 600)); window.__me = args.guid; return null;
         case "contacts_export": (window.__exports ??= []).push(args); return `/home/test/Downloads/${args.fileName}`;
+        case "drive_folder_status": return window.__driveFolder ??= { on: false, path: "/home/test/iCloud Drive", problem: null };
+        case "drive_folder_set":
+          if (window.__driveFolderRefuse) return { ...window.__driveFolder, on: false, problem: window.__driveFolderRefuse };
+          return (window.__driveFolder = { on: args.on, path: "/home/test/iCloud Drive", problem: null });
+        case "drive_folder_open": (window.__opened ??= []).push("drive"); return null;
         case "photo_video_turn": (window.__turnAsks ??= []).push(args); return window.__turn ?? [1, 0, 0, 1];
         case "contacts_import": (window.__imports ??= []).push(args); return window.__importAnswer ?? [2, 0, 0];
         case "plugin:dialog|open": return window.__pick ?? null;

@@ -96,6 +96,10 @@ export const api = {
   /** A video (or a Live Photo's moving part) opened in this computer's own player. */
   /** How a video's picture is turned, as its file records it (served upright: drawn here). */
   photoVideoTurn: (id: string, which: "original" | "video") => invoke<Turn>("photo_video_turn", { id, which }),
+  /** The iCloud Drive folder on this computer: whether it is up, where, and what stopped it. */
+  driveFolderStatus: () => invoke<DriveFolder>("drive_folder_status"),
+  driveFolderSet: (on: boolean) => invoke<DriveFolder>("drive_folder_set", { on }),
+  driveFolderOpen: () => invoke<void>("drive_folder_open"),
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Where the window's player fetches videos from (a loopback server), or null without one. */
   videoBase: () => invoke<string | null>("video_base"),
@@ -752,3 +756,6 @@ export function turnStyle(turn: Turn | null | undefined, w: number, h: number): 
     transform: `matrix(${turn[0]}, ${turn[1]}, ${turn[2]}, ${turn[3]}, 0, 0)`,
   };
 }
+
+/** The iCloud Drive folder on this computer (see src-tauri/src/mount.rs). */
+export type DriveFolder = { on: boolean; path: string; problem: string | null };

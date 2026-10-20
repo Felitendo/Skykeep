@@ -13,6 +13,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # A video's poster when Apple's is blank: one frame read with GStreamer, which WebKitGTK
 # already needs, so nothing new is installed.
 gstreamer = "0.25"
+quince-vfs = { path = "../crates/quince-vfs" }
 gstreamer-app = "0.25"
 gstreamer-video = "0.25"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
@@ -23,7 +24,7 @@ quince-icloud = { path = "../crates/quince-icloud" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 anyhow.workspace = true
 jiff = "0.2.37"
 uuid.workspace = true
@@ -34,6 +35,9 @@ notify-rust = "4"
 zbus = "5"
 tauri-plugin-single-instance = "2"
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.18", default-features = false }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

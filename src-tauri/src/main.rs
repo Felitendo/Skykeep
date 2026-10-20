@@ -14,6 +14,7 @@ macro_rules! quiet {
 
 mod alerts;
 mod cpu;
+mod mount;
 mod outbox;
 mod photos;
 mod poster;
@@ -544,6 +545,8 @@ async fn auth_submit_sms_code(phone_id: u64, code: String, auth: State<'_, Auth>
 
 #[tauri::command]
 async fn auth_sign_out(auth: State<'_, Auth>) -> UiResult<()> {
+    // The iCloud Drive folder goes with the session it was served by.
+    mount::release();
     let mut client = auth.client.lock().await;
     client.sign_out().map_err(|e| e.to_string())
 }
@@ -3827,6 +3830,37 @@ fn main() {
             let mut library = Library::open(&dir)?;
             adopt_writer(&mut library);
             app.manage(Data(Mutex::new(library)));
+            mount::resume(app.handle());
+            // Logging out or shutting down ends the app with a signal, not through its own
+            // quit, and a crash ends it with neither: either way the iCloud Drive folder is
+            // let go of first, never left behind answering "Transport endpoint is not
+            // connected".
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let (Ok(mut term), Ok(mut int), Ok(mut hup)) = (
+                        signal(SignalKind::terminate()),
+                        signal(SignalKind::interrupt()),
+                        signal(SignalKind::hangup()),
+                    ) else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                        _ = hup.recv() => {}
+                    }
+                    mount::release();
+                    handle.exit(0);
+                });
+                let before = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    mount::release();
+                    before(info);
+                }));
+            }
             app.manage(Occasions {
                 feed: Mutex::new((None, Vec::new())),
             });
@@ -3910,6 +3944,9 @@ fn main() {
             photos::photos_in_album,
             photos::photo_set_flag,
             photos::photo_play,
+            mount::drive_folder_status,
+            mount::drive_folder_set,
+            mount::drive_folder_open,
             photos::photo_video_turn,
             photos::photos_set_flag,
             photos::photos_burst,
@@ -3978,8 +4015,15 @@ fn main() {
             reminder_set_done,
             reminder_set_repeat,
         ])
-        .run(tauri::generate_context!())
-        .expect("Quince failed to start");
+        .build(tauri::generate_context!())
+        .expect("Quince failed to start")
+        .run(|_app, event| {
+            // The iCloud Drive folder goes with the app: left mounted, it would answer
+            // nothing ("Transport endpoint is not connected").
+            if let tauri::RunEvent::Exit = event {
+                mount::release();
+            }
+        });
 }
 
 #[cfg(test)]

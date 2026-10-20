@@ -2091,3 +2091,7 @@
    one out of sight is not drawn at all. */
 .screen-slot { display: contents; }
 .screen-slot[hidden] { display: none !important; }
+/* A label with a line under it: what the row is, then where or why. */
+.settings-stack { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.settings-stack .settings-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-hint.is-trouble { color: var(--danger); white-space: normal; }
