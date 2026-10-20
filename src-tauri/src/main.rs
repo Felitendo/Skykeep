@@ -3485,17 +3485,28 @@ fn adopt_writer(library: &mut Library) {
     quince_icloud::topotext::set_writer(*id.as_bytes());
 }
 
-/// WebKitGTK hands its frames to the compositor as DMA-BUFs — the GPU's own buffers, no copy.
-/// It was turned off once (`WEBKIT_DISABLE_DMABUF_RENDERER`) for flashes seen on resizes and
-/// menus, but that copies every frame of the window through shared memory, and measured on
-/// this machine's Iris Xe at 2560 wide it cost two thirds of every frame: the grid scrolled at
-/// 23 fps against 60, a zoomed photo panned at 21 against 61, and opening one stalled. So it
-/// stays on. `QUINCE_DMABUF=0` turns it off for anyone whose compositor flickers with it.
+/// How WebKitGTK hands its frames to the window. Three ways, measured on his Iris Xe at his
+/// 1920×1080 (grid scroll / zoomed pan):
+///
+/// - GPU buffers (DMA-BUF) straight to the compositor: 59 / 60 fps, but on Hyprland the frames
+///   arrive out of order — in his recordings the grid and the open viewer alternate frame by
+///   frame, a flicker on every open, close and resize;
+/// - no GPU hand-off at all (`WEBKIT_DISABLE_DMABUF_RENDERER`): steady, but 38 / 34 fps;
+/// - drawn on the GPU, handed over in shared memory (`WEBKIT_DMABUF_RENDERER_FORCE_SHM`):
+///   58 / 59 fps, and the frames reach the window in order.
+///
+/// The last, unless the person has chosen: any WebKit setting of their own is left alone, and
+/// `QUINCE_DMABUF=1` keeps GPU buffers, `QUINCE_DMABUF=0` turns the GPU hand-off off.
 fn steady_drawing() {
-    let chosen = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some();
-    if !chosen && std::env::var_os("QUINCE_DMABUF").is_some_and(|v| v == "0") {
-        // Before any thread starts: nothing else can be reading the environment yet.
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    let set = |k: &str| std::env::var_os(k).is_some();
+    if set("WEBKIT_DISABLE_DMABUF_RENDERER") || set("WEBKIT_DMABUF_RENDERER_FORCE_SHM") {
+        return;
+    }
+    // Before any thread starts: nothing else can be reading the environment yet.
+    match std::env::var("QUINCE_DMABUF").as_deref() {
+        Ok("1") => {}
+        Ok("0") => std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
+        _ => std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1"),
     }
 }
 
