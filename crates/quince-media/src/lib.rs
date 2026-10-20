@@ -91,6 +91,86 @@ fn cut(image: image::DynamicImage, crop: Option<Crop>) -> image::DynamicImage {
 ///
 /// A photograph re-encoded as PNG is several times the size for no visible gain, and these are
 /// read back on every scroll.
+/// A picture's longer side, read from its header alone (nothing decoded).
+#[must_use]
+pub fn long_side(bytes: &[u8]) -> Option<u32> {
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+        .map(|(w, h)| w.max(h))
+}
+
+/// A photo made the size it is shown at: its longer side `long` pixels (never larger than it
+/// is), turned the way its camera said, resampled with Lanczos.
+///
+/// WebKitGTK shrinks a large picture by sampling it, with no smoothing first: a 4032-pixel
+/// photo drawn 1000 wide came out with broken letters and moiré (its own output, compared with
+/// an ideal resample). Drawn at its own size, a picture is exactly as sharp as it can be. This
+/// is what the viewer and the grid show; the whole picture only when zoomed in past it.
+///
+/// `None` when the picture is already no larger: then the original is the one to show.
+///
+/// # Errors
+/// When the bytes are not an image this can decode.
+pub fn fit(bytes: &[u8], long: u32) -> Result<Option<Vec<u8>>, image::ImageError> {
+    use fast_image_resize as fr;
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()?
+        .into_decoder()?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let (w, h) = decoder.dimensions();
+    if w.max(h) <= long {
+        return Ok(None);
+    }
+    let mut picture = image::DynamicImage::from_decoder(decoder)?;
+    picture.apply_orientation(orientation);
+    let (w, h) = (picture.width(), picture.height());
+    let k = f64::from(long) / f64::from(w.max(h));
+    let (tw, th) = (
+        ((f64::from(w) * k).round() as u32).max(1),
+        ((f64::from(h) * k).round() as u32).max(1),
+    );
+    let alpha = transparent(&picture);
+    let (pixels, kind) = if alpha {
+        (picture.to_rgba8().into_raw(), fr::PixelType::U8x4)
+    } else {
+        (picture.to_rgb8().into_raw(), fr::PixelType::U8x3)
+    };
+    let to_err = |e: String| {
+        image::ImageError::Parameter(image::error::ParameterError::from_kind(
+            image::error::ParameterErrorKind::Generic(e),
+        ))
+    };
+    let src =
+        fr::images::Image::from_vec_u8(w, h, pixels, kind).map_err(|e| to_err(e.to_string()))?;
+    let mut dst = fr::images::Image::new(tw, th, kind);
+    fr::Resizer::new()
+        .resize(
+            &src,
+            &mut dst,
+            &fr::ResizeOptions::new()
+                .resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3)),
+        )
+        .map_err(|e| to_err(e.to_string()))?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    if alpha {
+        image::RgbaImage::from_raw(tw, th, dst.into_vec())
+            .ok_or_else(|| to_err("resized picture had the wrong size".into()))?
+            .write_to(&mut out, image::ImageFormat::Png)?;
+    } else {
+        let rgb = image::RgbImage::from_raw(tw, th, dst.into_vec())
+            .ok_or_else(|| to_err("resized picture had the wrong size".into()))?;
+        // High quality: this is the picture people look at, not a row's avatar.
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92).encode_image(&rgb)?;
+    }
+    Ok(Some(out.into_inner()))
+}
+
 fn encode(image: &image::DynamicImage) -> Result<Vec<u8>, image::ImageError> {
     let mut out = std::io::Cursor::new(Vec::new());
     if transparent(image) {
@@ -109,6 +189,29 @@ fn transparent(image: &image::DynamicImage) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_photo_is_made_its_shown_size_turned_the_camera_s_way() {
+        // 400×300 with a red left half; JPEG.
+        let img = image::RgbImage::from_fn(400, 300, |x, _| {
+            if x < 200 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
+        let mut jpg = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut jpg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let out = super::fit(jpg.get_ref(), 200).unwrap().unwrap();
+        let back = image::load_from_memory(&out).unwrap();
+        assert_eq!((back.width(), back.height()), (200, 150));
+        let left = back.to_rgb8().get_pixel(20, 75).0;
+        assert!(left[0] > 200 && left[2] < 60, "{left:?}");
+        // Never made larger than it is.
+        assert!(super::fit(jpg.get_ref(), 800).unwrap().is_none());
+    }
+
     use super::*;
     use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
 

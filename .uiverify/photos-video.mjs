@@ -36,7 +36,9 @@ await page.locator('.px-tile[data-id="p3"]').dblclick();
 await page.waitForTimeout(600);
 const video = page.locator(".px-stage video");
 ok((await video.count()) === 1 && (await video.getAttribute("src")) === `${base}/p3/original`, `the video is in the viewer, from the loopback server  ${await video.getAttribute("src").catch(() => "")}`);
-ok(await video.evaluate((v) => v.controls && v.autoplay), "with the player's own controls, playing at once");
+ok(await video.evaluate((v) => !v.controls && v.autoplay), "playing at once, with no engine controls over it");
+ok((await page.locator(".px-player-bar").count()) === 1 && (await page.getByRole("slider", { name: "Playback position" }).count()) === 1,
+  "Photos' own controls in a capsule: play, where it is, a scrubber, what is left, sound");
 const played = await video.evaluate((v) => new Promise((r) => {
   v.muted = true;
   void v.play().catch(() => undefined);
@@ -52,6 +54,21 @@ if (played.err) {
   ok(played.t > 0.5, `it plays  (at ${played.t.toFixed(2)}s)`);
   const sought = await video.evaluate((v) => new Promise((r) => { v.onseeked = () => r(v.currentTime); v.currentTime = 4; }));
   ok(Math.abs(sought - 4) < 0.5, `and seeks  (to ${sought.toFixed(2)}s)`);
+  // The scrubber: a press three quarters along seeks there; the clocks say where.
+  const bar = await page.getByRole("slider", { name: "Playback position" }).boundingBox();
+  await page.mouse.click(bar.x + bar.width * 0.75, bar.y + bar.height / 2);
+  await page.waitForTimeout(300);
+  const at = await video.evaluate((v) => v.currentTime / v.duration);
+  ok(at > 0.65 && at < 0.85, `a press on the scrubber seeks there  (${(at * 100).toFixed(0)}%)`);
+  ok(/^\d+:\d\d$/.test(await page.locator(".px-player-time").first().innerText()) && /^−\d+:\d\d$/.test(await page.locator(".px-player-time").last().innerText()),
+    `the clocks say where it is and what is left  ${await page.locator(".px-player-time").allInnerTexts()}`);
+  // Space pauses and plays; the pause button says which.
+  await page.keyboard.press(" ");
+  await page.waitForTimeout(150);
+  ok(await video.evaluate((v) => v.paused) && (await page.getByRole("button", { name: "Play" }).count()) === 1, "Space pauses it");
+  const was = await video.evaluate((v) => v.muted);
+  await page.getByRole("button", { name: was ? "Unmute" : "Mute" }).click();
+  ok((await video.evaluate((v) => v.muted)) === !was, "and the sound button turns sound off and on");
   ok(asked.some((u) => u.startsWith("/s3cret/p3/original")), "fetched from the app's server");
 }
 // Stepping to a photo leaves no video behind.

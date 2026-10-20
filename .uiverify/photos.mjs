@@ -40,7 +40,7 @@ const first = await page.locator(".px-stage .px-shown").getAttribute("src");
 await page.keyboard.press("ArrowRight");
 await page.waitForTimeout(100);
 const second = await page.locator(".px-stage .px-shown").getAttribute("src");
-ok(first && second && first !== second && /medium/.test(second), "the right arrow goes to the next photo, at screen size");
+ok(first && second && first !== second && /fit\d+/.test(second), "the right arrow goes to the next photo, made the size the screen shows it");
 await page.getByRole("button", { name: "Download" }).click();
 await page.waitForTimeout(200);
 ok((await page.evaluate(() => window.__downloads?.at(-1)?.id)) === "p2", "Download saves that photo's original");

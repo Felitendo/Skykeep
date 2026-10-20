@@ -12,6 +12,7 @@ import {
   api,
   messageOf,
   pictureSrc,
+  fitSrc,
   PHOTO_UPLOAD,
   type Photo,
   type PhotoAlbum,
@@ -25,6 +26,7 @@ import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
 import { Slideshow } from "./photos/Slideshow";
 import { useAsk } from "./photos/Ask";
+import { VideoPlayer } from "./photos/VideoPlayer";
 import { tintFrom } from "../lib/tint";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
@@ -145,7 +147,7 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
         aria-current={i === at}
         onClick={() => i !== at && onPick(i)}
       >
-        <img src={pictureSrc(p.id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+        <img src={fitSrc(p.id, (i === at ? SHOWN : SLIP * 2) * (window.devicePixelRatio || 1))} alt="" loading="lazy" decoding="async" draggable={false} />
       </button>,
     );
   }
@@ -159,53 +161,51 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
 }
 
 /**
- * Whole pictures already fetched and decoded, by photo. A photo in here opens and is stepped to
- * at full quality at once — never a blurry stand-in first. The bytes stay in the webview's
- * cache (and on disk); this is only which are known to be ready.
+ * The pictures the viewer shows — each made the size it is shown at (see fitSrc) — already
+ * fetched and decoded, by address. A photo whose picture is in here opens and is stepped to at
+ * full quality at once, never a smaller copy first.
  */
-const decodedFull = new Set<string>();
-/** The rest on a tile before its whole picture is fetched (see Tile). */
+const decoded = new Set<string>();
+/** The rest on a tile before its picture is fetched (see Tile). */
 let resting: number | undefined;
 const warming = new Map<string, Promise<boolean>>();
-function warm(id: string): Promise<boolean> {
-  if (decodedFull.has(id)) return Promise.resolve(true);
-  let ready = warming.get(id);
+/** The viewer's stage, in CSS pixels, as last measured (a guess from the window before). */
+let stageBox = { w: 0, h: 0 };
+/** The picture the viewer shows for a photo: the size its stage draws it at. */
+function viewSrc(p: Photo): string {
+  const box = stageBox.w ? stageBox : { w: Math.max(320, window.innerWidth - 400), h: Math.max(240, window.innerHeight - 140) };
+  const r = p.width && p.height ? p.width / p.height : 4 / 3;
+  const w = Math.min(box.w, box.h * r, (p.width || 4000) * 1.5);
+  return fitSrc(p.id, Math.max(w, w / r) * (window.devicePixelRatio || 1));
+}
+function warm(p: Photo): Promise<boolean> {
+  const url = viewSrc(p);
+  if (decoded.has(url)) return Promise.resolve(true);
+  let ready = warming.get(url);
   if (!ready) {
     const img = new Image();
     img.decoding = "async";
-    img.src = pictureSrc(id, "full");
+    img.src = url;
     ready = img
       .decode()
       .then(
         () => {
-          decodedFull.add(id);
+          decoded.add(url);
           return true;
         },
         () => false,
       )
-      .finally(() => warming.delete(id));
-    warming.set(id, ready);
+      .finally(() => warming.delete(url));
+    warming.set(url, ready);
   }
   return ready;
 }
 
-/**
- * Photos whose thumbnail is too small for their tile. Apple's thumbnails run from about 360 to
- * 560 pixels on the long side; a large tile on a dense screen needs more, and a thumbnail
- * stretched over it is soft. Such a tile asks for the screen-sized picture instead, once.
- */
-const finer = new Set<string>();
-function sharpen(img: HTMLImageElement, id: string) {
-  if (finer.has(id) || !img.naturalWidth || !img.naturalHeight) return;
-  const fit = img.closest("[data-fit]") !== null;
-  const sx = (img.clientWidth * window.devicePixelRatio) / img.naturalWidth;
-  const sy = (img.clientHeight * window.devicePixelRatio) / img.naturalHeight;
-  // Cover crops to the larger stretch; a fitted tile shows the whole picture.
-  const stretch = fit ? Math.min(sx, sy) : Math.max(sx, sy);
-  if (stretch > 1.1) {
-    finer.add(id);
-    img.src = pictureSrc(id, "medium");
-  }
+/** A tile's picture: the size it is drawn at — the whole cell when fitted, cropped to fill it
+ *  as a square (so its longer side reaches past the cell). */
+function tileSrc(p: Photo, cell: number, fit: boolean): string {
+  const r = p.width && p.height ? Math.max(p.width, p.height) / Math.min(p.width, p.height) : 1;
+  return fitSrc(p.id, fit ? cell : cell * r);
 }
 
 /** What a tile can ask of the screen; one object, kept the same, so tiles need not redraw. */
@@ -229,6 +229,7 @@ const Tile = memo(function Tile({
   left,
   soon,
   fit,
+  cell,
   act,
 }: {
   photo: Photo;
@@ -238,6 +239,8 @@ const Tile = memo(function Tile({
   left: string | null;
   soon: boolean;
   fit: boolean;
+  /** A cell's width in device pixels. */
+  cell: number;
   act: Acts;
 }) {
   return (
@@ -263,11 +266,11 @@ const Tile = memo(function Tile({
       onPointerEnter={() => {
         if (photo.kind === "video") return;
         window.clearTimeout(resting);
-        resting = window.setTimeout(() => void warm(photo.id), 140);
+        resting = window.setTimeout(() => void warm(photo), 140);
       }}
       onPointerLeave={() => window.clearTimeout(resting)}
       onPointerDown={() => {
-        if (photo.kind !== "video") void warm(photo.id);
+        if (photo.kind !== "video") void warm(photo);
       }}
       draggable
       onDragStart={(e) => act.drag(photo, e)}
@@ -279,16 +282,15 @@ const Tile = memo(function Tile({
     >
       {/* The picture's own frame: the whole tile when squares, the photo's own shape when
           fitted — what the badges and the selection sit on. */}
-      <span className="px-pic" style={fit && photo.width && photo.height ? fitFrame(photo) : undefined}>
+      <span
+        className="px-pic"
+        // The thumbnail underneath while the picture made for this tile's size comes.
+        style={{ ...(fit && photo.width && photo.height ? fitFrame(photo) : {}), backgroundImage: `url("${pictureSrc(photo.id, "thumb")}")` }}
+      >
         {/* Fetched as soon as its month is built, well ahead of the screen — not left to the
-            engine's own lazy margin, which a fast scroll outran. */}
-        <img
-          src={pictureSrc(photo.id, finer.has(photo.id) ? "medium" : "thumb")}
-          alt=""
-          decoding="async"
-          draggable={false}
-          onLoad={(e) => sharpen(e.currentTarget, photo.id)}
-        />
+            engine's own lazy margin, which a fast scroll outran — and made the size it is
+            drawn at, so the engine never shrinks it. */}
+        <img src={tileSrc(photo, cell, fit)} alt="" decoding="async" draggable={false} />
         {photo.kind === "video" && (
           <span className="px-badge px-duration">
             <Play size={10} strokeWidth={0} fill="currentColor" aria-hidden="true" />
@@ -317,6 +319,7 @@ const Month = memo(function Month({
   eager,
   across,
   fit,
+  cell,
   act,
 }: {
   label: string;
@@ -327,6 +330,7 @@ const Month = memo(function Month({
   eager: boolean;
   across: number;
   fit: boolean;
+  cell: number;
   act: Acts;
 }) {
   const ref = useRef<HTMLElement | null>(null);
@@ -367,6 +371,7 @@ const Month = memo(function Month({
                 left={t?.words ?? null}
                 soon={t?.soon ?? false}
                 fit={fit}
+                cell={cell}
                 act={act}
               />
             );
@@ -715,7 +720,6 @@ export function PhotosView() {
       }, glide ? 340 : 160);
     });
   };
-  const [sharp, setSharp] = useState<string | null>(null);
   /** Videos this computer's engine could not play; each opens in the system's player instead. */
   const [unplayable, setUnplayable] = useState<Set<string>>(() => new Set());
   // The window's player reads only http(s): videos come from the app's own loopback server.
@@ -751,13 +755,26 @@ export function PhotosView() {
   };
   useEffect(() => {
     unzoom(false);
-    setSharp(null);
   }, [shown?.id]);
-  // The whole picture, not the screen-sized one, as Photos shows a photo: fetched as soon as
-  // it opens (once, then from disk) and laid over the quick one when it has arrived.
-  useEffect(() => {
-    if (shown && shown.kind !== "video") setSharp(shown.id);
-  }, [shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The stage, measured as it opens and as the window is resized: the picture the viewer shows
+  // is made for its size (viewSrc), and asked for again only when that size crosses a step.
+  const [, setStep] = useState("");
+  useLayoutEffect(() => {
+    const el = stage.current;
+    if (!el) return undefined;
+    const measure = () => {
+      const cs = getComputedStyle(el);
+      stageBox = {
+        w: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+        h: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom),
+      };
+      if (shown && shown.kind !== "video") setStep(viewSrc(shown));
+    };
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [open !== null, shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // A pinch or Ctrl + wheel: the page must not zoom too, so this listener is not passive.
   useEffect(() => {
     const el = stage.current;
@@ -778,7 +795,7 @@ export function PhotosView() {
     if (open === null || !photos) return;
     for (const by of [1, -1, 2, -2]) {
       const p = photos[open + by];
-      if (p && p.kind !== "video") void warm(p.id);
+      if (p && p.kind !== "video") void warm(p);
     }
   }, [open, photos]);
 
@@ -1020,7 +1037,7 @@ export function PhotosView() {
     // Open at full quality: the whole picture decoded first — from disk, a moment — but never
     // waited on for longer than a blink (a click must answer at once); past that it opens on
     // its thumbnail and screen-sized picture, and the whole one follows.
-    if (p.kind !== "video") await Promise.race([warm(p.id), new Promise((r) => window.setTimeout(r, 150))]);
+    if (p.kind !== "video") await Promise.race([warm(p), new Promise((r) => window.setTimeout(r, 150))]);
     stopClosing();
     const tile = document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(p.id)}"]`);
     origin.current = tile?.getBoundingClientRect() ?? null;
@@ -1616,6 +1633,19 @@ export function PhotosView() {
     if (scroller.current) scroller.current.scrollTop = 0;
   }, [drawn]);
   const across = ACROSS[zoom];
+  // A cell's width in device pixels, for the size each tile's picture is made at; in steps of
+  // 32, so a window being resized does not redraw every tile on every frame.
+  const [gridWidth, setGridWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return undefined;
+    const measure = () => setGridWidth(Math.ceil(el.clientWidth / 32) * 32);
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
+  const cell = Math.round(((gridWidth || 1200) / across) * (window.devicePixelRatio || 1));
 
   // A new album or folder, at the top or in a folder: named in place in the sidebar.
   const startNew = (parent: string | null, folder: boolean) => {
@@ -2057,6 +2087,7 @@ export function PhotosView() {
               eager={k < 3}
               across={across}
               fit={fit}
+              cell={cell}
               act={act}
             />
           ))}
@@ -2150,16 +2181,11 @@ export function PhotosView() {
                 // Played here, as Photos plays one: from the disk cache, in the pieces the
                 // player asks for, so it starts at once and seeks anywhere.
                 <div className="px-video">
-                  <video
+                  <VideoPlayer
                     key={shown.id}
-                    className="px-shown"
                     src={`${videoBase}/${shown.id}/original`}
-                    poster={pictureSrc(shown.id, "medium")}
-                    aria-label={shown.filename ?? "Video"}
-                    controls
-                    autoPlay
-                    playsInline
-                    preload="auto"
+                    poster={viewSrc(shown)}
+                    label={shown.filename ?? "Video"}
                     style={fitted(shown)}
                     onError={() => setUnplayable((was) => new Set(was).add(shown.id))}
                   />
@@ -2191,13 +2217,11 @@ export function PhotosView() {
                   onPointerUp={() => (dragging.current = null)}
                   onPointerCancel={() => (dragging.current = null)}
                 >
-                  {decodedFull.has(shown.id) ? (
-                    // Already whole and decoded: drawn at once, at full quality, alone.
-                    <img key={`${shown.id}-whole`} className="px-shown" src={pictureSrc(shown.id, "full")} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
-                  ) : (
-                    <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
-                  )}
-                  {sharp === shown.id && !decodedFull.has(shown.id) && (
+                  {/* The picture made the size the stage draws it at — every pixel used, none
+                      thrown away by the engine — over the thumbnail until it is decoded. */}
+                  <img key={shown.id} className="px-shown" src={viewSrc(shown)} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
+                  {/* Zoomed in, the whole picture: only then are its own pixels the ones seen. */}
+                  {zoomed && (
                     <img
                       key={`${shown.id}-full`}
                       className="px-sharp"

@@ -148,6 +148,80 @@ pub fn requested(path: &str) -> Option<(String, Size)> {
     Some((id.to_string(), size))
 }
 
+/// The widths a picture is made at for the screen (its longer side), in steps — so a photo
+/// is made a handful of times, not once per window size.
+pub const FITS: [u32; 11] = [128, 256, 384, 512, 768, 1024, 1536, 2048, 2560, 3072, 3840];
+
+/// A `quince://` request for a picture made the size it is shown at: `pic/<asset id>/fit<N>`,
+/// N one of [`FITS`].
+pub fn requested_fit(path: &str) -> Option<(String, u32)> {
+    let path = crate::percent_decode(path.trim_start_matches('/'));
+    let (id, size) = path.strip_prefix("pic/")?.rsplit_once('/')?;
+    let long: u32 = size.strip_prefix("fit")?.parse().ok()?;
+    if !FITS.contains(&long)
+        || id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some((id.to_string(), long))
+}
+
+/// Pictures being made at once: one per core, so a grid filling in never starves the window.
+static MAKING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(0);
+static MAKING_READY: std::sync::Once = std::sync::Once::new();
+
+/// A photo's picture made the size it is shown at, longer side `long` (see
+/// `quince_media::fit`): from the smallest picture already kept that is at least that large —
+/// the thumbnail for the grid, the screen-sized one or the whole one for the viewer — made
+/// once and kept on disk.
+pub async fn fitted(app: &AppHandle, id: &str, long: u32) -> Result<Vec<u8>, String> {
+    let path = crate::state_dir(app)
+        .join("photos")
+        .join("fit")
+        .join(long.to_string())
+        .join(id);
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        return Ok(bytes);
+    }
+    MAKING_READY.call_once(|| {
+        let cores = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+        MAKING.add_permits(cores);
+    });
+    let mut last = None;
+    for size in [Size::Thumb, Size::Medium, Size::Full] {
+        let source = picture(app, id, size).await?;
+        let src = source.clone();
+        let _turn = MAKING.acquire().await.map_err(|e| e.to_string())?;
+        let made = tokio::task::spawn_blocking(move || {
+            let big = quince_media::long_side(&src).is_some_and(|l| l >= long);
+            if !big && size != Size::Full {
+                return Ok(None);
+            }
+            // Large enough (or the largest there is): made the size it is shown at, or, when it
+            // is no larger already, shown as it is.
+            quince_media::fit(&src, long).map(|out| Some(out.unwrap_or(src)))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        if let Some(bytes) = made {
+            if let Some(dir) = path.parent() {
+                let _ = tokio::fs::create_dir_all(dir).await;
+            }
+            let part = path.with_extension("part");
+            if tokio::fs::write(&part, &bytes).await.is_ok() {
+                let _ = tokio::fs::rename(&part, &path).await;
+            }
+            return Ok(bytes);
+        }
+        last = Some(source);
+    }
+    last.ok_or_else(|| "No picture of that photo could be made.".into())
+}
+
 fn cache_path(app: &AppHandle, id: &str, size: Size) -> PathBuf {
     crate::state_dir(app)
         .join("photos")
@@ -1645,6 +1719,20 @@ mod tests {
         assert_eq!(byte_range(Some("bytes=-0"), 100, all), None);
         assert_eq!(byte_range(Some("items=0-1"), 100, all), None);
         assert_eq!(byte_range(None, 0, all), None);
+    }
+
+    #[test]
+    fn a_fitted_picture_is_asked_for_by_its_step_only() {
+        assert_eq!(
+            requested_fit("/pic/A1-b/fit1024"),
+            Some(("A1-b".into(), 1024))
+        );
+        assert_eq!(requested_fit("pic%2FA1%2Ffit256"), Some(("A1".into(), 256)));
+        // Not a step (the cache would grow without end), not a picture, not a path.
+        assert_eq!(requested_fit("/pic/A1/fit1000"), None);
+        assert_eq!(requested_fit("/pic/A1/full"), None);
+        assert_eq!(requested_fit("/pic/../x/fit256"), None);
+        assert_eq!(requested_fit("/pic/A1/fitx"), None);
     }
 
     #[test]

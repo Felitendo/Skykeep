@@ -903,3 +903,77 @@
 .px-ask-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .px-ask-actions .is-act { color: var(--accent); }
 .px-ask-actions .is-act.danger { color: var(--danger); }
+
+/* ---- a video, as Photos plays one: the film alone, its controls in a capsule floating over
+   its foot that fades while the pointer rests (always there while paused) ----------------- */
+.px-player { position: relative; display: block; max-width: none; max-height: none; background: #000 center / 100% 100% no-repeat; }
+.px-player > video { display: block; width: 100%; height: 100%; object-fit: contain; outline: none; }
+.px-player-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  width: min(560px, calc(100% - 28px));
+  translate: -50% 0;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding: 0 6px;
+  border-radius: 20px;
+  opacity: 0;
+  transition: opacity 260ms ease;
+  pointer-events: none;
+}
+.px-player.is-awake .px-player-bar { opacity: 1; pointer-events: auto; }
+.px-player:not(.is-awake) { cursor: none; }
+.px-player-time {
+  flex: none;
+  min-width: 44px;
+  font-size: var(--t-12, 12px);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  text-align: center;
+}
+.px-scrub { position: relative; flex: 1; height: 28px; display: flex; align-items: center; cursor: default; touch-action: none; }
+.px-scrub:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.px-scrub-track { position: relative; width: 100%; height: 4px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--text) 20%, transparent); transition: height 160ms ease; }
+.px-scrub:hover .px-scrub-track { height: 6px; }
+.px-scrub-fill { position: absolute; inset: 0; transform-origin: left center; transform: scaleX(0); background: var(--text); }
+.px-scrub-knob {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  scale: 0;
+  transition: scale 160ms ease;
+}
+.px-scrub:hover .px-scrub-knob, .px-scrub:active .px-scrub-knob { scale: 1; }
+.px-scrub-tip {
+  position: absolute;
+  bottom: 30px;
+  translate: -50% 0;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: var(--t-11, 11px);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--sheet);
+  box-shadow: var(--glass-float);
+  pointer-events: none;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) { .px-player-bar, .px-scrub-track, .px-scrub-knob { transition: none; } }
+/* Over the film the controls are dark glass in light and dark alike, as QuickTime and Photos
+   draw them: they sit on the picture, not on the page. */
+.px-player-bar { background: rgba(28, 28, 30, 0.74); box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.14), 0 8px 24px rgba(0, 0, 0, 0.35); }
+.px-player-bar .px-cap { color: #fff; }
+.px-player-bar .px-cap:hover { background: rgba(255, 255, 255, 0.14); }
+.px-player-bar .px-player-time { color: rgba(255, 255, 255, 0.78); }
+.px-player-bar .px-scrub-track { background: rgba(255, 255, 255, 0.24); }
+.px-player-bar .px-scrub-fill, .px-player-bar .px-scrub-knob { background: #fff; }
+.px-player-bar .px-scrub-tip { color: #fff; background: rgba(28, 28, 30, 0.9); }

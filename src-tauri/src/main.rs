@@ -3670,6 +3670,7 @@ fn main() {
             let wanted = photo_guid(uri.host(), uri.path());
             let attachment = note_part(uri.path());
             let picture = photos::requested(uri.path());
+            let fit = photos::requested_fit(uri.path());
             let queued = photos::requested_upload(uri.path());
             tauri::async_runtime::spawn(async move {
                 // A file on its way into Photos, small, for the upload panel.
@@ -3678,6 +3679,21 @@ fn main() {
                         Ok(bytes) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", image_type(&bytes))
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.unwrap_or_default());
+                    return;
+                }
+                // A photo's picture made the size it is shown at.
+                if let Some((id, long)) = fit {
+                    let response = match photos::fitted(&app, &id, long).await {
+                        Ok(bytes) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", image_type(&bytes))
+                            .header("Cache-Control", "private, max-age=86400")
                             .body(bytes),
                         Err(_) => tauri::http::Response::builder()
                             .status(404)

@@ -577,6 +577,19 @@ export function pictureSrc(id: string, size: "thumb" | "medium" | "full" | "orig
   return convertFileSrc(`pic/${id}/${size}`, "quince");
 }
 
+/** The longer sides a picture is made at for the screen (photos.rs FITS). */
+export const FITS = [128, 256, 384, 512, 768, 1024, 1536, 2048, 2560, 3072, 3840];
+
+/**
+ * A photo's picture made `long` device pixels on its longer side — the step at or above it —
+ * resampled with care by the app. The engine then draws it at its own size: shrunk by
+ * WebKitGTK instead, a large picture came out jagged.
+ */
+export function fitSrc(id: string, long: number): string {
+  const step = FITS.find((f) => f >= long) ?? FITS[FITS.length - 1];
+  return convertFileSrc(`pic/${id}/fit${step}`, "quince");
+}
+
 export type PhotoAlbum = {
   id: string;
   name: string;
