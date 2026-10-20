@@ -313,7 +313,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             favorite: false, hidden: false, deleted: false, deletedAt: null, subtype: 0, changeTag: null, ...extra });
           const all = (window.__photos ??= [
             P("p1", 1792500000, { favorite: true }), P("p2", 1792400000), P("p3", 1792300000, { kind: "video", duration: 12.4, uti: "public.mpeg-4", filename: "clip.mp4" }),
-            P("p4", 1789900000), P("p5", 1789800000), P("p6", 1789700000, { deleted: true, deletedAt: 1792600000, expungeAt: Math.floor(Date.now() / 1000) + 2 * 86400 + 600 }),
+            P("p4", 1789900000, { addedAt: 1792700000 }), P("p5", 1789800000), P("p6", 1789700000, { deleted: true, deletedAt: 1792600000, expungeAt: Math.floor(Date.now() / 1000) + 2 * 86400 + 600 }),
           ]);
           const live = all.filter((p) => !p.deleted && !p.hidden);
           const views = {

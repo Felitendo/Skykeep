@@ -6,7 +6,15 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
  * of its own, opened beside it as macOS opens one; `keep` leaves the menu open after `run`.
  */
 export type MenuEntry =
-  | { label: string; run?: () => void; danger?: boolean; keep?: boolean; submenu?: MenuEntry[] }
+  | {
+      label: string;
+      run?: () => void;
+      danger?: boolean;
+      keep?: boolean;
+      submenu?: MenuEntry[];
+      /** A choice that is on or off: a check beside it when on, as a Mac menu marks one. */
+      checked?: boolean;
+    }
   | null;
 
 type Anchor = { x: number; y: number; alignRight: boolean };
@@ -94,6 +102,7 @@ function Panel({
   const box = useRef<HTMLDivElement | null>(null);
   const lines = useRef<(HTMLButtonElement | null)[]>([]);
   const items = entries.filter((e): e is NonNullable<MenuEntry> => e !== null);
+  const checks = items.some((e) => e.checked !== undefined);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   // Nothing highlighted until the pointer or a key says so, as a Mac menu opens.
   const [active, setActive] = useState(focusFirst ? 0 : -1);
@@ -193,7 +202,8 @@ function Panel({
               ref={(el) => {
                 lines.current[index] = el;
               }}
-              role="menuitem"
+              role={entry.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+              aria-checked={entry.checked}
               tabIndex={-1}
               aria-haspopup={entry.submenu ? "menu" : undefined}
               aria-expanded={entry.submenu ? sub?.index === index : undefined}
@@ -213,6 +223,13 @@ function Panel({
               }}
               onClick={() => choose(index, false)}
             >
+              {/* A menu with choices in it keeps the column for the check on every line, so
+                  the words line up whether a line is checked or not. */}
+              {checks && (
+                <span className="row-menu-check" aria-hidden="true">
+                  {entry.checked ? "✓" : ""}
+                </span>
+              )}
               <span className="row-menu-label">{entry.label}</span>
               {entry.submenu && <span className="row-menu-chevron" aria-hidden="true">›</span>}
             </button>

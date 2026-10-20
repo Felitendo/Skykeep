@@ -1837,6 +1837,8 @@
   font: inherit; font-size: var(--t-13); text-align: left; cursor: default; white-space: nowrap;
 }
 .row-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The check column: a Mac menu marks a choice that is on with a check before its name. */
+.row-menu-check { flex: none; width: 12px; margin: 0 -6px 0 -4px; font-size: 12px; font-weight: 600; text-align: center; }
 .row-menu-chevron { flex: none; margin-right: -4px; font-size: 15px; line-height: 1; color: var(--text-2); }
 .row-menu-item.is-active { background: var(--sys-blue, #0a84ff); color: #fff; }
 .row-menu-item.is-active .row-menu-chevron { color: #fff; }

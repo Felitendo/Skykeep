@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -63,6 +63,21 @@ const pickedWords = (list: Photo[]) => {
 };
 
 type Flag = "favorite" | "deleted" | "hidden" | "expunged";
+
+/** How a view is sorted, as Photos offers it: by the date taken or the date added, either way. */
+type Sort = { by: "taken" | "added"; oldest: boolean };
+const SORTS_KEY = "quince.photos.sort";
+const defaultSort = (view: PhotoView): Sort => ({ by: view === "recents" ? "added" : "taken", oldest: false });
+const sortKey = (p: Photo, by: Sort["by"]) => (by === "added" ? (p.addedAt ?? p.takenAt) : p.takenAt);
+const sortList = (list: Photo[], s: Sort) =>
+  [...list].sort((a, b) => (sortKey(b, s.by) - sortKey(a, s.by)) * (s.oldest ? -1 : 1) || (a.id < b.id ? -1 : 1));
+const readSorts = (): Partial<Record<PhotoView, Sort>> => {
+  try {
+    return JSON.parse(window.localStorage.getItem(SORTS_KEY) ?? "{}") ?? {};
+  } catch {
+    return {};
+  }
+};
 
 /**
  * How long a photo in Recently Deleted has left, in Photos' words: "29 days left" (or, on a
@@ -239,13 +254,35 @@ export function PhotosView() {
   /** An album being named in the sidebar: a new one (with the photos to put in it), or a rename. */
   const [naming, setNaming] = useState<{ id: string | null; then: string[]; draft: string } | null>(null);
 
+  // Each view keeps the sort chosen for it, on this machine. Albums keep their own order, and
+  // Recently Deleted its own, as in Photos.
+  const [sorts, setSorts] = useState(readSorts);
+  const sortable = !album && view !== "recentlyDeleted";
+  const sort = sortable ? (sorts[view] ?? defaultSort(view)) : null;
+  const sortRef = useRef(sort);
+  sortRef.current = sort;
+  const chooseSort = (next: Sort) => {
+    setSorts((all) => {
+      const was = { ...all, [view]: next };
+      try {
+        window.localStorage.setItem(SORTS_KEY, JSON.stringify(was));
+      } catch {
+        // Kept for this run only.
+      }
+      return was;
+    });
+  };
+  useEffect(() => {
+    if (sort) setPhotos((list) => (list ? sortList(list, sort) : list));
+  }, [sort?.by, sort?.oldest]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const read = useCallback(async () => {
     const [list, c, a] = await Promise.all([
       album ? api.photosInAlbum(album.id) : api.photosList(view),
       api.photosCounts(),
       api.photosAlbums(),
     ]);
-    setPhotos(list);
+    setPhotos(sortRef.current ? sortList(list, sortRef.current) : list);
     setCounts(Object.fromEntries(c));
     setAlbums(a);
     // An album deleted elsewhere is not left open, empty.
@@ -260,13 +297,13 @@ export function PhotosView() {
     const out: { label: string; items: { photo: Photo; index: number }[] }[] = [];
     if (album) return [{ label: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
     (photos ?? []).forEach((photo, index) => {
-      const label = monthOf(view === "recents" ? (photo.addedAt ?? photo.takenAt) : photo.takenAt);
+      const label = monthOf(sortKey(photo, sort?.by ?? "taken"));
       const last = out[out.length - 1];
       if (last && last.label === label) last.items.push({ photo, index });
       else out.push({ label, items: [{ photo, index }] });
     });
     return out;
-  }, [photos, view, album]);
+  }, [photos, sort?.by, album]);
 
   const shown = open !== null ? photos?.[open] ?? null : null;
 
@@ -1207,6 +1244,31 @@ export function PhotosView() {
                   Delete All
                 </button>
               )}
+            </div>
+          )}
+          {sort && (
+            <div className="px-capsule">
+              <button
+                className="px-cap"
+                aria-label="Sort"
+                aria-haspopup="menu"
+                title="Sort"
+                onClick={(e) => {
+                  const box = e.currentTarget.getBoundingClientRect();
+                  setMenu({
+                    at: { x: box.right, y: box.bottom + 6, alignRight: true },
+                    entries: [
+                      { label: "Date Captured", checked: sort.by === "taken", run: () => chooseSort({ ...sort, by: "taken" }) },
+                      { label: "Date Added", checked: sort.by === "added", run: () => chooseSort({ ...sort, by: "added" }) },
+                      null,
+                      { label: "Newest First", checked: !sort.oldest, run: () => chooseSort({ ...sort, oldest: false }) },
+                      { label: "Oldest First", checked: sort.oldest, run: () => chooseSort({ ...sort, oldest: true }) },
+                    ],
+                  });
+                }}
+              >
+                <ArrowDownUp size={16} strokeWidth={1.9} aria-hidden="true" />
+              </button>
             </div>
           )}
           <div className="px-capsule" role="group" aria-label="Zoom">
