@@ -62,7 +62,19 @@ const pickedWords = (list: Photo[]) => {
   return `${n.toLocaleString()} ${n === 1 ? noun : `${noun}s`} Selected`;
 };
 
-type Flag = "favorite" | "deleted" | "hidden";
+type Flag = "favorite" | "deleted" | "hidden" | "expunged";
+
+/**
+ * How long a photo in Recently Deleted has left, in Photos' words: "29 days left" (or, on a
+ * tile, "29 days"), then hours, then minutes; red under four days, as Photos turns it.
+ */
+const timeLeft = (p: Photo, compact: boolean) => {
+  if (!p.expungeAt) return null;
+  const ms = Math.max(0, p.expungeAt * 1000 - Date.now());
+  const [unit, size] = ms >= 86_400_000 ? ["day", 86_400_000] : ms >= 3_600_000 ? ["hour", 3_600_000] : ["minute", 60_000];
+  const n = Math.max(1, Math.floor(ms / size));
+  return { words: `${n} ${unit}${n === 1 ? "" : "s"}${compact ? "" : " left"}`, soon: ms < 4 * 86_400_000 };
+};
 
 const clock = (s: number | null) => {
   if (!s) return "";
@@ -332,6 +344,7 @@ export function PhotosView() {
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l" && current && view !== "recentlyDeleted") void change(current, "hidden", view !== "hidden");
       else if ((e.key === "Delete" || e.key === "Backspace") && current && album) void removeFrom([current]);
       else if ((e.key === "Delete" || e.key === "Backspace") && current && view !== "recentlyDeleted") void change(current, "deleted", true);
+      else if ((e.key === "Delete" || e.key === "Backspace") && current && view === "recentlyDeleted" && !album) void change(current, "expunged", true);
       else return;
       e.preventDefault();
     };
@@ -356,6 +369,15 @@ export function PhotosView() {
     ) {
       return;
     }
+    // For good, in Photos' words: it cannot be undone.
+    if (
+      flag === "expunged" &&
+      !window.confirm(
+        `${n === 1 ? "Are you sure you want to delete this item permanently?" : `Are you sure you want to delete these ${n} items permanently?`}\n\nThis action cannot be undone.`,
+      )
+    ) {
+      return;
+    }
     // Hiding asks too, in Photos' words: where the photos go.
     if (
       flag === "hidden" && on &&
@@ -367,7 +389,8 @@ export function PhotosView() {
     const ids = new Set(list.map((p) => p.id));
     // Which changes take a photo out of the view it is in.
     const leaves =
-      album ? flag !== "favorite" && on
+      flag === "expunged" ? true
+      : album ? flag !== "favorite" && on
       : flag === "deleted" ? (on ? view !== "recentlyDeleted" : view === "recentlyDeleted")
       : flag === "hidden" ? (on ? view !== "hidden" : view === "hidden")
       : !on && view === "favorites";
@@ -566,6 +589,7 @@ export function PhotosView() {
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected.length) {
         if (album) void removeFrom(selected);
         else if (view !== "recentlyDeleted") void changeAll(selected, "deleted", true);
+        else void changeAll(selected, "expunged", true);
       } else if (ctrl && e.key.toLowerCase() === "l" && selected.length && view !== "recentlyDeleted") {
         // ⌘L in Photos: hide, or in Hidden, unhide.
         void changeAll(selected, "hidden", view !== "hidden");
@@ -600,7 +624,11 @@ export function PhotosView() {
         at,
         entries:
           view === "recentlyDeleted" && !album
-            ? [{ label: `Recover ${n} Photos`, run: () => void changeAll(group, "deleted", false) }]
+            ? [
+                { label: `Recover ${n} Items`, run: () => void changeAll(group, "deleted", false) },
+                null,
+                { label: `Delete ${n} Items`, danger: true, run: () => void changeAll(group, "expunged", true) },
+              ]
             : [
                 { label: anyPlain ? "Favorite" : "Unfavorite", run: () => void changeAll(group, "favorite", anyPlain) },
                 null,
@@ -618,7 +646,11 @@ export function PhotosView() {
     }
     const entries: MenuEntry[] =
       view === "recentlyDeleted" && !album
-        ? [{ label: "Recover", run: () => void change(p, "deleted", false) }]
+        ? [
+            { label: "Recover", run: () => void change(p, "deleted", false) },
+            null,
+            { label: "Delete", danger: true, run: () => void change(p, "expunged", true) },
+          ]
         : [
             { label: p.favorite ? "Unfavorite" : "Favorite", run: () => void change(p, "favorite", !p.favorite) },
             { label: "Download", run: () => void download(p) },
@@ -913,6 +945,26 @@ export function PhotosView() {
               (here ?? span) && <p className="px-span">{here ?? span}</p>
             )}
           </div>
+          {view === "recentlyDeleted" && !album && photos && photos.length > 0 && (
+            // Recently Deleted's own toolbar, in Photos' words: Recover and Delete for what is
+            // selected, Delete All when nothing is.
+            <div className="px-capsule px-words">
+              {selected.length > 0 ? (
+                <>
+                  <button className="px-word" onClick={() => void changeAll(selected, "deleted", false)}>
+                    Recover
+                  </button>
+                  <button className="px-word is-danger" onClick={() => void changeAll(selected, "expunged", true)}>
+                    Delete
+                  </button>
+                </>
+              ) : (
+                <button className="px-word is-danger" onClick={() => void changeAll(photos, "expunged", true)}>
+                  Delete All
+                </button>
+              )}
+            </div>
+          )}
           <div className="px-capsule" role="group" aria-label="Zoom">
             <button className="px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
               <Minus size={15} strokeWidth={2.2} aria-hidden="true" />
@@ -981,6 +1033,9 @@ export function PhotosView() {
                         {clock(photo.duration)}
                       </span>
                     )}
+                    {view === "recentlyDeleted" && !album && timeLeft(photo, true) && (
+                      <span className={`px-badge px-left${timeLeft(photo, true)!.soon ? " is-soon" : ""}`}>{timeLeft(photo, true)!.words}</span>
+                    )}
                     {photo.favorite && (
                       <Heart className="px-heart" size={13} strokeWidth={0} fill="currentColor" aria-label="Favorite" />
                     )}
@@ -1003,13 +1058,22 @@ export function PhotosView() {
               </div>
               <div className="px-viewer-when">
                 <strong>{new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "long" })}</strong>
-                <span>{new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}</span>
+                {view === "recentlyDeleted" && !album && timeLeft(shown, false) ? (
+                  <span className={timeLeft(shown, false)!.soon ? "is-soon" : undefined}>{timeLeft(shown, false)!.words}</span>
+                ) : (
+                  <span>{new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}</span>
+                )}
               </div>
               <div className="px-capsule">
               {view === "recentlyDeleted" && !album ? (
-                <button className="px-cap" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
-                  <RotateCcw size={17} />
-                </button>
+                <>
+                  <button className="px-cap" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
+                    <RotateCcw size={17} />
+                  </button>
+                  <button className="px-cap" aria-label="Delete Permanently" title="Delete permanently (Delete)" onClick={() => void change(shown, "expunged", true)}>
+                    <Trash2 size={17} />
+                  </button>
+                </>
               ) : (
                 <>
                   <button

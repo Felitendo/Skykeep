@@ -384,8 +384,8 @@ async fn album_of(data: &State<'_, Data>, id: &str) -> UiResult<quince_core::pho
         .ok_or_else(|| "That album is no longer there.".into())
 }
 
-/// Favorite, Delete (to Recently Deleted, never for good) or Recover a photo, as icloud.com
-/// does it: the asset's one field updated against its change tag. The library takes Apple's
+/// Favorite, Hide, Delete (to Recently Deleted), Recover, or — from Recently Deleted only —
+/// delete for good, as icloud.com does it: the asset's one field updated against its change tag. The library takes Apple's
 /// answer at once, so every view shows it without waiting for the next pass.
 #[tauri::command]
 pub async fn photo_set_flag(
@@ -403,6 +403,11 @@ pub async fn photo_set_flag(
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
+    // Deleting for good is only ever from Recently Deleted, and only ever on: there is no
+    // taking it back, so nothing else may reach it.
+    if flag == quince_icloud::photos::Flag::Expunged && (!on || !photo.deleted) {
+        return Err("Only a photo in Recently Deleted can be deleted for good.".into());
+    }
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_flag(
         &http,
@@ -422,6 +427,23 @@ pub async fn photo_set_flag(
         quince_icloud::photos::Flag::Deleted => {
             updated.deleted = on;
             updated.deleted_at = on.then(|| jiff::Timestamp::now().as_second());
+            // Apple's own date for when it goes for good, or its thirty days until it says.
+            updated.expunge_at = on.then(|| {
+                answer
+                    .pointer("/fields/dateExpunged/value")
+                    .and_then(serde_json::Value::as_i64)
+                    .map_or(jiff::Timestamp::now().as_second() + 30 * 86_400, |ms| {
+                        ms / 1000
+                    })
+            });
+        }
+        quince_icloud::photos::Flag::Expunged => {
+            data.0
+                .lock()
+                .await
+                .forget_photos(std::slice::from_ref(&id))
+                .map_err(|e| e.to_string())?;
+            return Ok(updated);
         }
     }
     updated.change_tag = answer

@@ -64,6 +64,9 @@ pub struct Photo {
     pub deleted: bool,
     /// When it was deleted: Photos counts its 30 days from here.
     pub deleted_at: Option<i64>,
+    /// In Recently Deleted: when Apple deletes it for good, unix seconds (`dateExpunged`).
+    #[serde(default)]
+    pub expunge_at: Option<i64>,
     /// Photos' subtype: 1 and 3 mark screenshots and the like (`assetSubtypeV2`).
     pub subtype: i64,
     /// The asset's change tag, for writing back to it.
@@ -111,7 +114,7 @@ pub enum View {
 }
 
 const COLUMNS: &str = "id, master, taken_at, added_at, kind, width, height, duration, filename, \
-                       size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag";
+                       size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag, expunge_at";
 
 fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
     Ok(Photo {
@@ -132,6 +135,7 @@ fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
         deleted_at: r.get(14)?,
         subtype: r.get(15)?,
         change_tag: r.get(16)?,
+        expunge_at: r.get(17)?,
     })
 }
 
@@ -143,8 +147,8 @@ impl Library {
             let mut stmt = tx.prepare(
                 "INSERT INTO photos (id, master, taken_at, added_at, kind, width, height, duration,
                                      filename, size, uti, favorite, hidden, deleted, deleted_at,
-                                     subtype, change_tag)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                                     subtype, change_tag, expunge_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                  ON CONFLICT(id) DO UPDATE SET
                    master = excluded.master, taken_at = excluded.taken_at,
                    added_at = excluded.added_at, kind = excluded.kind, width = excluded.width,
@@ -152,7 +156,8 @@ impl Library {
                    filename = excluded.filename, size = excluded.size, uti = excluded.uti,
                    favorite = excluded.favorite, hidden = excluded.hidden,
                    deleted = excluded.deleted, deleted_at = excluded.deleted_at,
-                   subtype = excluded.subtype, change_tag = excluded.change_tag",
+                   subtype = excluded.subtype, change_tag = excluded.change_tag,
+                   expunge_at = excluded.expunge_at",
             )?;
             for p in photos {
                 stmt.execute(params![
@@ -172,7 +177,8 @@ impl Library {
                     i64::from(p.deleted),
                     p.deleted_at,
                     p.subtype,
-                    p.change_tag
+                    p.change_tag,
+                    p.expunge_at
                 ])?;
             }
         }
@@ -445,6 +451,7 @@ mod tests {
             deleted_at: None,
             subtype: 0,
             change_tag: None,
+            expunge_at: None,
         }
     }
 

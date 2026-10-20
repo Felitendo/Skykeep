@@ -439,4 +439,10 @@ pub const MIGRATIONS: &[&str] = &[
     ) STRICT;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // When a photo in Recently Deleted goes for good, as Apple counts it; Photos is read
+    // again so every deleted photo has it.
+    r#"
+    ALTER TABLE photos ADD COLUMN expunge_at INTEGER;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

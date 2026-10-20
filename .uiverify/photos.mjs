@@ -69,7 +69,7 @@ await page.locator(".px-source", { hasText: "Recently Deleted" }).click();
 await page.waitForTimeout(200);
 ok((await page.locator(".px-tile").count()) === 2, "the deleted photo is in Recently Deleted");
 await page.locator(".px-tile").first().dblclick();
-await page.getByRole("button", { name: "Recover" }).click();
+await page.locator(".px-viewer").getByRole("button", { name: "Recover" }).click();
 await page.waitForTimeout(300);
 ok((await page.evaluate(() => window.__flags.at(-1))).on === false, "Recover brings it back");
 await page.keyboard.press("Escape");
@@ -201,6 +201,27 @@ ok((await page.locator(".px-video").evaluate((el) => el.getAnimations().length))
 await page.waitForTimeout(400);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(650);
+
+// Recently Deleted, as Photos keeps it: each photo with the time it has left (red in its last
+// days); Recover and Delete for what is selected, Delete All otherwise; Delete is for good
+// and asked first, in Photos' words.
+await page.locator(".px-source", { hasText: "Recently Deleted" }).click();
+await page.waitForTimeout(250);
+const left = page.locator(".px-tile .px-left");
+ok((await left.count()) === 1 && (await left.innerText()) === "2 days" && /is-soon/.test(await left.getAttribute("class")),
+  `a deleted photo shows its days left, red near the end  "${await left.innerText()}"`);
+ok((await page.getByRole("button", { name: "Delete All" }).count()) === 1, "with nothing selected, the toolbar offers Delete All");
+await page.locator(".px-tile").first().click();
+ok((await page.locator(".px-word").allInnerTexts()).join() === "Recover,Delete", "with one selected, Recover and Delete");
+let asked = "";
+page.once("dialog", (d) => { asked = d.message(); void d.accept(); });
+await page.locator(".px-word", { hasText: /^Delete$/ }).click();
+await page.waitForTimeout(300);
+ok(/permanently/.test(asked) && /cannot be undone/.test(asked), `Delete asks first, in Photos' words  "${asked.split("\n")[0]}"`);
+ok((await page.locator(".px-tile").count()) === 0 && (await page.evaluate(() => window.__flags.at(-1).flag)) === "expunged",
+  "and deletes it for good");
+await page.locator(".px-source", { hasText: "Library" }).click();
+await page.waitForTimeout(250);
 
 const across = async () => page.locator(".px-grid").first().evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(" ").length);
 const before = await across();

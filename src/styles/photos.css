@@ -139,6 +139,30 @@
 .px-cap:disabled { color: var(--text-3); opacity: 0.55; }
 .px-cap:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
 
+/* Words in a capsule — Recently Deleted's Recover, Delete, Delete All — as Photos sets them. */
+.px-words { padding: 0 4px; }
+.px-word {
+  height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 17px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--t-13);
+  font-weight: 600;
+  cursor: default;
+  transition: background-color 120ms ease, transform 160ms var(--spring-quick);
+}
+.px-word.is-danger { color: var(--danger); }
+.px-word:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+.px-word:active { transform: scale(0.95); }
+.px-word:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
+/* Time left on a deleted photo's tile; red in its last days. */
+.px-badge.px-left { left: 6px; right: auto; }
+.px-badge.px-left.is-soon { color: #ff6961; }
+.px-viewer-when .is-soon { color: var(--danger); }
+
 .px-tally {
   margin: 18px 0 8px;
   color: var(--text-2);

@@ -95,7 +95,7 @@ export const api = {
   /** A video (or a Live Photo's moving part) opened in this computer's own player. */
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Favorite, Delete (to Recently Deleted) or Recover; answers the photo as Apple now has it. */
-  photoSetFlag: (id: string, flag: "favorite" | "deleted" | "hidden", on: boolean) =>
+  photoSetFlag: (id: string, flag: "favorite" | "deleted" | "hidden" | "expunged", on: boolean) =>
     invoke<Photo>("photo_set_flag", { id, flag, on }),
   /** The original saved to Downloads; answers where. */
   photoDownload: (id: string) => invoke<string>("photo_download", { id }),
@@ -578,6 +578,8 @@ export type Photo = {
   hidden: boolean;
   deleted: boolean;
   deletedAt: number | null;
+  /** In Recently Deleted: when Apple deletes it for good, unix seconds. */
+  expungeAt?: number | null;
   subtype: number;
   changeTag: string | null;
 };

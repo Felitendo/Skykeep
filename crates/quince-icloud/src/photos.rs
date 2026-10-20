@@ -158,6 +158,9 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
             .filter(|&d| d == 1)
             .and(millis(asset, "recordModificationDate")),
         subtype: field::int(asset, "assetSubtypeV2").unwrap_or(0),
+        expunge_at: (field::int(asset, "isDeleted") == Some(1))
+            .then(|| millis(asset, "dateExpunged"))
+            .flatten(),
         change_tag: asset
             .get("recordChangeTag")
             .and_then(Value::as_str)
@@ -177,6 +180,11 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     p.deleted = field::int(asset, "isDeleted") == Some(1);
     p.deleted_at = if p.deleted {
         millis(asset, "recordModificationDate").or(p.deleted_at)
+    } else {
+        None
+    };
+    p.expunge_at = if p.deleted {
+        millis(asset, "dateExpunged").or(p.expunge_at)
     } else {
         None
     };
@@ -226,6 +234,12 @@ pub fn apply(
             Some("CPLMaster") => {
                 if let Some(name) = field::record_name(r) {
                     masters.insert(name, r);
+                }
+            }
+            // Deleted for good stays a record at Apple, marked expunged: it is gone here.
+            Some("CPLAsset") if field::int(r, "isExpunged") == Some(1) => {
+                if let Some(name) = field::record_name(r) {
+                    gone.push(name);
                 }
             }
             Some("CPLAsset") => assets.push(r),
@@ -338,6 +352,7 @@ pub async fn set_flag(
         Flag::Favorite => "isFavorite",
         Flag::Deleted => "isDeleted",
         Flag::Hidden => "isHidden",
+        Flag::Expunged => "isExpunged",
     };
     client
         .update_record(
@@ -506,6 +521,8 @@ pub enum Flag {
     Favorite,
     Deleted,
     Hidden,
+    /// Deleted for good, from Recently Deleted: `isExpunged: 1`. It cannot be undone.
+    Expunged,
 }
 
 /// One master's links, read from Apple now: for a picture whose cached link expired, or one
@@ -678,5 +695,35 @@ mod tests {
             1,
             "the photos stay in the library"
         );
+    }
+
+    /// A photo deleted for good stays a record at Apple, marked `isExpunged`; the library
+    /// lets it go rather than keep it in Recently Deleted.
+    #[test]
+    fn an_expunged_photo_goes() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let pass = |records, incremental| PhotosFetch {
+            records,
+            token: Some("T".into()),
+            incremental,
+            complete: true,
+        };
+        apply(
+            &mut lib,
+            pass(vec![master(), asset(json!({"isDeleted": 1}))], false),
+        )
+        .unwrap();
+        assert_eq!(
+            lib.photos(quince_core::photos::View::RecentlyDeleted)
+                .unwrap()
+                .len(),
+            1
+        );
+        apply(
+            &mut lib,
+            pass(vec![asset(json!({"isDeleted": 1, "isExpunged": 1}))], true),
+        )
+        .unwrap();
+        assert!(lib.photo("A1").unwrap().is_none());
     }
 }
