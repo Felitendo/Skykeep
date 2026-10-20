@@ -101,6 +101,7 @@ export const api = {
   photoDownload: (id: string) => invoke<string>("photo_download", { id }),
   /** Title and caption together, as Info saves them. */
   photoSetText: (id: string, title: string, caption: string) => invoke<Photo>("photo_set_text", { id, title, caption }),
+  photoSetRating: (id: string, rating: number) => invoke<Photo>("photo_set_rating", { id, rating }),
   /** Photos and videos (or folders of them) into the library. Answers the batch; progress
    * arrives as PHOTO_UPLOAD events, in the same shape as Drive's. */
   /** Into the library, and into `album` too when one is open. */
@@ -562,7 +563,7 @@ export function pictureSrc(id: string, size: "thumb" | "medium" | "full" | "orig
 
 export type PhotoAlbum = { id: string; name: string; position: number; changeTag: string | null };
 
-export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "recents" | "hidden" | "recentlyDeleted";
+export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "recents" | "hidden" | "rated" | "recentlyDeleted";
 
 export type Photo = {
   id: string;
@@ -586,6 +587,8 @@ export type Photo = {
   /** Its title and caption, as typed in Photos' Info. */
   title?: string | null;
   caption?: string | null;
+  /** Its star rating, 0 (none) to 5. */
+  rating?: number;
   subtype: number;
   changeTag: string | null;
 };

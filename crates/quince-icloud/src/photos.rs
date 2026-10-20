@@ -160,6 +160,7 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
         subtype: field::int(asset, "assetSubtypeV2").unwrap_or(0),
         title: decoded(asset, "captionEnc"),
         caption: decoded(asset, "extendedDescEnc"),
+        rating: field::int(asset, "rating").unwrap_or(0).clamp(0, 5),
         expunge_at: (field::int(asset, "isDeleted") == Some(1))
             .then(|| millis(asset, "dateExpunged"))
             .flatten(),
@@ -187,6 +188,7 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     };
     p.title = decoded(asset, "captionEnc");
     p.caption = decoded(asset, "extendedDescEnc");
+    p.rating = field::int(asset, "rating").unwrap_or(0).clamp(0, 5);
     p.expunge_at = if p.deleted {
         millis(asset, "dateExpunged").or(p.expunge_at)
     } else {
@@ -392,6 +394,28 @@ pub async fn set_title_and_caption(
                 "captionEnc": { "value": album_name(title) },
                 "extendedDescEnc": { "value": album_name(caption) },
             }),
+        )
+        .await
+}
+
+/// A photo's star rating set, as icloud.com's Info sets it: `rating`, 0 (none) to 5, against
+/// the asset's change tag. Answers the asset as it now is.
+pub async fn set_rating(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    asset: &str,
+    change_tag: Option<&str>,
+    rating: i64,
+) -> Result<Value> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            asset,
+            "CPLAsset",
+            change_tag,
+            serde_json::json!({ "rating": { "value": rating.clamp(0, 5) } }),
         )
         .await
 }

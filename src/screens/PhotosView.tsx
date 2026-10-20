@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -37,6 +37,7 @@ const MEDIA: typeof VIEWS = [
 ];
 /** Photos' Utilities: what is kept out of the library. */
 const UTILITIES: typeof VIEWS = [
+  { key: "rated", label: "Rated", Icon: Star },
   { key: "hidden", label: "Hidden", Icon: EyeOff },
   { key: "recentlyDeleted", label: "Recently Deleted", Icon: Trash2 },
 ];
@@ -175,6 +176,7 @@ const Tile = memo(function Tile({
           </span>
         )}
         {left && <span className={`px-badge px-left${soon ? " is-soon" : ""}`}>{left}</span>}
+        {(photo.rating ?? 0) > 0 && <span className="px-stars" aria-label={`${photo.rating} stars`}>{photo.rating}★</span>}
         {photo.favorite && <Heart className="px-heart" size={13} strokeWidth={0} fill="currentColor" aria-label="Favorite" />}
       </span>
     </button>
@@ -297,7 +299,7 @@ export function PhotosView() {
   // Each view keeps the sort chosen for it, on this machine. Albums keep their own order, and
   // Recently Deleted its own, as in Photos.
   const [sorts, setSorts] = useState(readSorts);
-  const sortable = !album && view !== "recentlyDeleted";
+  const sortable = !album && view !== "recentlyDeleted" && view !== "rated";
   const sort = sortable ? (sorts[view] ?? defaultSort(view)) : null;
   const chooseSort = (next: Sort) => {
     setSorts((all) => {
@@ -344,13 +346,15 @@ export function PhotosView() {
     const out: { label: string; items: { photo: Photo; index: number }[] }[] = [];
     if (album) return [{ label: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
     (photos ?? []).forEach((photo, index) => {
-      const label = monthOf(sortKey(photo, sort?.by ?? "taken"));
+      // Rated is grouped by how many stars, as icloud.com's Rated page is.
+      const stars = photo.rating ?? 0;
+      const label = view === "rated" ? `${stars} ${stars === 1 ? "Star" : "Stars"}` : monthOf(sortKey(photo, sort?.by ?? "taken"));
       const last = out[out.length - 1];
       if (last && last.label === label) last.items.push({ photo, index });
       else out.push({ label, items: [{ photo, index }] });
     });
     return out;
-  }, [photos, sort?.by, album]);
+  }, [photos, sort?.by, album, view]);
 
   const shown = open !== null ? photos?.[open] ?? null : null;
 
@@ -1076,6 +1080,21 @@ export function PhotosView() {
     if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
     void words(p, titleField.current?.value ?? p.title ?? "", captionField.current?.value ?? p.caption ?? "");
   };
+  const rate = async (p: Photo, rating: number) => {
+    const before = photos;
+    const leaves = view === "rated" && rating === 0;
+    setPhotos((all) =>
+      leaves ? (all ?? []).filter((x) => x.id !== p.id) : (all ?? []).map((x) => (x.id === p.id ? { ...x, rating } : x)),
+    );
+    try {
+      await api.photoSetRating(p.id, rating);
+      read().catch(() => {});
+    } catch (e) {
+      setPhotos(before);
+      setError(messageOf(e));
+    }
+  };
+
   const words = async (p: Photo, title: string, caption: string) => {
     const [t, c] = [title.trim(), caption.trim()];
     if (t === (p.title ?? "") && c === (p.caption ?? "")) return;
@@ -1607,6 +1626,23 @@ export function PhotosView() {
                     onFocus={(e) => grow(e.currentTarget)}
                     onKeyDown={(e) => wordKeys(e, shown.caption)}
                   />
+                </dd>
+                {/* Stars, as Info sets them: a click gives that many; the same again takes them away. */}
+                <dt>Rating</dt>
+                <dd className="px-rating" role="radiogroup" aria-label="Rating">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      role="radio"
+                      aria-checked={(shown.rating ?? 0) === n}
+                      aria-label={`${n} ${n === 1 ? "star" : "stars"}`}
+                      className={`px-star${(shown.rating ?? 0) >= n ? " is-on" : ""}`}
+                      disabled={view === "recentlyDeleted"}
+                      onClick={() => void rate(shown, (shown.rating ?? 0) === n ? 0 : n)}
+                    >
+                      <Star size={15} fill={(shown.rating ?? 0) >= n ? "currentColor" : "none"} strokeWidth={1.8} />
+                    </button>
+                  ))}
                 </dd>
                 <dt>Name</dt>
                 <dd>{shown.filename ?? "—"}</dd>

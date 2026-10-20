@@ -462,4 +462,9 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE photos ADD COLUMN caption TEXT;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // A photo's star rating; Photos read again so every photo has its own.
+    r#"
+    ALTER TABLE photos ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

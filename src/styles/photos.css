@@ -473,3 +473,37 @@
 .px-title-field:hover:not(:read-only), .px-caption:hover:not(:read-only) { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .px-title-field:focus, .px-caption:focus { background: var(--field, transparent); box-shadow: 0 0 0 2px var(--accent-ring); }
 .px input, .px textarea { -webkit-user-select: text; user-select: text; }
+
+/* A rated photo's stars on its tile, as icloud.com marks them: a small dark chip, top left. */
+.px-stars {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+}
+/* Info's stars. */
+.px-rating { display: flex; gap: 2px; margin: 4px 0 0 -4px; }
+.px-star {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: default;
+  transition: color 120ms ease, transform 140ms var(--spring-quick);
+}
+.px-star.is-on { color: #ff9f0a; }
+.px-star:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.px-star:active:not(:disabled) { transform: scale(0.88); }
+.px-star:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }

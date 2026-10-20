@@ -313,13 +313,14 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             favorite: false, hidden: false, deleted: false, deletedAt: null, subtype: 0, changeTag: null, ...extra });
           const all = (window.__photos ??= [
             P("p1", 1792500000, { favorite: true }), P("p2", 1792400000), P("p3", 1792300000, { kind: "video", duration: 12.4, uti: "public.mpeg-4", filename: "clip.mp4" }),
-            P("p4", 1789900000, { addedAt: 1792700000 }), P("p5", 1789800000), P("p6", 1789700000, { deleted: true, deletedAt: 1792600000, expungeAt: Math.floor(Date.now() / 1000) + 2 * 86400 + 600 }),
+            P("p4", 1789900000, { addedAt: 1792700000 }), P("p5", 1789800000, { rating: 5 }), P("p6", 1789700000, { deleted: true, deletedAt: 1792600000, expungeAt: Math.floor(Date.now() / 1000) + 2 * 86400 + 600 }),
           ]);
           const live = all.filter((p) => !p.deleted && !p.hidden);
           const views = {
             library: live, recents: live, favorites: live.filter((p) => p.favorite), videos: live.filter((p) => p.kind === "video"),
             screenshots: live.filter((p) => p.uti === "public.png"), recentlyDeleted: all.filter((p) => p.deleted),
             hidden: all.filter((p) => !p.deleted && p.hidden),
+            rated: live.filter((p) => (p.rating ?? 0) > 0).sort((a, b) => b.rating - a.rating || b.takenAt - a.takenAt),
           };
           if (cmd === "photos_counts") return Object.entries(views).map(([k, v]) => [k, v.length]);
           // A read that takes its time, so a test can have it land after another view is chosen.
@@ -363,6 +364,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             if (args.flag === "expunged") window.__photos.splice(window.__photos.indexOf(p), 1);
             if (args.flag === "deleted") { p.deleted = args.on; p.deletedAt = args.on ? 1792700000 : null; }
           }
+          return p;
+        }
+        case "photo_set_rating": {
+          (window.__ratings ??= []).push(args);
+          const p = (window.__photos ?? []).find((x) => x.id === args.id);
+          if (p) p.rating = args.rating;
           return p;
         }
         case "photo_set_text": {

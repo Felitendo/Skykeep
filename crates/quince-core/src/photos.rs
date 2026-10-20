@@ -73,6 +73,9 @@ pub struct Photo {
     /// Its caption, the longer words under the title (`extendedDescEnc`).
     #[serde(default)]
     pub caption: Option<String>,
+    /// Its star rating, 0 (none) to 5.
+    #[serde(default)]
+    pub rating: i64,
     /// Photos' subtype: 1 and 3 mark screenshots and the like (`assetSubtypeV2`).
     pub subtype: i64,
     /// The asset's change tag, for writing back to it.
@@ -119,11 +122,13 @@ pub enum View {
     Recents,
     /// Hidden from every other view, as Photos' Hidden album.
     Hidden,
+    /// Those given stars, the most first.
+    Rated,
     RecentlyDeleted,
 }
 
 const COLUMNS: &str = "id, master, taken_at, added_at, kind, width, height, duration, filename, \
-                       size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag, expunge_at, title, caption";
+                       size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag, expunge_at, title, caption, rating";
 
 fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
     Ok(Photo {
@@ -147,6 +152,7 @@ fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
         expunge_at: r.get(17)?,
         title: r.get(18)?,
         caption: r.get(19)?,
+        rating: r.get(20)?,
     })
 }
 
@@ -158,8 +164,8 @@ impl Library {
             let mut stmt = tx.prepare(
                 "INSERT INTO photos (id, master, taken_at, added_at, kind, width, height, duration,
                                      filename, size, uti, favorite, hidden, deleted, deleted_at,
-                                     subtype, change_tag, expunge_at, title, caption)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                                     subtype, change_tag, expunge_at, title, caption, rating)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
                  ON CONFLICT(id) DO UPDATE SET
                    master = excluded.master, taken_at = excluded.taken_at,
                    added_at = excluded.added_at, kind = excluded.kind, width = excluded.width,
@@ -169,7 +175,7 @@ impl Library {
                    deleted = excluded.deleted, deleted_at = excluded.deleted_at,
                    subtype = excluded.subtype, change_tag = excluded.change_tag,
                    expunge_at = excluded.expunge_at, title = excluded.title,
-                   caption = excluded.caption",
+                   caption = excluded.caption, rating = excluded.rating",
             )?;
             for p in photos {
                 stmt.execute(params![
@@ -192,7 +198,8 @@ impl Library {
                     p.change_tag,
                     p.expunge_at,
                     p.title,
-                    p.caption
+                    p.caption,
+                    p.rating
                 ])?;
             }
         }
@@ -247,6 +254,10 @@ impl Library {
                 "COALESCE(added_at, taken_at) DESC",
             ),
             View::Hidden => ("deleted = 0 AND hidden = 1", "taken_at DESC"),
+            View::Rated => (
+                "deleted = 0 AND hidden = 0 AND rating > 0",
+                "rating DESC, taken_at DESC",
+            ),
             View::RecentlyDeleted => ("deleted = 1", "COALESCE(deleted_at, taken_at) DESC"),
         }
     }
@@ -269,6 +280,7 @@ impl Library {
             View::Videos,
             View::Screenshots,
             View::Hidden,
+            View::Rated,
             View::RecentlyDeleted,
         ] {
             // Counted where the rows are: a library of twenty thousand is not read seven times
@@ -505,6 +517,7 @@ mod tests {
             expunge_at: None,
             title: None,
             caption: None,
+            rating: 0,
         }
     }
 

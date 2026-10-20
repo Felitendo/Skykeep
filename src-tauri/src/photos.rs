@@ -502,6 +502,50 @@ pub async fn photo_set_text(
     Ok(photo)
 }
 
+/// A photo's star rating, 0 to 5, as set in its Info: Apple's answer taken at once.
+#[tauri::command]
+pub async fn photo_set_rating(
+    id: String,
+    rating: i64,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Photo> {
+    if !(0..=5).contains(&rating) {
+        return Err("A rating is from none to five stars.".into());
+    }
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let mut photo = data
+        .0
+        .lock()
+        .await
+        .photo(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo is no longer in the library.")?;
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let answer = quince_icloud::photos::set_rating(
+        &http,
+        &root,
+        params,
+        &id,
+        photo.change_tag.as_deref(),
+        rating,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    photo.rating = rating;
+    photo.change_tag = answer
+        .get("recordChangeTag")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or(photo.change_tag);
+    data.0
+        .lock()
+        .await
+        .put_photos(std::slice::from_ref(&photo))
+        .map_err(|e| e.to_string())?;
+    Ok(photo)
+}
+
 /// A video opened in this computer's own player. WebKitGTK plays nothing without GStreamer's
 /// codec plugins, which many systems (his among them) do not have, so a video is fetched once,
 /// kept beside the other pictures under its own name, and handed to the system's player.
