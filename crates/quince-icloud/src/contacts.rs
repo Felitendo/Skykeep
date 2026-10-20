@@ -174,10 +174,58 @@ pub fn parse(body: &Value) -> Vec<Contact> {
 /// `syncToken` is how the service knows which version of the address book a change is based
 /// on; `prefToken` carries the sort order the account is set to. Writing without them is
 /// refused.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Tokens {
     pub sync: String,
     pub pref: String,
+}
+
+impl Tokens {
+    /// As kept in the library's sync position for Contacts.
+    #[must_use]
+    pub fn stored(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// From the library's sync position; `None` for anything else (a library from before
+    /// positions were kept), which reads the book whole.
+    #[must_use]
+    pub fn from_stored(s: &str) -> Option<Self> {
+        serde_json::from_str(s).ok()
+    }
+}
+
+/// What a Contacts pass found: the book read again, or Apple saying nothing changed since the
+/// tokens the library kept.
+pub enum Pass {
+    Read(AddressBook, Tokens),
+    Unchanged(Tokens),
+}
+
+/// A pass over Contacts that reads the book only when it changed. Apple's `/co/changeset`
+/// answers "unchanged" in a few hundred milliseconds; a change (or tokens too old) is answered
+/// 420, and only then is the whole book read — Apple sends no partial changes to read instead.
+/// `since` is `None` for a full read (the first, and the daily one).
+///
+/// # Errors
+/// When Apple cannot be reached or refuses.
+pub async fn pass(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    since: Option<Tokens>,
+) -> Result<Pass> {
+    if let Some(mut tokens) = since {
+        match changed(http, root, params.clone(), &mut tokens).await {
+            Ok(false) => return Ok(Pass::Unchanged(tokens)),
+            Ok(true) => {}
+            // A session gone is the caller's to mend; anything else, the book is read.
+            Err(Error::ReauthRequired) => return Err(Error::ReauthRequired),
+            Err(_) => {}
+        }
+    }
+    let (book, tokens) = fetch_book_with_tokens(http, root, params).await?;
+    Ok(Pass::Read(book, tokens))
 }
 
 /// Read the address book along with the tokens a write will need.
@@ -1343,6 +1391,18 @@ pub fn apply(library: &mut quince_core::Library, book: AddressBook) -> Result<us
 
 #[cfg(test)]
 mod list_tests {
+
+    /// The tokens a pass keeps come back as they went in; anything else kept there (a library
+    /// from before) reads as none, so the book is read whole rather than trusted.
+    #[test]
+    fn kept_tokens_come_back_whole_or_not_at_all() {
+        let t = super::Tokens {
+            sync: "S1".into(),
+            pref: "P1".into(),
+        };
+        assert_eq!(super::Tokens::from_stored(&t.stored()), Some(t));
+        assert_eq!(super::Tokens::from_stored("an old position"), None);
+    }
 
     /// The phone renamed the person while the form here was open on their notes: saving
     /// writes the notes and keeps the phone's name — and Apple's numbers, untouched here —

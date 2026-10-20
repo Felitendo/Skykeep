@@ -263,18 +263,41 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
         reports.push(match ctx.contacts.as_deref() {
             None => unavailable("contacts", "Contacts"),
             Some(root) => {
-                // Fetch and store as one, never across a save: see `CONTACTS_PASS`.
+                // Fetch and store as one, never across a save: see `CONTACTS_PASS`. The book
+                // is read only when Apple says it changed (contacts::pass).
                 let _one = crate::CONTACTS_PASS.lock().await;
+                let since = token(data, "contacts")
+                    .await
+                    .and_then(|t| quince_icloud::contacts::Tokens::from_stored(&t));
+                let full = since.is_none();
                 let fetched =
-                    quince_icloud::contacts::fetch(&ctx.http, root, ctx.params.clone()).await;
+                    quince_icloud::contacts::pass(&ctx.http, root, ctx.params.clone(), since).await;
                 store(
                     "contacts",
                     "Contacts",
                     data,
                     ctx.account.as_deref(),
                     fetched,
-                    |library, people| {
-                        let count = quince_icloud::contacts::apply(library, people)?;
+                    move |library, pass| {
+                        use quince_icloud::contacts::Pass;
+                        let count = match pass {
+                            Pass::Read(book, tokens) => {
+                                let n = quince_icloud::contacts::apply(library, book)?;
+                                library.mark_synced("contacts", Some(&tokens.stored()))?;
+                                n
+                            }
+                            Pass::Unchanged(tokens) => {
+                                library.mark_synced("contacts", Some(&tokens.stored()))?;
+                                let n: i64 = library
+                                    .conn()
+                                    .query_row("SELECT count(*) FROM contacts", [], |r| r.get(0))
+                                    .map_err(quince_core::Error::from)?;
+                                usize::try_from(n).unwrap_or(0)
+                            }
+                        };
+                        if full {
+                            library.mark_full_sync("contacts")?;
+                        }
                         Ok(format!("{count} contact{}", plural(count)))
                     },
                 )
