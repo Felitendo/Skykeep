@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useActiveRef } from "../lib/screen";
+import { useActiveRef, useScreenActive } from "../lib/screen";
 import { useSync } from "../lib/sync";
 import { Notice } from "../components/Notice";
 import { Portal } from "../components/Portal";
@@ -424,6 +424,15 @@ function timeLeft(expiresAt: number | null): string {
 
 type Crumb = { id: string; name: string };
 
+/** Whether a folder read back is the same as what is on screen: the same items, each at the
+ * same version and name. */
+function sameItems(a: DriveItem[], b: DriveItem[]): boolean {
+  if (a.length !== b.length) return false;
+  const key = (i: DriveItem) => `${i.drivewsid}\u0000${i.etag ?? ""}\u0000${i.name}\u0000${i.extension ?? ""}\u0000${i.size ?? ""}`;
+  const seen = new Set(a.map(key));
+  return b.every((i) => seen.has(key(i)));
+}
+
 export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
   const [items, setItems] = useState<DriveItem[]>([]);
@@ -589,7 +598,10 @@ export function DriveView() {
       if (token !== openToken.current) return;
       const fresh = await api.driveChildren(folderId);
       if (token !== openToken.current) return;
-      setItems(Array.isArray(fresh) ? fresh : []);
+      // Redrawn only when something in it changed: a check that found nothing new leaves the
+      // rows, their selection and their pictures exactly as they were.
+      const next = Array.isArray(fresh) ? fresh : [];
+      setItems((was) => (sameItems(was, next) ? was : next));
       api.driveThumbnails(folderId).then(
         (t) => { if (token === openToken.current && t) setThumbs((was) => ({ ...was, ...t })); },
         () => {},
@@ -598,6 +610,28 @@ export function DriveView() {
       // A quiet refresh that fails changes nothing; opening the folder says what is wrong.
     }
   }, []);
+  // Apple sends no push for iCloud Drive (measured: none in 25 s for a folder made or
+  // deleted), and icloud.com reads a folder only as it is opened. The folder in front is
+  // checked again every ten seconds while the window shows it, and at once when the window
+  // comes back — one small request; none while hidden — so a file saved on the phone appears
+  // here as it would in Finder.
+  const shown = useScreenActive();
+  useEffect(() => {
+    if (!shown) return undefined;
+    // Never over a change of this computer's own still on its way: a check read before a
+    // rename reached Apple would put the old name back for a moment.
+    const look = () => {
+      if (document.visibilityState === "visible" && !writingRef.current) void refresh();
+    };
+    const t = window.setInterval(look, 10_000);
+    document.addEventListener("visibilitychange", look);
+    window.addEventListener("focus", look);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", look);
+      window.removeEventListener("focus", look);
+    };
+  }, [shown, refresh]);
   const { revision } = useSync();
   const firstRevision = useRef(revision);
   useEffect(() => {
@@ -751,6 +785,8 @@ export function DriveView() {
    */
   const [pending, setPending] = useState<{ key: string; folder: string; name: string; doing: string }[]>([]);
   const settle = (key: string) => setPending((p) => p.filter((x) => !x.key.startsWith(key)));
+  const writingRef = useRef(false);
+  writingRef.current = busyGuid !== null || renaming !== null || pending.length > 0;
 
   // At most one re-read of the open folder every couple of seconds while files land.
   const landedTimer = useRef<number | null>(null);
