@@ -3913,6 +3913,28 @@ fn window_ready(app: tauri::AppHandle, needs_you: Option<bool>) {
     show_window(&app);
 }
 
+/// Quince ended, the one way every exit takes — Quit in the tray, Ctrl-C, a logout's signal,
+/// the last window closed: the window gone at once, no more work started ahead, the folders
+/// let go of (never waited on past three seconds), then the process ended on the spot.
+///
+/// Ended through `exit()`, the libraries' own teardown ran while a worker was still decoding a
+/// HEIC — libheif unloaded under it, and Quince crashed on the way out (his, 2026-10-20: SIGSEGV
+/// in libheif, main thread in exit). Nothing needs that teardown: every change is in the
+/// library the moment it is made (SQLite commits as it goes), and what waits to be sent is
+/// written down as it waits.
+fn shutdown(app: &tauri::AppHandle, code: i32) -> ! {
+    static ENDING: AtomicBool = AtomicBool::new(false);
+    if !ENDING.swap(true, Ordering::SeqCst) {
+        if let Some(w) = app.get_webview_window("main") {
+            w.hide().ok();
+        }
+        cpu::stop();
+        mount::release_within(Duration::from_secs(3));
+    }
+    // SAFETY: ends the process at once; nothing after it runs.
+    unsafe { libc::_exit(code) }
+}
+
 fn show_when_ready(app: &tauri::AppHandle) {
     // Started at login: the window is the first window_ready's to show, or not.
     if login::background() {
@@ -3952,7 +3974,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_window(app),
-            "quit" => app.exit(0),
+            "quit" => shutdown(app, 0),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -4166,13 +4188,23 @@ fn main() {
                     ) else {
                         return;
                     };
-                    tokio::select! {
-                        _ = term.recv() => {}
-                        _ = int.recv() => {}
-                        _ = hup.recv() => {}
+                    // The first: ended as Quit ends it. A second while that is under way (Ctrl-C
+                    // pressed again): ended at once.
+                    let mut first = true;
+                    loop {
+                        tokio::select! {
+                            _ = term.recv() => {}
+                            _ = int.recv() => {}
+                            _ = hup.recv() => {}
+                        }
+                        if !first {
+                            // SAFETY: ends the process at once; nothing after it runs.
+                            unsafe { libc::_exit(130) };
+                        }
+                        first = false;
+                        let app = handle.clone();
+                        std::thread::spawn(move || shutdown(&app, 0));
                     }
-                    mount::release();
-                    handle.exit(0);
                 });
                 let before = std::panic::take_hook();
                 std::panic::set_hook(Box::new(move |info| {
@@ -4346,7 +4378,7 @@ fn main() {
             // The iCloud Drive folder goes with the app: left mounted, it would answer
             // nothing ("Transport endpoint is not connected").
             if let tauri::RunEvent::Exit = event {
-                mount::release();
+                shutdown(_app, 0);
             }
         });
 }

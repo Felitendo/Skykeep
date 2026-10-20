@@ -28,6 +28,14 @@ pub fn is_ahead() -> bool {
 
 type Job = Box<dyn FnOnce() + Send>;
 
+/// The app is ending: no more work done ahead is started.
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Work done ahead stops being started (see `crate::shutdown`).
+pub fn stop() {
+    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// The one background worker, started at the lowest priority the first time it is needed.
 fn background() -> &'static mpsc::Sender<Job> {
     static TX: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
@@ -44,7 +52,9 @@ fn background() -> &'static mpsc::Sender<Job> {
                     libc::setpriority(libc::PRIO_PROCESS, tid, 19);
                 }
                 for job in rx {
-                    job();
+                    if !STOPPING.load(std::sync::atomic::Ordering::SeqCst) {
+                        job();
+                    }
                 }
             })
             .expect("could not start the background worker");

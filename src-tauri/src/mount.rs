@@ -513,6 +513,34 @@ pub fn forget_thumbnails(app: &AppHandle) {
     }
 }
 
+/// Both folders let go of, waiting at most `limit`: a folder whose program is stuck in it (a
+/// file manager mid-read on a lost connection) is detached instead (`fusermount3 -uz`), so
+/// quitting never hangs on it and nothing is left answering "Transport endpoint is not
+/// connected".
+pub fn release_within(limit: std::time::Duration) {
+    #[cfg(target_os = "linux")]
+    let places: Vec<PathBuf> = SESSIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|(_, at, _)| at.clone())
+        .collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        release();
+        let _ = tx.send(());
+    });
+    if rx.recv_timeout(limit).is_err() {
+        #[cfg(target_os = "linux")]
+        for at in places {
+            let _ = std::process::Command::new("fusermount3")
+                .arg("-uz")
+                .arg(&at)
+                .status();
+        }
+    }
+}
+
 /// When signing out or quitting: both folders go with the session.
 pub fn release() {
     stop(Which::Drive);
