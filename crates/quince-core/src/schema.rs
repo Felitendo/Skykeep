@@ -481,4 +481,9 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE photo_albums ADD COLUMN parent TEXT;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // How each photo was rendered (a Portrait is 8); Photos read again so every photo has it.
+    r#"
+    ALTER TABLE photos ADD COLUMN rendered INTEGER NOT NULL DEFAULT 0;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

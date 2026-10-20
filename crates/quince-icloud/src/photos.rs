@@ -201,6 +201,7 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
         caption: decoded(asset, "extendedDescEnc"),
         rating: field::int(asset, "rating").unwrap_or(0).clamp(0, 5),
         keywords: keywords_of(asset),
+        rendered: field::int(asset, "customRenderedValue").unwrap_or(0),
         latitude: location_of(asset).map(|l| l.0),
         longitude: location_of(asset).map(|l| l.1),
         expunge_at: (field::int(asset, "isDeleted") == Some(1))
@@ -232,6 +233,7 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     p.caption = decoded(asset, "extendedDescEnc");
     p.rating = field::int(asset, "rating").unwrap_or(0).clamp(0, 5);
     p.keywords = keywords_of(asset);
+    p.rendered = field::int(asset, "customRenderedValue").unwrap_or(p.rendered);
     if let Some((lat, lon)) = location_of(asset) {
         (p.latitude, p.longitude) = (Some(lat), Some(lon));
     }

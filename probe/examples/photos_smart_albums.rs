@@ -72,6 +72,19 @@ async fn main() -> Result<()> {
             "{album}: {} assets; assetSubtypeV2 → {subtypes:?}",
             all.len()
         );
+        // With FIELDS set, each asset's own fields (not its renditions), to find what marks it.
+        if std::env::var("FIELDS").is_ok_and(|f| f.split(',').any(|x| x == album)) {
+            for asset in &all {
+                let keys: Vec<String> = asset["fields"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(k, _)| !k.starts_with("res") && !k.ends_with("Enc"))
+                    .map(|(k, v)| format!("{k}={}", v["value"]))
+                    .collect();
+                println!("   {}", keys.join(" "));
+            }
+        }
     }
     Ok(())
 }

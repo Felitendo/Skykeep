@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
         walk("VIDEO").await?,
         walk("SCREENSHOT").await?,
         walk("PANORAMA").await?,
+        walk("DEPTH").await?,
     ];
     let views = [
         (View::Library, ids[0]),
@@ -101,6 +102,7 @@ async fn main() -> Result<()> {
         (View::Videos, ids[2]),
         (View::Screenshots, ids[3]),
         (View::Panoramas, ids[4]),
+        (View::Portrait, ids[4]),
         (View::Hidden, ids[5]),
         (View::RecentlyDeleted, ids[6]),
     ];
@@ -112,6 +114,7 @@ async fn main() -> Result<()> {
             View::Videos => Some(walked[1]),
             View::Screenshots => Some(walked[2]),
             View::Panoramas => Some(walked[3]),
+            View::Portrait => Some(walked[4]),
             _ => apple(id),
         };
         let same = theirs == Some(ours);

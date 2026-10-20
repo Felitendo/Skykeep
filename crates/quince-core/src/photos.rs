@@ -84,6 +84,9 @@ pub struct Photo {
     pub latitude: Option<f64>,
     #[serde(default)]
     pub longitude: Option<f64>,
+    /// How it was rendered (Apple's customRenderedValue): 8 is a Portrait, with depth.
+    #[serde(default)]
+    pub rendered: i64,
     /// Photos' subtype: 1 and 3 mark screenshots and the like (`assetSubtypeV2`).
     pub subtype: i64,
     /// The asset's change tag, for writing back to it.
@@ -134,6 +137,8 @@ pub enum View {
     Screenshots,
     /// Wide photos made by sweeping: assetSubtypeV2 1.
     Panoramas,
+    /// Portraits, with depth: customRenderedValue 8.
+    Portrait,
     /// Newest added first.
     Recents,
     /// Hidden from every other view, as Photos' Hidden album.
@@ -145,7 +150,7 @@ pub enum View {
 
 const COLUMNS: &str = "id, master, taken_at, added_at, kind, width, height, duration, filename, \
                        size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag, expunge_at, title, caption, rating, \
-                       keywords, latitude, longitude";
+                       keywords, latitude, longitude, rendered";
 
 fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
     Ok(Photo {
@@ -176,6 +181,7 @@ fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
             .unwrap_or_default(),
         latitude: r.get(22)?,
         longitude: r.get(23)?,
+        rendered: r.get(24)?,
     })
 }
 
@@ -188,9 +194,9 @@ impl Library {
                 "INSERT INTO photos (id, master, taken_at, added_at, kind, width, height, duration,
                                      filename, size, uti, favorite, hidden, deleted, deleted_at,
                                      subtype, change_tag, expunge_at, title, caption, rating,
-                                     keywords, latitude, longitude)
+                                     keywords, latitude, longitude, rendered)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
-                         ?22, ?23, ?24)
+                         ?22, ?23, ?24, ?25)
                  ON CONFLICT(id) DO UPDATE SET
                    master = excluded.master, taken_at = excluded.taken_at,
                    added_at = excluded.added_at, kind = excluded.kind, width = excluded.width,
@@ -202,7 +208,7 @@ impl Library {
                    expunge_at = excluded.expunge_at, title = excluded.title,
                    caption = excluded.caption, rating = excluded.rating,
                    keywords = excluded.keywords, latitude = excluded.latitude,
-                   longitude = excluded.longitude",
+                   longitude = excluded.longitude, rendered = excluded.rendered",
             )?;
             for p in photos {
                 stmt.execute(params![
@@ -230,7 +236,8 @@ impl Library {
                     (!p.keywords.is_empty())
                         .then(|| serde_json::to_string(&p.keywords).unwrap_or_default()),
                     p.latitude,
-                    p.longitude
+                    p.longitude,
+                    p.rendered
                 ])?;
             }
         }
@@ -336,6 +343,11 @@ impl Library {
                 "deleted = 0 AND hidden = 0 AND subtype = 1",
                 "taken_at DESC",
             ),
+            // Apple's DEPTH smart album, read on his library: customRenderedValue 8.
+            View::Portrait => (
+                "deleted = 0 AND hidden = 0 AND rendered = 8",
+                "taken_at DESC",
+            ),
             View::Recents => (
                 "deleted = 0 AND hidden = 0",
                 "COALESCE(added_at, taken_at) DESC",
@@ -367,6 +379,7 @@ impl Library {
             View::Videos,
             View::Screenshots,
             View::Panoramas,
+            View::Portrait,
             View::Hidden,
             View::Rated,
             View::RecentlyDeleted,
@@ -681,6 +694,7 @@ mod tests {
             keywords: Vec::new(),
             latitude: None,
             longitude: None,
+            rendered: 0,
         }
     }
 
@@ -803,5 +817,16 @@ mod tests {
         };
         assert_eq!(ids(View::Screenshots), ["shot"]);
         assert_eq!(ids(View::Panoramas), ["wide"]);
+        let mut portrait = photo("depth", 400);
+        portrait.rendered = 8;
+        lib.put_photos(&[portrait]).unwrap();
+        assert_eq!(
+            lib.photos(View::Portrait)
+                .unwrap()
+                .into_iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            ["depth"]
+        );
     }
 }
