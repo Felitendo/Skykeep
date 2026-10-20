@@ -475,4 +475,10 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE photos ADD COLUMN longitude REAL;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // Folders of albums, and which folder an album sits in; Photos read again so they come.
+    r#"
+    ALTER TABLE photo_albums ADD COLUMN folder INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE photo_albums ADD COLUMN parent TEXT;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

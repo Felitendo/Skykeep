@@ -311,22 +311,27 @@ pub fn apply(
                 if let Some(id) = field::record_name(r) {
                     albums_touched.push(id);
                 }
-                // Folders and smart albums are not albums a photo is put in.
-                if field::int(r, "isDeleted") != Some(1)
-                    && field::int(r, "albumType").unwrap_or(0) == 0
-                {
+                // Albums (type 0) and folders of them (type 3); smart albums and the rest are
+                // not the person's own. The root folder is the top, not a folder to show.
+                let kind = field::int(r, "albumType").unwrap_or(0);
+                if field::int(r, "isDeleted") != Some(1) && (kind == 0 || kind == 3) {
                     if let (Some(id), Some(name)) =
                         (field::record_name(r), decoded(r, "albumNameEnc"))
                     {
-                        albums.push(Album {
-                            id,
-                            name,
-                            position: field::int(r, "position").unwrap_or(0),
-                            change_tag: r
-                                .get("recordChangeTag")
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
-                        });
+                        if !id.starts_with("----") {
+                            albums.push(Album {
+                                id,
+                                name,
+                                position: field::int(r, "position").unwrap_or(0),
+                                change_tag: r
+                                    .get("recordChangeTag")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                folder: kind == 3,
+                                parent: field::string(r, "parentId")
+                                    .filter(|p| !p.is_empty() && !p.starts_with("----")),
+                            });
+                        }
                     }
                 }
             }
@@ -369,6 +374,7 @@ pub fn apply(
             }
             all.extend(albums);
             library.replace_albums(&all)?;
+            library.forget_orphan_albums()?;
         }
     } else if complete {
         // A full pass that finished is the whole truth; one that stopped early is not, and
@@ -376,6 +382,7 @@ pub fn apply(
         library.replace_photos(&photos)?;
         library.replace_albums(&albums)?;
         library.replace_album_items(&in_albums)?;
+        library.forget_orphan_albums()?;
     } else {
         library.put_photos(&photos)?;
         library.put_album_items(&in_albums)?;
@@ -527,14 +534,17 @@ pub const MAX_POSITION: i64 = 9_007_199_254_740_991 - 1024;
 /// Gap between items added to an album, and the first item's position.
 const ITEM_SPACING: i64 = 1024;
 
-/// A new album, made as icloud.com makes one: CloudKit names it, it sorts first (two below
-/// the first album there is), and its photos sort by date. Answers the album.
+/// A new album — or folder — made as icloud.com makes one: CloudKit names it, it sorts first
+/// (two below the first there is), its photos sort by date; a folder is albumType 3, and either
+/// may sit in a folder (`parentId`). Answers the album.
 pub async fn create_album(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
     name: &str,
     first_position: Option<i64>,
+    parent: Option<&str>,
+    folder: bool,
 ) -> Result<Album> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let position = first_position.map_or(MAX_POSITION, |p| (p - 2).max(0));
@@ -544,13 +554,22 @@ pub async fn create_album(
             "CPLAlbum",
             serde_json::json!({
                 "albumNameEnc": { "value": album_name(name) },
-                "albumType": { "value": 0 },
+                "albumType": { "value": if folder { 3 } else { 0 } },
                 "isDeleted": { "value": 0 },
                 "isExpunged": { "value": 0 },
                 "position": { "value": position },
                 "sortAscending": { "value": 1 },
                 "sortType": { "value": 1 },
-            }),
+            })
+            .as_object()
+            .cloned()
+            .map(|mut f| {
+                if let Some(p) = parent {
+                    f.insert("parentId".into(), serde_json::json!({ "value": p }));
+                }
+                Value::Object(f)
+            })
+            .unwrap_or_default(),
         )
         .await?;
     Ok(Album {
@@ -563,6 +582,8 @@ pub async fn create_album(
             .get("recordChangeTag")
             .and_then(Value::as_str)
             .map(str::to_string),
+        folder,
+        parent: parent.map(str::to_string),
     })
 }
 
@@ -1042,6 +1063,52 @@ mod tests {
                 .unwrap()
                 .0,
             "https://o/IMG_0001.HEIC"
+        );
+    }
+
+    /// Folders come through as folders, an album in one knows it, and when the folder is
+    /// deleted elsewhere the album inside goes with it — though Apple keeps that album.
+    #[test]
+    fn folders_and_what_they_hold() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let album = |id: &str, name: &str, kind: i64, parent: Option<&str>, deleted: i64| {
+            let mut f = json!({
+                "albumNameEnc": {"value": base64::engine::general_purpose::STANDARD.encode(name)},
+                "albumType": {"value": kind}, "position": {"value": 1}, "isDeleted": {"value": deleted}});
+            if let Some(p) = parent {
+                f["parentId"] = json!({"value": p});
+            }
+            json!({"recordName": id, "recordType": "CPLAlbum", "fields": f})
+        };
+        let pass = |records, incremental| PhotosFetch {
+            records,
+            token: Some("T".into()),
+            incremental,
+            complete: true,
+        };
+        apply(
+            &mut lib,
+            pass(
+                vec![
+                    album("F", "Trips", 3, Some("----Root-Folder----"), 0),
+                    album("A", "Goa", 0, Some("F"), 0),
+                ],
+                false,
+            ),
+        )
+        .unwrap();
+        let all = lib.albums().unwrap();
+        let f = all.iter().find(|a| a.id == "F").unwrap();
+        let a = all.iter().find(|a| a.id == "A").unwrap();
+        assert!(f.folder && f.parent.is_none(), "a folder at the top");
+        assert!(
+            !a.folder && a.parent.as_deref() == Some("F"),
+            "an album in it"
+        );
+        apply(&mut lib, pass(vec![album("F", "Trips", 3, None, 1)], true)).unwrap();
+        assert!(
+            lib.albums().unwrap().is_empty(),
+            "the folder deleted takes the album inside with it"
         );
     }
 }

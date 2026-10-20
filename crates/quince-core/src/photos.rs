@@ -98,6 +98,12 @@ pub struct Album {
     pub name: String,
     pub position: i64,
     pub change_tag: Option<String>,
+    /// A folder of albums (Apple's albumType 3), not an album of photos.
+    #[serde(default)]
+    pub folder: bool,
+    /// The folder it sits in; none at the top.
+    #[serde(default)]
+    pub parent: Option<String>,
 }
 
 /// A file on its way into Photos: waiting, sending, verifying (Apple making the photo), done,
@@ -469,8 +475,16 @@ impl Library {
         tx.execute("DELETE FROM photo_albums", [])?;
         for a in albums {
             tx.execute(
-                "INSERT INTO photo_albums (id, name, position, change_tag) VALUES (?1, ?2, ?3, ?4)",
-                params![a.id, a.name, a.position, a.change_tag],
+                "INSERT INTO photo_albums (id, name, position, change_tag, folder, parent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    a.id,
+                    a.name,
+                    a.position,
+                    a.change_tag,
+                    i64::from(a.folder),
+                    a.parent
+                ],
             )?;
         }
         tx.commit()?;
@@ -529,10 +543,18 @@ impl Library {
     /// One album added or changed, as Apple answered a write.
     pub fn put_album(&mut self, a: &Album) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO photo_albums (id, name, position, change_tag) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO photo_albums (id, name, position, change_tag, folder, parent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(id) DO UPDATE SET name = excluded.name, position = excluded.position,
-             change_tag = excluded.change_tag",
-            params![a.id, a.name, a.position, a.change_tag],
+             change_tag = excluded.change_tag, folder = excluded.folder, parent = excluded.parent",
+            params![
+                a.id,
+                a.name,
+                a.position,
+                a.change_tag,
+                i64::from(a.folder),
+                a.parent
+            ],
         )?;
         Ok(())
     }
@@ -555,7 +577,7 @@ impl Library {
     /// order the albums are listed.
     pub fn albums_counted(&self) -> Result<Vec<(Album, i64, Option<String>)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT a.id, a.name, a.position, a.change_tag,
+            "SELECT a.id, a.name, a.position, a.change_tag, a.folder, a.parent,
                     (SELECT COUNT(*) FROM photo_album_items i JOIN photos p ON p.id = i.asset
                       WHERE i.album = a.id AND p.deleted = 0 AND p.hidden = 0),
                     (SELECT i.asset FROM photo_album_items i JOIN photos p ON p.id = i.asset
@@ -570,12 +592,35 @@ impl Library {
                     name: r.get(1)?,
                     position: r.get(2)?,
                     change_tag: r.get(3)?,
+                    folder: r.get::<_, i64>(4)? != 0,
+                    parent: r.get(5)?,
                 },
-                r.get(4)?,
-                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
             ))
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Albums whose folder is gone, gone with it — and theirs in turn. Apple keeps an album in a
+    /// deleted folder (checked live), where every Photos shows it as deleted with the folder.
+    pub fn forget_orphan_albums(&mut self) -> Result<()> {
+        loop {
+            let orphans: Vec<String> = {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id FROM photo_albums
+                     WHERE parent IS NOT NULL AND parent NOT IN (SELECT id FROM photo_albums)",
+                )?;
+                let rows = stmt.query_map([], |r| r.get(0))?;
+                rows.collect::<std::result::Result<_, _>>()?
+            };
+            if orphans.is_empty() {
+                return Ok(());
+            }
+            for id in orphans {
+                self.forget_album(&id)?;
+            }
+        }
     }
 
     /// Where the album's last photo sits, so what is added goes after it.
@@ -589,7 +634,8 @@ impl Library {
 
     pub fn albums(&self) -> Result<Vec<Album>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, position, change_tag FROM photo_albums ORDER BY position, name",
+            "SELECT id, name, position, change_tag, folder, parent FROM photo_albums
+             ORDER BY position, name",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Album {
@@ -597,6 +643,8 @@ impl Library {
                 name: r.get(1)?,
                 position: r.get(2)?,
                 change_tag: r.get(3)?,
+                folder: r.get::<_, i64>(4)? != 0,
+                parent: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -713,6 +761,8 @@ mod tests {
             name: "Trip".into(),
             position: 0,
             change_tag: None,
+            folder: false,
+            parent: None,
         }])
         .unwrap();
         assert_eq!(

@@ -272,10 +272,13 @@ pub async fn photos_in_album(album: String, data: State<'_, Data>) -> UiResult<V
         .map_err(|e| e.to_string())
 }
 
-/// A new album, first in the list as Photos puts one. Answers it as Apple made it.
+/// A new album — or folder, `folder` — first in its list as Photos puts one, at the top or in
+/// the folder `parent`. Answers it as Apple made it.
 #[tauri::command]
 pub async fn photos_album_create(
     name: String,
+    parent: Option<String>,
+    folder: Option<bool>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<quince_core::photos::Album> {
@@ -294,9 +297,17 @@ pub async fn photos_album_create(
         .map(|a| a.position)
         .min();
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
-    let album = quince_icloud::photos::create_album(&http, &root, params, name, first)
-        .await
-        .map_err(|e| e.to_string())?;
+    let album = quince_icloud::photos::create_album(
+        &http,
+        &root,
+        params,
+        name,
+        first,
+        parent.as_deref(),
+        folder.unwrap_or(false),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     data.0
         .lock()
         .await
@@ -339,7 +350,7 @@ pub async fn photos_album_rename(
         .map_err(|e| e.to_string())
 }
 
-/// An album deleted. Its photos stay in the library.
+/// An album, or a folder with all it holds, deleted. Their photos stay in the library.
 #[tauri::command]
 pub async fn photos_album_delete(
     id: String,
@@ -347,16 +358,45 @@ pub async fn photos_album_delete(
     data: State<'_, Data>,
 ) -> UiResult<()> {
     let _one = crate::PHOTOS_PASS.lock().await;
-    let album = album_of(&data, &id).await?;
+    album_of(&data, &id).await?;
+    // A folder goes with everything in it, as icloud.com says it will ("…will also delete all
+    // albums inside this folder"). Apple's server does not do that itself — checked live: an
+    // album inside a deleted folder stayed, its folder gone — so the ones inside are deleted
+    // here, the deepest first, and the folder last.
+    let all = data.0.lock().await.albums().map_err(|e| e.to_string())?;
+    let mut order: Vec<quince_core::photos::Album> = Vec::new();
+    fn within(
+        all: &[quince_core::photos::Album],
+        id: &str,
+        out: &mut Vec<quince_core::photos::Album>,
+    ) {
+        for a in all.iter().filter(|a| a.parent.as_deref() == Some(id)) {
+            within(all, &a.id, out);
+            out.push(a.clone());
+        }
+    }
+    within(&all, &id, &mut order);
+    if let Some(me) = all.iter().find(|a| a.id == id) {
+        order.push(me.clone());
+    }
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
-    quince_icloud::photos::delete_album(&http, &root, params, &id, album.change_tag.as_deref())
+    for a in order {
+        quince_icloud::photos::delete_album(
+            &http,
+            &root,
+            params.clone(),
+            &a.id,
+            a.change_tag.as_deref(),
+        )
         .await
         .map_err(|e| e.to_string())?;
-    data.0
-        .lock()
-        .await
-        .forget_album(&id)
-        .map_err(|e| e.to_string())
+        data.0
+            .lock()
+            .await
+            .forget_album(&a.id)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Photos put in an album after what is there. One already in it is not added twice.

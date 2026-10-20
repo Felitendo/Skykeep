@@ -29,7 +29,16 @@ async fn main() -> Result<()> {
             .map(|b| String::from_utf8_lossy(&b).into_owned())
     };
 
-    let album = photos::create_album(&http, &ck, p.clone(), "Quince probe album", None).await?;
+    let album = photos::create_album(
+        &http,
+        &ck,
+        p.clone(),
+        "Quince probe album",
+        None,
+        None,
+        false,
+    )
+    .await?;
     let made = zc
         .lookup_record(ZONE, &album.id)
         .await?
