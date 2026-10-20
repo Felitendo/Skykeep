@@ -1,6 +1,10 @@
 /* Photos: the photos are the design. Chrome stays quiet and solid (no live blur: WebKitGTK),
    tiles meet with a hairline gap as on a Mac, and only what answers an action moves. */
 
+/* The screen fills the window as Notes does, so the sidebar's divider runs the full height
+   and only the library scrolls. */
+.content:has(.px) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
+
 .px {
   flex: 1;
   min-height: 0;
@@ -73,6 +77,7 @@
 .px-count { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: var(--t-12, 12px); }
 
 /* ---- the library ------------------------------------------------------------------------- */
+.px-notice { padding: 0 18px; }
 .px-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .px-bar {
   display: flex;

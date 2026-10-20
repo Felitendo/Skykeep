@@ -117,26 +117,25 @@ export function AppIcon({ app, size = 22 }: { app: string; size?: number }) {
       );
       break;
     case "photos":
-      // A picture in its frame: sky, the sun, two hills. Not Apple's pinwheel, which is theirs.
+      // Photos' flower: eight petals turning about the centre, each its own colour, where
+      // they overlap the colours mix as the light petals of Apple's icon do.
       art = (
-        <>
-          <defs>
-            <linearGradient id={`${id}s`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stopColor="#5ac8fa" />
-              <stop offset="1" stopColor="#a2e1ff" />
-            </linearGradient>
-            <clipPath id={`${id}c`}>
-              <rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4" />
-            </clipPath>
-          </defs>
-          <g clipPath={`url(#${id}c)`}>
-            <rect x="3.4" y="4.6" width="17.2" height="14.8" fill={`url(#${id}s)`} />
-            <circle cx="15.9" cy="9" r="2.1" fill="#ffd60a" />
-            <path d="M3.4 17.2l5-5.6 4.2 4.4 2.4-2.6 5.6 5.8v.2H3.4z" fill="#34c759" />
-            <path d="M3.4 19.4l6.4-4.6 4.6 4.6z" fill="#248a3d" />
-          </g>
-          <rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4" fill="none" stroke="#000" strokeOpacity="0.12" strokeWidth="0.4" />
-        </>
+        <g style={{ isolation: "isolate" }}>
+          {["#ff9f0a", "#ffd60a", "#a4d65e", "#30c48d", "#3aa8f0", "#5e5ce6", "#bf5af2", "#ff375f"].map((c, k) => (
+            <rect
+              key={c}
+              x="11.55"
+              y="3.1"
+              width="4.3"
+              height="8.6"
+              rx="2.15"
+              fill={c}
+              opacity="0.9"
+              style={{ mixBlendMode: "multiply" }}
+              transform={`rotate(${k * 45} 12 12)`}
+            />
+          ))}
+        </g>
       );
       break;
     default:

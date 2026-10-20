@@ -488,6 +488,12 @@ export function PhotosView() {
           </button>
         </header>
 
+        {error && (
+          <div className="px-notice">
+            <Notice message={error} onDismiss={() => setError(null)} />
+          </div>
+        )}
+
         {photos && photos.length === 0 && (
           <p className="px-empty">
             {album
@@ -631,7 +637,6 @@ export function PhotosView() {
           </div>
         )}
       </section>
-      {error && <Notice message={error} onDismiss={() => setError(null)} />}
       {saved && (
         <p className="drive-saved px-saved" role="status" onClick={() => setSaved(null)}>
           {saved}

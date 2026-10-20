@@ -427,4 +427,16 @@ pub const MIGRATIONS: &[&str] = &[
         added_at INTEGER NOT NULL
     ) STRICT;
     "#,
+    // Which photo is in which album, for a library made before the Photos migration carried
+    // it: that one had already run there, so the table never came. Photos is read again
+    // from the start so every album fills.
+    r#"
+    CREATE TABLE IF NOT EXISTS photo_album_items (
+        album    TEXT NOT NULL,
+        asset    TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (album, asset)
+    ) STRICT;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];
