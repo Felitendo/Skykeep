@@ -47,6 +47,16 @@ pub trait Remote: Send + Sync + 'static {
     fn delete(&self, _item: &DriveItem) -> Fut<()> {
         Box::pin(async { Err("read-only".to_string()) })
     }
+    /// Where a file's whole bytes are already kept on this computer by the app (fetched once if
+    /// need be): read from there, not copied into the folder's own cache. `None`: no such
+    /// place, the cache is used.
+    fn file(&self, _item: &DriveItem) -> Option<Fut<PathBuf>> {
+        None
+    }
+    /// Whether a file's bytes are on this computer already, without fetching them.
+    fn is_local(&self, _item: &DriveItem) -> bool {
+        false
+    }
     /// The account's iCloud storage, `(used, total)` in bytes: a file manager checks there is
     /// room before it copies anything in.
     fn space(&self) -> Fut<(u64, u64)> {

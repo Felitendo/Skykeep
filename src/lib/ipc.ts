@@ -100,6 +100,10 @@ export const api = {
   driveFolderStatus: () => invoke<DriveFolder>("drive_folder_status"),
   driveFolderSet: (on: boolean) => invoke<DriveFolder>("drive_folder_set", { on }),
   driveFolderOpen: () => invoke<void>("drive_folder_open"),
+  /** The iCloud Photos folder on this computer: the same, for photos (read-only for now). */
+  photosFolderStatus: () => invoke<DriveFolder>("photos_folder_status"),
+  photosFolderSet: (on: boolean) => invoke<DriveFolder>("photos_folder_set", { on }),
+  photosFolderOpen: () => invoke<void>("photos_folder_open"),
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Where the window's player fetches videos from (a loopback server), or null without one. */
   videoBase: () => invoke<string | null>("video_base"),

@@ -53,6 +53,8 @@ struct Inner {
     writes: Option<Arc<Writes>>,
     /// The account's storage as last asked, `(used, total)`.
     space: Mutex<Option<((u64, u64), std::time::Instant)>>,
+    /// Nothing in it can be changed (the Photos folder, for now).
+    read_only: bool,
 }
 
 pub struct DriveFs(Arc<Inner>);
@@ -80,6 +82,7 @@ impl DriveFs {
             filled: Mutex::new(std::collections::HashSet::new()),
             writes: None,
             space: Mutex::new(None),
+            read_only: false,
         }))
     }
 
@@ -92,6 +95,13 @@ impl DriveFs {
     #[must_use]
     pub fn with_thumbnails(mut self, mount: std::path::PathBuf, cache: std::path::PathBuf) -> Self {
         self.inner_mut().thumbs = Some((mount, cache));
+        self
+    }
+
+    /// Nothing in it can be changed: every change answered "read-only file system".
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.inner_mut().read_only = true;
         self
     }
 
@@ -274,7 +284,8 @@ impl Inner {
             } else {
                 FileType::RegularFile
             },
-            perm: match (dir, self.writes.is_some()) {
+            perm: match (dir, self.writes.is_some() && !self.read_only) {
+                (true, _) if self.read_only => 0o555,
                 (true, _) => 0o755,
                 (false, true) => 0o644,
                 (false, false) => 0o444,
@@ -799,6 +810,9 @@ impl Filesystem for DriveFs {
             return reply.error(Errno::ENOENT);
         };
         // Only a file's length is Apple's to keep; modes and times are taken as they are.
+        if size.is_some() && inner.read_only {
+            return reply.error(Errno::EROFS);
+        }
         if let (Some(size), false) = (size, item.is_container()) {
             if let Err(e) = inner.begin_writing(ino.0, &item, size > 0) {
                 return reply.error(e);
@@ -886,7 +900,7 @@ impl Filesystem for DriveFs {
         }
         let writing = flags.acc_mode() != OpenAccMode::O_RDONLY;
         let truncate = flags.0 & libc::O_TRUNC != 0;
-        if writing && inner.writes.is_none() {
+        if writing && (inner.writes.is_none() || inner.read_only) {
             return reply.error(Errno::EROFS);
         }
         if inner.pending(ino.0).is_none() {
@@ -901,7 +915,10 @@ impl Filesystem for DriveFs {
                 let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
                     .map(|b| String::from_utf8_lossy(&b).into_owned())
                     .unwrap_or_default();
-                if is_thumbnailer(&comm, &cmdline) && !inner.cache.whole(&item) {
+                if is_thumbnailer(&comm, &cmdline)
+                    && !inner.cache.whole(&item)
+                    && !inner.remote.is_local(&item)
+                {
                     return reply.error(Errno::EACCES);
                 }
                 return reply.opened(FileHandle(0), FopenFlags::empty());
@@ -937,6 +954,9 @@ impl Filesystem for DriveFs {
         flags: i32,
         reply: ReplyCreate,
     ) {
+        if self.0.read_only {
+            return reply.error(Errno::EROFS);
+        }
         let inner = &self.0;
         let Some(writes) = inner.writes.clone() else {
             return reply.error(Errno::EROFS);
@@ -1060,6 +1080,24 @@ impl Filesystem for DriveFs {
         let Some(item) = inner.item(ino.0) else {
             return reply.error(Errno::ENOENT);
         };
+        // Kept whole by the app already (a photo's original): read from there, no second copy.
+        if let Some(path) = inner.remote.file(&item) {
+            inner.rt.spawn(async move {
+                let bytes = path.await.and_then(|p| {
+                    let mut buf = vec![0u8; size as usize];
+                    let n = std::fs::File::open(p)
+                        .and_then(|f| f.read_at(&mut buf, offset))
+                        .map_err(|e| e.to_string())?;
+                    buf.truncate(n);
+                    Ok(buf)
+                });
+                match bytes {
+                    Ok(b) => reply.data(&b),
+                    Err(_) => reply.error(Errno::EIO),
+                }
+            });
+            return;
+        }
         let (cache, remote) = (Arc::clone(&inner.cache), Arc::clone(&inner.remote));
         // Answered when the bytes are here, without holding up the folder's other requests.
         inner.rt.spawn(async move {
@@ -1163,6 +1201,9 @@ impl Filesystem for DriveFs {
         _umask: u32,
         reply: ReplyEntry,
     ) {
+        if self.0.read_only {
+            return reply.error(Errno::EROFS);
+        }
         let inner = &self.0;
         let Some(folder) = inner.item(parent.0) else {
             return reply.error(Errno::ENOENT);
@@ -1183,6 +1224,9 @@ impl Filesystem for DriveFs {
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        if self.0.read_only {
+            return reply.error(Errno::EROFS);
+        }
         match self.0.remove(parent.0, name, false) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
@@ -1190,6 +1234,9 @@ impl Filesystem for DriveFs {
     }
 
     fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        if self.0.read_only {
+            return reply.error(Errno::EROFS);
+        }
         match self.0.remove(parent.0, name, true) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
@@ -1206,6 +1253,9 @@ impl Filesystem for DriveFs {
         _flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
+        if self.0.read_only {
+            return reply.error(Errno::EROFS);
+        }
         match Inner::rename(&self.0, parent.0, name, newparent.0, newname) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),

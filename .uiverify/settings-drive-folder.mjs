@@ -29,5 +29,14 @@ await sw.click();
 await page.waitForTimeout(300);
 const row = await page.locator(".settings-row", { has: sw }).innerText();
 ok((await sw.getAttribute("aria-checked")) === "false" && /already has files in it/.test(row), `one that cannot come up is left off, and says why  "${row.replace(/\n/g, " ")}"`);
+// The Photos folder: its own switch, beside Drive's, independent of it.
+const ph = page.getByRole("switch", { name: "iCloud Photos folder" });
+ok((await ph.getAttribute("aria-checked")) === "false" && (await sw.getAttribute("aria-checked")) === "false", "the Photos folder has its own switch, off");
+await ph.click();
+await page.waitForTimeout(200);
+ok((await ph.getAttribute("aria-checked")) === "true" && (await sw.getAttribute("aria-checked")) === "false", "turned on alone, Drive's left as it was");
+ok(/\/home\/test\/iCloud Photos/.test(await page.locator(".settings-row", { has: ph }).innerText()), "and says where it is");
+await page.locator(".settings-row", { has: ph }).getByRole("button", { name: "Open" }).click();
+ok((await page.evaluate(() => window.__opened)).includes("photos"), "Open shows it");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

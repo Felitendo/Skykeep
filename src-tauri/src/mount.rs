@@ -20,9 +20,9 @@ const PATH_KEY: &str = "drive_folder_path";
 /// How long a file's download link is used before asking Apple for a fresh one.
 const LINK_LIFE: Duration = Duration::from_secs(20 * 60);
 
-/// The mount while it is up; dropping it lets the folder go.
+/// The folders while they are up; dropping one lets its folder go.
 #[cfg(target_os = "linux")]
-static SESSION: Mutex<Option<(PathBuf, fuser::BackgroundSession)>> = Mutex::new(None);
+static SESSIONS: Mutex<Vec<(Which, PathBuf, fuser::BackgroundSession)>> = Mutex::new(Vec::new());
 
 struct AppRemote {
     app: AppHandle,
@@ -212,18 +212,47 @@ impl Store for AppStore {
     }
 }
 
-/// Where the folder goes: as moved, or "iCloud Drive" in the home folder, where iCloud for
-/// Windows puts it in a user's folder.
-fn place(app: &AppHandle) -> PathBuf {
+/// The two folders: iCloud Drive and iCloud Photos, each its own switch and place, each
+/// needing only its own service (someone with iCloud Photos off still has Drive).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Which {
+    Drive,
+    Photos,
+}
+
+impl Which {
+    fn on_key(self) -> &'static str {
+        match self {
+            Which::Drive => ON_KEY,
+            Which::Photos => "photos_folder_on",
+        }
+    }
+    fn path_key(self) -> &'static str {
+        match self {
+            Which::Drive => PATH_KEY,
+            Which::Photos => "photos_folder_path",
+        }
+    }
+    /// Its folder's name in the home folder, as iCloud for Windows names them.
+    fn folder(self) -> &'static str {
+        match self {
+            Which::Drive => "iCloud Drive",
+            Which::Photos => "iCloud Photos",
+        }
+    }
+}
+
+/// Where a folder goes: as moved, or its own name in the home folder.
+fn place(app: &AppHandle, which: Which) -> PathBuf {
     let data = app.state::<Data>();
     let library = data.0.blocking_lock();
     library
-        .state(PATH_KEY)
+        .state(which.path_key())
         .ok()
         .flatten()
         .map(PathBuf::from)
-        .or_else(|| app.path().home_dir().ok().map(|h| h.join("iCloud Drive")))
-        .unwrap_or_else(|| PathBuf::from("iCloud Drive"))
+        .or_else(|| app.path().home_dir().ok().map(|h| h.join(which.folder())))
+        .unwrap_or_else(|| PathBuf::from(which.folder()))
 }
 
 /// What Settings shows: whether it is up, where, and what stopped it if anything did.
@@ -236,19 +265,29 @@ pub struct FolderStatus {
 }
 
 #[cfg(target_os = "linux")]
-fn mounted() -> Option<PathBuf> {
-    SESSION
+fn mounted(which: Which) -> Option<PathBuf> {
+    SESSIONS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .map(|(p, _)| p.clone())
+        .iter()
+        .find(|(w, ..)| *w == which)
+        .map(|(_, p, _)| p.clone())
 }
 
-/// The folder brought up at `at`. Never over a folder with something in it: a mount would
-/// hide what is there.
+/// Where every file manager looks for thumbnails (~/.cache/thumbnails).
+fn thumbnail_cache(app: &AppHandle) -> Option<PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| app.path().home_dir().ok().map(|h| h.join(".cache")))
+        .map(|c| c.join("thumbnails"))
+}
+
+/// A folder brought up at `at`. Never over a folder with something in it: a mount would hide
+/// what is there.
 #[cfg(target_os = "linux")]
-fn start(app: &AppHandle, at: &std::path::Path) -> Result<(), String> {
-    if mounted().is_some() {
+fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), String> {
+    if mounted(which).is_some() {
         return Ok(());
     }
     if !std::path::Path::new("/dev/fuse").exists() {
@@ -262,43 +301,58 @@ fn start(app: &AppHandle, at: &std::path::Path) -> Result<(), String> {
             ));
         }
     }
-    let cache = crate::state_dir(app).join("drive-cache");
-    let cache = Arc::new(quince_vfs::Cache::new(&cache).map_err(|e| e.to_string())?);
-    let remote = Arc::new(AppRemote {
-        app: app.clone(),
-        links: Arc::new(Mutex::new(HashMap::new())),
-    });
-    let store = Arc::new(AppStore(app.clone()));
     let rt = tauri::async_runtime::handle().inner().clone();
-    // Apple's pictures go where every file manager looks for thumbnails, so none of them
-    // downloads a file to draw one.
-    let thumbs = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| app.path().home_dir().ok().map(|h| h.join(".cache")))
-        .map(|c| c.join("thumbnails"));
-    // What is written here waits beside the library (owner-only) until Apple has it.
-    let mut fs = quince_vfs::fuse::DriveFs::new(remote, store, cache, rt)
-        .with_writes(&crate::state_dir(app).join("drive-writes"))
-        .map_err(|e| e.to_string())?;
-    if let Some(thumbs) = thumbs {
+    let mut fs = match which {
+        Which::Drive => {
+            let cache = crate::state_dir(app).join("drive-cache");
+            let cache = Arc::new(quince_vfs::Cache::new(&cache).map_err(|e| e.to_string())?);
+            let remote = Arc::new(AppRemote {
+                app: app.clone(),
+                links: Arc::new(Mutex::new(HashMap::new())),
+            });
+            // What is written here waits beside the library (owner-only) until Apple has it.
+            quince_vfs::fuse::DriveFs::new(remote, Arc::new(AppStore(app.clone())), cache, rt)
+                .with_writes(&crate::state_dir(app).join("drive-writes"))
+                .map_err(|e| e.to_string())?
+        }
+        Which::Photos => {
+            // Read through the app's own photo cache; the folder keeps no second copy.
+            let unused = crate::state_dir(app).join("photos-folder-cache");
+            let cache = Arc::new(quince_vfs::Cache::new(&unused).map_err(|e| e.to_string())?);
+            quince_vfs::fuse::DriveFs::new(
+                Arc::new(crate::mount_photos::PhotosRemote(app.clone())),
+                Arc::new(crate::mount_photos::PhotosStore(app.clone())),
+                cache,
+                rt,
+            )
+            .read_only()
+        }
+    };
+    // Pictures go where every file manager looks for thumbnails, so none of them downloads a
+    // file to draw one.
+    if let Some(thumbs) = thumbnail_cache(app) {
         fs = fs.with_thumbnails(at.to_path_buf(), thumbs);
     }
     let session = quince_vfs::fuse::mount(fs, at)
         .map_err(|e| format!("The folder could not be mounted: {e}"))?;
-    *SESSION
+    SESSIONS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((at.to_path_buf(), session));
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((which, at.to_path_buf(), session));
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn stop() {
-    let gone = SESSION
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
-    if let Some((at, session)) = gone {
+fn stop(which: Which) {
+    let gone: Vec<_> = {
+        let mut sessions = SESSIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (go, keep): (Vec<_>, Vec<_>) = sessions.drain(..).partition(|(w, ..)| *w == which);
+        *sessions = keep;
+        go
+    };
+    for (_, at, session) in gone {
         drop(session);
         // The empty folder the mount stood on is put away too, as it was made for it.
         let _ = std::fs::remove_dir(at);
@@ -306,77 +360,110 @@ fn stop() {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn start(_app: &AppHandle, _at: &std::path::Path) -> Result<(), String> {
-    Err("The iCloud Drive folder is not on this system yet.".into())
+fn start(_app: &AppHandle, _which: Which, _at: &std::path::Path) -> Result<(), String> {
+    Err("These folders are not on this system yet.".into())
 }
 #[cfg(not(target_os = "linux"))]
-fn stop() {}
+fn stop(_which: Which) {}
 #[cfg(not(target_os = "linux"))]
-fn mounted() -> Option<PathBuf> {
+fn mounted(_which: Which) -> Option<PathBuf> {
     None
 }
 
-fn status(app: &AppHandle, problem: Option<String>) -> FolderStatus {
-    let at = mounted().unwrap_or_else(|| place(app));
+fn status(app: &AppHandle, which: Which, problem: Option<String>) -> FolderStatus {
+    let at = mounted(which).unwrap_or_else(|| place(app, which));
     FolderStatus {
-        on: mounted().is_some(),
+        on: mounted(which).is_some(),
         path: at.to_string_lossy().into_owned(),
         problem,
     }
 }
 
-/// At start: brought up if it was on.
+/// At start: each brought up if it was on.
 pub fn resume(app: &AppHandle) {
-    let wanted = {
-        let data = app.state::<Data>();
-        let library = data.0.blocking_lock();
-        library.state(ON_KEY).ok().flatten().as_deref() == Some("1")
-    };
-    if wanted {
-        if let Err(e) = start(app, &place(app)) {
-            quiet!("the iCloud Drive folder could not come up: {e}");
+    for which in [Which::Drive, Which::Photos] {
+        let wanted = {
+            let data = app.state::<Data>();
+            let library = data.0.blocking_lock();
+            library.state(which.on_key()).ok().flatten().as_deref() == Some("1")
+        };
+        if wanted {
+            if let Err(e) = start(app, which, &place(app, which)) {
+                quiet!("a folder could not come up: {e}");
+            }
         }
     }
 }
 
-/// When signing out: the folder goes with the session.
+/// When signing out or quitting: both folders go with the session.
 pub fn release() {
-    stop();
+    stop(Which::Drive);
+    stop(Which::Photos);
 }
 
-#[tauri::command]
-pub async fn drive_folder_status(app: AppHandle) -> Result<FolderStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || status(&app, None))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Turn the folder on or off, remembered for the next start.
-#[tauri::command]
-pub async fn drive_folder_set(on: bool, app: AppHandle) -> Result<FolderStatus, String> {
+async fn set(app: AppHandle, which: Which, on: bool) -> Result<FolderStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let problem = if on {
-            start(&app, &place(&app)).err()
+            start(&app, which, &place(&app, which)).err()
         } else {
-            stop();
+            stop(which);
             None
         };
         let data = app.state::<Data>();
         let mut library = data.0.blocking_lock();
-        let _ = library.set_state(ON_KEY, if on && problem.is_none() { "1" } else { "0" });
+        let _ = library.set_state(
+            which.on_key(),
+            if on && problem.is_none() { "1" } else { "0" },
+        );
         drop(library);
-        status(&app, problem)
+        status(&app, which, problem)
     })
     .await
     .map_err(|e| e.to_string())
 }
 
-/// The folder opened in the system's file manager.
-#[tauri::command]
-pub async fn drive_folder_open(app: AppHandle) -> Result<(), String> {
+fn open(app: &AppHandle, which: Which) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let at = mounted().ok_or("The iCloud Drive folder is off.")?;
+    let at = mounted(which).ok_or("That folder is off.")?;
     app.opener()
         .open_path(at.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn drive_folder_status(app: AppHandle) -> Result<FolderStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || status(&app, Which::Drive, None))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Turn the iCloud Drive folder on or off, remembered for the next start.
+#[tauri::command]
+pub async fn drive_folder_set(on: bool, app: AppHandle) -> Result<FolderStatus, String> {
+    set(app, Which::Drive, on).await
+}
+
+/// The iCloud Drive folder opened in the system's file manager.
+#[tauri::command]
+pub async fn drive_folder_open(app: AppHandle) -> Result<(), String> {
+    open(&app, Which::Drive)
+}
+
+#[tauri::command]
+pub async fn photos_folder_status(app: AppHandle) -> Result<FolderStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || status(&app, Which::Photos, None))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Turn the iCloud Photos folder on or off, remembered for the next start.
+#[tauri::command]
+pub async fn photos_folder_set(on: bool, app: AppHandle) -> Result<FolderStatus, String> {
+    set(app, Which::Photos, on).await
+}
+
+/// The iCloud Photos folder opened in the system's file manager.
+#[tauri::command]
+pub async fn photos_folder_open(app: AppHandle) -> Result<(), String> {
+    open(&app, Which::Photos)
 }

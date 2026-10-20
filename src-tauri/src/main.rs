@@ -15,6 +15,7 @@ macro_rules! quiet {
 mod alerts;
 mod cpu;
 mod mount;
+mod mount_photos;
 mod outbox;
 mod photos;
 mod poster;
@@ -3956,6 +3957,9 @@ fn main() {
             mount::drive_folder_status,
             mount::drive_folder_set,
             mount::drive_folder_open,
+            mount::photos_folder_status,
+            mount::photos_folder_set,
+            mount::photos_folder_open,
             photos::photo_video_turn,
             photos::photos_set_flag,
             photos::photos_burst,

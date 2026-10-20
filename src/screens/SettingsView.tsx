@@ -38,6 +38,8 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
   const [savedReport, setSavedReport] = useState<string | null>(null);
   const [folder, setFolder] = useState<DriveFolder | null>(null);
   const [folderBusy, setFolderBusy] = useState(false);
+  const [photosFolder, setPhotosFolder] = useState<DriveFolder | null>(null);
+  const [photosBusy, setPhotosBusy] = useState(false);
   const { report, syncing, refresh } = useSync();
 
   useEffect(() => {
@@ -46,6 +48,7 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
     api.settingsGet().then(setAlerts, (e) => setError(messageOf(e)));
     getVersion().then(setVersion, () => {});
     api.driveFolderStatus().then(setFolder, () => {});
+    api.photosFolderStatus().then(setPhotosFolder, () => {});
   }, []);
 
   // A switch moves the moment it is pressed, and goes back with the reason if it could not
@@ -163,6 +166,40 @@ export function SettingsView({ onSignOut }: { onSignOut: () => void }) {
                   setFolder({ ...folder, problem: messageOf(e) });
                 })
                 .finally(() => setFolderBusy(false));
+            }}
+          >
+            <span className="switch-knob" />
+          </button>
+        </div>
+        <div className="settings-row">
+          <AppIcon app="photos" />
+          <span className="settings-label settings-stack">
+            iCloud Photos folder
+            <span className={`settings-hint${photosFolder?.problem ? " is-trouble" : ""}`}>
+              {photosFolder?.problem ??
+                (photosFolder?.on ? photosFolder.path : "Your photos by date and album, for every other app")}
+            </span>
+          </span>
+          {photosFolder?.on && (
+            <button className="quiet" onClick={() => api.photosFolderOpen().catch((e) => setError(messageOf(e)))}>
+              Open
+            </button>
+          )}
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={photosFolder?.on ?? false}
+            aria-label="iCloud Photos folder"
+            disabled={!photosFolder || photosBusy}
+            onClick={() => {
+              if (!photosFolder) return;
+              const on = !photosFolder.on;
+              setPhotosFolder({ ...photosFolder, on, problem: null });
+              setPhotosBusy(true);
+              api
+                .photosFolderSet(on)
+                .then(setPhotosFolder, (e) => setPhotosFolder({ ...photosFolder, problem: messageOf(e) }))
+                .finally(() => setPhotosBusy(false));
             }}
           >
             <span className="switch-knob" />

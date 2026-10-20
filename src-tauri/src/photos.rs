@@ -232,7 +232,7 @@ pub async fn fitted(app: &AppHandle, id: &str, long: u32) -> Result<Vec<u8>, Str
     last.ok_or_else(|| "No picture of that photo could be made.".into())
 }
 
-fn cache_path(app: &AppHandle, id: &str, size: Size) -> PathBuf {
+pub(crate) fn cache_path(app: &AppHandle, id: &str, size: Size) -> PathBuf {
     crate::state_dir(app)
         .join("photos")
         .join(size.name())
