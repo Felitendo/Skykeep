@@ -1,0 +1,465 @@
+//! iCloud Drive as a folder other apps can use, on demand.
+//!
+//! The platform-free engine: which item an inode is, what a folder holds, and a file's bytes
+//! read in chunks into a sparse cache on disk — only the parts an app actually reads, each
+//! fetched once (Apple's download links answer byte ranges; proven live). The platform's
+//! own front end ([`fuse`] on Linux) asks it and never waits on the network for what the
+//! library already knows. Design: docs/mount-design.md.
+
+#[cfg(target_os = "linux")]
+pub mod fuse;
+
+use quince_core::drive::DriveItem;
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
+/// A future the engine waits on, as the app's own async code gives it.
+pub type Fut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
+
+/// Apple's side, as the app reaches it with the signed-in session.
+pub trait Remote: Send + Sync + 'static {
+    /// A folder's items, fetched from Apple (and kept in the library by the app).
+    fn list(&self, folder: &str) -> Fut<Vec<DriveItem>>;
+    /// `len` bytes of a file from `offset` (fewer only at its end).
+    fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>>;
+}
+
+/// What the library already knows, read without the network.
+pub trait Store: Send + Sync + 'static {
+    /// A folder's items as last stored; `None` when it has never been listed.
+    fn children(&self, folder: &str) -> Option<Vec<DriveItem>>;
+}
+
+/// The root of iCloud Drive, as Apple names it.
+pub const ROOT: &str = "FOLDER::com.apple.CloudDocs::root";
+
+/// Inode numbers for Apple's items, the same for an item for as long as the folder is
+/// mounted. 1 is the root, as FUSE requires.
+#[derive(Default)]
+pub struct Inodes {
+    by_ino: HashMap<u64, DriveItem>,
+    by_id: HashMap<String, u64>,
+    next: u64,
+}
+
+impl Inodes {
+    #[must_use]
+    pub fn new() -> Self {
+        let mut me = Self {
+            next: 2,
+            ..Self::default()
+        };
+        let root = DriveItem {
+            drivewsid: ROOT.into(),
+            parent_id: None,
+            name: "iCloud Drive".into(),
+            extension: None,
+            kind: "FOLDER".into(),
+            size: None,
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: None,
+        };
+        me.by_ino.insert(1, root);
+        me.by_id.insert(ROOT.into(), 1);
+        me
+    }
+
+    /// The inode of an item, given one the first time it is seen; its details kept fresh.
+    pub fn ino(&mut self, item: &DriveItem) -> u64 {
+        if let Some(&ino) = self.by_id.get(&item.drivewsid) {
+            if ino != 1 {
+                self.by_ino.insert(ino, item.clone());
+            }
+            return ino;
+        }
+        let ino = self.next;
+        self.next += 1;
+        self.by_id.insert(item.drivewsid.clone(), ino);
+        self.by_ino.insert(ino, item.clone());
+        ino
+    }
+
+    /// The inode an item already has, by Apple's id.
+    #[must_use]
+    pub fn ino_of(&self, id: &str) -> Option<u64> {
+        self.by_id.get(id).copied()
+    }
+
+    #[must_use]
+    pub fn item(&self, ino: u64) -> Option<&DriveItem> {
+        self.by_ino.get(&ino)
+    }
+}
+
+/// A folder's items as names a file manager shows: the name with its extension, NFC as Apple
+/// keeps them. Two that would share a name (Apple's names differ by case or by a character a
+/// path cannot hold) are told apart, never one hiding the other.
+#[must_use]
+pub fn named(items: &[DriveItem]) -> Vec<(String, DriveItem)> {
+    let mut taken: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        // "/" cannot be in a name on Linux, and NUL nowhere: Apple allows the first.
+        let base: String = item
+            .display_name()
+            .chars()
+            .map(|c| match c {
+                '/' => '∕',
+                '\0' => '�',
+                c => c,
+            })
+            .collect();
+        let base = if base == "." || base == ".." || base.is_empty() {
+            format!("{base}_")
+        } else {
+            base
+        };
+        let n = taken.entry(base.clone()).or_insert(0);
+        *n += 1;
+        let name = if *n == 1 {
+            base
+        } else {
+            // "Report (2).pdf": the second of two with the same name.
+            match base.rsplit_once('.') {
+                Some((stem, ext)) if !item.is_container() && !stem.is_empty() => {
+                    format!("{stem} ({n}).{ext}")
+                }
+                _ => format!("{base} ({n})"),
+            }
+        };
+        out.push((name, item.clone()));
+    }
+    out
+}
+
+/// How much of a file is fetched at a time: a picture or a page in one request, a film in a
+/// few. Each chunk is fetched once and kept.
+pub const CHUNK: u64 = 4 * 1024 * 1024;
+
+/// A file's bytes kept on disk as they are read: a sparse file the file's own size, and which
+/// of its chunks are there. Keyed by the item and its version (Apple's etag), so a file
+/// changed on another device is never served from an older copy.
+pub struct Cache {
+    dir: PathBuf,
+    have: Mutex<HashMap<PathBuf, Vec<bool>>>,
+    fetching: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl Cache {
+    /// # Errors
+    /// When the folder cannot be made.
+    pub fn new(dir: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            have: Mutex::new(HashMap::new()),
+            fetching: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn path(&self, item: &DriveItem) -> PathBuf {
+        let safe = |s: &str| -> String {
+            s.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect()
+        };
+        self.dir.join(format!(
+            "{}~{}",
+            safe(&item.drivewsid),
+            safe(item.etag.as_deref().unwrap_or("-"))
+        ))
+    }
+
+    fn chunks(size: u64) -> usize {
+        usize::try_from(size.div_ceil(CHUNK)).unwrap_or(0)
+    }
+
+    /// Which chunks are there, from memory or the file kept beside the bytes.
+    fn present(&self, path: &Path, size: u64) -> Vec<bool> {
+        let mut have = self
+            .have
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        have.entry(path.to_path_buf())
+            .or_insert_with(|| {
+                let n = Self::chunks(size);
+                let mut v = vec![false; n];
+                if let Ok(bytes) = std::fs::read(path.with_extension("have")) {
+                    for (i, b) in bytes.iter().take(n).enumerate() {
+                        v[i] = *b == 1;
+                    }
+                }
+                v
+            })
+            .clone()
+    }
+
+    fn mark(&self, path: &Path, chunk: usize, size: u64) -> std::io::Result<()> {
+        let mut have = self
+            .have
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let v = have
+            .entry(path.to_path_buf())
+            .or_insert_with(|| vec![false; Self::chunks(size)]);
+        if chunk < v.len() {
+            v[chunk] = true;
+        }
+        let bytes: Vec<u8> = v.iter().map(|&b| u8::from(b)).collect();
+        // Written beside, after the bytes themselves: a chunk is never claimed before it is
+        // on disk, so a crash between the two only costs fetching it again.
+        let part = path.with_extension("have.part");
+        std::fs::write(&part, bytes)?;
+        std::fs::rename(&part, path.with_extension("have"))
+    }
+
+    /// Whether every byte of a file is on disk already.
+    #[must_use]
+    pub fn whole(&self, item: &DriveItem) -> bool {
+        let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
+        size == 0 || self.present(&self.path(item), size).iter().all(|&b| b)
+    }
+
+    /// `len` bytes of a file from `offset`: from disk, each chunk missing fetched once.
+    ///
+    /// # Errors
+    /// When Apple cannot be reached for a missing chunk, or the disk refuses.
+    pub async fn read(
+        &self,
+        remote: &dyn Remote,
+        item: &DriveItem,
+        offset: u64,
+        len: u64,
+    ) -> Result<Vec<u8>, String> {
+        let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
+        if offset >= size || len == 0 {
+            return Ok(Vec::new());
+        }
+        let end = (offset + len).min(size);
+        let path = self.path(item);
+        let lock = {
+            let mut f = self
+                .fetching
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(f.entry(path.clone()).or_default())
+        };
+        {
+            // One fetch at a time for a file: two readers of the same part wait for one fetch.
+            let _one = lock.lock().await;
+            let first = usize::try_from(offset / CHUNK).unwrap_or(0);
+            let last = usize::try_from((end - 1) / CHUNK).unwrap_or(0);
+            for chunk in first..=last {
+                if self
+                    .present(&path, size)
+                    .get(chunk)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let from = chunk as u64 * CHUNK;
+                let want = CHUNK.min(size - from);
+                let bytes = remote.read(item, from, want).await?;
+                if bytes.len() as u64 != want {
+                    return Err(format!("Apple sent {} of {want} bytes", bytes.len()));
+                }
+                let p = path.clone();
+                tokio::task::spawn_blocking(move || put(&p, from, &bytes, size))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                self.mark(&path, chunk, size).map_err(|e| e.to_string())?;
+            }
+        }
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || get(&p, offset, end - offset))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Bytes written at `at` in the sparse file, made its full size first.
+fn put(path: &Path, at: u64, bytes: &[u8], size: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    if file.metadata()?.len() != size {
+        file.set_len(size)?;
+    }
+    file.write_all_at(bytes, at)?;
+    file.sync_data()
+}
+
+fn get(path: &Path, at: u64, len: u64) -> std::io::Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::File::open(path)?;
+    let mut out = vec![0u8; usize::try_from(len).unwrap_or(0)];
+    file.read_exact_at(&mut out, at)?;
+    Ok(out)
+}
+
+/// Whether the program asking is a file manager's thumbnailer. Reading a whole file only to
+/// draw a small picture of it would download every file a folder shows: such a read of a
+/// file not on this computer is refused, and the file manager draws its plain icon instead.
+/// (GLib treats a FUSE folder as local — glocalfile.c's is_remote_fs_type — so GNOME Files
+/// thumbnails everything in it.)
+///
+/// Named exactly, never broadly: a viewer opening a picture (Loupe's glycin loaders), a
+/// Flatpak app (bwrap) or KDE copying a file (a kioworker) must still read it. KDE's thumbnail
+/// worker is a kioworker running thumbnail.so, told apart by its command line.
+#[must_use]
+pub fn is_thumbnailer(comm: &str, cmdline: &str) -> bool {
+    let comm = comm.trim();
+    let named = [
+        "gnome-thumbnail",
+        "totem-video-thu",
+        "evince-thumbnai",
+        "ffmpegthumbnail",
+        "gst-video-thumb",
+        "gdk-pixbuf-thum",
+        "tumblerd",
+        "papers-thumbnai",
+    ]
+    .iter()
+    .any(|t| comm.starts_with(t));
+    named || (comm == "kioworker" && cmdline.contains("thumbnail"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(
+        id: &str,
+        name: &str,
+        ext: Option<&str>,
+        kind: &str,
+        size: i64,
+        etag: &str,
+    ) -> DriveItem {
+        DriveItem {
+            drivewsid: id.into(),
+            parent_id: Some(ROOT.into()),
+            name: name.into(),
+            extension: ext.map(Into::into),
+            kind: kind.into(),
+            size: Some(size),
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: Some(etag.into()),
+        }
+    }
+
+    #[test]
+    fn names_are_never_lost_to_each_other() {
+        let items = [
+            item("a", "Report", Some("pdf"), "FILE", 1, "e"),
+            item("b", "Report", Some("pdf"), "FILE", 1, "e"),
+            item("c", "a/b", None, "FOLDER", 0, "e"),
+            item("d", "..", None, "FOLDER", 0, "e"),
+        ];
+        let names: Vec<String> = named(&items).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["Report.pdf", "Report (2).pdf", "a∕b", ".._"]);
+    }
+
+    #[test]
+    fn inodes_are_stable() {
+        let mut inodes = Inodes::new();
+        let a = item("FILE::x::1", "a", None, "FILE", 1, "e");
+        let first = inodes.ino(&a);
+        assert_eq!(inodes.ino(&a), first);
+        assert_ne!(first, 1);
+        assert_eq!(inodes.item(1).map(|i| i.drivewsid.as_str()), Some(ROOT));
+    }
+
+    struct Bytes(Vec<u8>, Mutex<Vec<(u64, u64)>>);
+    impl Remote for Bytes {
+        fn list(&self, _: &str) -> Fut<Vec<DriveItem>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn read(&self, _: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>> {
+            self.1.lock().unwrap().push((offset, len));
+            let out = self.0
+                [usize::try_from(offset).unwrap()..usize::try_from(offset + len).unwrap()]
+                .to_vec();
+            Box::pin(async move { Ok(out) })
+        }
+    }
+
+    /// Only the chunks read are fetched, each once; the bytes are the file's; a new version
+    /// of the file is never served from the old one's copy.
+    #[tokio::test]
+    async fn reads_fetch_each_chunk_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path()).unwrap();
+        let size = CHUNK * 2 + 100;
+        let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let remote = Bytes(data.clone(), Mutex::new(Vec::new()));
+        let f = item(
+            "FILE::x::1",
+            "film",
+            Some("mov"),
+            "FILE",
+            i64::try_from(size).unwrap(),
+            "v1",
+        );
+        let got = cache.read(&remote, &f, CHUNK - 10, 20).await.unwrap();
+        assert_eq!(
+            got,
+            data[usize::try_from(CHUNK - 10).unwrap()..usize::try_from(CHUNK + 10).unwrap()]
+        );
+        assert_eq!(
+            remote.1.lock().unwrap().clone(),
+            vec![(0, CHUNK), (CHUNK, CHUNK)],
+            "the two chunks it spans"
+        );
+        cache.read(&remote, &f, 5, 5).await.unwrap();
+        assert_eq!(remote.1.lock().unwrap().len(), 2, "kept, not fetched again");
+        let tail = cache.read(&remote, &f, size - 50, 500).await.unwrap();
+        assert_eq!(tail.len(), 50, "cut at the end of the file");
+        assert!(cache.whole(&f));
+        // Kept across a restart: a new cache over the same folder knows what is there.
+        let again = Cache::new(dir.path()).unwrap();
+        assert!(again.whole(&f));
+        // Changed on another device: a new version is fetched afresh.
+        let f2 = item(
+            "FILE::x::1",
+            "film",
+            Some("mov"),
+            "FILE",
+            i64::try_from(size).unwrap(),
+            "v2",
+        );
+        assert!(!again.whole(&f2));
+    }
+
+    #[test]
+    fn thumbnailers_are_known() {
+        assert!(is_thumbnailer("gnome-thumbnail", ""));
+        assert!(is_thumbnailer("totem-video-thu\n", ""));
+        assert!(is_thumbnailer(
+            "kioworker",
+            "/usr/lib/kf6/kioworker /usr/lib/qt6/plugins/kf6/kio/thumbnail.so"
+        ));
+        assert!(!is_thumbnailer(
+            "kioworker",
+            "/usr/lib/kf6/kioworker /usr/lib/qt6/plugins/kf6/kio/file.so"
+        ));
+        assert!(
+            !is_thumbnailer("glycin-image-rs", ""),
+            "a viewer opening a picture"
+        );
+        assert!(!is_thumbnailer("libreoffice", ""));
+    }
+}
