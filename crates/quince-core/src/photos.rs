@@ -204,7 +204,17 @@ impl Library {
 
     /// A view's photos, newest first.
     pub fn photos(&self, view: View) -> Result<Vec<Photo>> {
-        let (filter, order) = match view {
+        let (filter, order) = Self::view_query(view);
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM photos WHERE {filter} ORDER BY {order}, id"
+        ))?;
+        let rows = stmt.query_map([], row_to_photo)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Which photos a view holds, and in what order.
+    fn view_query(view: View) -> (&'static str, &'static str) {
+        match view {
             View::Library => ("deleted = 0 AND hidden = 0", "taken_at DESC"),
             View::Favorites => (
                 "deleted = 0 AND hidden = 0 AND favorite = 1",
@@ -224,12 +234,7 @@ impl Library {
             ),
             View::Hidden => ("deleted = 0 AND hidden = 1", "taken_at DESC"),
             View::RecentlyDeleted => ("deleted = 1", "COALESCE(deleted_at, taken_at) DESC"),
-        };
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM photos WHERE {filter} ORDER BY {order}, id"
-        ))?;
-        let rows = stmt.query_map([], row_to_photo)?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        }
     }
 
     /// One photo, by asset id, wherever it is (Recently Deleted and hidden included).
@@ -252,7 +257,15 @@ impl Library {
             View::Hidden,
             View::RecentlyDeleted,
         ] {
-            out.push((view, self.photos(view)?.len() as i64));
+            // Counted where the rows are: a library of twenty thousand is not read seven times
+            // over to say how many each view holds.
+            let (filter, _) = Self::view_query(view);
+            let n: i64 = self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM photos WHERE {filter}"),
+                [],
+                |r| r.get(0),
+            )?;
+            out.push((view, n));
         }
         Ok(out)
     }
@@ -403,6 +416,29 @@ impl Library {
         Ok(())
     }
 
+    /// Every album with how many photos it shows (deleted and hidden ones not counted), in
+    /// the order the albums are listed.
+    pub fn albums_counted(&self) -> Result<Vec<(Album, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.id, a.name, a.position, a.change_tag,
+                    (SELECT COUNT(*) FROM photo_album_items i JOIN photos p ON p.id = i.asset
+                      WHERE i.album = a.id AND p.deleted = 0 AND p.hidden = 0)
+             FROM photo_albums a ORDER BY a.position, a.name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                Album {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    position: r.get(2)?,
+                    change_tag: r.get(3)?,
+                },
+                r.get(4)?,
+            ))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// Where the album's last photo sits, so what is added goes after it.
     pub fn album_last_position(&self, album: &str) -> Result<Option<i64>> {
         Ok(self.conn.query_row(
@@ -480,6 +516,10 @@ mod tests {
         assert_eq!(ids(&lib, View::Favorites), ["b"]);
         assert_eq!(ids(&lib, View::Videos), ["c"]);
         assert_eq!(ids(&lib, View::RecentlyDeleted), ["d"]);
+        // Each view's count is how many it shows; the sidebar never reads a view to count it.
+        for (view, n) in lib.photo_counts().unwrap() {
+            assert_eq!(n as usize, lib.photos(view).unwrap().len(), "{view:?}");
+        }
         assert_eq!(
             ids(&lib, View::Hidden),
             ["e"],
@@ -503,6 +543,18 @@ mod tests {
             in_album,
             ["a", "b"],
             "in position order, the deleted one not shown"
+        );
+        lib.replace_albums(&[Album {
+            id: "AL".into(),
+            name: "Trip".into(),
+            position: 0,
+            change_tag: None,
+        }])
+        .unwrap();
+        assert_eq!(
+            lib.albums_counted().unwrap()[0].1,
+            2,
+            "an album's count is what it shows"
         );
         lib.forget_album_items(&[("AL".into(), "a".into())])
             .unwrap();

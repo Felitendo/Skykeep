@@ -87,6 +87,8 @@ type Acts = {
   pick: (index: number, e: React.MouseEvent) => void;
   open: (index: number) => void;
   menu: (photo: Photo, e: React.MouseEvent) => void;
+  drag: (photo: Photo, e: React.DragEvent) => void;
+  dragEnd: () => void;
 };
 
 /**
@@ -127,6 +129,9 @@ const Tile = memo(function Tile({
         act.pick(index, e);
       }}
       onDoubleClick={() => act.open(index)}
+      draggable
+      onDragStart={(e) => act.drag(photo, e)}
+      onDragEnd={act.dragEnd}
       onContextMenu={(e) => {
         e.preventDefault();
         act.menu(photo, e);
@@ -461,6 +466,13 @@ export function PhotosView() {
       else if (e.key === "ArrowLeft") step(-1);
       else if (e.key === "Escape" && lensRef.current.k > 1) unzoom();
       else if (e.key === "Escape") close();
+      // Cmd/Ctrl + "." closes too, as icloud.com's one-up view does.
+      else if ((e.ctrlKey || e.metaKey) && e.key === ".") close();
+      // Z: fit, or the photo at full size about its middle.
+      else if (e.key.toLowerCase() === "z" && !e.ctrlKey && !e.metaKey && current?.kind !== "video") {
+        const box = pan.current?.getBoundingClientRect();
+        if (box) zoomAt(lensRef.current.k > 1 ? 1 : 2.5, box.left + box.width / 2, box.top + box.height / 2);
+      }
       else if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0") && current?.kind !== "video") {
         const box = pan.current?.getBoundingClientRect();
         if (!box) return;
@@ -470,8 +482,9 @@ export function PhotosView() {
       else if (e.key === " " && current?.kind === "video") void play(current);
       else if (e.key.toLowerCase() === "i" && !e.metaKey && !e.ctrlKey) setInfo((v) => !v);
       // As in Photos: "." favorites, Delete sends it to Recently Deleted.
-      else if (e.key === "." && current && view !== "recentlyDeleted") void change(current, "favorite", !current.favorite);
-      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "l" && current && view !== "recentlyDeleted") void change(current, "hidden", view !== "hidden");
+      // F as well as ".", and H as well as Ctrl+L, as icloud.com takes them.
+      else if ((e.key === "." || (e.key.toLowerCase() === "f" && !e.ctrlKey && !e.metaKey)) && current && view !== "recentlyDeleted") void change(current, "favorite", !current.favorite);
+      else if (((e.ctrlKey || e.metaKey) ? e.key.toLowerCase() === "l" : e.key.toLowerCase() === "h") && current && view !== "recentlyDeleted") void change(current, "hidden", view !== "hidden");
       else if ((e.key === "Delete" || e.key === "Backspace") && current && album) void removeFrom([current]);
       else if ((e.key === "Delete" || e.key === "Backspace") && current && view !== "recentlyDeleted") void change(current, "deleted", true);
       else if ((e.key === "Delete" || e.key === "Backspace") && current && view === "recentlyDeleted" && !album) void change(current, "expunged", true);
@@ -739,10 +752,17 @@ export function PhotosView() {
         if (album) void removeFrom(selected);
         else if (view !== "recentlyDeleted") void changeAll(selected, "deleted", true);
         else void changeAll(selected, "expunged", true);
-      } else if (ctrl && e.key.toLowerCase() === "l" && selected.length && view !== "recentlyDeleted") {
+      } else if (!ctrl && (e.key === "=" || e.key === "+" || e.key === "-")) {
+        // = and − size the thumbnails, as in icloud.com's grid.
+        setZoom((z) => (e.key === "-" ? Math.max(0, z - 1) : Math.min(ACROSS.length - 1, z + 1)));
+      } else if (!ctrl && e.key.toLowerCase() === "i" && selected.length) {
+        // I: the selected photo, opened with its details.
+        setInfo(true);
+        openAt(list.indexOf(selected[0]));
+      } else if ((ctrl ? e.key.toLowerCase() === "l" : e.key.toLowerCase() === "h") && selected.length && view !== "recentlyDeleted") {
         // ⌘L in Photos: hide, or in Hidden, unhide.
         void changeAll(selected, "hidden", view !== "hidden");
-      } else if (e.key === "." && selected.length && view !== "recentlyDeleted") {
+      } else if ((e.key === "." || (!ctrl && e.key.toLowerCase() === "f")) && selected.length && view !== "recentlyDeleted") {
         // As Photos: if any is not a favorite, all become favorites; else all stop being.
         void changeAll(selected, "favorite", selected.some((p) => !p.favorite));
       } else return;
@@ -817,13 +837,72 @@ export function PhotosView() {
   };
 
   // The tiles' handlers, one object for the life of the screen; each call reaches the newest.
-  const acts = useRef({ pick, openAt, photoMenu });
-  acts.current = { pick, openAt, photoMenu };
+  /*
+   * Dragging photos onto an album in the sidebar puts them in it, as on a Mac: what is dragged
+   * is the photo, or the whole selection when the photo is part of it.
+   */
+  const dragging2 = useRef<string[] | null>(null);
+  const [dropOn, setDropOn] = useState<string | null>(null);
+  const dragFrom = (p: Photo, e: React.DragEvent) => {
+    const ids = chosen.has(p.id) ? selected.map((x) => x.id) : [p.id];
+    if (!chosen.has(p.id)) {
+      setChosen(new Set([p.id]));
+      anchor.current = photos?.findIndex((x) => x.id === p.id) ?? null;
+    }
+    dragging2.current = ids;
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("application/x-quince-photos", ids.join(","));
+    // A stack of photos with how many, as Photos drags them.
+    const img = e.currentTarget.querySelector("img");
+    if (img && typeof e.dataTransfer.setDragImage === "function") {
+      const ghost = document.createElement("div");
+      ghost.className = "px-ghost";
+      const pic = img.cloneNode() as HTMLImageElement;
+      ghost.appendChild(pic);
+      if (ids.length > 1) {
+        const n = document.createElement("span");
+        n.textContent = String(ids.length);
+        ghost.appendChild(n);
+      }
+      document.body.appendChild(ghost);
+      e.dataTransfer.setDragImage(ghost, 36, 36);
+      window.setTimeout(() => ghost.remove(), 0);
+    }
+  };
+  const dropTarget = (a: PhotoAlbum) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (!dragging2.current || a.id.startsWith("new:") || album?.id === a.id) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      if (dropOn !== a.id) setDropOn(a.id);
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      // Passing over the row's own symbol or name is not leaving it.
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+      setDropOn((d) => (d === a.id ? null : d));
+    },
+    onDrop: (e: React.DragEvent) => {
+      const ids = dragging2.current;
+      dragging2.current = null;
+      setDropOn(null);
+      if (!ids || a.id.startsWith("new:")) return;
+      e.preventDefault();
+      void addTo(a, ids);
+    },
+  });
+
+  const acts = useRef({ pick, openAt, photoMenu, dragFrom });
+  acts.current = { pick, openAt, photoMenu, dragFrom };
   const act = useMemo<Acts>(
     () => ({
       pick: (i, e) => acts.current.pick(i, e),
       open: (i) => acts.current.openAt(i),
       menu: (p, e) => acts.current.photoMenu(p, { x: e.clientX, y: e.clientY, alignRight: false }),
+      drag: (p, e) => acts.current.dragFrom(p, e),
+      dragEnd: () => {
+        dragging2.current = null;
+        setDropOn(null);
+      },
     }),
     [],
   );
@@ -947,6 +1026,8 @@ export function PhotosView() {
     try {
       void getCurrentWebview()
         .onDragDropEvent((event) => {
+          // Photos of the library's own being dragged to an album are not files arriving.
+          if (dragging2.current) return;
           if (event.payload.type === "over") setDropping(true);
           else if (event.payload.type === "leave") setDropping(false);
           else if (event.payload.type === "drop") {
@@ -1070,6 +1151,8 @@ export function PhotosView() {
                 setOpen(null);
               }}
               onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
+              {...dropTarget(a)}
+              data-drop={dropOn === a.id || undefined}
               onContextMenu={(e) => {
                 e.preventDefault();
                 if (a.id.startsWith("new:")) return;

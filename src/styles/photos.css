@@ -385,3 +385,22 @@
   color: #fff;
 }
 .px-video:hover .px-play { background: rgba(0, 0, 0, 0.65); }
+
+/* An album under photos being dragged to it: lit, as a Mac sidebar lights a drop target. */
+.px-source[data-drop] { background: var(--accent-tint); box-shadow: inset 0 0 0 2px var(--accent); }
+/* What is dragged: the photo, with how many when it is more than one. */
+.px-ghost { position: fixed; top: -200px; left: -200px; width: 72px; height: 72px; }
+.px-ghost img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); }
+.px-ghost span {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: #ff3b30;
+  color: #fff;
+  font: 600 12px/22px system-ui, sans-serif;
+  text-align: center;
+}

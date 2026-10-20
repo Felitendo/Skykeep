@@ -190,18 +190,16 @@ pub async fn photos_list(view: View, data: State<'_, Data>) -> UiResult<Vec<Phot
 pub async fn photos_albums(
     data: State<'_, Data>,
 ) -> UiResult<Vec<(quince_core::photos::Album, usize)>> {
-    let library = data.0.lock().await;
-    let albums = library.albums().map_err(|e| e.to_string())?;
-    albums
+    let counted = data
+        .0
+        .lock()
+        .await
+        .albums_counted()
+        .map_err(|e| e.to_string())?;
+    Ok(counted
         .into_iter()
-        .map(|a| {
-            let n = library
-                .album_photos(&a.id)
-                .map_err(|e| e.to_string())?
-                .len();
-            Ok((a, n))
-        })
-        .collect()
+        .map(|(a, n)| (a, usize::try_from(n).unwrap_or(0)))
+        .collect())
 }
 
 /// One album's photos, in its order.
