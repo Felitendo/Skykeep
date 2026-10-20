@@ -69,6 +69,9 @@ const pickedWords = (list: Photo[]) => {
 
 type Flag = "favorite" | "deleted" | "hidden" | "expunged";
 
+/** A coordinate as a map gives it: 17.7654° N. */
+const degrees = (v: number, plus: string, minus: string) => `${Math.abs(v).toFixed(4)}° ${v >= 0 ? plus : minus}`;
+
 /** How a view is sorted, as Photos offers it: by the date taken or the date added, either way. */
 type Sort = { by: "taken" | "added"; oldest: boolean };
 const SORTS_KEY = "quince.photos.sort";
@@ -1148,6 +1151,17 @@ export function PhotosView() {
     if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
     void words(p, titleField.current?.value ?? p.title ?? "", captionField.current?.value ?? p.caption ?? "");
   };
+  const keywords = async (p: Photo, words: string[]) => {
+    const before = photos;
+    setPhotos((all) => (all ?? []).map((x) => (x.id === p.id ? { ...x, keywords: words } : x)));
+    try {
+      await api.photoSetKeywords(p.id, words);
+    } catch (e) {
+      setPhotos(before);
+      setError(messageOf(e));
+    }
+  };
+
   const rate = async (p: Photo, rating: number) => {
     const before = photos;
     const leaves = view === "rated" && rating === 0;
@@ -1852,6 +1866,58 @@ export function PhotosView() {
                     <dd>{shown.size >= 1024 * 1024 ? `${(shown.size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(shown.size / 1024))} KB`}</dd>
                   </>
                 ) : null}
+                {shown.latitude != null && shown.longitude != null && (
+                  <>
+                    <dt>Place</dt>
+                    <dd className="px-place">
+                      <span>{degrees(shown.latitude, "N", "S")}, {degrees(shown.longitude, "E", "W")}</span>
+                      <button className="px-link" onClick={() => void api.photoOpenMap(shown.id).catch((e) => setError(messageOf(e)))}>
+                        Open in Map
+                      </button>
+                    </dd>
+                  </>
+                )}
+                {/* Keywords, as Info keeps them: each its own chip, taken away with ×; a word
+                    typed and Return adds one. */}
+                <dt>Keywords</dt>
+                <dd className="px-words-field">
+                  {(shown.keywords ?? []).map((k) => (
+                    <span key={k} className="px-chip">
+                      {k}
+                      {view !== "recentlyDeleted" && (
+                        <button
+                          aria-label={`Remove ${k}`}
+                          onClick={() => void keywords(shown, (shown.keywords ?? []).filter((x) => x !== k))}
+                        >
+                          <X size={10} strokeWidth={3} aria-hidden="true" />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                  {view !== "recentlyDeleted" && (
+                    <input
+                      key={`k${shown.id}`}
+                      className="px-keyword-field"
+                      aria-label="Add a Keyword"
+                      placeholder="Add a Keyword"
+                      maxLength={100}
+                      onKeyDown={(e) => {
+                        const word = e.currentTarget.value.trim();
+                        if ((e.key === "Enter" || e.key === ",") && word) {
+                          e.preventDefault();
+                          e.currentTarget.value = "";
+                          if (!(shown.keywords ?? []).some((x) => x.toLowerCase() === word.toLowerCase())) {
+                            void keywords(shown, [...(shown.keywords ?? []), word]);
+                          }
+                        } else if (e.key === "Escape") {
+                          e.currentTarget.value = "";
+                          e.currentTarget.blur();
+                          e.stopPropagation();
+                        }
+                      }}
+                    />
+                  )}
+                </dd>
               </dl>
             )}
           </div>

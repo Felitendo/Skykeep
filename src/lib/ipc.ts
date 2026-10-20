@@ -103,6 +103,8 @@ export const api = {
   /** Title and caption together, as Info saves them. */
   photoSetText: (id: string, title: string, caption: string) => invoke<Photo>("photo_set_text", { id, title, caption }),
   photoSetRating: (id: string, rating: number) => invoke<Photo>("photo_set_rating", { id, rating }),
+  photoSetKeywords: (id: string, keywords: string[]) => invoke<Photo>("photo_set_keywords", { id, keywords }),
+  photoOpenMap: (id: string) => invoke<void>("photo_open_map", { id }),
   /** Photos and videos (or folders of them) into the library. Answers the batch; progress
    * arrives as PHOTO_UPLOAD events, in the same shape as Drive's. */
   /** Into the library, and into `album` too when one is open. */
@@ -590,6 +592,10 @@ export type Photo = {
   caption?: string | null;
   /** Its star rating, 0 (none) to 5. */
   rating?: number;
+  keywords?: string[];
+  /** Where it was taken, in degrees. */
+  latitude?: number | null;
+  longitude?: number | null;
   subtype: number;
   changeTag: string | null;
 };

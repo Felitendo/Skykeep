@@ -92,6 +92,45 @@ fn decoded(record: &Value, name: &str) -> Option<String> {
     String::from_utf8(bytes).ok().filter(|s| !s.is_empty())
 }
 
+/// A field Photos keeps as a binary property list, base64'd: keywords, a location.
+fn plist_field(record: &Value, name: &str) -> Option<plist::Value> {
+    let v = record.pointer(&format!("/fields/{name}/value"))?.as_str()?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(v).ok()?;
+    plist::from_bytes(&bytes).ok()
+}
+
+/// The words a photo is filed under: `keywordsEnc`, a list of strings.
+fn keywords_of(asset: &Value) -> Vec<String> {
+    plist_field(asset, "keywordsEnc")
+        .and_then(|v| v.into_array())
+        .map(|a| {
+            a.into_iter()
+                .filter_map(plist::Value::into_string)
+                .filter(|k| !k.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Where a photo was taken: `locationEnc` (or `locationV2Enc`), `lat` and `lon` in degrees.
+/// Apple marks no fix with values out of range; those are not a place.
+fn location_of(asset: &Value) -> Option<(f64, f64)> {
+    let d = plist_field(asset, "locationV2Enc")
+        .or_else(|| plist_field(asset, "locationEnc"))?
+        .into_dictionary()?;
+    let deg = |k: &str| {
+        d.get(k).and_then(|v| {
+            v.as_real()
+                .or_else(|| v.as_signed_integer().map(|i| i as f64))
+        })
+    };
+    let (lat, lon) = (deg("lat")?, deg("lon")?);
+    ((-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+        && !(lat == 0.0 && lon == 0.0))
+        .then_some((lat, lon))
+}
+
 fn millis(record: &Value, name: &str) -> Option<i64> {
     record
         .pointer(&format!("/fields/{name}/value"))
@@ -161,6 +200,9 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
         title: decoded(asset, "captionEnc"),
         caption: decoded(asset, "extendedDescEnc"),
         rating: field::int(asset, "rating").unwrap_or(0).clamp(0, 5),
+        keywords: keywords_of(asset),
+        latitude: location_of(asset).map(|l| l.0),
+        longitude: location_of(asset).map(|l| l.1),
         expunge_at: (field::int(asset, "isDeleted") == Some(1))
             .then(|| millis(asset, "dateExpunged"))
             .flatten(),
@@ -189,6 +231,10 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     p.title = decoded(asset, "captionEnc");
     p.caption = decoded(asset, "extendedDescEnc");
     p.rating = field::int(asset, "rating").unwrap_or(0).clamp(0, 5);
+    p.keywords = keywords_of(asset);
+    if let Some((lat, lon)) = location_of(asset) {
+        (p.latitude, p.longitude) = (Some(lat), Some(lon));
+    }
     p.expunge_at = if p.deleted {
         millis(asset, "dateExpunged").or(p.expunge_at)
     } else {
@@ -416,6 +462,34 @@ pub async fn set_rating(
             "CPLAsset",
             change_tag,
             serde_json::json!({ "rating": { "value": rating.clamp(0, 5) } }),
+        )
+        .await
+}
+
+/// A photo's keywords set, as icloud.com's Info sets them: `keywordsEnc`, a binary property
+/// list of the words, base64'd, against the asset's change tag. Answers the asset as it now is.
+pub async fn set_keywords(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    asset: &str,
+    change_tag: Option<&str>,
+    keywords: &[String],
+) -> Result<Value> {
+    let list = plist::Value::Array(keywords.iter().cloned().map(plist::Value::String).collect());
+    let mut bytes = Vec::new();
+    plist::to_writer_binary(&mut bytes, &list)
+        .map_err(|e| crate::Error::Protocol(format!("keywords could not be written: {e}")))?;
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    client
+        .update_record(
+            ZONE,
+            asset,
+            "CPLAsset",
+            change_tag,
+            serde_json::json!({
+                "keywordsEnc": { "value": base64::engine::general_purpose::STANDARD.encode(bytes) }
+            }),
         )
         .await
 }
@@ -780,5 +854,22 @@ mod tests {
         )
         .unwrap();
         assert!(lib.photo("A1").unwrap().is_none());
+    }
+
+    /// Keywords and a place, from the bytes Apple holds for his photo titled "loupe": a binary
+    /// plist list of words, and one of where (`lat`, `lon`) with Apple's marks for no fix.
+    #[test]
+    fn keywords_and_place_are_read_as_apple_keeps_them() {
+        let asset = json!({"fields": {
+            "keywordsEnc": {"value": "YnBsaXN0MDChAVVsb3VwZQgKAAAAAAAAAQEAAAAAAAAAAgAAAAAAAAAAAAAAAAAAABA="},
+            "locationEnc": {"value": "YnBsaXN0MDDYAQIDBAUGBwgJCgsMDQ4PEFNhbHRWY291cnNlV2hvcnpBY2NXdmVydEFjY1NsYXRTbG9uVXNwZWVkWXRpbWVzdGFtcBAAE///////////E///////////E///////////I0Axw++gAAAAI0BU1uMAAAAAE///////////XxAYMjAyNi0xMC0xOFQxNTo0MDo0NS41ODJaCBkdJCw0ODxCTE5XYGlye4QAAAAAAAABAQAAAAAAAAARAAAAAAAAAAAAAAAAAAAAnw=="}
+        }});
+        assert_eq!(keywords_of(&asset), ["loupe"]);
+        let (lat, lon) = location_of(&asset).unwrap();
+        assert!((lat - 17.765_375).abs() < 1e-5 && (lon - 83.357_605).abs() < 1e-5);
+        assert!(
+            location_of(&json!({"fields": {}})).is_none(),
+            "no place is no place"
+        );
     }
 }

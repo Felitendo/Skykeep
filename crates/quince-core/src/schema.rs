@@ -467,4 +467,12 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE photos ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // A photo's keywords (a JSON list) and where it was taken; Photos read again so every
+    // photo has its own.
+    r#"
+    ALTER TABLE photos ADD COLUMN keywords TEXT;
+    ALTER TABLE photos ADD COLUMN latitude REAL;
+    ALTER TABLE photos ADD COLUMN longitude REAL;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

@@ -312,7 +312,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             width: 4032, height: 3024, duration: null, filename: `IMG_${id}.JPG`, size: 2400000, uti: "public.jpeg",
             favorite: false, hidden: false, deleted: false, deletedAt: null, subtype: 0, changeTag: null, ...extra });
           const all = (window.__photos ??= [
-            P("p1", 1792500000, { favorite: true }), P("p2", 1792400000), P("p3", 1792300000, { kind: "video", duration: 12.4, uti: "public.mpeg-4", filename: "clip.mp4" }),
+            P("p1", 1792500000, { favorite: true }), P("p2", 1792400000, { keywords: ["beach"], latitude: 17.7653751, longitude: 83.357605 }), P("p3", 1792300000, { kind: "video", duration: 12.4, uti: "public.mpeg-4", filename: "clip.mp4" }),
             P("p4", 1789900000, { addedAt: 1792700000 }), P("p5", 1789800000, { rating: 5 }), P("p6", 1789700000, { deleted: true, deletedAt: 1792600000, expungeAt: Math.floor(Date.now() / 1000) + 2 * 86400 + 600 }),
           ]);
           const live = all.filter((p) => !p.deleted && !p.hidden);
@@ -366,6 +366,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           }
           return p;
         }
+        case "photo_set_keywords": {
+          (window.__keywords ??= []).push(args);
+          const p = (window.__photos ?? []).find((x) => x.id === args.id);
+          if (p) p.keywords = args.keywords;
+          return p;
+        }
+        case "photo_open_map": (window.__maps ??= []).push(args.id); return null;
         case "photo_set_rating": {
           (window.__ratings ??= []).push(args);
           const p = (window.__photos ?? []).find((x) => x.id === args.id);

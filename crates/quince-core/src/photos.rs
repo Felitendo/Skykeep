@@ -76,6 +76,14 @@ pub struct Photo {
     /// Its star rating, 0 (none) to 5.
     #[serde(default)]
     pub rating: i64,
+    /// The words it is filed under (`keywordsEnc`).
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    /// Where it was taken, in degrees, when Apple has it (`locationEnc`).
+    #[serde(default)]
+    pub latitude: Option<f64>,
+    #[serde(default)]
+    pub longitude: Option<f64>,
     /// Photos' subtype: 1 and 3 mark screenshots and the like (`assetSubtypeV2`).
     pub subtype: i64,
     /// The asset's change tag, for writing back to it.
@@ -128,7 +136,8 @@ pub enum View {
 }
 
 const COLUMNS: &str = "id, master, taken_at, added_at, kind, width, height, duration, filename, \
-                       size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag, expunge_at, title, caption, rating";
+                       size, uti, favorite, hidden, deleted, deleted_at, subtype, change_tag, expunge_at, title, caption, rating, \
+                       keywords, latitude, longitude";
 
 fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
     Ok(Photo {
@@ -153,6 +162,12 @@ fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
         title: r.get(18)?,
         caption: r.get(19)?,
         rating: r.get(20)?,
+        keywords: r
+            .get::<_, Option<String>>(21)?
+            .and_then(|k| serde_json::from_str(&k).ok())
+            .unwrap_or_default(),
+        latitude: r.get(22)?,
+        longitude: r.get(23)?,
     })
 }
 
@@ -164,8 +179,10 @@ impl Library {
             let mut stmt = tx.prepare(
                 "INSERT INTO photos (id, master, taken_at, added_at, kind, width, height, duration,
                                      filename, size, uti, favorite, hidden, deleted, deleted_at,
-                                     subtype, change_tag, expunge_at, title, caption, rating)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                                     subtype, change_tag, expunge_at, title, caption, rating,
+                                     keywords, latitude, longitude)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+                         ?22, ?23, ?24)
                  ON CONFLICT(id) DO UPDATE SET
                    master = excluded.master, taken_at = excluded.taken_at,
                    added_at = excluded.added_at, kind = excluded.kind, width = excluded.width,
@@ -175,7 +192,9 @@ impl Library {
                    deleted = excluded.deleted, deleted_at = excluded.deleted_at,
                    subtype = excluded.subtype, change_tag = excluded.change_tag,
                    expunge_at = excluded.expunge_at, title = excluded.title,
-                   caption = excluded.caption, rating = excluded.rating",
+                   caption = excluded.caption, rating = excluded.rating,
+                   keywords = excluded.keywords, latitude = excluded.latitude,
+                   longitude = excluded.longitude",
             )?;
             for p in photos {
                 stmt.execute(params![
@@ -199,7 +218,11 @@ impl Library {
                     p.expunge_at,
                     p.title,
                     p.caption,
-                    p.rating
+                    p.rating,
+                    (!p.keywords.is_empty())
+                        .then(|| serde_json::to_string(&p.keywords).unwrap_or_default()),
+                    p.latitude,
+                    p.longitude
                 ])?;
             }
         }
@@ -548,6 +571,9 @@ mod tests {
             title: None,
             caption: None,
             rating: 0,
+            keywords: Vec::new(),
+            latitude: None,
+            longitude: None,
         }
     }
 

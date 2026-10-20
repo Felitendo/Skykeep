@@ -633,6 +633,78 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
         .map_err(|e| format!("No app on this computer opens that video: {e}"))
 }
 
+/// A photo's keywords, as typed in its Info: each trimmed, empty and repeated ones dropped,
+/// Apple's answer taken at once.
+#[tauri::command]
+pub async fn photo_set_keywords(
+    id: String,
+    keywords: Vec<String>,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Photo> {
+    let mut words: Vec<String> = Vec::new();
+    for k in keywords {
+        let k = k.trim().to_string();
+        if !k.is_empty() && !words.iter().any(|w| w.eq_ignore_ascii_case(&k)) {
+            words.push(k);
+        }
+    }
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let mut photo = data
+        .0
+        .lock()
+        .await
+        .photo(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo is no longer in the library.")?;
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let answer = quince_icloud::photos::set_keywords(
+        &http,
+        &root,
+        params,
+        &id,
+        photo.change_tag.as_deref(),
+        &words,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    photo.keywords = words;
+    photo.change_tag = answer
+        .get("recordChangeTag")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .or(photo.change_tag);
+    data.0
+        .lock()
+        .await
+        .put_photos(std::slice::from_ref(&photo))
+        .map_err(|e| e.to_string())?;
+    Ok(photo)
+}
+
+/// Where a photo was taken, opened in a map in the browser: OpenStreetMap at its coordinates.
+/// Apple's place names come from Apple Maps, which is not here; the place itself is.
+#[tauri::command]
+pub async fn photo_open_map(id: String, app: AppHandle, data: State<'_, Data>) -> UiResult<()> {
+    let photo = data
+        .0
+        .lock()
+        .await
+        .photo(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo is no longer in the library.")?;
+    let (Some(lat), Some(lon)) = (photo.latitude, photo.longitude) else {
+        return Err("This photo has no place.".into());
+    };
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(
+            format!("https://www.openstreetmap.org/?mlat={lat:.6}&mlon={lon:.6}#map=16/{lat:.6}/{lon:.6}"),
+            None::<&str>,
+        )
+        .map_err(|e| format!("No browser on this computer opened the map: {e}"))
+}
+
 /// How many photos each view holds. Asked after every sync, which is also when an upload queue
 /// paused for a session coming back starts again.
 #[tauri::command]

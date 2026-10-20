@@ -67,6 +67,7 @@ step "whole photos"      node .uiverify/photos-fit.mjs
 step "star ratings"      node .uiverify/photos-rating.mjs
 step "viewer, real sizes" node .uiverify/photos-viewer-real.mjs
 step "filmstrip"         node .uiverify/photos-strip.mjs
+step "place & keywords"  node .uiverify/photos-info.mjs
 step "notes delete"      node .uiverify/notes-delete.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs
@@ -117,6 +118,7 @@ step "webkit: whole photos" env ENGINE=webkit node .uiverify/photos-fit.mjs
 step "webkit: ratings"   env ENGINE=webkit node .uiverify/photos-rating.mjs
 step "webkit: viewer sizes" env ENGINE=webkit node .uiverify/photos-viewer-real.mjs
 step "webkit: filmstrip" env ENGINE=webkit node .uiverify/photos-strip.mjs
+step "webkit: place & keywords" env ENGINE=webkit node .uiverify/photos-info.mjs
 step "webkit: delete"    env ENGINE=webkit node .uiverify/notes-delete.mjs
 step "webkit: row hover" env ENGINE=webkit node .uiverify/row-hover.mjs
 step "webkit: fold"      env ENGINE=webkit node .uiverify/sidebar-fold.mjs

@@ -3785,6 +3785,8 @@ fn main() {
             photos::photos_album_remove,
             photos::photo_set_text,
             photos::photo_set_rating,
+            photos::photo_set_keywords,
+            photos::photo_open_map,
             photos::photo_download,
             note_table_add_row,
             note_table_remove,

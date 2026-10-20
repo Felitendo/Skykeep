@@ -12,6 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror = "2"
 jiff = "0.2.37"
+plist = "1.10"
 base64 = "0.22"
 flate2 = "1"
 uuid = { workspace = true }
