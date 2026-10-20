@@ -233,41 +233,37 @@
 .px-heart { position: absolute; left: 6px; bottom: 6px; color: #fff; filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6)); }
 
 /* ---- the viewer: a dark stage, the photo fitted to it -------------------------------------- */
+/* A photo opened: the window's own background behind it, as Photos has it in light and in
+   dark, the photo as large as fits, and the controls floating over it in glass capsules. */
 .px-viewer {
   position: absolute;
   inset: 0;
   z-index: 5;
+  isolation: isolate;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-columns: minmax(0, 1fr) auto;
-  color: #f5f5f7;
+  grid-template-rows: minmax(0, 1fr);
+  color: var(--text);
 }
-/* The dark behind a photo is its own layer, so it can come up while the photo stays solid. */
-.px-backdrop { position: absolute; inset: 0; z-index: -1; background: #161618; }
-.px-viewer { isolation: isolate; }
+/* The background is its own layer, so it can come up while the photo stays solid. */
+.px-backdrop { position: absolute; inset: 0; z-index: -1; background: var(--bg); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .px-backdrop { background: #0b0b0c; } }
+:root[data-theme="dark"] .px-backdrop { background: #0b0b0c; }
 .px-viewer-bar {
-  grid-column: 1 / -1;
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 2;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 12px 14px;
+  pointer-events: none;
 }
-.px-viewer-when { flex: 1; display: flex; flex-direction: column; align-items: center; line-height: 1.25; }
-.px-viewer-when span { color: #a1a1a6; font-size: var(--t-11); }
-.px-icon {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: none;
-  box-shadow: none;
-  color: inherit;
-}
-.px-icon:hover, .px-icon[aria-pressed="true"] { background: rgba(255, 255, 255, 0.12); }
-.px-stage { position: relative; display: grid; place-items: center; min-height: 0; padding: 8px 56px 24px; }
+.px-viewer-bar > * { pointer-events: auto; }
+.px-viewer-when { flex: 1; display: flex; flex-direction: column; align-items: center; line-height: 1.25; pointer-events: none; }
+.px-viewer-when strong { font-size: var(--t-13); font-weight: 600; }
+.px-viewer-when span { color: var(--text-2); font-size: var(--t-11); }
+.px-cap[aria-pressed="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
+.px-stage { position: relative; display: grid; place-items: center; min-height: 0; padding: 62px 64px 22px; }
 .px-stage img, .px-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
 /* The thumbnail, already on disk, fills the photo's box until the sharper picture covers it. */
 .px-shown { background-size: 100% 100%; transform-origin: center; will-change: transform; }
@@ -276,30 +272,41 @@
   top: 50%;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  margin-top: -20px;
+  width: 36px;
+  height: 36px;
+  margin-top: -18px;
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  box-shadow: none;
-  color: #f5f5f7;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-float);
+  color: var(--text);
+  transition: transform 160ms var(--spring-quick);
 }
-.px-nav:hover { background: rgba(255, 255, 255, 0.2); }
-.px-nav.is-prev { left: 10px; }
-.px-nav.is-next { right: 10px; }
+.px-nav:hover { background: var(--glass-thick); }
+.px-nav:active { transform: scale(0.92); }
+.px-nav.is-prev { left: 14px; }
+.px-nav.is-next { right: 14px; }
+/* Info: a floating glass card over the photo's right side, as Photos' inspector floats. */
 .px-info {
-  grid-row: 2;
-  grid-column: 2;
+  position: absolute;
+  z-index: 2;
+  top: 58px;
+  right: 14px;
   width: 260px;
+  max-height: calc(100% - 72px);
   margin: 0;
-  padding: 14px 16px;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 12px 16px 14px;
+  border-radius: 16px;
+  background: var(--glass-thick);
+  box-shadow: var(--glass-float);
   font-size: var(--t-13);
   overflow-y: auto;
 }
-.px-info dt { margin-top: 10px; color: #a1a1a6; font-size: var(--t-11); }
+.px-info dt { margin-top: 10px; color: var(--text-2); font-size: var(--t-11); font-weight: 600; }
+.px-info dt:first-child { margin-top: 0; }
 .px-info dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .px-saved {
   position: absolute;
@@ -312,7 +319,6 @@
   background: var(--glass-thick);
   box-shadow: var(--glass-specular), var(--glass-lift);
 }
-.px-icon.is-favorite { color: #ff375f; }
 .px-video {
   position: relative;
   display: grid;
@@ -324,7 +330,7 @@
   background: none;
   box-shadow: none;
 }
-.px-video img { max-width: 100%; max-height: calc(100vh - 140px); object-fit: contain; }
+.px-video img { max-width: 100%; max-height: calc(100vh - 120px); object-fit: contain; }
 .px-play {
   position: absolute;
   display: grid;

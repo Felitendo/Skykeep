@@ -881,21 +881,24 @@ export function PhotosView() {
           <div className="px-viewer" ref={viewer} role="dialog" aria-label={shown.filename ?? "Photo"}>
             <div className="px-backdrop" aria-hidden="true" />
             <header className="px-viewer-bar">
-              <button className="px-icon" aria-label="Close" title="Close (Esc)" onClick={close}>
-                <X size={18} />
-              </button>
+              <div className="px-capsule">
+                <button className="px-cap" aria-label="Close" title="Close (Esc)" onClick={close}>
+                  <X size={17} strokeWidth={2} />
+                </button>
+              </div>
               <div className="px-viewer-when">
                 <strong>{new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "long" })}</strong>
                 <span>{new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}</span>
               </div>
+              <div className="px-capsule">
               {view === "recentlyDeleted" && !album ? (
-                <button className="px-icon" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
+                <button className="px-cap" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
                   <RotateCcw size={17} />
                 </button>
               ) : (
                 <>
                   <button
-                    className={`px-icon${shown.favorite ? " is-favorite" : ""}`}
+                    className="px-cap"
                     aria-label={shown.favorite ? "Unfavorite" : "Favorite"}
                     aria-pressed={shown.favorite}
                     title={shown.favorite ? "Unfavorite (.)" : "Favorite (.)"}
@@ -904,7 +907,7 @@ export function PhotosView() {
                     <Heart size={17} fill={shown.favorite ? "currentColor" : "none"} />
                   </button>
                   <button
-                    className="px-icon"
+                    className="px-cap"
                     aria-label="Add to Album"
                     aria-haspopup="menu"
                     title="Add to Album"
@@ -916,22 +919,25 @@ export function PhotosView() {
                     <CopyPlus size={17} />
                   </button>
                   {album ? (
-                    <button className="px-icon" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown])}>
+                    <button className="px-cap" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown])}>
                       <CopyMinus size={17} />
                     </button>
                   ) : (
-                    <button className="px-icon" aria-label="Delete" title="Delete (Delete)" onClick={() => void change(shown, "deleted", true)}>
+                    <button className="px-cap" aria-label="Delete" title="Delete (Delete)" onClick={() => void change(shown, "deleted", true)}>
                       <Trash2 size={17} />
                     </button>
                   )}
                 </>
               )}
-              <button className="px-icon" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
-                <Download size={17} />
-              </button>
-              <button className="px-icon" aria-label="Info" aria-pressed={info} title="Info (I)" onClick={() => setInfo((v) => !v)}>
-                <Info size={17} />
-              </button>
+              </div>
+              <div className="px-capsule">
+                <button className="px-cap" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
+                  <Download size={17} />
+                </button>
+                <button className="px-cap" aria-label="Info" aria-pressed={info} title="Info (I)" onClick={() => setInfo((v) => !v)}>
+                  <Info size={17} />
+                </button>
+              </div>
             </header>
             <div className="px-stage" ref={stage}>
               {shown.kind === "video" ? (
@@ -962,14 +968,22 @@ export function PhotosView() {
                 <dt>Name</dt>
                 <dd>{shown.filename ?? "—"}</dd>
                 <dt>Taken</dt>
-                <dd>{new Date(shown.takenAt * 1000).toLocaleString()}</dd>
-                <dt>Size</dt>
                 <dd>
-                  {shown.width} × {shown.height}
-                  {shown.size ? ` · ${(shown.size / 1024 / 1024).toFixed(1)} MB` : ""}
+                  {new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "full" })} at{" "}
+                  {new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}
                 </dd>
                 <dt>Kind</dt>
-                <dd>{shown.kind === "video" ? "Video" : shown.kind === "live" ? "Live Photo" : "Photo"}</dd>
+                <dd>
+                  {shown.kind === "video" ? `Video${shown.duration ? `, ${clock(shown.duration)}` : ""}` : shown.kind === "live" ? "Live Photo" : "Photo"}
+                </dd>
+                <dt>Dimensions</dt>
+                <dd>{shown.width.toLocaleString()} × {shown.height.toLocaleString()}</dd>
+                {shown.size ? (
+                  <>
+                    <dt>File size</dt>
+                    <dd>{shown.size >= 1024 * 1024 ? `${(shown.size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(shown.size / 1024))} KB`}</dd>
+                  </>
+                ) : null}
               </dl>
             )}
           </div>
