@@ -76,6 +76,22 @@ impl Remote for Apple {
                 .map_err(|e| e.to_string())
         })
     }
+    fn upload(&self, folder: &DriveItem, path: &std::path::Path) -> Fut<DriveItem> {
+        let (http, docws, drivews, p, folder, path) = (
+            self.http.clone(),
+            self.docws.clone(),
+            self.drivews.clone(),
+            self.params.clone(),
+            folder.drivewsid.clone(),
+            path.to_path_buf(),
+        );
+        Box::pin(async move {
+            let progress: quince_icloud::drive::Progress = Arc::new(|_, _| {});
+            quince_icloud::drive::upload(&http, &docws, &drivews, p, &folder, &path, progress)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
     fn delete(&self, item: &DriveItem) -> Fut<()> {
         let (http, root, p, item) = (
             self.http.clone(),
@@ -164,12 +180,15 @@ fn main() -> Result<()> {
         links: Arc::new(Mutex::new(HashMap::new())),
     });
     let cache = tempfile_dir()?;
+    let writes_dir =
+        std::env::temp_dir().join(format!("quince-mount-writes-{}", std::process::id()));
     let fs = fuse::DriveFs::new(
         apple,
         Arc::new(Library(library)),
         Arc::new(Cache::new(&cache)?),
         rt.handle().clone(),
-    );
+    )
+    .with_writes(&writes_dir)?;
     let session = fuse::mount(fs, &at)?;
     println!("mounted at {}", at.display());
     std::thread::sleep(std::time::Duration::from_secs(secs));

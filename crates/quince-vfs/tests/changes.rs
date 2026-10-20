@@ -188,13 +188,12 @@ fn changes_through_the_folder_are_made_at_apple() {
         "moved back out under a new name"
     );
 
-    let clash = std::fs::rename(root.join("Itinerary.pdf"), root.join("Notes.txt")).unwrap_err();
-    assert_eq!(
-        clash.raw_os_error(),
-        Some(libc::EEXIST),
-        "a rename never replaces what is there"
-    );
-    assert_eq!(names(root), ["Itinerary.pdf", "Notes.txt", "Trips"]);
+    // A rename over a file that is there replaces it, as on any disk — the replaced one into
+    // Apple's Recently Deleted, never gone.
+    std::fs::rename(root.join("Itinerary.pdf"), root.join("Notes.txt")).unwrap();
+    assert_eq!(names(root), ["Notes.txt", "Trips"]);
+    assert_eq!(world.deleted.lock().unwrap().len(), 1);
+    std::fs::rename(root.join("Notes.txt"), root.join("Itinerary.pdf")).unwrap();
 
     std::fs::rename(root.join("Itinerary.pdf"), root.join("Trips/Itinerary.pdf")).unwrap();
     let full = std::fs::remove_dir(root.join("Trips")).unwrap_err();
@@ -205,21 +204,14 @@ fn changes_through_the_folder_are_made_at_apple() {
     );
     std::fs::remove_file(root.join("Trips/Itinerary.pdf")).unwrap();
     std::fs::remove_dir(root.join("Trips")).unwrap();
-    assert_eq!(
-        names(root),
-        ["Notes.txt"],
+    assert!(
+        names(root).is_empty(),
         "deleted, file then folder, as rm -r does"
     );
     assert_eq!(
         world.deleted.lock().unwrap().len(),
-        2,
-        "each a delete at Apple (into Recently Deleted)"
-    );
-    assert_eq!(
-        std::fs::remove_dir(root.join("Notes.txt"))
-            .unwrap_err()
-            .raw_os_error(),
-        Some(libc::ENOTDIR)
+        3,
+        "each a delete at Apple (into Recently Deleted), the replaced file among them"
     );
 
     drop(session);

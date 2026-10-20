@@ -1,20 +1,25 @@
 //! The engine as a Linux folder, through FUSE (fuser).
 //!
-//! Read-only for now. Names, sizes and dates come from the library, never the network, so a
-//! file manager browsing is never kept waiting; a folder never opened before is fetched once.
-//! A file's bytes come from the cache, each part fetched from Apple the first time it is read.
+//! Names, sizes and dates come from the library, never the network, so a file manager
+//! browsing is never kept waiting; a folder never opened before is fetched once. A file's
+//! bytes come from the cache, each part fetched from Apple the first time it is read.
+//! Folders, renames, moves and deletes are made at Apple as they happen. A file's own bytes
+//! are written here first and sent behind the program writing them (see writes.rs).
 
+use crate::writes::{self, Pending, Writes};
 use crate::{is_thumbnailer, named, Cache, Inodes, Remote, Store};
 use fuser::{
-    Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
-    LockOwner, MountOption, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyData,
-    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, Request,
+    BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
+    Generation, INodeNo, LockOwner, MountOption, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
+    ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs,
+    ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 use quince_core::drive::DriveItem;
 use std::ffi::OsStr;
+use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long the kernel may keep what it was told about a name or a file. Short, as rclone's
 /// is: a file changed on another device must not be read with its old length.
@@ -27,7 +32,11 @@ const LIST_WAIT: Duration = Duration::from_secs(30);
 /// How long a change (a new folder, a rename, a delete) may take at Apple.
 const CHANGE_WAIT: Duration = Duration::from_secs(60);
 
-pub struct DriveFs {
+/// The longest wait between tries of a send Apple would not take.
+const LONGEST_RETRY: Duration = Duration::from_secs(300);
+
+/// What the folder's threads and its sends share.
+struct Inner {
     remote: Arc<dyn Remote>,
     store: Arc<dyn Store>,
     cache: Arc<Cache>,
@@ -35,12 +44,18 @@ pub struct DriveFs {
     rt: tokio::runtime::Handle,
     uid: u32,
     gid: u32,
-    mounted: std::time::SystemTime,
+    mounted: SystemTime,
     /// Where the folder is mounted and the thumbnail cache's root, when thumbnails are wanted.
     thumbs: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// Folders whose thumbnails were written, by their items' versions: written once.
     filled: Mutex<std::collections::HashSet<String>>,
+    /// Files written here and not yet at Apple as written. `None`: the folder is read-only.
+    writes: Option<Arc<Writes>>,
+    /// The account's storage as last asked, `(used, total)`.
+    space: Mutex<Option<((u64, u64), std::time::Instant)>>,
 }
+
+pub struct DriveFs(Arc<Inner>);
 
 impl DriveFs {
     #[must_use]
@@ -52,28 +67,77 @@ impl DriveFs {
     ) -> Self {
         // SAFETY: getuid and getgid cannot fail and touch no memory.
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-        Self {
+        Self(Arc::new(Inner {
             remote,
             store,
             cache,
             inodes: Mutex::new(Inodes::new()),
-            mounted: std::time::SystemTime::now(),
-            thumbs: None,
-            filled: Mutex::new(std::collections::HashSet::new()),
             rt,
             uid,
             gid,
-        }
+            mounted: SystemTime::now(),
+            thumbs: None,
+            filled: Mutex::new(std::collections::HashSet::new()),
+            writes: None,
+            space: Mutex::new(None),
+        }))
+    }
+
+    fn inner_mut(&mut self) -> &mut Inner {
+        Arc::get_mut(&mut self.0).expect("configured before it is mounted")
     }
 
     /// Apple's pictures of each folder listed put in the thumbnail cache (the crate's
     /// write_thumbnails), for a folder mounted at `mount`.
     #[must_use]
     pub fn with_thumbnails(mut self, mount: std::path::PathBuf, cache: std::path::PathBuf) -> Self {
-        self.thumbs = Some((mount, cache));
+        self.inner_mut().thumbs = Some((mount, cache));
         self
     }
 
+    /// Files can be written, their bytes kept in `dir` until Apple has them. What was waiting
+    /// when the folder last went away is picked up again and sent.
+    ///
+    /// # Errors
+    /// When the folder for the bytes cannot be made.
+    pub fn with_writes(mut self, dir: &Path) -> std::io::Result<Self> {
+        let writes = Arc::new(Writes::new(dir)?);
+        let waiting = writes.load();
+        self.inner_mut().writes = Some(Arc::clone(&writes));
+        for (old, pending) in waiting {
+            let ino = self
+                .0
+                .inodes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .local(&pending.folder, &pending.name);
+            // Its bytes moved to the inode it has now.
+            let from = writes.staging(old, &pending.name);
+            let to = writes.staging(ino, &pending.name);
+            if let Some(dir) = to.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::rename(&from, &to)?;
+            writes.drop_staging(old);
+            writes
+                .items
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    ino,
+                    Pending {
+                        dirty: true,
+                        ..pending
+                    },
+                );
+            Inner::schedule(&self.0, ino, Duration::from_millis(500));
+        }
+        writes.save();
+        Ok(self)
+    }
+}
+
+impl Inner {
     /// In the background, once per folder version: the folder's thumbnails written.
     fn fill_thumbnails(&self, folder: &DriveItem, files: &[(String, u64, DriveItem)]) {
         let Some((mount, cache)) = self.thumbs.clone() else {
@@ -86,7 +150,10 @@ impl DriveFs {
                 .inodes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (_, ino, item) in files.iter().filter(|(_, _, i)| !i.is_container()) {
+            for (_, ino, item) in files
+                .iter()
+                .filter(|(_, _, i)| !i.is_container() && !i.drivewsid.starts_with("LOCAL::"))
+            {
                 if let Some(p) = inodes.path(*ino) {
                     paths.push((p.to_string(), item.clone()));
                     fingerprint.push_str(item.etag.as_deref().unwrap_or(""));
@@ -132,29 +199,43 @@ impl DriveFs {
                 Errno::EIO
             })?;
         for folder in touched {
-            let (remote, id) = (Arc::clone(&self.remote), folder.drivewsid.clone());
-            let _ = self
-                .rt
-                .block_on(async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await });
+            self.relist(&folder.drivewsid);
         }
         Ok(done)
     }
 
-    /// The item called `name` in folder `parent`.
-    fn child(&self, parent: INodeNo, name: &OsStr) -> Result<(u64, DriveItem), Errno> {
-        self.children(parent)?
-            .into_iter()
-            .find(|(n, ..)| OsStr::new(n) == name)
-            .map(|(_, ino, item)| (ino, item))
-            .ok_or(Errno::ENOENT)
+    fn relist(&self, folder: &str) {
+        let (remote, id) = (Arc::clone(&self.remote), folder.to_string());
+        let _ = self
+            .rt
+            .block_on(async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await });
     }
 
-    fn item(&self, ino: INodeNo) -> Option<DriveItem> {
+    fn item(&self, ino: u64) -> Option<DriveItem> {
         self.inodes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .item(ino.0)
+            .item(ino)
             .cloned()
+    }
+
+    fn pending(&self, ino: u64) -> Option<Pending> {
+        self.writes
+            .as_ref()?
+            .items
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&ino)
+            .cloned()
+    }
+
+    fn with_pending<R>(&self, ino: u64, f: impl FnOnce(&mut Pending) -> R) -> Option<R> {
+        let writes = self.writes.as_ref()?;
+        let mut items = writes
+            .items
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        items.get_mut(&ino).map(f)
     }
 
     fn attr(&self, ino: u64, item: &DriveItem) -> FileAttr {
@@ -167,25 +248,37 @@ impl DriveFs {
             })
         };
         let dir = item.is_container();
-        let size = if dir {
-            0
-        } else {
-            u64::try_from(item.size.unwrap_or(0)).unwrap_or(0)
-        };
+        let (mut size, mut mtime) = (
+            if dir {
+                0
+            } else {
+                u64::try_from(item.size.unwrap_or(0)).unwrap_or(0)
+            },
+            secs(item.modified_at),
+        );
+        // A file being written shows what has been written, as of when.
+        if let (Some(p), Some(w)) = (self.pending(ino), self.writes.as_ref()) {
+            size = std::fs::metadata(w.staging(ino, &p.name)).map_or(size, |m| m.len());
+            mtime = p.modified;
+        }
         FileAttr {
             ino: INodeNo(ino),
             size,
             blocks: size.div_ceil(512),
-            atime: secs(item.modified_at),
-            mtime: secs(item.modified_at),
-            ctime: secs(item.modified_at),
+            atime: mtime,
+            mtime,
+            ctime: mtime,
             crtime: secs(item.created_at.or(item.modified_at)),
             kind: if dir {
                 FileType::Directory
             } else {
                 FileType::RegularFile
             },
-            perm: if dir { 0o755 } else { 0o444 },
+            perm: match (dir, self.writes.is_some()) {
+                (true, _) => 0o755,
+                (false, true) => 0o644,
+                (false, false) => 0o444,
+            },
             nlink: if dir { 2 } else { 1 },
             uid: self.uid,
             gid: self.gid,
@@ -195,21 +288,21 @@ impl DriveFs {
         }
     }
 
-    /// A folder's items with their names and inodes: from the library, or — never opened
-    /// before — from Apple, once.
-    fn children(&self, ino: INodeNo) -> Result<Vec<(String, u64, DriveItem)>, Errno> {
-        let item = self.item(ino).ok_or(Errno::ENOENT)?;
-        if !item.is_container() {
+    /// A folder's items with their names and inodes: from the library — or, never opened
+    /// before, from Apple once — with the files being written here among them.
+    fn children(&self, ino: u64) -> Result<Vec<(String, u64, DriveItem)>, Errno> {
+        let folder = self.item(ino).ok_or(Errno::ENOENT)?;
+        if !folder.is_container() {
             return Err(Errno::ENOTDIR);
         }
-        let stored = self.store.children(&item.drivewsid);
+        let stored = self.store.children(&folder.drivewsid);
         // A folder Apple says has things in it, with nothing stored, was never listed.
-        let listed = stored.filter(|s| !s.is_empty() || item.child_count == Some(0));
-        let items = match listed {
+        let listed = stored.filter(|s| !s.is_empty() || folder.child_count == Some(0));
+        let mut items = match listed {
             Some(items) => items,
             None => {
                 let remote = Arc::clone(&self.remote);
-                let id = item.drivewsid.clone();
+                let id = folder.drivewsid.clone();
                 self.rt
                     .block_on(
                         async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await },
@@ -218,52 +311,443 @@ impl DriveFs {
                     .map_err(|_| Errno::EIO)?
             }
         };
+        // Files being written here: a new one is shown beside Apple's; one taking another's
+        // place is shown in it, under its own inode.
+        let mut local: Vec<(u64, Pending)> = Vec::new();
+        if let Some(w) = &self.writes {
+            let pending = w
+                .items
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            local = pending
+                .iter()
+                .filter(|(_, p)| p.folder == folder.drivewsid)
+                .map(|(i, p)| (*i, p.clone()))
+                .collect();
+        }
         let mut inodes = self
             .inodes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(named(&items)
+        for (pino, p) in &local {
+            if let Some(r) = &p.replaces {
+                items.retain(|i| i.drivewsid != r.drivewsid);
+            }
+            // Its own inode keeps the name it is being written under.
+            if let Some(it) = inodes.item(*pino).cloned() {
+                if it.drivewsid.starts_with("LOCAL::")
+                    || p.replaces
+                        .as_ref()
+                        .is_some_and(|r| r.drivewsid == it.drivewsid)
+                {
+                    items.retain(|i| i.drivewsid != it.drivewsid);
+                }
+            }
+        }
+        let mut out: Vec<(String, u64, DriveItem)> = named(&items)
             .into_iter()
             .map(|(name, it)| {
                 let child = inodes.ino(&it);
-                inodes.place(child, ino.0, &name);
+                inodes.place(child, ino, &name);
                 (name, child, it)
             })
-            .collect())
+            .collect();
+        for (pino, p) in local {
+            let Some(it) = inodes.item(pino).cloned().or_else(|| p.replaces.clone()) else {
+                continue;
+            };
+            inodes.place(pino, ino, &p.name);
+            out.push((p.name.clone(), pino, it));
+        }
+        Ok(out)
     }
-}
 
-impl DriveFs {
-    /// A file or (an empty) folder deleted, into Apple's Recently Deleted.
-    fn remove(&self, parent: INodeNo, name: &OsStr, folder: bool, reply: ReplyEmpty) {
-        let Some(from) = self.item(parent) else {
-            return reply.error(Errno::ENOENT);
+    /// The item called `name` in folder `parent`.
+    fn child(&self, parent: u64, name: &OsStr) -> Result<(u64, DriveItem), Errno> {
+        self.children(parent)?
+            .into_iter()
+            .find(|(n, ..)| OsStr::new(n) == name)
+            .map(|(_, ino, item)| (ino, item))
+            .ok_or(Errno::ENOENT)
+    }
+
+    /// A file of Apple's made writable: its bytes copied here (unless they are about to be
+    /// thrown away), to be sent back in its place.
+    fn begin_writing(&self, ino: u64, item: &DriveItem, keep: bool) -> Result<(), Errno> {
+        let writes = self.writes.as_ref().ok_or(Errno::EROFS)?;
+        if self.pending(ino).is_some() {
+            return Ok(());
+        }
+        let name = {
+            let inodes = self
+                .inodes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inodes
+                .path(ino)
+                .and_then(|p| p.rsplit('/').next())
+                .map_or_else(|| item.display_name(), str::to_string)
         };
-        let (ino, item) = match self.child(parent, name) {
-            Ok(c) => c,
-            Err(e) => return reply.error(e),
-        };
+        let staged = writes.staging(ino, &name);
+        std::fs::create_dir_all(staged.parent().ok_or(Errno::EIO)?).map_err(|_| Errno::EIO)?;
+        let file = std::fs::File::create(&staged).map_err(|_| Errno::EIO)?;
+        if keep {
+            let size = u64::try_from(item.size.unwrap_or(0)).unwrap_or(0);
+            let (cache, remote, it) = (
+                Arc::clone(&self.cache),
+                Arc::clone(&self.remote),
+                item.clone(),
+            );
+            let mut at = 0;
+            while at < size {
+                let len = crate::CHUNK.min(size - at);
+                let (c, r, i) = (Arc::clone(&cache), Arc::clone(&remote), it.clone());
+                let bytes = self
+                    .rt
+                    .block_on(async move { c.read(r.as_ref(), &i, at, len).await })
+                    .map_err(|_| Errno::EIO)?;
+                file.write_all_at(&bytes, at).map_err(|_| Errno::EIO)?;
+                at += len;
+            }
+        }
+        writes
+            .items
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                ino,
+                Pending {
+                    folder: item
+                        .parent_id
+                        .clone()
+                        .unwrap_or_else(|| crate::ROOT.to_string()),
+                    name,
+                    replaces: Some(item.clone()),
+                    open: 0,
+                    dirty: !keep,
+                    generation: 0,
+                    modified: SystemTime::now(),
+                    sender: false,
+                    quiet_since: None,
+                },
+            );
+        Ok(())
+    }
+
+    /// Sent to Apple once left alone a moment (writes::SETTLE), and tried again until Apple
+    /// takes it. Only the bytes that were sent are counted as sent.
+    fn schedule(me: &Arc<Self>, ino: u64, after: Duration) {
+        // One sender per file: a second close, or a read-back, never starts a second send of
+        // the same bytes. Claimed under the same lock that counts who has it open.
+        let claimed = me
+            .with_pending(ino, |p| {
+                p.quiet_since = Some(std::time::Instant::now());
+                if p.sender {
+                    false
+                } else {
+                    p.sender = true;
+                    true
+                }
+            })
+            .unwrap_or(false);
+        if !claimed {
+            return;
+        }
+        let me = Arc::clone(me);
+        let rt = me.rt.clone();
+        rt.spawn(async move {
+            tokio::time::sleep(after).await;
+            let mut wait = Duration::from_secs(5);
+            loop {
+                // Left alone long enough? Open again, or nothing to send: the sender stands
+                // down, and the next close claims it again.
+                loop {
+                    let state = me.with_pending(ino, |p| {
+                        if p.open > 0 || !p.dirty || writes::stays_local(&p.name) {
+                            p.sender = false;
+                            Some(false)
+                        } else if p.quiet_since.is_some_and(|q| q.elapsed() < writes::SETTLE) {
+                            None
+                        } else {
+                            Some(true)
+                        }
+                    });
+                    match state {
+                        None | Some(Some(false)) => return,
+                        Some(Some(true)) => break,
+                        Some(None) => tokio::time::sleep(Duration::from_millis(250)).await,
+                    }
+                }
+                let Some(p) = me.pending(ino) else { return };
+                let generation = p.generation;
+                let Some(writes) = me.writes.clone() else {
+                    return;
+                };
+                let folder = {
+                    let inodes = me
+                        .inodes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    inodes
+                        .ino_of(&p.folder)
+                        .and_then(|f| inodes.item(f).cloned())
+                };
+                let Some(folder) = folder else {
+                    me.with_pending(ino, |p| p.sender = false);
+                    return;
+                };
+                let key = format!("{}/{}", p.folder, p.name);
+                // Behind any send of the same name still under way, so this one finds it
+                // finished and replaces it as this computer's own.
+                let lane = writes.lane(&key);
+                let _turn = lane.lock().await;
+                let ours = writes
+                    .sent
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&key)
+                    .cloned();
+                // Sent from a copy of the bytes as they are now: a write during the send
+                // changes the file, never what is on its way.
+                let out_dir = writes.staging(ino, &p.name).with_file_name(".out");
+                let out = out_dir.join(&p.name);
+                let copied = std::fs::create_dir_all(&out_dir).is_ok()
+                    && std::fs::copy(writes.staging(ino, &p.name), &out).is_ok();
+                let result = if copied {
+                    let r = writes::send(
+                        me.remote.as_ref(),
+                        &folder,
+                        &out,
+                        p.replaces.as_ref(),
+                        ours.as_ref(),
+                    )
+                    .await;
+                    let _ = std::fs::remove_dir_all(&out_dir);
+                    r
+                } else {
+                    Err("the bytes could not be read".into())
+                };
+                match result {
+                    Ok(sent) => {
+                        if !sent.conflicted {
+                            // This computer's own, so its next save replaces it as such.
+                            writes
+                                .sent
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(key, sent.item.clone());
+                        }
+                        let done = me
+                            .with_pending(ino, |now| {
+                                if now.generation == generation {
+                                    true
+                                } else {
+                                    // Written again while on its way: what Apple has now is
+                                    // what the next send replaces.
+                                    now.replaces = Some(sent.item.clone());
+                                    false
+                                }
+                            })
+                            .unwrap_or(true);
+                        let _ = me.remote.list(&folder.drivewsid).await;
+                        if done {
+                            if let Some(w) = &me.writes {
+                                w.items
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .remove(&ino);
+                                w.drop_staging(ino);
+                                w.save();
+                            }
+                            if !sent.conflicted {
+                                me.inodes
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .bind(ino, &sent.item);
+                            }
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        quiet_note(&e);
+                        tokio::time::sleep(wait).await;
+                        wait = (wait * 2).min(LONGEST_RETRY);
+                    }
+                }
+            }
+        });
+    }
+
+    /// A file or (an empty) folder deleted, into Apple's Recently Deleted. A file made here
+    /// and never sent is simply let go of.
+    fn remove(&self, parent: u64, name: &OsStr, folder: bool) -> Result<(), Errno> {
+        let from = self.item(parent).ok_or(Errno::ENOENT)?;
+        let (ino, item) = self.child(parent, name)?;
         if folder != item.is_container() {
-            return reply.error(if folder {
+            return Err(if folder {
                 Errno::ENOTDIR
             } else {
                 Errno::EISDIR
             });
         }
+        if let Some(p) = self.pending(ino) {
+            if let Some(w) = &self.writes {
+                w.items
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&ino);
+                w.drop_staging(ino);
+                w.save();
+            }
+            return match p.replaces {
+                Some(old) => self.change(self.remote.delete(&old), &[&from]),
+                None => Ok(()),
+            };
+        }
         // A folder goes only when empty, as on any disk: Apple would take everything in it,
         // and a file manager or `rm -r` empties it first, file by file.
-        if folder
-            && !self
-                .children(INodeNo(ino))
-                .map(|c| c.is_empty())
-                .unwrap_or(false)
-        {
-            return reply.error(Errno::ENOTEMPTY);
+        if folder && !self.children(ino).map(|c| c.is_empty()).unwrap_or(false) {
+            return Err(Errno::ENOTEMPTY);
         }
-        match self.change(self.remote.delete(&item), &[&from]) {
-            Ok(()) => reply.ok(),
-            Err(e) => reply.error(e),
+        self.change(self.remote.delete(&item), &[&from])
+    }
+
+    /// An item moved and renamed at Apple: into `to`, then given `newname`.
+    fn move_and_rename(
+        &self,
+        item: &DriveItem,
+        from: &DriveItem,
+        to: &DriveItem,
+        name: &OsStr,
+        newname: &str,
+    ) -> Result<(), Errno> {
+        if from.drivewsid != to.drivewsid {
+            self.change(self.remote.move_to(item, to), &[from, to])?;
         }
+        if name != OsStr::new(newname) {
+            let moved = self
+                .store
+                .children(&to.drivewsid)
+                .and_then(|c| c.into_iter().find(|i| i.drivewsid == item.drivewsid))
+                .unwrap_or_else(|| item.clone());
+            self.change(self.remote.rename(&moved, newname), &[to])?;
+        }
+        Ok(())
+    }
+
+    fn rename(
+        me: &Arc<Self>,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+    ) -> Result<(), Errno> {
+        let (from, to) = (
+            me.item(parent).ok_or(Errno::ENOENT)?,
+            me.item(newparent).ok_or(Errno::ENOENT)?,
+        );
+        let (ino, item) = me.child(parent, name)?;
+        let newname = newname.to_str().ok_or(Errno::EINVAL)?;
+        let target = me.child(newparent, OsStr::new(newname)).ok();
+        if let Some((tino, titem)) = &target {
+            if *tino == ino {
+                return Ok(());
+            }
+            if titem.is_container() || item.is_container() {
+                return Err(Errno::EEXIST);
+            }
+        }
+        let pending = me.pending(ino);
+        match (pending, target) {
+            // A file written here taking another's name — an editor's save: what it replaces
+            // (Apple's file, or another being written) goes, and Apple's into Recently Deleted
+            // only once the new bytes are there (writes::send).
+            (Some(p), Some((tino, titem))) => {
+                let theirs = me.pending(tino);
+                if let Some(w) = &me.writes {
+                    w.items
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&tino);
+                    w.drop_staging(tino);
+                }
+                let replaced = theirs.map_or(Some(titem), |t| t.replaces);
+                // The file this one was copied from, if it was Apple's and is left behind by
+                // the rename, goes as a rename would take it.
+                if let Some(old) = p
+                    .replaces
+                    .as_ref()
+                    .filter(|o| replaced.as_ref().is_none_or(|r| r.drivewsid != o.drivewsid))
+                {
+                    me.change(me.remote.delete(old), &[&from])?;
+                }
+                me.restage(ino, &p.name, newname)?;
+                me.with_pending(ino, |now| {
+                    now.folder = to.drivewsid.clone();
+                    now.name = newname.to_string();
+                    now.replaces = replaced;
+                    now.dirty = true;
+                    now.generation += 1;
+                });
+            }
+            // Apple's file taking another's name: the other into Recently Deleted first.
+            (None, Some((tino, titem))) => {
+                match me.pending(tino) {
+                    Some(t) => {
+                        if let Some(w) = &me.writes {
+                            w.items
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&tino);
+                            w.drop_staging(tino);
+                        }
+                        if let Some(old) = t.replaces {
+                            me.change(me.remote.delete(&old), &[&to])?;
+                        }
+                    }
+                    None => me.change(me.remote.delete(&titem), &[&to])?,
+                }
+                me.move_and_rename(&item, &from, &to, name, newname)?;
+            }
+            // A file written here, to a free name: Apple's copy (if any) is moved and renamed
+            // there, and what is waiting follows it.
+            (Some(p), None) => {
+                if let Some(old) = &p.replaces {
+                    me.move_and_rename(old, &from, &to, name, newname)?;
+                    let now = me
+                        .store
+                        .children(&to.drivewsid)
+                        .and_then(|c| c.into_iter().find(|i| i.drivewsid == old.drivewsid));
+                    me.with_pending(ino, |w| {
+                        if let Some(n) = now {
+                            // Its version moved with the rename; not a change made elsewhere.
+                            w.replaces = Some(n);
+                        }
+                    });
+                }
+                me.restage(ino, &p.name, newname)?;
+                me.with_pending(ino, |now| {
+                    now.folder = to.drivewsid.clone();
+                    now.name = newname.to_string();
+                });
+            }
+            (None, None) => me.move_and_rename(&item, &from, &to, name, newname)?,
+        }
+        if let Some(w) = &me.writes {
+            w.save();
+        }
+        if me.pending(ino).is_some_and(|p| p.open == 0 && p.dirty) {
+            Self::schedule(me, ino, writes::SETTLE);
+        }
+        Ok(())
+    }
+
+    fn restage(&self, ino: u64, from: &str, to: &str) -> Result<(), Errno> {
+        self.writes
+            .as_ref()
+            .ok_or(Errno::EROFS)?
+            .rename_staging(ino, from, to)
+            .map_err(|_| Errno::EIO)
     }
 }
 
@@ -279,20 +763,67 @@ fn quiet_note(e: &str) {
 
 impl Filesystem for DriveFs {
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        match self.children(parent) {
-            Ok(children) => match children.into_iter().find(|(n, ..)| OsStr::new(n) == name) {
-                Some((_, ino, item)) => reply.entry(&TTL, &self.attr(ino, &item), Generation(0)),
-                None => reply.error(Errno::ENOENT),
-            },
+        match self.0.child(parent.0, name) {
+            Ok((ino, item)) => reply.entry(&TTL, &self.0.attr(ino, &item), Generation(0)),
             Err(e) => reply.error(e),
         }
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-        match self.item(ino) {
-            Some(item) => reply.attr(&TTL, &self.attr(ino.0, &item)),
+        match self.0.item(ino.0) {
+            Some(item) => reply.attr(&TTL, &self.0.attr(ino.0, &item)),
             None => reply.error(Errno::ENOENT),
         }
+    }
+
+    fn setattr(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<TimeOrNow>,
+        _mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        _fh: Option<FileHandle>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<BsdFileFlags>,
+        reply: ReplyAttr,
+    ) {
+        let inner = &self.0;
+        let Some(item) = inner.item(ino.0) else {
+            return reply.error(Errno::ENOENT);
+        };
+        // Only a file's length is Apple's to keep; modes and times are taken as they are.
+        if let (Some(size), false) = (size, item.is_container()) {
+            if let Err(e) = inner.begin_writing(ino.0, &item, size > 0) {
+                return reply.error(e);
+            }
+            let (Some(w), Some(p)) = (&inner.writes, inner.pending(ino.0)) else {
+                return reply.error(Errno::EROFS);
+            };
+            let ok = std::fs::OpenOptions::new()
+                .write(true)
+                .open(w.staging(ino.0, &p.name))
+                .and_then(|f| f.set_len(size))
+                .is_ok();
+            if !ok {
+                return reply.error(Errno::EIO);
+            }
+            inner.with_pending(ino.0, |p| {
+                p.dirty = true;
+                p.generation += 1;
+                p.modified = SystemTime::now();
+            });
+            if inner.pending(ino.0).is_some_and(|p| p.open == 0) {
+                Inner::schedule(inner, ino.0, writes::SETTLE);
+            }
+        }
+        reply.attr(&TTL, &inner.attr(ino.0, &item));
     }
 
     fn readdir(
@@ -303,19 +834,20 @@ impl Filesystem for DriveFs {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let children = match self.children(ino) {
+        let inner = &self.0;
+        let children = match inner.children(ino.0) {
             Ok(c) => c,
             Err(e) => return reply.error(e),
         };
         if offset == 0 {
-            if let Some(folder) = self.item(ino) {
-                self.fill_thumbnails(&folder, &children);
+            if let Some(folder) = inner.item(ino.0) {
+                inner.fill_thumbnails(&folder, &children);
             }
         }
-        let parent = self
-            .item(ino)
+        let parent = inner
+            .item(ino.0)
             .and_then(|i| i.parent_id)
-            .and_then(|p| self.inodes.lock().ok().and_then(|n| n.ino_of(&p)))
+            .and_then(|p| inner.inodes.lock().ok().and_then(|n| n.ino_of(&p)))
             .unwrap_or(1);
         let mut all: Vec<(u64, FileType, String)> = vec![
             (ino.0, FileType::Directory, ".".into()),
@@ -345,25 +877,162 @@ impl Filesystem for DriveFs {
     }
 
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-        let Some(item) = self.item(ino) else {
+        let inner = &self.0;
+        let Some(item) = inner.item(ino.0) else {
             return reply.error(Errno::ENOENT);
         };
         if item.is_container() {
             return reply.error(Errno::EISDIR);
         }
-        if flags.acc_mode() != OpenAccMode::O_RDONLY {
+        let writing = flags.acc_mode() != OpenAccMode::O_RDONLY;
+        let truncate = flags.0 & libc::O_TRUNC != 0;
+        if writing && inner.writes.is_none() {
             return reply.error(Errno::EROFS);
         }
-        // A thumbnailer is not let download a file only to draw it small (see is_thumbnailer).
-        let pid = req.pid();
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
-        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .unwrap_or_default();
-        if is_thumbnailer(&comm, &cmdline) && !self.cache.whole(&item) {
-            return reply.error(Errno::EACCES);
+        if inner.pending(ino.0).is_none() {
+            if writing {
+                if let Err(e) = inner.begin_writing(ino.0, &item, !truncate) {
+                    return reply.error(e);
+                }
+            } else {
+                // A thumbnailer is not let download a file only to draw it small.
+                let pid = req.pid();
+                let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+                let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_default();
+                if is_thumbnailer(&comm, &cmdline) && !inner.cache.whole(&item) {
+                    return reply.error(Errno::EACCES);
+                }
+                return reply.opened(FileHandle(0), FopenFlags::empty());
+            }
         }
-        reply.opened(FileHandle(0), FopenFlags::empty());
+        if truncate {
+            if let (Some(w), Some(p)) = (&inner.writes, inner.pending(ino.0)) {
+                let _ = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(w.staging(ino.0, &p.name))
+                    .and_then(|f| f.set_len(0));
+            }
+        }
+        inner.with_pending(ino.0, |p| {
+            p.open += 1;
+            if truncate {
+                p.dirty = true;
+                p.generation += 1;
+                p.modified = SystemTime::now();
+            }
+        });
+        // The kernel's page cache is not kept for a file being written: every read is ours.
+        reply.opened(FileHandle(ino.0), FopenFlags::FOPEN_DIRECT_IO);
+    }
+
+    fn create(
+        &self,
+        req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        flags: i32,
+        reply: ReplyCreate,
+    ) {
+        let inner = &self.0;
+        let Some(writes) = inner.writes.clone() else {
+            return reply.error(Errno::EROFS);
+        };
+        let Some(folder) = inner.item(parent.0) else {
+            return reply.error(Errno::ENOENT);
+        };
+        let Some(name) = name.to_str() else {
+            return reply.error(Errno::EINVAL);
+        };
+        if let Ok((ino, item)) = inner.child(parent.0, OsStr::new(name)) {
+            if flags & libc::O_EXCL != 0 {
+                return reply.error(Errno::EEXIST);
+            }
+            if item.is_container() {
+                return reply.error(Errno::EISDIR);
+            }
+            let truncate = flags & libc::O_TRUNC != 0;
+            if inner.pending(ino).is_none() {
+                if let Err(e) = inner.begin_writing(ino, &item, !truncate) {
+                    return reply.error(e);
+                }
+            }
+            if truncate {
+                if let Some(p) = inner.pending(ino) {
+                    let _ = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(writes.staging(ino, &p.name))
+                        .and_then(|f| f.set_len(0));
+                }
+            }
+            inner.with_pending(ino, |p| {
+                p.open += 1;
+                if truncate {
+                    p.dirty = true;
+                    p.generation += 1;
+                }
+            });
+            let _ = req;
+            return reply.created(
+                &TTL,
+                &inner.attr(ino, &item),
+                Generation(0),
+                FileHandle(ino),
+                FopenFlags::FOPEN_DIRECT_IO,
+            );
+        }
+        let ino = inner
+            .inodes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .local(&folder.drivewsid, name);
+        let staged = writes.staging(ino, name);
+        let made = staged
+            .parent()
+            .map(std::fs::create_dir_all)
+            .transpose()
+            .is_ok()
+            && std::fs::File::create(&staged).is_ok();
+        if !made {
+            return reply.error(Errno::EIO);
+        }
+        writes
+            .items
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                ino,
+                Pending {
+                    folder: folder.drivewsid.clone(),
+                    name: name.to_string(),
+                    replaces: None,
+                    open: 1,
+                    dirty: true,
+                    generation: 1,
+                    modified: SystemTime::now(),
+                    sender: false,
+                    quiet_since: None,
+                },
+            );
+        inner
+            .inodes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .place(ino, parent.0, name);
+        writes.save();
+        let Some(item) = inner.item(ino) else {
+            return reply.error(Errno::EIO);
+        };
+        reply.created(
+            &TTL,
+            &inner.attr(ino, &item),
+            Generation(0),
+            FileHandle(ino),
+            FopenFlags::FOPEN_DIRECT_IO,
+        );
     }
 
     fn read(
@@ -377,12 +1046,23 @@ impl Filesystem for DriveFs {
         _lock: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let Some(item) = self.item(ino) else {
+        let inner = &self.0;
+        // A file being written reads what has been written.
+        if let (Some(w), Some(p)) = (&inner.writes, inner.pending(ino.0)) {
+            let mut buf = vec![0u8; size as usize];
+            return match std::fs::File::open(w.staging(ino.0, &p.name))
+                .and_then(|f| f.read_at(&mut buf, offset))
+            {
+                Ok(n) => reply.data(&buf[..n]),
+                Err(_) => reply.error(Errno::EIO),
+            };
+        }
+        let Some(item) = inner.item(ino.0) else {
             return reply.error(Errno::ENOENT);
         };
-        let (cache, remote) = (Arc::clone(&self.cache), Arc::clone(&self.remote));
+        let (cache, remote) = (Arc::clone(&inner.cache), Arc::clone(&inner.remote));
         // Answered when the bytes are here, without holding up the folder's other requests.
-        self.rt.spawn(async move {
+        inner.rt.spawn(async move {
             match cache
                 .read(remote.as_ref(), &item, offset, u64::from(size))
                 .await
@@ -391,6 +1071,87 @@ impl Filesystem for DriveFs {
                 Err(_) => reply.error(Errno::EIO),
             }
         });
+    }
+
+    fn write(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
+        data: &[u8],
+        _write_flags: WriteFlags,
+        _flags: OpenFlags,
+        _lock: Option<LockOwner>,
+        reply: ReplyWrite,
+    ) {
+        let inner = &self.0;
+        let (Some(w), Some(p)) = (&inner.writes, inner.pending(ino.0)) else {
+            return reply.error(Errno::EBADF);
+        };
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .open(w.staging(ino.0, &p.name))
+            .and_then(|f| f.write_all_at(data, offset));
+        if written.is_err() {
+            return reply.error(Errno::EIO);
+        }
+        inner.with_pending(ino.0, |p| {
+            p.dirty = true;
+            p.generation += 1;
+            p.modified = SystemTime::now();
+        });
+        reply.written(u32::try_from(data.len()).unwrap_or(u32::MAX));
+    }
+
+    fn flush(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _lock: LockOwner,
+        reply: ReplyEmpty,
+    ) {
+        reply.ok();
+    }
+
+    fn fsync(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        // On this computer's disk is as far as a sync can promise; Apple's copy follows.
+        if let (Some(w), Some(p)) = (&self.0.writes, self.0.pending(ino.0)) {
+            let _ = std::fs::File::open(w.staging(ino.0, &p.name)).and_then(|f| f.sync_all());
+        }
+        reply.ok();
+    }
+
+    fn release(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        _flags: OpenFlags,
+        _lock: Option<LockOwner>,
+        _flush: bool,
+        reply: ReplyEmpty,
+    ) {
+        let inner = &self.0;
+        let last = inner.with_pending(ino.0, |p| {
+            p.open = p.open.saturating_sub(1);
+            p.open == 0 && p.dirty
+        });
+        if last == Some(true) {
+            if let Some(w) = &inner.writes {
+                w.save();
+            }
+            Inner::schedule(inner, ino.0, writes::SETTLE);
+        }
+        reply.ok();
     }
 
     fn mkdir(
@@ -402,18 +1163,19 @@ impl Filesystem for DriveFs {
         _umask: u32,
         reply: ReplyEntry,
     ) {
-        let Some(folder) = self.item(parent) else {
+        let inner = &self.0;
+        let Some(folder) = inner.item(parent.0) else {
             return reply.error(Errno::ENOENT);
         };
         let Some(name) = name.to_str() else {
             return reply.error(Errno::EINVAL);
         };
-        if self.child(parent, OsStr::new(name)).is_ok() {
+        if inner.child(parent.0, OsStr::new(name)).is_ok() {
             return reply.error(Errno::EEXIST);
         }
-        match self.change(self.remote.mkdir(&folder, name), &[&folder]) {
-            Ok(_) => match self.child(parent, OsStr::new(name)) {
-                Ok((ino, item)) => reply.entry(&TTL, &self.attr(ino, &item), Generation(0)),
+        match inner.change(inner.remote.mkdir(&folder, name), &[&folder]) {
+            Ok(_) => match inner.child(parent.0, OsStr::new(name)) {
+                Ok((ino, item)) => reply.entry(&TTL, &inner.attr(ino, &item), Generation(0)),
                 Err(e) => reply.error(e),
             },
             Err(e) => reply.error(e),
@@ -421,11 +1183,17 @@ impl Filesystem for DriveFs {
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        self.remove(parent, name, false, reply);
+        match self.0.remove(parent.0, name, false) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
     }
 
     fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        self.remove(parent, name, true, reply);
+        match self.0.remove(parent.0, name, true) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
     }
 
     fn rename(
@@ -438,42 +1206,49 @@ impl Filesystem for DriveFs {
         _flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
-        let (Some(from), Some(to)) = (self.item(parent), self.item(newparent)) else {
-            return reply.error(Errno::ENOENT);
-        };
-        let (_, item) = match self.child(parent, name) {
-            Ok(c) => c,
-            Err(e) => return reply.error(e),
-        };
-        let Some(newname) = newname.to_str() else {
-            return reply.error(Errno::EINVAL);
-        };
-        // Over something already there is not done yet: replacing a file is a write, and
-        // nothing is ever overwritten before writes keep a copy of what they replace.
-        if self.child(newparent, OsStr::new(newname)).is_ok() {
-            return reply.error(Errno::EEXIST);
+        match Inner::rename(&self.0, parent.0, name, newparent.0, newname) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
         }
-        if parent != newparent {
-            if let Err(e) = self.change(self.remote.move_to(&item, &to), &[&from, &to]) {
-                return reply.error(e);
-            }
-        }
-        if name != OsStr::new(newname) {
-            // Moved, it is found again in its new folder under its old name, then renamed.
-            let moved = match self.child(newparent, name) {
-                Ok((_, i)) => i,
-                Err(e) => return reply.error(e),
-            };
-            if let Err(e) = self.change(self.remote.rename(&moved, newname), &[&to]) {
-                return reply.error(e);
-            }
-        }
-        reply.ok();
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
-        // Read-only: nothing free to write into, as a mounted disc says.
-        reply.statfs(0, 0, 0, 0, 0, 4096, 255, 4096);
+        let inner = &self.0;
+        // The account's own storage, asked at most once a minute: a file manager checks there
+        // is room before copying in.
+        let known = *inner
+            .space
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let space = match known {
+            Some((s, at)) if at.elapsed() < Duration::from_secs(60) => Some(s),
+            _ => {
+                let remote = Arc::clone(&inner.remote);
+                let got = inner
+                    .rt
+                    .block_on(async move {
+                        tokio::time::timeout(Duration::from_secs(5), remote.space()).await
+                    })
+                    .ok()
+                    .and_then(Result::ok);
+                if let Some(s) = got {
+                    *inner
+                        .space
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((s, std::time::Instant::now()));
+                }
+                got.or(known.map(|(s, _)| s))
+            }
+        };
+        let block = 4096u64;
+        match (space, inner.writes.is_some()) {
+            (Some((used, total)), true) => {
+                let free = total.saturating_sub(used) / block;
+                reply.statfs(total / block, free, free, 0, 0, 4096, 255, 4096);
+            }
+            _ => reply.statfs(0, 0, 0, 0, 0, 4096, 255, 4096),
+        }
     }
 }
 

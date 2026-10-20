@@ -1,7 +1,8 @@
 //! iCloud Drive as a folder on this computer (quince-vfs), served by the app itself: its
 //! signed-in session, its library, and what it learns kept in the library for the window too.
-//! Off until it is turned on in Settings. Folders can be made, items renamed, moved and deleted
-//! (into Recently Deleted); a file's own bytes are not written yet. See docs/mount-design.md.
+//! Off until it is turned on in Settings. Everything a folder does: files written (kept here,
+//! then sent), folders made, renames, moves, deletes into Recently Deleted. See
+//! docs/mount-design.md.
 
 use crate::{Auth, Data};
 use quince_core::drive::DriveItem;
@@ -87,6 +88,41 @@ impl Remote for AppRemote {
             quince_icloud::drive::move_to(&http, &root, params, &item, &to)
                 .await
                 .map_err(|e| e.to_string())
+        })
+    }
+
+    fn upload(&self, folder: &DriveItem, path: &std::path::Path) -> Fut<DriveItem> {
+        let (app, folder, path) = (
+            self.app.clone(),
+            folder.drivewsid.clone(),
+            path.to_path_buf(),
+        );
+        Box::pin(async move {
+            let (http, docws, params) = context(&app, "docws").await?;
+            let drivews = context(&app, "drivews").await?.1;
+            let progress: quince_icloud::drive::Progress = Arc::new(|_, _| {});
+            quince_icloud::drive::upload(&http, &docws, &drivews, params, &folder, &path, progress)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn space(&self) -> Fut<(u64, u64)> {
+        let app = self.app.clone();
+        Box::pin(async move {
+            let (http, setup, params) = {
+                let auth = app.state::<Auth>();
+                let client = auth.client.lock().await;
+                (
+                    client.http().clone(),
+                    client.setup_url().to_string(),
+                    client.service_params(),
+                )
+            };
+            let s = quince_icloud::drive::storage(&http, &setup, params)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok((s.used_bytes, s.total_bytes))
         })
     }
 
@@ -241,7 +277,10 @@ fn start(app: &AppHandle, at: &std::path::Path) -> Result<(), String> {
         .filter(|p| p.is_absolute())
         .or_else(|| app.path().home_dir().ok().map(|h| h.join(".cache")))
         .map(|c| c.join("thumbnails"));
-    let mut fs = quince_vfs::fuse::DriveFs::new(remote, store, cache, rt);
+    // What is written here waits beside the library (owner-only) until Apple has it.
+    let mut fs = quince_vfs::fuse::DriveFs::new(remote, store, cache, rt)
+        .with_writes(&crate::state_dir(app).join("drive-writes"))
+        .map_err(|e| e.to_string())?;
     if let Some(thumbs) = thumbs {
         fs = fs.with_thumbnails(at.to_path_buf(), thumbs);
     }

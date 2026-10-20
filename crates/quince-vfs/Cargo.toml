@@ -11,6 +11,8 @@ tokio = { workspace = true, features = ["sync", "rt", "time"] }
 libc = "0.2"
 quince-media = { path = "../quince-media" }
 md-5 = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.18", default-features = false }

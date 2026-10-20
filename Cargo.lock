@@ -3758,6 +3758,8 @@ dependencies = [
  "md-5",
  "quince-core",
  "quince-media",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

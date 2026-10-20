@@ -8,6 +8,7 @@
 
 #[cfg(target_os = "linux")]
 pub mod fuse;
+pub mod writes;
 
 use quince_core::drive::DriveItem;
 use std::collections::HashMap;
@@ -37,9 +38,19 @@ pub trait Remote: Send + Sync + 'static {
     fn move_to(&self, _item: &DriveItem, _folder: &DriveItem) -> Fut<()> {
         Box::pin(async { Err("read-only".to_string()) })
     }
+    /// A file sent into `folder`, named after the file at `path`; Apple names it "name 2"
+    /// when the name is taken. Answers the file as Apple filed it.
+    fn upload(&self, _folder: &DriveItem, _path: &Path) -> Fut<DriveItem> {
+        Box::pin(async { Err("read-only".to_string()) })
+    }
     /// An item deleted — into Apple's Recently Deleted, where it can be put back for 30 days.
     fn delete(&self, _item: &DriveItem) -> Fut<()> {
         Box::pin(async { Err("read-only".to_string()) })
+    }
+    /// The account's iCloud storage, `(used, total)` in bytes: a file manager checks there is
+    /// room before it copies anything in.
+    fn space(&self) -> Fut<(u64, u64)> {
+        Box::pin(async { Err("unknown".to_string()) })
     }
     /// Apple's own pictures of a folder's files, by item id: for a file manager's thumbnails,
     /// so it never downloads a file to draw one. None by default.
@@ -124,6 +135,48 @@ impl Inodes {
             None => return,
         };
         self.paths.insert(ino, at);
+    }
+
+    /// An inode for a file made on this computer and not yet at Apple: its own id
+    /// ("LOCAL::<inode>") until Apple files it.
+    pub fn local(&mut self, folder: &str, name: &str) -> u64 {
+        let ino = self.next;
+        self.next += 1;
+        let (stem, ext) = match name.rsplit_once('.') {
+            Some((s, e)) if !s.is_empty() => (s.to_string(), Some(e.to_string())),
+            _ => (name.to_string(), None),
+        };
+        let item = DriveItem {
+            drivewsid: format!("LOCAL::{ino}"),
+            parent_id: Some(folder.to_string()),
+            name: stem,
+            extension: ext,
+            kind: "FILE".into(),
+            size: Some(0),
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: None,
+        };
+        self.by_id.insert(item.drivewsid.clone(), ino);
+        self.by_ino.insert(ino, item);
+        ino
+    }
+
+    /// An inode given to the item Apple filed for it (a local file sent, or a file replaced):
+    /// the same inode, so a program holding it open carries on.
+    pub fn bind(&mut self, ino: u64, item: &DriveItem) {
+        if let Some(old) = self.by_ino.get(&ino).map(|i| i.drivewsid.clone()) {
+            if old != item.drivewsid {
+                self.by_id.remove(&old);
+            }
+        }
+        if let Some(other) = self.by_id.insert(item.drivewsid.clone(), ino) {
+            if other != ino {
+                self.by_ino.remove(&other);
+            }
+        }
+        self.by_ino.insert(ino, item.clone());
     }
 
     /// The inode an item already has, by Apple's id.
