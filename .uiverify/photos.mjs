@@ -169,7 +169,7 @@ ok((await page.locator(".px-tile").count()) === 5, "and it is back in the librar
 
 // Zooming into a photo: double-click zooms to where was clicked, with the full picture
 // laid over; Escape zooms back out before it closes; Ctrl+wheel zooms; the grid's own zoom
-// keys are not taken while a photo is open; the next photo slides in.
+// keys are not taken while a photo is open; the arrows step at once.
 await page.locator(".px-tile").nth(1).dblclick();
 await page.waitForTimeout(600);
 const scaleOf = () => page.locator(".px-pan").evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
@@ -195,13 +195,12 @@ ok((await scaleOf()) > 1.2 && (await page.evaluate(() => getComputedStyle(docume
   "Ctrl = zooms the photo, not the grid behind it");
 await page.keyboard.press("Control+0");
 await page.keyboard.press("ArrowLeft");
-await page.waitForTimeout(30);
-ok((await page.locator(".px-pan").evaluate((el) => el.getAnimations().length)) > 0, "the photo before slides in");
-await page.waitForTimeout(400);
+await page.waitForTimeout(60);
+ok(/p1/.test((await page.locator(".px-shown").getAttribute("src")) ?? ""), "the left arrow goes to the photo before, at once");
 await page.keyboard.press("ArrowRight");
 await page.keyboard.press("ArrowRight");
-await page.waitForTimeout(30);
-ok((await page.locator(".px-video").evaluate((el) => el.getAnimations().length)) > 0, "a video slides in the same way");
+await page.waitForTimeout(60);
+ok((await page.locator(".px-video").count()) === 1, "and on to a video");
 await page.waitForTimeout(400);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(650);

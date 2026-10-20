@@ -71,6 +71,7 @@ step "place & keywords"  node .uiverify/photos-info.mjs
 step "download options"  node .uiverify/photos-download.mjs
 step "adjust date"       node .uiverify/photos-date.mjs
 step "photo search"      node .uiverify/photos-search.mjs
+step "full quality"      node .uiverify/photos-quality.mjs
 step "notes delete"      node .uiverify/notes-delete.mjs
 step "empty today"     node .uiverify/reminders-empty.mjs
 step "calendar keys"   node .uiverify/calendar-keys.mjs
@@ -125,6 +126,7 @@ step "webkit: place & keywords" env ENGINE=webkit node .uiverify/photos-info.mjs
 step "webkit: downloads" env ENGINE=webkit node .uiverify/photos-download.mjs
 step "webkit: adjust date" env ENGINE=webkit node .uiverify/photos-date.mjs
 step "webkit: search"    env ENGINE=webkit node .uiverify/photos-search.mjs
+step "webkit: full quality" env ENGINE=webkit node .uiverify/photos-quality.mjs
 step "webkit: delete"    env ENGINE=webkit node .uiverify/notes-delete.mjs
 step "webkit: row hover" env ENGINE=webkit node .uiverify/row-hover.mjs
 step "webkit: fold"      env ENGINE=webkit node .uiverify/sidebar-fold.mjs

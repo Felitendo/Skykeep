@@ -3461,6 +3461,23 @@ fn adopt_writer(library: &mut Library) {
     quince_icloud::topotext::set_writer(*id.as_bytes());
 }
 
+/// WebKitGTK hands its frames to the compositor as DMA-BUFs; on Wayland that path tears and
+/// flickers — whole-window flashes on a resize, on a menu, on a screen changing — which he saw
+/// across the app. Turning it off (WebKitGTK's own switch, the one Tauri's Linux users are
+/// pointed to) draws through shared memory instead, steadily. Only under Wayland, only when the
+/// person has not set it themselves; `QUINCE_DMABUF=1` keeps DMA-BUF for anyone who wants it.
+fn steady_drawing() {
+    let wayland = std::env::var("XDG_SESSION_TYPE")
+        .is_ok_and(|s| s.eq_ignore_ascii_case("wayland"))
+        || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
+    let chosen = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some()
+        || std::env::var_os("QUINCE_DMABUF").is_some_and(|v| v == "1");
+    if wayland && !chosen {
+        // Before any thread starts: nothing else can be reading the environment yet.
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 /// Whether this session runs under a tiling Wayland compositor, which manages windows itself.
 fn tiling_compositor() -> bool {
     let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
@@ -3542,6 +3559,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn main() {
+    steady_drawing();
     tauri::Builder::default()
         // One Quince at a time: opening it again brings back the one already running, which
         // may be sitting in the tray with its window closed.

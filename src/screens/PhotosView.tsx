@@ -22,6 +22,7 @@ import { useSync } from "../lib/sync";
 import { Notice } from "../components/Notice";
 import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
+import { Portal } from "../components/Portal";
 import { Slideshow } from "./photos/Slideshow";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
@@ -152,6 +153,35 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
       </div>
     </div>
   );
+}
+
+/**
+ * Whole pictures already fetched and decoded, by photo. A photo in here opens and is stepped to
+ * at full quality at once — never a blurry stand-in first. The bytes stay in the webview's
+ * cache (and on disk); this is only which are known to be ready.
+ */
+const decodedFull = new Set<string>();
+const warming = new Map<string, Promise<boolean>>();
+function warm(id: string): Promise<boolean> {
+  if (decodedFull.has(id)) return Promise.resolve(true);
+  let ready = warming.get(id);
+  if (!ready) {
+    const img = new Image();
+    img.decoding = "async";
+    img.src = pictureSrc(id, "full");
+    ready = img
+      .decode()
+      .then(
+        () => {
+          decodedFull.add(id);
+          return true;
+        },
+        () => false,
+      )
+      .finally(() => warming.delete(id));
+    warming.set(id, ready);
+  }
+  return ready;
 }
 
 /** What a tile can ask of the screen; one object, kept the same, so tiles need not redraw. */
@@ -511,7 +541,6 @@ export function PhotosView() {
       height: Math.round(p.height * k),
       maxWidth: "none",
       maxHeight: "none",
-      backgroundImage: `url("${pictureSrc(p.id, "thumb")}")`,
     };
   };
   const still = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -573,14 +602,11 @@ export function PhotosView() {
     // A finish that never comes (a hidden window stops the clock) must not leave it open.
     closingRun.current = { anims, timer: window.setTimeout(done, 600) };
   }, [open, photos]);
-  // Which way the last step went, so the next photo slides in from that side.
-  const stepped = useRef(0);
   const step = useCallback(
     (by: number) =>
       setOpen((at) => {
         if (at === null || !photos) return at;
         const to = Math.max(0, Math.min(photos.length - 1, at + by));
-        if (to !== at) stepped.current = by;
         return to;
       }),
     [photos],
@@ -642,17 +668,16 @@ export function PhotosView() {
     return () => el.removeEventListener("wheel", wheel);
   });
   const dragging = useRef<{ x: number; y: number; lx: number; ly: number } | null>(null);
-  // The next photo slides in from the side the step went to.
-  useLayoutEffect(() => {
-    const by = stepped.current;
-    stepped.current = 0;
-    const el = stage.current?.querySelector<HTMLElement>(".px-pan, .px-video");
-    if (!by || !el || still() || typeof el.animate !== "function") return;
-    el.animate(
-      [{ transform: `translateX(${by * 56}px)`, opacity: 0.2 }, { transform: "none", opacity: 1 }],
-      { duration: 300, easing: spring() },
-    );
-  }, [shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The photos either side are fetched and decoded while this one shows, so a step lands on
+  // a whole picture at once. (No slide between them: moving a picture as it changes is what
+  // tore in WebKitGTK.)
+  useEffect(() => {
+    if (open === null || !photos) return;
+    for (const by of [1, -1, 2, -2]) {
+      const p = photos[open + by];
+      if (p && p.kind !== "video") void warm(p.id);
+    }
+  }, [open, photos]);
 
   // The viewer's keys: arrows to go through, Escape to close, I for the details.
   useEffect(() => {
@@ -844,9 +869,12 @@ export function PhotosView() {
 
   const selected = useMemo(() => (photos ?? []).filter((p) => chosen.has(p.id)), [photos, chosen]);
 
-  const openAt = (index: number) => {
+  const openAt = async (index: number) => {
     const p = photos?.[index];
     if (!p) return;
+    // Open at full quality: the whole picture decoded first — from disk, a moment — but never
+    // waited on for longer than a blink; past that it opens and the whole picture follows.
+    if (p.kind !== "video") await Promise.race([warm(p.id), new Promise((r) => window.setTimeout(r, 400))]);
     stopClosing();
     const tile = document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(p.id)}"]`);
     origin.current = tile?.getBoundingClientRect() ?? null;
@@ -1884,8 +1912,13 @@ export function PhotosView() {
                   onPointerUp={() => (dragging.current = null)}
                   onPointerCancel={() => (dragging.current = null)}
                 >
-                  <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
-                  {sharp === shown.id && (
+                  {decodedFull.has(shown.id) ? (
+                    // Already whole and decoded: drawn at once, at full quality, alone.
+                    <img key={`${shown.id}-whole`} className="px-shown" src={pictureSrc(shown.id, "full")} alt={shown.filename ?? ""} decoding="sync" draggable={false} style={fitted(shown)} />
+                  ) : (
+                    <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
+                  )}
+                  {sharp === shown.id && !decodedFull.has(shown.id) && (
                     <img
                       key={`${shown.id}-full`}
                       className="px-sharp"
@@ -2048,9 +2081,23 @@ export function PhotosView() {
         </p>
       )}
       {menu && <RowMenu at={menu.at} entries={menu.entries} onClose={() => setMenu(null)} />}
-      {show && <Slideshow photos={show.list} start={show.start} onClose={() => setShow(null)} />}
-      {adjusting && <AdjustDate photo={adjusting} onSave={(t) => void redate(adjusting, t)} onClose={() => setAdjusting(null)} />}
-      {options && <DownloadOptions photos={options} onPick={(w) => void downloadAs(options, w)} onClose={() => setOptions(null)} />}
+      {/* Drawn at the top of the page: inside the screen, whose content moves by a transform,
+          "fixed" was fixed to the screen and a slideshow played inside a box, not the window. */}
+      {show && (
+        <Portal>
+          <Slideshow photos={show.list} start={show.start} onClose={() => setShow(null)} />
+        </Portal>
+      )}
+      {adjusting && (
+        <Portal>
+          <AdjustDate photo={adjusting} onSave={(t) => void redate(adjusting, t)} onClose={() => setAdjusting(null)} />
+        </Portal>
+      )}
+      {options && (
+        <Portal>
+          <DownloadOptions photos={options} onPick={(w) => void downloadAs(options, w)} onClose={() => setOptions(null)} />
+        </Portal>
+      )}
       <UploadPanel uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />
     </div>
   );

@@ -19,6 +19,11 @@ await page.locator(".px-tile").nth(1).click({ button: "right" });
 await page.locator(".row-menu").getByText("Start Slideshow").click();
 await page.waitForTimeout(200);
 ok((await page.locator(".px-show").count()) === 1 && (await count()) === "2 of 5", `it begins at the photo it was started from  "${await count()}"`);
+const fills = await page.locator(".px-show").evaluate((el) => {
+  const r = el.getBoundingClientRect();
+  return r.left === 0 && r.top === 0 && Math.round(r.width) === innerWidth && Math.round(r.height) === innerHeight;
+});
+ok(fills, "it fills the whole window, not a box inside the screen");
 await page.waitForTimeout(4400);
 ok((await count()) === "3 of 5", `and goes on by itself  "${await count()}"`);
 await page.keyboard.press(" ");
