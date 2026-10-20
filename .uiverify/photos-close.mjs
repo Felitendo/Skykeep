@@ -35,6 +35,32 @@ for (const round of [1, 2]) {
   ok(!grew && trace.at(-1) === null, `close ${round}: the photo only shrinks, then the viewer is gone — no frame drawn larger  ${JSON.stringify(seen)}`);
   await page.waitForTimeout(300);
 }
+// No frame can flash however the engine starts or ends an animation: the backdrop's own
+// style is its first frame (hidden) the moment the viewer appears, its last (shown) once the
+// fade runs; closing, its own style is gone (hidden) while it fades out.
+const own = await page.evaluate(() => new Promise((resolve) => {
+  const seen = {};
+  new MutationObserver((_, mo) => {
+    const bd = document.querySelector(".px-backdrop");
+    if (bd && seen.first === undefined) {
+      seen.first = bd.style.opacity;
+      mo.disconnect();
+      document.getAnimations().forEach((a) => a.ready.then(() => { seen.running = bd.style.opacity; }));
+      setTimeout(() => resolve(seen), 400);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+  document.querySelectorAll(".px-tile")[2].dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+}));
+ok(own.first === "0" && own.running === "1", `opening: the backdrop's own style is hidden before its fade, shown once it runs  ${JSON.stringify(own)}`);
+await page.waitForTimeout(500);
+const closingOwn = await page.evaluate(() => new Promise((resolve) => {
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  const bd = document.querySelector(".px-backdrop");
+  Promise.all(bd.getAnimations().map((a) => a.ready)).then(() => resolve(bd.style.opacity));
+}));
+ok(closingOwn === "0", `closing: its own style is already gone while it fades  ${JSON.stringify(closingOwn)}`);
+await page.waitForTimeout(700);
+
 // The window's own colour follows what fills its edges, so a resize shows no lighter band.
 const rgb = (sel) => page.evaluate((s) => /(\d+), (\d+), (\d+)/.exec(getComputedStyle(document.querySelector(s)).backgroundColor).slice(1).join(","), sel);
 const body = await rgb("body");

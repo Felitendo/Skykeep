@@ -28,6 +28,7 @@ import { Slideshow } from "./photos/Slideshow";
 import { useAsk } from "./photos/Ask";
 import { VideoPlayer } from "./photos/VideoPlayer";
 import { tintFrom } from "../lib/tint";
+import { glide } from "../lib/motion";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
 
@@ -142,7 +143,9 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
       <button
         key={p.id}
         className={`px-slip${i === at ? " is-shown" : ""}`}
-        style={{ left: i * (SLIP + GAP) + (i > at ? SHOWN - SLIP : 0) }}
+        // Placed by transform, eased with its neighbours: the shown one widens as they make
+        // room, all on the compositor — before, each step jumped every slip into place.
+        style={{ transform: `translateX(${i * (SLIP + GAP) + (i > at ? SHOWN - SLIP : 0)}px)` }}
         aria-label={p.filename ?? "Photo"}
         aria-current={i === at}
         onClick={() => i !== at && onPick(i)}
@@ -151,8 +154,20 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
       </button>,
     );
   }
+  // A wheel or a two-finger swipe over the strip skims through the photos, as in Photos: one
+  // photo every 40 pixels of scroll, a fling several.
+  const spun = useRef(0);
+  const onWheel = (e: React.WheelEvent) => {
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    spun.current += e.deltaMode === 1 ? d * 40 : d;
+    const by = Math.trunc(spun.current / 40);
+    if (!by) return;
+    spun.current -= by * 40;
+    const to = Math.max(0, Math.min(photos.length - 1, at + by));
+    if (to !== at) onPick(to);
+  };
   return (
-    <div className="px-strip" role="toolbar" aria-label="Photos">
+    <div className="px-strip" role="toolbar" aria-label="Photos" onWheel={onWheel}>
       <div className="px-strip-run" style={{ transform: `translateX(${shift}px)` }}>
         {slips}
       </div>
@@ -559,6 +574,16 @@ export function PhotosView() {
   const stage = useRef<HTMLDivElement | null>(null);
   const origin = useRef<DOMRect | null>(null);
   const closing = useRef(false);
+  /**
+   * While a photo is open the grid behind it is not drawn at all (content-visibility): each
+   * step to the next photo moved the selection in it, and the engine laid out and painted
+   * thousands of tiles no one could see — 80 ms a step, the stutter in going through photos.
+   * It keeps its place and state, and is back the moment the viewer starts to close.
+   */
+  const [leaving, setLeaving] = useState(false);
+  useEffect(() => {
+    if (open === null) setLeaving(false);
+  }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
   // A close still running: its animations and its fallback, so a photo opened in the middle
   // of it is not shut by the close finishing, nor left faded out by it.
   const closingRun = useRef<{ anims: Animation[]; timer: number } | null>(null);
@@ -572,6 +597,16 @@ export function PhotosView() {
       a.onfinish = null;
       a.cancel();
     });
+    // What the close wrote as the elements' own style (see glide) goes with it: the viewer stays,
+    // whole, as it was before the close began.
+    const el = viewer.current;
+    if (el) {
+      el.style.opacity = "";
+      el.style.visibility = "";
+      for (const part of el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info, .px-strip")) part.style.opacity = "";
+      const img = el.querySelector<HTMLElement>(".px-pan, .px-video");
+      if (img) img.style.transform = "";
+    }
   };
   // The photo's own box, laid out by the engine itself against the stage (a size container):
   // as large as fits, never past 1.5× its own pixels, its shape exact. Known before it loads,
@@ -617,9 +652,9 @@ export function PhotosView() {
     // it as it grew: two photos, torn.
     const img = el.querySelector<HTMLElement>(".px-pan, .px-video");
     const t = img && toTile(img, from);
-    if (img && t) img.animate([{ transform: t }, { transform: "none" }], { duration: 460, easing: spring() });
+    if (img && t) glide(img, [{ transform: t }, { transform: "none" }], { duration: 460, easing: spring() });
     for (const part of el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info, .px-strip")) {
-      part.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+      glide(part, [{ opacity: "0" }, { opacity: "1" }], { duration: 160, easing: "ease-out" });
     }
   }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -632,6 +667,10 @@ export function PhotosView() {
   }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const close = useCallback(() => {
+    // The grid back in the page first (see `behind`): the photo goes back into its tile, which
+    // must be laid out to be found.
+    document.querySelector(".px-scroll")?.removeAttribute("data-behind");
+    setLeaving(true);
     const el = viewer.current;
     const current = open !== null ? photos?.[open] : null;
     const tile = current ? document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(current.id)}"]`) : null;
@@ -667,10 +706,10 @@ export function PhotosView() {
     };
     const t = seen && img ? toTile(img, box) : null;
     const parts = [...el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info, .px-strip")];
-    const anims = parts.map((part) => part.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, easing: "ease-in", fill: "forwards" }));
+    const anims = parts.map((part) => glide(part, [{ opacity: "1" }, { opacity: "0" }], { duration: 140, easing: "ease-in" }));
     const last = t && img
-      ? img.animate([{ transform: "none" }, { transform: t }], { duration: 340, easing: spring(), fill: "forwards" })
-      : el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, easing: "ease-in", fill: "forwards" });
+      ? glide(img, [{ transform: "none" }, { transform: t }], { duration: 340, easing: spring() })
+      : glide(el, [{ opacity: "1" }, { opacity: "0" }], { duration: 200, easing: "ease-in" });
     anims.push(last);
     last.onfinish = done;
     // A finish that never comes (a hidden window stops the clock) must not leave it open.
@@ -1039,6 +1078,7 @@ export function PhotosView() {
     // its thumbnail and screen-sized picture, and the whole one follows.
     if (p.kind !== "video") await Promise.race([warm(p), new Promise((r) => window.setTimeout(r, 150))]);
     stopClosing();
+    setLeaving(false);
     const tile = document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(p.id)}"]`);
     origin.current = tile?.getBoundingClientRect() ?? null;
     setOpen(index);
@@ -2075,7 +2115,7 @@ export function PhotosView() {
           onClick={(e) => {
             // A click on the space between photos lets the selection go, as in Photos.
             if (!(e.target as HTMLElement).closest(".px-tile")) setChosen(new Set());
-          }} data-fit={fit || undefined} style={{ "--across": across } as React.CSSProperties}>
+          }} data-fit={fit || undefined} data-behind={(open !== null && !leaving) || undefined} style={{ "--across": across } as React.CSSProperties}>
           {months.map((m, k) => (
             <Month
               key={`${k}/${m.label}`}

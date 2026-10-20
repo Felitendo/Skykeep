@@ -36,5 +36,19 @@ ok((await centred()) <= 1, "and the strip glides to keep it in the middle");
 for (let i = 0; i < 40; i++) await page.keyboard.press("ArrowRight");
 await page.waitForTimeout(700);
 ok((await centred()) <= 1 && (await page.locator(".px-slip").count()) <= 61, "stepping far along, still in the middle and still few");
+// A wheel or a two-finger swipe over the strip skims: four notches of 40 go four photos on,
+// and the slips glide on the compositor, never jump.
+const which = async () => (await page.locator(".px-slip.is-shown img").getAttribute("src")).split("pic%2F")[1].split("%2F")[0];
+const before = await which();
+const strip = await page.locator(".px-strip").boundingBox();
+await page.mouse.move(strip.x + strip.width / 2, strip.y + strip.height / 2);
+for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 40); await page.waitForTimeout(60); }
+await page.waitForTimeout(700);
+const after = await which();
+const ids = await page.evaluate(() => window.__photos.map((p) => p.id));
+ok(ids.indexOf(after) - ids.indexOf(before) === 4, `scrolling over the strip skims through the photos  (${ids.indexOf(before)} → ${ids.indexOf(after)})`);
+ok((await centred()) <= 1, "and the strip keeps the shown one in the middle");
+ok(await page.locator(".px-slip").first().evaluate((e) => getComputedStyle(e).transform !== "none" && /transform/.test(getComputedStyle(e).transitionProperty)),
+  "slips are placed and eased by transform");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);
