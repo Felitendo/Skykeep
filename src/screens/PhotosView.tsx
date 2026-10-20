@@ -231,10 +231,84 @@ export function PhotosView() {
     // A finish that never comes (a hidden window stops the clock) must not leave it open.
     closingRun.current = { anims, timer: window.setTimeout(done, 600) };
   }, [open, photos]);
+  // Which way the last step went, so the next photo slides in from that side.
+  const stepped = useRef(0);
   const step = useCallback(
-    (by: number) => setOpen((at) => (at === null || !photos ? at : Math.max(0, Math.min(photos.length - 1, at + by)))),
+    (by: number) =>
+      setOpen((at) => {
+        if (at === null || !photos) return at;
+        const to = Math.max(0, Math.min(photos.length - 1, at + by));
+        if (to !== at) stepped.current = by;
+        return to;
+      }),
     [photos],
   );
+
+  /*
+   * Zooming into a photo, as Photos does: double-click zooms to where was clicked and back;
+   * Ctrl + scroll (a trackpad pinch arrives as that) zooms about the pointer; dragging pans.
+   * One transform on the photo's frame, so it is the compositor's work. Past the fit, the
+   * full picture is laid over the screen-sized one once it has loaded.
+   */
+  const [lens, setLens] = useState({ k: 1, x: 0, y: 0 });
+  const lensRef = useRef(lens);
+  lensRef.current = lens;
+  const pan = useRef<HTMLDivElement | null>(null);
+  const [sharp, setSharp] = useState<string | null>(null);
+  const unzoom = () => setLens({ k: 1, x: 0, y: 0 });
+  // Kept so the image's edge never comes in past the middle of the stage.
+  const bound = (k: number, x: number, y: number) => {
+    const el = pan.current;
+    if (!el || k <= 1) return { k: 1, x: 0, y: 0 };
+    const mx = ((k - 1) * el.offsetWidth) / 2;
+    const my = ((k - 1) * el.offsetHeight) / 2;
+    return { k, x: Math.max(-mx, Math.min(mx, x)), y: Math.max(-my, Math.min(my, y)) };
+  };
+  // Zoom to k, keeping the point under (sx, sy) — screen coordinates — where it is.
+  const zoomAt = (k: number, sx: number, sy: number) => {
+    const el = pan.current;
+    if (!el) return;
+    const box = el.getBoundingClientRect();
+    const was = lensRef.current;
+    const cx = box.left + box.width / 2 - was.x;
+    const cy = box.top + box.height / 2 - was.y;
+    const [dx, dy] = [sx - cx, sy - cy];
+    const px = (dx - was.x) / was.k;
+    const py = (dy - was.y) / was.k;
+    const next = Math.max(1, Math.min(5, k));
+    setLens(bound(next, dx - next * px, dy - next * py));
+  };
+  useEffect(() => {
+    unzoom();
+    setSharp(null);
+  }, [shown?.id]);
+  useEffect(() => {
+    if (lens.k > 1.15 && shown && shown.kind !== "video") setSharp(shown.id);
+  }, [lens.k > 1.15, shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A pinch or Ctrl + wheel: the page must not zoom too, so this listener is not passive.
+  useEffect(() => {
+    const el = stage.current;
+    if (!el) return undefined;
+    const wheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      zoomAt(lensRef.current.k * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  });
+  const dragging = useRef<{ x: number; y: number; lx: number; ly: number } | null>(null);
+  // The next photo slides in from the side the step went to.
+  useLayoutEffect(() => {
+    const by = stepped.current;
+    stepped.current = 0;
+    const el = stage.current?.querySelector<HTMLElement>(".px-pan, .px-video");
+    if (!by || !el || still() || typeof el.animate !== "function") return;
+    el.animate(
+      [{ transform: `translateX(${by * 56}px)`, opacity: 0.2 }, { transform: "none", opacity: 1 }],
+      { duration: 300, easing: spring() },
+    );
+  }, [shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The viewer's keys: arrows to go through, Escape to close, I for the details.
   useEffect(() => {
@@ -243,7 +317,14 @@ export function PhotosView() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "ArrowRight") step(1);
       else if (e.key === "ArrowLeft") step(-1);
+      else if (e.key === "Escape" && lensRef.current.k > 1) unzoom();
       else if (e.key === "Escape") close();
+      else if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0") && current?.kind !== "video") {
+        const box = pan.current?.getBoundingClientRect();
+        if (!box) return;
+        const k = e.key === "0" ? 1 : lensRef.current.k * (e.key === "-" ? 1 / 1.5 : 1.5);
+        zoomAt(k, box.left + box.width / 2, box.top + box.height / 2);
+      }
       else if (e.key === " " && current?.kind === "video") void play(current);
       else if (e.key.toLowerCase() === "i" && !e.metaKey && !e.ctrlKey) setInfo((v) => !v);
       // As in Photos: "." favorites, Delete sends it to Recently Deleted.
@@ -740,7 +821,7 @@ export function PhotosView() {
   // Zoom from the keys as in Photos: Ctrl and + or −.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || viewer.current) return;
       if (e.key === "=" || e.key === "+") setZoom((z) => Math.min(ACROSS.length - 1, z + 1));
       else if (e.key === "-") setZoom((z) => Math.max(0, z - 1));
       else return;
@@ -984,7 +1065,38 @@ export function PhotosView() {
                   </span>
                 </button>
               ) : (
-                <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" style={fitted(shown)} />
+                <div
+                  ref={pan}
+                  className={`px-pan${lens.k > 1 ? " is-zoomed" : ""}`}
+                  style={{ transform: lens.k > 1 ? `translate(${lens.x}px, ${lens.y}px) scale(${lens.k})` : undefined }}
+                  onDoubleClick={(e) => (lens.k > 1 ? unzoom() : zoomAt(2.5, e.clientX, e.clientY))}
+                  onPointerDown={(e) => {
+                    if (lensRef.current.k <= 1 || e.button !== 0) return;
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    dragging.current = { x: e.clientX, y: e.clientY, lx: lensRef.current.x, ly: lensRef.current.y };
+                  }}
+                  onPointerMove={(e) => {
+                    const d = dragging.current;
+                    if (!d) return;
+                    setLens(bound(lensRef.current.k, d.lx + e.clientX - d.x, d.ly + e.clientY - d.y));
+                  }}
+                  onPointerUp={() => (dragging.current = null)}
+                  onPointerCancel={() => (dragging.current = null)}
+                >
+                  <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
+                  {sharp === shown.id && (
+                    <img
+                      key={`${shown.id}-full`}
+                      className="px-sharp"
+                      src={pictureSrc(shown.id, "full")}
+                      alt=""
+                      aria-hidden="true"
+                      decoding="async"
+                      draggable={false}
+                      onLoad={(e) => e.currentTarget.classList.add("is-in")}
+                    />
+                  )}
+                </div>
               )}
               {open !== null && open > 0 && (
                 <button className="px-nav is-prev" aria-label="Previous" onClick={() => step(-1)}>

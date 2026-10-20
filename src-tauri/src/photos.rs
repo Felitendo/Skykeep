@@ -48,6 +48,8 @@ pub enum Size {
     Thumb,
     Medium,
     Original,
+    /// The whole picture, displayable: for a photo zoomed in.
+    Full,
     Video,
 }
 
@@ -57,6 +59,7 @@ impl Size {
             Size::Thumb => "thumb",
             Size::Medium => "medium",
             Size::Original => "original",
+            Size::Full => "full",
             Size::Video => "video",
         }
     }
@@ -65,6 +68,7 @@ impl Size {
             Size::Thumb => l.thumb.clone(),
             Size::Medium => l.medium.clone().or_else(|| l.thumb.clone()),
             Size::Original => l.original.clone(),
+            Size::Full => l.full.clone().or_else(|| l.medium.clone()),
             Size::Video => l.video.clone(),
         }
     }
@@ -80,6 +84,7 @@ pub fn requested(path: &str) -> Option<(String, Size)> {
         "thumb" => Size::Thumb,
         "medium" => Size::Medium,
         "original" => Size::Original,
+        "full" => Size::Full,
         "video" => Size::Video,
         _ => return None,
     };

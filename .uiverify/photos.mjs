@@ -163,6 +163,45 @@ await page.locator(".px-source", { hasText: "Library" }).click();
 await page.waitForTimeout(250);
 ok((await page.locator(".px-tile").count()) === 5, "and it is back in the library");
 
+// Zooming into a photo: double-click zooms to where was clicked, with the full picture
+// laid over; Escape zooms back out before it closes; Ctrl+wheel zooms; the grid's own zoom
+// keys are not taken while a photo is open; the next photo slides in.
+await page.locator(".px-tile").nth(1).dblclick();
+await page.waitForTimeout(600);
+const scaleOf = () => page.locator(".px-pan").evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
+await page.locator(".px-pan").dblclick({ position: { x: 40, y: 40 } });
+await page.waitForTimeout(150);
+ok((await scaleOf()) > 2, `double-click zooms in  ×${(await scaleOf()).toFixed(2)}`);
+ok(/full/.test((await page.locator(".px-sharp").getAttribute("src")) ?? ""), "and the full picture is laid over");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(150);
+ok((await scaleOf()) === 1 && (await page.locator(".px-viewer").count()) === 1, "Escape zooms back out first, and keeps the photo open");
+const box = await page.locator(".px-pan").boundingBox();
+await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+await page.keyboard.down("Control");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Control");
+await page.waitForTimeout(150);
+ok((await scaleOf()) > 1.5, `Ctrl + scroll zooms about the pointer  ×${(await scaleOf()).toFixed(2)}`);
+const gridAcross = await page.evaluate(() => getComputedStyle(document.querySelector(".px-scroll")).getPropertyValue("--across"));
+await page.keyboard.press("Control+0");
+await page.keyboard.press("Control+=");
+await page.waitForTimeout(150);
+ok((await scaleOf()) > 1.2 && (await page.evaluate(() => getComputedStyle(document.querySelector(".px-scroll")).getPropertyValue("--across"))) === gridAcross,
+  "Ctrl = zooms the photo, not the grid behind it");
+await page.keyboard.press("Control+0");
+await page.keyboard.press("ArrowLeft");
+await page.waitForTimeout(30);
+ok((await page.locator(".px-pan").evaluate((el) => el.getAnimations().length)) > 0, "the photo before slides in");
+await page.waitForTimeout(400);
+await page.keyboard.press("ArrowRight");
+await page.keyboard.press("ArrowRight");
+await page.waitForTimeout(30);
+ok((await page.locator(".px-video").evaluate((el) => el.getAnimations().length)) > 0, "a video slides in the same way");
+await page.waitForTimeout(400);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(650);
+
 const across = async () => page.locator(".px-grid").first().evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(" ").length);
 const before = await across();
 await page.getByRole("button", { name: "Zoom In" }).click();

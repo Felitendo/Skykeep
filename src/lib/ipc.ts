@@ -553,7 +553,7 @@ export function noteMediaSrc(id: string, part: "file" | "preview"): string {
 }
 
 /** One of a photo's pictures, served from the disk cache (fetched from Apple once). */
-export function pictureSrc(id: string, size: "thumb" | "medium" | "original" | "video"): string {
+export function pictureSrc(id: string, size: "thumb" | "medium" | "full" | "original" | "video"): string {
   return convertFileSrc(`pic/${id}/${size}`, "quince");
 }
 

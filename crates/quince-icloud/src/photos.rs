@@ -50,6 +50,9 @@ pub struct Links {
     pub thumb: Option<String>,
     pub medium: Option<String>,
     pub original: Option<String>,
+    /// The whole picture as a JPEG, for zooming in: Apple's full-size rendition, or the
+    /// original itself when that is already a JPEG or PNG (a HEIC original shows nowhere here).
+    pub full: Option<String>,
     /// A video's playable rendition, or a Live Photo's moving part.
     pub video: Option<String>,
 }
@@ -71,6 +74,12 @@ pub fn links_of(master: &Value) -> Links {
         medium: link(f, "resJPEGMedRes", "med.jpg")
             .or_else(|| link(f, "resJPEGFullRes", "full.jpg")),
         original: link(f, "resOriginalRes", "original"),
+        full: link(f, "resJPEGFullRes", "full.jpg").or_else(|| {
+            let kind = f.pointer("/itemType/value").and_then(Value::as_str);
+            matches!(kind, Some("public.jpeg" | "public.png"))
+                .then(|| link(f, "resOriginalRes", "original"))
+                .flatten()
+        }),
         video: link(f, "resVidMedRes", "video.mp4")
             .or_else(|| link(f, "resVidSmallRes", "video.mp4"))
             .or_else(|| link(f, "resOriginalVidComplRes", "live.mov")),
