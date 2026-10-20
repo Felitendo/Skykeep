@@ -32,6 +32,28 @@ ok(new Set(titles).size === titles.length && (await page.locator(".px-tile").cou
 await page.locator(".px-source", { hasText: "Library" }).click();
 await page.waitForTimeout(300);
 
+// Switching views, frame by frame: the title never stands over another view's photos, a photo
+// in both views keeps its picture (no reload, no flash), and the new view starts at its top.
+await page.locator(".px-scroll").evaluate((e) => (e.scrollTop = 200));
+await page.evaluate(() => {
+  window.__frames = [];
+  document.querySelector('.px-tile[data-id="p1"] img').__kept = true;
+  const tick = () => {
+    window.__frames.push({ title: document.querySelector(".px-bar h1")?.textContent, ids: [...document.querySelectorAll(".px-tile")].map((t) => t.dataset.id).join() });
+    if (window.__frames.length < 40) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+});
+await page.locator(".px-source", { hasText: "Favorites" }).click();
+await page.waitForTimeout(900);
+const frames = await page.evaluate(() => window.__frames);
+const wrong = frames.filter((f) => f.title === "Favorites" && f.ids !== "p1");
+ok(wrong.length === 0, `no frame shows Favorites over other photos  (${wrong.length} of ${frames.length})`);
+ok(await page.evaluate(() => document.querySelector('.px-tile[data-id="p1"] img').__kept === true), "a photo in both views keeps its picture across the switch");
+ok((await page.locator(".px-scroll").evaluate((e) => e.scrollTop)) === 0, "and the new view starts at its top");
+await page.locator(".px-source", { hasText: "Library" }).click();
+await page.waitForTimeout(300);
+
 await page.locator(".nav-item", { hasText: "Photos" }).focus();
 await page.keyboard.press("Control+a");
 await page.waitForTimeout(100);

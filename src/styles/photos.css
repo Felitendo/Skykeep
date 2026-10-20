@@ -318,7 +318,20 @@
 .px-pan.is-zoomed { cursor: grab; }
 .px-pan.is-zoomed:active { cursor: grabbing; }
 .px-pan > img { grid-area: 1 / 1; }
-.px-sharp { width: 100%; height: 100%; max-width: none; max-height: none; opacity: 0; transition: opacity 180ms ease; pointer-events: none; }
+/* Laid exactly over the screen-sized picture, out of the layout: however large the whole picture
+   is, it never sizes the frame. */
+.px-sharp {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 180ms ease;
+  pointer-events: none;
+}
 .px-sharp.is-in { opacity: 1; }
 /* The thumbnail, already on disk, fills the photo's box until the sharper picture covers it. */
 .px-shown { background-size: 100% 100%; transform-origin: center; will-change: transform; }

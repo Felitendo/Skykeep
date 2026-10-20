@@ -316,12 +316,16 @@ export function PhotosView() {
 
   // Each view keeps the sort chosen for it, on this machine. Albums keep their own order, and
   // Recently Deleted its own, as in Photos.
+  // The view the photos on screen belong to. A view chosen changes the title, the months and
+  // the order only when its photos arrive, all with them — not a frame before, over the last
+  // view's photos.
+  const [drawn, setDrawn] = useState<{ view: PhotoView; album: PhotoAlbum | null }>({ view, album });
   const [sorts, setSorts] = useState(readSorts);
-  const sortable = !album && view !== "recentlyDeleted" && view !== "rated";
-  const sort = sortable ? (sorts[view] ?? defaultSort(view)) : null;
+  const sortable = !drawn.album && drawn.view !== "recentlyDeleted" && drawn.view !== "rated";
+  const sort = sortable ? (sorts[drawn.view] ?? defaultSort(drawn.view)) : null;
   const chooseSort = (next: Sort) => {
     setSorts((all) => {
-      const was = { ...all, [view]: next };
+      const was = { ...all, [drawn.view]: next };
       try {
         window.localStorage.setItem(SORTS_KEY, JSON.stringify(was));
       } catch {
@@ -350,6 +354,7 @@ export function PhotosView() {
     ]);
     if (mine !== reads.current) return;
     setPhotos(list);
+    setDrawn({ view, album });
     setCounts(Object.fromEntries(c));
     setAlbums(a);
     // An album deleted elsewhere is not left open, empty.
@@ -362,17 +367,17 @@ export function PhotosView() {
   // Grouped by month, as the library reads; an album is one grid in its own order.
   const months = useMemo(() => {
     const out: { label: string; items: { photo: Photo; index: number }[] }[] = [];
-    if (album) return [{ label: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
+    if (drawn.album) return [{ label: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
     (photos ?? []).forEach((photo, index) => {
       // Rated is grouped by how many stars, as icloud.com's Rated page is.
       const stars = photo.rating ?? 0;
-      const label = view === "rated" ? `${stars} ${stars === 1 ? "Star" : "Stars"}` : monthOf(sortKey(photo, sort?.by ?? "taken"));
+      const label = drawn.view === "rated" && !drawn.album ? `${stars} ${stars === 1 ? "Star" : "Stars"}` : monthOf(sortKey(photo, sort?.by ?? "taken"));
       const last = out[out.length - 1];
       if (last && last.label === label) last.items.push({ photo, index });
       else out.push({ label, items: [{ photo, index }] });
     });
     return out;
-  }, [photos, sort?.by, album, view]);
+  }, [photos, sort?.by, drawn]);
 
   const shown = open !== null ? photos?.[open] ?? null : null;
 
@@ -445,7 +450,10 @@ export function PhotosView() {
     origin.current = null;
     const el = viewer.current;
     if (!from || !el || still() || typeof el.animate !== "function") return;
-    const img = el.querySelector<HTMLElement>(".px-shown");
+    // The photo's whole frame moves — the screen-sized picture and the whole one over it
+    // together. Moving the one alone, the whole one (already on disk) stood full size over
+    // it as it grew: two photos, torn.
+    const img = el.querySelector<HTMLElement>(".px-pan, .px-video");
     const t = img && toTile(img, from);
     if (img && t) img.animate([{ transform: t }, { transform: "none" }], { duration: 460, easing: spring() });
     for (const part of el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info")) {
@@ -457,7 +465,7 @@ export function PhotosView() {
     const el = viewer.current;
     const current = open !== null ? photos?.[open] : null;
     const tile = current ? document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(current.id)}"]`) : null;
-    const img = el?.querySelector<HTMLElement>(".px-shown");
+    const img = el?.querySelector<HTMLElement>(".px-pan, .px-video");
     const box = tile?.getBoundingClientRect();
     const scroller = tile?.closest(".px-scroll")?.getBoundingClientRect();
     // Only back into a tile that is on screen; otherwise the viewer just fades.
@@ -1285,7 +1293,13 @@ export function PhotosView() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const title = album?.name ?? [...VIEWS, ...MEDIA, ...UTILITIES].find((v) => v.key === view)?.label ?? "Photos";
+  const title = drawn.album
+    ? (album?.id === drawn.album.id ? album.name : drawn.album.name)
+    : [...VIEWS, ...MEDIA, ...UTILITIES].find((v) => v.key === drawn.view)?.label ?? "Photos";
+  // A view arrives at its top, not wherever the last one was scrolled to.
+  useLayoutEffect(() => {
+    if (scroller.current) scroller.current.scrollTop = 0;
+  }, [drawn]);
   const across = ACROSS[zoom];
 
   const source = (v: (typeof VIEWS)[number]) => (
@@ -1493,12 +1507,12 @@ export function PhotosView() {
           }} data-fit={fit || undefined} style={{ "--across": across } as React.CSSProperties}>
           {months.map((m, k) => (
             <Month
-              key={`${view}/${album?.id ?? ""}/${k}/${m.label}`}
+              key={`${k}/${m.label}`}
               label={m.label}
               items={m.items}
               chosen={chosen}
               anchor={anchor.current}
-              deleted={view === "recentlyDeleted" && !album}
+              deleted={drawn.view === "recentlyDeleted" && !drawn.album}
               eager={k < 3}
               across={across}
               fit={fit}
