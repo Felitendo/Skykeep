@@ -192,6 +192,10 @@ const scaleOf = () => page.locator(".px-pan").evaluate((el) => new DOMMatrix(get
 await page.locator(".px-pan").dblclick({ position: { x: 40, y: 40 } });
 await page.waitForTimeout(400); // the zoom glides
 ok((await scaleOf()) > 2, `double-click zooms in  ×${(await scaleOf()).toFixed(2)}`);
+ok(await page.locator(".px-pan").evaluate((p) => {
+  const cs = getComputedStyle(p);
+  return cs.willChange === "auto" && cs.transitionDuration.split(",").every((d) => parseFloat(d) === 0) && !/matrix3d|translate3d/.test(p.style.transform) && p.getAnimations().length === 0;
+}), "zooming is drawn by the page: no transition, no will-change, no 3D layer, no compositor animation (each flickered)");
 ok(/full/.test((await page.locator(".px-sharp").getAttribute("src")) ?? ""), "and the full picture is laid over");
 await page.keyboard.press("Escape");
 await page.waitForTimeout(400); // the zoom glides

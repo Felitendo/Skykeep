@@ -38,12 +38,17 @@ await page.waitForTimeout(150);
 await page.keyboard.press("ArrowLeft");
 await page.waitForTimeout(150);
 ok((await count()) === "2 of 5", "and the left back");
-// The one leaving dissolves away above the next (never left whole behind it), then is gone.
+// The next dissolves in over the one leaving (drawn frame by frame by the page, never the
+// compositor's), the leaving one still beneath it, then gone.
 await page.keyboard.press("ArrowRight");
 await page.waitForTimeout(250);
-const mid = await page.locator(".px-slide.is-leaving").evaluate((e) => Number(getComputedStyle(e).opacity)).catch(() => -1);
+const mid = await page.evaluate(() => {
+  const a = document.querySelector(".px-slide:not(.is-leaving)"), l = document.querySelector(".px-slide.is-leaving");
+  return { arriving: Number(getComputedStyle(a).opacity), leaving: l ? Number(getComputedStyle(l).opacity) : -1, engine: document.querySelector(".px-show").getAnimations({ subtree: true }).length };
+});
 await page.waitForTimeout(900);
-ok(mid > 0 && mid < 1 && (await page.locator(".px-slide.is-leaving").count()) === 0, `the photo leaving fades out over the next, then goes  (opacity ${mid.toFixed?.(2)} mid-way)`);
+ok(mid.arriving > 0 && mid.arriving < 1 && mid.leaving === 1 && mid.engine === 0 && (await page.locator(".px-slide.is-leaving").count()) === 0,
+  `the next dissolves in over the one leaving, none of it the engine's, then the old one goes  ${JSON.stringify(mid)}`);
 await page.keyboard.press("ArrowLeft");
 await page.waitForTimeout(150);
 await page.keyboard.press("Escape");

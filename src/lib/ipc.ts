@@ -102,6 +102,10 @@ export const api = {
   /** What the window shows pictures at, so the app makes them before they are shown. */
   photosPrepare: (shown: { cell: number; fit: boolean; stageW: number; stageH: number; dpr: number }) =>
     invoke<void>("photos_prepare", { shown }),
+  /** Shared albums, made or joined, newest first — from Apple each time. */
+  photosSharedAlbums: () => invoke<SharedAlbum[]>("photos_shared_albums"),
+  photosSharedCreate: (name: string) => invoke<string>("photos_shared_create", { name }),
+  photosSharedDelete: (guid: string) => invoke<void>("photos_shared_delete", { guid }),
   /** Every photo of one burst, in the order they were shot. */
   photosBurst: (burst: string) => invoke<Photo[]>("photos_burst", { burst }),
   /** Favorite, Delete (to Recently Deleted) or Recover; answers the photo as Apple now has it. */
@@ -596,6 +600,17 @@ export function fitSrc(id: string, long: number): string {
   const step = FITS.find((f) => f >= long) ?? FITS[FITS.length - 1];
   return convertFileSrc(`pic/${id}/fit${step}`, "quince");
 }
+
+/** A shared album (Apple's sharedstreams service). */
+export type SharedAlbum = {
+  guid: string;
+  name: string;
+  createdAt: number | null;
+  /** Made by this account, as against one it was invited to. */
+  owned: boolean;
+  public: boolean;
+  contributions: boolean;
+};
 
 export type PhotoAlbum = {
   id: string;

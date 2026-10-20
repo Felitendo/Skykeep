@@ -3,9 +3,10 @@
  * year's months as tiles with a photo from each, in the calendar's order. A tile takes the grid
  * to that month. Only months the library has photos in are offered.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { fitSrc, type Photo } from "../../lib/ipc";
 import { Portal } from "../../components/Portal";
+import { fadeIn } from "../../lib/fade";
 
 export type MonthCover = { label: string; year: number; month: number; cover: Photo };
 
@@ -32,6 +33,9 @@ export function JumpTo({
   const box = useRef<HTMLDivElement | null>(null);
   const shown = months.filter((m) => m.year === year).sort((a, b) => a.month - b.month);
 
+  // Once, before its first frame is painted: run after it, the picker showed whole for a frame
+  // and then began its fade from nothing — a flash.
+  useLayoutEffect(() => fadeIn(box.current, { duration: 140 }), []);
   useEffect(() => {
     box.current?.focus({ preventScroll: true });
     const down = (e: MouseEvent) => {

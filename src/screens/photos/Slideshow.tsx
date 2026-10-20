@@ -9,9 +9,10 @@
  * one leaving fades out as the next fades in — before, it stood whole behind the next for the
  * length of the fade, its edges showing round a narrower photo, and then vanished at once.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Pause, Play, X } from "lucide-react";
 import { fitSrc, type Photo } from "../../lib/ipc";
+import { fadeIn } from "../../lib/fade";
 
 const HOLD = 4000;
 const FADE = 900;
@@ -46,7 +47,6 @@ export function Slideshow({ photos, start, onClose }: { photos: Photo[]; start: 
   const [leaving, setLeaving] = useState<number | null>(null);
   const [playing, setPlaying] = useState(true);
   const [awake, setAwake] = useState(true);
-  const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const shown = useRef(first);
 
   // To another photo, once its picture is decoded.
@@ -112,12 +112,19 @@ export function Slideshow({ photos, start, onClose }: { photos: Photo[]; start: 
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The arriving photo dissolves in over the one leaving, frame by frame from the page, set before
+  // its first frame is painted.
+  const arriving = useRef<HTMLImageElement | null>(null);
+  useLayoutEffect(() => {
+    if (leaving !== null) fadeIn(arriving.current, { duration: FADE });
+  }, [at]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const photo = list[at];
   if (!photo) return null;
   const old = leaving !== null ? list[leaving] : null;
   return (
     <div
-      className={`px-show${awake ? " is-awake" : ""}${still ? " is-still" : ""}`}
+      className={`px-show${awake ? " is-awake" : ""}`}
       role="dialog"
       aria-label="Slideshow"
       onMouseMove={wake}
@@ -126,7 +133,8 @@ export function Slideshow({ photos, start, onClose }: { photos: Photo[]; start: 
       {old && <img key={`l${old.id}-${leaving}`} className="px-slide is-leaving" src={screenSrc(old)} alt="" aria-hidden="true" />}
       <img
         key={`a${photo.id}-${at}`}
-        className={`px-slide${playing ? "" : " is-paused"}`}
+        ref={arriving}
+        className="px-slide"
         src={screenSrc(photo)}
         alt={photo.filename ?? "Photo"}
       />

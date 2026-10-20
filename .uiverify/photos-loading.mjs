@@ -46,5 +46,22 @@ const boxed = await page.evaluate(() => new Promise((resolve) => {
   [...document.querySelectorAll(".px-source")].find((e) => /Library/.test(e.textContent)).click();
 }));
 ok(!boxed, "a view that comes quickly never shows the boxes — nothing flashes");
+// Switching views settles in with a short fade drawn by the page (never the compositor's, which
+// glitched on his screen): part-shown at first, whole within a moment, nothing the engine animates.
+const fade = await page.evaluate(() => new Promise((resolve) => {
+  const scroll = document.querySelector(".px-scroll");
+  const seen = [];
+  let engine = 0;
+  const t0 = performance.now();
+  const tick = () => {
+    seen.push(Number(getComputedStyle(scroll).opacity));
+    engine = Math.max(engine, scroll.getAnimations({ subtree: true }).filter((a) => a.playState === "running").length);
+    if (performance.now() - t0 < 400) requestAnimationFrame(tick); else resolve({ seen, engine });
+  };
+  [...document.querySelectorAll(".px-source")].find((e) => /Favorites/.test(e.textContent)).click();
+  requestAnimationFrame(tick);
+}));
+ok(Math.min(...fade.seen) >= 0.3 && Math.min(...fade.seen) < 1 && fade.seen.at(-1) === 1 && fade.engine === 0,
+  `a view settles in with a short fade — never from nothing, whole within a moment, none of it the engine's  (min ${Math.min(...fade.seen).toFixed(2)}, last ${fade.seen.at(-1)}, engine ${fade.engine})`);
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

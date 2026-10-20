@@ -347,8 +347,9 @@
   max-width: none;
   max-height: none;
   object-fit: contain;
+  /* Hidden until it has loaded, then faded in by the page frame by frame (fadeIn) — a CSS
+     transition here was the compositor's, and flickered as a zoom brought it in. */
   opacity: 0;
-  transition: opacity 180ms ease;
   pointer-events: none;
 }
 .px-sharp.is-in { opacity: 1; }
@@ -458,17 +459,12 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
-  transform-origin: 50% 45%;
-  animation: px-arrive 900ms ease-out both, px-drift 4900ms linear both;
+  /* No CSS animation: the arriving photo fades in over the leaving one frame by frame from the
+     page (fadeIn), the leaving one still beneath it. The slow zoom across each photo was a
+     long compositor animation on a full-screen picture — the kind that glitched on his screen. */
+  z-index: 1;
 }
-/* The one leaving dissolves away from where its drift ended, over the next fading in. */
-.px-slide.is-leaving { animation: px-leave 900ms ease-in-out both; transform: scale(1.06); z-index: 1; pointer-events: none; }
-@keyframes px-leave { from { opacity: 1; } to { opacity: 0; } }
-.px-show.is-still .px-slide.is-leaving { animation: none; opacity: 0; }
-.px-slide.is-paused { animation-play-state: paused; }
-@keyframes px-arrive { from { opacity: 0; } to { opacity: 1; } }
-@keyframes px-drift { from { transform: scale(1); } to { transform: scale(1.06); } }
-.px-show.is-still .px-slide { animation: none; }
+.px-slide.is-leaving { z-index: 0; pointer-events: none; }
 .px-show-bar {
   position: absolute;
   z-index: 2;
@@ -767,7 +763,6 @@
   display: grid;
   place-items: center;
   background: rgba(0, 0, 0, 0.42);
-  animation: px-fade 160ms ease-out both;
 }
 .px-sheet {
   position: relative;
@@ -777,11 +772,8 @@
   background: var(--sheet);
   box-shadow: var(--glass-float);
   color: var(--text);
-  animation: px-rise 260ms var(--spring-smooth) both;
+  /* Fades in from the page, frame by frame (fadeSheetsIn), never a compositor animation. */
 }
-@keyframes px-fade { from { opacity: 0; } }
-@keyframes px-rise { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
-@media (prefers-reduced-motion: reduce) { .px-sheet-scrim, .px-sheet { animation: none; } }
 .px-sheet h2 { margin: 6px 0 12px; text-align: center; font-size: var(--t-15, 15px); font-weight: 700; }
 .px-sheet-x {
   position: absolute;
@@ -999,11 +991,13 @@
 .px-scroll[data-behind] { visibility: hidden; }
 
 /* What kind of photo it is, at the stage's corner, as Photos marks it: LIVE, BURST. */
+/* On the photo's own top-left corner, as Photos lays them (--photo-x/y, measured), not the
+   stage's — and not shown over a photo zoomed in. */
 .px-mark {
   position: absolute;
   z-index: 3;
-  top: 62px;
-  left: 64px;
+  top: calc(var(--photo-y, 62px) + 10px);
+  left: calc(var(--photo-x, 64px) + 10px);
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1020,7 +1014,7 @@
 }
 .px-mark:hover, .px-mark.is-on { background: rgba(28, 28, 30, 0.82); }
 .px-mark-count { font-weight: 500; opacity: 0.7; letter-spacing: 0; }
-.px-mark.is-burst { letter-spacing: 0; font-weight: 600; padding-right: 4px; }
+.px-mark.is-burst { letter-spacing: 0; font-weight: 600; padding-right: 4px; top: 62px; left: 64px; }
 .px-mark-done {
   margin-left: 6px;
   height: 18px;
@@ -1047,10 +1041,9 @@
   box-shadow: var(--glass-float);
   overflow: hidden;
   outline: none;
-  animation: px-jump-in 160ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  /* Fades in frame by frame from the page (fadeIn), never a CSS animation: animated by the
+     engine's compositor it glitched on his screen as it opened. */
 }
-@keyframes px-jump-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
-@media (prefers-reduced-motion: reduce) { .px-jump { animation: none; } }
 .px-jump-years { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; border-right: 1px solid var(--separator); overflow-y: auto; }
 .px-jump-year {
   height: 30px;
@@ -1093,3 +1086,21 @@
 /* A picture that could not be had at all draws nothing — never the engine's broken box (a
    white frame, a question mark, the file's name); what is under it shows. */
 img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }
+
+/* Shared Albums: nothing shared yet, and the name for a new one. */
+.px-shared-empty { display: grid; justify-items: start; gap: 12px; }
+.px-shared-empty p { margin: 0; }
+.px-shared-name {
+  width: 100%;
+  height: 34px;
+  margin: 4px 0 2px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-size: var(--t-15, 15px);
+  color: var(--text);
+  background: var(--field, color-mix(in srgb, var(--text) 8%, transparent));
+  box-shadow: inset 0 0 0 1px var(--field-edge, var(--separator));
+}
+.px-shared-name:focus { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-ring); }

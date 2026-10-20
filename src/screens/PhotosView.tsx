@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -28,7 +28,9 @@ import { Slideshow } from "./photos/Slideshow";
 import { useAsk } from "./photos/Ask";
 import { VideoPlayer } from "./photos/VideoPlayer";
 import { JumpTo, type MonthCover } from "./photos/JumpTo";
+import { SharedAlbums } from "./photos/SharedAlbums";
 import { tintFrom } from "../lib/tint";
+import { fadeIn } from "../lib/fade";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
 
@@ -131,8 +133,12 @@ const SHOWN = 54;
 const GAP = 2;
 const REACH = 30;
 function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick: (index: number) => void }) {
-  const from = Math.max(0, at - REACH);
-  const to = Math.min(photos.length - 1, at + REACH);
+  // Enough either side to fill the window's width and more, so a slip is always built (and its
+  // picture decoded) before it can be seen: built at the edge of the screen, slips came in
+  // blank and filled in as each step was taken.
+  const reach = Math.max(REACH, Math.ceil(window.innerWidth / (SLIP + GAP) / 2) + 12);
+  const from = Math.max(0, at - reach);
+  const to = Math.min(photos.length - 1, at + reach);
   // Each slip has its place by its index in the whole library, so the slips built as the
   // window moves along never jump; the strip is placed to put the shown one's centre in the middle.
   const shift = -(at * (SLIP + GAP) + SHOWN / 2);
@@ -151,7 +157,9 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
         onClick={() => i !== at && onPick(i)}
       >
         {/* At once, never lazily: a slip coming into the strip showed empty for a moment. */}
-        <img src={fitSrc(p.id, (i === at ? SHOWN : SLIP * 2) * (window.devicePixelRatio || 1))} alt="" decoding="async" draggable={false} />
+        {/* One size for every slip, shown or not, so a step never asks for a new picture; decoded
+            before it is drawn (they are small), so none appears blank first. */}
+        <img src={fitSrc(p.id, SHOWN * 2 * (window.devicePixelRatio || 1))} alt="" decoding="sync" draggable={false} />
       </button>,
     );
   }
@@ -424,6 +432,8 @@ export function PhotosView() {
   const [albums, setAlbums] = useState<[PhotoAlbum, number, (string | null)?][]>([]);
   /** The Albums page open: every album as a card with its cover, as icloud.com's. */
   const [albumsPage, setAlbumsPage] = useState(false);
+  /** The Shared Albums page open (Sharing, in the sidebar). */
+  const [sharedPage, setSharedPage] = useState(false);
   // Which of the sidebar's branches are open — Albums and Media Types — kept on this machine.
   const [branches, setBranches] = useState<{ albums: boolean; media: boolean }>(() => {
     try {
@@ -571,6 +581,25 @@ export function PhotosView() {
   }, [photos, sort?.by, drawn]);
 
   const shown = open !== null ? photos?.[open] ?? null : null;
+  /**
+   * The photo whose picture is on the stage. A step changes `shown` at once (its date, its
+   * place, its info) but the picture changes only once the next one is decoded — at once when
+   * it already is, as the photos either side are made to be — so a step never shows a blank or
+   * the soft thumbnail before the sharp picture: the flicker on every switch.
+   */
+  const [pictured, setPictured] = useState<Photo | null>(null);
+  useLayoutEffect(() => {
+    if (!shown) return setPictured(null);
+    if (shown.kind === "video" || decoded.has(viewSrc(shown))) return setPictured(shown);
+    let live = true;
+    const take = () => live && setPictured(shown);
+    void warm(shown).then(take);
+    const t = window.setTimeout(take, 250);
+    return () => {
+      live = false;
+      window.clearTimeout(t);
+    };
+  }, [shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // The viewer follows the photo, not its place: when the list moves under it — its date
   // changed, a sync reordered the library — it finds the photo again rather than showing
   // whichever came to stand where it was.
@@ -716,26 +745,46 @@ export function PhotosView() {
   const lensRef = useRef({ k: 1, x: 0, y: 0 });
   const [zoomed, setZoomed] = useState(false);
   const pan = useRef<HTMLDivElement | null>(null);
-  const settle = useRef<number | undefined>(undefined);
   const frame = useRef<number | null>(null);
+  // What is on the screen now, and a glide on its way to the lens.
+  const drawn_ = useRef({ k: 1, x: 0, y: 0 });
+  const gliding = useRef<number | null>(null);
+  /**
+   * The lens drawn by the page itself, once a frame: never a CSS transition, never will-change,
+   * never a 3D transform. Each of those hands the picture to WebKitGTK's compositor (a layer
+   * made as a zoom began and dropped as it ended), and on his screen that flickered — 88
+   * frames in one recording of zooming. A double-click's or a key's zoom glides over a moment,
+   * stepped from here; a pinch or a drag follows the hand directly.
+   */
+  const draw = (l: { k: number; x: number; y: number }) => {
+    drawn_.current = l;
+    const el = pan.current;
+    if (el) el.style.transform = l.k > 1 || l.x || l.y ? `translate(${l.x}px, ${l.y}px) scale(${l.k})` : "";
+  };
   const paint = (next: { k: number; x: number; y: number }, glide = false) => {
     lensRef.current = next;
     setZoomed(next.k > 1);
+    if (gliding.current !== null) {
+      cancelAnimationFrame(gliding.current);
+      gliding.current = null;
+    }
+    const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (glide && !still) {
+      const from = drawn_.current;
+      const start = performance.now();
+      const step = (now: number) => {
+        const t = Math.min(1, (now - start) / 220);
+        const e = 1 - (1 - t) ** 3;
+        draw({ k: from.k + (next.k - from.k) * e, x: from.x + (next.x - from.x) * e, y: from.y + (next.y - from.y) * e });
+        gliding.current = t < 1 ? requestAnimationFrame(step) : null;
+      };
+      gliding.current = requestAnimationFrame(step);
+      return;
+    }
     if (frame.current !== null) return;
     frame.current = requestAnimationFrame(() => {
       frame.current = null;
-      const el = pan.current;
-      if (!el) return;
-      const { k, x, y } = lensRef.current;
-      // Its own layer only while it moves — moved as one bitmap — and drawn afresh, sharp at
-      // the new size, once it rests.
-      el.style.willChange = "transform";
-      el.style.transition = glide ? "transform 280ms var(--spring-smooth, ease-out)" : "none";
-      el.style.transform = k > 1 ? `translate3d(${x}px, ${y}px, 0) scale(${k})` : "";
-      window.clearTimeout(settle.current);
-      settle.current = window.setTimeout(() => {
-        if (pan.current) pan.current.style.willChange = "";
-      }, glide ? 340 : 160);
+      draw(lensRef.current);
     });
   };
   const viewBurst = async (p: Photo) => {
@@ -858,6 +907,14 @@ export function PhotosView() {
         h: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom),
       };
       if (shown && shown.kind !== "video") setStep(viewSrc(shown));
+      // Where the photo itself sits on the stage, for the marks laid on its corner (LIVE,
+      // BURST): read a frame later, once the picture has its box.
+      requestAnimationFrame(() => {
+        const p = el.querySelector<HTMLElement>(".px-pan, .px-video");
+        if (!p) return;
+        el.style.setProperty("--photo-x", `${p.offsetLeft}px`);
+        el.style.setProperty("--photo-y", `${p.offsetTop}px`);
+      });
     };
     measure();
     const watch = new ResizeObserver(measure);
@@ -1758,9 +1815,17 @@ export function PhotosView() {
     ? (album?.id === shownAs.album.id ? album.name : shownAs.album.name)
     : [...VIEWS, ...MEDIA, ...UTILITIES].find((v) => v.key === shownAs.view)?.label ?? "Photos";
   const waitingFor = waiting ? Math.min(84, album ? (albums.find(([a]) => a.id === album.id)?.[1] ?? 21) : (counts[view] ?? 21)) : 0;
-  // A view arrives at its top, not wherever the last one was scrolled to.
+  // A view arrives at its top, not wherever the last one was scrolled to — and settles in with a
+  // short fade (drawn frame by frame by the page, never the compositor's, which glitched on his
+  // screen), from part-shown so there is never an empty moment between the two.
+  const firstDraw = useRef(true);
   useLayoutEffect(() => {
     if (scroller.current) scroller.current.scrollTop = 0;
+    if (firstDraw.current) {
+      firstDraw.current = false;
+      return;
+    }
+    fadeIn(scroller.current, { from: 0.35, duration: 160 });
   }, [drawn]);
   const across = ACROSS[zoom];
   // A cell's width in device pixels, for the size each tile's picture is made at; in steps of
@@ -1903,6 +1968,7 @@ export function PhotosView() {
           onClick={() => {
             setAlbum(a);
             setAlbumsPage(false);
+            setSharedPage(false);
             endSearch();
             setOpen(null);
           }}
@@ -1939,11 +2005,12 @@ export function PhotosView() {
     <button
       key={v.key}
       className="px-source"
-      aria-current={!album && !albumsPage && view === v.key}
+      aria-current={!album && !albumsPage && !sharedPage && view === v.key}
       onClick={() => {
         setView(v.key);
         setAlbum(null);
         setAlbumsPage(false);
+        setSharedPage(false);
         endSearch();
         setOpen(null);
       }}
@@ -1972,6 +2039,7 @@ export function PhotosView() {
             aria-current={albumsPage && folderPage === null}
             onClick={() => {
               setAlbumsPage(true);
+              setSharedPage(false);
               setFolderPage(null);
               endSearch();
               setOpen(null);
@@ -2004,10 +2072,26 @@ export function PhotosView() {
           </div>
         )}
         {UTILITIES.map(source)}
+        {/* Sharing, as icloud.com lists it: the shared albums this account has made or joined. */}
+        <p className="px-side-heading px-side-gap">Sharing</p>
+        <button
+          className="px-source"
+          aria-current={sharedPage}
+          onClick={() => {
+            setSharedPage(true);
+            setAlbumsPage(false);
+            endSearch();
+            setOpen(null);
+          }}
+        >
+          <Users className="px-glyph" size={16} strokeWidth={1.8} aria-hidden="true" />
+          <span className="px-label">Shared Albums</span>
+        </button>
       </aside>
 
-      <section className="px-main" aria-label={albumsPage ? "Albums" : title} data-page={albumsPage ? "albums" : undefined}>
-        {albumsPage && (
+      <section className="px-main" aria-label={sharedPage ? "Shared Albums" : albumsPage ? "Albums" : title} data-page={albumsPage || sharedPage ? "albums" : undefined}>
+        {sharedPage && <SharedAlbums ask={ask} onError={(m) => setError(m)} />}
+        {albumsPage && !sharedPage && (
           <div className="px-albums-page">
             {(() => {
               // This page's level: the top, or a folder's own albums and folders.
@@ -2058,6 +2142,7 @@ export function PhotosView() {
                             if (a.folder) return openFolder(a.id);
                             setAlbum(a);
                             setAlbumsPage(false);
+                            setSharedPage(false);
                           }}
                           {...dropTarget(a)}
                           data-drop={dropOn === a.id || undefined}
@@ -2428,26 +2513,33 @@ export function PhotosView() {
                 >
                   {/* The picture made the size the stage draws it at — every pixel used, none
                       thrown away by the engine — over the thumbnail until it is decoded. */}
+                  {/* The picture on the stage is `pictured`'s: the next one takes its place
+                      only once decoded (see pictured). */}
+                  {(() => {
+                    const pic = pictured && pictured.kind !== "video" ? pictured : shown;
+                    return (
                   <img
-                    key={shown.id}
+                    key={pic.id}
                     className="px-shown"
-                    src={viewSrc(shown)}
+                    src={viewSrc(pic)}
                     // What was asked for, kept whatever the fallback below does to `src`.
-                    data-picture={viewSrc(shown)}
-                    alt={shown.filename ?? ""}
+                    data-picture={viewSrc(pic)}
+                    alt={pic.filename ?? ""}
                     decoding="async"
                     draggable={false}
-                    style={fitted(shown)}
+                    style={fitted(pic)}
                     // Never the engine's broken-picture box (a white frame, a question mark, the
                     // file's name): a picture that will not come falls back to the thumbnail,
                     // and past that shows nothing over the thumbnail already painted under it.
                     onError={(e) => {
                       const img = e.currentTarget;
-                      const thumb = pictureSrc(shown.id, "thumb");
+                      const thumb = pictureSrc(pic.id, "thumb");
                       if (!img.src.includes("thumb")) img.src = thumb;
                       else img.dataset.failed = "";
                     }}
                   />
+                    );
+                  })()}
                   {moving === shown.id && videoBase && (
                     // The moving part, laid exactly over the still, played once and gone.
                     <video
@@ -2470,7 +2562,10 @@ export function PhotosView() {
                       aria-hidden="true"
                       decoding="async"
                       draggable={false}
-                      onLoad={(e) => e.currentTarget.classList.add("is-in")}
+                      onLoad={(e) => {
+                        e.currentTarget.classList.add("is-in");
+                        fadeIn(e.currentTarget, { duration: 160 });
+                      }}
                     />
                   )}
                 </div>
@@ -2478,7 +2573,7 @@ export function PhotosView() {
               {/* What kind of photo it is, as Photos marks it at the stage's corner: a Live
                   Photo plays its moving part while the pointer rests on LIVE; a burst's BURST
                   goes through all of it. */}
-              {shown.kind === "live" && videoBase && (
+              {shown.kind === "live" && videoBase && !zoomed && (
                 <button
                   className={`px-mark${moving === shown.id ? " is-on" : ""}`}
                   aria-label="Play Live Photo"
@@ -2494,7 +2589,7 @@ export function PhotosView() {
                   LIVE
                 </button>
               )}
-              {shown.burst && (shown.burstCount ?? 0) > 1 && !inBurst && (
+              {shown.burst && (shown.burstCount ?? 0) > 1 && !inBurst && !zoomed && (
                 <button className="px-mark" aria-label={`View all ${shown.burstCount} photos in this burst`} onClick={() => void viewBurst(shown)}>
                   <Layers size={13} aria-hidden="true" />
                   BURST

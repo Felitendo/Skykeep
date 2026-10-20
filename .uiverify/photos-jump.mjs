@@ -21,8 +21,19 @@ await page.waitForTimeout(500);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 
-await page.getByRole("button", { name: "Go to a Month" }).click();
-await page.waitForTimeout(250);
+const pick = await page.evaluate(() => new Promise((resolve) => {
+  const seen = [];
+  const t0 = performance.now();
+  const tick = () => {
+    const d = document.querySelector(".px-jump");
+    if (d) seen.push(Number(getComputedStyle(d).opacity));
+    if (performance.now() - t0 < 350) requestAnimationFrame(tick); else resolve({ seen, engine: document.querySelector(".px-jump")?.getAnimations({ subtree: true }).length ?? 0 });
+  };
+  document.querySelector('[aria-label="Go to a Month"]').click();
+  requestAnimationFrame(tick);
+}));
+ok(pick.seen.length > 0 && pick.seen[0] < 0.6 && pick.seen.at(-1) === 1 && pick.engine === 0,
+  `the month picker fades in, drawn by the page — never whole for a frame first, never the engine's animation  (first frame ${pick.seen[0]?.toFixed(2)}, last ${pick.seen.at(-1)}, engine ${pick.engine})`);
 const dialog = page.getByRole("dialog", { name: "Go to a month" });
 ok((await dialog.count()) === 1, "the calendar button opens the month picker");
 ok(JSON.stringify(await dialog.getByRole("tab").allInnerTexts()) === JSON.stringify(["2026", "2025"]), `years down the side, newest first  ${await dialog.getByRole("tab").allInnerTexts()}`);

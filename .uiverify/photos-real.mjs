@@ -63,7 +63,16 @@ await page.keyboard.press("Escape");
 
 await page.locator(".px-tile").nth(1).dblclick();
 await page.waitForTimeout(500);
-ok(/full/.test((await page.locator(".px-sharp").getAttribute("src")) ?? ""), "an opened photo fetches the whole picture at once, not only when zoomed");
+// The picture made for the stage's own size (fit<N>), never smaller than the stage draws it —
+// sharp from the first frame; the whole file only once zoomed in, where its pixels are seen.
+{
+  const { src, long } = await page.locator(".px-shown").evaluate((img) => {
+    const r = img.getBoundingClientRect();
+    return { src: img.getAttribute("data-picture") ?? "", long: Math.max(r.width, r.height) * devicePixelRatio };
+  });
+  const n = Number(/fit(\d+)/.exec(src)?.[1] ?? 0);
+  ok(n >= Math.min(long, 3840) - 1, `an opened photo is shown from a picture at least the stage's size  (fit${n} for ${Math.round(long)}px)`);
+}
 // Media types as icloud.com lists them: only the kinds the library has — a panorama appears
 // once there is one (Apple's assetSubtypeV2 1); no empty ones.
 ok((await page.locator(".px-source", { hasText: "Panoramas" }).count()) === 0, "no Panoramas in the sidebar while there are none");

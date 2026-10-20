@@ -9,10 +9,12 @@ import "./styles/notes.css";
 import "./styles/photos.css";
 import { applyTheme, storedTheme } from "./lib/theme";
 import { keepTinted } from "./lib/tint";
+import { fadeSheetsIn } from "./lib/fade";
 
 // Before the first paint, so the window opens in the appearance chosen.
 applyTheme(storedTheme());
 keepTinted();
+fadeSheetsIn();
 
 /*
  * Every link goes the one way out: as a navigation, which the window refuses and hands to

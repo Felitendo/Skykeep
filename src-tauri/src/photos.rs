@@ -573,6 +573,61 @@ pub async fn photos_list(view: View, data: State<'_, Data>) -> UiResult<Vec<Phot
     data.0.lock().await.photos(view).map_err(|e| e.to_string())
 }
 
+/// The Shared Albums service for the signed-in account: its client, address and params.
+async fn shared_streams(
+    auth: &State<'_, Auth>,
+) -> Result<(reqwest::Client, String, Vec<(String, String)>), String> {
+    let client = auth.client.lock().await;
+    let root = client
+        .session()
+        .service_url("sharedstreams")
+        .ok_or("Apple hasn't offered Shared Albums for this account.")?;
+    Ok((client.http().clone(), root, client.service_params()))
+}
+
+/// Every shared album the account has, made or joined, newest first — read from Apple each time
+/// (there are few, and a list kept here would go stale as people are invited and leave).
+#[tauri::command]
+pub async fn photos_shared_albums(
+    auth: State<'_, Auth>,
+) -> UiResult<Vec<quince_icloud::shared_albums::SharedAlbum>> {
+    let (http, root, params) = shared_streams(&auth).await?;
+    let s = quince_icloud::shared_albums::SharedStreams {
+        http: &http,
+        root: &root,
+        params: &params,
+    };
+    s.list().await.map_err(|e| e.to_string())
+}
+
+/// A new shared album, named; answers its id.
+#[tauri::command]
+pub async fn photos_shared_create(name: String, auth: State<'_, Auth>) -> UiResult<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("A shared album needs a name.".into());
+    }
+    let (http, root, params) = shared_streams(&auth).await?;
+    let s = quince_icloud::shared_albums::SharedStreams {
+        http: &http,
+        root: &root,
+        params: &params,
+    };
+    s.create(name).await.map_err(|e| e.to_string())
+}
+
+/// A shared album deleted, for everyone it was shared with.
+#[tauri::command]
+pub async fn photos_shared_delete(guid: String, auth: State<'_, Auth>) -> UiResult<()> {
+    let (http, root, params) = shared_streams(&auth).await?;
+    let s = quince_icloud::shared_albums::SharedStreams {
+        http: &http,
+        root: &root,
+        params: &params,
+    };
+    s.delete(&guid).await.map_err(|e| e.to_string())
+}
+
 /// Every photo of one burst, in the order they were shot — what "View all" shows.
 #[tauri::command]
 pub async fn photos_burst(burst: String, data: State<'_, Data>) -> UiResult<Vec<Photo>> {

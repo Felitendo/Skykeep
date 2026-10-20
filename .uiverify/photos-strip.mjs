@@ -25,7 +25,7 @@ const centred = () => page.evaluate(() => {
 
 await page.locator(".px-tile").nth(40).dblclick();
 await page.waitForTimeout(800);
-ok((await page.locator(".px-slip").count()) <= 61 && (await page.locator(".px-slip").count()) > 20, `only the nearest slips are built  (${await page.locator(".px-slip").count()} of 2000)`);
+ok((await page.locator(".px-slip").count()) <= 2 * Math.max(30, Math.ceil(1280 / 28 / 2) + 12) + 1 && (await page.locator(".px-slip").count()) > 20, `only the nearest slips are built  (${await page.locator(".px-slip").count()} of 2000)`);
 ok((await centred()) <= 1, "the shown photo's slip sits in the middle");
 await page.locator(".px-slip").nth(25).click();
 await page.waitForTimeout(700);
@@ -35,7 +35,7 @@ ok(shown.split("pic%2F")[1]?.split("%2F")[0] === slip.split("pic%2F")[1]?.split(
 ok((await centred()) <= 1, "and the strip glides to keep it in the middle");
 for (let i = 0; i < 40; i++) await page.keyboard.press("ArrowRight");
 await page.waitForTimeout(700);
-ok((await centred()) <= 1 && (await page.locator(".px-slip").count()) <= 61, "stepping far along, still in the middle and still few");
+ok((await centred()) <= 1 && (await page.locator(".px-slip").count()) <= 2 * Math.max(30, Math.ceil(1280 / 28 / 2) + 12) + 1, "stepping far along, still in the middle and still few");
 // A wheel or a two-finger swipe over the strip skims: four notches of 40 go four photos on,
 // and the slips glide on the compositor, never jump.
 const which = async () => (await page.locator(".px-slip.is-shown img").getAttribute("src")).split("pic%2F")[1].split("%2F")[0];

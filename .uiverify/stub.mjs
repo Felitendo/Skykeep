@@ -331,6 +331,18 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return answer;
         }
         case "photos_prepare": (window.__prepared ??= []).push(args.shown); return null;
+        case "photos_shared_albums": return [...(window.__shared ??= [])];
+        case "photos_shared_create": {
+          if (window.__sharedFail) throw "Shared Albums refused that (503).";
+          const guid = `S-${(window.__shared ??= []).length + 1}`;
+          window.__shared.unshift({ guid, name: args.name, createdAt: 1792500000, owned: true, public: false, contributions: true });
+          return guid;
+        }
+        case "photos_shared_delete": {
+          if (window.__sharedFail) throw "Shared Albums refused that (503).";
+          window.__shared = (window.__shared ?? []).filter((a) => a.guid !== args.guid);
+          return null;
+        }
         case "photos_burst": {
           // Three shots; the library's own photo is the chosen one, in the middle.
           const pick = (window.__photos ?? []).find((p) => p.burst === args.burst);

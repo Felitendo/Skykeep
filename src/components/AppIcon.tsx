@@ -2,16 +2,41 @@ import { useId } from "react";
 import { dateText } from "../lib/when";
 
 /**
- * Each screen's mark in the sidebar, drawn after the app it stands in for — Reminders' three
- * coloured dots, Notes' yellow pad, Drive's blue folder, Calendar's day tile, Contacts' card —
- * so a row is found by its picture before its name is read.
+ * Each screen's mark in the sidebar, so a row is found by its picture before its name is read.
  *
- * Drawn here, not Apple's artwork, which is Apple's to ship. Like icloud.com's launcher they
- * come in two finishes: a light tile, and in dark mode the deep graphite tile Apple's dark
- * icons sit on, with a soft top light and a hairline edge so they read as objects, not
- * flat stickers. Vector, so they are crisp at any scale on any desktop.
+ * Photos, Reminders, Notes, iCloud Drive and Contacts are Apple's own icons, light and dark,
+ * as icloud.com shows them — his choice (2026-10-20), for his own copy of Quince; they are
+ * Apple's artwork, not to be published with the code. Made 22 and 44 pixels with a Lanczos
+ * resample, never shrunk by the engine (WebKitGTK shrinks a large picture crudely). Calendar
+ * stays drawn here, as icloud.com draws it: its weekday and date are today's, which a fixed
+ * picture could not be. The rest, below, are vector marks in two finishes — a light tile, and
+ * the deep graphite tile Apple's dark icons sit on.
  */
+const pictures = import.meta.glob("../assets/app-icons/*.png", { eager: true, import: "default" }) as Record<string, string>;
+const picture = (name: string) => pictures[`../assets/app-icons/${name}.png`];
+const APPLE: Record<string, string> = { photos: "photos", reminders: "reminders", notes: "notes", drivews: "drive", contacts: "contacts" };
+
 export function AppIcon({ app, size = 22 }: { app: string; size?: number }) {
+  const apple = APPLE[app];
+  if (apple) {
+    const one = (finish: "light" | "dark") => (
+      <img
+        className={`ai-${finish}`}
+        src={picture(`${apple}-${finish}@1x`)}
+        srcSet={`${picture(`${apple}-${finish}@1x`)} 1x, ${picture(`${apple}-${finish}@2x`)} 2x`}
+        width={size}
+        height={size}
+        alt=""
+        draggable={false}
+      />
+    );
+    return (
+      <span className={`app-icon app-icon-apple ai-${app}`} style={{ width: size, height: size, flex: "none" }} aria-hidden="true">
+        {one("light")}
+        {one("dark")}
+      </span>
+    );
+  }
   const id = useId().replace(/:/g, "");
   const today = new Date();
   const s = { width: size, height: size, flex: "none" } as const;
@@ -117,20 +142,21 @@ export function AppIcon({ app, size = 22 }: { app: string; size?: number }) {
       );
       break;
     case "photos":
-      // Photos' flower: eight petals turning about the centre, each its own colour, where
-      // they overlap the colours mix as the light petals of Apple's icon do.
+      // Photos' flower: eight petals turning about the centre, each its own colour — the
+      // colours read off Apple's own icon, clockwise from the top: orange, yellow, lime, green,
+      // blue, lavender, pink, coral — and where two overlap they darken together, multiplied,
+      // as Apple's do (orange over yellow a deep orange, yellow over lime an olive).
       art = (
         <g style={{ isolation: "isolate" }}>
-          {["#ff9f0a", "#ffd60a", "#a4d65e", "#30c48d", "#3aa8f0", "#5e5ce6", "#bf5af2", "#ff375f"].map((c, k) => (
+          {["#ffa31c", "#ffcd00", "#90d300", "#00ce74", "#00a7ec", "#9981d8", "#fe6aab", "#ff5e64"].map((c, k) => (
             <rect
               key={c}
-              x="11.55"
-              y="3.1"
-              width="4.3"
-              height="8.6"
-              rx="2.15"
+              x="9.15"
+              y="2.2"
+              width="5.7"
+              height="8.5"
+              rx="2.85"
               fill={c}
-              opacity="0.9"
               style={{ mixBlendMode: "multiply" }}
               transform={`rotate(${k * 45} 12 12)`}
             />
