@@ -183,10 +183,13 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
         kind,
         width,
         height,
+        // Apple keeps a video's length in milliseconds (12917 for a 12.917 s clip, checked
+        // against the files themselves); the library keeps seconds.
         duration: asset
             .pointer("/fields/duration/value")
             .and_then(Value::as_f64)
-            .filter(|d| *d > 0.0),
+            .filter(|d| *d > 0.0)
+            .map(|ms| ms / 1000.0),
         filename: decoded(master, "filenameEnc"),
         size: size("resOriginalFileSize"),
         uti,
@@ -949,6 +952,17 @@ mod tests {
         assert_eq!(
             l.original.as_deref(),
             Some("https://cvws.example/orig/original")
+        );
+    }
+
+    /// A video's length: Apple's milliseconds, kept as seconds (a 62.18 s clip, not 1036 minutes).
+    #[test]
+    fn a_video_length_is_seconds() {
+        let p = photo_of(&asset(json!({"duration": 62184.0})), &master()).unwrap();
+        assert_eq!(p.duration, Some(62.184));
+        assert_eq!(
+            photo_of(&asset(json!({})), &master()).unwrap().duration,
+            None
         );
     }
 

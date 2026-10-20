@@ -502,4 +502,9 @@ pub const MIGRATIONS: &[&str] = &[
     ) STRICT;
     CREATE INDEX outbox_by_service ON outbox (service, id);
     "#,
+    // A video's length was kept as Apple sends it, in milliseconds, and shown as seconds: a
+    // one-minute clip read 1036:24. Every one stored so far is in milliseconds.
+    r#"
+    UPDATE photos SET duration = duration / 1000.0 WHERE duration IS NOT NULL;
+    "#,
 ];
