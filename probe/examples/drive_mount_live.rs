@@ -1,0 +1,130 @@
+//! Live, read-only: his iCloud Drive mounted in a scratch folder (the first argument) with the
+//! app's own engine (quince-vfs), for a minute or the seconds given second — listed through
+//! Apple's folder API, read through its signed links in byte ranges. Nothing is written to
+//! iCloud. The folder is let go of at the end.
+use anyhow::{anyhow, Result};
+use quince_core::drive::DriveItem;
+use quince_vfs::{fuse, Cache, Fut, Remote, Store};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+struct Apple {
+    http: reqwest::Client,
+    drivews: String,
+    docws: String,
+    params: Vec<(String, String)>,
+    library: Arc<Mutex<HashMap<String, Vec<DriveItem>>>>,
+    links: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl Remote for Apple {
+    fn list(&self, folder: &str) -> Fut<Vec<DriveItem>> {
+        let (http, root, p, folder, library) = (
+            self.http.clone(),
+            self.drivews.clone(),
+            self.params.clone(),
+            folder.to_string(),
+            Arc::clone(&self.library),
+        );
+        Box::pin(async move {
+            let items = quince_icloud::drive::fetch_folder(&http, &root, p, &folder)
+                .await
+                .map_err(|e| e.to_string())?;
+            library.lock().unwrap().insert(folder, items.clone());
+            Ok(items)
+        })
+    }
+    fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>> {
+        let known = self.links.lock().unwrap().get(&item.drivewsid).cloned();
+        let (http, docws, p, item) = (
+            self.http.clone(),
+            self.docws.clone(),
+            self.params.clone(),
+            item.clone(),
+        );
+        let links = Arc::clone(&self.links);
+        Box::pin(async move {
+            let url = match known {
+                Some(u) => u,
+                None => {
+                    let u = quince_icloud::drive::download_url(&http, &docws, p, &item)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    links
+                        .lock()
+                        .unwrap()
+                        .insert(item.drivewsid.clone(), u.clone());
+                    u
+                }
+            };
+            let r = http
+                .get(&url)
+                .header("Range", format!("bytes={offset}-{}", offset + len - 1))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(r.bytes().await.map_err(|e| e.to_string())?.to_vec())
+        })
+    }
+}
+
+struct Library(Arc<Mutex<HashMap<String, Vec<DriveItem>>>>);
+impl Store for Library {
+    fn children(&self, folder: &str) -> Option<Vec<DriveItem>> {
+        self.0.lock().unwrap().get(folder).cloned()
+    }
+}
+
+fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    let at = std::path::PathBuf::from(args.next().ok_or_else(|| anyhow!("mount folder"))?);
+    let secs: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(60);
+    let rt = tokio::runtime::Runtime::new()?;
+    let dir = std::path::PathBuf::from(std::env::var("HOME")?).join(".local/share/quince-probe");
+    let (http, drivews, docws, params) = rt.block_on(async {
+        let mut client = quince_auth::Client::new(&dir)?;
+        if !client.resume().await? {
+            return Err(anyhow!("no session"));
+        }
+        let s = client.session();
+        let drivews = s
+            .service_url("drivews")
+            .ok_or_else(|| anyhow!("no drivews"))?;
+        let docws = s.service_url("docws").ok_or_else(|| anyhow!("no docws"))?;
+        anyhow::Ok((
+            client.http().clone(),
+            drivews,
+            docws,
+            client.service_params(),
+        ))
+    })?;
+    let library = Arc::new(Mutex::new(HashMap::new()));
+    let apple = Arc::new(Apple {
+        http,
+        drivews,
+        docws,
+        params,
+        library: Arc::clone(&library),
+        links: Arc::new(Mutex::new(HashMap::new())),
+    });
+    let cache = tempfile_dir()?;
+    let fs = fuse::DriveFs::new(
+        apple,
+        Arc::new(Library(library)),
+        Arc::new(Cache::new(&cache)?),
+        rt.handle().clone(),
+    );
+    let session = fuse::mount(fs, &at)?;
+    println!("mounted at {}", at.display());
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    drop(session);
+    let _ = std::fs::remove_dir_all(&cache);
+    println!("unmounted");
+    Ok(())
+}
+
+fn tempfile_dir() -> Result<std::path::PathBuf> {
+    let d = std::env::temp_dir().join(format!("quince-mount-cache-{}", std::process::id()));
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
+}

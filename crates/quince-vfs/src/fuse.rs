@@ -32,6 +32,7 @@ pub struct DriveFs {
     rt: tokio::runtime::Handle,
     uid: u32,
     gid: u32,
+    mounted: std::time::SystemTime,
 }
 
 impl DriveFs {
@@ -49,6 +50,7 @@ impl DriveFs {
             store,
             cache,
             inodes: Mutex::new(Inodes::new()),
+            mounted: std::time::SystemTime::now(),
             rt,
             uid,
             gid,
@@ -64,8 +66,13 @@ impl DriveFs {
     }
 
     fn attr(&self, ino: u64, item: &DriveItem) -> FileAttr {
+        // Apple lists no dates for a folder: it shows when the folder was mounted rather than
+        // 1 January 1970, which a file manager sorts and labels as if it were real.
+        let mounted = self.mounted;
         let secs = |s: Option<i64>| {
-            UNIX_EPOCH + Duration::from_secs(u64::try_from(s.unwrap_or(0)).unwrap_or(0))
+            s.filter(|&s| s > 0).map_or(mounted, |s| {
+                UNIX_EPOCH + Duration::from_secs(u64::try_from(s).unwrap_or(0))
+            })
         };
         let dir = item.is_container();
         let size = if dir {
