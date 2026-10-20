@@ -592,3 +592,59 @@
   animation: px-spin 800ms linear infinite;
 }
 @keyframes px-spin { to { transform: rotate(360deg); } }
+
+/* ---- the Albums page: every album as a card with its cover, as icloud.com's ------------------ */
+.px-main[data-page="albums"] > :not(.px-albums-page) { display: none; }
+.px-albums-page { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 18px 24px; }
+.px-albums-head { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 18px; }
+.px-albums-head h1 { margin: 0; font-size: var(--t-22, 22px); font-weight: 700; letter-spacing: -0.015em; }
+.px-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 22px 18px; }
+.px-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.px-card-pic {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text-3);
+  transition: transform 180ms var(--spring-quick), box-shadow 180ms ease;
+}
+.px-card-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.px-card-pic .px-glyph { width: 36px; height: 36px; }
+.px-card:hover .px-card-pic { transform: scale(1.015); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18); }
+.px-card:active .px-card-pic { transform: scale(0.985); }
+.px-card:focus-visible { outline: none; }
+.px-card:focus-visible .px-card-pic, .px-card[data-drop] .px-card-pic { box-shadow: 0 0 0 3px var(--accent); }
+.px-card-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-13); font-weight: 600; }
+.px-card-count { color: var(--text-2); font-size: var(--t-12, 12px); }
+/* The chevron beside Albums: its own small button, apart from the row that opens the page. */
+.px-twisty {
+  position: absolute;
+  left: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: default;
+}
+.px-twisty[aria-expanded="true"] .px-chevron { transform: rotate(90deg); }
+.px-parent-row .px-parent { padding-left: 20px; }

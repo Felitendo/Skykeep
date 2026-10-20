@@ -259,6 +259,8 @@ export function PhotosView() {
   /** An album open instead of a view. */
   const [album, setAlbum] = useState<PhotoAlbum | null>(null);
   const [albums, setAlbums] = useState<[PhotoAlbum, number, (string | null)?][]>([]);
+  /** The Albums page open: every album as a card with its cover, as icloud.com's. */
+  const [albumsPage, setAlbumsPage] = useState(false);
   // Which of the sidebar's branches are open — Albums and Media Types — kept on this machine.
   const [branches, setBranches] = useState<{ albums: boolean; media: boolean }>(() => {
     try {
@@ -1309,10 +1311,11 @@ export function PhotosView() {
     <button
       key={v.key}
       className="px-source"
-      aria-current={!album && view === v.key}
+      aria-current={!album && !albumsPage && view === v.key}
       onClick={() => {
         setView(v.key);
         setAlbum(null);
+        setAlbumsPage(false);
         setOpen(null);
       }}
     >
@@ -1331,8 +1334,18 @@ export function PhotosView() {
             hold, then Rated, Hidden and Recently Deleted. */}
         <p className="px-side-heading px-side-gap">Collections</p>
         <div className="px-parent-row">
-          <button className="px-source px-parent" aria-expanded={branches.albums} onClick={() => branch("albums")}>
+          {/* The chevron opens the list here; the row itself opens the Albums page. */}
+          <button className="px-twisty" aria-label={branches.albums ? "Hide Albums" : "Show Albums"} aria-expanded={branches.albums} onClick={() => branch("albums")}>
             <ChevronRight className="px-chevron" size={12} strokeWidth={2.4} aria-hidden="true" />
+          </button>
+          <button
+            className="px-source px-parent"
+            aria-current={albumsPage}
+            onClick={() => {
+              setAlbumsPage(true);
+              setOpen(null);
+            }}
+          >
             <AlbumGlyph />
             <span className="px-label">Albums</span>
           </button>
@@ -1353,9 +1366,10 @@ export function PhotosView() {
                 <button
                   key={a.id}
                   className="px-source"
-                  aria-current={album?.id === a.id}
+                  aria-current={!albumsPage && album?.id === a.id}
                   onClick={() => {
                     setAlbum(a);
+                    setAlbumsPage(false);
                     setOpen(null);
                   }}
                   onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
@@ -1399,7 +1413,69 @@ export function PhotosView() {
         {UTILITIES.map(source)}
       </aside>
 
-      <section className="px-main" aria-label={title}>
+      <section className="px-main" aria-label={albumsPage ? "Albums" : title} data-page={albumsPage ? "albums" : undefined}>
+        {albumsPage && (
+          <div className="px-albums-page">
+            <header className="px-albums-head">
+              <div className="px-heading">
+                <h1>Albums</h1>
+                <p className="px-span">{albums.length === 1 ? "1 Album" : `${albums.length} Albums`}</p>
+              </div>
+              <div className="px-capsule">
+                <button className="px-cap" aria-label="New Album" title="New Album" onClick={() => {
+                  if (!branches.albums) branch("albums");
+                  setNaming({ id: null, then: [], draft: "" });
+                }}>
+                  <Plus size={16} strokeWidth={2} aria-hidden="true" />
+                </button>
+              </div>
+            </header>
+            {albums.length === 0 ? (
+              <p className="px-empty">No albums yet. Make one with +, then add photos to it from their menu or by dragging them onto it.</p>
+            ) : (
+              <div className="px-cards" role="list">
+                {albums.map(([a, n, cover]) => (
+                  <button
+                    key={a.id}
+                    role="listitem"
+                    className="px-card"
+                    onClick={() => {
+                      setAlbum(a);
+                      setAlbumsPage(false);
+                    }}
+                    {...dropTarget(a)}
+                    data-drop={dropOn === a.id || undefined}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      if (a.id.startsWith("new:")) return;
+                      setMenu({
+                        at: { x: e.clientX, y: e.clientY, alignRight: false },
+                        entries: [
+                          { label: "Rename Album", run: () => {
+                            if (!branches.albums) branch("albums");
+                            setNaming({ id: a.id, then: [], draft: a.name });
+                          } },
+                          null,
+                          { label: "Delete Album", danger: true, run: () => void deleteAlbum(a) },
+                        ],
+                      });
+                    }}
+                  >
+                    <span className="px-card-pic">
+                      {cover ? (
+                        <img src={pictureSrc(cover, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+                      ) : (
+                        <AlbumGlyph />
+                      )}
+                    </span>
+                    <span className="px-card-name">{a.name}</span>
+                    <span className="px-card-count">{n === 1 ? "1 item" : `${n} items`}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {/* As in Photos on macOS 26: the title and the controls float over the library, which
             scrolls beneath them and fades out at the top edge. */}
         <header className="px-bar">

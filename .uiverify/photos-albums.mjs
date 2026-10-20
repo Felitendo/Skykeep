@@ -17,6 +17,24 @@ let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 const albumNames = () => page.locator(".px-albums .px-source").evaluateAll((els) => els.map((e) => e.querySelector(".px-label")?.textContent ?? ""));
 
+// The Albums page: the row opens it — every album a card with its cover, name and count —
+// while the chevron only opens the list in the sidebar; a card opens its album.
+await page.locator(".px-parent", { hasText: "Albums" }).click();
+await page.waitForTimeout(200);
+ok((await page.locator(".px-albums-head h1").innerText()) === "Albums" && (await page.locator(".px-albums-head .px-span").innerText()) === "1 Album",
+  "Albums opens the Albums page");
+ok((await page.locator(".px-card").count()) === 1 && /Trips[\s\S]*2 items/.test(await page.locator(".px-card").innerText()),
+  `each album a card with its name and count  ${JSON.stringify(await page.locator(".px-card").innerText())}`);
+ok((await page.locator(".px-tile").count()) === 0, "and the photos give way to it");
+await page.getByRole("button", { name: "Hide Albums" }).click();
+ok((await page.locator(".px-albums .px-source").count()) === 0 && (await page.locator(".px-card").count()) === 1, "the chevron only folds the list away");
+await page.getByRole("button", { name: "Show Albums" }).click();
+await page.locator(".px-card").click();
+await page.waitForTimeout(250);
+ok((await page.locator(".px-bar h1").innerText()) === "Trips" && (await page.locator(".px-tile").count()) === 2, "a card opens its album");
+await page.locator(".px-source", { hasText: "Library" }).first().click();
+await page.waitForTimeout(250);
+
 await page.getByRole("button", { name: "New Album" }).click();
 await page.getByLabel("Album name").fill("Beach");
 await page.keyboard.press("Enter");
