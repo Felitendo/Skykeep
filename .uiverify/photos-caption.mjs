@@ -36,7 +36,8 @@ await page.keyboard.press("Escape");
 await page.waitForTimeout(650);
 await page.locator(".px-tile").nth(1).dblclick();
 await page.waitForTimeout(600);
-ok((await page.locator(".px-info").count()) === 1, "Info is still open on the next photo opened");
+ok((await page.locator(".px-info").count()) === 0, "the next photo opens without Info");
+await page.keyboard.press("i");
 ok((await page.getByLabel("Title").inputValue()) === "Ferry" && (await page.getByLabel("Caption").inputValue()) === "Half five, fish and hills",
   "and both are there when the photo opens again");
 await page.getByLabel("Title").click();

@@ -119,9 +119,10 @@
   height: 34px;
   padding: 0 3px;
   border-radius: 17px;
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
+  /* No live blur: these sit over a scrolling grid and a photo that moves, and WebKitGTK blurs
+     what is behind again on every frame of either — the stutter in scrolling and the flash as a
+     photo opened. The glass is in the rim, the lift and a fill near enough to solid. */
+  background: color-mix(in srgb, var(--sheet) 90%, transparent);
   box-shadow: var(--glass-float);
 }
 .px-cap {
@@ -195,15 +196,23 @@
 }
 .px-empty { margin: 18vh auto 0; max-width: 36ch; color: var(--text-2); text-align: center; }
 
-/* The library runs up under the floating bar and fades out against the top edge — Apple's
-   scroll edge effect, done with a mask, which costs nothing per frame. */
+/* The library runs up under the floating bar and fades out at the top edge — Apple's scroll
+   edge effect. Done with a still layer in the window's colour over the top, not a mask on the
+   scroller: WebKitGTK composited a masked scroller again on every frame, and the scroll stuttered. */
 .px-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 80px 2px 24px;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent 44px, #000 104px);
-  mask-image: linear-gradient(to bottom, transparent 0, transparent 44px, #000 104px);
+}
+.px-bar { isolation: isolate; }
+.px-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 -34px 0;
+  z-index: -1;
+  background: linear-gradient(to bottom, var(--bg) 0, var(--bg) 58%, color-mix(in srgb, var(--bg) 0%, transparent) 100%);
+  pointer-events: none;
 }
 /* A month not yet built: one cell laid out on the very grid its photos will use, as tall as
    all its rows — square tiles, 2px between — so nothing moves when it is built. */
@@ -288,6 +297,9 @@
   z-index: 5;
   isolation: isolate;
   display: grid;
+  /* One column the window sizes — never the photo: sized by what was in it, the column grew
+     to the photo, the photo was fitted to the column, and a photo ran off the window. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   color: var(--text);
 }
@@ -310,7 +322,7 @@
 .px-viewer-when strong { font-size: var(--t-13); font-weight: 600; }
 .px-viewer-when span { color: var(--text-2); font-size: var(--t-11); }
 .px-cap[aria-pressed="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
-.px-stage { position: relative; display: grid; place-items: center; min-height: 0; padding: 62px 64px 22px; }
+.px-stage { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; overflow: hidden; padding: 62px 64px 22px; }
 .px-stage img, .px-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
 /* The photo's frame: what zooms and pans. The full picture lies over the screen-sized one,
    faded in once loaded, so zooming never shows a blank. */
@@ -346,9 +358,7 @@
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
+  background: color-mix(in srgb, var(--sheet) 90%, transparent);
   box-shadow: var(--glass-float);
   color: var(--text);
   transition: transform 160ms var(--spring-quick);

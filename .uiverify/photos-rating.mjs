@@ -35,6 +35,7 @@ await page.waitForTimeout(250);
 ok((await page.locator(".px-month-title").allInnerTexts()).join() === "5 Stars,3 Stars", `and Rated has it under 3 Stars  ${JSON.stringify(await page.locator(".px-month-title").allInnerTexts())}`);
 await page.locator(".px-tile").nth(1).dblclick();
 await page.waitForTimeout(600);
+await page.keyboard.press("i");
 await page.getByRole("radio", { name: "3 stars" }).click();
 await page.waitForTimeout(300);
 ok((await page.evaluate(() => window.__ratings.at(-1).rating)) === 0, "the same star again takes the rating away");

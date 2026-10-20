@@ -1265,21 +1265,33 @@ export function PhotosView() {
   const [here, setHere] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
   const looking = useRef(false);
+  // Read a few times a second, not every frame, and by halving rather than going down every
+  // month: at the foot of three hundred months, measuring each one on every frame was work
+  // the scroll itself was waiting for.
   const onScroll = useCallback(() => {
     if (looking.current) return;
     looking.current = true;
-    requestAnimationFrame(() => {
+    window.setTimeout(() => {
       looking.current = false;
       const el = scroller.current;
       if (!el || album) return setHere(null);
       if (el.scrollTop < 24) return setHere(null);
       const edge = el.getBoundingClientRect().top + 96;
-      for (const m of el.querySelectorAll<HTMLElement>(".px-month")) {
-        if (m.getBoundingClientRect().bottom > edge) return setHere(m.getAttribute("aria-label"));
+      const months = el.querySelectorAll<HTMLElement>(".px-month");
+      let [lo, hi] = [0, months.length - 1];
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (months[mid].getBoundingClientRect().bottom > edge) hi = mid;
+        else lo = mid + 1;
       }
-    });
+      setHere(months[lo]?.getAttribute("aria-label") ?? null);
+    }, 120);
   }, [album]);
   useEffect(() => setHere(null), [view, album]);
+  // Info closes with the photo: the next photo opens plain, as he expects it to.
+  useEffect(() => {
+    if (open === null) setInfo(false);
+  }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     setChosen(new Set());
     anchor.current = null;

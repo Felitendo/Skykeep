@@ -58,5 +58,15 @@ await page.keyboard.press("ArrowLeft");
 await page.waitForTimeout(1200);
 b1 = await boxes();
 ok(lies(b1) && inside(b1), `and on the next photo  ${JSON.stringify(b1)}`);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(700);
+// A narrow window, a photo opened in it: inside, never wider than the window lets it be.
+await page.setViewportSize({ width: 760, height: 700 });
+await page.waitForTimeout(300);
+await page.locator(".px-tile").nth(0).dblclick();
+await page.waitForTimeout(1200);
+b1 = await boxes();
+const win = await page.evaluate(() => window.innerWidth);
+ok(inside(b1) && b1.shown.x + b1.shown.w <= win, `in a narrow window the photo stays inside it  ${JSON.stringify(b1)}`);
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);
