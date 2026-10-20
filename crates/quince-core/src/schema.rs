@@ -486,4 +486,20 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE photos ADD COLUMN rendered INTEGER NOT NULL DEFAULT 0;
     UPDATE sync_state SET token = NULL WHERE service = 'photos';
     "#,
+    // Changes made here and not yet taken by Apple, in the order they were made: the library
+    // shows them at once, and they go to Apple behind it, kept across a restart or a lost
+    // connection until Apple has them.
+    r#"
+    CREATE TABLE outbox (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        service  TEXT NOT NULL,
+        record   TEXT NOT NULL,
+        kind     TEXT NOT NULL,
+        payload  TEXT NOT NULL,
+        made_at  INTEGER NOT NULL,
+        tries    INTEGER NOT NULL DEFAULT 0,
+        error    TEXT
+    ) STRICT;
+    CREATE INDEX outbox_by_service ON outbox (service, id);
+    "#,
 ];

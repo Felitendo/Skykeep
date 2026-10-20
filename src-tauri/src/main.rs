@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod alerts;
+mod outbox;
 mod photos;
 mod push;
 mod refresh;
@@ -120,6 +121,8 @@ async fn refresh_reminders(
         let mut library = data.0.lock().await;
         quince_icloud::reminders::apply_cloudkit(&mut library, fetched)
             .map_err(|e| e.to_string())?;
+        // Changes still on their way to Apple stay as made here.
+        outbox::replay_reminders(&mut library).map_err(|e| e.to_string())?;
     }
     alerts::changed();
     Ok(())
@@ -1145,6 +1148,10 @@ async fn reminder_set_done(
 }
 
 /// Tick a reminder off or put it back — from the window, or from an alert's button.
+///
+/// In the library at once and queued for Apple (see outbox.rs): the window never waits on the
+/// network. A repeating one is the exception — ticking it, Apple rolls it on to its next date,
+/// which only Apple's answer can show — so that one is sent and answered here.
 async fn set_done(
     auth: &State<'_, Auth>,
     data: &State<'_, Data>,
@@ -1152,8 +1159,6 @@ async fn set_done(
     list_guid: &str,
     done: bool,
 ) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(auth).await?;
-
     let reminder = {
         let library = data.0.lock().await;
         library
@@ -1163,6 +1168,24 @@ async fn set_done(
             .find(|r| r.guid == guid)
             .ok_or("That reminder is no longer in the local library.")?
     };
+    if !(done && reminder.repeats()) {
+        let now = jiff::Timestamp::now().as_second();
+        let payload =
+            serde_json::to_string(&outbox::Done { done, at: now }).map_err(|e| e.to_string())?;
+        {
+            let mut library = data.0.lock().await;
+            library
+                .set_reminder_completed(guid, done.then_some(now))
+                .map_err(|e| e.to_string())?;
+            library
+                .outbox_push("reminders", guid, "done", &payload)
+                .map_err(|e| e.to_string())?;
+        }
+        outbox::kick();
+        alerts::changed();
+        return Ok(());
+    }
+    let (http, root, params) = cloudkit_context(auth).await?;
 
     quince_icloud::reminders::set_completed_cloudkit(&http, &root, params.clone(), &reminder, done)
         .await
@@ -3721,6 +3744,7 @@ fn main() {
         })
         .setup(|app| {
             video::serve(app.handle().clone());
+            outbox::start(app.handle().clone());
             let dir = state_dir(app.handle());
             let client = Arc::new(Mutex::new(Client::new(&dir)?));
             app.manage(Auth {

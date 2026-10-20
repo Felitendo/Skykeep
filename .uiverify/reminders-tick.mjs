@@ -47,5 +47,11 @@ ok((await row("Plan tomorrow").count()) === 1 && (await row("Plan tomorrow").loc
 await page.waitForTimeout(9000);
 const sent = await page.evaluate(() => window.__done.filter((d) => d.guid === "r1").map((d) => d.done));
 ok(JSON.stringify(sent) === JSON.stringify([true, false]), `and Apple gets both ticks, in order  ${JSON.stringify(sent)}`);
+// Apple refuses a change that was queued behind the window: the reason is said, and the list
+// is read again (Apple's version back over the tick).
+const readsBefore = await page.evaluate(() => (window.__reads ??= 0));
+await page.evaluate(() => window.__emit("quince://outbox-refused", { service: "reminders", record: "r2", message: "This reminder was changed on another device first." }));
+await page.waitForTimeout(300);
+ok(/changed on another device/.test(await page.locator(".notice").innerText().catch(() => "")), "a change Apple refuses is put back, and the window says why");
 await b.close();
 process.exitCode = failures ? 1 : 0;

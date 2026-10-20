@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { usePending } from "../lib/pending";
 import { Notice } from "../components/Notice";
 import { Portal } from "../components/Portal";
@@ -285,6 +286,20 @@ export function RemindersView() {
     setListSections(Array.isArray(sections) ? sections : []);
     return fresh;
   }, [picked, showDone, query, searching, over]);
+
+  // Changes go to Apple behind the window (the outbox): once a batch has landed the library
+  // holds Apple's own version, and a change Apple refused has been put back — said here, why.
+  useEffect(() => {
+    const offs = [
+      listen("quince://reminders-synced", () => void readItems().catch(() => {})),
+      listen<{ service: string; message: string }>("quince://outbox-refused", (e) => {
+        if (e.payload.service !== "reminders") return;
+        setError(e.payload.message);
+        void readItems().catch(() => {});
+      }),
+    ];
+    return () => offs.forEach((off) => void off.then((f) => f()).catch(() => {}));
+  }, [readItems]);
 
   // Both reads come from the library. `revision` ticks when the shared refresh finishes —
   // pressed, or on the timer — so a reminder ticked on the phone appears here without this
