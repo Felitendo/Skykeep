@@ -1,0 +1,55 @@
+/**
+ * Download Options, as icloud.com's: the photos (one, or how many), then Unmodified Originals —
+ * as captured or imported — and, including edits, Highest Resolution or Most Compatible. Each
+ * row downloads at once; Escape or × closes.
+ */
+import { useEffect } from "react";
+import { Download, X } from "lucide-react";
+import { pictureSrc, type Photo } from "../../lib/ipc";
+
+export type Want = "originals" | "highestQuality" | "mostCompatible";
+
+export function DownloadOptions({ photos, onPick, onClose }: { photos: Photo[]; onPick: (want: Want) => void; onClose: () => void }) {
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [onClose]);
+  const n = photos.length;
+  const row = (want: Want, title: string, words: string) => (
+    <div className="px-dl-row">
+      <span>
+        <strong>{title}</strong>
+        <small>{words}</small>
+      </span>
+      <button className="px-dl-go" aria-label={`Download ${title}`} title="Download" onClick={() => onPick(want)}>
+        <Download size={16} strokeWidth={2} aria-hidden="true" />
+      </button>
+    </div>
+  );
+  return (
+    <div className="px-sheet-scrim" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="px-sheet" role="dialog" aria-modal="true" aria-label="Download Options">
+        <button className="px-sheet-x" aria-label="Close" onClick={onClose}>
+          <X size={16} strokeWidth={2.2} aria-hidden="true" />
+        </button>
+        <h2>Download Options</h2>
+        <div className="px-dl-pics" aria-hidden="true">
+          {photos.slice(0, 3).map((p) => (
+            <img key={p.id} src={pictureSrc(p.id, "thumb")} alt="" />
+          ))}
+        </div>
+        <p className="px-dl-count">{n === 1 ? "1 Item" : `${n} Items`}</p>
+        {row("originals", "Unmodified Originals", "Originals as captured or imported")}
+        <p className="px-dl-head">Including Edits</p>
+        {row("highestQuality", "Highest Resolution", "Typically includes HEIC or H.265 files")}
+        {row("mostCompatible", "Most Compatible", "JPEG or MP4/H.264 when possible")}
+      </div>
+    </div>
+  );
+}

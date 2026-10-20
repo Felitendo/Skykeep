@@ -739,3 +739,67 @@
   outline: none;
 }
 .px-keyword-field:focus { box-shadow: 0 0 0 2px var(--accent-ring); }
+
+/* ---- a sheet over Photos — Download Options — as icloud.com's: centred, solid, the rest dimmed */
+.px-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.42);
+  animation: px-fade 160ms ease-out both;
+}
+.px-sheet {
+  position: relative;
+  width: min(380px, calc(100vw - 32px));
+  padding: 22px 24px 18px;
+  border-radius: 16px;
+  background: var(--sheet);
+  box-shadow: var(--glass-float);
+  color: var(--text);
+  animation: px-rise 260ms var(--spring-smooth) both;
+}
+@keyframes px-fade { from { opacity: 0; } }
+@keyframes px-rise { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+@media (prefers-reduced-motion: reduce) { .px-sheet-scrim, .px-sheet { animation: none; } }
+.px-sheet h2 { margin: 6px 0 12px; text-align: center; font-size: var(--t-15, 15px); font-weight: 700; }
+.px-sheet-x {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  cursor: default;
+}
+.px-sheet-x:hover { background: color-mix(in srgb, var(--text) 9%, transparent); }
+.px-dl-pics { display: flex; justify-content: center; gap: 4px; }
+.px-dl-pics img { width: 58px; height: 58px; border-radius: 8px; object-fit: cover; background: color-mix(in srgb, var(--text) 8%, transparent); }
+.px-dl-count { margin: 6px 0 14px; text-align: center; font-size: var(--t-13); font-weight: 600; }
+.px-dl-head { margin: 12px 0 2px; padding-top: 12px; border-top: 1px solid var(--separator); font-size: var(--t-13); font-weight: 700; }
+.px-dl-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.px-dl-row span { display: flex; flex-direction: column; }
+.px-dl-row strong { font-size: var(--t-13); font-weight: 600; }
+.px-dl-row small { color: var(--text-2); font-size: var(--t-12, 12px); }
+.px-dl-go {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--accent);
+  cursor: default;
+  transition: transform 140ms var(--spring-quick);
+}
+.px-dl-go:hover { background: color-mix(in srgb, var(--text) 14%, transparent); }
+.px-dl-go:active { transform: scale(0.92); }

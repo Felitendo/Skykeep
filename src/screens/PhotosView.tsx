@@ -23,6 +23,7 @@ import { Notice } from "../components/Notice";
 import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Slideshow } from "./photos/Slideshow";
+import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
 const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
@@ -975,6 +976,9 @@ export function PhotosView() {
             : [
                 { label: anyPlain ? "Favorite" : "Unfavorite", run: () => void changeAll(group, "favorite", anyPlain) },
                 null,
+                { label: `Download ${n} Items`, run: () => void downloadAs(group, "originals") },
+                { label: "More Download Options…", run: () => setOptions(group) },
+                null,
                 { label: "Start Slideshow", run: () => startShow(p) },
                 { label: "Add to Album", submenu: albumEntries(group.map((x) => x.id)) },
                 null,
@@ -998,6 +1002,7 @@ export function PhotosView() {
         : [
             { label: p.favorite ? "Unfavorite" : "Favorite", run: () => void change(p, "favorite", !p.favorite) },
             { label: "Download", run: () => void download(p) },
+            { label: "More Download Options…", run: () => setOptions([p]) },
             { label: "Start Slideshow", run: () => startShow(p) },
             null,
             { label: "Add to Album", submenu: albumEntries([p.id]) },
@@ -1202,6 +1207,19 @@ export function PhotosView() {
     try {
       const where = await api.photoDownload(p.id);
       setSaved(`Saved to ${where}`);
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  };
+
+  /** Download Options open for these photos. */
+  const [options, setOptions] = useState<Photo[] | null>(null);
+  const downloadAs = async (list: Photo[], want: Want) => {
+    setOptions(null);
+    let last = "";
+    try {
+      for (const p of list) last = await api.photoDownload(p.id, want);
+      setSaved(list.length === 1 ? `Saved to ${last}` : `${list.length} saved to Downloads`);
     } catch (e) {
       setError(messageOf(e));
     }
@@ -1741,7 +1759,15 @@ export function PhotosView() {
                 </button>
               </div>
             </header>
-            <div className="px-stage" ref={stage}>
+            <div
+              className="px-stage"
+              ref={stage}
+              onContextMenu={(e) => {
+                // The photo's own menu on the photo itself, as on a Mac.
+                e.preventDefault();
+                photoMenu(shown, { x: e.clientX, y: e.clientY, alignRight: false });
+              }}
+            >
               {shown.kind === "video" ? (
                 // A still of the video, and Play opens it in this computer's own player: the
                 // window's engine plays nothing without codec plugins many systems lack.
@@ -1930,6 +1956,7 @@ export function PhotosView() {
       )}
       {menu && <RowMenu at={menu.at} entries={menu.entries} onClose={() => setMenu(null)} />}
       {show && <Slideshow photos={show.list} start={show.start} onClose={() => setShow(null)} />}
+      {options && <DownloadOptions photos={options} onPick={(w) => void downloadAs(options, w)} onClose={() => setOptions(null)} />}
       <UploadPanel uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />
     </div>
   );

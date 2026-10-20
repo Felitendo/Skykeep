@@ -717,9 +717,22 @@ pub async fn photos_counts(app: AppHandle, data: State<'_, Data>) -> UiResult<Ve
         .map_err(|e| e.to_string())
 }
 
-/// A photo's original saved to Downloads under its own name; answers where.
+/// A photo saved to Downloads, as icloud.com's Download Options choose the file: the original
+/// as captured, the highest quality (edits included), or the most compatible (JPEG or MP4). Both
+/// records are read fresh — their links expire — and the file is streamed to a part file, named
+/// only once whole: a large video never sits in memory, and a broken download leaves no half file
+/// under the photo's name. Answers where it went.
 #[tauri::command]
-pub async fn photo_download(id: String, app: AppHandle, data: State<'_, Data>) -> UiResult<String> {
+pub async fn photo_download(
+    id: String,
+    want: Option<quince_icloud::photos::Want>,
+    app: AppHandle,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let want = want.unwrap_or(quince_icloud::photos::Want::Originals);
     let photo = data
         .0
         .lock()
@@ -727,17 +740,67 @@ pub async fn photo_download(id: String, app: AppHandle, data: State<'_, Data>) -
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
-    let bytes = picture(&app, &id, Size::Original).await?;
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let zc = quince_icloud::cloudkit::ZoneClient::new(
+        &http,
+        &root,
+        quince_icloud::photos::CONTAINER,
+        params,
+    );
+    let asset = zc
+        .lookup_record(quince_icloud::photos::ZONE, &id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo is no longer in iCloud.")?;
+    let master = zc
+        .lookup_record(quince_icloud::photos::ZONE, &photo.master)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo's file is no longer in iCloud.")?;
+    let video = photo.kind == quince_core::photos::Kind::Video;
+    let (url, name) = quince_icloud::photos::download_choice(&asset, &master, want, video)
+        .ok_or("iCloud has no file of that kind for this photo.")?;
     let dir = app
         .path()
         .download_dir()
         .map_err(|_| "There is no Downloads folder to save to.")?;
-    let name = photo
-        .filename
-        .filter(|n| !n.contains('/') && !n.starts_with('.'))
-        .unwrap_or_else(|| format!("Photo {}", &id[..id.len().min(8)]));
+    let name = if name.contains('/') || name.starts_with('.') {
+        format!("Photo {}", &id[..id.len().min(8)])
+    } else {
+        name
+    };
     let path = crate::free_path(&dir, &name);
-    tokio::fs::write(&path, bytes)
+    let part = path.with_extension(format!(
+        "{}.part",
+        path.extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ));
+    let response = http
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| format!("iCloud did not send the file: {e}"))?;
+    let mut out = tokio::fs::File::create(&part)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut body = response.bytes_stream();
+    let written: Result<(), String> = async {
+        while let Some(chunk) = body.next().await {
+            out.write_all(&chunk.map_err(|e| format!("The download broke off: {e}"))?)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        out.flush().await.map_err(|e| e.to_string())
+    }
+    .await;
+    if let Err(e) = written {
+        tokio::fs::remove_file(&part).await.ok();
+        return Err(e);
+    }
+    drop(out);
+    tokio::fs::rename(&part, &path)
         .await
         .map_err(|e| e.to_string())?;
     Ok(path.display().to_string())

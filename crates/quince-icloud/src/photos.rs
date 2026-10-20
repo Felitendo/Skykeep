@@ -643,6 +643,110 @@ pub async fn remove_from_album(
     Ok(())
 }
 
+/// Which file a download takes, as icloud.com's Download Options offer them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Want {
+    /// The original, as captured or imported.
+    Originals,
+    /// The best there is, edits included: HEIC and HEVC allowed.
+    HighestQuality,
+    /// JPEG, PNG, GIF, MOV or MP4 where there is one.
+    MostCompatible,
+}
+
+const PHOTO_SLOTS: [&str; 5] = ["JPEGThumb", "JPEGMed", "JPEGLarge", "JPEGFull", "Original"];
+const VIDEO_SLOTS: [&str; 4] = ["VidSmall", "VidMed", "VidFull", "Original"];
+
+/// One rendition of a record: its file type (a UTI, lower case) and where to fetch it. The
+/// original is on the master only. Any rendition not the original that says QuickTime is an MP4,
+/// as icloud.com treats it (main.js `fileDataForSlot`).
+fn rendition(slot: &str, record: &Value) -> Option<(String, String)> {
+    let master = field::record_type(record).as_deref() == Some("CPLMaster");
+    let (kind, url) = if slot == "Original" {
+        if !master {
+            return None;
+        }
+        (
+            field::string(record, "resOriginalFileType"),
+            record.pointer("/fields/resOriginalRes/value/downloadURL"),
+        )
+    } else {
+        (
+            field::string(record, &format!("res{slot}FileType")),
+            record.pointer(&format!("/fields/res{slot}Res/value/downloadURL")),
+        )
+    };
+    let mut kind = kind?.to_lowercase();
+    if slot != "Original" && kind == "com.apple.quicktime-movie" {
+        kind = "public.mpeg-4".into();
+    }
+    Some((kind, url?.as_str()?.to_string()))
+}
+
+/// The file a download takes, as icloud.com picks it (ui.main.js `getDownloadURLInfo`): the
+/// largest rendition of an allowed type, from the asset first — where an edit's renditions are —
+/// then the master; for originals, the master's original whatever its type. Answers the URL with
+/// `${f}` filled, and the file's name: the original's, with the chosen type's extension.
+#[must_use]
+pub fn download_choice(
+    asset: &Value,
+    master: &Value,
+    want: Want,
+    video: bool,
+) -> Option<(String, String)> {
+    let mut allowed = vec![
+        "public.jpeg",
+        "public.png",
+        "com.compuserve.gif",
+        "com.apple.quicktime-movie",
+        "public.mpeg-4",
+    ];
+    if want != Want::MostCompatible {
+        allowed.extend(["public.heic", "com.apple.m4v-video"]);
+    }
+    let slots: &[&str] = if video { &VIDEO_SLOTS } else { &PHOTO_SLOTS };
+    let pick = |record: &Value| {
+        slots.iter().rev().find_map(|slot| {
+            let (kind, url) = rendition(slot, record)?;
+            ((*slot == "Original" && want == Want::Originals)
+                || kind == "com.adobe.pdf"
+                || allowed.contains(&kind.as_str()))
+            .then_some((kind, url))
+        })
+    };
+    let from_master = pick(master);
+    let (kind, url) = if want == Want::Originals {
+        from_master.or_else(|| pick(asset))?
+    } else {
+        pick(asset).or(from_master)?
+    };
+    let ext = match kind.as_str() {
+        "public.jpeg" => "JPG",
+        "public.png" => "PNG",
+        "com.compuserve.gif" => "GIF",
+        "public.heic" => "HEIC",
+        "com.apple.quicktime-movie" => "MOV",
+        "public.mpeg-4" => "MP4",
+        "com.apple.m4v-video" => "M4V",
+        "com.adobe.pdf" => "PDF",
+        other => other.rsplit('.').next().unwrap_or("bin"),
+    };
+    let full = decoded(master, "filenameEnc").unwrap_or_else(|| "Photo".into());
+    let base = full.rsplit_once('.').map_or(full.as_str(), |(b, _)| b);
+    let name = format!("{base}.{ext}");
+    let encoded: String = name
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    Some((url.replace("${f}", &encoded), name))
+}
+
 /// The flags a photo carries that this app sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -870,6 +974,51 @@ mod tests {
         assert!(
             location_of(&json!({"fields": {}})).is_none(),
             "no place is no place"
+        );
+    }
+
+    /// Download Options pick as icloud.com does: an original as it is; Most Compatible turns
+    /// a HEIC original into the full-size JPEG; an edit (renditions on the asset) wins for
+    /// Highest Quality, never for originals.
+    #[test]
+    fn downloads_pick_the_file_icloud_picks() {
+        let master = json!({"recordType": "CPLMaster", "fields": {
+            "filenameEnc": {"value": base64::engine::general_purpose::STANDARD.encode("IMG_0001.HEIC")},
+            "resOriginalFileType": {"value": "public.heic"},
+            "resOriginalRes": {"value": {"downloadURL": "https://o/${f}"}},
+            "resJPEGFullFileType": {"value": "public.jpeg"},
+            "resJPEGFullRes": {"value": {"downloadURL": "https://full/${f}"}},
+        }});
+        let plain = json!({"recordType": "CPLAsset", "fields": {}});
+        let edited = json!({"recordType": "CPLAsset", "fields": {
+            "resJPEGFullFileType": {"value": "public.jpeg"},
+            "resJPEGFullRes": {"value": {"downloadURL": "https://edit/${f}"}},
+        }});
+        assert_eq!(
+            download_choice(&plain, &master, Want::Originals, false).unwrap(),
+            ("https://o/IMG_0001.HEIC".into(), "IMG_0001.HEIC".into())
+        );
+        assert_eq!(
+            download_choice(&plain, &master, Want::MostCompatible, false).unwrap(),
+            ("https://full/IMG_0001.JPG".into(), "IMG_0001.JPG".into())
+        );
+        assert_eq!(
+            download_choice(&plain, &master, Want::HighestQuality, false)
+                .unwrap()
+                .1,
+            "IMG_0001.HEIC"
+        );
+        assert_eq!(
+            download_choice(&edited, &master, Want::HighestQuality, false)
+                .unwrap()
+                .0,
+            "https://edit/IMG_0001.JPG"
+        );
+        assert_eq!(
+            download_choice(&edited, &master, Want::Originals, false)
+                .unwrap()
+                .0,
+            "https://o/IMG_0001.HEIC"
         );
     }
 }

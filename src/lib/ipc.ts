@@ -99,7 +99,10 @@ export const api = {
   photoSetFlag: (id: string, flag: "favorite" | "deleted" | "hidden" | "expunged", on: boolean) =>
     invoke<Photo>("photo_set_flag", { id, flag, on }),
   /** The original saved to Downloads; answers where. */
-  photoDownload: (id: string) => invoke<string>("photo_download", { id }),
+  /** As icloud.com's Download Options: the original (the default), the highest quality, or
+   * the most compatible. Answers where it was saved. */
+  photoDownload: (id: string, want?: "originals" | "highestQuality" | "mostCompatible") =>
+    invoke<string>("photo_download", { id, want: want ?? null }),
   /** Title and caption together, as Info saves them. */
   photoSetText: (id: string, title: string, caption: string) => invoke<Photo>("photo_set_text", { id, title, caption }),
   photoSetRating: (id: string, rating: number) => invoke<Photo>("photo_set_rating", { id, rating }),
