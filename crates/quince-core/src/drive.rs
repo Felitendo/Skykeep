@@ -128,6 +128,47 @@ impl Library {
     ///
     /// Named the way Finder orders them: numbers as numbers and accents ignored, so "Scan 10"
     /// follows "Scan 9" and "Été" sits among the E's. SQL's `lower` can do neither.
+    /// Files and folders whose name holds every word of `query`, across every folder this
+    /// computer has listed: case and accents aside, as Finder finds them. At most `limit`.
+    pub fn search_drive(&self, query: &str, limit: usize) -> Result<Vec<DriveItem>> {
+        let words = crate::fold::words(query);
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT drivewsid, parent_id, name, extension, kind, size, child_count,
+                    created_at, modified_at, etag
+             FROM drive_items
+             ORDER BY modified_at IS NULL, modified_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DriveItem {
+                drivewsid: row.get(0)?,
+                parent_id: row.get(1)?,
+                name: row.get(2)?,
+                extension: row.get(3)?,
+                kind: row.get(4)?,
+                size: row.get(5)?,
+                child_count: row.get(6)?,
+                created_at: row.get(7)?,
+                modified_at: row.get(8)?,
+                etag: row.get(9)?,
+            })
+        })?;
+        let mut found = Vec::new();
+        for row in rows {
+            let item = row?;
+            let name = format!("{}.{}", item.name, item.extension.as_deref().unwrap_or(""));
+            if crate::fold::holds_all(&crate::fold::fold(&name), &words) {
+                found.push(item);
+                if found.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(found)
+    }
+
     pub fn drive_children(&self, parent_id: &str) -> Result<Vec<DriveItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT drivewsid, parent_id, name, extension, kind, size, child_count,

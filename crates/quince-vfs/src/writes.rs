@@ -120,6 +120,7 @@ pub struct Writes {
     pub(crate) items: Mutex<HashMap<u64, Pending>>,
     /// What this computer last sent under each name ("folder/name"): the next save of that
     /// name replaces it as its own, never mistaking it for a change made elsewhere.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) sent: Mutex<HashMap<String, DriveItem>>,
     /// One send at a time per name ("folder/name"): a replace is three steps at Apple (send,
     /// old into Recently Deleted, rename), and a second save of the same name arriving

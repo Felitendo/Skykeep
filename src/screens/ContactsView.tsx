@@ -17,6 +17,7 @@ import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { dateText } from "../lib/when";
+import { useReveal } from "../lib/reveal";
 
 /** The sidebar row that is every contact rather than a list. */
 const ALL = "";
@@ -127,6 +128,15 @@ export function ContactsView() {
   const [lists, setLists] = useState<ContactList[]>([]);
   /** The list being looked at, or ALL. */
   const [list, setList] = useState<string>(ALL);
+  // A contact found by the search across everything: shown, from All Contacts and with this
+  // screen's own search cleared, so nothing here hides it.
+  useReveal("contacts", (r) => {
+    setList(ALL);
+    setSearch("");
+    setDraft(null);
+    setOpenGuid(r.id);
+    setDetail(true);
+  });
   /** A list whose name is being typed: "new" for one not made yet. */
   const [naming, setNaming] = useState<string | null>(null);
   const [listMenu, setListMenu] = useState<(MenuAt & { list: ContactList }) | null>(null);

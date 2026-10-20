@@ -25,6 +25,7 @@ import { Picker } from "../components/Picker";
 import { RowMenu } from "../components/RowMenu";
 import { dateText, timeText } from "../lib/when";
 import { Clock } from "lucide-react";
+import { useReveal } from "../lib/reveal";
 
 /** iCloud Drive's own four orders, as its "by Name" menu offers them. */
 const SORTS = [
@@ -498,6 +499,35 @@ export function DriveView() {
   const [info, setInfo] = useState<DriveItem | null>(null);
   /** The one item selected, as a click in Finder selects it. */
   const [selected, setSelected] = useState<string | null>(null);
+  // A file or folder found by the search across everything: its folder opened, with the whole
+  // path above it in the trail, and it selected and brought into view — as Finder's "Show in
+  // Enclosing Folder". The path is walked up from the library, which knows every folder seen.
+  const revealing = useRef<string | null>(null);
+  useReveal("drivews", (r) => {
+    void (async () => {
+      const crumbs: Crumb[] = [];
+      let at = r.within ?? null;
+      for (let hops = 0; at && at !== DRIVE_ROOT && hops < 64; hops++) {
+        const folder: DriveItem | null = await api.driveItem(at).catch(() => null);
+        if (!folder) break;
+        crumbs.unshift({ id: folder.drivewsid, name: driveName(folder) });
+        at = folder.parentId ?? null;
+      }
+      setInTrash(false);
+      setInRecents(false);
+      setTrail([{ id: DRIVE_ROOT, name: "iCloud Drive" }, ...crumbs]);
+      revealing.current = r.id;
+      setSelected(r.id);
+    })();
+  });
+  useEffect(() => {
+    const id = revealing.current;
+    if (!id || !items.some((i) => i.drivewsid === id)) return;
+    revealing.current = null;
+    requestAnimationFrame(() =>
+      document.querySelector(`.drive [data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "center" }),
+    );
+  }, [items]);
   /** The ⋯ menu, or the same menu opened by a right-click, for one item. */
   const [menu, setMenu] = useState<{ item: DriveItem; x: number; y: number; alignRight: boolean } | null>(null);
   /** An item of Drive's own being dragged onto a folder, and the folder it is over. */
@@ -1194,7 +1224,7 @@ export function DriveView() {
           const container = isContainer(item);
           const busy = busyGuid === item.drivewsid;
           return (
-            <li key={item.drivewsid}>
+            <li key={item.drivewsid} data-id={item.drivewsid}>
               {renaming === item.drivewsid ? (
                 <div className="drive-row">
                   <span className="drive-badge" aria-hidden="true">

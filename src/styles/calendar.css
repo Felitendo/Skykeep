@@ -1,6 +1,6 @@
 /* Calendar, laid out the way macOS Calendar is. Scoped under `.cx`. */
 
-.content:has(> .screen-slot:not([hidden]) .cx) {
+.content[data-screen="calendar"] {
   display: flex;
   flex-direction: column;
   overflow: hidden;

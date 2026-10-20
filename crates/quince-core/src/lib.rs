@@ -15,6 +15,7 @@ pub mod outbox;
 pub mod photos;
 pub mod reminders;
 pub mod schema;
+pub mod search;
 
 use rusqlite::Connection;
 use std::path::Path;

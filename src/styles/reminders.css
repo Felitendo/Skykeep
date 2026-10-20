@@ -29,7 +29,7 @@
     --sys-orange: #ff9230;
   }
 
-.content:has(> .screen-slot:not([hidden]) .rx) { display: flex; flex-direction: column; overflow: hidden; }
+.content[data-screen="reminders"] { display: flex; flex-direction: column; overflow: hidden; }
 
 .rx {
   flex: 1;
@@ -457,7 +457,9 @@
 .rx-trailing { display: flex; align-items: center; gap: 2px; padding-top: 1px; }
 .rx-trailing .rx-icon-button { opacity: 0; }
 .rx-row:hover .rx-icon-button,
-.rx-row:focus-within .rx-icon-button,
+/* Moved to with the keys, not merely holding the focus a click left behind: with that, the
+   row's info and flag stayed showing as though it were still pointed at. */
+.rx-row:has(:focus-visible) .rx-icon-button,
 .rx-row.is-open .rx-icon-button,
 .rx-icon-button.rx-flag.on { opacity: 1; }
 .rx-icon-button.rx-flag.on { color: var(--sys-orange); }

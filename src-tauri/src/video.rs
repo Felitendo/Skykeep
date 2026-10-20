@@ -4,8 +4,7 @@
 //! the loopback interface: a port of the system's choosing, a fresh secret in every path, only
 //! cached videos by asset id, in the ranges the player asks for, streamed from disk.
 
-use crate::photos::{self, Size};
-use std::path::PathBuf;
+use crate::photos::{self, Film, Size};
 use std::sync::OnceLock;
 use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
@@ -34,17 +33,17 @@ pub fn serve(app: AppHandle) {
         let _ = BASE.set(format!("http://127.0.0.1:{}/{secret}", addr.port()));
         listen(listener, secret, move |id, size| {
             let app = app.clone();
-            async move { photos::cached(&app, &id, size).await }
+            async move { photos::film(&app, &id, size).await }
         })
         .await;
     });
 }
 
-/// Answers each connection on its own task; `find` gives a cached video's path on disk.
+/// Answers each connection on its own task; `find` gives a video: kept on disk, or landing.
 async fn listen<F, Fut>(listener: TcpListener, secret: String, find: F)
 where
     F: Fn(String, Size) -> Fut + Clone + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<PathBuf, String>> + Send,
+    Fut: std::future::Future<Output = Result<Film, String>> + Send,
 {
     while let Ok((stream, _)) = listener.accept().await {
         let (find, secret) = (find.clone(), secret.clone());
@@ -95,7 +94,7 @@ fn parse(secret: &str, lines: &[String]) -> Option<Asked> {
 async fn answer<F, Fut>(find: F, secret: &str, stream: TcpStream) -> std::io::Result<()>
 where
     F: Fn(String, Size) -> Fut,
-    Fut: std::future::Future<Output = Result<PathBuf, String>>,
+    Fut: std::future::Future<Output = Result<Film, String>>,
 {
     let mut reader = BufReader::new(stream);
     let mut lines = Vec::new();
@@ -116,11 +115,30 @@ where
     let Some(asked) = parse(secret, &lines) else {
         return status(&mut stream, "404 Not Found", "").await;
     };
-    let Ok(path) = find(asked.id.clone(), asked.size).await else {
+    let Ok(film) = find(asked.id.clone(), asked.size).await else {
         return status(&mut stream, "404 Not Found", "").await;
     };
-    let mut file = tokio::fs::File::open(&path).await?;
-    let len = file.metadata().await?.len();
+    // A film still landing is served as it lands: its length is known, and each piece is
+    // waited for only as the player reaches it — it starts at once, not after the download.
+    let (mut file, len, growing, path) = match film {
+        Film::Whole(path) => {
+            let file = tokio::fs::File::open(&path).await?;
+            let len = file.metadata().await?.len();
+            (file, len, None, path)
+        }
+        Film::Growing(g) => {
+            // Just finished and renamed: then it is where it is kept.
+            let file = match tokio::fs::File::open(&g.part).await {
+                Ok(f) => f,
+                Err(_) => tokio::fs::File::open(&g.kept).await?,
+            };
+            if g.wait_for(12.min(g.total)).await.is_none() {
+                return status(&mut stream, "404 Not Found", "").await;
+            }
+            let kept = g.kept.clone();
+            (file, g.total, Some(g), kept)
+        }
+    };
     let mut head = [0u8; 12];
     let _ = file.read(&mut head).await;
     let kind = photos::video_type(&head);
@@ -145,22 +163,34 @@ where
         // WebKitGTK honoured it in one way of drawing and not another, and a front-camera Live
         // Photo played sideways. So the film goes out upright — its matrix's 36 bytes, alone,
         // replaced as they pass. The file on disk is untouched.
-        let at = {
-            let path = path.clone();
-            tokio::task::spawn_blocking(move || quince_media::video_matrix(&path).ok().flatten())
+        let at = match &growing {
+            None => {
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || {
+                    quince_media::video_matrix(&path).ok().flatten()
+                })
                 .await
                 .ok()
                 .flatten()
-                .filter(|(_, m)| *m != [1, 0, 0, 1])
-                .map(|(at, _)| at)
-        };
+            }
+            Some(g) => g.matrix().await.ok().flatten(),
+        }
+        .filter(|(_, m)| *m != [1, 0, 0, 1])
+        .map(|(at, _)| at);
         // Streamed from disk: a long film is never held in memory, and a player that stops
         // reading (a seek elsewhere) just closes the connection.
         let mut pos = first;
         let mut left = n;
         let mut chunk = vec![0u8; 64 * 1024];
         while left > 0 {
-            let want = usize::try_from(left.min(chunk.len() as u64)).unwrap_or(chunk.len());
+            let mut want = left.min(chunk.len() as u64);
+            if let Some(g) = &growing {
+                let Some(have) = g.wait_for(pos + want).await else {
+                    break;
+                };
+                want = want.min(have.saturating_sub(pos));
+            }
+            let want = usize::try_from(want).unwrap_or(chunk.len());
             let got = file.read(&mut chunk[..want]).await?;
             if got == 0 {
                 break;
@@ -225,7 +255,7 @@ mod tests {
                 let found = found.clone();
                 async move {
                     if id == "v1" {
-                        Ok(found)
+                        Ok(Film::Whole(found))
                     } else {
                         Err("none".into())
                     }
@@ -278,6 +308,60 @@ mod tests {
             assert!(head.starts_with("HTTP/1.1 404"), "{head}");
             let (head, _) = get(port, "GET /k3y/v2/original HTTP/1.1\r\n\r\n").await;
             assert!(head.starts_with("HTTP/1.1 404"), "{head}");
+            std::fs::remove_dir_all(&dir).ok();
+        });
+    }
+
+    /// A film still downloading plays at once: each range is answered as its bytes land, the
+    /// end of it included, and the bytes are the film's whatever the pieces it lands in.
+    #[test]
+    fn serves_a_film_while_it_lands() {
+        tauri::async_runtime::block_on(async {
+            let dir = std::env::temp_dir().join(format!("quince-growing-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (part, kept) = (dir.join("clip.part"), dir.join("clip"));
+            let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 241) as u8).collect();
+            std::fs::write(&part, b"").unwrap();
+            let g = std::sync::Arc::new(photos::Growth::new(part.clone(), kept.clone(), 300_000));
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let shared = g.clone();
+            tauri::async_runtime::spawn(listen(listener, "k".into(), move |_, _| {
+                let g = shared.clone();
+                async move { Ok(Film::Growing(g)) }
+            }));
+            // Lands in uneven pieces, a little at a time, then is renamed into place.
+            let (lander, all) = (g.clone(), bytes.clone());
+            tauri::async_runtime::spawn(async move {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&lander.part)
+                    .unwrap();
+                for piece in all.chunks(37_000) {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    f.write_all(piece).unwrap();
+                    f.flush().unwrap();
+                    lander.landed(piece.len() as u64);
+                }
+                std::fs::rename(&lander.part, &lander.kept).unwrap();
+                lander.ended(true);
+            });
+            let (head, body) = get(
+                port,
+                "GET /k/v/video HTTP/1.1\r\nRange: bytes=1000-1999\r\n\r\n",
+            )
+            .await;
+            assert!(
+                head.contains("Content-Range: bytes 1000-1999/300000"),
+                "{head}"
+            );
+            assert_eq!(body, bytes[1000..2000]);
+            let (head, body) = get(port, "GET /k/v/video HTTP/1.1\r\n\r\n").await;
+            assert!(head.contains("Content-Length: 300000"), "{head}");
+            assert_eq!(body, bytes);
+            let (_, body) = get(port, "GET /k/v/video HTTP/1.1\r\nRange: bytes=-500\r\n\r\n").await;
+            assert_eq!(body, bytes[299_500..]);
             std::fs::remove_dir_all(&dir).ok();
         });
     }

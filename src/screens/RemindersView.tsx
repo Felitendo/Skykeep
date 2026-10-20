@@ -23,6 +23,7 @@ import { Picker } from "../components/Picker";
 import { RowMenu } from "../components/RowMenu";
 import { Glyph, emblemGlyph, type GlyphName } from "../components/Glyph";
 import { dateText, timeText } from "../lib/when";
+import { useReveal } from "../lib/reveal";
 
 /** Apple's built-in views, in Apple's order, each with the glyph and system colour its app uses. */
 const SMART: { kind: SmartList; title: string; glyph: GlyphName; colour: string }[] = [
@@ -215,7 +216,25 @@ export function RemindersView() {
     kind: "today",
   });
   const [selection, setShown] = useState<Selection>(picked);
+  // A reminder found by the search across everything: its list opened, its details shown,
+  // and its row brought into view once the list has come.
+  const revealing = useRef<string | null>(null);
+  useReveal("reminders", (r) => {
+    if (r.within) setSelection({ type: "list", guid: r.within });
+    revealing.current = r.id;
+    setOpenGuid(r.id);
+  });
   const [items, setItems] = useState<Reminder[]>([]);
+  useEffect(() => {
+    const id = revealing.current;
+    if (!id || !items.some((r) => r.guid === id)) return;
+    revealing.current = null;
+    requestAnimationFrame(() =>
+      document.querySelector(`.rx-row [aria-label="Rename ${CSS.escape(items.find((r) => r.guid === id)?.title ?? "")}"]`)
+        ?.closest(".rx-row")
+        ?.scrollIntoView({ block: "center" }),
+    );
+  }, [items]);
   const [showDone, setShowDone] = useState(false);
   const [syncing, setSyncing] = useState(false);
   /** Every reminder with a write still on its way — a set, since several can be at once. */
@@ -425,8 +444,37 @@ export function RemindersView() {
 
   /** Each reminder's ticks, sent to Apple one after another, in the order they were made. */
   const ticks = useRef(new Map<string, Promise<unknown>>());
+  /**
+   * A repeating reminder ticked: shown ticked for a moment — the circle filled — before it
+   * rolls on to its next date, as on the Mac; and while it does, a second click on it is not
+   * taken. Rolled on at once, the row came back unticked as if nothing had happened, a click
+   * again ticked the next day too, and a daily reminder skipped a day (one,
+   * ticked twice three seconds apart, came out due the day after tomorrow).
+   */
+  const [settling, setSettling] = useState<Set<string>>(() => new Set());
+  // Read by the click itself: a double-click's second click comes before the redraw.
+  const held = useRef(new Set<string>());
+  const SETTLE_MS = 1500;
   const toggle = (r: Reminder) => {
     const wasOpen = !r.completedAt;
+    const repeating = repeatLabel(r) !== null;
+    if (repeating) {
+      // Not taken while it settles, nor until Apple has the tick before; once it shows open
+      // again with its next date, a tick counts.
+      if (held.current.has(r.guid) || ticks.current.has(r.guid)) return;
+      if (wasOpen) {
+        held.current.add(r.guid);
+        setSettling((was) => new Set(was).add(r.guid));
+        window.setTimeout(() => {
+          held.current.delete(r.guid);
+          setSettling((was) => {
+            const next = new Set(was);
+            next.delete(r.guid);
+            return next;
+          });
+        }, SETTLE_MS);
+      }
+    }
     // Shown at once, every time, even while an earlier tick of this one is on its way — a
     // repeating one too: its circle fills now, and it rolls on to its next date when Apple
     // has made it (waiting for that, a tick on one showed nothing at all for a second or two).
@@ -1265,7 +1313,7 @@ export function RemindersView() {
                     <button
                       className="rx-tick"
                       role="checkbox"
-                      aria-checked={Boolean(reminder.completedAt)}
+                      aria-checked={Boolean(reminder.completedAt) || settling.has(reminder.guid)}
                       aria-label={reminder.title}
                       style={{ "--tick": colourOf(home) } as React.CSSProperties}
                       // The fill springs in on the press itself, and only then: kept as state,

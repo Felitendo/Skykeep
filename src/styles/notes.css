@@ -1,6 +1,6 @@
 /* Notes, laid out the way Apple Notes is: folders, the list, the note. */
 
-.content:has(> .screen-slot:not([hidden]) .notes) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
+.content[data-screen="notes"] { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
 
 .notes {
   flex: 1;

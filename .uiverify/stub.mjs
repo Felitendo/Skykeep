@@ -631,6 +631,16 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_send_sms":       return null;
         case "auth_submit_sms_code": return null;
         case "auth_sign_out":    sessionStorage.setItem("__signedOut", JSON.stringify(args)); return null;
+        case "search_everything": {
+          // A search across every app: what the fixtures hold that matches every word.
+          const q = String(args.query).toLowerCase().split(/\s+/).filter(Boolean);
+          const has = (t) => q.every((w) => String(t ?? "").toLowerCase().includes(w));
+          const notes = noteList.filter((n) => has(`${n.title} ${n.body ?? ""}`));
+          const contacts = contactList.filter((c) => has(`${c.firstName ?? ""} ${c.lastName ?? ""} ${c.company ?? ""}`));
+          const files = (driveFixture ? driveItems : []).filter((f) => has(`${f.name}.${f.extension ?? ""}`));
+          return { notes: notes.slice(0, 5), reminders: [], events: [], contacts: contacts.slice(0, 5), files: files.slice(0, 5), photos: [],
+            counts: [notes.length, 0, 0, contacts.length, files.length, 0] };
+        }
         case "drive_kept": return window.__driveFolder?.on ? [...(window.__kept ??= [])] : null;
         case "drive_keep":
           if (!window.__driveFolder?.on) throw "Turn on the iCloud Drive folder in Settings to keep files on this computer.";

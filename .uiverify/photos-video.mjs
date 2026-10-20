@@ -8,9 +8,11 @@ import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const clip = new URL("./clip.webm", import.meta.url);
 const len = fs.statSync(clip).size;
 const asked = [];
+// Apple keeps no streaming copy of some videos: then the original plays.
+let noCopy = false;
 const server = http.createServer((req, res) => {
   asked.push(req.url);
-  if (!req.url.startsWith("/s3cret/p3/")) return void res.writeHead(404).end();
+  if (!req.url.startsWith("/s3cret/p3/") || (noCopy && req.url.startsWith("/s3cret/p3/video"))) return void res.writeHead(404).end();
   const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? "");
   const first = m && m[1] ? +m[1] : 0;
   const last = m && m[2] ? Math.min(+m[2], len - 1) : len - 1;
@@ -35,7 +37,7 @@ const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failu
 await page.locator('.px-tile[data-id="p3"]').dblclick();
 await page.waitForTimeout(600);
 const video = page.locator(".px-stage video");
-ok((await video.count()) === 1 && (await video.getAttribute("src")) === `${base}/p3/original`, `the video is in the viewer, from the loopback server  ${await video.getAttribute("src").catch(() => "")}`);
+ok((await video.count()) === 1 && (await video.getAttribute("src")) === `${base}/p3/video`, `the video is in the viewer, Apple's streaming copy from the loopback server  ${await video.getAttribute("src").catch(() => "")}`);
 ok(await video.evaluate((v) => !v.controls && v.autoplay), "playing at once, with no engine controls over it");
 ok((await page.locator(".px-player-bar").count()) === 1 && (await page.getByRole("slider", { name: "Playback position" }).count()) === 1,
   "Photos' own controls in a capsule: play, where it is, a scrubber, what is left, sound");
@@ -69,8 +71,20 @@ if (played.err) {
   const was = await video.evaluate((v) => v.muted);
   await page.getByRole("button", { name: was ? "Unmute" : "Mute" }).click();
   ok((await video.evaluate((v) => v.muted)) === !was, "and the sound button turns sound off and on");
-  ok(asked.some((u) => u.startsWith("/s3cret/p3/original")), "fetched from the app's server");
+  ok(asked.some((u) => u.startsWith("/s3cret/p3/video")), "fetched from the app's server");
 }
+// No streaming copy: the original plays in its place.
+noCopy = true;
+const pc = await ctx.newPage();
+await pc.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await openScreen(pc, "Photos");
+await pc.waitForTimeout(400);
+await pc.locator('.px-tile[data-id="p3"]').dblclick();
+await pc.waitForTimeout(1500);
+ok((await pc.locator(".px-stage video").getAttribute("src").catch(() => "")) === `${base}/p3/original` || (await pc.locator(".px-stage button.px-video").count()) === 1,
+  `with no streaming copy, the original plays  ${await pc.locator(".px-stage video").getAttribute("src").catch(() => "")}`);
+await pc.close();
+noCopy = false;
 // Stepping to a photo leaves no video behind.
 await page.keyboard.press("ArrowLeft");
 await page.waitForTimeout(300);

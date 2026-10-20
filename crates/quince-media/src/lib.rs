@@ -99,6 +99,16 @@ fn cut(image: image::DynamicImage, crop: Option<Crop>) -> image::DynamicImage {
 ///
 /// # Errors
 /// When the bytes are not a HEIF image libheif can decode.
+#[cfg(windows)]
+pub fn heic_to_jpeg(_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    Err("HEIC pictures are not decoded on Windows yet.".into())
+}
+
+/// A HEIC picture made a JPEG (see the Windows variant above for where it is not).
+///
+/// # Errors
+/// When the bytes are not a HEIF image libheif can decode.
+#[cfg(not(windows))]
 pub fn heic_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
     let lib = LibHeif::new();
@@ -284,7 +294,6 @@ pub const UPRIGHT_MATRIX: [u8; 36] = [
 /// the MD5 of this string, so one character escaped differently and no file manager finds it.
 #[must_use]
 pub fn file_uri(path: &std::path::Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
     // GLib's table, ASCII 32 to 127; a character is kept when its byte has 0x08 set.
     const ACCEPTABLE: [u8; 96] = [
         0x00, 0x3F, 0x20, 0x20, 0x28, 0x00, 0x2C, 0x3F, 0x3F, 0x3F, 0x3F, 0x2A, 0x28, 0x3F, 0x3F,
@@ -301,7 +310,8 @@ pub fn file_uri(path: &std::path::Path) -> String {
         0x20,
     ];
     let mut out = String::from("file://");
-    for &b in path.as_os_str().as_bytes() {
+    // On Linux these are the path's own bytes, as GLib reads them.
+    for &b in path.as_os_str().as_encoded_bytes() {
         let kept = (32..128).contains(&b) && ACCEPTABLE[usize::from(b - 32)] & 0x08 != 0;
         if kept {
             out.push(char::from(b));

@@ -10,13 +10,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-# A video's poster when Apple's is blank: one frame read with GStreamer, which WebKitGTK
-# already needs, so nothing new is installed.
-gstreamer = "0.25"
 quince-vfs = { path = "../crates/quince-vfs" }
 sha2 = "0.10"
-gstreamer-app = "0.25"
-gstreamer-video = "0.25"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 quince-auth = { path = "../crates/quince-auth" }
 quince-core = { path = "../crates/quince-core" }
@@ -33,12 +28,17 @@ base64 = "0.22"
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-opener = "2"
 notify-rust = "4"
-zbus = "5"
 tauri-plugin-single-instance = "2"
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.18", default-features = false }
+# A video's poster when Apple's is blank: one frame read with GStreamer, which WebKitGTK
+# already needs, so nothing new is installed. Linux only: elsewhere Apple's poster stands.
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+zbus = "5"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

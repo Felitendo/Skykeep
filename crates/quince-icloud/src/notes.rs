@@ -2485,7 +2485,8 @@ pub async fn add_table_line_cloudkit(
                 crate::table::with_row_in_base64(current, at)?
             };
             Some(serde_json::json!({
-                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited }
+                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited },
+                "LastModificationDate": { "type": "TIMESTAMP", "value": now_millis() }
             }))
         })
         .await?
@@ -2495,6 +2496,7 @@ pub async fn add_table_line_cloudkit(
                 if column { "column" } else { "row" }
             ))
         })?;
+    touch_note_of(&client, attachment).await;
     client
         .lookup_record(ZONE, attachment)
         .await?
@@ -2523,7 +2525,8 @@ pub async fn remove_table_line_cloudkit(
                 .as_str()?;
             let edited = crate::table::without_line_in_base64(current, column, at)?;
             Some(serde_json::json!({
-                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited }
+                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited },
+                "LastModificationDate": { "type": "TIMESTAMP", "value": now_millis() }
             }))
         })
         .await?
@@ -2533,6 +2536,7 @@ pub async fn remove_table_line_cloudkit(
                 if column { "column" } else { "row" }
             ))
         })?;
+    touch_note_of(&client, attachment).await;
     client
         .lookup_record(ZONE, attachment)
         .await?
@@ -2541,6 +2545,28 @@ pub async fn remove_table_line_cloudkit(
         .and_then(Value::as_str)
         .and_then(crate::table::cells_from_base64)
         .ok_or_else(|| Error::Protocol("Apple kept a table this cannot read back".into()))
+}
+
+/// The note a table lives in, marked changed now, as a phone marks it when one of its tables
+/// is edited (`ModificationDate`): a table edited here was stored at Apple but did not show on
+/// the phone, whose note had no change to read. Best effort: the edit itself is already kept.
+async fn touch_note_of(client: &ZoneClient<'_>, attachment: &str) {
+    let Ok(Some(record)) = client.lookup_record(ZONE, attachment).await else {
+        return;
+    };
+    let Some(note) = record
+        .pointer("/fields/Note/value/recordName")
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    let _ = client
+        .edit_record(ZONE, note, "Note", |_| {
+            Some(serde_json::json!({
+                "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() }
+            }))
+        })
+        .await;
 }
 
 /// A table cell set to `text`.
@@ -2561,7 +2587,8 @@ pub async fn set_table_cell_cloudkit(
                 .as_str()?;
             let edited = crate::table::with_cell_in_base64(current, row, column, text)?;
             Some(serde_json::json!({
-                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited }
+                "MergeableDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": edited },
+                "LastModificationDate": { "type": "TIMESTAMP", "value": now_millis() }
             }))
         })
         .await?
@@ -2570,6 +2597,7 @@ pub async fn set_table_cell_cloudkit(
         })?;
     // Apple's answer to the write does not carry the table back (measured), so what it now
     // holds is read from it.
+    touch_note_of(&client, attachment).await;
     client
         .lookup_record(ZONE, attachment)
         .await?

@@ -19,7 +19,15 @@ mod mount;
 mod mount_photos;
 mod outbox;
 mod photos;
+#[cfg(target_os = "linux")]
 mod poster;
+#[cfg(not(target_os = "linux"))]
+mod poster {
+    //! Elsewhere than Linux there is no GStreamer to read a frame with: Apple's own poster stands.
+    pub fn first_seen_frame(_path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
+    }
+}
 mod push;
 mod refresh;
 mod video;
@@ -794,6 +802,19 @@ async fn auth_submit_sms_code(
     drop(client);
     folders_up(&app).await;
     Ok(())
+}
+
+/// One search across every app's library — notes, reminders, events, contacts, files, photos —
+/// the first few of each and how many in all. Offline: read from the library alone.
+#[tauri::command]
+async fn search_everything(
+    query: String,
+    data: State<'_, Data>,
+) -> UiResult<quince_core::search::Everything> {
+    let library = data.0.lock().await;
+    library
+        .search_everything(&query, 5)
+        .map_err(|e| e.to_string())
 }
 
 /// What of the signed-in account's has not reached Apple yet: asked before a sign-out, so a
@@ -4266,6 +4287,7 @@ fn main() {
             auth_submit_sms_code,
             auth_sign_out,
             account_unsent,
+            search_everything,
             login::login_item_status,
             mount::drive_kept,
             mount::drive_keep,

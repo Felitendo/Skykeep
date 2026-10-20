@@ -20,12 +20,26 @@ await page.waitForTimeout(500);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 
-// A month far down, not built: boxes, laid out on the grid.
+// A month far down, not built: its tiles painted as boxes on one block as tall as its rows
+// (14 photos over the grid's columns), never an empty space — and one element, not one a box.
 const far = await page.evaluate(() => {
   const later = [...document.querySelectorAll(".px-later")];
-  return { months: later.length, boxes: later.reduce((n, l) => n + l.querySelectorAll(".px-ph").length, 0) };
+  const across = Number(getComputedStyle(document.querySelector(".px-scroll")).getPropertyValue("--across")) || 7;
+  const first = later[0];
+  const cs = first && getComputedStyle(first);
+  const cell = first ? (first.clientWidth - (across - 1) * 2) / across : 0;
+  const rows = Math.ceil(14 / across);
+  return {
+    months: later.length,
+    painted: later.every((l) => getComputedStyle(l.firstElementChild).backgroundImage.includes("gradient")),
+    children: later.reduce((n, l) => n + l.querySelectorAll("*").length, 0) / later.length,
+    height: first?.getBoundingClientRect().height ?? 0,
+    want: rows * cell + (rows - 1) * 2,
+    repeat: first && getComputedStyle(first.firstElementChild).backgroundRepeat,
+  };
 });
-ok(far.months > 0 && far.boxes === far.months * 14, `months not yet built show their tiles as boxes  (${far.months} months, ${far.boxes} boxes)`);
+ok(far.months > 0 && far.painted && far.children === 1 && Math.abs(far.height - far.want) < 1,
+  `months not yet built show their tiles as boxes, one block each  ${JSON.stringify(far)}`);
 
 // A slow view: title at once, boxes, then the photos.
 await page.evaluate(() => { window.__slowView = "favorites"; });

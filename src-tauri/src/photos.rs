@@ -686,6 +686,226 @@ async fn new_link(
         .ok_or_else(|| "That photo has no picture of that size.".into())
 }
 
+/// A film's bytes on their way to the cache: where they are landing, how many there will be,
+/// how many have landed, and whether it ended (well or not). The player is served from it as it
+/// grows, so a film starts within a moment instead of after its whole download.
+pub struct Growth {
+    pub part: PathBuf,
+    /// Where it is kept once it is whole.
+    pub kept: PathBuf,
+    pub total: u64,
+    have: std::sync::atomic::AtomicU64,
+    pub done: std::sync::atomic::AtomicBool,
+    failed: std::sync::atomic::AtomicBool,
+    more: tokio::sync::Notify,
+}
+
+impl Growth {
+    /// A film of `total` bytes about to land at `part`, to be kept at `kept`.
+    pub fn new(part: PathBuf, kept: PathBuf, total: u64) -> Self {
+        Growth {
+            part,
+            kept,
+            total,
+            have: std::sync::atomic::AtomicU64::new(0),
+            done: std::sync::atomic::AtomicBool::new(false),
+            failed: std::sync::atomic::AtomicBool::new(false),
+            more: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// `n` more bytes are in the file.
+    pub fn landed(&self, n: u64) {
+        self.have.fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+        self.more.notify_waiters();
+    }
+
+    /// The download ended: whole and in place, or not.
+    pub fn ended(&self, whole: bool) {
+        use std::sync::atomic::Ordering;
+        if whole {
+            self.done.store(true, Ordering::SeqCst);
+        } else {
+            self.failed.store(true, Ordering::SeqCst);
+        }
+        self.more.notify_waiters();
+    }
+
+    /// Where its matrix is and what it says, once its header has landed — read a little more at
+    /// a time. `None`: it has no matrix.
+    pub async fn matrix(&self) -> Result<Option<(u64, [i32; 4])>, String> {
+        let read = |path: PathBuf| async move {
+            tokio::task::spawn_blocking(move || quince_media::video_matrix(&path))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())
+        };
+        let mut want = (256 * 1024).min(self.total);
+        loop {
+            let have = self.wait_for(want).await.ok_or("The film broke off.")?;
+            let done = have >= self.total && self.done.load(std::sync::atomic::Ordering::SeqCst);
+            // Renamed into place when it finished: read it there.
+            let at = if done {
+                self.kept.clone()
+            } else {
+                self.part.clone()
+            };
+            if let Ok(Some(found)) = read(at).await {
+                return Ok(Some(found));
+            }
+            if done {
+                return Ok(None);
+            }
+            want = (want * 2).min(self.total);
+        }
+    }
+
+    /// Waits until the file holds `upto` bytes (or ended); answers how many it holds, or `None`
+    /// when the download failed.
+    pub async fn wait_for(&self, upto: u64) -> Option<u64> {
+        use std::sync::atomic::Ordering;
+        loop {
+            let wake = self.more.notified();
+            if self.failed.load(Ordering::SeqCst) {
+                return None;
+            }
+            let have = self.have.load(Ordering::SeqCst);
+            let done = self.done.load(Ordering::SeqCst);
+            // All of it asked for: only once it is in place (renamed), never in that instant.
+            if done || (upto < self.total && have >= upto) {
+                return Some(have);
+            }
+            // Woken by every piece that lands; a second at most, never stuck on a missed wake.
+            let _ = tokio::time::timeout(Duration::from_secs(1), wake).await;
+        }
+    }
+}
+
+/// Films being fetched now, by where they will be kept: one download each, however many ask.
+static GROWING: Mutex<Option<HashMap<PathBuf, std::sync::Arc<Growth>>>> = Mutex::new(None);
+
+/// Where a film is: kept whole, or on its way.
+pub enum Film {
+    Whole(PathBuf),
+    Growing(std::sync::Arc<Growth>),
+}
+
+/// A film for the player: from the cache if it is kept, else fetched — once — with the player
+/// served from the bytes as they land.
+pub async fn film(app: &AppHandle, id: &str, size: Size) -> Result<Film, String> {
+    let path = cache_path(app, id, size);
+    if tokio::fs::metadata(&path).await.is_ok() {
+        return Ok(Film::Whole(path));
+    }
+    if let Some(g) = GROWING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(|m| m.get(&path).cloned())
+    {
+        return Ok(Film::Growing(g));
+    }
+    let photo = {
+        let data = app.state::<Data>();
+        let library = data.0.lock().await;
+        library
+            .photo(id)
+            .map_err(|e| e.to_string())?
+            .ok_or("That photo is no longer in the library.")?
+    };
+    let auth = app.state::<Auth>();
+    let (http, root, params) = crate::cloudkit_context(&auth).await?;
+    let ask = |url: String| {
+        let http = http.clone();
+        async move { http.get(url).send().await.map_err(|e| e.to_string()) }
+    };
+    let mut response = match fresh_links(&photo.master).and_then(|l| size.pick(&l)) {
+        Some(url) => ask(url).await.ok().filter(|r| r.status().is_success()),
+        None => None,
+    };
+    if response.is_none() {
+        let url = new_link(&http, &root, params, &photo, size).await?;
+        response = Some(ask(url).await?).filter(|r| r.status().is_success());
+    }
+    let response = response.ok_or("Apple did not send that film.")?;
+    let total = response.content_length().unwrap_or(0);
+    if total == 0 {
+        // No length said: fetched whole first, as any other picture.
+        drop(response);
+        return cached(app, id, size).await.map(Film::Whole);
+    }
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let part = path.with_extension(format!("{}.part", uuid::Uuid::new_v4().simple()));
+    let file = tokio::fs::File::create(&part)
+        .await
+        .map_err(|e| e.to_string())?;
+    let growth = std::sync::Arc::new(Growth::new(part.clone(), path.clone(), total));
+    // Two asking at once: the first one's download is the one kept.
+    {
+        let mut growing = GROWING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let map = growing.get_or_insert_with(HashMap::new);
+        if let Some(g) = map.get(&path) {
+            let _ = std::fs::remove_file(&part);
+            return Ok(Film::Growing(g.clone()));
+        }
+        map.insert(path.clone(), growth.clone());
+    }
+    let g = growth.clone();
+    tauri::async_runtime::spawn(async move {
+        use futures_util::StreamExt;
+        use std::sync::atomic::Ordering;
+        use tokio::io::AsyncWriteExt;
+        let mut out = file;
+        let mut body = response.bytes_stream();
+        let mut ok = true;
+        while let Some(chunk) = body.next().await {
+            let Ok(chunk) = chunk else {
+                ok = false;
+                break;
+            };
+            if out.write_all(&chunk).await.is_err() {
+                ok = false;
+                break;
+            }
+            // Flushed as it lands, so a reader of the file finds what is counted here.
+            let _ = out.flush().await;
+            g.landed(chunk.len() as u64);
+        }
+        drop(out);
+        ok = ok && g.have.load(Ordering::SeqCst) == g.total;
+        let whole = ok && tokio::fs::rename(&g.part, &path).await.is_ok();
+        if !whole {
+            let _ = tokio::fs::remove_file(&g.part).await;
+        }
+        g.ended(whole);
+        GROWING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .map(|m| m.remove(&path));
+    });
+    Ok(Film::Growing(growth))
+}
+
+/// A film's turn (its matrix), read as soon as its header has landed — a film from Apple's
+/// streaming copies keeps its header at the front — never waiting for the whole film.
+pub async fn film_turn(app: &AppHandle, id: &str, size: Size) -> Result<[i32; 4], String> {
+    let found = match film(app, id, size).await? {
+        Film::Whole(path) => tokio::task::spawn_blocking(move || quince_media::video_matrix(&path))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?,
+        Film::Growing(g) => g.matrix().await?,
+    };
+    Ok(found.map_or([1, 0, 0, 1], |(_, m)| m))
+}
+
 /// What a picture's bytes are, for the window to draw them.
 /// The bytes a `Range: bytes=…` header asks of a file `len` long, as `(first, last)` inclusive,
 /// at most `most` of them. No header is the whole file; one this file cannot satisfy is `None`.
@@ -1357,12 +1577,7 @@ pub async fn photo_video_turn(id: String, which: String, app: AppHandle) -> UiRe
     } else {
         Size::Original
     };
-    let path = cached(&app, &id, size).await?;
-    let turn = tokio::task::spawn_blocking(move || quince_media::video_matrix(&path))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    Ok(turn.map_or([1, 0, 0, 1], |(_, m)| m))
+    film_turn(&app, &id, size).await
 }
 
 /// A video opened in this computer's own player. WebKitGTK plays nothing without GStreamer's
@@ -1502,7 +1717,8 @@ pub async fn photo_set_date(
 }
 
 /// Where a photo was taken, opened in a map in the browser: OpenStreetMap at its coordinates.
-/// Apple's place names come from Apple Maps, which is not here; the place itself is.
+/// Apple's place names come from Apple Maps, which is not here; the place itself is, opened in
+/// this computer's own map app.
 #[tauri::command]
 pub async fn photo_open_map(id: String, app: AppHandle, data: State<'_, Data>) -> UiResult<()> {
     let photo = data
@@ -1515,13 +1731,24 @@ pub async fn photo_open_map(id: String, app: AppHandle, data: State<'_, Data>) -
     let (Some(lat), Some(lon)) = (photo.latitude, photo.longitude) else {
         return Err("This photo has no place.".into());
     };
+    // The place handed to this computer's own map app (a geo: link, RFC 5870, as GNOME Maps
+    // and the like take it) — never to a website: the photo's location goes nowhere else.
+    #[cfg(target_os = "linux")]
+    {
+        let handled = std::process::Command::new("xdg-mime")
+            .args(["query", "default", "x-scheme-handler/geo"])
+            .output()
+            .is_ok_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
+        if !handled {
+            return Err(format!(
+                "No map app on this computer opens places. The place is {lat:.6}, {lon:.6}."
+            ));
+        }
+    }
     use tauri_plugin_opener::OpenerExt;
     app.opener()
-        .open_url(
-            format!("https://www.openstreetmap.org/?mlat={lat:.6}&mlon={lon:.6}#map=16/{lat:.6}/{lon:.6}"),
-            None::<&str>,
-        )
-        .map_err(|e| format!("No browser on this computer opened the map: {e}"))
+        .open_url(format!("geo:{lat:.6},{lon:.6}"), None::<&str>)
+        .map_err(|e| format!("The map app did not open: {e}"))
 }
 
 /// How many photos each view holds. Asked after every sync, which is also when an upload queue

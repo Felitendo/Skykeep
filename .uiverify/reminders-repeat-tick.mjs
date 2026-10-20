@@ -31,5 +31,23 @@ ok((await row.count()) === 1, "and the row stays — a repeating one never leave
 await page.waitForTimeout(1500);
 ok((await row.locator(".rx-tick").getAttribute("aria-checked")) === "false", "once Apple has it, it is open again");
 ok((await due()) !== before, `with its next date  (${(await due()).replace(/\n/g, " ")})`);
+
+// Clicked twice in a row (a double-click, or a second click because nothing seemed to happen):
+// one tick, never two — a daily reminder must not skip a day. And when Apple answers at once,
+// the circle still stays filled a moment before it rolls on.
+await page.evaluate(() => { window.__doneDelay = 0; window.__done = []; });
+const sent = () => page.evaluate(() => (window.__done ?? []).filter((d) => d.guid === "rr" && d.done).length);
+await row.locator(".rx-tick").dblclick();
+await page.waitForTimeout(300);
+ok((await sent()) === 1, `a double-click ticks it once  (${await sent()} sent)`);
+ok((await row.locator(".rx-tick").getAttribute("aria-checked")) === "true", "and it stays ticked a moment, even with Apple's answer back");
+await row.locator(".rx-tick").click();
+await page.waitForTimeout(200);
+ok((await sent()) === 1, "a second click while it settles is not a second tick");
+await page.waitForTimeout(2600);
+ok((await row.locator(".rx-tick").getAttribute("aria-checked")) === "false", "then it rolls on, open for its next day");
+await row.locator(".rx-tick").click();
+await page.waitForTimeout(200);
+ok((await sent()) === 2, "and a deliberate tick after that counts again");
 await b.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

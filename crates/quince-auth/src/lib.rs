@@ -349,7 +349,23 @@ impl Client {
 
     fn persist(&self) -> Result<()> {
         self.store.save(&self.session)?;
-        let mut w = std::io::BufWriter::new(std::fs::File::create(self.store.cookie_path())?);
+        // The session's cookies are a credential: readable by this user alone, whatever folder
+        // they end up in (a backup, a copy), not only by the private data folder around them.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(self.store.cookie_path())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // A file made before this kept its old mode: set it, too.
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        let mut w = std::io::BufWriter::new(file);
         let jar = self.jar.lock().expect("cookie jar mutex poisoned");
         cookie_store::serde::json::save(&jar, &mut w)
             .map_err(|e| Error::Protocol(format!("couldn't save cookies: {e}")))

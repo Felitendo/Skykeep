@@ -3,7 +3,7 @@
 
 /* The screen fills the window as Notes does, so the sidebar's divider runs the full height
    and only the library scrolls. */
-.content:has(> .screen-slot:not([hidden]) .px) { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
+.content[data-screen="photos"] { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
 
 .px {
   /* An app's own words are not text to select, as in Photos; a field still takes typing. */
@@ -224,6 +224,22 @@
 }
 /* A month not yet built: its tiles as plain boxes in the photos' own tone, on the same grid. */
 .px-ph { aspect-ratio: 1; background: color-mix(in srgb, var(--text) 7%, transparent); }
+/* A month not built yet: as tall as its rows of square tiles will be — its count over the
+   columns, rounded up — with its tiles painted on as boxes. Sized by its own width alone (no
+   container query: WebKit let a kept screen's scroll go when one was measured on coming back).
+   The block inside is the grid's width plus one gap, so each column and its gap is a square of
+   it, and its proportion is simply columns to rows; the extra gap below is taken back by a
+   negative margin. Each square is painted as a box with the gap left clear. */
+.px-later { --gap: 2px; --pad: 0px; --rows: round(up, var(--n) / var(--across, 7), 1); padding: 0 var(--pad); display: flow-root; }
+.px-later-in {
+  display: block;
+  margin-right: calc(-1 * var(--gap));
+  margin-bottom: calc(-1 * var(--gap));
+  aspect-ratio: var(--across, 7) / var(--rows);
+  background: conic-gradient(at calc(100% - var(--gap)) calc(100% - var(--gap)), transparent 75%, color-mix(in srgb, var(--text) 7%, transparent) 0)
+    0 0 / calc(100% / var(--across, 7)) calc(100% / var(--rows));
+}
+.px-scroll[data-fit] .px-later { --gap: 14px; --pad: 14px; }
 .px-month-title {
   margin: 0;
   padding: 12px 16px 8px;

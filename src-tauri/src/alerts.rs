@@ -124,7 +124,11 @@ pub fn spawn(app: AppHandle) {
 }
 
 /// Wake when the machine comes back from sleep, where logind says so. Where it cannot be
-/// asked — no system bus, no logind — the ten-minute ceiling still holds.
+/// asked — no system bus, no logind, not Linux — the ten-minute ceiling still holds.
+#[cfg(not(target_os = "linux"))]
+fn watch_for_resume() {}
+
+#[cfg(target_os = "linux")]
 fn watch_for_resume() {
     tauri::async_runtime::spawn(async {
         let Ok(bus) = zbus::Connection::system().await else {

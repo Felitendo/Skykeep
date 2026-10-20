@@ -33,6 +33,7 @@ import {
   weekSpans,
 } from "./model";
 import { dateText, timeText } from "../../lib/when";
+import { useReveal } from "../../lib/reveal";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -268,6 +269,13 @@ export function CalendarView() {
   const [naming, setNaming] = useState<string | null>(null);
   const [calMenu, setCalMenu] = useState<{ cal: Calendar; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(() => readSet(HIDDEN_KEY));
+  // An event found by the search across everything: its day shown, and its calendar too if
+  // it was hidden — never a found event that cannot be seen.
+  useReveal("calendar", (r) => {
+    if (r.at) setSelected(midnight(new Date(r.at * 1000)));
+    const cal = r.within;
+    if (cal) setHidden((h) => (h.has(cal) ? new Set([...h].filter((g) => g !== cal)) : h));
+  });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);

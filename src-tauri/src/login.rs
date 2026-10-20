@@ -6,11 +6,15 @@
 //! Some compositors run no autostart entries (Hyprland, Sway and the like, unless started
 //! through uwsm). There Settings says so, with the one line that does the same in their
 //! own startup — written by the person, never by Quince into their config.
+//!
+//! On Windows it is the standard place too: a value under the user's own `Run` key, which
+//! Windows reads at sign-in (and lists in Task Manager's Startup apps, where it can be turned
+//! off as any other).
 
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 /// Started by the login entry: the window stays hidden unless something needs the person.
 static BACKGROUND: AtomicBool = AtomicBool::new(false);
@@ -48,7 +52,9 @@ pub struct LoginItem {
     pub honoured: bool,
 }
 
+#[cfg(not(windows))]
 fn entry(app: &AppHandle) -> Option<PathBuf> {
+    use tauri::Manager;
     app.path()
         .config_dir()
         .ok()
@@ -62,6 +68,10 @@ fn command() -> String {
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())
         .unwrap_or_else(|| PathBuf::from("quince-app"));
+    // Windows reads the Run value as a command line: the path in plain quotes.
+    if cfg!(windows) {
+        return format!("\"{}\" {FLAG}", program.to_string_lossy());
+    }
     format!("{} {FLAG}", quoted(&program.to_string_lossy()))
 }
 
@@ -79,12 +89,14 @@ fn quoted(path: &str) -> String {
     out
 }
 
+#[cfg(not(windows))]
 fn desktop_file(command: &str) -> String {
     format!(
         "[Desktop Entry]\nType=Application\nName=Quince\nComment=Keeps iCloud in sync in the background\nExec={command}\nIcon=dev.quince.client\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n"
     )
 }
 
+#[cfg(not(windows))]
 /// Desktops that run autostart entries themselves.
 const RUNS_AUTOSTART: [&str; 10] = [
     "GNOME",
@@ -99,6 +111,7 @@ const RUNS_AUTOSTART: [&str; 10] = [
     "Unity",
 ];
 
+#[cfg(not(windows))]
 /// Whether autostart entries run at login here: a desktop that runs them, or a session that
 /// started systemd's autostart target (uwsm, and the desktops that use it).
 fn honoured() -> bool {
@@ -120,6 +133,64 @@ fn honoured() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// The user's own `Run` key, and the value Quince keeps there.
+#[cfg(windows)]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(windows)]
+const RUN_VALUE: &str = "Quince";
+
+/// Windows' own `reg` tool, with no window flashing up.
+#[cfg(windows)]
+fn reg(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new("reg")
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub async fn login_item_status(_app: AppHandle) -> Result<LoginItem, String> {
+    let on = tauri::async_runtime::spawn_blocking(|| {
+        reg(&["query", RUN_KEY, "/v", RUN_VALUE]).is_ok_and(|s| s.success())
+    })
+    .await
+    .unwrap_or(false);
+    Ok(LoginItem {
+        on,
+        command: command(),
+        honoured: true,
+    })
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, String> {
+    let line = command();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        if on {
+            reg(&[
+                "add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &line, "/f",
+            ])
+        } else {
+            reg(&["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    // Turning off what was never on is not a failure.
+    if on && !done.success() {
+        return Err("Windows did not keep the startup entry.".into());
+    }
+    login_item_status(app).await
+}
+
+#[cfg(not(windows))]
 #[tauri::command]
 pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
     let on = entry(&app).is_some_and(|p| p.exists());
@@ -133,6 +204,7 @@ pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
     })
 }
 
+#[cfg(not(windows))]
 #[tauri::command]
 pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, String> {
     let path = entry(&app).ok_or("There is no configuration folder to keep it in.")?;

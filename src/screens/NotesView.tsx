@@ -11,6 +11,7 @@ import { NoteEditor, refreshTables, type EditorHandle, type EditorStatus } from 
 import { FormatPanel } from "./notes/FormatPanel";
 import { NotePicture } from "./notes/NotePicture";
 import { OPEN_NOTE_EVENT } from "./notes/links";
+import { useReveal } from "../lib/reveal";
 import { useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
@@ -212,21 +213,25 @@ export function NotesView() {
   // A link to another note, followed: that note opened — from All iCloud when the folder in
   // front does not hold it — or, when it is not in this account's notes, said so.
   const following = useRef<string | null>(null);
+  const follow = (guid: string) => {
+    if (notes.some((n) => n.guid === guid)) {
+      setOpenGuid(guid);
+      setDetail(true);
+      return;
+    }
+    following.current = guid;
+    if (folder !== ALL) setFolder(ALL);
+    else void read();
+  };
+  const followRef = useRef(follow);
+  followRef.current = follow;
   useEffect(() => {
-    const follow = (e: Event) => {
-      const guid = (e as CustomEvent<string>).detail;
-      if (notes.some((n) => n.guid === guid)) {
-        setOpenGuid(guid);
-        setDetail(true);
-        return;
-      }
-      following.current = guid;
-      if (folder !== ALL) setFolder(ALL);
-      else void read();
-    };
-    window.addEventListener(OPEN_NOTE_EVENT, follow);
-    return () => window.removeEventListener(OPEN_NOTE_EVENT, follow);
-  }, [notes, folder, read]);
+    const on = (e: Event) => followRef.current((e as CustomEvent<string>).detail);
+    window.addEventListener(OPEN_NOTE_EVENT, on);
+    return () => window.removeEventListener(OPEN_NOTE_EVENT, on);
+  }, []);
+  // A note found by the search across everything: opened as a link to it opens it.
+  useReveal("notes", (r) => followRef.current(r.id));
   useEffect(() => {
     const guid = following.current;
     if (!guid || folder !== ALL || notes.length === 0) return;

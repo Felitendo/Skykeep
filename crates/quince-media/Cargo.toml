@@ -9,5 +9,10 @@ fast_image_resize = "6.1.0"
 # Only the formats Apple has been observed to serve. Every extra decoder is compile time and
 # attack surface for no gain.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-libheif-rs = "3.0.0"
 png = "0.17"
+
+# HEIC decoded with libheif where the system has it (Linux packages it everywhere). On Windows
+# it is not built yet: HEIC is shown at Apple's own JPEG sizes there until the system's own
+# decoder (the Windows Imaging Component) is used.
+[target.'cfg(not(windows))'.dependencies]
+libheif-rs = "3.0.0"

@@ -28,11 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "deb",
-      "rpm",
-      "appimage"
-    ],
+    "targets": "all",
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",
@@ -47,6 +43,16 @@
     "licenseFile": "../LICENSE",
     "homepage": "https://github.com/YashwanthKamireddi/quince",
     "publisher": "Yashwanth Kamireddi",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    },
     "linux": {
       "deb": {
         "depends": [

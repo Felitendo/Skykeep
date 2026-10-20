@@ -377,13 +377,12 @@ impl Cache {
     /// Bytes on disk now: what the sparse files really take, not their full sizes.
     #[must_use]
     pub fn used(&self) -> u64 {
-        use std::os::unix::fs::MetadataExt;
         std::fs::read_dir(&self.dir)
             .map(|d| {
                 d.flatten()
                     .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
                     .filter_map(|e| e.metadata().ok())
-                    .map(|m| m.blocks() * 512)
+                    .map(|m| on_disk(&m))
                     .sum()
             })
             .unwrap_or(0)
@@ -392,7 +391,6 @@ impl Cache {
     /// Down to four fifths of the budget, the files read longest ago first; never one read in
     /// the last few minutes. Answers how many bytes were let go of.
     pub fn evict(&self) -> u64 {
-        use std::os::unix::fs::MetadataExt;
         let mut used = self.used();
         if used <= self.budget {
             return 0;
@@ -426,8 +424,8 @@ impl Cache {
                     .filter_map(|e| {
                         let m = e.metadata().ok()?;
                         let have = std::fs::metadata(e.path().with_extension("have"))
-                            .map_or(0, |h| h.blocks() * 512);
-                        Some((m.modified().ok()?, e.path(), m.blocks() * 512 + have))
+                            .map_or(0, |h| on_disk(&h));
+                        Some((m.modified().ok()?, e.path(), on_disk(&m) + have))
                     })
                     .collect()
             })
@@ -595,9 +593,44 @@ impl Cache {
     }
 }
 
+/// What a file really takes on disk: a sparse file only its blocks written. (Windows says only
+/// its length.)
+#[cfg(unix)]
+fn on_disk(m: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    m.blocks() * 512
+}
+#[cfg(not(unix))]
+fn on_disk(m: &std::fs::Metadata) -> u64 {
+    m.len()
+}
+
+#[cfg(unix)]
+fn write_at(file: &std::fs::File, bytes: &[u8], at: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.write_all_at(bytes, at)
+}
+#[cfg(not(unix))]
+fn write_at(mut file: &std::fs::File, bytes: &[u8], at: u64) -> std::io::Result<()> {
+    use std::io::{Seek, Write};
+    file.seek(std::io::SeekFrom::Start(at))?;
+    file.write_all(bytes)
+}
+
+#[cfg(unix)]
+fn read_at(file: &std::fs::File, out: &mut [u8], at: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(out, at)
+}
+#[cfg(not(unix))]
+fn read_at(mut file: &std::fs::File, out: &mut [u8], at: u64) -> std::io::Result<()> {
+    use std::io::{Read, Seek};
+    file.seek(std::io::SeekFrom::Start(at))?;
+    file.read_exact(out)
+}
+
 /// Bytes written at `at` in the sparse file, made its full size first.
 fn put(path: &Path, at: u64, bytes: &[u8], size: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -606,15 +639,14 @@ fn put(path: &Path, at: u64, bytes: &[u8], size: u64) -> std::io::Result<()> {
     if file.metadata()?.len() != size {
         file.set_len(size)?;
     }
-    file.write_all_at(bytes, at)?;
+    write_at(&file, bytes, at)?;
     file.sync_data()
 }
 
 fn get(path: &Path, at: u64, len: u64) -> std::io::Result<Vec<u8>> {
-    use std::os::unix::fs::FileExt;
     let file = std::fs::File::open(path)?;
     let mut out = vec![0u8; usize::try_from(len).unwrap_or(0)];
-    file.read_exact_at(&mut out, at)?;
+    read_at(&file, &mut out, at)?;
     Ok(out)
 }
 
@@ -658,7 +690,6 @@ pub fn write_thumbnails(
     pictures: &HashMap<String, Vec<u8>>,
 ) {
     use md5::Digest;
-    use std::os::unix::fs::PermissionsExt;
     for (path, item) in files {
         let Some(picture) = pictures.get(&item.drivewsid) else {
             continue;
@@ -682,7 +713,11 @@ pub fn write_thumbnails(
             // As the specification asks: private to its owner, and never seen half-written.
             let part = at.with_extension("png.part");
             if std::fs::write(&part, &png).is_ok() {
-                let _ = std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o600));
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o600));
+                }
                 let _ = std::fs::rename(&part, &at);
             }
         }

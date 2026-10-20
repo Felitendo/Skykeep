@@ -26,6 +26,10 @@ await page.locator(".note-row", { hasText: "Curtains" }).first().click();
 await page.waitForTimeout(300);
 await page.evaluate(() => { window.__slowMove = 900; });
 await page.getByRole("button", { name: "Folder for Curtains" }).click();
+// The move is out (Apple slow to answer, 900 ms) before anything is watched: a refresh is made
+// to land while it is out — timed from the move, not from opening the picker, which on a slow
+// run let the refresh land before the move began and the check measured nothing.
+await page.getByRole("option", { name: "Work" }).click();
 await page.evaluate(() => {
   window.__back = 0; window.__gone = false; window.__watching = true;
   const tick = () => {
@@ -34,11 +38,9 @@ await page.evaluate(() => {
     else if (window.__gone) window.__back++;
     if (window.__watching) requestAnimationFrame(tick);
   };
-  requestAnimationFrame(tick);
-  // A refresh finishing while the move is out, as Apple's push makes happen.
-  setTimeout(() => window.__emit?.("quince://synced", { services: [], asOf: Math.floor(Date.now() / 1000), tookMs: 1 }), 350);
+  tick();
+  setTimeout(() => window.__emit?.("quince://synced", { services: [], asOf: Math.floor(Date.now() / 1000), tookMs: 1 }), 300);
 });
-await page.getByRole("option", { name: "Work" }).click();
 await page.waitForTimeout(800);
 const r = await page.evaluate(() => { window.__watching = false; return { gone: window.__gone, back: window.__back }; });
 ok(r.gone && r.back === 0, `a moved note leaves at once and does not come back while the move is out  [${JSON.stringify(r)}]`);

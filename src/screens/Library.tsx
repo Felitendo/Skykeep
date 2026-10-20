@@ -29,6 +29,7 @@ const SettingsView = lazy(loaders.settings);
 import { ScreenBoundary } from "../components/ScreenBoundary";
 import { ScreenActive } from "../lib/screen";
 import { AppIcon } from "../components/AppIcon";
+import { GlobalSearch } from "../components/GlobalSearch";
 
 /**
  * What the sidebar holds: the services with a real screen behind them, most used first.
@@ -263,6 +264,7 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
               <PanelLeft size={16} strokeWidth={2} aria-hidden="true" />
             </button>
           </div>
+          {!rail && <GlobalSearch available={services} onOpen={(screen) => choose(screen)} />}
           {services.map(item)}
           {!ready && !error && <p className="badge">Loading…</p>}
           {error && (
@@ -276,7 +278,10 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
           </div>
         </nav>
 
-        <main className="content" ref={content}>
+        {/* Which screen is in front, for its layout (each screen's CSS keys on it): asked with
+            :has() across the whole content instead, WebKit checked it again on every change
+            anywhere inside — every tile's selection in a 20,000-photo grid. */}
+        <main className="content" ref={content} data-screen={selected}>
           {webAccess === false && selected !== "settings" ? (
             // Advanced Data Protection with web access off: every read would fail, and each
             // screen would say so its own way. One plain answer, with Apple's own switch.

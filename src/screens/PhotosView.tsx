@@ -36,6 +36,7 @@ import { tintFrom } from "../lib/tint";
 import { fadeIn } from "../lib/fade";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
+import { useReveal } from "../lib/reveal";
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
 const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
@@ -349,6 +350,65 @@ const Tile = memo(function Tile({
  * block exactly as tall as its rows will be (worked out in CSS from the grid's own width),
  * so a library of tens of thousands opens at once and scrolls without the bar jumping.
  */
+/** The ids whose selection differs between two selections, worked out once per pair. */
+const diffs = new WeakMap<Set<string>, { from: Set<string>; changed: string[] }>();
+function changedBetween(from: Set<string>, to: Set<string>): string[] {
+  const known = diffs.get(to);
+  if (known && known.from === from) return known.changed;
+  const changed: string[] = [];
+  for (const id of from) if (!to.has(id)) changed.push(id);
+  for (const id of to) if (!from.has(id)) changed.push(id);
+  diffs.set(to, { from, changed });
+  return changed;
+}
+/** A month's photo ids, made once per list of them. */
+const monthIds = new WeakMap<object, Set<string>>();
+function idsOf(items: { photo: Photo }[]): Set<string> {
+  let ids = monthIds.get(items);
+  if (!ids) {
+    ids = new Set(items.map((x) => x.photo.id));
+    monthIds.set(items, ids);
+  }
+  return ids;
+}
+
+/**
+ * Whether a month draws the same as before: everything it was given is the same, except a
+ * selection or a focused tile that changed somewhere else. One click used to draw every built
+ * month again — every one was handed the whole selection — 166 ms on a 20,000-photo library.
+ */
+function sameMonth(a: MonthProps, b: MonthProps): boolean {
+  if (a.label !== b.label || a.items !== b.items || a.deleted !== b.deleted || a.eager !== b.eager
+    || a.fit !== b.fit || a.cell !== b.cell || a.act !== b.act) return false;
+  if (a.chosen !== b.chosen) {
+    // Only the photos whose selection changed are looked at (worked out once per change, not
+    // once per month), each against this month's own photos.
+    const changed = changedBetween(a.chosen, b.chosen);
+    const mine = idsOf(a.items);
+    for (const id of changed) if (mine.has(id)) return false;
+  }
+  if (a.anchor !== b.anchor) {
+    const first = a.items[0]?.index ?? 0;
+    const last = a.items[a.items.length - 1]?.index ?? -1;
+    const here = (n: number | null) => n !== null && n >= first && n <= last;
+    // The tile that takes Tab is the anchor's, or the first of all when there is none.
+    if (here(a.anchor) || here(b.anchor) || ((a.anchor === null) !== (b.anchor === null) && first === 0)) return false;
+  }
+  return true;
+}
+
+type MonthProps = {
+  label: string;
+  items: { photo: Photo; index: number }[];
+  chosen: Set<string>;
+  anchor: number | null;
+  deleted: boolean;
+  eager: boolean;
+  fit: boolean;
+  cell: number;
+  act: Acts;
+};
+
 const Month = memo(function Month({
   label,
   items,
@@ -415,17 +475,17 @@ const Month = memo(function Month({
           })}
         </div>
       ) : (
-        // Not built yet (far from the screen): its tiles as plain boxes on the very grid the photos
-        // will use, so a fast scroll shows photos on their way — never an empty page.
-        <div className="px-grid px-later" aria-hidden="true">
-          {items.map(({ photo }) => (
-            <div key={photo.id} className="px-ph" />
-          ))}
+        // Not built yet (far from the screen): one block as tall as its rows will be, its tiles
+        // painted on it as plain boxes, so a fast scroll shows photos on their way — never an
+        // empty page. One element, not one a photo: a box each was 20,000 on a large library,
+        // and every focus and every frame paid for them (photos-scale).
+        <div className="px-later" aria-hidden="true" style={{ "--n": items.length } as React.CSSProperties}>
+          <i className="px-later-in" />
         </div>
       )}
     </section>
   );
-});
+}, sameMonth);
 
 export function PhotosView() {
   const { revision } = useSync();
@@ -923,7 +983,12 @@ export function PhotosView() {
   useEffect(() => setMoving(null), [shown?.id]);
   /** How the film being played is turned, as its file records it (see turnStyle). */
   const [turn, setTurn] = useState<{ key: string; value: Turn } | null>(null);
-  const turnFor = shown?.kind === "video" ? `${shown.id}/original` : moving && moving === shown?.id ? `${moving}/video` : null;
+  /** Videos Apple keeps no streaming copy of: played from the original instead. */
+  const [noCopy, setNoCopy] = useState<Set<string>>(() => new Set());
+  // A video plays from Apple's streaming copy (H.264, its header first: it starts at once), not
+  // the original as shot — often a gigabyte of HEVC this computer can barely decode.
+  const film = shown?.kind === "video" ? `${shown.id}/${noCopy.has(shown.id) ? "original" : "video"}` : null;
+  const turnFor = film ?? (moving && moving === shown?.id ? `${moving}/video` : null);
   useEffect(() => {
     if (!turnFor || turn?.key === turnFor) return undefined;
     let live = true;
@@ -1266,7 +1331,37 @@ export function PhotosView() {
     }
   };
 
-  const selected = useMemo(() => (photos ?? []).filter((p) => chosen.has(p.id)), [photos, chosen]);
+  // Where each photo is, by id: the selection is turned into photos by looking them up, in the
+  // order they are shown — not by walking the whole library on every click.
+  const placeOf = useMemo(() => new Map((photos ?? []).map((p, i) => [p.id, i] as const)), [photos]);
+  const selected = useMemo(() => {
+    const all = photos ?? [];
+    return [...chosen]
+      .map((id) => placeOf.get(id))
+      .filter((i): i is number => i !== undefined)
+      .sort((x, y) => x - y)
+      .map((i) => all[i]);
+  }, [photos, chosen, placeOf]);
+
+  // A photo found by the search across everything: the whole library shown, and the photo
+  // opened in the viewer once the library's photos are here.
+  const revealing = useRef<string | null>(null);
+  useReveal("photos", (r) => {
+    revealing.current = r.id;
+    setAlbum(null);
+    setAlbumsPage(false);
+    setSharedPage(false);
+    endSearch();
+    setView("library");
+  });
+  useEffect(() => {
+    const id = revealing.current;
+    if (!id || view !== "library" || album) return;
+    const at = (photos ?? []).findIndex((p) => p.id === id);
+    if (at < 0) return;
+    revealing.current = null;
+    void openAt(at);
+  }, [photos, view, album]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openAt = async (index: number) => {
     const p = photos?.[index];
@@ -2671,18 +2766,22 @@ export function PhotosView() {
               }}
             >
               {shown.kind === "video" && videoBase && !unplayable.has(shown.id) ? (
-                // Played here, as Photos plays one: from the disk cache, in the pieces the
-                // player asks for, so it starts at once and seeks anywhere.
+                // Played here, as Photos plays one: in the pieces the player asks for, served
+                // as they arrive from Apple, so it starts at once and seeks anywhere.
                 <div className="px-video">
                   <VideoPlayer
-                    key={shown.id}
-                    turn={turn?.key === `${shown.id}/original` ? turn.value : undefined}
+                    key={film}
+                    turn={turn?.key === film ? turn.value : undefined}
                     shape={{ w: shown.width, h: shown.height }}
-                    src={`${videoBase}/${shown.id}/original`}
+                    src={`${videoBase}/${film}`}
                     poster={viewSrc(shown)}
                     label={shown.filename ?? "Video"}
                     style={fitted(shown)}
-                    onError={() => setUnplayable((was) => new Set(was).add(shown.id))}
+                    onError={() =>
+                      noCopy.has(shown.id)
+                        ? setUnplayable((was) => new Set(was).add(shown.id))
+                        : setNoCopy((was) => new Set(was).add(shown.id))
+                    }
                   />
                 </div>
               ) : shown.kind === "video" ? (

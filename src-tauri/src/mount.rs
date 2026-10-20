@@ -4,6 +4,9 @@
 //! then sent), folders made, renames, moves, deletes into Recently Deleted. See
 //! docs/mount-design.md.
 
+// The folder itself is FUSE, on Linux only; on Windows it waits for the Cloud Files API.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_variables))]
+
 use crate::{Auth, Data};
 use quince_core::drive::DriveItem;
 use quince_vfs::{Fut, Remote, Store};
