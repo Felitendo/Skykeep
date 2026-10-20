@@ -56,7 +56,8 @@
     "linux": {
       "deb": {
         "depends": [
-          "libsecret-1-0"
+          "libsecret-1-0",
+          "libheif1"
         ],
         "desktopTemplate": "../packaging/dev.quince.client.desktop.in",
         "files": {
@@ -65,7 +66,8 @@
       },
       "rpm": {
         "depends": [
-          "libsecret"
+          "libsecret",
+          "libheif"
         ],
         "desktopTemplate": "../packaging/dev.quince.client.desktop.in",
         "files": {
