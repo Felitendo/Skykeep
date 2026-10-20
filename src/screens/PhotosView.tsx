@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, CalendarDays, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -791,6 +791,21 @@ export function PhotosView() {
   useEffect(() => {
     if (open === null && inBurst) void leaveBurst(false);
   }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  /**
+   * The window full screen for a photo, as icloud.com's viewer offers: the button, and Escape
+   * leaving full screen before it closes the photo. Closing the photo leaves it too.
+   */
+  const [fullscreen, setFullscreen] = useState(false);
+  const toggleFullscreen = async (on = !fullscreen) => {
+    try {
+      setFullscreen(await api.windowFullscreen(on));
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  };
+  useEffect(() => {
+    if (open === null && fullscreen) void toggleFullscreen(false);
+  }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
   /** A Live Photo's moving part playing over it. */
   const [moving, setMoving] = useState<string | null>(null);
   useEffect(() => setMoving(null), [shown?.id]);
@@ -883,6 +898,7 @@ export function PhotosView() {
       if (e.key === "ArrowRight") step(1);
       else if (e.key === "ArrowLeft") step(-1);
       else if (e.key === "Escape" && lensRef.current.k > 1) unzoom();
+      else if (e.key === "Escape" && fullscreen) void toggleFullscreen(false);
       else if (e.key === "Escape") close();
       // Cmd/Ctrl + "." closes too, as icloud.com's one-up view does.
       else if ((e.ctrlKey || e.metaKey) && e.key === ".") close();
@@ -2277,13 +2293,31 @@ export function PhotosView() {
                 <button className="px-cap" aria-label="Close" title="Close (Esc)" onClick={close}>
                   <X size={17} strokeWidth={2} />
                 </button>
+                <button
+                  className="px-cap"
+                  aria-label={fullscreen ? "Exit Full Screen" : "Enter Full Screen"}
+                  aria-pressed={fullscreen}
+                  title={fullscreen ? "Exit Full Screen" : "Enter Full Screen"}
+                  onClick={() => void toggleFullscreen()}
+                >
+                  {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                </button>
               </div>
               <div className="px-viewer-when">
                 <strong>{new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "long" })}</strong>
                 {view === "recentlyDeleted" && !album && timeLeft(shown, false) ? (
                   <span className={timeLeft(shown, false)!.soon ? "is-soon" : undefined}>{timeLeft(shown, false)!.words}</span>
                 ) : (
-                  <span>{new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}</span>
+                  <span>
+                    {new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}
+                    {/* Where it is among them, as icloud.com says it: "133 of 169". */}
+                    {photos && photos.length > 1 && open !== null && !inBurst && (
+                      <span className="px-viewer-place">
+                        {" · "}
+                        {(open + 1).toLocaleString()} of {photos.length.toLocaleString()}
+                      </span>
+                    )}
+                  </span>
                 )}
               </div>
               <div className="px-capsule">

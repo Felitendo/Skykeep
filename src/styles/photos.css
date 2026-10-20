@@ -85,7 +85,8 @@
 .px-count { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: var(--t-12, 12px); }
 
 /* ---- the library ------------------------------------------------------------------------- */
-.px-notice { position: absolute; z-index: 5; top: 62px; left: 18px; right: 18px; max-width: 420px; }
+/* Above the photo viewer too: a change refused while a photo was open said so behind it, unseen. */
+.px-notice { position: absolute; z-index: 7; top: 62px; left: 18px; right: 18px; max-width: 420px; }
 .px-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .px-bar {
   position: absolute;

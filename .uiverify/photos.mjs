@@ -81,8 +81,13 @@ await page.getByRole("button", { name: "Favorite", exact: true }).click();
 await page.waitForTimeout(300);
 ok((await page.getByRole("button", { name: "Favorite", exact: true }).count()) === 1 && (await page.locator(".notice").count()) === 1,
   "a change iCloud refuses goes back, and says why");
-await page.keyboard.press("Escape");
+ok(await page.locator(".notice").evaluate((n) => {
+  const r = n.getBoundingClientRect();
+  return n.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+}), "and says it in front of the open photo, not hidden behind it");
 await page.evaluate(() => { window.__flagFail = false; });
+await page.getByRole("button", { name: "Dismiss" }).click();
+await page.keyboard.press("Escape");
 // It goes back into its tile first, then is gone.
 await page.waitForTimeout(650);
 ok((await page.locator(".px-viewer").count()) === 0, "Escape closes the viewer");

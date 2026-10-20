@@ -97,6 +97,8 @@ export const api = {
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Where the window's player fetches videos from (a loopback server), or null without one. */
   videoBase: () => invoke<string | null>("video_base"),
+  /** The window full screen or back; answers whether it now is. */
+  windowFullscreen: (on: boolean) => invoke<boolean>("window_fullscreen", { on }),
   /** What the window shows pictures at, so the app makes them before they are shown. */
   photosPrepare: (shown: { cell: number; fit: boolean; stageW: number; stageH: number; dpr: number }) =>
     invoke<void>("photos_prepare", { shown }),

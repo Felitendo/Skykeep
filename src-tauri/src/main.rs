@@ -3532,6 +3532,14 @@ fn window_tint(window: tauri::WebviewWindow, rgb: [u8; 3]) -> UiResult<()> {
         .map_err(|e| e.to_string())
 }
 
+/// The window full screen, or back, as the photo viewer's button asks (icloud.com's); answers
+/// whether it now is.
+#[tauri::command]
+fn window_fullscreen(window: tauri::WebviewWindow, on: bool) -> UiResult<bool> {
+    window.set_fullscreen(on).map_err(|e| e.to_string())?;
+    window.is_fullscreen().map_err(|e| e.to_string())
+}
+
 /// Whether this session runs under a tiling Wayland compositor, which manages windows itself.
 fn tiling_compositor() -> bool {
     let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
@@ -3872,6 +3880,7 @@ fn main() {
             photos::photos_prepare,
             video::video_base,
             window_tint,
+            window_fullscreen,
             photos::photos_upload,
             photos::photos_upload_cancel,
             photos::photos_album_create,
