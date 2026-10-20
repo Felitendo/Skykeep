@@ -43,7 +43,7 @@ fn fresh_links(master: &str) -> Option<Links> {
 }
 
 /// Which of a photo's pictures is wanted.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Size {
     Thumb,
     Medium,
@@ -267,6 +267,47 @@ async fn new_link(
 }
 
 /// What a picture's bytes are, for the window to draw them.
+/// The bytes a `Range: bytes=…` header asks of a file `len` long, as `(first, last)` inclusive,
+/// at most `most` of them. No header is the whole file; one this file cannot satisfy is `None`.
+pub fn byte_range(header: Option<&str>, len: u64, most: u64) -> Option<(u64, u64)> {
+    if len == 0 || most == 0 {
+        return None;
+    }
+    let (first, last) = match header {
+        None => (0, len - 1),
+        Some(h) => {
+            let spec = h.trim().strip_prefix("bytes=")?.split(',').next()?.trim();
+            let (a, b) = spec.split_once('-')?;
+            match (a.trim(), b.trim()) {
+                // The last n bytes: where a player looks for an index at the end.
+                ("", n) => {
+                    let n: u64 = n.parse().ok()?;
+                    if n == 0 {
+                        return None;
+                    }
+                    (len.saturating_sub(n), len - 1)
+                }
+                (a, "") => (a.parse().ok()?, len - 1),
+                (a, b) => (a.parse().ok()?, b.parse::<u64>().ok()?.min(len - 1)),
+            }
+        }
+    };
+    if first > last || first >= len {
+        return None;
+    }
+    Some((first, last.min(first.saturating_add(most - 1))))
+}
+
+/// A video's type from its first bytes: a QuickTime film says so in its first box; everything
+/// else Apple keeps is MPEG-4.
+pub fn video_type(head: &[u8]) -> &'static str {
+    if head.get(8..12) == Some(b"qt  ") {
+        "video/quicktime"
+    } else {
+        "video/mp4"
+    }
+}
+
 pub fn content_type(bytes: &[u8], size: Size) -> &'static str {
     if size == Size::Video || bytes.get(4..8) == Some(b"ftyp") {
         return "video/mp4";
@@ -601,6 +642,134 @@ pub async fn photo_set_flag(
         .put_photos(std::slice::from_ref(&updated))
         .map_err(|e| e.to_string())?;
     Ok(updated)
+}
+
+/// One flag on many photos — a selection deleted, recovered, hidden, favorited, or deleted
+/// for good from Recently Deleted — as Photos does it: the library changes first, so every view
+/// (and a sync pass reading it) shows it at once, then Apple is told in batches; whatever Apple
+/// refuses is put back as it was. Answers the photos as they now are, and an error naming how
+/// many could not be changed, if any.
+#[tauri::command]
+pub async fn photos_set_flag(
+    ids: Vec<String>,
+    flag: quince_icloud::photos::Flag,
+    on: bool,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Photo>> {
+    use quince_icloud::photos::Flag;
+    let now = jiff::Timestamp::now().as_second();
+    let set = |p: &mut Photo| match flag {
+        Flag::Favorite => p.favorite = on,
+        Flag::Hidden => p.hidden = on,
+        Flag::Deleted => {
+            p.deleted = on;
+            p.deleted_at = on.then_some(now);
+            p.expunge_at = on.then_some(now + 30 * 86_400);
+        }
+        Flag::Expunged => {}
+    };
+    // At once, in the library.
+    let before: Vec<Photo> = {
+        let mut library = data.0.lock().await;
+        let mut found = Vec::with_capacity(ids.len());
+        for id in &ids {
+            if let Some(p) = library.photo(id).map_err(|e| e.to_string())? {
+                found.push(p);
+            }
+        }
+        // Deleting for good is only ever from Recently Deleted, and only ever on.
+        if flag == Flag::Expunged && (!on || found.iter().any(|p| !p.deleted)) {
+            return Err("Only photos in Recently Deleted can be deleted for good.".into());
+        }
+        if flag == Flag::Expunged {
+            let gone: Vec<String> = found.iter().map(|p| p.id.clone()).collect();
+            library.forget_photos(&gone).map_err(|e| e.to_string())?;
+        } else {
+            let changed: Vec<Photo> = found
+                .iter()
+                .cloned()
+                .map(|mut p| {
+                    set(&mut p);
+                    p
+                })
+                .collect();
+            library.put_photos(&changed).map_err(|e| e.to_string())?;
+        }
+        found
+    };
+    if before.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Then to Apple, with no sync pass between the two.
+    let _one = crate::PHOTOS_PASS.lock().await;
+    let sent = async {
+        let (http, root, params) = crate::cloudkit_context(&auth).await?;
+        let assets: Vec<(String, Option<String>)> = before
+            .iter()
+            .map(|p| (p.id.clone(), p.change_tag.clone()))
+            .collect();
+        quince_icloud::photos::set_flags(&http, &root, params, &assets, flag, on)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    .await;
+    let answers = match sent {
+        Ok(a) => a,
+        Err(e) => {
+            // Nothing reached Apple: all of it as it was.
+            let mut library = data.0.lock().await;
+            library.put_photos(&before).map_err(|e| e.to_string())?;
+            return Err(e);
+        }
+    };
+    let mut now_are = Vec::with_capacity(before.len());
+    let mut refused = Vec::new();
+    let mut why = None;
+    for (old, answer) in before.iter().zip(answers) {
+        match answer {
+            Ok(record) => {
+                if flag == Flag::Expunged {
+                    continue;
+                }
+                let mut p = old.clone();
+                set(&mut p);
+                if flag == Flag::Deleted && on {
+                    // Apple's own date for when it goes for good.
+                    if let Some(ms) = record
+                        .pointer("/fields/dateExpunged/value")
+                        .and_then(serde_json::Value::as_i64)
+                    {
+                        p.expunge_at = Some(ms / 1000);
+                    }
+                }
+                p.change_tag = record
+                    .get("recordChangeTag")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .or(p.change_tag);
+                now_are.push(p);
+            }
+            Err(e) => {
+                why.get_or_insert(e);
+                refused.push(old.clone());
+            }
+        }
+    }
+    {
+        let mut library = data.0.lock().await;
+        library.put_photos(&now_are).map_err(|e| e.to_string())?;
+        library.put_photos(&refused).map_err(|e| e.to_string())?;
+    }
+    if let Some(why) = why {
+        let n = refused.len();
+        return Err(format!(
+            "{n} of {} {} could not be changed: {why}",
+            before.len(),
+            if before.len() == 1 { "photo" } else { "photos" }
+        ));
+    }
+    Ok(now_are)
 }
 
 /// A photo's title and caption, as typed in its Info: Apple's answer taken at once. Empty clears one.
@@ -1441,4 +1610,47 @@ async fn refresh_photos(app: &AppHandle) {
     crate::refresh::some(&auth.client, &data.0, &["photos"]).await;
     app.emit(crate::SYNCED, crate::refresh::status(&data.0).await)
         .ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ranges_as_a_player_asks_for_them() {
+        let len = 10 * 1024 * 1024;
+        let all = u64::MAX;
+        assert_eq!(byte_range(None, len, all), Some((0, len - 1)));
+        assert_eq!(byte_range(Some("bytes=0-"), len, all), Some((0, len - 1)));
+        assert_eq!(byte_range(Some("bytes=0-"), len, 4096), Some((0, 4095)));
+        assert_eq!(byte_range(Some("bytes=0-1"), len, all), Some((0, 1)));
+        assert_eq!(
+            byte_range(Some("bytes=100-199"), len, all),
+            Some((100, 199))
+        );
+        assert_eq!(
+            byte_range(Some("bytes=-500"), len, all),
+            Some((len - 500, len - 1))
+        );
+        assert_eq!(
+            byte_range(Some("bytes=9000000-"), len, all),
+            Some((9_000_000, len - 1))
+        );
+        assert_eq!(
+            byte_range(Some("bytes=5-999999999"), 100, all),
+            Some((5, 99))
+        );
+        assert_eq!(byte_range(Some("bytes=100-"), 100, all), None);
+        assert_eq!(byte_range(Some("bytes=9-3"), 100, all), None);
+        assert_eq!(byte_range(Some("bytes=-0"), 100, all), None);
+        assert_eq!(byte_range(Some("items=0-1"), 100, all), None);
+        assert_eq!(byte_range(None, 0, all), None);
+    }
+
+    #[test]
+    fn quicktime_or_mpeg4() {
+        assert_eq!(video_type(b"\0\0\0\x14ftypqt  "), "video/quicktime");
+        assert_eq!(video_type(b"\0\0\0\x18ftypmp42"), "video/mp4");
+        assert_eq!(video_type(b""), "video/mp4");
+    }
 }

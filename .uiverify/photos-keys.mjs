@@ -7,7 +7,9 @@ const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null });
 const page = await ctx.newPage();
 page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
-page.on("dialog", (d) => void d.accept());
+// Every question agreed to, as soon as it is asked.
+await page.addInitScript(() => addEventListener("DOMContentLoaded", () =>
+  new MutationObserver(() => document.querySelector(".px-ask .is-act")?.click()).observe(document.body, { childList: true, subtree: true })));
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Photos");
 await page.waitForTimeout(400);
@@ -32,11 +34,11 @@ await page.keyboard.press("i");
 await page.waitForTimeout(600);
 ok((await page.locator(".px-viewer").count()) === 1 && (await page.locator(".px-info").count()) === 1, "I opens the photo with its details");
 await page.keyboard.press("z");
-await page.waitForTimeout(150);
+await page.waitForTimeout(400); // the zoom glides
 const k = await page.locator(".px-pan").evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
 ok(k > 2, `Z zooms in  ×${k.toFixed(2)}`);
 await page.keyboard.press("z");
-await page.waitForTimeout(150);
+await page.waitForTimeout(400); // the zoom glides
 ok((await page.locator(".px-pan").evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a)) === 1, "and Z again fits it");
 await page.keyboard.press("Control+.");
 await page.waitForTimeout(650);

@@ -27,10 +27,14 @@ export function Slideshow({ photos, start, onClose }: { photos: Photo[]; start: 
     return () => window.clearTimeout(t);
   }, [at, playing, go, photos.length]);
 
-  // The next picture is fetched now, so it is there when its turn comes.
+  // The next picture is fetched and decoded now, whole, so it is there when its turn comes.
   useEffect(() => {
     const next = photos[(at + 1) % photos.length];
-    if (next) new Image().src = pictureSrc(next.id, "medium");
+    if (!next || next.kind === "video") return;
+    const img = new Image();
+    img.decoding = "async";
+    img.src = pictureSrc(next.id, "full");
+    void img.decode().catch(() => undefined);
   }, [at, photos]);
 
   useEffect(() => {
@@ -86,12 +90,27 @@ export function Slideshow({ photos, start, onClose }: { photos: Photo[]; start: 
       {before !== null && photos[before] && (
         <img key={`b${photos[before].id}`} className="px-slide is-leaving" src={pictureSrc(photos[before].id, "medium")} alt="" />
       )}
+      {before !== null && photos[before] && photos[before].kind !== "video" && (
+        <img key={`bw${photos[before].id}`} className="px-slide is-leaving" src={pictureSrc(photos[before].id, "full")} alt="" aria-hidden="true" />
+      )}
       <img
         key={`a${photo.id}-${at}`}
         className={`px-slide${playing ? "" : " is-paused"}`}
         src={pictureSrc(photo.id, "medium")}
         alt={photo.filename ?? "Photo"}
       />
+      {/* The screen-sized copy is soft on a large screen; the whole picture covers it, moving
+          with it on the same clock. */}
+      {photo.kind !== "video" && (
+        <img
+          key={`w${photo.id}-${at}`}
+          className={`px-slide${playing ? "" : " is-paused"}`}
+          src={pictureSrc(photo.id, "full")}
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+        />
+      )}
       <div className="px-show-bar px-capsule" role="toolbar" aria-label="Slideshow controls">
         <button className="px-cap" aria-label="Previous" onClick={() => go(-1)}>
           <ChevronLeft size={18} />

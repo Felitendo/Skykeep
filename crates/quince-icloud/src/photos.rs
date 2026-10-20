@@ -426,6 +426,37 @@ pub async fn set_flag(
         .await
 }
 
+/// One flag on many photos at once, as icloud.com sends a selection: batched, each photo
+/// standing alone. `assets` are `(record name, change tag)`. Answers each photo's outcome in
+/// the order given — the asset as it now is, or why not.
+pub async fn set_flags(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    assets: &[(String, Option<String>)],
+    flag: Flag,
+    on: bool,
+) -> Result<Vec<std::result::Result<Value, String>>> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let name = match flag {
+        Flag::Favorite => "isFavorite",
+        Flag::Deleted => "isDeleted",
+        Flag::Hidden => "isHidden",
+        Flag::Expunged => "isExpunged",
+    };
+    let updates: Vec<(String, Option<String>, Value)> = assets
+        .iter()
+        .map(|(id, tag)| {
+            (
+                id.clone(),
+                tag.clone(),
+                serde_json::json!({ name: { "value": i64::from(on) } }),
+            )
+        })
+        .collect();
+    client.update_records(ZONE, "CPLAsset", &updates).await
+}
+
 /// A photo's title and caption set, as icloud.com's Info sets them: the title is `captionEnc`
 /// and the caption `extendedDescEnc` (Apple's names), each base64 of its UTF-8 bytes, against
 /// the asset's change tag. Empty clears one. Answers the asset as it now is.

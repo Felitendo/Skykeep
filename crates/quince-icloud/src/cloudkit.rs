@@ -962,6 +962,163 @@ impl ZoneClient<'_> {
         Ok(())
     }
 
+    /// Many records updated at once, as icloud.com sends a selection: up to 200 operations to a
+    /// `records/modify`, not atomic — each record stands or falls alone — and a record whose
+    /// change tag had moved (the phone changed it) tried once more on its fresh tag. Answers
+    /// each update's outcome in the order given: the record as it now is, or why not.
+    pub async fn update_records(
+        &self,
+        zone: &str,
+        record_type: &str,
+        updates: &[(String, Option<String>, Value)],
+    ) -> Result<Vec<std::result::Result<Value, String>>> {
+        let mut out: Vec<std::result::Result<Value, String>> = Vec::with_capacity(updates.len());
+        for chunk in updates.chunks(200) {
+            let first = self.modify_many(zone, record_type, chunk).await?;
+            // The stale ones, once more on the tag Apple has now.
+            let stale: Vec<usize> = first
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| matches!(r, Err(Error::Conflict)))
+                .map(|(i, _)| i)
+                .collect();
+            let mut answers: Vec<std::result::Result<Value, String>> = first
+                .into_iter()
+                .map(|r| r.map_err(|e| e.to_string()))
+                .collect();
+            if !stale.is_empty() {
+                let names: Vec<&str> = stale.iter().map(|&i| chunk[i].0.as_str()).collect();
+                let fresh = self.lookup_tags(zone, &names).await?;
+                let again: Vec<(String, Option<String>, Value)> = stale
+                    .iter()
+                    .map(|&i| {
+                        let (name, _, fields) = &chunk[i];
+                        (name.clone(), fresh.get(name).cloned(), fields.clone())
+                    })
+                    .collect();
+                let second = self.modify_many(zone, record_type, &again).await?;
+                for (&i, r) in stale.iter().zip(second) {
+                    answers[i] = r.map_err(|e| e.to_string());
+                }
+            }
+            out.extend(answers);
+        }
+        Ok(out)
+    }
+
+    /// One `records/modify` of many updates, not atomic; each record's own outcome.
+    async fn modify_many(
+        &self,
+        zone: &str,
+        record_type: &str,
+        updates: &[(String, Option<String>, Value)],
+    ) -> Result<Vec<Result<Value>>> {
+        let operations: Vec<Value> = updates
+            .iter()
+            .map(|(name, tag, fields)| {
+                let mut record =
+                    json!({ "recordName": name, "recordType": record_type, "fields": fields });
+                if let Some(tag) = tag {
+                    record["recordChangeTag"] = Value::String(tag.clone());
+                }
+                json!({ "operationType": "update", "record": record })
+            })
+            .collect();
+        let body = json!({
+            "operations": operations,
+            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+            "atomic": false,
+        });
+        let url = format!(
+            "{}/database/1/{}/production/private/records/modify",
+            self.base, self.container
+        );
+        let (status, text) = self.post_json(&url, &body).await?;
+        if status.as_u16() == 450 {
+            return Err(Error::ReauthRequired);
+        }
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "CloudKit refused the change ({status}): {}",
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+        let parsed: Value = serde_json::from_str(&text)
+            .map_err(|e| Error::Protocol(format!("CloudKit returned invalid JSON: {e}")))?;
+        let records = parsed
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        // Matched by name, not place: an answer missing for one is that one's failure.
+        Ok(updates
+            .iter()
+            .map(|(name, _, _)| {
+                let Some(r) = records
+                    .iter()
+                    .find(|r| r.get("recordName").and_then(Value::as_str) == Some(name.as_str()))
+                else {
+                    return Err(Error::Protocol("CloudKit did not answer for it".into()));
+                };
+                match r.get("reason").and_then(Value::as_str) {
+                    None => Ok(r.clone()),
+                    Some(reason) => {
+                        let code = r
+                            .get("serverErrorCode")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        Err(
+                            if code == "CONFLICT" || reason.to_ascii_lowercase().contains("oplock")
+                            {
+                                Error::Conflict
+                            } else {
+                                Error::Protocol(format!("CloudKit refused the change: {reason}"))
+                            },
+                        )
+                    }
+                }
+            })
+            .collect())
+    }
+
+    /// The current change tags of many records, by name; one missing is not there any more.
+    async fn lookup_tags(
+        &self,
+        zone: &str,
+        names: &[&str],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let url = format!(
+            "{}/database/1/{}/production/private/records/lookup",
+            self.base, self.container
+        );
+        let body = json!({
+            "records": names.iter().map(|n| json!({ "recordName": n })).collect::<Vec<_>>(),
+            "zoneID": { "zoneName": zone, "zoneType": "REGULAR_CUSTOM_ZONE" },
+        });
+        let (status, text) = self.post_json(&url, &body).await?;
+        if status.as_u16() == 450 {
+            return Err(Error::ReauthRequired);
+        }
+        if !status.is_success() {
+            return Err(Error::Protocol(format!(
+                "CloudKit couldn't look those up ({status})"
+            )));
+        }
+        let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        Ok(parsed
+            .get("records")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                Some((
+                    r.get("recordName")?.as_str()?.to_string(),
+                    r.get("recordChangeTag")?.as_str()?.to_string(),
+                ))
+            })
+            .collect())
+    }
+
     pub async fn lookup_record(&self, zone: &str, record_name: &str) -> Result<Option<Value>> {
         let url = format!(
             "{}/database/1/{}/production/private/records/lookup",

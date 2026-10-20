@@ -24,6 +24,7 @@ import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
 import { Slideshow } from "./photos/Slideshow";
+import { useAsk } from "./photos/Ask";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
 
@@ -187,6 +188,25 @@ function warm(id: string): Promise<boolean> {
   return ready;
 }
 
+/**
+ * Photos whose thumbnail is too small for their tile. Apple's thumbnails run from about 360 to
+ * 560 pixels on the long side; a large tile on a dense screen needs more, and a thumbnail
+ * stretched over it is soft. Such a tile asks for the screen-sized picture instead, once.
+ */
+const finer = new Set<string>();
+function sharpen(img: HTMLImageElement, id: string) {
+  if (finer.has(id) || !img.naturalWidth || !img.naturalHeight) return;
+  const fit = img.closest("[data-fit]") !== null;
+  const sx = (img.clientWidth * window.devicePixelRatio) / img.naturalWidth;
+  const sy = (img.clientHeight * window.devicePixelRatio) / img.naturalHeight;
+  // Cover crops to the larger stretch; a fitted tile shows the whole picture.
+  const stretch = fit ? Math.min(sx, sy) : Math.max(sx, sy);
+  if (stretch > 1.1) {
+    finer.add(id);
+    img.src = pictureSrc(id, "medium");
+  }
+}
+
 /** What a tile can ask of the screen; one object, kept the same, so tiles need not redraw. */
 type Acts = {
   pick: (index: number, e: React.MouseEvent) => void;
@@ -259,7 +279,15 @@ const Tile = memo(function Tile({
       {/* The picture's own frame: the whole tile when squares, the photo's own shape when
           fitted — what the badges and the selection sit on. */}
       <span className="px-pic" style={fit && photo.width && photo.height ? fitFrame(photo) : undefined}>
-        <img src={pictureSrc(photo.id, "thumb")} alt="" loading="lazy" decoding="async" draggable={false} />
+        {/* Fetched as soon as its month is built, well ahead of the screen — not left to the
+            engine's own lazy margin, which a fast scroll outran. */}
+        <img
+          src={pictureSrc(photo.id, finer.has(photo.id) ? "medium" : "thumb")}
+          alt=""
+          decoding="async"
+          draggable={false}
+          onLoad={(e) => sharpen(e.currentTarget, photo.id)}
+        />
         {photo.kind === "video" && (
           <span className="px-badge px-duration">
             <Play size={10} strokeWidth={0} fill="currentColor" aria-hidden="true" />
@@ -308,10 +336,16 @@ const Month = memo(function Month({
       setLive(true);
       return undefined;
     }
-    const watch = new IntersectionObserver(([e]) => setLive(e.isIntersecting), {
-      root: el.closest(".px-scroll"),
-      rootMargin: "1600px 0px",
-    });
+    // Built well ahead and then kept: a month taken down and built again as it scrolls back
+    // showed as a heading over nothing while its tiles came back.
+    const watch = new IntersectionObserver(
+      ([e]) => {
+        if (!e.isIntersecting) return;
+        setLive(true);
+        watch.disconnect();
+      },
+      { root: el.closest(".px-scroll"), rootMargin: "4000px 0px" },
+    );
     watch.observe(el);
     return () => watch.disconnect();
   }, []);
@@ -533,30 +567,22 @@ export function PhotosView() {
       a.cancel();
     });
   };
-  const [room, setRoom] = useState<{ w: number; h: number } | null>(null);
-  useLayoutEffect(() => {
-    const el = stage.current;
-    if (!el) return undefined;
-    const measure = () => {
-      const cs = getComputedStyle(el);
-      setRoom({
-        w: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
-        h: el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom),
-      });
-    };
-    measure();
-    const watch = new ResizeObserver(measure);
-    watch.observe(el);
-    return () => watch.disconnect();
-  }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The photo's own box, worked out before it loads, so its thumbnail fills that box at once
-  // and the sharper picture lands on top of it without anything moving.
-  const fitted = (p: Photo): React.CSSProperties | undefined => {
-    if (!room || !p.width || !p.height) return undefined;
-    const k = Math.min(room.w / p.width, room.h / p.height, 1.5);
+  // The photo's own box, laid out by the engine itself against the stage (a size container):
+  // as large as fits, never past 1.5× its own pixels, its shape exact. Known before it loads,
+  // so its thumbnail fills that box at once and the sharper picture lands without anything
+  // moving; and a window being resized redraws it every frame with no script in the way.
+  const fitted = (p: Photo): React.CSSProperties => {
+    // The grid's thumbnail, already decoded, painted under the picture: never a black stage.
+    const under = { backgroundImage: `url("${pictureSrc(p.id, "thumb")}")` };
+    if (!p.width || !p.height) return under;
+    // Both sides set, each the smaller of the room across and the room down in the photo's own
+    // proportion: WebKit sized a replaced image's height from its width alone, ignoring
+    // aspect-ratio, and drew every photo square.
+    const r = (p.width / p.height).toFixed(6);
     return {
-      width: Math.round(p.width * k),
-      height: Math.round(p.height * k),
+      ...under,
+      width: `min(100cqw, ${r} * 100cqh, ${Math.round(p.width * 1.5)}px)`,
+      height: `min(100cqw / ${r}, 100cqh, ${Math.round(p.height * 1.5)}px)`,
       maxWidth: "none",
       maxHeight: "none",
     };
@@ -573,7 +599,7 @@ export function PhotosView() {
     return `translate(${dx}px, ${dy}px) scale(${k})`;
   };
   useLayoutEffect(() => {
-    if (open === null || !room) return;
+    if (open === null) return;
     const from = origin.current;
     origin.current = null;
     const el = viewer.current;
@@ -585,9 +611,9 @@ export function PhotosView() {
     const t = img && toTile(img, from);
     if (img && t) img.animate([{ transform: t }, { transform: "none" }], { duration: 460, easing: spring() });
     for (const part of el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info")) {
-      part.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: "ease-out" });
+      part.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
     }
-  }, [open !== null && room !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const close = useCallback(() => {
     const el = viewer.current;
@@ -611,7 +637,7 @@ export function PhotosView() {
     };
     const t = seen && img ? toTile(img, box) : null;
     const parts = [...el.querySelectorAll<HTMLElement>(".px-backdrop, .px-viewer-bar, .px-nav, .px-info")];
-    const anims = parts.map((part) => part.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 220, easing: "ease-in", fill: "forwards" }));
+    const anims = parts.map((part) => part.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, easing: "ease-in", fill: "forwards" }));
     const last = t && img
       ? img.animate([{ transform: "none" }, { transform: t }], { duration: 340, easing: spring(), fill: "forwards" })
       : el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, easing: "ease-in", fill: "forwards" });
@@ -636,12 +662,43 @@ export function PhotosView() {
    * One transform on the photo's frame, so it is the compositor's work. Past the fit, the
    * full picture is laid over the screen-sized one once it has loaded.
    */
-  const [lens, setLens] = useState({ k: 1, x: 0, y: 0 });
-  const lensRef = useRef(lens);
-  lensRef.current = lens;
+  // The lens lives outside React: a gesture writes the frame's transform straight to it, once a
+  // frame, so a pan or a pinch never redraws the screen (which made it crawl). Only crossing
+  // into or out of zoom is state — the cursor and the double-click's meaning change with it.
+  const lensRef = useRef({ k: 1, x: 0, y: 0 });
+  const [zoomed, setZoomed] = useState(false);
   const pan = useRef<HTMLDivElement | null>(null);
+  const settle = useRef<number | undefined>(undefined);
+  const frame = useRef<number | null>(null);
+  const paint = (next: { k: number; x: number; y: number }, glide = false) => {
+    lensRef.current = next;
+    setZoomed(next.k > 1);
+    if (frame.current !== null) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      const el = pan.current;
+      if (!el) return;
+      const { k, x, y } = lensRef.current;
+      // Its own layer only while it moves — moved as one bitmap — and drawn afresh, sharp at
+      // the new size, once it rests.
+      el.style.willChange = "transform";
+      el.style.transition = glide ? "transform 280ms var(--spring-smooth, ease-out)" : "none";
+      el.style.transform = k > 1 ? `translate3d(${x}px, ${y}px, 0) scale(${k})` : "";
+      window.clearTimeout(settle.current);
+      settle.current = window.setTimeout(() => {
+        if (pan.current) pan.current.style.willChange = "";
+      }, glide ? 340 : 160);
+    });
+  };
   const [sharp, setSharp] = useState<string | null>(null);
-  const unzoom = () => setLens({ k: 1, x: 0, y: 0 });
+  /** Videos this computer's engine could not play; each opens in the system's player instead. */
+  const [unplayable, setUnplayable] = useState<Set<string>>(() => new Set());
+  // The window's player reads only http(s): videos come from the app's own loopback server.
+  const [videoBase, setVideoBase] = useState<string | null>(null);
+  useEffect(() => {
+    api.videoBase().then(setVideoBase, () => setVideoBase(null));
+  }, []);
+  const unzoom = (glide = true) => paint({ k: 1, x: 0, y: 0 }, glide);
   // Kept so the image's edge never comes in past the middle of the stage.
   const bound = (k: number, x: number, y: number) => {
     const el = pan.current;
@@ -651,21 +708,24 @@ export function PhotosView() {
     return { k, x: Math.max(-mx, Math.min(mx, x)), y: Math.max(-my, Math.min(my, y)) };
   };
   // Zoom to k, keeping the point under (sx, sy) — screen coordinates — where it is.
-  const zoomAt = (k: number, sx: number, sy: number) => {
+  const zoomAt = (k: number, sx: number, sy: number, glide = true) => {
     const el = pan.current;
     if (!el) return;
-    const box = el.getBoundingClientRect();
+    // The frame's centre as laid out, before any transform: the transform on screen may be a
+    // frame behind the lens while a pinch runs.
+    const host = (el.offsetParent as HTMLElement | null)?.getBoundingClientRect();
+    if (!host) return;
     const was = lensRef.current;
-    const cx = box.left + box.width / 2 - was.x;
-    const cy = box.top + box.height / 2 - was.y;
+    const cx = host.left + el.offsetLeft + el.offsetWidth / 2;
+    const cy = host.top + el.offsetTop + el.offsetHeight / 2;
     const [dx, dy] = [sx - cx, sy - cy];
     const px = (dx - was.x) / was.k;
     const py = (dy - was.y) / was.k;
     const next = Math.max(1, Math.min(5, k));
-    setLens(bound(next, dx - next * px, dy - next * py));
+    paint(bound(next, dx - next * px, dy - next * py), glide);
   };
   useEffect(() => {
-    unzoom();
+    unzoom(false);
     setSharp(null);
   }, [shown?.id]);
   // The whole picture, not the screen-sized one, as Photos shows a photo: fetched as soon as
@@ -680,7 +740,7 @@ export function PhotosView() {
     const wheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      zoomAt(lensRef.current.k * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+      zoomAt(lensRef.current.k * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY, false);
     };
     el.addEventListener("wheel", wheel, { passive: false });
     return () => el.removeEventListener("wheel", wheel);
@@ -741,6 +801,7 @@ export function PhotosView() {
    * Favorite, Delete and Recover show at once, as on the phone; Apple's answer only matters if
    * it refuses, which puts the photo back as it was and says why.
    */
+  const [ask, asking] = useAsk();
   const change = (p: Photo, flag: Flag, on: boolean) => changeAll([p], flag, on);
   const changeAll = async (list: Photo[], flag: Flag, on: boolean) => {
     if (list.length === 0) return;
@@ -748,25 +809,38 @@ export function PhotosView() {
     // Asked first, in icloud.com's words: a delete reaches every device.
     if (
       flag === "deleted" && on &&
-      !window.confirm(
-        `${n === 1 ? "Delete this photo?" : `Delete ${n} photos?`}\n\n${n === 1 ? "It" : "They"} will be deleted from iCloud Photos on all your devices. ${n === 1 ? "It stays" : "They stay"} in Recently Deleted for 30 days.`,
-      )
+      !(await ask({
+        title: n === 1 ? "Delete this photo?" : `Delete ${n} photos?`,
+        body: `${n === 1 ? "It" : "They"} will be deleted from iCloud Photos on all your devices. ${n === 1 ? "It stays" : "They stay"} in Recently Deleted for 30 days.`,
+        action: "Delete",
+        danger: true,
+        symbol: "trash",
+      }))
     ) {
       return;
     }
     // For good, in Photos' words: it cannot be undone.
     if (
       flag === "expunged" &&
-      !window.confirm(
-        `${n === 1 ? "Are you sure you want to delete this item permanently?" : `Are you sure you want to delete these ${n} items permanently?`}\n\nThis action cannot be undone.`,
-      )
+      !(await ask({
+        title: n === 1 ? "Are you sure you want to delete this item permanently?" : `Are you sure you want to delete these ${n} items permanently?`,
+        body: "This action cannot be undone.",
+        action: "Delete",
+        danger: true,
+        symbol: "trash",
+      }))
     ) {
       return;
     }
     // Hiding asks too, in Photos' words: where the photos go.
     if (
       flag === "hidden" && on &&
-      !window.confirm(`${n === 1 ? "Hide this photo?" : `Hide ${n} photos?`}\n\n${n === 1 ? "It" : "They"} will be hidden from your library, and can be found in the Hidden album.`)
+      !(await ask({
+        title: n === 1 ? "Hide this photo?" : `Hide ${n} photos?`,
+        body: `${n === 1 ? "It" : "They"} will be hidden from your library, and can be found in the Hidden album.`,
+        action: "Hide",
+        symbol: "hide",
+      }))
     ) {
       return;
     }
@@ -794,7 +868,8 @@ export function PhotosView() {
       });
     }
     try {
-      for (const p of list) await api.photoSetFlag(p.id, flag, on);
+      // The whole selection in one call: the library changes at once, Apple hears it batched.
+      await api.photosSetFlag(list.map((p) => p.id), flag, on);
       read().catch(() => {});
     } catch (e) {
       setPhotos(before);
@@ -838,10 +913,16 @@ export function PhotosView() {
 
   const deleteAlbum = async (a: PhotoAlbum) => {
     // A folder, in icloud.com's words: it goes with every album in it.
-    const words = a.folder
-      ? `Delete the folder “${a.name}”?\n\nThis will also delete all albums inside this folder. The photos in them stay in your library.`
-      : `Delete the album “${a.name}”?\n\nThe photos in it stay in your library.`;
-    if (!window.confirm(words)) return;
+    const sure = await ask({
+      title: a.folder ? `Delete the folder “${a.name}”?` : `Delete the album “${a.name}”?`,
+      body: a.folder
+        ? "This will also delete all albums inside this folder. The photos in them stay in your library."
+        : "The photos in it stay in your library.",
+      action: "Delete",
+      danger: true,
+      symbol: "trash",
+    });
+    if (!sure) return;
     const before = albums;
     // Everything under a folder goes with it, here as on iCloud.
     const gone = new Set([a.id]);
@@ -882,7 +963,12 @@ export function PhotosView() {
   const removeFrom = async (gone: Photo[]) => {
     if (!album) return;
     const n = gone.length;
-    if (!window.confirm(`Remove ${n === 1 ? "this photo" : `${n} photos`} from the album?\n\n${n === 1 ? "It stays" : "They stay"} in your library.`)) return;
+    const sure = await ask({
+      title: `Remove ${n === 1 ? "this photo" : `${n} photos`} from the album?`,
+      body: `${n === 1 ? "It stays" : "They stay"} in your library.`,
+      action: "Remove",
+    });
+    if (!sure) return;
     const before = photos;
     const ids = new Set(gone.map((p) => p.id));
     setPhotos((list) => (list ?? []).filter((x) => !ids.has(x.id)));
@@ -907,8 +993,9 @@ export function PhotosView() {
     const p = photos?.[index];
     if (!p) return;
     // Open at full quality: the whole picture decoded first — from disk, a moment — but never
-    // waited on for longer than a blink; past that it opens and the whole picture follows.
-    if (p.kind !== "video") await Promise.race([warm(p.id), new Promise((r) => window.setTimeout(r, 400))]);
+    // waited on for longer than a blink (a click must answer at once); past that it opens on
+    // its thumbnail and screen-sized picture, and the whole one follows.
+    if (p.kind !== "video") await Promise.race([warm(p.id), new Promise((r) => window.setTimeout(r, 150))]);
     stopClosing();
     const tile = document.querySelector<HTMLElement>(`.px-tile[data-id="${CSS.escape(p.id)}"]`);
     origin.current = tile?.getBoundingClientRect() ?? null;
@@ -2034,9 +2121,27 @@ export function PhotosView() {
                 photoMenu(shown, { x: e.clientX, y: e.clientY, alignRight: false });
               }}
             >
-              {shown.kind === "video" ? (
-                // A still of the video, and Play opens it in this computer's own player: the
-                // window's engine plays nothing without codec plugins many systems lack.
+              {shown.kind === "video" && videoBase && !unplayable.has(shown.id) ? (
+                // Played here, as Photos plays one: from the disk cache, in the pieces the
+                // player asks for, so it starts at once and seeks anywhere.
+                <div className="px-video">
+                  <video
+                    key={shown.id}
+                    className="px-shown"
+                    src={`${videoBase}/${shown.id}/original`}
+                    poster={pictureSrc(shown.id, "medium")}
+                    aria-label={shown.filename ?? "Video"}
+                    controls
+                    autoPlay
+                    playsInline
+                    preload="auto"
+                    style={fitted(shown)}
+                    onError={() => setUnplayable((was) => new Set(was).add(shown.id))}
+                  />
+                </div>
+              ) : shown.kind === "video" ? (
+                // This computer's engine could not play it (no codec for it): a still, and Play
+                // opens it in the system's own player.
                 <button className="px-video" aria-label="Play in your video player" onClick={() => void play(shown)}>
                   <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" style={fitted(shown)} />
                   <span className="px-play" aria-hidden="true">
@@ -2046,9 +2151,8 @@ export function PhotosView() {
               ) : (
                 <div
                   ref={pan}
-                  className={`px-pan${lens.k > 1 ? " is-zoomed" : ""}`}
-                  style={{ transform: lens.k > 1 ? `translate(${lens.x}px, ${lens.y}px) scale(${lens.k})` : undefined }}
-                  onDoubleClick={(e) => (lens.k > 1 ? unzoom() : zoomAt(2.5, e.clientX, e.clientY))}
+                  className={`px-pan${zoomed ? " is-zoomed" : ""}`}
+                  onDoubleClick={(e) => (lensRef.current.k > 1 ? unzoom() : zoomAt(2.5, e.clientX, e.clientY))}
                   onPointerDown={(e) => {
                     if (lensRef.current.k <= 1 || e.button !== 0) return;
                     e.currentTarget.setPointerCapture(e.pointerId);
@@ -2057,14 +2161,14 @@ export function PhotosView() {
                   onPointerMove={(e) => {
                     const d = dragging.current;
                     if (!d) return;
-                    setLens(bound(lensRef.current.k, d.lx + e.clientX - d.x, d.ly + e.clientY - d.y));
+                    paint(bound(lensRef.current.k, d.lx + e.clientX - d.x, d.ly + e.clientY - d.y));
                   }}
                   onPointerUp={() => (dragging.current = null)}
                   onPointerCancel={() => (dragging.current = null)}
                 >
                   {decodedFull.has(shown.id) ? (
                     // Already whole and decoded: drawn at once, at full quality, alone.
-                    <img key={`${shown.id}-whole`} className="px-shown" src={pictureSrc(shown.id, "full")} alt={shown.filename ?? ""} decoding="sync" draggable={false} style={fitted(shown)} />
+                    <img key={`${shown.id}-whole`} className="px-shown" src={pictureSrc(shown.id, "full")} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
                   ) : (
                     <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" draggable={false} style={fitted(shown)} />
                   )}
@@ -2231,6 +2335,7 @@ export function PhotosView() {
         </p>
       )}
       {menu && <RowMenu at={menu.at} entries={menu.entries} onClose={() => setMenu(null)} />}
+      {asking}
       {/* Drawn at the top of the page: inside the screen, whose content moves by a transform,
           "fixed" was fixed to the screen and a slideshow played inside a box, not the window. */}
       {show && (

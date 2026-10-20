@@ -362,6 +362,22 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (cmd === "photos_album_remove") find(args.album).items = find(args.album).items.filter((i) => !args.ids.includes(i));
           return null;
         }
+        case "photos_set_flag": {
+          (window.__batches ??= []).push(args);
+          if (window.__flagFail) throw "iCloud didn’t accept that change.";
+          const out = [];
+          for (const id of args.ids) {
+            (window.__flags ??= []).push({ id, flag: args.flag, on: args.on });
+            const p = (window.__photos ?? []).find((x) => x.id === id);
+            if (!p) continue;
+            if (args.flag === "favorite") p.favorite = args.on;
+            if (args.flag === "hidden") p.hidden = args.on;
+            if (args.flag === "expunged") { window.__photos.splice(window.__photos.indexOf(p), 1); continue; }
+            if (args.flag === "deleted") { p.deleted = args.on; p.deletedAt = args.on ? 1792700000 : null; }
+            out.push(p);
+          }
+          return out;
+        }
         case "photo_set_flag": {
           (window.__flags ??= []).push(args);
           if (window.__flagFail) throw "iCloud didn’t accept that change.";
@@ -412,6 +428,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return p;
         }
         case "photo_play": (window.__plays ??= []).push(args); return null;
+        case "video_base": return window.__videoBase ?? null;
         case "photo_download": (window.__downloads ??= []).push(args); return `/home/test/Downloads/IMG_${args.id}.JPG`;
         // Each file is answered at once with where it stands; a test plays the rest in with __emit.
         case "photos_upload": {

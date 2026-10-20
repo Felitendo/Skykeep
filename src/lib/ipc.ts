@@ -95,7 +95,11 @@ export const api = {
   photosInAlbum: (album: string) => invoke<Photo[]>("photos_in_album", { album }),
   /** A video (or a Live Photo's moving part) opened in this computer's own player. */
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
+  /** Where the window's player fetches videos from (a loopback server), or null without one. */
+  videoBase: () => invoke<string | null>("video_base"),
   /** Favorite, Delete (to Recently Deleted) or Recover; answers the photo as Apple now has it. */
+  photosSetFlag: (ids: string[], flag: "favorite" | "deleted" | "hidden" | "expunged", on: boolean) =>
+    invoke<Photo[]>("photos_set_flag", { ids, flag, on }),
   photoSetFlag: (id: string, flag: "favorite" | "deleted" | "hidden" | "expunged", on: boolean) =>
     invoke<Photo>("photo_set_flag", { id, flag, on }),
   /** The original saved to Downloads; answers where. */

@@ -9,7 +9,9 @@ const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null });
 const page = await ctx.newPage();
 page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
-page.on("dialog", (d) => void d.accept());
+// Every question agreed to, as soon as it is asked.
+await page.addInitScript(() => addEventListener("DOMContentLoaded", () =>
+  new MutationObserver(() => document.querySelector(".px-ask .is-act")?.click()).observe(document.body, { childList: true, subtree: true })));
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Photos");
 await page.waitForTimeout(400);
@@ -25,7 +27,8 @@ ok((await page.locator(".px-albums-head h1").innerText()) === "Albums" && (await
   "Albums opens the Albums page");
 ok((await page.locator(".px-card").count()) === 1 && /Trips[\s\S]*2 items/.test(await page.locator(".px-card").innerText()),
   `each album a card with its name and count  ${JSON.stringify(await page.locator(".px-card").innerText())}`);
-ok((await page.locator(".px-tile").count()) === 0, "and the photos give way to it");
+// The grid stays built underneath (back is instant) but none of it shows.
+ok((await page.locator(".px-tile").evaluateAll((els) => els.filter((e) => e.getClientRects().length > 0).length)) === 0, "and the photos give way to it");
 await page.getByRole("button", { name: "Hide Albums" }).click();
 ok((await page.locator(".px-albums .px-source").count()) === 0 && (await page.locator(".px-card").count()) === 1, "the chevron only folds the list away");
 await page.getByRole("button", { name: "Show Albums" }).click();

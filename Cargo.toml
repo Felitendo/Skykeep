@@ -22,6 +22,11 @@ quince-media = { path = "crates/quince-media" }
 # Line tables are kept for this project's own code, so a panic still names the line it came from.
 [profile.dev]
 debug = "line-tables-only"
+# The app he runs every day is this build: unoptimised, every picture served, every reply
+# parsed and every database read ran many times slower than it needs to. Our own code a
+# little optimised (still quick to rebuild), everything it stands on fully.
+opt-level = 1
 
 [profile.dev.package."*"]
 debug = false
+opt-level = 3

@@ -5,6 +5,7 @@ mod alerts;
 mod photos;
 mod push;
 mod refresh;
+mod video;
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use quince_core::calendar::{Calendar, Event};
@@ -3461,20 +3462,29 @@ fn adopt_writer(library: &mut Library) {
     quince_icloud::topotext::set_writer(*id.as_bytes());
 }
 
-/// WebKitGTK hands its frames to the compositor as DMA-BUFs; on Wayland that path tears and
-/// flickers — whole-window flashes on a resize, on a menu, on a screen changing — which he saw
-/// across the app. Turning it off (WebKitGTK's own switch, the one Tauri's Linux users are
-/// pointed to) draws through shared memory instead, steadily. Only under Wayland, only when the
-/// person has not set it themselves; `QUINCE_DMABUF=1` keeps DMA-BUF for anyone who wants it.
+/// WebKitGTK hands its frames to the compositor as DMA-BUFs — the GPU's own buffers, no copy.
+/// It was turned off once (`WEBKIT_DISABLE_DMABUF_RENDERER`) for flashes seen on resizes and
+/// menus, but that copies every frame of the window through shared memory, and measured on
+/// this machine's Iris Xe at 2560 wide it cost two thirds of every frame: the grid scrolled at
+/// 23 fps against 60, a zoomed photo panned at 21 against 61, and opening one stalled. So it
+/// stays on. `QUINCE_DMABUF=0` turns it off for anyone whose compositor flickers with it.
 fn steady_drawing() {
-    let wayland = std::env::var("XDG_SESSION_TYPE")
-        .is_ok_and(|s| s.eq_ignore_ascii_case("wayland"))
-        || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
-    let chosen = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some()
-        || std::env::var_os("QUINCE_DMABUF").is_some_and(|v| v == "1");
-    if wayland && !chosen {
+    let chosen = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some();
+    if !chosen && std::env::var_os("QUINCE_DMABUF").is_some_and(|v| v == "0") {
         // Before any thread starts: nothing else can be reading the environment yet.
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
+/// WebKitGTK's player on its older pipeline (playbin) buffers a video read over HTTP to disk
+/// and then stalls: "Pausing stream for buffering" after the whole file has arrived, the
+/// picture frozen on its first frame. Its newer pipeline (playbin3, WebKit's own switch) plays
+/// and seeks the same file smoothly — proven on this machine's WebKitGTK 2.54. Only when the
+/// person has not chosen themselves.
+fn smooth_video() {
+    if std::env::var_os("WEBKIT_GST_USE_PLAYBIN3").is_none() {
+        // Before any thread starts: nothing else can be reading the environment yet.
+        std::env::set_var("WEBKIT_GST_USE_PLAYBIN3", "1");
     }
 }
 
@@ -3560,6 +3570,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn main() {
     steady_drawing();
+    smooth_video();
     tauri::Builder::default()
         // One Quince at a time: opening it again brings back the one already running, which
         // may be sitting in the tray with its window closed.
@@ -3700,6 +3711,7 @@ fn main() {
             });
         })
         .setup(|app| {
+            video::serve(app.handle().clone());
             let dir = state_dir(app.handle());
             let client = Arc::new(Mutex::new(Client::new(&dir)?));
             app.manage(Auth {
@@ -3794,6 +3806,8 @@ fn main() {
             photos::photos_in_album,
             photos::photo_set_flag,
             photos::photo_play,
+            photos::photos_set_flag,
+            video::video_base,
             photos::photos_upload,
             photos::photos_upload_cancel,
             photos::photos_album_create,

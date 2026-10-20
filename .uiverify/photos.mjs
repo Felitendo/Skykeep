@@ -53,8 +53,8 @@ await page.waitForTimeout(200);
 ok((await page.getByRole("button", { name: "Favorite", exact: true }).count()) === 1, '"." takes it back');
 const flags = await page.evaluate(() => window.__flags.map((f) => `${f.id}:${f.flag}:${f.on}`));
 ok(JSON.stringify(flags) === JSON.stringify(["p2:favorite:true", "p2:favorite:false"]), `and each goes to iCloud  ${JSON.stringify(flags)}`);
-page.once("dialog", (d) => void d.accept());
 await page.getByRole("button", { name: "Delete", exact: true }).click();
+await page.locator(".px-ask .is-act").click();
 await page.waitForTimeout(300);
 const next = await page.locator(".px-stage .px-shown").first().getAttribute("src");
 ok(/p3|p4/.test(next ?? "") && (await page.locator(".px-tile").count()) === 4, "Delete, once agreed, takes it out and shows the next");
@@ -88,9 +88,20 @@ await page.waitForTimeout(650);
 ok((await page.locator(".px-viewer").count()) === 0, "Escape closes the viewer");
 
 // Opening grows the photo out of its tile: a moment in, it is still near the tile's size.
+// The width in the very frame the photo first appears, caught in the page, not after a round trip.
+await page.evaluate(() => {
+  window.__firstWidth = null;
+  const watch = new MutationObserver(() => {
+    const i = document.querySelector(".px-stage .px-shown");
+    if (!i) return;
+    watch.disconnect();
+    requestAnimationFrame(() => { window.__firstWidth = i.getBoundingClientRect().width; });
+  });
+  watch.observe(document.body, { childList: true, subtree: true });
+});
 await page.locator(".px-tile").first().dblclick();
-await page.waitForTimeout(40);
-const mid = await page.locator(".px-shown").evaluate((i) => i.getBoundingClientRect().width);
+await page.waitForFunction(() => window.__firstWidth !== null);
+const mid = await page.evaluate(() => window.__firstWidth);
 await page.waitForTimeout(600);
 const end = await page.locator(".px-shown").evaluate((i) => i.getBoundingClientRect().width);
 ok(mid < end * 0.8 && end > 200, `a photo opens out of its tile  ${Math.round(mid)} → ${Math.round(end)}px`);
@@ -150,9 +161,9 @@ await page.locator(".px-scroll").click({ position: { x: 600, y: 600 } });
 ok((await page.locator('.px-tile[aria-selected="true"]').count()) === 0, "a click on the empty space lets the selection go");
 
 // Hide, as Photos hides: asked, out of the library, into Hidden (under Utilities), and back.
-page.once("dialog", (d) => void d.accept());
 await page.locator(".px-tile").nth(1).click({ button: "right" });
 await page.locator(".row-menu").getByText("Hide Photo").click();
+await page.locator(".px-ask .is-act").click();
 await page.waitForTimeout(300);
 ok((await page.locator(".px-tile").count()) === 4, "Hide Photo takes it out of the library at once");
 await page.locator(".px-source", { hasText: "Hidden" }).click();
@@ -174,11 +185,11 @@ await page.locator(".px-tile").nth(1).dblclick();
 await page.waitForTimeout(600);
 const scaleOf = () => page.locator(".px-pan").evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
 await page.locator(".px-pan").dblclick({ position: { x: 40, y: 40 } });
-await page.waitForTimeout(150);
+await page.waitForTimeout(400); // the zoom glides
 ok((await scaleOf()) > 2, `double-click zooms in  ×${(await scaleOf()).toFixed(2)}`);
 ok(/full/.test((await page.locator(".px-sharp").getAttribute("src")) ?? ""), "and the full picture is laid over");
 await page.keyboard.press("Escape");
-await page.waitForTimeout(150);
+await page.waitForTimeout(400); // the zoom glides
 ok((await scaleOf()) === 1 && (await page.locator(".px-viewer").count()) === 1, "Escape zooms back out first, and keeps the photo open");
 const box = await page.locator(".px-pan").boundingBox();
 await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -190,7 +201,7 @@ ok((await scaleOf()) > 1.5, `Ctrl + scroll zooms about the pointer  ×${(await s
 const gridAcross = await page.evaluate(() => getComputedStyle(document.querySelector(".px-scroll")).getPropertyValue("--across"));
 await page.keyboard.press("Control+0");
 await page.keyboard.press("Control+=");
-await page.waitForTimeout(150);
+await page.waitForTimeout(400); // the zoom glides
 ok((await scaleOf()) > 1.2 && (await page.evaluate(() => getComputedStyle(document.querySelector(".px-scroll")).getPropertyValue("--across"))) === gridAcross,
   "Ctrl = zooms the photo, not the grid behind it");
 await page.keyboard.press("Control+0");
@@ -216,9 +227,14 @@ ok((await left.count()) === 1 && (await left.innerText()) === "2 days" && /is-so
 ok((await page.getByRole("button", { name: "Delete All" }).count()) === 1, "with nothing selected, the toolbar offers Delete All");
 await page.locator(".px-tile").first().click();
 ok((await page.locator(".px-word").allInnerTexts()).join() === "Recover,Delete", "with one selected, Recover and Delete");
-let asked = "";
-page.once("dialog", (d) => { asked = d.message(); void d.accept(); });
 await page.locator(".px-word", { hasText: /^Delete$/ }).click();
+const asked = await page.locator(".px-ask").innerText();
+ok((await page.locator(".px-ask .px-ask-symbol").count()) === 1 && (await page.locator(".px-ask button").first().evaluate((b) => b === document.activeElement)),
+  "asked in a sheet, as icloud.com asks: the trash symbol, Cancel holding the focus");
+await page.keyboard.press("Escape");
+ok((await page.locator(".px-ask").count()) === 0 && (await page.locator(".px-tile").count()) === 1, "Escape cancels: nothing deleted");
+await page.locator(".px-word", { hasText: /^Delete$/ }).click();
+await page.locator(".px-ask .is-act").click();
 await page.waitForTimeout(300);
 ok(/permanently/.test(asked) && /cannot be undone/.test(asked), `Delete asks first, in Photos' words  "${asked.split("\n")[0]}"`);
 ok((await page.locator(".px-tile").count()) === 0 && (await page.evaluate(() => window.__flags.at(-1).flag)) === "expunged",
