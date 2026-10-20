@@ -1,5 +1,6 @@
-//! Live, on a wallpaper he named as a throwaway: a caption set through Quince's own
-//! set_caption, read back from Apple, then cleared. Leaves the photo as it was.
+//! Live, on a wallpaper he named as a throwaway: a title and a caption set through Quince's
+//! own set_title_and_caption (captionEnc and extendedDescEnc), read back from Apple, then
+//! cleared. Leaves the photo as it was.
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use quince_icloud::photos::{self, CONTAINER, ZONE};
@@ -18,8 +19,8 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
     let zc = quince_icloud::cloudkit::ZoneClient::new(&http, &ck, CONTAINER, p.clone());
-    let caption = |r: &serde_json::Value| {
-        r.pointer("/fields/captionEnc/value")
+    let text = |r: &serde_json::Value, f: &str| {
+        r.pointer(&format!("/fields/{f}/value"))
             .and_then(|v| v.as_str())
             .map(|v| {
                 String::from_utf8_lossy(
@@ -30,29 +31,34 @@ async fn main() -> Result<()> {
                 .into_owned()
             })
     };
+    let show = |r: &serde_json::Value| {
+        format!(
+            "title={:?} caption={:?}",
+            text(r, "captionEnc"),
+            text(r, "extendedDescEnc")
+        )
+    };
     let before = zc
         .lookup_record(ZONE, &asset)
         .await?
         .ok_or_else(|| anyhow!("gone"))?;
-    println!("before: {:?}", caption(&before));
+    println!("before: {}", show(&before));
     let tag = before.get("recordChangeTag").and_then(|t| t.as_str());
-    let after = photos::set_caption(
+    photos::set_title_and_caption(
         &http,
         &ck,
         p.clone(),
         &asset,
         tag,
-        "Spring bloom — Quince test ✿",
+        "Spring bloom",
+        "Quince test — a caption ✿",
     )
     .await?;
     let now = zc.lookup_record(ZONE, &asset).await?.unwrap();
-    println!("set:    {:?}", caption(&now));
-    let tag = after
-        .get("recordChangeTag")
-        .and_then(|t| t.as_str())
-        .or_else(|| now.get("recordChangeTag").and_then(|t| t.as_str()));
-    photos::set_caption(&http, &ck, p.clone(), &asset, tag, "").await?;
+    println!("set:    {}", show(&now));
+    let tag = now.get("recordChangeTag").and_then(|t| t.as_str());
+    photos::set_title_and_caption(&http, &ck, p.clone(), &asset, tag, "", "").await?;
     let back = zc.lookup_record(ZONE, &asset).await?.unwrap();
-    println!("clear:  {:?}", caption(&back));
+    println!("clear:  {}", show(&back));
     Ok(())
 }

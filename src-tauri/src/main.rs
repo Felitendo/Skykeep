@@ -3768,7 +3768,7 @@ fn main() {
             photos::photos_album_delete,
             photos::photos_album_add,
             photos::photos_album_remove,
-            photos::photo_set_caption,
+            photos::photo_set_text,
             photos::photo_download,
             note_table_add_row,
             note_table_remove,

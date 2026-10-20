@@ -158,7 +158,8 @@ pub fn photo_of(asset: &Value, master: &Value) -> Option<Photo> {
             .filter(|&d| d == 1)
             .and(millis(asset, "recordModificationDate")),
         subtype: field::int(asset, "assetSubtypeV2").unwrap_or(0),
-        caption: decoded(asset, "captionEnc"),
+        title: decoded(asset, "captionEnc"),
+        caption: decoded(asset, "extendedDescEnc"),
         expunge_at: (field::int(asset, "isDeleted") == Some(1))
             .then(|| millis(asset, "dateExpunged"))
             .flatten(),
@@ -184,7 +185,8 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     } else {
         None
     };
-    p.caption = decoded(asset, "captionEnc");
+    p.title = decoded(asset, "captionEnc");
+    p.caption = decoded(asset, "extendedDescEnc");
     p.expunge_at = if p.deleted {
         millis(asset, "dateExpunged").or(p.expunge_at)
     } else {
@@ -367,14 +369,16 @@ pub async fn set_flag(
         .await
 }
 
-/// A photo's caption set, as icloud.com sets it: `captionEnc`, base64 of its UTF-8 bytes,
-/// against the asset's change tag. An empty caption clears it. Answers the asset as it now is.
-pub async fn set_caption(
+/// A photo's title and caption set, as icloud.com's Info sets them: the title is `captionEnc`
+/// and the caption `extendedDescEnc` (Apple's names), each base64 of its UTF-8 bytes, against
+/// the asset's change tag. Empty clears one. Answers the asset as it now is.
+pub async fn set_title_and_caption(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
     asset: &str,
     change_tag: Option<&str>,
+    title: &str,
     caption: &str,
 ) -> Result<Value> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
@@ -384,7 +388,10 @@ pub async fn set_caption(
             asset,
             "CPLAsset",
             change_tag,
-            serde_json::json!({ "captionEnc": { "value": album_name(caption) } }),
+            serde_json::json!({
+                "captionEnc": { "value": album_name(title) },
+                "extendedDescEnc": { "value": album_name(caption) },
+            }),
         )
         .await
 }

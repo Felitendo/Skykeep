@@ -455,4 +455,11 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE photo_uploads ADD COLUMN album TEXT;
     "#,
+    // What was kept as the caption is Photos' title (`captionEnc`); the caption proper is
+    // `extendedDescEnc`. Photos is read again so each has its own.
+    r#"
+    ALTER TABLE photos RENAME COLUMN caption TO title;
+    ALTER TABLE photos ADD COLUMN caption TEXT;
+    UPDATE sync_state SET token = NULL WHERE service = 'photos';
+    "#,
 ];

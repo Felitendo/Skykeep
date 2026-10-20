@@ -1015,13 +1015,38 @@ export function PhotosView() {
     />
   );
 
-  const caption = async (p: Photo, words: string) => {
-    const next = words.trim();
-    if (next === (p.caption ?? "")) return;
+  /*
+   * Title and caption, as Photos' Info has them: typed in place, Return (in the title) or
+   * leaving them saves both at once — moving from one to the other is not leaving — and Escape
+   * puts back what was there. Shown at once; put back if iCloud refuses.
+   */
+  const titleField = useRef<HTMLInputElement | null>(null);
+  const captionField = useRef<HTMLTextAreaElement | null>(null);
+  const grow = (el: HTMLTextAreaElement) => {
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  const wordKeys = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>, was: string | null | undefined) => {
+    if (e.key === "Enter" && (e.currentTarget.tagName === "INPUT" || !e.shiftKey)) {
+      e.preventDefault();
+      e.currentTarget.blur();
+    } else if (e.key === "Escape") {
+      e.currentTarget.value = was ?? "";
+      e.currentTarget.blur();
+      e.stopPropagation();
+    }
+  };
+  const wordsLeft = (p: Photo, e: React.FocusEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    void words(p, titleField.current?.value ?? p.title ?? "", captionField.current?.value ?? p.caption ?? "");
+  };
+  const words = async (p: Photo, title: string, caption: string) => {
+    const [t, c] = [title.trim(), caption.trim()];
+    if (t === (p.title ?? "") && c === (p.caption ?? "")) return;
     const before = photos;
-    setPhotos((all) => (all ?? []).map((x) => (x.id === p.id ? { ...x, caption: next || null } : x)));
+    setPhotos((all) => (all ?? []).map((x) => (x.id === p.id ? { ...x, title: t || null, caption: c || null } : x)));
     try {
-      await api.photoSetCaption(p.id, next);
+      await api.photoSetText(p.id, t, c);
     } catch (e) {
       setPhotos(before);
       setError(messageOf(e));
@@ -1508,24 +1533,31 @@ export function PhotosView() {
               <dl className="px-info">
                 {/* As in Photos' Info: the caption first, typed in place, and kept on every
                     device; Return or leaving the field saves it, Escape puts it back. */}
-                <dd className="px-caption-row">
+                <dd className="px-caption-row" onBlur={(e) => wordsLeft(shown, e)}>
                   <input
-                    key={shown.id}
+                    key={`t${shown.id}`}
+                    ref={titleField}
+                    className="px-title-field"
+                    aria-label="Title"
+                    placeholder="Add a Title"
+                    defaultValue={shown.title ?? ""}
+                    maxLength={255}
+                    readOnly={view === "recentlyDeleted"}
+                    onKeyDown={(e) => wordKeys(e, shown.title)}
+                  />
+                  <textarea
+                    key={`c${shown.id}`}
+                    ref={captionField}
                     className="px-caption"
                     aria-label="Caption"
                     placeholder="Add a Caption"
                     defaultValue={shown.caption ?? ""}
                     maxLength={2000}
+                    rows={1}
                     readOnly={view === "recentlyDeleted"}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") e.currentTarget.blur();
-                      else if (e.key === "Escape") {
-                        e.currentTarget.value = shown.caption ?? "";
-                        e.currentTarget.blur();
-                        e.stopPropagation();
-                      }
-                    }}
-                    onBlur={(e) => void caption(shown, e.currentTarget.value)}
+                    onInput={(e) => grow(e.currentTarget)}
+                    onFocus={(e) => grow(e.currentTarget)}
+                    onKeyDown={(e) => wordKeys(e, shown.caption)}
                   />
                 </dd>
                 <dt>Name</dt>

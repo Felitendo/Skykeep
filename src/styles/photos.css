@@ -445,7 +445,8 @@
 
 /* The caption, typed in place at the head of Info, as Photos has it. */
 .px-caption-row { margin: 0 0 4px; }
-.px-caption {
+.px-title-field, .px-caption {
+  display: block;
   padding: 6px 8px;
   margin: 0 -8px;
   width: calc(100% + 16px);
@@ -458,7 +459,8 @@
   font-weight: 600;
   outline: none;
 }
-.px-caption::placeholder { color: var(--text-3); font-weight: 500; }
-.px-caption:hover:not(:read-only) { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.px-caption:focus { background: var(--field, transparent); box-shadow: 0 0 0 2px var(--accent-ring); }
+.px-caption { resize: none; overflow: hidden; font-size: var(--t-13); font-weight: 400; line-height: 1.4; color: var(--text-2); }
+.px-title-field::placeholder, .px-caption::placeholder { color: var(--text-3); font-weight: 500; }
+.px-title-field:hover:not(:read-only), .px-caption:hover:not(:read-only) { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.px-title-field:focus, .px-caption:focus { background: var(--field, transparent); box-shadow: 0 0 0 2px var(--accent-ring); }
 .px input, .px textarea { -webkit-user-select: text; user-select: text; }

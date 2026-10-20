@@ -99,7 +99,8 @@ export const api = {
     invoke<Photo>("photo_set_flag", { id, flag, on }),
   /** The original saved to Downloads; answers where. */
   photoDownload: (id: string) => invoke<string>("photo_download", { id }),
-  photoSetCaption: (id: string, caption: string) => invoke<Photo>("photo_set_caption", { id, caption }),
+  /** Title and caption together, as Info saves them. */
+  photoSetText: (id: string, title: string, caption: string) => invoke<Photo>("photo_set_text", { id, title, caption }),
   /** Photos and videos (or folders of them) into the library. Answers the batch; progress
    * arrives as PHOTO_UPLOAD events, in the same shape as Drive's. */
   /** Into the library, and into `album` too when one is open. */
@@ -582,7 +583,8 @@ export type Photo = {
   deletedAt: number | null;
   /** In Recently Deleted: when Apple deletes it for good, unix seconds. */
   expungeAt?: number | null;
-  /** The caption typed for it in Photos. */
+  /** Its title and caption, as typed in Photos' Info. */
+  title?: string | null;
   caption?: string | null;
   subtype: number;
   changeTag: string | null;

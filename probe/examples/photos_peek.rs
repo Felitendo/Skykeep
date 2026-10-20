@@ -23,7 +23,13 @@ async fn main() -> Result<()> {
         .await?
         .ok_or_else(|| anyhow!("gone"))?;
     for (k, v) in r["fields"].as_object().unwrap() {
-        if k.contains("ate") || k.starts_with("is") {
+        if k.contains("ate")
+            || k.starts_with("is")
+            || k.ends_with("Enc")
+            || k.contains("ating")
+            || k.contains("eyword")
+            || k.contains("ocation")
+        {
             println!("{k} = {}", v["value"]);
         }
     }

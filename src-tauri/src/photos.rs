@@ -457,10 +457,11 @@ pub async fn photo_set_flag(
     Ok(updated)
 }
 
-/// A photo's caption, as typed in its Info: Apple's answer taken at once. Empty clears it.
+/// A photo's title and caption, as typed in its Info: Apple's answer taken at once. Empty clears one.
 #[tauri::command]
-pub async fn photo_set_caption(
+pub async fn photo_set_text(
     id: String,
+    title: String,
     caption: String,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
@@ -473,18 +474,20 @@ pub async fn photo_set_caption(
         .photo(&id)
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
-    let caption = caption.trim().to_string();
+    let (title, caption) = (title.trim().to_string(), caption.trim().to_string());
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
-    let answer = quince_icloud::photos::set_caption(
+    let answer = quince_icloud::photos::set_title_and_caption(
         &http,
         &root,
         params,
         &id,
         photo.change_tag.as_deref(),
+        &title,
         &caption,
     )
     .await
     .map_err(|e| e.to_string())?;
+    photo.title = (!title.is_empty()).then_some(title);
     photo.caption = (!caption.is_empty()).then_some(caption);
     photo.change_tag = answer
         .get("recordChangeTag")

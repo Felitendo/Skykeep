@@ -365,10 +365,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           }
           return p;
         }
-        case "photo_set_caption": {
-          (window.__captions ??= []).push(args);
+        case "photo_set_text": {
+          (window.__texts ??= []).push(args);
           const p = (window.__photos ?? []).find((x) => x.id === args.id);
-          if (p) p.caption = args.caption || null;
+          if (p) { p.title = args.title || null; p.caption = args.caption || null; }
           return p;
         }
         case "photo_play": (window.__plays ??= []).push(args); return null;
