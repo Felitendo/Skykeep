@@ -7,7 +7,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Video, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Video, X, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -366,9 +366,20 @@ export function PhotosView() {
   // The view the photos on screen belong to. A view chosen changes the title, the months and
   // the order only when its photos arrive, all with them — not a frame before, over the last
   // view's photos.
-  const [drawn, setDrawn] = useState<{ view: PhotoView; album: PhotoAlbum | null }>({ view, album });
+  const [drawn, setDrawn] = useState<{ view: PhotoView; album: PhotoAlbum | null; query: string }>({ view, album, query: "" });
+  // What is typed in the search field, and — a moment after the typing stops — what is searched.
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState("");
+  useEffect(() => {
+    const t = window.setTimeout(() => setSearching(query.trim()), 140);
+    return () => window.clearTimeout(t);
+  }, [query]);
+  const endSearch = () => {
+    setQuery("");
+    setSearching("");
+  };
   const [sorts, setSorts] = useState(readSorts);
-  const sortable = !drawn.album && drawn.view !== "recentlyDeleted" && drawn.view !== "rated";
+  const sortable = !drawn.query && !drawn.album && drawn.view !== "recentlyDeleted" && drawn.view !== "rated";
   const sort = sortable ? (sorts[drawn.view] ?? defaultSort(drawn.view)) : null;
   const chooseSort = (next: Sort) => {
     setSorts((all) => {
@@ -395,18 +406,18 @@ export function PhotosView() {
   const read = useCallback(async () => {
     const mine = ++reads.current;
     const [list, c, a] = await Promise.all([
-      album ? api.photosInAlbum(album.id) : api.photosList(view),
+      searching ? api.photosSearch(searching) : album ? api.photosInAlbum(album.id) : api.photosList(view),
       api.photosCounts(),
       api.photosAlbums(),
     ]);
     if (mine !== reads.current) return;
     setPhotos(list);
-    setDrawn({ view, album });
+    setDrawn({ view, album, query: searching });
     setCounts(Object.fromEntries(c));
     setAlbums(a);
     // An album deleted elsewhere is not left open, empty.
     if (album && !a.some(([x]) => x.id === album.id)) setAlbum(null);
-  }, [view, album]);
+  }, [view, album, searching]);
   useEffect(() => {
     read().catch((e) => setError(messageOf(e)));
   }, [read, revision]);
@@ -1420,7 +1431,9 @@ export function PhotosView() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const title = drawn.album
+  const title = drawn.query
+    ? `“${drawn.query}”`
+    : drawn.album
     ? (album?.id === drawn.album.id ? album.name : drawn.album.name)
     : [...VIEWS, ...MEDIA, ...UTILITIES].find((v) => v.key === drawn.view)?.label ?? "Photos";
   // A view arrives at its top, not wherever the last one was scrolled to.
@@ -1438,6 +1451,7 @@ export function PhotosView() {
         setView(v.key);
         setAlbum(null);
         setAlbumsPage(false);
+        endSearch();
         setOpen(null);
       }}
     >
@@ -1465,6 +1479,7 @@ export function PhotosView() {
             aria-current={albumsPage}
             onClick={() => {
               setAlbumsPage(true);
+              endSearch();
               setOpen(null);
             }}
           >
@@ -1492,6 +1507,7 @@ export function PhotosView() {
                   onClick={() => {
                     setAlbum(a);
                     setAlbumsPage(false);
+                    endSearch();
                     setOpen(null);
                   }}
                   onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
@@ -1606,7 +1622,11 @@ export function PhotosView() {
             {selected.length > 0 ? (
               <p className="px-span px-picked">{pickedWords(selected)}</p>
             ) : (
-              (here ?? span) && <p className="px-span">{here ?? span}</p>
+              drawn.query ? (
+                <p className="px-span">{photos?.length === 1 ? "1 Result" : `${(photos?.length ?? 0).toLocaleString()} Results`}</p>
+              ) : (
+                (here ?? span) && <p className="px-span">{here ?? span}</p>
+              )
             )}
           </div>
           {view === "recentlyDeleted" && !album && photos && photos.length > 0 && (
@@ -1678,6 +1698,32 @@ export function PhotosView() {
               <ImagePlus size={16} strokeWidth={1.9} aria-hidden="true" />
             </button>
           </div>
+          {/* Search, as icloud.com's toolbar has it: names, titles, captions, keywords, years and
+              months, from the library on this machine — nothing typed leaves it. */}
+          <label className="px-capsule px-search">
+            <SearchIcon size={15} strokeWidth={2} aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="Search Photos"
+              placeholder="Search Photos"
+              value={query}
+              spellCheck={false}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  endSearch();
+                  e.currentTarget.blur();
+                }
+              }}
+            />
+            {query && (
+              <button className="px-search-clear" aria-label="Clear Search" onClick={endSearch}>
+                <X size={11} strokeWidth={3} aria-hidden="true" />
+              </button>
+            )}
+          </label>
         </header>
 
         {error && (
@@ -1688,7 +1734,9 @@ export function PhotosView() {
 
         {photos && photos.length === 0 && (
           <p className="px-empty">
-            {album
+            {drawn.query
+              ? `No photos match “${drawn.query}”. Search finds names, titles, captions, keywords, years and months.`
+              : album
               ? "This album is empty. Photos added to it on any device show here."
               : view === "recentlyDeleted"
               ? "Nothing deleted. Photos you delete stay here for 30 days."

@@ -840,3 +840,33 @@
 .px-sheet-button.is-primary { background: var(--accent); color: #fff; }
 .px-sheet-button.is-primary:hover:not(:disabled) { background: var(--accent-strong); }
 .px-sheet-button:disabled { opacity: 0.45; }
+
+/* The search field, a capsule at the toolbar's end as icloud.com's. */
+.px-search { align-items: center; gap: 6px; width: 200px; padding: 0 10px; color: var(--text-2); cursor: text; }
+.px-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  outline: none;
+}
+.px-search input::-webkit-search-cancel-button { display: none; }
+.px-search input::placeholder { color: var(--text-3); }
+.px-search:focus-within { box-shadow: var(--glass-float), 0 0 0 3px var(--accent-ring); }
+.px-search-clear {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-3);
+  color: var(--sheet);
+  cursor: default;
+}
+@media (max-width: 1000px) { .px-search { width: 140px; } }

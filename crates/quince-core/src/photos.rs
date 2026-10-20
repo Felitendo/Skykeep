@@ -256,6 +256,55 @@ impl Library {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Photos found by what is typed, as Photos' search finds them: every word must match the
+    /// file's name, title, caption or a keyword, or the year or month it was taken ("2025",
+    /// "march"). Deleted and hidden photos are not searched. Newest first, at most `limit`.
+    pub fn search_photos(&self, query: &str, limit: usize) -> Result<Vec<Photo>> {
+        let words: Vec<String> = query
+            .split_whitespace()
+            .map(|w| w.to_lowercase())
+            .filter(|w| !w.is_empty())
+            .take(8)
+            .collect();
+        if words.is_empty() {
+            return Ok(Vec::new());
+        }
+        // One condition per word, each its own parameter: what is typed is never part of the SQL.
+        let one = "(LOWER(COALESCE(filename, '')) LIKE ?{n} ESCAPE '\\'
+              OR LOWER(COALESCE(title, '')) LIKE ?{n} ESCAPE '\\'
+              OR LOWER(COALESCE(caption, '')) LIKE ?{n} ESCAPE '\\'
+              OR LOWER(COALESCE(keywords, '')) LIKE ?{n} ESCAPE '\\'
+              OR strftime('%Y', taken_at, 'unixepoch', 'localtime') LIKE ?{n} ESCAPE '\\'
+              OR (CASE strftime('%m', taken_at, 'unixepoch', 'localtime')
+                    WHEN '01' THEN 'january' WHEN '02' THEN 'february' WHEN '03' THEN 'march'
+                    WHEN '04' THEN 'april' WHEN '05' THEN 'may' WHEN '06' THEN 'june'
+                    WHEN '07' THEN 'july' WHEN '08' THEN 'august' WHEN '09' THEN 'september'
+                    WHEN '10' THEN 'october' WHEN '11' THEN 'november' ELSE 'december' END)
+                  LIKE ?{n} ESCAPE '\\')";
+        let conditions: Vec<String> = (1..=words.len())
+            .map(|n| one.replace("{n}", &n.to_string()))
+            .collect();
+        let sql = format!(
+            "SELECT {COLUMNS} FROM photos WHERE deleted = 0 AND hidden = 0 AND {}
+             ORDER BY taken_at DESC, id LIMIT {}",
+            conditions.join(" AND "),
+            limit.min(50_000)
+        );
+        let patterns: Vec<String> = words
+            .iter()
+            .map(|w| {
+                let escaped = w
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                format!("%{escaped}%")
+            })
+            .collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(patterns.iter()), row_to_photo)?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// Which photos a view holds, and in what order.
     fn view_query(view: View) -> (&'static str, &'static str) {
         match view {
@@ -606,6 +655,25 @@ mod tests {
         for (view, n) in lib.photo_counts().unwrap() {
             assert_eq!(n as usize, lib.photos(view).unwrap().len(), "{view:?}");
         }
+        // Search finds by name and by month, every word, and leaves the hidden and deleted out.
+        let found = |q: &str| {
+            lib.search_photos(q, 100)
+                .unwrap()
+                .into_iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(found("B.JPG"), ["b"]);
+        assert_eq!(
+            found("jpg january 1970"),
+            ["c", "b", "a"],
+            "every word, the newest first"
+        );
+        assert!(found("e.jpg").is_empty(), "the hidden one is not found");
+        assert!(
+            found("100%").is_empty(),
+            "what is typed is matched as text, never as a pattern"
+        );
         assert_eq!(
             ids(&lib, View::Hidden),
             ["e"],

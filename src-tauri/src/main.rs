@@ -3788,6 +3788,7 @@ fn main() {
             photos::photo_set_keywords,
             photos::photo_open_map,
             photos::photo_set_date,
+            photos::photos_search,
             photos::photo_download,
             note_table_add_row,
             note_table_remove,

@@ -110,6 +110,8 @@ export const api = {
   photoOpenMap: (id: string) => invoke<void>("photo_open_map", { id }),
   /** When it was taken, in unix seconds. */
   photoSetDate: (id: string, takenAt: number) => invoke<Photo>("photo_set_date", { id, takenAt }),
+  /** Every word in a name, title, caption, keyword, year or month; newest first. */
+  photosSearch: (query: string) => invoke<Photo[]>("photos_search", { query }),
   /** Photos and videos (or folders of them) into the library. Answers the batch; progress
    * arrives as PHOTO_UPLOAD events, in the same shape as Drive's. */
   /** Into the library, and into `album` too when one is open. */

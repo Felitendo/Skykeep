@@ -251,6 +251,17 @@ pub async fn photos_albums(
         .collect())
 }
 
+/// Photos found by what is typed in the search field, from the library on this machine: every
+/// word in a name, title, caption, keyword, year or month.
+#[tauri::command]
+pub async fn photos_search(query: String, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
+    data.0
+        .lock()
+        .await
+        .search_photos(&query, 20_000)
+        .map_err(|e| e.to_string())
+}
+
 /// One album's photos, in its order.
 #[tauri::command]
 pub async fn photos_in_album(album: String, data: State<'_, Data>) -> UiResult<Vec<Photo>> {

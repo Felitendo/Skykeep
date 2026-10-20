@@ -372,6 +372,18 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (p) p.keywords = args.keywords;
           return p;
         }
+        case "photos_search": {
+          const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+          const words = args.query.toLowerCase().split(/\s+/).filter(Boolean);
+          return (window.__photos ?? [])
+            .filter((p) => !p.deleted && !p.hidden)
+            .filter((p) => {
+              const d = new Date(p.takenAt * 1000);
+              const hay = [p.filename, p.title, p.caption, ...(p.keywords ?? []), String(d.getFullYear()), months[d.getMonth()]].filter(Boolean).join(" ").toLowerCase();
+              return words.every((w) => hay.includes(w));
+            })
+            .sort((a, b) => b.takenAt - a.takenAt);
+        }
         case "photo_set_date": {
           (window.__dates ??= []).push(args);
           const p = (window.__photos ?? []).find((x) => x.id === args.id);
