@@ -59,6 +59,11 @@ impl Remote for AppRemote {
         })
     }
 
+    fn thumbnails(&self, folder: &str) -> Fut<HashMap<String, Vec<u8>>> {
+        let (app, folder) = (self.app.clone(), folder.to_string());
+        Box::pin(async move { crate::folder_thumbnails(&app, &folder).await })
+    }
+
     fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>> {
         let (app, links, item) = (self.app.clone(), Arc::clone(&self.links), item.clone());
         Box::pin(async move {
@@ -188,7 +193,17 @@ fn start(app: &AppHandle, at: &std::path::Path) -> Result<(), String> {
     });
     let store = Arc::new(AppStore(app.clone()));
     let rt = tauri::async_runtime::handle().inner().clone();
-    let fs = quince_vfs::fuse::DriveFs::new(remote, store, cache, rt);
+    // Apple's pictures go where every file manager looks for thumbnails, so none of them
+    // downloads a file to draw one.
+    let thumbs = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| app.path().home_dir().ok().map(|h| h.join(".cache")))
+        .map(|c| c.join("thumbnails"));
+    let mut fs = quince_vfs::fuse::DriveFs::new(remote, store, cache, rt);
+    if let Some(thumbs) = thumbs {
+        fs = fs.with_thumbnails(at.to_path_buf(), thumbs);
+    }
     let session = quince_vfs::fuse::mount(fs, at)
         .map_err(|e| format!("The folder could not be mounted: {e}"))?;
     *SESSION

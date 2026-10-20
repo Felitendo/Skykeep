@@ -34,3 +34,31 @@ fn the_matrix_is_found_where_it_is() {
     let b = i32::from_be_bytes(bytes[at as usize + 4..at as usize + 8].try_into().unwrap());
     assert_eq!((a, b), (0, 0x10000), "its first two words are a and b");
 }
+
+/// The thumbnail cache's own rules: a path's URI escaped as GLib escapes it, and a PNG that
+/// carries that URI and the file's time.
+#[test]
+fn freedesktop_thumbnails() {
+    assert_eq!(
+        quince_media::file_uri(Path::new("/home/a b/Résumé (v2)+x;y#z.txt")),
+        "file:///home/a%20b/R%C3%A9sum%C3%A9%20(v2)+x%3By%23z.txt"
+    );
+    let mut picture = image::RgbImage::new(400, 200);
+    for (x, _, p) in picture.enumerate_pixels_mut() {
+        *p = image::Rgb([(x % 255) as u8, 80, 200]);
+    }
+    let mut jpeg = std::io::Cursor::new(Vec::new());
+    picture
+        .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+        .unwrap();
+    let png =
+        quince_media::freedesktop_thumbnail(jpeg.get_ref(), 128, "file:///x.jpg", 1_700_000_100)
+            .unwrap();
+    let back = image::load_from_memory(&png).unwrap();
+    assert_eq!(
+        (back.width(), back.height()),
+        (128, 64),
+        "no larger than 128 on its longer side"
+    );
+    assert_eq!(quince_media::thumbnail_mtime(&png), Some(1_700_000_100));
+}

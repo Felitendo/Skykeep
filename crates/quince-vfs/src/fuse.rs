@@ -33,6 +33,10 @@ pub struct DriveFs {
     uid: u32,
     gid: u32,
     mounted: std::time::SystemTime,
+    /// Where the folder is mounted and the thumbnail cache's root, when thumbnails are wanted.
+    thumbs: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// Folders whose thumbnails were written, by their items' versions: written once.
+    filled: Mutex<std::collections::HashSet<String>>,
 }
 
 impl DriveFs {
@@ -51,10 +55,62 @@ impl DriveFs {
             cache,
             inodes: Mutex::new(Inodes::new()),
             mounted: std::time::SystemTime::now(),
+            thumbs: None,
+            filled: Mutex::new(std::collections::HashSet::new()),
             rt,
             uid,
             gid,
         }
+    }
+
+    /// Apple's pictures of each folder listed put in the thumbnail cache (the crate's
+    /// write_thumbnails), for a folder mounted at `mount`.
+    #[must_use]
+    pub fn with_thumbnails(mut self, mount: std::path::PathBuf, cache: std::path::PathBuf) -> Self {
+        self.thumbs = Some((mount, cache));
+        self
+    }
+
+    /// In the background, once per folder version: the folder's thumbnails written.
+    fn fill_thumbnails(&self, folder: &DriveItem, files: &[(String, u64, DriveItem)]) {
+        let Some((mount, cache)) = self.thumbs.clone() else {
+            return;
+        };
+        let mut paths = Vec::new();
+        let mut fingerprint = folder.drivewsid.clone();
+        {
+            let inodes = self
+                .inodes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (_, ino, item) in files.iter().filter(|(_, _, i)| !i.is_container()) {
+                if let Some(p) = inodes.path(*ino) {
+                    paths.push((p.to_string(), item.clone()));
+                    fingerprint.push_str(item.etag.as_deref().unwrap_or(""));
+                }
+            }
+        }
+        if paths.is_empty()
+            || !self
+                .filled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(fingerprint)
+        {
+            return;
+        }
+        let (remote, id) = (Arc::clone(&self.remote), folder.drivewsid.clone());
+        self.rt.spawn(async move {
+            let Ok(pictures) = remote.thumbnails(&id).await else {
+                return;
+            };
+            if !pictures.is_empty() {
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::write_thumbnails(&mount, &cache, &paths, &pictures)
+                })
+                .await;
+            }
+        });
     }
 
     fn item(&self, ino: INodeNo) -> Option<DriveItem> {
@@ -132,7 +188,11 @@ impl DriveFs {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(named(&items)
             .into_iter()
-            .map(|(name, it)| (name, inodes.ino(&it), it))
+            .map(|(name, it)| {
+                let child = inodes.ino(&it);
+                inodes.place(child, ino.0, &name);
+                (name, child, it)
+            })
             .collect())
     }
 }
@@ -167,6 +227,11 @@ impl Filesystem for DriveFs {
             Ok(c) => c,
             Err(e) => return reply.error(e),
         };
+        if offset == 0 {
+            if let Some(folder) = self.item(ino) {
+                self.fill_thumbnails(&folder, &children);
+            }
+        }
         let parent = self
             .item(ino)
             .and_then(|i| i.parent_id)

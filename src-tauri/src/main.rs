@@ -3084,17 +3084,37 @@ async fn drive_duplicate(
 async fn drive_thumbnails(
     folder_id: String,
     app: tauri::AppHandle,
-    auth: State<'_, Auth>,
-    data: State<'_, Data>,
 ) -> UiResult<std::collections::HashMap<String, String>> {
     use base64::Engine;
+    Ok(folder_thumbnails(&app, &folder_id)
+        .await?
+        .into_iter()
+        .map(|(id, bytes)| {
+            let url = data_url(
+                &bytes,
+                &base64::engine::general_purpose::STANDARD.encode(&bytes),
+            );
+            (id, url)
+        })
+        .collect())
+}
+
+/// Apple's pictures of a folder's files, by item id: for the window's grid and for the iCloud
+/// Drive folder's thumbnails (mount.rs), from one cache. Kept on disk beside the library,
+/// named by item and version, so a folder opened again has its pictures at once and only a
+/// changed file is fetched anew.
+pub(crate) async fn folder_thumbnails(
+    app: &tauri::AppHandle,
+    folder_id: &str,
+) -> Result<std::collections::HashMap<String, Vec<u8>>, String> {
     let files = {
+        let data = app.state::<Data>();
         let library = data.0.lock().await;
         library
-            .drive_children(&folder_id)
+            .drive_children(folder_id)
             .map_err(|e| e.to_string())?
     };
-    let cache = state_dir(&app).join("thumbnails");
+    let cache = state_dir(app).join("thumbnails");
     std::fs::create_dir_all(&cache).ok();
     let key = |f: &quince_core::drive::DriveItem| {
         let safe = |s: &str| {
@@ -3114,19 +3134,14 @@ async fn drive_thumbnails(
         match std::fs::read(key(f)) {
             Ok(bytes) if bytes.is_empty() => {} // known to have none
             Ok(bytes) => {
-                out.insert(
-                    f.drivewsid.clone(),
-                    data_url(
-                        &bytes,
-                        &base64::engine::general_purpose::STANDARD.encode(&bytes),
-                    ),
-                );
+                out.insert(f.drivewsid.clone(), bytes);
             }
             Err(_) => missing.push(f.clone()),
         }
     }
     if !missing.is_empty() {
         let (http, docws, params) = {
+            let auth = app.state::<Auth>();
             let client = auth.client.lock().await;
             (
                 client.http().clone(),
@@ -3148,13 +3163,7 @@ async fn drive_thumbnails(
             // An empty file records "Apple has no picture for this version", so it is not asked again.
             std::fs::write(key(f), bytes.as_deref().unwrap_or(&[])).ok();
             if let Some(bytes) = bytes {
-                out.insert(
-                    f.drivewsid.clone(),
-                    data_url(
-                        &bytes,
-                        &base64::engine::general_purpose::STANDARD.encode(&bytes),
-                    ),
-                );
+                out.insert(f.drivewsid.clone(), bytes);
             }
         }
     }

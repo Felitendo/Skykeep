@@ -35,6 +35,23 @@ impl Remote for Apple {
         let out = self.folders.get(folder).cloned().unwrap_or_default();
         Box::pin(async move { Ok(out) })
     }
+    fn thumbnails(&self, folder: &str) -> Fut<HashMap<String, Vec<u8>>> {
+        // Apple's picture of the film, for the root folder.
+        let out = if folder == ROOT {
+            let mut picture = image::RgbImage::new(300, 200);
+            for (x, y, p) in picture.enumerate_pixels_mut() {
+                *p = image::Rgb([(x % 255) as u8, (y % 255) as u8, 90]);
+            }
+            let mut jpeg = std::io::Cursor::new(Vec::new());
+            picture
+                .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+                .unwrap();
+            HashMap::from([("FILE::z::film".to_string(), jpeg.into_inner())])
+        } else {
+            HashMap::new()
+        };
+        Box::pin(async move { Ok(out) })
+    }
     fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>> {
         self.reads.lock().unwrap().push((offset, len));
         let data = &self.files[&item.drivewsid];
@@ -101,12 +118,14 @@ fn a_mounted_drive_reads_like_a_folder() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let cache_dir = tempfile::tempdir().unwrap();
     let at = tempfile::tempdir().unwrap();
+    let thumbs = tempfile::tempdir().unwrap();
     let fs = fuse::DriveFs::new(
         apple.clone(),
         library,
         Arc::new(Cache::new(cache_dir.path()).unwrap()),
         rt.handle().clone(),
-    );
+    )
+    .with_thumbnails(at.path().to_path_buf(), thumbs.path().join("thumbnails"));
     let session = fuse::mount(fs, at.path()).expect("mounted");
 
     let mut names: Vec<String> = std::fs::read_dir(at.path())
@@ -174,6 +193,39 @@ fn a_mounted_drive_reads_like_a_folder() {
     let err = std::fs::write(at.path().join("Note.txt"), b"x").unwrap_err();
     assert_eq!(err.raw_os_error(), Some(libc::EROFS), "{err}");
     assert_eq!(std::fs::read(at.path().join("Note.txt")).unwrap(), note);
+
+    // Apple's picture of the film is in the thumbnail cache, named and stamped so that GLib —
+    // what GNOME Files asks — finds it valid for the mounted file, with nothing downloaded for it.
+    let film_path = at.path().join("Film.mov");
+    let reads_before = apple.reads.lock().unwrap().len();
+    let mut valid = String::new();
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Ok(out) = std::process::Command::new("gio")
+            .args(["info", "-a", "thumbnail::path,thumbnail::is-valid"])
+            .arg(&film_path)
+            .env("XDG_CACHE_HOME", thumbs.path())
+            .output()
+        {
+            valid = String::from_utf8_lossy(&out.stdout).into_owned();
+            if valid.contains("thumbnail::is-valid: TRUE") {
+                break;
+            }
+        } else {
+            valid = "no gio here".into();
+            break;
+        }
+    }
+    assert!(
+        valid.contains("thumbnail::is-valid: TRUE") || valid == "no gio here",
+        "GLib finds the thumbnail valid: {valid}"
+    );
+    eprintln!("gio says: {}", valid.trim().replace('\n', " | "));
+    assert_eq!(
+        apple.reads.lock().unwrap().len(),
+        reads_before,
+        "nothing downloaded to draw it"
+    );
 
     drop(session);
     assert_eq!(

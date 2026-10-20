@@ -25,6 +25,11 @@ pub trait Remote: Send + Sync + 'static {
     fn list(&self, folder: &str) -> Fut<Vec<DriveItem>>;
     /// `len` bytes of a file from `offset` (fewer only at its end).
     fn read(&self, item: &DriveItem, offset: u64, len: u64) -> Fut<Vec<u8>>;
+    /// Apple's own pictures of a folder's files, by item id: for a file manager's thumbnails,
+    /// so it never downloads a file to draw one. None by default.
+    fn thumbnails(&self, _folder: &str) -> Fut<HashMap<String, Vec<u8>>> {
+        Box::pin(async { Ok(HashMap::new()) })
+    }
 }
 
 /// What the library already knows, read without the network.
@@ -42,6 +47,8 @@ pub const ROOT: &str = "FOLDER::com.apple.CloudDocs::root";
 pub struct Inodes {
     by_ino: HashMap<u64, DriveItem>,
     by_id: HashMap<String, u64>,
+    /// Where each item is in the folder, as the file manager names it ("Work/Deck.key").
+    paths: HashMap<u64, String>,
     next: u64,
 }
 
@@ -82,6 +89,25 @@ impl Inodes {
         self.by_id.insert(item.drivewsid.clone(), ino);
         self.by_ino.insert(ino, item.clone());
         ino
+    }
+
+    /// Where an item is, from the folder's top, as last listed.
+    #[must_use]
+    pub fn path(&self, ino: u64) -> Option<&str> {
+        if ino == 1 {
+            return Some("");
+        }
+        self.paths.get(&ino).map(String::as_str)
+    }
+
+    /// Record where an item is: its folder's path and its name in it.
+    pub fn place(&mut self, ino: u64, parent: u64, name: &str) {
+        let at = match self.path(parent) {
+            Some("") => name.to_string(),
+            Some(p) => format!("{p}/{name}"),
+            None => return,
+        };
+        self.paths.insert(ino, at);
     }
 
     /// The inode an item already has, by Apple's id.
@@ -333,6 +359,50 @@ pub fn is_thumbnailer(comm: &str, cmdline: &str) -> bool {
     .iter()
     .any(|t| comm.starts_with(t));
     named || (comm == "kioworker" && cmdline.contains("thumbnail"))
+}
+
+/// Apple's pictures of a folder's files written into the freedesktop thumbnail cache, where
+/// GNOME Files, Dolphin and every other file manager look before reading a file to draw it:
+/// thumbnails appear at once, and nothing is downloaded for them. Each is named by the MD5 of
+/// its file's URI and carries the file's time, which the file manager checks; one already
+/// there for the same version is left alone. `mount` is where the folder is mounted, `cache`
+/// the thumbnail cache's root (~/.cache/thumbnails).
+pub fn write_thumbnails(
+    mount: &Path,
+    cache: &Path,
+    files: &[(String, DriveItem)],
+    pictures: &HashMap<String, Vec<u8>>,
+) {
+    use md5::Digest;
+    use std::os::unix::fs::PermissionsExt;
+    for (path, item) in files {
+        let Some(picture) = pictures.get(&item.drivewsid) else {
+            continue;
+        };
+        let uri = quince_media::file_uri(&mount.join(path));
+        let mtime = item.modified_at.unwrap_or(0);
+        let name = format!("{:x}.png", md5::Md5::digest(uri.as_bytes()));
+        for (dir, px) in [("normal", 128), ("large", 256), ("x-large", 512)] {
+            let at = cache.join(dir).join(&name);
+            if std::fs::read(&at)
+                .ok()
+                .and_then(|b| quince_media::thumbnail_mtime(&b))
+                == Some(mtime)
+            {
+                continue;
+            }
+            let Ok(png) = quince_media::freedesktop_thumbnail(picture, px, &uri, mtime) else {
+                continue;
+            };
+            let _ = std::fs::create_dir_all(cache.join(dir));
+            // As the specification asks: private to its owner, and never seen half-written.
+            let part = at.with_extension("png.part");
+            if std::fs::write(&part, &png).is_ok() {
+                let _ = std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::rename(&part, &at);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

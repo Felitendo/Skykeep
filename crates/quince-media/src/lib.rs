@@ -279,6 +279,91 @@ pub const UPRIGHT_MATRIX: [u8; 36] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0,
 ];
 
+/// The `file://` URI of a path, escaped exactly as GLib escapes it (g_filename_to_uri, its
+/// UNSAFE_PATH table in gconvert.c): the freedesktop thumbnail cache names each thumbnail by
+/// the MD5 of this string, so one character escaped differently and no file manager finds it.
+#[must_use]
+pub fn file_uri(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    // GLib's table, ASCII 32 to 127; a character is kept when its byte has 0x08 set.
+    const ACCEPTABLE: [u8; 96] = [
+        0x00, 0x3F, 0x20, 0x20, 0x28, 0x00, 0x2C, 0x3F, 0x3F, 0x3F, 0x3F, 0x2A, 0x28, 0x3F, 0x3F,
+        0x1C, //
+        0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x38, 0x20, 0x20, 0x2C, 0x20,
+        0x20, //
+        0x38, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
+        0x3F, //
+        0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x20, 0x20, 0x20, 0x20,
+        0x3F, //
+        0x20, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
+        0x3F, //
+        0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x20, 0x20, 0x20, 0x3F,
+        0x20,
+    ];
+    let mut out = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        let kept = (32..128).contains(&b) && ACCEPTABLE[usize::from(b - 32)] & 0x08 != 0;
+        if kept {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// A thumbnail as the freedesktop thumbnail cache keeps one: a PNG no larger than `px` on its
+/// longer side (never enlarged), carrying the file's URI and modification time, which a file
+/// manager checks before trusting it.
+///
+/// # Errors
+/// When the picture cannot be read or the PNG cannot be made.
+pub fn freedesktop_thumbnail(
+    picture: &[u8],
+    px: u32,
+    uri: &str,
+    mtime: i64,
+) -> Result<Vec<u8>, String> {
+    let image = image::load_from_memory(picture).map_err(|e| e.to_string())?;
+    let image = if image.width().max(image.height()) > px {
+        image.resize(px, px, image::imageops::FilterType::Lanczos3)
+    } else {
+        image
+    };
+    let rgba = image.to_rgba8();
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, rgba.width(), rgba.height());
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .add_text_chunk("Thumb::URI".into(), uri.into())
+            .map_err(|e| e.to_string())?;
+        encoder
+            .add_text_chunk("Thumb::MTime".into(), mtime.to_string())
+            .map_err(|e| e.to_string())?;
+        encoder
+            .add_text_chunk("Software".into(), "Quince".into())
+            .map_err(|e| e.to_string())?;
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        writer.write_image_data(&rgba).map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+/// The `Thumb::MTime` a freedesktop thumbnail carries, if it is one.
+#[must_use]
+pub fn thumbnail_mtime(png_bytes: &[u8]) -> Option<i64> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    let reader = decoder.read_info().ok()?;
+    reader
+        .info()
+        .uncompressed_latin1_text
+        .iter()
+        .find(|t| t.keyword == "Thumb::MTime")
+        .and_then(|t| t.text.trim().parse().ok())
+}
+
 /// Whether bytes are a HEIF file (HEIC and its kin): an `ftyp` box naming a HEIF brand.
 #[must_use]
 pub fn is_heif(bytes: &[u8]) -> bool {

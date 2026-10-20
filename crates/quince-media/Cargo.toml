@@ -10,3 +10,4 @@ fast_image_resize = "6.1.0"
 # attack surface for no gain.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 libheif-rs = "3.0.0"
+png = "0.17"
