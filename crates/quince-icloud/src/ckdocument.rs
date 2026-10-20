@@ -2013,10 +2013,7 @@ mod tests {
     #[test]
     fn reads_text_from_a_gzipped_document() {
         let payload = gzipped(&document("Move more"));
-        assert_eq!(
-            text_from_bytes(&payload).as_deref(),
-            Some("Move more")
-        );
+        assert_eq!(text_from_bytes(&payload).as_deref(), Some("Move more"));
     }
 
     /// Real titles carry emoji and accents, so the decode must be UTF-8, not ASCII.

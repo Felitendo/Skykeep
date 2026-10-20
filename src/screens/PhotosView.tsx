@@ -2319,7 +2319,7 @@ export function PhotosView() {
           )}
           <div className="px-capsule">
             <button
-              className="px-cap"
+              className="px-cap is-glyph-state"
               aria-label={fit ? "Show Square Photos" : "Show Whole Photos"}
               aria-pressed={fit}
               title={fit ? "Square photos" : "Whole photos"}

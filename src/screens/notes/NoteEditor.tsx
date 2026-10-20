@@ -8,7 +8,7 @@ import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror
 import { Fragment, Slice, type Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
 import { fromDoc, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
-import { api, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
+import { api, messageOf, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
 import { RowMenu, type MenuEntry } from "../../components/RowMenu";
 import { autolink, openLinkAt } from "./links";
 
@@ -56,7 +56,12 @@ const described = new Map<string, Promise<NoteAttachment | null>>();
 function describe(id: string): Promise<NoteAttachment | null> {
   let known = described.get(id);
   if (!known) {
-    known = api.noteAttachmentInfo(id).catch(() => null);
+    // A lookup that failed (offline, the session being renewed) is not kept: the next time
+    // the note is drawn asks again, rather than leaving the attachment a blank chip all session.
+    known = api.noteAttachmentInfo(id).catch(() => {
+      described.delete(id);
+      return null;
+    });
     described.set(id, known);
   }
   return known;
@@ -80,7 +85,15 @@ export type PictureShown = { id: string; name: string; src: string; srcDark?: st
 
 function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   const name = info.filename ?? info.title ?? (info.kind === "audio" ? "Recording" : "Attachment");
-  const open = () => void api.noteAttachmentOpen(info.id).catch(() => {});
+  // Opened in the app this computer uses for it; one that cannot be says why, on the chip
+  // itself, rather than a click that seems to do nothing.
+  let said: HTMLElement | null = null;
+  const open = () =>
+    void api.noteAttachmentOpen(info.id).catch((e) => {
+      if (!said) return;
+      said.textContent = `Couldn’t open: ${messageOf(e)}`;
+      said.classList.add("is-trouble");
+    });
   const chip = () => {
     const c = document.createElement("button");
     c.type = "button";
@@ -96,6 +109,7 @@ function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     const meta = document.createElement("span");
     meta.className = "nf-file-meta";
     meta.textContent = size(info.size);
+    said = meta;
     c.append(glyph, label, meta);
     c.title = `Open ${name}`;
     c.addEventListener("click", open);

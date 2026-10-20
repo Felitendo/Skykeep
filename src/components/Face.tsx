@@ -3,11 +3,11 @@ import { useLayoutEffect, useRef, useState } from "react";
 /**
  * A person's picture over their initials, as Contacts draws one.
  *
- * The initials hold the place until the picture is decoded, and the picture then fades in
- * over them — never initials swapped for a picture in one jump, which read as a flicker.
- * A picture already to hand (the backend keeps each on disk, the window keeps it in memory)
- * is drawn at once with no fade: there is nothing to wait for, so nothing should move. One
- * that cannot be had leaves the initials, never a broken frame.
+ * The initials hold the place until the picture is decoded, and the picture then takes it,
+ * drawn whole in one frame (decoded before it is drawn, never shown half-way). A picture
+ * already to hand (the backend keeps each on disk, the window keeps it in memory) is drawn at
+ * once. Nothing fades: a fade replayed every time Contacts came back into view. One that
+ * cannot be had leaves the initials, never a broken frame.
  */
 export function Face({ src, initials }: { src: string | null; initials: string }) {
   const img = useRef<HTMLImageElement | null>(null);
@@ -26,7 +26,7 @@ export function Face({ src, initials }: { src: string | null; initials: string }
           className={`face-photo is-${state}`}
           src={src}
           alt=""
-          decoding="async"
+          decoding="sync"
           draggable={false}
           onLoad={() => setState((s) => (s === "instant" ? s : "ready"))}
           onError={() => setState("failed")}

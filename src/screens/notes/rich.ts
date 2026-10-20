@@ -109,7 +109,9 @@ export const schema = new Schema({
       attrs: { href: {} },
       inclusive: false,
       parseDOM: [{ tag: "a[href]", getAttrs: (d) => ({ href: (d as HTMLElement).getAttribute("href") }) }],
-      toDOM: (m) => ["a", { href: m.attrs.href, rel: "noreferrer", target: "_blank" }, 0],
+      // No target: a click is the editor's to follow (notes/links), never a new window — one
+      // opened by WebKitGTK for a link to a note went to the browser.
+      toDOM: (m) => ["a", { href: m.attrs.href, rel: "noreferrer" }, 0],
     },
   },
 });

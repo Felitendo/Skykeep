@@ -1268,7 +1268,14 @@ export function RemindersView() {
                       aria-checked={Boolean(reminder.completedAt)}
                       aria-label={reminder.title}
                       style={{ "--tick": colourOf(home) } as React.CSSProperties}
-                      onClick={() => toggle(reminder)}
+                      // The fill springs in on the press itself, and only then: kept as state,
+                      // it sprang in again every time Reminders came back into view.
+                      onClick={(e) => {
+                        const tick = e.currentTarget;
+                        tick.classList.add("is-pressed");
+                        window.setTimeout(() => tick.classList.remove("is-pressed"), 300);
+                        toggle(reminder);
+                      }}
                     />
 
                     <div className="rx-text">

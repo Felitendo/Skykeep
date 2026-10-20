@@ -1997,10 +1997,10 @@
 .avatar { position: relative; overflow: hidden; }
 .face-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .face-photo.is-loading { opacity: 0; }
-.face-photo.is-ready { opacity: 1; animation: face-in 180ms ease-out; }
-.face-photo.is-instant { opacity: 1; }
-@keyframes face-in { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .face-photo.is-ready { animation: none; } }
+/* Shown the moment it is ready, never faded: a fade here was an animation, and an animation
+   starts again whenever its screen comes back into view — every face in Contacts faded in
+   anew on every visit, a flicker (and fades flicker on WebKitGTK's compositor anyway). */
+.face-photo.is-ready, .face-photo.is-instant { opacity: 1; }
 @media (min-width: 901px) {
   .is-rail .sidebar-foot { display: flex; }
   .is-rail .sidebar-account { justify-content: center; padding-inline: 0; }

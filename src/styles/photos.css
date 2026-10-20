@@ -326,6 +326,10 @@
 .px-viewer-when strong { font-size: var(--t-13); font-weight: 600; }
 .px-viewer-when span { color: var(--text-2); font-size: var(--t-11); }
 .px-cap[aria-pressed="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
+/* A button whose glyph already says which way it is set (square or whole photos), as
+   icloud.com draws it: no pressed fill as well — a fill that never left read as a hover stuck
+   on it. */
+.px-cap.is-glyph-state[aria-pressed="true"]:not(:hover) { background: none; }
 .px-stage { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; overflow: hidden; padding: 62px 64px 70px; container-type: size; }
 .px-stage img, .px-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
 /* The photo's frame: what zooms and pans. The full picture lies over the screen-sized one,

@@ -487,3 +487,13 @@ textarea.note-title::placeholder { color: var(--text-3); }
 }
 :root[data-theme="dark"] .nf-ink-light { display: none; }
 :root[data-theme="dark"] .nf-ink-dark { display: block; }
+
+/* An attachment chosen in the note (clicked once, as Notes selects one): marked by an accent
+   ring around the thing itself — a picture's own edges, a chip's own — never the box the
+   line gives it, which ran the width of the note. */
+.note-rich .ProseMirror-selectednode { outline: none; }
+.note-rich .nf-attachment.ProseMirror-selectednode:not(.is-image) > *,
+.note-rich .nf-attachment.ProseMirror-selectednode.is-image img {
+  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px;
+}
+.nf-file-meta.is-trouble { color: var(--danger); white-space: normal; }

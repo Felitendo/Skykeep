@@ -392,11 +392,12 @@
   inset: 2.5px;
   border-radius: 50%;
   background: var(--tick);
-  /* The fill lands the instant it is pressed, with the quick spring Reminders gives it. */
-  animation: rx-tick-in 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
+/* The fill lands the instant it is pressed, with the quick spring Reminders gives it — on the
+   press only (is-pressed), never again when the list comes back into view. */
+.rx-tick.is-pressed[aria-checked="true"]::after { animation: rx-tick-in 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }
 @keyframes rx-tick-in { from { transform: scale(0.3); opacity: 0.4; } to { transform: scale(1); opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .rx-tick[aria-checked="true"]::after { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .rx-tick.is-pressed[aria-checked="true"]::after { animation: none; } }
 .rx-tick.ghost {
   display: grid;
   place-items: center;

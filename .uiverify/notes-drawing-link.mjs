@@ -48,14 +48,22 @@ for (const scheme of ["light", "dark"]) {
   await page.waitForTimeout(150);
   ok(await page.getByRole("dialog", { name: "Drawing" }).isVisible(), `${scheme}: a click shows it large`);
   await page.keyboard.press("Escape");
+  // Chosen in the note, its ring is the drawing's own edges, not the width of the line.
+  const ring = await drawing.evaluate((img) => {
+    const box = img.closest(".nf-attachment");
+    return { selected: box.classList.contains("ProseMirror-selectednode"), img: getComputedStyle(img).outlineStyle, box: getComputedStyle(box).outlineStyle };
+  });
+  ok(!ring.selected || (ring.img === "solid" && ring.box === "none"), `${scheme}: chosen, the ring sits on the drawing itself  ${JSON.stringify(ring)}`);
+  ok((await page.locator(".ProseMirror a[target]").count()) === 0, `${scheme}: no link opens a window of its own`);
   // The link to another note: that note opens, in Quince.
   const link = page.locator(".ProseMirror a", { hasText: "The plan" });
   ok((await link.count()) === 1, `${scheme}: the link to a note shows as a link`);
   await link.click();
   await page.waitForTimeout(600);
   ok(page.url().startsWith("http://localhost:4173"), `${scheme}: following it stays in Quince`);
-  ok((await page.locator(".note-row[aria-current='true'], .note-row.is-open, .note-row[aria-selected='true']", { hasText: "The plan" }).count()) === 1
-    || /The plan/.test(await page.locator(".note-rich").first().innerText()), `${scheme}: and opens the note it links to`);
+  const opened = (await page.locator(".note-rich .nf-p").first().innerText()).trim();
+  ok(opened === "The plan" && /Step one/.test(await page.locator(".note-rich").first().innerText()),
+    `${scheme}: and opens the note it links to  (the note open is "${opened}")`);
   await ctx.close();
 }
 await b.close();
