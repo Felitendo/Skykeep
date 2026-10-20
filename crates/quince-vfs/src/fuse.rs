@@ -59,8 +59,11 @@ struct Inner {
     writes: Option<Arc<Writes>>,
     /// The account's storage as last asked, `(used, total)`.
     space: Mutex<Option<((u64, u64), std::time::Instant)>>,
-    /// Nothing in it can be changed (the Photos folder, for now).
+    /// Nothing in it can be changed.
     read_only: bool,
+    /// New files can be added and anything deleted, nothing else (the Photos folder: a photo is
+    /// added or deleted, never rewritten in place, renamed or given a folder).
+    add_only: bool,
 }
 
 pub struct DriveFs(Arc<Inner>);
@@ -89,6 +92,7 @@ impl DriveFs {
             writes: None,
             space: Mutex::new(None),
             read_only: false,
+            add_only: false,
         }))
     }
 
@@ -114,6 +118,14 @@ impl DriveFs {
     #[must_use]
     pub fn read_only(mut self) -> Self {
         self.inner_mut().read_only = true;
+        self
+    }
+
+    /// New files can be added (into folders the remote `accepts`) and files deleted; nothing
+    /// is rewritten, renamed, moved or made a folder — "read-only file system" to all of that.
+    #[must_use]
+    pub fn add_only(mut self) -> Self {
+        self.inner_mut().add_only = true;
         self
     }
 
@@ -299,7 +311,8 @@ impl Inner {
             perm: match (dir, self.writes.is_some() && !self.read_only) {
                 (true, _) if self.read_only => 0o555,
                 (true, _) => 0o755,
-                (false, true) => 0o644,
+                (false, true) if !self.add_only => 0o644,
+                (false, true) => 0o444,
                 (false, false) => 0o444,
             },
             nlink: if dir { 2 } else { 1 },
@@ -397,6 +410,9 @@ impl Inner {
     /// A file of Apple's made writable: its bytes copied here (unless they are about to be
     /// thrown away), to be sent back in its place.
     fn begin_writing(&self, ino: u64, item: &DriveItem, keep: bool) -> Result<(), Errno> {
+        if self.add_only {
+            return Err(Errno::EROFS);
+        }
         let writes = self.writes.as_ref().ok_or(Errno::EROFS)?;
         if self.pending(ino).is_some() {
             return Ok(());
@@ -540,14 +556,26 @@ impl Inner {
                     && std::fs::copy(writes.staging(ino, &p.name), &out).is_ok();
                 me.with_pending(ino, |p| p.sending = true);
                 let result = if copied {
-                    let r = writes::send(
-                        me.remote.as_ref(),
-                        &folder,
-                        &out,
-                        p.replaces.as_ref(),
-                        ours.as_ref(),
-                    )
-                    .await;
+                    // Where only adding is, a send is an addition and nothing else: never a
+                    // replacement of a file found under the same name.
+                    let r = if me.add_only {
+                        me.remote
+                            .upload(&folder, &out)
+                            .await
+                            .map(|item| writes::Sent {
+                                item,
+                                conflicted: false,
+                            })
+                    } else {
+                        writes::send(
+                            me.remote.as_ref(),
+                            &folder,
+                            &out,
+                            p.replaces.as_ref(),
+                            ours.as_ref(),
+                        )
+                        .await
+                    };
                     let _ = std::fs::remove_dir_all(&out_dir);
                     r
                 } else {
@@ -688,6 +716,17 @@ impl Inner {
             }
         }
         let pending = me.pending(ino);
+        // Added and not yet sent, under another name or among other new files — a copy's
+        // temporary name made its own — is all that can be renamed where only adding is.
+        if me.add_only
+            && (pending.is_none()
+                || target
+                    .as_ref()
+                    .is_some_and(|(t, _)| me.pending(*t).is_none())
+                || !me.remote.accepts(&to))
+        {
+            return Err(Errno::EROFS);
+        }
         match (pending, target) {
             // A file written here taking another's name — an editor's save: what it replaces
             // (Apple's file, or another being written) goes, and Apple's into Recently Deleted
@@ -986,6 +1025,9 @@ impl Filesystem for DriveFs {
         let Some(name) = name.to_str() else {
             return reply.error(Errno::EINVAL);
         };
+        if inner.add_only && !inner.remote.accepts(&folder) {
+            return reply.error(Errno::EROFS);
+        }
         if let Ok((ino, item)) = inner.child(parent.0, OsStr::new(name)) {
             if flags & libc::O_EXCL != 0 {
                 return reply.error(Errno::EEXIST);
@@ -1220,7 +1262,7 @@ impl Filesystem for DriveFs {
         _umask: u32,
         reply: ReplyEntry,
     ) {
-        if self.0.read_only {
+        if self.0.read_only || self.0.add_only {
             return reply.error(Errno::EROFS);
         }
         let inner = &self.0;
@@ -1253,7 +1295,7 @@ impl Filesystem for DriveFs {
     }
 
     fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        if self.0.read_only {
+        if self.0.read_only || self.0.add_only {
             return reply.error(Errno::EROFS);
         }
         match self.0.remove(parent.0, name, true) {

@@ -1775,6 +1775,116 @@ pub async fn photos_upload(
     Ok(batch)
 }
 
+/// A file put in the Photos folder, added to Photos (and to `album`, when it was put in one)
+/// through the same queue as the window's own uploads — the tray shows it, a quit resumes it,
+/// Photos' limits refuse it with the reason — answering the photo Apple made once it is there.
+///
+/// Sent from a copy named by its bytes, so the folder sending it again after a restart finds
+/// the upload already made, or under way, and waits on that one instead of making a second.
+pub async fn add_from_folder(
+    app: &AppHandle,
+    path: &std::path::Path,
+    album: Option<String>,
+) -> Result<String, String> {
+    use sha2::Digest;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or("no name")?;
+    // Read in pieces: a video can be many gigabytes, never held whole in memory.
+    let (digest, len) = {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || -> std::io::Result<(String, u64)> {
+            use std::io::Read;
+            let mut f = std::fs::File::open(&path)?;
+            let (mut hash, mut buf, mut len) = (sha2::Sha256::new(), vec![0u8; 1 << 20], 0u64);
+            loop {
+                let n = f.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hash.update(&buf[..n]);
+                len += n as u64;
+            }
+            Ok((format!("{:x}", hash.finalize()), len))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?
+    };
+    let kept = crate::state_dir(app)
+        .join("photos-folder-writes")
+        .join("outgoing")
+        .join(digest)
+        .join(&name);
+    let at = kept.to_string_lossy().into_owned();
+    let data = app.state::<Data>();
+    let known = data
+        .0
+        .lock()
+        .await
+        .upload_at(&at)
+        .map_err(|e| e.to_string())?;
+    let id = match known {
+        Some(u) if u.state != "failed" && u.state != "cancelled" => u.id,
+        _ => {
+            if let Some(r) = quince_icloud::photos_upload::refusal(&name, len) {
+                return Err(r.words());
+            }
+            if let Some(dir) = kept.parent() {
+                tokio::fs::create_dir_all(dir)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            tokio::fs::copy(path, &kept)
+                .await
+                .map_err(|e| e.to_string())?;
+            let u = quince_core::photos::Upload {
+                id: uuid::Uuid::new_v4().to_string(),
+                batch: uuid::Uuid::new_v4().to_string(),
+                path: at,
+                name,
+                state: "waiting".into(),
+                error: None,
+                asset: None,
+                added_at: jiff::Timestamp::now().as_second(),
+                album,
+            };
+            data.0
+                .lock()
+                .await
+                .queue_uploads(std::slice::from_ref(&u))
+                .map_err(|e| e.to_string())?;
+            say(app, &u, "waiting", 0, len, None);
+            u.id
+        }
+    };
+    work(app.clone());
+    // Waited on as the folder waits on any send: it retries a failure with its own backoff.
+    let outcome = loop {
+        let now = data.0.lock().await.upload(&id).map_err(|e| e.to_string())?;
+        match now {
+            Some(u) if u.state == "done" => {
+                break u.asset.ok_or("Apple named no photo".to_string())
+            }
+            Some(u) if u.state == "failed" => {
+                break Err(u.error.unwrap_or_else(|| "It could not be added.".into()))
+            }
+            Some(u) if u.state == "cancelled" => break Err("The upload was cancelled.".into()),
+            None => break Err("The upload is no longer there.".into()),
+            Some(_) => {
+                // A session lapsed stops the queue; started again here, it carries on.
+                work(app.clone());
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+    if let Some(dir) = kept.parent() {
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+    outcome
+}
+
 /// Stop uploads, by id or a whole batch: what is waiting is not sent, and the file on its way
 /// is abandoned mid-send. A photo Apple has already made stays (it is in the library, and can
 /// be deleted there).

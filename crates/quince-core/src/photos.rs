@@ -519,6 +519,23 @@ impl Library {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// The latest upload of the file at `path`, whatever its state: a file added through the
+    /// Photos folder is sent once, even when the folder sends it again after a restart.
+    pub fn upload_at(&self, path: &str) -> Result<Option<Upload>> {
+        let id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM photo_uploads WHERE path = ?1 ORDER BY added_at DESC, rowid DESC LIMIT 1",
+                params![path],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match id {
+            Some(id) => self.upload(&id),
+            None => Ok(None),
+        }
+    }
+
     /// One upload, by id, whatever its state: what the upload panel shows a picture of.
     pub fn upload(&self, id: &str) -> Result<Option<Upload>> {
         Ok(self

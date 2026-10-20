@@ -367,13 +367,16 @@ fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), Stri
             // Read through the app's own photo cache; the folder keeps no second copy.
             let unused = crate::state_dir(app).join("photos-folder-cache");
             let cache = Arc::new(quince_vfs::Cache::new(&unused).map_err(|e| e.to_string())?);
+            // Photos added here wait beside the library (owner-only) until Photos has them.
             quince_vfs::fuse::DriveFs::new(
                 Arc::new(crate::mount_photos::PhotosRemote(app.clone())),
                 Arc::new(crate::mount_photos::PhotosStore(app.clone())),
                 cache,
                 rt,
             )
-            .read_only()
+            .add_only()
+            .with_writes(&crate::state_dir(app).join("photos-folder-writes"))
+            .map_err(|e| e.to_string())?
         }
     };
     // Pictures go where every file manager looks for thumbnails, so none of them downloads a
@@ -467,25 +470,28 @@ pub fn resume(app: &AppHandle) {
 /// Files written in the iCloud Drive folder and not yet sent: from the folder while it is up,
 /// from what it wrote down when it went away while it is not.
 pub fn unsent_files(data_dir: &std::path::Path) -> usize {
-    if let Some(w) = WRITES
+    let journal = |name: &str| {
+        let dir = data_dir.join(name);
+        if !dir.exists() {
+            return 0;
+        }
+        quince_vfs::writes::Writes::new(&dir)
+            .map(|w| {
+                w.load()
+                    .iter()
+                    .filter(|(_, p)| !quince_vfs::writes::stays_local(&p.name))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    let drive = WRITES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
-    {
-        return w.waiting().files as usize;
-    }
-    let dir = data_dir.join("drive-writes");
-    if !dir.exists() {
-        return 0;
-    }
-    quince_vfs::writes::Writes::new(&dir)
-        .map(|w| {
-            w.load()
-                .iter()
-                .filter(|(_, p)| !quince_vfs::writes::stays_local(&p.name))
-                .count()
-        })
-        .unwrap_or(0)
+        .map(|w| w.waiting().files as usize);
+    // The Photos folder's are counted from what it wrote down; once sending, they are in
+    // Photos' upload queue as well, and counted there.
+    drive.unwrap_or_else(|| journal("drive-writes")) + journal("photos-folder-writes")
 }
 
 /// Every thumbnail the folders left where file managers look for them, removed — with the

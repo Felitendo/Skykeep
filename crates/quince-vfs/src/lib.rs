@@ -43,6 +43,11 @@ pub trait Remote: Send + Sync + 'static {
     fn upload(&self, _folder: &DriveItem, _path: &Path) -> Fut<DriveItem> {
         Box::pin(async { Err("read-only".to_string()) })
     }
+    /// Whether new files may be written into `folder`. Every folder by default; a folder that
+    /// is a view, not a place (the Photos folder's Favorites), says no.
+    fn accepts(&self, _folder: &DriveItem) -> bool {
+        true
+    }
     /// An item deleted — into Apple's Recently Deleted, where it can be put back for 30 days.
     fn delete(&self, _item: &DriveItem) -> Fut<()> {
         Box::pin(async { Err("read-only".to_string()) })

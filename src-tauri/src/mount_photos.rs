@@ -1,4 +1,4 @@
-//! iCloud Photos as a folder (quince-vfs, read-only for now), laid out as people look for
+//! iCloud Photos as a folder (quince-vfs), laid out as people look for
 //! photos: by when they were taken, in their albums, the favourites, the videos.
 //!
 //!   Library/2026/10 October/IMG_1234.HEIC
@@ -11,6 +11,10 @@
 //! read from the app's own photo cache (fetched once if they are not there), never copied a
 //! second time; thumbnails are the app's own, so a file manager browsing downloads nothing.
 //! Hidden and Recently Deleted are never shown.
+//!
+//! Photos are added and deleted here, never rewritten in place (quince-vfs `add_only`): a
+//! file put in the library, or in an album, goes up to iCloud Photos (and into the album); a
+//! file deleted goes to Recently Deleted, or out of the album it was deleted from.
 
 use crate::photos::{cache_path, cached, Size};
 use crate::Data;
@@ -223,7 +227,105 @@ impl Store for PhotosStore {
 
 pub struct PhotosRemote(pub AppHandle);
 
+/// Whether a folder is a place photos can be added: the library at any depth (a photo then
+/// shows under the month it was taken), or an album (it goes into it too). Favorites, Videos,
+/// the albums list and album folders are views, not places.
+fn accepts(app: &AppHandle, folder: &str) -> bool {
+    if folder == LIBRARY || folder.starts_with("PH::y:") || folder.starts_with("PH::m:") {
+        return true;
+    }
+    folder.strip_prefix("PH::album:").is_some_and(|album| {
+        let data = app.state::<Data>();
+        let library = data.0.blocking_lock();
+        library
+            .albums()
+            .unwrap_or_default()
+            .iter()
+            .any(|a| a.id == album && !a.folder)
+    })
+}
+
 impl Remote for PhotosRemote {
+    fn accepts(&self, folder: &DriveItem) -> bool {
+        // Asked from the folder's own threads, never the async ones: the lock can block.
+        accepts(&self.0, &folder.drivewsid)
+    }
+
+    fn upload(&self, folder: &DriveItem, path: &std::path::Path) -> Fut<DriveItem> {
+        let (app, folder, path) = (self.0.clone(), folder.drivewsid.clone(), path.to_path_buf());
+        Box::pin(async move {
+            let album = folder.strip_prefix("PH::album:").map(str::to_string);
+            let asset = crate::photos::add_from_folder(&app, &path, album).await?;
+            let made = {
+                let data = app.state::<Data>();
+                let library = data.0.lock().await;
+                library.photo(&asset).map_err(|e| e.to_string())?
+            };
+            Ok(match made {
+                Some(p) => file(&p, &folder),
+                // Not read back yet: named as it was put there, until the next look.
+                None => {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let (stem, ext) = match name.rsplit_once('.') {
+                        Some((s, e)) if !s.is_empty() => (s.to_string(), Some(e.to_string())),
+                        _ => (name, None),
+                    };
+                    DriveItem {
+                        drivewsid: format!("{FILE}{asset}"),
+                        parent_id: Some(folder),
+                        name: stem,
+                        extension: ext,
+                        kind: "FILE".into(),
+                        size: std::fs::metadata(&path)
+                            .ok()
+                            .and_then(|m| i64::try_from(m.len()).ok()),
+                        child_count: None,
+                        created_at: None,
+                        modified_at: None,
+                        etag: None,
+                    }
+                }
+            })
+        })
+    }
+
+    fn delete(&self, item: &DriveItem) -> Fut<()> {
+        let (app, item) = (self.0.clone(), item.clone());
+        Box::pin(async move {
+            let (id, _) = photo_of(&item).ok_or("not a photo")?;
+            let ids = vec![id.to_string()];
+            // In an album, Delete takes it out of the album, as Photos does; anywhere else it
+            // goes to Recently Deleted, there for 30 days. A Live Photo's still and .MOV go as one.
+            match item
+                .parent_id
+                .as_deref()
+                .and_then(|f| f.strip_prefix("PH::album:"))
+            {
+                Some(album) => crate::photos::photos_album_remove(
+                    album.to_string(),
+                    ids,
+                    app.state(),
+                    app.state(),
+                )
+                .await
+                .map_err(|e| e.to_string()),
+                None => crate::photos::photos_set_flag(
+                    ids,
+                    quince_icloud::photos::Flag::Deleted,
+                    true,
+                    app.state(),
+                    app.state(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            }
+        })
+    }
+
     fn list(&self, folder: &str) -> Fut<Vec<DriveItem>> {
         // Nothing to ask Apple: the library is kept in step by the app's own sync.
         let (app, folder) = (self.0.clone(), folder.to_string());

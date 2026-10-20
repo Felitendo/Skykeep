@@ -511,7 +511,7 @@ pub const ACCOUNT_KEY: &str = "account";
 
 /// What of an account lives in the data folder beside the session: its library, and every
 /// cache and queue made from it. Moved as one when another account signs in.
-const ACCOUNT_FILES: [&str; 11] = [
+const ACCOUNT_FILES: [&str; 12] = [
     "library.db",
     "library.db-wal",
     "library.db-shm",
@@ -519,6 +519,7 @@ const ACCOUNT_FILES: [&str; 11] = [
     "photos-folder-cache",
     "drive-cache",
     "drive-writes",
+    "photos-folder-writes",
     "thumbnails",
     "note-files",
     "note-media",
