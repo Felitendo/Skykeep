@@ -87,6 +87,7 @@ function Panel({
   onBack,
   focusFirst,
   onArrive,
+  hostRef,
 }: {
   entries: MenuEntry[];
   anchor: PanelAnchor;
@@ -98,6 +99,8 @@ function Panel({
   focusFirst: boolean;
   /** The pointer came into this submenu. */
   onArrive?: () => void;
+  /** This level's own box, for the level that opened it to aim at. */
+  hostRef?: React.MutableRefObject<HTMLDivElement | null>;
 }) {
   const box = useRef<HTMLDivElement | null>(null);
   const lines = useRef<(HTMLButtonElement | null)[]>([]);
@@ -108,12 +111,38 @@ function Panel({
   const [active, setActive] = useState(focusFirst ? 0 : -1);
   const [sub, setSub] = useState<{ index: number; byKeyboard: boolean } | null>(null);
   /**
-   * Menu aim, as macOS has it: with a submenu open, crossing another line on the way to it
-   * does not close it at once. The switch waits a moment, and is called off if the pointer
-   * arrives in the submenu — moving diagonally from "Add to List" to its lists used to pass
-   * over "Edit Contact", close the submenu, and open it again: the flicker.
+   * Menu aim, as macOS has it: with a submenu open, a pointer heading into it — inside the
+   * triangle from where it just was to the submenu's near edge — may cross other lines
+   * without closing it; the switch waits a moment and is called off when it arrives. Any
+   * other move (back up the menu, away from the submenu) switches at once. Waiting on every
+   * move left the menu looking stuck: the lines above did not light as the pointer crossed
+   * them.
    */
   const aim = useRef<number | null>(null);
+  const subBox = useRef<HTMLDivElement | null>(null);
+  // Where the pointer last moved, within this level. A move fires a line's mouseenter before
+  // its mousemove, so on entering a line this is still where the pointer came from.
+  const last = useRef<{ x: number; y: number } | null>(null);
+  const heading = (x: number, y: number) => {
+    const from = last.current;
+    const r = subBox.current?.getBoundingClientRect();
+    if (!from || !r) return false;
+    // The submenu's near edge: its left side when it opened to the right, else its right.
+    const edge = r.left >= from.x ? r.left : r.right;
+    // Only a move toward that side is heading there at all.
+    if ((edge - from.x) * (x - from.x) <= 0) return false;
+    // A hand does not move in straight lines: a short submenu — one album — is aimed at
+    // with room above and below it, or a move that dips a few pixels past it closes it.
+    const a = { x: edge, y: r.top - 48 };
+    const c = { x: edge, y: r.bottom + 48 };
+    const side = (p: { x: number; y: number }, q: { x: number; y: number }) => (q.x - p.x) * (y - p.y) - (q.y - p.y) * (x - p.x);
+    const d1 = side(from, a);
+    const d2 = side(a, c);
+    const d3 = side(c, from);
+    const neg = d1 < 0 || d2 < 0 || d3 < 0;
+    const pos = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(neg && pos);
+  };
   const stopAim = () => {
     if (aim.current !== null) window.clearTimeout(aim.current);
     aim.current = null;
@@ -166,12 +195,18 @@ function Panel({
   return (
     <>
       <div
-        ref={box}
+        ref={(el) => {
+          box.current = el;
+          if (hostRef) hostRef.current = el;
+        }}
         className="row-menu"
         role="menu"
         tabIndex={-1}
         style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }}
         onMouseEnter={onArrive}
+        onMouseMove={(e) => {
+          last.current = { x: e.clientX, y: e.clientY };
+        }}
         onKeyDown={(e) => {
           // Keys belong to the deepest open level.
           if (sub) return;
@@ -208,7 +243,7 @@ function Panel({
               aria-haspopup={entry.submenu ? "menu" : undefined}
               aria-expanded={entry.submenu ? sub?.index === index : undefined}
               className={`row-menu-item${entry.danger ? " is-danger" : ""}${index === active ? " is-active" : ""}${entry.submenu ? " has-submenu" : ""}`}
-              onMouseEnter={() => {
+              onMouseEnter={(e) => {
                 const go = () => {
                   aim.current = null;
                   // The submenu going takes its focus with it: the keys come back here.
@@ -218,7 +253,7 @@ function Panel({
                   setSub(entry.submenu ? { index, byKeyboard: false } : null);
                 };
                 stopAim();
-                if (sub && sub.index !== index) aim.current = window.setTimeout(go, 280);
+                if (sub && sub.index !== index && heading(e.clientX, e.clientY)) aim.current = window.setTimeout(go, 280);
                 else go();
               }}
               onClick={() => choose(index, false)}
@@ -252,6 +287,7 @@ function Panel({
             setActive(sub.index);
           }}
           focusFirst={sub.byKeyboard}
+          hostRef={subBox}
         />
       )}
     </>
