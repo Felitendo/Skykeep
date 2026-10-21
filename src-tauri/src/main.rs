@@ -1981,15 +1981,14 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 }
 
 /// A table's cells, row by row, as the last pass read them — `None` when none are known.
-/// Whether Quince writes a table's cells. On: a cell set here — the table's and the note's
-/// modification dates stamped with it — showed on his iPhone (2026-10-21). Before those stamps
-/// (2026-10-19) Apple stored the write but the phone did not show it.
-const TABLE_CELL_WRITES: bool = true;
-/// Whether Quince adds and removes rows and columns. On: a row and a column added here showed
-/// on his iPhone, and he typed in them there (2026-10-21).
-const TABLE_LINE_WRITES: bool = true;
+/// Whether Quince writes to Notes tables. OFF: a cell and a row and a column written here
+/// showed on his iPhone (2026-10-21), but Notes there then kept two conflict copies of the note,
+/// one with the written cells' text doubled and tripled — it could not merge these edits
+/// cleanly. No table is written until a write is shown to merge on the phone with no copy.
+const TABLE_CELL_WRITES: bool = false;
+const TABLE_LINE_WRITES: bool = false;
 const TABLE_WRITES_OFF: &str =
-    "Adding and removing rows and columns isn’t on in Quince yet: it waits to be seen working on an iPhone.";
+    "Tables are read-only in Quince for now: edits made here didn’t merge cleanly on iPhone yet.";
 
 /// Add an empty row to a Notes table at `at` (0 is the top), as Notes does, and keep the
 /// table as Apple now holds it.

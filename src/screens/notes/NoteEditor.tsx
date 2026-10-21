@@ -34,10 +34,10 @@ export function refreshTables() {
   liveTables.forEach((read) => read());
 }
 
-/** Whether a table's cells can be edited here: on since a cell set here showed on an iPhone. */
-const TABLE_CELL_WRITES = true;
-/** Whether rows and columns can be added and removed: on since ones added here showed there. */
-const TABLE_LINE_WRITES = true;
+/** Whether tables can be edited here. Off: edits made here showed on an iPhone, but Notes there
+ * kept conflict copies of the note with the edited text doubled — they did not merge cleanly. */
+const TABLE_CELL_WRITES = false;
+const TABLE_LINE_WRITES = false;
 
 /** A table's right-click menu: drawn by the editor that holds the table, opened by a cell. */
 type CellMenu = { at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] };
