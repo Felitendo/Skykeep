@@ -1,0 +1,56 @@
+# Pomander for Windows: the .msi and the per-user .exe installer, built on GitHub's own
+# Windows machines. Run by hand (Actions → Windows build → Run workflow) or by a release tag,
+# never on every push, so it spends minutes only when a build is wanted. Unsigned for now:
+# Windows will warn before the first run until the Store or SignPath signs it.
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install the window's dependencies
+        run: npm ci
+
+      - name: Build the installers
+        # The build machine's paths are never written into the program.
+        env:
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=pomander
+        run: npx tauri build
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem target/release/bundle -Recurse -Include *.msi,*.exe
+          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content target/release/bundle/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pomander-windows
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/SHA256SUMS.txt
+          if-no-files-found: error
