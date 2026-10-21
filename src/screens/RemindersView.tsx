@@ -448,8 +448,8 @@ export function RemindersView() {
    * A repeating reminder ticked: shown ticked for a moment — the circle filled — before it
    * rolls on to its next date, as on the Mac; and while it does, a second click on it is not
    * taken. Rolled on at once, the row came back unticked as if nothing had happened, a click
-   * again ticked the next day too, and a daily reminder skipped a day (one,
-   * ticked twice three seconds apart, came out due the day after tomorrow).
+   * again ticked the next day too, and a daily reminder skipped a day (one ticked twice three
+   * seconds apart came out due the day after tomorrow).
    */
   const [settling, setSettling] = useState<Set<string>>(() => new Set());
   // Read by the click itself: a double-click's second click comes before the redraw.
