@@ -12,7 +12,8 @@
 import { chromium, webkit } from "playwright";
 
 export const engineName = ["webkit", "gtk", "msedge"].includes(process.env.ENGINE) ? process.env.ENGINE : "chromium";
-const base = engineName === "chromium" ? chromium : webkit;
+// Edge is Chromium (the engine WebView2 is); only the two WebKit ports take Playwright's WebKit.
+const base = engineName === "webkit" || engineName === "gtk" ? webkit : chromium;
 /**
  * In the GTK port the window is a real one on this desktop, and a tiling window manager sizes
  * it — Playwright's attempt to resize it is refused ("Failed to resize window"). So a GTK run
