@@ -76,8 +76,14 @@ jobs:
         run: |
           $shots = "$PWD\shots"; New-Item -ItemType Directory -Force $shots | Out-Null
           $env:TMPDIR = $shots
-          $preview = Start-Process npx -ArgumentList "vite","preview","--port","4173","--strictPort" -PassThru -WindowStyle Hidden
-          for ($i = 0; $i -lt 30; $i++) { try { Invoke-WebRequest http://localhost:4173 -UseBasicParsing | Out-Null; break } catch { Start-Sleep 1 } }
+          # Node runs vite directly: `npx` is a .cmd script on Windows, which Start-Process cannot
+          # launch, and every suite then met a refused connection. Bound to every address, so
+          # "localhost" answers whether it resolves to 127.0.0.1 or ::1.
+          $preview = Start-Process node -ArgumentList "node_modules/vite/bin/vite.js","preview","--port","4173","--strictPort","--host" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$shots\preview.log" -RedirectStandardError "$shots\preview-err.log"
+          $up = $false
+          for ($i = 0; $i -lt 60; $i++) { try { Invoke-WebRequest http://localhost:4173 -UseBasicParsing | Out-Null; $up = $true; break } catch { Start-Sleep 1 } }
+          if (-not $up) { Get-Content "$shots\preview.log","$shots\preview-err.log" -ErrorAction SilentlyContinue; throw "the preview server did not come up" }
+          "preview up"
           node .uiverify/look-all.mjs $shots 1400 850 dark
           node .uiverify/look-all.mjs "$shots" 1400 850 light
           Get-ChildItem $shots -Filter "all-*.png" | ForEach-Object { Rename-Item $_.FullName ($_.Name -replace "^all-", "screen-") -ErrorAction SilentlyContinue }
