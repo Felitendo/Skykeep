@@ -347,10 +347,10 @@ async fn diagnostics_save(app: tauri::AppHandle, data: State<'_, Data>) -> UiRes
     };
     let mut out = String::new();
     use std::fmt::Write as _;
-    let _ = writeln!(out, "Quince diagnostic report");
+    let _ = writeln!(out, "Pomander diagnostic report");
     let _ = writeln!(
         out,
-        "Quince {} · {} · {} {}",
+        "Pomander {} · {} · {} {}",
         app.package_info().version,
         os,
         std::env::consts::ARCH,
@@ -389,7 +389,7 @@ async fn diagnostics_save(app: tauri::AppHandle, data: State<'_, Data>) -> UiRes
     }
     let dir = app.path().download_dir().map_err(|e| e.to_string())?;
     let path = dir.join(format!(
-        "Quince diagnostics {}.txt",
+        "Pomander diagnostics {}.txt",
         jiff::Zoned::now().strftime("%Y-%m-%d %H.%M")
     ));
     tokio::fs::write(&path, out)
@@ -2043,7 +2043,7 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 const TABLE_CELL_WRITES: bool = false;
 const TABLE_LINE_WRITES: bool = false;
 const TABLE_WRITES_OFF: &str =
-    "Tables are read-only in Quince for now: edits made here didn’t merge cleanly on iPhone yet.";
+    "Tables are read-only in Pomander for now: edits made here didn’t merge cleanly on iPhone yet.";
 
 /// Add an empty row to a Notes table at `at` (0 is the top), as Notes does, and keep the
 /// table as Apple now holds it.
@@ -2187,7 +2187,8 @@ async fn note_save(
     let note = note_by_guid(&data, &guid).await?;
     if !note.editable {
         return Err(
-            "This note holds formatting Quince can't rewrite safely, so it stays read-only.".into(),
+            "This note holds formatting Pomander can't rewrite safely, so it stays read-only."
+                .into(),
         );
     }
     let saved = quince_icloud::notes::edit_rich_cloudkit_from(
@@ -4077,11 +4078,11 @@ fn show_window(app: &tauri::AppHandle) {
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-    let open = MenuItem::with_id(app, "open", "Open Quince", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Quince", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open Pomander", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Pomander", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
     let mut tray = TrayIconBuilder::with_id("quince")
-        .tooltip("Quince")
+        .tooltip("Pomander")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -4491,7 +4492,7 @@ fn main() {
             reminder_set_repeat,
         ])
         .build(tauri::generate_context!())
-        .expect("Quince failed to start")
+        .expect("Pomander failed to start")
         .run(|_app, event| {
             // The iCloud Drive folder goes with the app: left mounted, it would answer
             // nothing ("Transport endpoint is not connected").

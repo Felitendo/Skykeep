@@ -70,7 +70,7 @@ await page.locator(".sidebar-account").click();
 await page.waitForSelector(".settings");
 await page.getByRole("button", { name: "Save Diagnostic Report" }).click();
 await page.waitForTimeout(150);
-ok((await page.evaluate(() => window.__diagnostics)) === 1 && /Saved to Downloads\/Quince diagnostics/.test(await page.locator(".settings").innerText()), "a diagnostic report is saved, and the screen says where");
+ok((await page.evaluate(() => window.__diagnostics)) === 1 && /Saved to Downloads\/Pomander diagnostics/.test(await page.locator(".settings").innerText()), "a diagnostic report is saved, and the screen says where");
 
 // The account's picture is the photo on the person's own card, where it has one.
 // (A plain browser cannot load quince:// — the picture falls back to initials, as it should —

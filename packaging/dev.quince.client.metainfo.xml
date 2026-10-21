@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  What a software centre shows about Quince. Flathub requires this file; GNOME Software and
+  What a software centre shows about Pomander. Flathub requires this file; GNOME Software and
   KDE Discover read it to build the page someone decides from.
 
   Every claim here has to be one the app can keep. The disclaimer is not boilerplate: this
@@ -12,22 +12,22 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
 
-  <name>Quince</name>
+  <name>Pomander</name>
   <summary>Your iCloud, on this computer</summary>
 
   <description>
     <p>
-      Quince keeps your iCloud calendar, reminders, notes, contacts and Drive on your own
+      Pomander keeps your iCloud calendar, reminders, notes, contacts and Drive on your own
       machine. Everything opens straight away and works without a connection, and what you
       change here reaches your other devices.
     </p>
     <p>
       You sign in once with your Apple ID and stay signed in. Nothing is stored on anybody
-      else's server: there is no Quince account and no Quince service, and your credentials
+      else's server: there is no Pomander account and no Pomander service, and your credentials
       never leave this computer.
     </p>
     <p>
-      Quince is an independent project. It is not made by, endorsed by, or affiliated with
+      Pomander is an independent project. It is not made by, endorsed by, or affiliated with
       Apple, and it reaches iCloud through interfaces Apple has not published, which means
       they can change without warning. Services that Apple encrypts end to end — Health,
       Messages, Keychain and others — cannot be read by any client and are shown as
@@ -35,7 +35,7 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">Quince.desktop</launchable>
+  <launchable type="desktop-id">Pomander.desktop</launchable>
 
   <categories>
     <category>Utility</category>

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Quince",
+  "productName": "Pomander",
   "version": "0.1.0",
   "identifier": "dev.quince.client",
   "build": {
@@ -10,7 +10,7 @@
   "app": {
     "windows": [
       {
-        "title": "Quince",
+        "title": "Pomander",
         "width": 1040,
         "height": 720,
         "minWidth": 480,
@@ -39,7 +39,7 @@
     ],
     "category": "Productivity",
     "shortDescription": "Your iCloud, on this computer",
-    "longDescription": "Quince keeps your iCloud calendar, reminders, photos and notes on your own machine, so they open instantly and work offline. Independent project, not affiliated with Apple.",
+    "longDescription": "Pomander keeps your iCloud notes, reminders, calendar, contacts, Drive and photos on your own computer, so they open instantly and work offline. An independent project, not affiliated with or endorsed by Apple Inc. iCloud is a trademark of Apple Inc.",
     "licenseFile": "../LICENSE",
     "homepage": "https://github.com/YashwanthKamireddi/quince",
     "publisher": "Yashwanth Kamireddi",
@@ -79,5 +79,5 @@
       }
     }
   },
-  "mainBinaryName": "quince"
+  "mainBinaryName": "pomander"
 }

@@ -30,7 +30,7 @@ export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
       <Mark className="mark" />
       <h1>Sign in with your Apple ID</h1>
       <p className="lede">
-        Quince keeps your iCloud on this computer, so it opens instantly and works offline.
+        Pomander keeps your iCloud on this computer, so it opens instantly and works offline.
       </p>
 
       <div className="field-group">
@@ -62,7 +62,7 @@ export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
       {error && <p className="error" role="alert">{error}</p>}
 
       <p className="assurance">
-        Your password never leaves this computer. Quince proves you know it without sending
+        Your password never leaves this computer. Pomander proves you know it without sending
         it, and keeps it in your system keyring so it can sign itself back in. Signing out
         erases it.
       </p>
@@ -77,14 +77,14 @@ export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
         <summary>An independent project. Not affiliated with Apple.</summary>
         <div className="disclosure-body">
           <p>
-            <strong>Unofficial.</strong> Quince reaches iCloud through interfaces Apple has
+            <strong>Unofficial.</strong> Pomander reaches iCloud through interfaces Apple has
             not published. Apple can change them without notice, and when that happens
             something here will stop working until it is put right.
           </p>
           <p>
-            <strong>Your password never leaves this computer.</strong> Quince proves you know
+            <strong>Your password never leaves this computer.</strong> Pomander proves you know
             it without sending it, and keeps the result in your system keyring. There is no
-            Quince account and no Quince server — there is nowhere else for any of this to go.
+            Pomander account and no Pomander server — there is nowhere else for any of this to go.
           </p>
           <p>
             <strong>What it keeps, and where.</strong> A copy of your calendar, reminders,
@@ -95,7 +95,7 @@ export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
           <p>
             <strong>What no client can read.</strong> Health, Messages, Keychain, Home, Safari
             history and Screen Time are encrypted end to end — Apple's own servers hold no key
-            to them, so no app can show them. Quince says they are unavailable rather than
+            to them, so no app can show them. Pomander says they are unavailable rather than
             quietly leaving them out.
           </p>
         </div>

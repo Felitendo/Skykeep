@@ -174,7 +174,7 @@ fn show(app: AppHandle, due: DueAlarm) {
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         {
             notify_rust::Notification::new()
-                .appname("Quince")
+                .appname("Pomander")
                 .summary(&due.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))
@@ -195,7 +195,7 @@ fn show(app: AppHandle, due: DueAlarm) {
                 })
             };
             let shown = notify_rust::Notification::new()
-                .appname("Quince")
+                .appname("Pomander")
                 .summary(&due.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))
@@ -375,7 +375,7 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         {
             notify_rust::Notification::new()
-                .appname("Quince")
+                .appname("Pomander")
                 .summary(&event.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))
@@ -385,7 +385,7 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             let shown = notify_rust::Notification::new()
-                .appname("Quince")
+                .appname("Pomander")
                 .summary(&event.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))

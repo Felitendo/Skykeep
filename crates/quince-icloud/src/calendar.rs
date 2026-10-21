@@ -287,7 +287,7 @@ fn refusal(path: &str, status: reqwest::StatusCode, body: &str) -> Error {
         401 | 403 => Error::Refused(
             "iCloud won't let this calendar be changed from here — it may be read-only.".into(),
         ),
-        429 => Error::Refused("iCloud asked Quince to slow down. Try again in a minute.".into()),
+        429 => Error::Refused("iCloud asked Pomander to slow down. Try again in a minute.".into()),
         500..=599 => Error::Refused(
             "iCloud's calendar isn't answering right now. Nothing was changed — try again in a moment."
                 .into(),

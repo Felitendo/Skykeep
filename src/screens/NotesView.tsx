@@ -1128,9 +1128,9 @@ export function NotesView() {
               <pre className="note-text">{splitTitle(body ?? "").rest}</pre>
             )}
             <p className="note-readonly">
-              Quince can’t yet save changes to this note without risking what is in it — it
+              Pomander can’t yet save changes to this note without risking what is in it — it
               is very long, or its copy on iCloud is out of step with your devices — so it is
-              read-only here. Editing it on an Apple device is safe, and after that Quince can
+              read-only here. Editing it on an Apple device is safe, and after that Pomander can
               usually edit it again.
             </p>
           </div>

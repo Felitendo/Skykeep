@@ -203,7 +203,7 @@ where
                 "A queued change could not be read: {e}"
             ))),
             (other, _) => Err(Error::Refused(format!(
-                "Quince does not know how to send “{other}”."
+                "Pomander does not know how to send “{other}”."
             ))),
         };
         match result {

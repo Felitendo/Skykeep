@@ -289,12 +289,12 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
               <h1>Your iCloud data is kept off the web</h1>
               <p>
                 Your Apple Account uses Advanced Data Protection with “Access iCloud Data on the Web”
-                turned off, so Apple doesn’t let any app outside your devices — Quince included —
+                turned off, so Apple doesn’t let any app outside your devices — Pomander included —
                 read your iCloud.
               </p>
               <p>
-                To use Quince, turn it on: on your iPhone, open <b>Settings</b>, tap your name, then
-                <b> iCloud</b>, and turn on <b>Access iCloud Data on the Web</b>. Then sign in to Quince
+                To use Pomander, turn it on: on your iPhone, open <b>Settings</b>, tap your name, then
+                <b> iCloud</b>, and turn on <b>Access iCloud Data on the Web</b>. Then sign in to Pomander
                 again.
               </p>
             </div>

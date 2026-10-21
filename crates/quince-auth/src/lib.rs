@@ -107,7 +107,7 @@ pub enum Error {
     BadCode,
     #[error("Apple didn't return a trust token, so this session wouldn't survive a restart")]
     NoTrustToken,
-    #[error("this account signs in a way Quince can't handle yet ({0})")]
+    #[error("this account signs in a way Pomander can't handle yet ({0})")]
     UnsupportedAccount(String),
     /// Said without the address, which carries account and client ids.
     #[error("couldn't reach Apple: {}", if .0.is_timeout() { "it took too long to answer" } else if .0.is_connect() { "check your connection" } else { "the connection dropped" })]

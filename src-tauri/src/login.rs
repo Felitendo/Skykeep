@@ -92,7 +92,7 @@ fn quoted(path: &str) -> String {
 #[cfg(not(windows))]
 fn desktop_file(command: &str) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName=Quince\nComment=Keeps iCloud in sync in the background\nExec={command}\nIcon=dev.quince.client\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n"
+        "[Desktop Entry]\nType=Application\nName=Pomander\nComment=Keeps iCloud in sync in the background\nExec={command}\nIcon=dev.quince.client\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n"
     )
 }
 
@@ -137,7 +137,7 @@ fn honoured() -> bool {
 #[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
-const RUN_VALUE: &str = "Quince";
+const RUN_VALUE: &str = "Pomander";
 
 /// Windows' own `reg` tool, with no window flashing up.
 #[cfg(windows)]

@@ -151,7 +151,7 @@ export function CodeEntry({
       )}
 
       <p className="assurance">
-        After this, Quince stays signed in. You won't be asked again unless Apple retires the
+        After this, Pomander stays signed in. You won't be asked again unless Apple retires the
         session, which takes about two months.
       </p>
 

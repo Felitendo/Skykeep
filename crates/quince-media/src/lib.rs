@@ -353,7 +353,7 @@ pub fn freedesktop_thumbnail(
             .add_text_chunk("Thumb::MTime".into(), mtime.to_string())
             .map_err(|e| e.to_string())?;
         encoder
-            .add_text_chunk("Software".into(), "Quince".into())
+            .add_text_chunk("Software".into(), "Pomander".into())
             .map_err(|e| e.to_string())?;
         let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
         writer.write_image_data(&rgba).map_err(|e| e.to_string())?;
@@ -456,7 +456,8 @@ pub fn thumbnail_is_ours(png_bytes: &[u8]) -> bool {
         .info()
         .uncompressed_latin1_text
         .iter()
-        .any(|t| t.keyword == "Software" && t.text == "Quince")
+        // Ours under either name: written as Quince before the app was renamed.
+        .any(|t| t.keyword == "Software" && (t.text == "Pomander" || t.text == "Quince"))
 }
 
 /// Whether bytes are a HEIF file (HEIC and its kin): an `ftyp` box naming a HEIF brand.

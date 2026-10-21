@@ -60,7 +60,7 @@ for (const scheme of ["light", "dark"]) {
   ok((await link.count()) === 1, `${scheme}: the link to a note shows as a link`);
   await link.click();
   await page.waitForTimeout(600);
-  ok(page.url().startsWith("http://localhost:4173"), `${scheme}: following it stays in Quince`);
+  ok(page.url().startsWith("http://localhost:4173"), `${scheme}: following it stays in Pomander`);
   const opened = (await page.locator(".note-rich .nf-p").first().innerText()).trim();
   ok(opened === "The plan" && /Step one/.test(await page.locator(".note-rich").first().innerText()),
     `${scheme}: and opens the note it links to  (the note open is "${opened}")`);

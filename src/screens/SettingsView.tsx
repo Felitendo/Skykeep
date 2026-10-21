@@ -395,14 +395,14 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         </div>
         <div className="settings-row">
           <span className="settings-label settings-hint">
-            Your iCloud is kept on this computer and talks only to Apple. Quince has no servers.
+            Your iCloud is kept on this computer and talks only to Apple. Pomander has no servers.
           </span>
         </div>
         <div className="settings-row">
           <span className="settings-label settings-hint">
             {savedReport
               ? `Saved to ${savedReport.split("/").slice(-2).join("/")} — versions and sync states only, no names or contents. Attach it to a bug report.`
-              : "A plain report of how Quince is doing, for a bug report. Nothing is sent anywhere."}
+              : "A plain report of how Pomander is doing, for a bug report. Nothing is sent anywhere."}
           </span>
           <button
             className="quiet"

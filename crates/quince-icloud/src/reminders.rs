@@ -1544,7 +1544,7 @@ async fn edit_once(
             None => Ok(crate::ckdocument::text_to_base64(text)),
             Some(existing) => crate::ckdocument::replace_text_in_base64(existing, text).ok_or_else(|| {
                 Error::Refused(
-                    "Quince can’t safely change this reminder’s text yet, so nothing was changed. Editing it on an Apple device is safe."
+                    "Pomander can’t safely change this reminder’s text yet, so nothing was changed. Editing it on an Apple device is safe."
                         .into(),
                 )
             }),
