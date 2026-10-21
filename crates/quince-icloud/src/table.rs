@@ -91,6 +91,23 @@ fn bytes<'a, 'f>(fs: &'f [(u64, Wire<'a>)], tag: u64) -> impl Iterator<Item = &'
     })
 }
 
+/// The version of a table's document that holds the table, and its place among them: the last
+/// with any data. A document may keep more than one (field 2 of the top): a table made on a
+/// newer phone was measured with an empty first version and the table in the second, which a
+/// reader of the first alone took for no table at all.
+fn live_version(document: &[u8]) -> Option<(usize, &[u8])> {
+    let top = fields(document)?;
+    let found = bytes(&top, 2)
+        .enumerate()
+        .filter(|(_, v)| {
+            fields(v)
+                .and_then(|f| bytes(&f, 3).next().map(|d| !d.is_empty()))
+                .unwrap_or(false)
+        })
+        .last();
+    found
+}
+
 fn int(fs: &[(u64, Wire<'_>)], tag: u64) -> Option<u64> {
     fs.iter().find_map(|(t, w)| match (t, w) {
         (t, Wire::Int(v)) if *t == tag => Some(*v),
@@ -276,8 +293,7 @@ fn splice(message: &[u8], tag: u64, nth: usize, payload: &[u8]) -> Option<Vec<u8
 
 /// Where a cell's text lives: the index of its text object among the document's objects.
 fn cell_object(document: &[u8], row: usize, column: usize) -> Option<usize> {
-    let top = fields(document)?;
-    let version = fields(bytes(&top, 2).next()?)?;
+    let version = fields(live_version(document)?.1)?;
     let data = fields(bytes(&version, 3).next()?)?;
     let doc = Doc {
         objects: bytes(&data, 3).collect(),
@@ -311,8 +327,7 @@ fn cell_object(document: &[u8], row: usize, column: usize) -> Option<usize> {
 #[must_use]
 pub fn with_cell(document: &[u8], row: usize, column: usize, text: &str) -> Option<Vec<u8>> {
     let cell = cell_object(document, row, column)?;
-    let top = fields(document)?;
-    let version_bytes = bytes(&top, 2).next()?;
+    let (version_at, version_bytes) = live_version(document)?;
     let version = fields(version_bytes)?;
     let data_bytes = bytes(&version, 3).next()?;
     let data = fields(data_bytes)?;
@@ -336,13 +351,13 @@ pub fn with_cell(document: &[u8], row: usize, column: usize, text: &str) -> Opti
             &new_writers,
         )?;
         let new_version = splice(version_bytes, 3, 0, &new_data)?;
-        splice(document, 2, 0, &new_version)
+        splice(document, 2, version_at, &new_version)
     };
     // The proof: the splice itself, with the string as it was, changes nothing.
     let same = splice(object, 10, 0, string)
         .and_then(|o| splice(data_bytes, 3, cell, &o))
         .and_then(|d| splice(version_bytes, 3, 0, &d))
-        .and_then(|v| splice(document, 2, 0, &v))?;
+        .and_then(|v| splice(document, 2, version_at, &v))?;
     if same != document {
         return None;
     }
@@ -482,8 +497,7 @@ fn with_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
     if at > count {
         return None;
     }
-    let top = fields(document)?;
-    let version_bytes = bytes(&top, 2).next()?;
+    let (version_at, version_bytes) = live_version(document)?;
     let version = fields(version_bytes)?;
     let data_bytes = bytes(&version, 3).next()?;
     let data = fields(data_bytes)?;
@@ -768,7 +782,7 @@ fn with_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
         }
     }
     let new_version = splice(version_bytes, 3, 0, &new_data)?;
-    let out = splice(document, 2, 0, &new_version)?;
+    let out = splice(document, 2, version_at, &new_version)?;
 
     // And it reads back as the same table with one empty row or column at `at`.
     let mut expected = before;
@@ -824,8 +838,7 @@ fn without_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
     if at >= count || count < 2 {
         return None;
     }
-    let top = fields(document)?;
-    let version_bytes = bytes(&top, 2).next()?;
+    let (version_at, version_bytes) = live_version(document)?;
     let version = fields(version_bytes)?;
     let data_bytes = bytes(&version, 3).next()?;
     let data = fields(data_bytes)?;
@@ -1010,7 +1023,7 @@ fn without_member(document: &[u8], column: bool, at: usize) -> Option<Vec<u8>> {
         }
     }
     let new_version = splice(version_bytes, 3, 0, &new_data)?;
-    let out = splice(document, 2, 0, &new_version)?;
+    let out = splice(document, 2, version_at, &new_version)?;
 
     let mut expected = before;
     if column {
@@ -1093,8 +1106,7 @@ pub fn cells_from_base64(value: &str) -> Option<Vec<Vec<String>>> {
 /// [`cells_from_base64`] over the inflated document.
 #[must_use]
 pub fn cells(document: &[u8]) -> Option<Vec<Vec<String>>> {
-    let top = fields(document)?;
-    let version = fields(bytes(&top, 2).next()?)?;
+    let version = fields(live_version(document)?.1)?;
     let data = fields(bytes(&version, 3).next()?)?;
     let doc = Doc {
         objects: bytes(&data, 3).collect(),

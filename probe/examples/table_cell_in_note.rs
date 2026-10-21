@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
                 .count()
         })
         .collect::<Vec<_>>();
-    if placed != [1] {
+    if placed.iter().filter(|&&n| n > 0).count() != 1 || placed.iter().sum::<usize>() != 1 {
         return Err(anyhow!(
             "that table is not placed once in one note titled {title:?} ({placed:?})"
         ));
