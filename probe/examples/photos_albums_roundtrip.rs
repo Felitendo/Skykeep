@@ -50,7 +50,8 @@ async fn main() -> Result<()> {
         made.pointer("/fields/position/value")
     );
 
-    let added = photos::add_to_album(&http, &ck, p.clone(), &album.id, &assets, None).await?;
+    let (added, done) = photos::add_to_album(&http, &ck, p.clone(), &album.id, &assets, None).await;
+    done?;
     println!("added {added:?}");
     for a in &assets {
         let r = zc

@@ -1219,13 +1219,9 @@ pub async fn photos_album_add(
         return Ok(());
     }
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
-    let added =
+    let (placed, added) =
         quince_icloud::photos::add_to_album(&http, &root, params, &album, &fresh, last).await;
     // What went in before a failure is in the album on Apple; the library says so too.
-    let placed = match &added {
-        Ok(a) => a.clone(),
-        Err(_) => Vec::new(),
-    };
     data.0
         .lock()
         .await
@@ -1236,7 +1232,7 @@ pub async fn photos_album_add(
                 .collect::<Vec<_>>(),
         )
         .map_err(|e| e.to_string())?;
-    added.map(|_| ()).map_err(|e| e.to_string())
+    added.map_err(|e| e.to_string())
 }
 
 /// Photos taken out of an album. They stay in the library.
@@ -1422,9 +1418,10 @@ pub async fn photos_set_flag(
     let answers = match sent {
         Ok(a) => a,
         Err(e) => {
-            // Nothing reached Apple: all of it as it was.
+            // Nothing reached Apple: the flags as they were, on each photo as it is now.
             let mut library = data.0.lock().await;
-            library.put_photos(&before).map_err(|e| e.to_string())?;
+            let back = flags_back(&library, &before, None);
+            library.put_photos(&back).map_err(|e| e.to_string())?;
             return Err(e);
         }
     };
@@ -1462,9 +1459,14 @@ pub async fn photos_set_flag(
         }
     }
     {
+        // Only the flags and Apple's new version are laid on each photo as the library holds
+        // it now: written whole from the copy read before the wait, a title or caption that a
+        // sync pass brought in meanwhile was put back as it had been.
         let mut library = data.0.lock().await;
-        library.put_photos(&now_are).map_err(|e| e.to_string())?;
-        library.put_photos(&refused).map_err(|e| e.to_string())?;
+        let done = flags_back(&library, &now_are, Some(()));
+        let back = flags_back(&library, &refused, None);
+        library.put_photos(&done).map_err(|e| e.to_string())?;
+        library.put_photos(&back).map_err(|e| e.to_string())?;
     }
     if let Some(why) = why {
         let n = refused.len();
@@ -1475,6 +1477,28 @@ pub async fn photos_set_flag(
         ));
     }
     Ok(now_are)
+}
+
+/// `from`'s flags — favourite, hidden, in Recently Deleted and its dates — laid on each photo as
+/// the library holds it now; with `tag`, its change tag too. A photo no longer there is `from`
+/// as it was.
+fn flags_back(library: &quince_core::Library, from: &[Photo], tag: Option<()>) -> Vec<Photo> {
+    from.iter()
+        .map(|f| match library.photo(&f.id).ok().flatten() {
+            Some(mut now) => {
+                now.favorite = f.favorite;
+                now.hidden = f.hidden;
+                now.deleted = f.deleted;
+                now.deleted_at = f.deleted_at;
+                now.expunge_at = f.expunge_at;
+                if tag.is_some() {
+                    now.change_tag.clone_from(&f.change_tag);
+                }
+                now
+            }
+            None => f.clone(),
+        })
+        .collect()
 }
 
 /// A photo's title and caption, as typed in its Info: Apple's answer taken at once. Empty clears one.
@@ -1495,20 +1519,29 @@ pub async fn photo_set_text(
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
     let (title, caption) = (title.trim().to_string(), caption.trim().to_string());
+    // Only what was changed here goes: the other field may have been changed on another device.
+    let title_changed = photo.title.as_deref().unwrap_or("") != title;
+    let caption_changed = photo.caption.as_deref().unwrap_or("") != caption;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let answer = quince_icloud::photos::set_title_and_caption(
         &http,
         &root,
         params,
         &id,
-        photo.change_tag.as_deref(),
-        &title,
-        &caption,
+        title_changed.then_some(title.as_str()),
+        caption_changed.then_some(caption.as_str()),
     )
     .await
     .map_err(|e| e.to_string())?;
-    photo.title = (!title.is_empty()).then_some(title);
-    photo.caption = (!caption.is_empty()).then_some(caption);
+    let Some(answer) = answer else {
+        return Ok(photo);
+    };
+    if title_changed {
+        photo.title = (!title.is_empty()).then_some(title);
+    }
+    if caption_changed {
+        photo.caption = (!caption.is_empty()).then_some(caption);
+    }
     photo.change_tag = answer
         .get("recordChangeTag")
         .and_then(serde_json::Value::as_str)
@@ -1646,17 +1679,12 @@ pub async fn photo_set_keywords(
         .map_err(|e| e.to_string())?
         .ok_or("That photo is no longer in the library.")?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
-    let answer = quince_icloud::photos::set_keywords(
-        &http,
-        &root,
-        params,
-        &id,
-        photo.change_tag.as_deref(),
-        &words,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    photo.keywords = words;
+    let (answer, kept) =
+        quince_icloud::photos::set_keywords(&http, &root, params, &id, &photo.keywords, &words)
+            .await
+            .map_err(|e| e.to_string())?;
+    // Apple's list now: this change, and any word another device added meanwhile.
+    photo.keywords = kept;
     photo.change_tag = answer
         .get("recordChangeTag")
         .and_then(serde_json::Value::as_str)
@@ -2217,23 +2245,17 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
         return false;
     };
     // Resumed after a quit: a photo Apple had already named is not made twice.
-    if let Some(asset) = u.asset.as_deref() {
-        let zc = quince_icloud::cloudkit::ZoneClient::new(
-            &http,
-            &ck,
-            quince_icloud::photos::CONTAINER,
-            params.clone(),
-        );
-        if matches!(
-            zc.lookup_record(quince_icloud::photos::ZONE, asset).await,
-            Ok(Some(_))
-        ) {
-            set("done", None, Some(asset)).await;
-            into_album(app, &http, &ck, &params, &u, asset).await;
+    match already_made(app, &http, &ck, &params, &u.id).await {
+        Made::Yes(asset) => {
+            set("done", None, Some(&asset)).await;
+            into_album(app, &http, &ck, &params, &u, &asset).await;
             say(app, &u, "done", 1, 1, None);
             refresh_photos(app).await;
             return true;
         }
+        // Not known yet: asked again later, never taken for "not uploaded" and sent twice.
+        Made::Unknown => return false,
+        Made::No => {}
     }
     let path = PathBuf::from(&u.path);
     let Ok(meta) = tokio::fs::metadata(&path).await else {
@@ -2384,6 +2406,19 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
             Err(e) if attempt < 3 && !cancelled(&u) => {
                 quiet!("photos upload: try {attempt} failed: {e}");
                 tokio::time::sleep(Duration::from_secs(2 * attempt)).await;
+                // Apple may have made the photo before the try failed (waiting on its
+                // processing, say): then it is done, and the file is never sent again.
+                match already_made(app, &http, &ck, &params, &u.id).await {
+                    Made::Yes(asset) => {
+                        set("done", None, Some(&asset)).await;
+                        into_album(app, &http, &ck, &params, &u, &asset).await;
+                        say(app, &u, "done", size, size, None);
+                        refresh_photos(app).await;
+                        return true;
+                    }
+                    Made::Unknown => return false,
+                    Made::No => {}
+                }
             }
             Err(e) => {
                 let words = e.to_string();
@@ -2392,6 +2427,47 @@ async fn one(app: &AppHandle, u: quince_core::photos::Upload) -> bool {
                 return true;
             }
         }
+    }
+}
+
+/// Whether Apple has already made the photo an upload was sending.
+enum Made {
+    /// Yes: the photo's record, by name.
+    Yes(String),
+    /// No photo was named for it, or Apple says there is none.
+    No,
+    /// Apple could not be asked just now.
+    Unknown,
+}
+
+/// Asked of Apple by the name it gave the photo when the upload was first sent (kept with the
+/// upload as soon as Apple names it), never assumed: a failed check read as "not made" sent the
+/// whole file again, and Apple kept a second copy.
+async fn already_made(
+    app: &AppHandle,
+    http: &reqwest::Client,
+    ck: &str,
+    params: &[(String, String)],
+    id: &str,
+) -> Made {
+    let asset = {
+        let data = app.state::<Data>();
+        let library = data.0.lock().await;
+        library.upload(id).ok().flatten().and_then(|u| u.asset)
+    };
+    let Some(asset) = asset else {
+        return Made::No;
+    };
+    let zc = quince_icloud::cloudkit::ZoneClient::new(
+        http,
+        ck,
+        quince_icloud::photos::CONTAINER,
+        params.to_vec(),
+    );
+    match zc.lookup_record(quince_icloud::photos::ZONE, &asset).await {
+        Ok(Some(_)) => Made::Yes(asset),
+        Ok(None) => Made::No,
+        Err(_) => Made::Unknown,
     }
 }
 
@@ -2432,7 +2508,7 @@ async fn into_album(
     )
     .await
     {
-        Ok(placed) => {
+        (placed, Ok(())) => {
             data.0
                 .lock()
                 .await
@@ -2444,7 +2520,7 @@ async fn into_album(
                 )
                 .ok();
         }
-        Err(e) => quiet!("photos upload: not put in its album: {e}"),
+        (_, Err(e)) => quiet!("photos upload: not put in its album: {e}"),
     }
 }
 

@@ -268,9 +268,10 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
         p.burst = burst_of(asset);
         p.burst_pick = burst_pick_of(asset);
     }
-    if let Some((lat, lon)) = location_of(asset) {
-        (p.latitude, p.longitude) = (Some(lat), Some(lon));
-    }
+    // The asset is where a place is kept (as the full read takes it), and a changed asset
+    // comes whole: none there is none at all — removed on the phone, it goes here too.
+    let place = location_of(asset);
+    (p.latitude, p.longitude) = (place.map(|l| l.0), place.map(|l| l.1));
     p.expunge_at = if p.deleted {
         millis(asset, "dateExpunged").or(p.expunge_at)
     } else {
@@ -553,22 +554,32 @@ pub async fn set_title_and_caption(
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
     asset: &str,
-    change_tag: Option<&str>,
-    title: &str,
-    caption: &str,
-) -> Result<Value> {
+    title: Option<&str>,
+    caption: Option<&str>,
+) -> Result<Option<Value>> {
+    // Only what was changed here is written, over the photo as Apple holds it now: sending
+    // both, and sending them again over a version another device had just written, put back
+    // an old caption over one added on the phone.
+    let mut fields = serde_json::Map::new();
+    if let Some(t) = title {
+        fields.insert(
+            "captionEnc".into(),
+            serde_json::json!({ "value": album_name(t) }),
+        );
+    }
+    if let Some(c) = caption {
+        fields.insert(
+            "extendedDescEnc".into(),
+            serde_json::json!({ "value": album_name(c) }),
+        );
+    }
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    let fields = Value::Object(fields);
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     client
-        .update_record(
-            ZONE,
-            asset,
-            "CPLAsset",
-            change_tag,
-            serde_json::json!({
-                "captionEnc": { "value": album_name(title) },
-                "extendedDescEnc": { "value": album_name(caption) },
-            }),
-        )
+        .edit_record(ZONE, asset, "CPLAsset", |_| Some(fields.clone()))
         .await
 }
 
@@ -601,25 +612,55 @@ pub async fn set_keywords(
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
     asset: &str,
-    change_tag: Option<&str>,
-    keywords: &[String],
-) -> Result<Value> {
-    let list = plist::Value::Array(keywords.iter().cloned().map(plist::Value::String).collect());
-    let mut bytes = Vec::new();
-    plist::to_writer_binary(&mut bytes, &list)
-        .map_err(|e| crate::Error::Protocol(format!("keywords could not be written: {e}")))?;
+    base: &[String],
+    wanted: &[String],
+) -> Result<(Value, Vec<String>)> {
+    // The change made here — words added, words taken away from `base`, the list as it was
+    // read — laid over the list Apple holds now, so a word added on another device meanwhile
+    // stays. (The whole list sent, and sent again on a conflict, took it away.)
+    let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+    let added: Vec<String> = wanted
+        .iter()
+        .filter(|w| !base.iter().any(|b| same(b, w)))
+        .cloned()
+        .collect();
+    let removed: Vec<String> = base
+        .iter()
+        .filter(|b| !wanted.iter().any(|w| same(w, b)))
+        .cloned()
+        .collect();
+    let result = std::sync::Mutex::new(Vec::new());
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    client
-        .update_record(
-            ZONE,
-            asset,
-            "CPLAsset",
-            change_tag,
-            serde_json::json!({
+    let written = client
+        .edit_record(ZONE, asset, "CPLAsset", |current| {
+            let mut words: Vec<String> = keywords_of(current)
+                .into_iter()
+                .filter(|w| !removed.iter().any(|r| same(r, w)))
+                .collect();
+            for a in &added {
+                if !words.iter().any(|w| same(w, a)) {
+                    words.push(a.clone());
+                }
+            }
+            let list =
+                plist::Value::Array(words.iter().cloned().map(plist::Value::String).collect());
+            let mut bytes = Vec::new();
+            plist::to_writer_binary(&mut bytes, &list).ok()?;
+            *result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = words;
+            Some(serde_json::json!({
                 "keywordsEnc": { "value": base64::engine::general_purpose::STANDARD.encode(bytes) }
-            }),
-        )
-        .await
+            }))
+        })
+        .await?
+        .ok_or_else(|| crate::Error::Protocol("keywords could not be written".into()))?;
+    let words = std::mem::take(
+        &mut *result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    Ok((written, words))
 }
 
 /// When a photo was taken, changed, as icloud.com's Adjust Date and Time changes it: `assetDate`,
@@ -767,16 +808,19 @@ pub async fn add_to_album(
     album: &str,
     assets: &[String],
     last_position: Option<i64>,
-) -> Result<Vec<(String, i64)>> {
+) -> (Vec<(String, i64)>, Result<()>) {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let mut at = last_position.unwrap_or(ITEM_SPACING);
+    // What went in, even when a later one fails: the library records those, so they are not
+    // shown as missing and asked for again.
     let mut added = Vec::new();
     for asset in assets {
         at = (at + ITEM_SPACING).min(MAX_POSITION);
-        client
+        let name = format!("{asset}-IN-{album}");
+        let made = client
             .create_record(
                 ZONE,
-                &format!("{asset}-IN-{album}"),
+                &name,
                 "CPLContainerRelation",
                 serde_json::json!({
                     "itemId": { "value": asset },
@@ -784,10 +828,34 @@ pub async fn add_to_album(
                     "containerId": { "value": album },
                 }),
             )
-            .await?;
+            .await;
+        if let Err(e) = made {
+            // Already there — added before a failure, or taken out on another device (marked,
+            // not removed): in the album now, revived if it was taken out.
+            match client.lookup_record(ZONE, &name).await {
+                Ok(Some(existing)) => {
+                    if field::int(&existing, "isDeleted") == Some(1) {
+                        let revived = client
+                            .edit_record(ZONE, &name, "CPLContainerRelation", |_| {
+                                Some(serde_json::json!({
+                                    "isDeleted": { "value": 0 },
+                                    "position": { "value": at },
+                                }))
+                            })
+                            .await;
+                        if let Err(e) = revived {
+                            return (added, Err(e));
+                        }
+                    } else if let Some(p) = field::int(&existing, "position") {
+                        at = p;
+                    }
+                }
+                _ => return (added, Err(e)),
+            }
+        }
         added.push((asset.clone(), at));
     }
-    Ok(added)
+    (added, Ok(()))
 }
 
 /// Photos taken out of an album, as icloud.com takes them: their relation records removed

@@ -38,20 +38,11 @@ async fn main() -> Result<()> {
         .await?
         .ok_or_else(|| anyhow!("gone"))?;
     println!("before: {:?}", words(&before));
-    let tag = before.get("recordChangeTag").and_then(|t| t.as_str());
-    photos::set_keywords(
-        &http,
-        &ck,
-        p.clone(),
-        &asset,
-        tag,
-        &["spring".into(), "quince test ✿".into()],
-    )
-    .await?;
+    let wanted: Vec<String> = vec!["spring".into(), "quince test ✿".into()];
+    photos::set_keywords(&http, &ck, p.clone(), &asset, &[], &wanted).await?;
     let now = zc.lookup_record(ZONE, &asset).await?.unwrap();
     println!("set:    {:?}", words(&now));
-    let tag = now.get("recordChangeTag").and_then(|t| t.as_str());
-    photos::set_keywords(&http, &ck, p.clone(), &asset, tag, &[]).await?;
+    photos::set_keywords(&http, &ck, p.clone(), &asset, &wanted, &[]).await?;
     let back = zc.lookup_record(ZONE, &asset).await?.unwrap();
     println!("clear:  {:?}", words(&back));
     Ok(())

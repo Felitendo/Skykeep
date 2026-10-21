@@ -43,21 +43,18 @@ async fn main() -> Result<()> {
         .await?
         .ok_or_else(|| anyhow!("gone"))?;
     println!("before: {}", show(&before));
-    let tag = before.get("recordChangeTag").and_then(|t| t.as_str());
     photos::set_title_and_caption(
         &http,
         &ck,
         p.clone(),
         &asset,
-        tag,
-        "Spring bloom",
-        "Quince test — a caption ✿",
+        Some("Spring bloom"),
+        Some("Quince test — a caption ✿"),
     )
     .await?;
     let now = zc.lookup_record(ZONE, &asset).await?.unwrap();
     println!("set:    {}", show(&now));
-    let tag = now.get("recordChangeTag").and_then(|t| t.as_str());
-    photos::set_title_and_caption(&http, &ck, p.clone(), &asset, tag, "", "").await?;
+    photos::set_title_and_caption(&http, &ck, p.clone(), &asset, Some(""), Some("")).await?;
     let back = zc.lookup_record(ZONE, &asset).await?.unwrap();
     println!("clear:  {}", show(&back));
     Ok(())
