@@ -13,6 +13,7 @@ macro_rules! quiet {
 }
 
 mod alerts;
+mod apps;
 mod cpu;
 mod login;
 mod mount;
@@ -3996,7 +3997,7 @@ fn window_fullscreen(window: tauri::WebviewWindow, on: bool) -> UiResult<bool> {
 }
 
 /// Whether this session runs under a tiling Wayland compositor, which manages windows itself.
-fn tiling_compositor() -> bool {
+pub(crate) fn tiling_compositor() -> bool {
     let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
     if set("HYPRLAND_INSTANCE_SIGNATURE") || set("SWAYSOCK") || set("NIRI_SOCKET") {
         return true;
@@ -4016,7 +4017,17 @@ fn tiling_compositor() -> bool {
 /// painted, and the window appears whole. Shown anyway after a few seconds, so a page that
 /// never says so still leaves a window to use.
 #[tauri::command]
-fn window_ready(app: tauri::AppHandle, needs_you: Option<bool>) {
+fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: Option<bool>) {
+    // An app's own window (Notes, Reminders…): shown once it has drawn.
+    if window.label() != "main" {
+        window.show().ok();
+        window.set_focus().ok();
+        return;
+    }
+    // Opened as one app from its launcher entry: the whole-library window stays put away.
+    if LAUNCHED_AS_APP.load(Ordering::SeqCst) {
+        return;
+    }
     // Started at login, with nothing for the person to do: everything runs, the window waits
     // in the tray.
     // Never without the tray to come back from.
@@ -4025,6 +4036,9 @@ fn window_ready(app: tauri::AppHandle, needs_you: Option<bool>) {
     }
     show_window(&app);
 }
+
+/// Started from one app's launcher entry (`--app notes`): that app's window is what shows.
+static LAUNCHED_AS_APP: AtomicBool = AtomicBool::new(false);
 
 /// Quince ended, the one way every exit takes — Quit in the tray, Ctrl-C, a logout's signal,
 /// the last window closed: the window gone at once, no more work started ahead, the folders
@@ -4038,7 +4052,7 @@ fn window_ready(app: tauri::AppHandle, needs_you: Option<bool>) {
 fn shutdown(app: &tauri::AppHandle, code: i32) -> ! {
     static ENDING: AtomicBool = AtomicBool::new(false);
     if !ENDING.swap(true, Ordering::SeqCst) {
-        if let Some(w) = app.get_webview_window("main") {
+        for w in app.webview_windows().values() {
             w.hide().ok();
         }
         cpu::stop();
@@ -4049,8 +4063,9 @@ fn shutdown(app: &tauri::AppHandle, code: i32) -> ! {
 }
 
 fn show_when_ready(app: &tauri::AppHandle) {
-    // Started at login: the window is the first window_ready's to show, or not.
-    if login::background() {
+    // Started at login: the window is the first window_ready's to show, or not. Started as one
+    // app: that app's window shows instead.
+    if login::background() || LAUNCHED_AS_APP.load(Ordering::SeqCst) {
         return;
     }
     let app = app.clone();
@@ -4076,11 +4091,26 @@ fn show_window(app: &tauri::AppHandle) {
 /// A place in the tray, so Quince stays running — and ringing reminders — with its window
 /// closed, and can be opened again or quit from there.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::PredefinedMenuItem;
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     let open = MenuItem::with_id(app, "open", "Open Pomander", true, None::<&str>)?;
+    // Each app on its own, as its launcher entry opens it.
+    let each: Vec<MenuItem<tauri::Wry>> = apps::APPS
+        .iter()
+        .map(|(key, name)| MenuItem::with_id(app, format!("app:{key}"), *name, true, None::<&str>))
+        .collect::<tauri::Result<_>>()?;
+    let line = PredefinedMenuItem::separator(app)?;
+    let line2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Pomander", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&open, &line];
+    items.extend(
+        each.iter()
+            .map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>),
+    );
+    items.push(&line2);
+    items.push(&quit);
+    let menu = Menu::with_items(app, &items)?;
     let mut tray = TrayIconBuilder::with_id("quince")
         .tooltip("Pomander")
         .menu(&menu)
@@ -4088,7 +4118,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_window(app),
             "quit" => shutdown(app, 0),
-            _ => {}
+            other => {
+                if let Some(key) = other.strip_prefix("app:") {
+                    apps::open(app, key);
+                }
+            }
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -4114,8 +4148,12 @@ fn main() {
     tauri::Builder::default()
         // One Quince at a time: opening it again brings back the one already running, which
         // may be sitting in the tray with its window closed.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // `--app notes` from a launcher entry: that app's window, in this same process.
+            match apps::asked(&args) {
+                Some(key) => apps::open(app, key),
+                None => show_window(app),
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -4149,8 +4187,10 @@ fn main() {
         // in the tray. Where no tray could be made there is nowhere to come back from, so
         // there closing quits as it always did.
         .on_window_event(|window, event| {
+            // An app's own window closes for good, giving its memory back; the whole-library
+            // window is put away, as the engine keeps running behind the tray.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.app_handle().tray_by_id("quince").is_some() {
+                if window.label() == "main" && window.app_handle().tray_by_id("quince").is_some() {
                     api.prevent_close();
                     window.hide().ok();
                 }
@@ -4347,6 +4387,11 @@ fn main() {
             if let Err(e) = build_tray(app) {
                 quiet!("no tray on this desktop, so closing the window quits: {e}");
             }
+            let launched: Vec<String> = std::env::args().collect();
+            if let Some(key) = apps::asked(&launched) {
+                LAUNCHED_AS_APP.store(true, Ordering::SeqCst);
+                apps::open(app.handle(), key);
+            }
             show_when_ready(app.handle());
             // Photos uploads a quit left half done carry on.
             photos::work(app.handle().clone());
@@ -4364,6 +4409,7 @@ fn main() {
             auth_sign_out,
             account_unsent,
             search_everything,
+            apps::app_open,
             login::login_item_status,
             mount::drive_kept,
             mount::drive_keep,

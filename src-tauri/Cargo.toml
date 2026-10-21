@@ -39,6 +39,10 @@ gstreamer = "0.25"
 gstreamer-app = "0.25"
 gstreamer-video = "0.25"
 zbus = "5"
+# Each app's window says its own app ID on Wayland (apps.rs): the GTK window under Tauri's.
+gtk = "0.18"
+gdk = "0.18"
+glib = "0.18"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
