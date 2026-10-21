@@ -74,7 +74,7 @@ impl Library {
         gone: &[String],
         whole: bool,
     ) -> Result<()> {
-        let tx = self.conn_mut().transaction()?;
+        let tx = self.conn_mut().savepoint()?;
         if whole {
             tx.execute("DELETE FROM reminder_alarms", [])?;
             tx.execute("DELETE FROM alarm_triggers", [])?;

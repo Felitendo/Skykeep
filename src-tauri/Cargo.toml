@@ -32,6 +32,10 @@ tauri-plugin-single-instance = "2"
 libc = "0.2"
 tauri-plugin-window-state = "2"
 
+# Toasts with buttons on Windows (notify-rust sends none there): the same crate notify-rust uses.
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.8"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.18", default-features = false }
 # A video's poster when Apple's is blank: one frame read with GStreamer, which WebKitGTK

@@ -512,28 +512,52 @@ pub fn keep_ahead(app: AppHandle) {
             let library = data.0.lock().await;
             library.photos(View::Library).unwrap_or_default()
         };
-        // Videos whose black poster was kept before posters were remade: remade now, once.
-        for p in newest
-            .iter()
-            .filter(|p| p.kind == quince_core::photos::Kind::Video)
-        {
-            if cache_path(&app, &p.id, Size::Thumb).exists() {
-                crate::cpu::ahead(repair_poster(&app, &p.id)).await;
+        // Videos whose black poster was kept before posters were remade: remade now, once —
+        // once per video for the life of the process. Every pass decoded every video's poster
+        // again to ask (1.7 ms each, measured), and a pass follows each read of the library.
+        static LOOKED: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+        let unlooked: Vec<String> = {
+            let looked = LOOKED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            newest
+                .iter()
+                .filter(|p| p.kind == quince_core::photos::Kind::Video)
+                .filter(|p| looked.as_ref().is_none_or(|l| !l.contains(&p.id)))
+                .map(|p| p.id.clone())
+                .collect()
+        };
+        for id in unlooked {
+            // Looked at only once its poster is here to look at.
+            if cache_path(&app, &id, Size::Thumb).exists() {
+                crate::cpu::ahead(repair_poster(&app, &id)).await;
+                LOOKED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_or_insert_with(Default::default)
+                    .insert(id);
             }
         }
-        let wanted: Vec<(String, Size)> = newest
-            .into_iter()
-            .take(600)
-            .map(|p| {
-                let size = if p.kind == quince_core::photos::Kind::Video {
-                    Size::Original
-                } else {
-                    Size::Full
-                };
-                (p.id, size)
-            })
-            .filter(|(id, size)| !cache_path(&app, id, *size).exists())
-            .collect();
+        // What is on disk already, asked of the disk off the runtime's workers: a stat each, and
+        // on Windows a stat is slow enough to count.
+        let ask = app.clone();
+        let wanted: Vec<(String, Size)> = tauri::async_runtime::spawn_blocking(move || {
+            newest
+                .into_iter()
+                .take(600)
+                .map(|p| {
+                    let size = if p.kind == quince_core::photos::Kind::Video {
+                        Size::Original
+                    } else {
+                        Size::Full
+                    };
+                    (p.id, size)
+                })
+                .filter(|(id, size)| !cache_path(&ask, id, *size).exists())
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
         // At most 3 GB a pass, and never past the cache's budget: a computer short of space
         // keeps fewer ahead, not a full disk.
         let room = {
@@ -643,19 +667,24 @@ pub fn prepare(app: AppHandle) {
             library.photos(View::Library).unwrap_or_default()
         };
         let fit_dir = crate::state_dir(&app).join("photos").join("fit");
-        let wanted: Vec<(String, u32)> = photos
-            .iter()
-            .filter(|p| p.kind != quince_core::photos::Kind::Video)
-            .map(|p| (p.id.clone(), steps_of(p, shown).0))
-            .chain(
-                photos
-                    .iter()
-                    .filter(|p| p.kind != quince_core::photos::Kind::Video)
-                    .take(600)
-                    .map(|p| (p.id.clone(), steps_of(p, shown).1)),
-            )
-            .filter(|(id, step)| !fit_dir.join(step.to_string()).join(id).exists())
-            .collect();
+        // A stat per picture, off the runtime's workers (see keep_ahead).
+        let wanted: Vec<(String, u32)> = tauri::async_runtime::spawn_blocking(move || {
+            photos
+                .iter()
+                .filter(|p| p.kind != quince_core::photos::Kind::Video)
+                .map(|p| (p.id.clone(), steps_of(p, shown).0))
+                .chain(
+                    photos
+                        .iter()
+                        .filter(|p| p.kind != quince_core::photos::Kind::Video)
+                        .take(600)
+                        .map(|p| (p.id.clone(), steps_of(p, shown).1)),
+                )
+                .filter(|(id, step)| !fit_dir.join(step.to_string()).join(id).exists())
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
         futures_util::stream::iter(wanted)
             .for_each_concurrent(4, |(id, step)| {
                 let app = app.clone();
@@ -1631,15 +1660,17 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
         Size::Video
     };
     let source = cached(&app, &id, size).await?;
-    let name = photo
-        .filename
-        .filter(|n| !n.contains('/') && !n.starts_with('.'))
-        .unwrap_or_else(|| format!("{id}.mp4"));
+    // Cleaned as a note attachment's name is: a shared album's item is named by whoever
+    // shared it, and a name is no place for a path, a hidden file or a reversed extension.
+    let name = match photo.filename.as_deref() {
+        Some(given) => crate::attachment_name(Some(given), &id),
+        None => format!("{id}.mp4"),
+    };
     let dir = crate::state_dir(&app).join("photos").join("open").join(&id);
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| e.to_string())?;
-    let path = dir.join(name);
+    let path = dir.join(&name);
     // Under its own name for the player, linked to the cached file rather than copied.
     if tokio::fs::metadata(&path).await.is_err()
         && tokio::fs::hard_link(&source, &path).await.is_err()
@@ -1649,6 +1680,24 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
             .map_err(|e| e.to_string())?;
     }
     use tauri_plugin_opener::OpenerExt;
+    // A video plays in a player; anything that would run instead (a program dressed as a
+    // film) is shown in its folder, never started.
+    let head = {
+        use tokio::io::AsyncReadExt;
+        let mut head = vec![0u8; 512];
+        let n = match tokio::fs::File::open(&path).await {
+            Ok(mut f) => f.read(&mut head).await.unwrap_or(0),
+            Err(_) => 0,
+        };
+        head.truncate(n);
+        head
+    };
+    if crate::runs_code(&name, &head) {
+        return app
+            .opener()
+            .reveal_item_in_dir(&path)
+            .map_err(|e| e.to_string());
+    }
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| format!("No app on this computer opens that video: {e}"))

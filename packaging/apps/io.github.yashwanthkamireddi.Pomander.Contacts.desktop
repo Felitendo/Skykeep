@@ -3,13 +3,13 @@
 # Pomander: one sign-in, one library.
 [Desktop Entry]
 Type=Application
-Name=Calendar
-GenericName=Calendar for iCloud
-Comment=Your iCloud calendars, on this computer
-Exec=pomander --app calendar
-Icon=dev.quince.client
+Name=Contacts
+GenericName=Contacts for iCloud
+Comment=Your iCloud contacts, on this computer
+Exec=pomander --app contacts
+Icon=io.github.yashwanthkamireddi.Pomander
 Terminal=false
 Categories=Office;
-Keywords=Pomander;iCloud;events;schedule;
+Keywords=Pomander;iCloud;people;address;
 StartupNotify=true
-StartupWMClass=dev.quince.client.Calendar
+StartupWMClass=io.github.yashwanthkamireddi.Pomander.Contacts

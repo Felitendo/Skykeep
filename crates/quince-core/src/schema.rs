@@ -527,4 +527,81 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     UPDATE sync_state SET token = NULL, last_full_at = NULL WHERE service = 'notes';
     "#,
+    // A change Apple turned down for good stays, marked with when, rather than being thrown
+    // away: what was typed is kept for the person to see, send again or let go.
+    r#"
+    ALTER TABLE outbox ADD COLUMN refused_at INTEGER;
+    "#,
+    // 43 — a contact's postal addresses, part by part.
+    //
+    // They were kept only as the flattened lines of an envelope, so a street, a town or a
+    // postcode could not be changed on its own. Apple's card keeps each part separately
+    // (`streetAddresses[].field.{street, city, state, postalCode, country, ...}`); this keeps
+    // them the same way. The raw card was never stored, so nothing here can be filled from
+    // what is already in the library: the position is forgotten, and the next Contacts pass
+    // reads the book whole and fills it.
+    r#"
+    CREATE TABLE contact_addresses (
+        contact_guid            TEXT NOT NULL REFERENCES contacts(guid) ON DELETE CASCADE,
+        position                INTEGER NOT NULL,
+        label                   TEXT,
+        street                  TEXT,
+        sub_locality            TEXT,
+        city                    TEXT,
+        sub_administrative_area TEXT,
+        state                   TEXT,
+        postal_code             TEXT,
+        country                 TEXT,
+        country_code            TEXT,
+        PRIMARY KEY (contact_guid, position)
+    ) STRICT;
+    UPDATE sync_state SET token = NULL WHERE service = 'contacts';
+    "#,
+    // 44 — reminder details Apple keeps beside the reminder: tags, a link, early alerts, and
+    // custom smart lists.
+    //
+    // A tag is a `Hashtag` record (Name, Reminder) whose bare id the reminder lists in
+    // `HashtagIDs`; a link is an `Attachment` record of Type "URL" listed in `AttachmentIDs`;
+    // an early alert ("remind me 30 minutes early") is JSON in the reminder's own
+    // `DueDateDeltaAlertsData`; a smart list is a `SmartList` record whose `FilterData` is
+    // JSON. Reminders read again from the start so every reminder has them.
+    r#"
+    CREATE TABLE reminder_hashtags (
+        guid          TEXT PRIMARY KEY,
+        reminder_guid TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        updated_at    INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX reminder_hashtags_by_reminder ON reminder_hashtags (reminder_guid);
+    CREATE INDEX reminder_hashtags_by_name ON reminder_hashtags (name COLLATE NOCASE);
+    CREATE TABLE reminder_attachments (
+        guid          TEXT PRIMARY KEY,
+        reminder_guid TEXT NOT NULL,
+        kind          TEXT NOT NULL,
+        url           TEXT,
+        uti           TEXT,
+        updated_at    INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX reminder_attachments_by_reminder ON reminder_attachments (reminder_guid);
+    CREATE TABLE reminder_early_alerts (
+        id            TEXT NOT NULL,
+        reminder_guid TEXT NOT NULL,
+        count         INTEGER NOT NULL,
+        unit          INTEGER NOT NULL,
+        account_id    TEXT,
+        PRIMARY KEY (reminder_guid, id)
+    ) STRICT;
+    CREATE TABLE reminder_smart_lists (
+        guid       TEXT PRIMARY KEY,
+        kind       TEXT NOT NULL,
+        title      TEXT,
+        colour     TEXT,
+        emblem     TEXT,
+        pinned     INTEGER NOT NULL DEFAULT 0,
+        sorting    TEXT,
+        filter     TEXT,
+        updated_at INTEGER NOT NULL
+    ) STRICT;
+    UPDATE sync_state SET token = NULL WHERE service = 'reminders';
+    "#,
 ];

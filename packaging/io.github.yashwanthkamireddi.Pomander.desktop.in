@@ -1,6 +1,8 @@
 # The menu entry, with the names filled in by whatever is building the package — Tauri
 # substitutes these itself, and the Arch PKGBUILD fills them in with sed. One file, so the
 # entry cannot say one thing in a .deb and another in a .pkg.tar.zst.
+# MimeType: calendar and contact files open in Pomander's import sheet (src-tauri/src/intake.rs);
+# %U hands them over as file:// URIs, which intake reads.
 [Desktop Entry]
 Type=Application
 Name={{name}}
@@ -11,9 +13,18 @@ Icon={{icon}}
 Terminal=false
 Categories={{categories}}
 Keywords=iCloud;calendar;reminders;notes;contacts;sync;
+MimeType=text/calendar;text/vcard;text/x-vcard;
 StartupNotify=true
 StartupWMClass={{exec}}
-Actions=notes;reminders;calendar;contacts;drive;photos;
+Actions=new-reminder;new-note;notes;reminders;calendar;contacts;drive;photos;
+
+[Desktop Action new-reminder]
+Name=New Reminder
+Exec={{exec}} --new reminder
+
+[Desktop Action new-note]
+Name=New Note
+Exec={{exec}} --new note
 
 [Desktop Action notes]
 Name=Notes

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  What a software centre shows about Pomander. Flathub requires this file; GNOME Software and
+  KDE Discover read it to build the page someone decides from.
+
+  Every claim here has to be one the app can keep. The disclaimer is not boilerplate: this
+  talks to iCloud through interfaces Apple has not published, and somebody installing it is
+  entitled to know that before they type their Apple ID.
+-->
+<component type="desktop-application">
+  <id>io.github.yashwanthkamireddi.Pomander</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+
+  <name>Pomander</name>
+  <summary>Your iCloud, on this computer</summary>
+
+  <description>
+    <p>
+      Pomander keeps your iCloud calendar, reminders, notes, contacts and Drive on your own
+      machine. Everything opens straight away and works without a connection, and what you
+      change here reaches your other devices.
+    </p>
+    <p>
+      You sign in once with your Apple ID and stay signed in. Nothing is stored on anybody
+      else's server: there is no Pomander account and no Pomander service, and your credentials
+      never leave this computer.
+    </p>
+    <p>
+      Pomander is an independent project. It is not made by, endorsed by, or affiliated with
+      Apple, and it reaches iCloud through interfaces Apple has not published, which means
+      they can change without warning. Services that Apple encrypts end to end — Health,
+      Messages, Keychain and others — cannot be read by any client and are shown as
+      unavailable rather than quietly left out.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">Pomander.desktop</launchable>
+
+  <provides>
+    <mediatype>text/calendar</mediatype>
+    <mediatype>text/vcard</mediatype>
+    <mediatype>text/x-vcard</mediatype>
+  </provides>
+
+  <categories>
+    <category>Utility</category>
+    <category>Office</category>
+  </categories>
+
+  <keywords>
+    <keyword>iCloud</keyword>
+    <keyword>calendar</keyword>
+    <keyword>reminders</keyword>
+    <keyword>notes</keyword>
+    <keyword>contacts</keyword>
+    <keyword>sync</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1"/>
+
+  <url type="homepage">https://github.com/YashwanthKamireddi/quince</url>
+  <url type="bugtracker">https://github.com/YashwanthKamireddi/quince/issues</url>
+
+  <developer id="io.github.yashwanthkamireddi">
+    <name>Yashwanth Kamireddi</name>
+  </developer>
+
+  <requires>
+    <internet>first-run</internet>
+  </requires>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+
+  <releases>
+    <release version="0.1.0" date="2026-09-14">
+      <description>
+        <p>
+          Calendar, Reminders, Notes, Contacts and iCloud Drive, all readable and writable,
+          kept in step with your other devices.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

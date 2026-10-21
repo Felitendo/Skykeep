@@ -3,13 +3,13 @@
 # Pomander: one sign-in, one library.
 [Desktop Entry]
 Type=Application
-Name=Reminders
-GenericName=Reminders for iCloud
-Comment=Reminders from iCloud, on this computer
-Exec=pomander --app reminders
-Icon=dev.quince.client
+Name=Photos
+GenericName=Photos for iCloud
+Comment=iCloud Photos, on this computer
+Exec=pomander --app photos
+Icon=io.github.yashwanthkamireddi.Pomander
 Terminal=false
 Categories=Office;
-Keywords=Pomander;iCloud;todo;tasks;lists;
+Keywords=Pomander;iCloud;pictures;images;gallery;
 StartupNotify=true
-StartupWMClass=dev.quince.client.Reminders
+StartupWMClass=io.github.yashwanthkamireddi.Pomander.Photos

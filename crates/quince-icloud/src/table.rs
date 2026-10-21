@@ -316,55 +316,619 @@ fn cell_object(document: &[u8], row: usize, column: usize) -> Option<usize> {
     (doc.object(cell)?.0 == 10).then_some(cell)
 }
 
-/// The table's document with one cell's text changed, edited as a device edits it.
-///
-/// Only a cell already typed in is written: its text object exists, and is rewritten in
-/// place with its merge records moved in step (the same rewrite a note's body takes). A cell
-/// never typed in has no object yet, and making one is not attempted. Before anything is
-/// returned it is proven that the rewrite is exact: written back with the text it already
-/// had, the document must come out byte for byte as it was — anything this does not model
-/// would break that, and the cell is then left alone.
+/// Who makes a cell edit, and when: what a phone stamps into the records an edit writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellEditor {
+    /// This installation's replica id: the uuid it signs text with, the same every run (the
+    /// app keeps it in the library as `documents.writer`; see `topotext::set_writer`).
+    pub replica: [u8; 16],
+    /// Unix seconds, for the new attribute run's field 13.
+    pub unix_seconds: u64,
+    /// The paragraph uuid a cell gets when it has no run to take one from (a cell never
+    /// typed in). A phone gives such a cell a fresh one.
+    pub paragraph: [u8; 16],
+}
+
+impl CellEditor {
+    /// This installation, now.
+    #[must_use]
+    pub fn this_installation() -> Self {
+        Self {
+            replica: crate::topotext::writer_bytes(),
+            unix_seconds: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            paragraph: *uuid::Uuid::new_v4().as_bytes(),
+        }
+    }
+}
+
+/// The table's document with one cell's text changed, by this installation, now. See
+/// [`with_cell_by`].
 #[must_use]
 pub fn with_cell(document: &[u8], row: usize, column: usize, text: &str) -> Option<Vec<u8>> {
+    with_cell_by(
+        document,
+        row,
+        column,
+        text,
+        &CellEditor::this_installation(),
+    )
+}
+
+/// The table's document with one cell's text changed, written the way a phone writes it
+/// (measured; docs/notes-tables-crdt.md):
+///
+/// - The table's writer list (data field 7) is a map from writer uuid to its clocks (next
+///   character, next timestamp), kept **sorted by uuid**, and a writer number in any text of
+///   the table is its 1-based place in that sorted list. An editor new to the table goes in
+///   at its sorted place, and every text in the table is renumbered to match — the step whose
+///   absence (appending instead) made Apple read the phone's own characters as another
+///   writer's, and keep both copies.
+/// - The cell's merge records: what was typed is a substring under the editor's number with
+///   its next character clock; what was removed is marked deleted (never dropped) and stamped
+///   with the editor's next timestamp. The cached string is the new text.
+/// - The cell's attribute runs: what was typed gets a run of its own, patterned on the run
+///   beside it (so its paragraph style and uuid carry on), stamped with the time in Unix
+///   seconds at field 13; a cell never typed in gets `{1: n, 2: {9: paragraph uuid}, 13: t}`.
+/// - An empty data field 2, which every document a phone has edited carries.
+///
+/// The version vector (data field 1), the uuid list (field 6) and every other object are left
+/// as they are: a phone's text-only edit was measured leaving them untouched. Nor is the
+/// record's `ReplicaIDToNotesVersionDataEncrypted` the document's business: it is an
+/// account-wide list of devices, identical on every record, that no edit changes.
+///
+/// Refused (`None`) for anything this cannot do exactly: a writer list that is not sorted (a
+/// document an earlier build of this app wrote), records or runs that would not re-encode
+/// byte for byte as Apple wrote them, an object of a kind this does not know when texts must
+/// be renumbered, or a result that does not read back as the same table with that one cell
+/// changed.
+#[must_use]
+pub fn with_cell_by(
+    document: &[u8],
+    row: usize,
+    column: usize,
+    text: &str,
+    editor: &CellEditor,
+) -> Option<Vec<u8>> {
+    let before = cells(document)?;
     let cell = cell_object(document, row, column)?;
     let (version_at, version_bytes) = live_version(document)?;
     let version = fields(version_bytes)?;
     let data_bytes = bytes(&version, 3).next()?;
     let data = fields(data_bytes)?;
-    let object = bytes(&data, 3).nth(cell)?;
-    let string = bytes(&fields(object)?, 10).next()?;
-    let old = bytes(&fields(string)?, 2)
-        .next()
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-        .unwrap_or_default();
 
-    let writers = bytes(&data, 7).next()?;
-    let rebuild = |new_text: &str| -> Option<Vec<u8>> {
-        let (new_string, new_writers) = edit_table_text(string, writers, |lent| {
-            crate::ckdocument::rewrite_text_object(lent, &old, new_text)
-        })?;
-        let new_object = splice(object, 10, 0, &new_string)?;
-        let new_data = splice(
-            &splice(data_bytes, 3, cell, &new_object)?,
-            7,
-            0,
-            &new_writers,
-        )?;
-        let new_version = splice(version_bytes, 3, 0, &new_data)?;
-        splice(document, 2, version_at, &new_version)
-    };
-    // The proof: the splice itself, with the string as it was, changes nothing.
-    let same = splice(object, 10, 0, string)
-        .and_then(|o| splice(data_bytes, 3, cell, &o))
-        .and_then(|d| splice(version_bytes, 3, 0, &d))
-        .and_then(|v| splice(document, 2, version_at, &v))?;
-    if same != document {
+    let mut writers = TableWriters::read(bytes(&data, 7).next()?)?;
+    let object = bytes(&data, 3).nth(cell)?;
+    let mut cell_text = CellText::read(bytes(&fields(object)?, 10).next()?)?;
+    let old: Vec<u16> = cell_text.text.encode_utf16().collect();
+    let new: Vec<u16> = text.encode_utf16().collect();
+    if old == new {
+        return Some(document.to_vec());
+    }
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let from = prefix as u64;
+    let removed = (old.len() - prefix - suffix) as u64;
+    let inserted = (new.len() - prefix - suffix) as u64;
+
+    // The editor's number, and — when it is new to the table and sorts before writers
+    // already there — every text renumbered to keep each character with its writer.
+    let (me, shift_from) = writers.own(editor.replica);
+    let mut objects: Vec<Vec<u8>> = Vec::new();
+    for o in bytes(&data, 3) {
+        objects.push(match shift_from {
+            Some(from) => renumber_object(o, from)?,
+            None => o.to_vec(),
+        });
+    }
+    if let Some(from) = shift_from {
+        cell_text.renumber(from);
+    }
+
+    cell_text.edit(&mut writers, me, from, removed, inserted, editor)?;
+    cell_text.text = text.to_owned();
+    let string = bytes(&fields(&objects[cell])?, 10).next()?.to_vec();
+    let new_string = cell_text.encode(&string)?;
+    objects[cell] = splice(&objects[cell], 10, 0, &new_string)?;
+
+    let mut new_data = Vec::with_capacity(data_bytes.len() + 128);
+    let mut object_n = 0usize;
+    let has_two = data.iter().any(|(t, _)| *t == 2);
+    for (tag, raw) in raw_fields(data_bytes)? {
+        match tag {
+            1 => {
+                new_data.extend_from_slice(raw);
+                if !has_two {
+                    put_len(2, &[], &mut new_data);
+                }
+            }
+            3 => {
+                put_len(3, objects.get(object_n)?, &mut new_data);
+                object_n += 1;
+            }
+            7 => put_len(7, &writers.encode(), &mut new_data),
+            _ => new_data.extend_from_slice(raw),
+        }
+    }
+    let new_version = splice(version_bytes, 3, 0, &new_data)?;
+    let out = splice(document, 2, version_at, &new_version)?;
+
+    // It reads back as the same table with that one cell changed.
+    let mut expected = before;
+    *expected.get_mut(row)?.get_mut(column)? = text.to_owned();
+    (cells(&out)? == expected).then_some(out)
+}
+
+/// The end marker's character clock.
+const END_CLOCK: u64 = 0xFFFF_FFFF;
+
+/// The table's writer list (data field 7): `{1: {1: uuid, 2: {1: next character},
+/// 2: {1: next timestamp}}, …}`, sorted by uuid. A text's writer number is a 1-based place in
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TableWriters(Vec<([u8; 16], Vec<u64>)>);
+
+impl TableWriters {
+    /// The list, proven to re-encode as it was written and to be in the order Apple keeps it.
+    fn read(list: &[u8]) -> Option<Self> {
+        let mut out = Vec::new();
+        for (tag, entry) in fields(list)? {
+            let (1, Wire::Bytes(entry)) = (tag, entry) else {
+                return None;
+            };
+            let mut uuid = None;
+            let mut clocks = Vec::new();
+            for (tag, value) in fields(entry)? {
+                match (tag, value) {
+                    (1, Wire::Bytes(u)) if uuid.is_none() => {
+                        uuid = Some(<[u8; 16]>::try_from(u).ok()?);
+                    }
+                    (2, Wire::Bytes(c)) => {
+                        let cf = fields(c)?;
+                        if cf.len() != 1 {
+                            return None;
+                        }
+                        clocks.push(int(&cf, 1)?);
+                    }
+                    _ => return None,
+                }
+            }
+            out.push((uuid?, clocks));
+        }
+        let writers = Self(out);
+        let sorted = writers.0.windows(2).all(|w| w[0].0 < w[1].0);
+        (sorted && writers.encode() == list).then_some(writers)
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut list = Vec::new();
+        for (uuid, clocks) in &self.0 {
+            let mut entry = Vec::new();
+            put_len(1, uuid, &mut entry);
+            for c in clocks {
+                let mut clock = Vec::new();
+                put_int(1, *c, &mut clock);
+                put_len(2, &clock, &mut entry);
+            }
+            put_len(1, &entry, &mut list);
+        }
+        list
+    }
+
+    /// The editor's 1-based number. One new to the list goes in at its sorted place, clocks
+    /// at zero; then every number from that place up moves up one, and that place is
+    /// answered too (`None` when nothing moves).
+    fn own(&mut self, replica: [u8; 16]) -> (u64, Option<u64>) {
+        let (at, shift) = match self.0.binary_search_by(|(u, _)| u.cmp(&replica)) {
+            Ok(at) => (at, None),
+            Err(at) => {
+                self.0.insert(at, (replica, vec![0, 0]));
+                let moved = at + 1 < self.0.len();
+                (at, moved.then_some(at as u64 + 1))
+            }
+        };
+        while self.0[at].1.len() < 2 {
+            self.0[at].1.push(0);
+        }
+        (at as u64 + 1, shift)
+    }
+
+    /// Take `n` characters (`which` 0) or timestamps (`which` 1) from writer `me`'s clock.
+    fn take(&mut self, me: u64, which: usize, n: u64) -> Option<u64> {
+        let clock = self
+            .0
+            .get_mut(usize::try_from(me.checked_sub(1)?).ok()?)?
+            .1
+            .get_mut(which)?;
+        let at = *clock;
+        *clock += n;
+        Some(at)
+    }
+}
+
+/// One substring of a table text's merge records: `{1: id, 2: length, 3: timestamp,
+/// 4: deleted, 5: next}`, where an id and a timestamp are `{1: writer, 2: clock}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Piece {
+    id: (u64, u64),
+    length: u64,
+    stamp: (u64, u64),
+    deleted: bool,
+}
+
+fn pair_of(b: &[u8]) -> Option<(u64, u64)> {
+    let f = fields(b)?;
+    if f.iter()
+        .any(|(t, w)| !matches!((t, w), (1 | 2, Wire::Int(_))))
+    {
         return None;
     }
-    let out = rebuild(text)?;
-    // And what was written reads back as meant.
-    let read = cells(&out)?;
-    (read.get(row)?.get(column)? == text).then_some(out)
+    Some((int(&f, 1).unwrap_or(0), int(&f, 2).unwrap_or(0)))
+}
+
+fn put_pair(tag: u64, (a, b): (u64, u64), out: &mut Vec<u8>) {
+    let mut m = Vec::new();
+    put_int(1, a, &mut m);
+    put_int(2, b, &mut m);
+    put_len(tag, &m, out);
+}
+
+/// A text's merge records, refused unless they are one chain from the start marker to the
+/// end marker, in reading order, that re-encodes byte for byte.
+fn read_pieces(text: &[u8]) -> Option<Vec<Piece>> {
+    let mut pieces = Vec::new();
+    let mut original = Vec::new();
+    for (i, raw) in bytes(&fields(text)?, 3).enumerate() {
+        put_len(3, raw, &mut original);
+        let mut p = Piece {
+            id: (0, 0),
+            length: 0,
+            stamp: (0, 0),
+            deleted: false,
+        };
+        let mut next = None;
+        for (tag, value) in fields(raw)? {
+            match (tag, value) {
+                (1, Wire::Bytes(b)) => p.id = pair_of(b)?,
+                (2, Wire::Int(v)) => p.length = v,
+                (3, Wire::Bytes(b)) => p.stamp = pair_of(b)?,
+                (4, Wire::Int(v)) => p.deleted = v != 0,
+                (5, Wire::Int(v)) if next.is_none() => next = Some(v),
+                _ => return None,
+            }
+        }
+        if next.is_some_and(|n| n != i as u64 + 1) {
+            return None;
+        }
+        pieces.push(p);
+    }
+    let n = pieces.len();
+    if n < 2
+        || pieces[0].id != (0, 0)
+        || pieces[0].length != 0
+        || pieces[n - 1].id != (0, END_CLOCK)
+        || pieces[n - 1].length != 0
+    {
+        return None;
+    }
+    (encode_pieces(&pieces) == original).then_some(pieces)
+}
+
+fn encode_pieces(pieces: &[Piece]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let last = pieces.len().saturating_sub(1);
+    for (i, p) in pieces.iter().enumerate() {
+        let mut m = Vec::new();
+        put_pair(1, p.id, &mut m);
+        put_int(2, p.length, &mut m);
+        put_pair(3, p.stamp, &mut m);
+        if p.deleted {
+            put_int(4, 1, &mut m);
+        }
+        if i != last {
+            put_int(5, i as u64 + 1, &mut m);
+        }
+        put_len(3, &m, &mut out);
+    }
+    out
+}
+
+/// Writer numbers from `from` up moved up one, in a run of pieces. Number 0 (the markers)
+/// is nobody's and stays.
+fn renumber_pieces(pieces: &mut [Piece], from: u64) {
+    for p in pieces {
+        if p.id.0 >= from {
+            p.id.0 += 1;
+        }
+        if p.stamp.0 >= from {
+            p.stamp.0 += 1;
+        }
+    }
+}
+
+/// A text message with its merge records replaced, every other field where it was.
+fn with_pieces(text: &[u8], pieces: &[Piece]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() + 16);
+    let mut wrote = false;
+    for (tag, raw) in raw_fields(text)? {
+        match tag {
+            3 if !wrote => {
+                out.extend(encode_pieces(pieces));
+                wrote = true;
+            }
+            3 => {}
+            _ => out.extend_from_slice(raw),
+        }
+    }
+    wrote.then_some(out)
+}
+
+/// A text message renumbered (see [`renumber_pieces`]).
+fn renumber_text(text: &[u8], from: u64) -> Option<Vec<u8>> {
+    let mut pieces = read_pieces(text)?;
+    renumber_pieces(&mut pieces, from);
+    with_pieces(text, &pieces)
+}
+
+/// A table object with the writer numbers in its texts renumbered: a cell's text (kind 10)
+/// and an ordered set's (kind 16, at 1 → 1 → 1). Objects that hold no text — registers
+/// (1), dictionaries (6), custom objects (13) — are kept as they are; any other kind is one
+/// this does not know, and refused.
+fn renumber_object(object: &[u8], from: u64) -> Option<Vec<u8>> {
+    let of = fields(object)?;
+    let [(kind, Wire::Bytes(body))] = of.as_slice() else {
+        return None;
+    };
+    match kind {
+        1 | 6 | 13 => Some(object.to_vec()),
+        10 => splice(object, 10, 0, &renumber_text(body, from)?),
+        16 => {
+            let array = bytes(&fields(body)?, 1).next()?;
+            let string_array = bytes(&fields(array)?, 1).next()?;
+            let text = bytes(&fields(string_array)?, 1).next()?;
+            let string_array = splice(string_array, 1, 0, &renumber_text(text, from)?)?;
+            let array = splice(array, 1, 0, &string_array)?;
+            splice(object, 16, 0, &splice(body, 1, 0, &array)?)
+        }
+        _ => None,
+    }
+}
+
+/// A cell's text object, as far as an edit touches it: the cached text, its merge records in
+/// reading order, and its attribute runs. Every other field is copied through.
+struct CellText {
+    text: String,
+    pieces: Vec<Piece>,
+    runs: Vec<Vec<u8>>,
+}
+
+fn run_units(run: &[u8]) -> Option<u64> {
+    int(&fields(run)?, 1)
+}
+
+impl CellText {
+    /// A cell's text, refused unless its records read (see [`read_pieces`]) and agree with
+    /// its text, and its runs cover the text exactly.
+    fn read(object: &[u8]) -> Option<Self> {
+        let f = fields(object)?;
+        // A writer list inside the text: no phone writes one in a table.
+        if bytes(&f, 4).next().is_some() {
+            return None;
+        }
+        let text = String::from_utf8(bytes(&f, 2).next()?.to_vec()).ok()?;
+        let pieces = read_pieces(object)?;
+        let runs: Vec<Vec<u8>> = bytes(&f, 5).map(<[u8]>::to_vec).collect();
+        let units = text.encode_utf16().count() as u64;
+        let live: u64 = pieces.iter().filter(|p| !p.deleted).map(|p| p.length).sum();
+        let covered = runs.iter().map(|r| run_units(r)).sum::<Option<u64>>()?;
+        (live == units && covered == units).then_some(Self { text, pieces, runs })
+    }
+
+    fn renumber(&mut self, from: u64) {
+        renumber_pieces(&mut self.pieces, from);
+    }
+
+    /// The object with this text, these records and these runs in the places the old ones
+    /// held; every other field as it was.
+    fn encode(&self, original: &[u8]) -> Option<Vec<u8>> {
+        let mut runs = Vec::new();
+        for r in &self.runs {
+            put_len(5, r, &mut runs);
+        }
+        let mut out = Vec::with_capacity(original.len() + 64);
+        let (mut wrote_pieces, mut wrote_runs) = (false, false);
+        for (tag, raw) in raw_fields(original)? {
+            match tag {
+                2 => put_len(2, self.text.as_bytes(), &mut out),
+                3 if !wrote_pieces => {
+                    out.extend(encode_pieces(&self.pieces));
+                    wrote_pieces = true;
+                }
+                5 if !wrote_runs => {
+                    out.extend_from_slice(&runs);
+                    wrote_runs = true;
+                }
+                3 | 5 => {}
+                _ => out.extend_from_slice(raw),
+            }
+        }
+        // A cell never typed in has no runs; they go after its records, where a phone puts
+        // them.
+        if !wrote_runs {
+            out.extend_from_slice(&runs);
+        }
+        wrote_pieces.then_some(out)
+    }
+
+    /// Make live offset `at` fall between two pieces.
+    fn split_at(&mut self, at: u64) {
+        let mut offset = 0;
+        for i in 0..self.pieces.len() {
+            if self.pieces[i].deleted {
+                continue;
+            }
+            let len = self.pieces[i].length;
+            if offset < at && at < offset + len {
+                let keep = at - offset;
+                let mut tail = self.pieces[i].clone();
+                tail.id.1 += keep;
+                tail.length -= keep;
+                self.pieces[i].length = keep;
+                self.pieces.insert(i + 1, tail);
+                return;
+            }
+            offset += len;
+        }
+    }
+
+    /// `removed` units at `from` replaced by `inserted` new ones, by writer `me`, in the
+    /// records and the runs.
+    fn edit(
+        &mut self,
+        writers: &mut TableWriters,
+        me: u64,
+        from: u64,
+        removed: u64,
+        inserted: u64,
+        editor: &CellEditor,
+    ) -> Option<()> {
+        if removed > 0 {
+            // Marked deleted, never dropped, and stamped: each deletion a phone makes
+            // carries the timestamp it was made at.
+            let stamp = (me, writers.take(me, 1, 1)?);
+            self.split_at(from);
+            self.split_at(from + removed);
+            let mut offset = 0;
+            for p in &mut self.pieces {
+                if p.deleted {
+                    continue;
+                }
+                if offset >= from && offset + p.length <= from + removed && p.length > 0 {
+                    p.deleted = true;
+                    p.stamp = stamp;
+                }
+                offset += p.length;
+            }
+        }
+        if inserted > 0 {
+            self.split_at(from);
+            // Right after the live character before `from` (after the start marker at 0).
+            let mut offset = 0;
+            let mut place = self.pieces.len() - 1;
+            for (i, p) in self.pieces.iter().enumerate().skip(1) {
+                if offset == from {
+                    place = i;
+                    break;
+                }
+                if !p.deleted {
+                    offset += p.length;
+                }
+            }
+            let clock = writers.take(me, 0, inserted)?;
+            let stamp = writers.take(me, 1, 1)?;
+            self.pieces.insert(
+                place,
+                Piece {
+                    id: (me, clock),
+                    length: inserted,
+                    stamp: (me, stamp),
+                    deleted: false,
+                },
+            );
+        }
+        self.runs = edit_runs(&self.runs, from, removed, inserted, editor)?;
+        Some(())
+    }
+}
+
+/// `run` with field `tag` set to `value` (a varint), in its place or appended.
+fn with_run_int(run: &[u8], tag: u64, value: u64) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(run.len() + 6);
+    let mut set = false;
+    for (t, raw) in raw_fields(run)? {
+        if t == tag {
+            if !set {
+                put_int(tag, value, &mut out);
+                set = true;
+            }
+        } else {
+            out.extend_from_slice(raw);
+        }
+    }
+    if !set {
+        put_int(tag, value, &mut out);
+    }
+    Some(out)
+}
+
+/// A cell's attribute runs after an edit, as a phone leaves them: what was removed cut out
+/// of the runs it fell in, and what was typed a run of its own at its place, patterned on
+/// the run before it (else the one after), so the paragraph style and its uuid carry on, and
+/// stamped with the time (field 13). With no run to pattern on (a cell never typed in) it is
+/// `{1: n, 2: {9: paragraph uuid}, 13: t}`.
+fn edit_runs(
+    runs: &[Vec<u8>],
+    from: u64,
+    removed: u64,
+    inserted: u64,
+    editor: &CellEditor,
+) -> Option<Vec<Vec<u8>>> {
+    let end = from + removed;
+    // (pattern, length), and where the new run goes with what it is patterned on.
+    let mut out: Vec<(Vec<u8>, u64)> = Vec::with_capacity(runs.len() + 2);
+    let mut slot: Option<(usize, Vec<u8>)> = None;
+    let mut cursor = 0u64;
+    for run in runs {
+        let len = run_units(run)?;
+        let (start, stop) = (cursor, cursor + len);
+        cursor = stop;
+        let head = from.saturating_sub(start).min(len);
+        let tail = stop.saturating_sub(end).min(len);
+        if head + tail > len {
+            return None;
+        }
+        if head > 0 {
+            out.push((run.clone(), head));
+            if slot.is_none() && from <= stop {
+                slot = Some((out.len(), run.clone()));
+            }
+        } else if slot.is_none() && from <= start {
+            slot = Some((out.len(), run.clone()));
+        }
+        if tail > 0 {
+            out.push((run.clone(), tail));
+        }
+    }
+    if inserted > 0 {
+        let (at, pattern) = slot.unwrap_or_else(|| {
+            (
+                out.len(),
+                out.last().map(|(r, _)| r.clone()).unwrap_or_default(),
+            )
+        });
+        let pattern = if pattern.is_empty() {
+            let mut style = Vec::new();
+            put_len(9, &editor.paragraph, &mut style);
+            let mut run = Vec::new();
+            put_int(1, inserted, &mut run);
+            put_len(2, &style, &mut run);
+            run
+        } else {
+            pattern
+        };
+        let run = with_run_int(&pattern, 13, editor.unix_seconds)?;
+        out.insert(at.min(out.len()), (run, inserted));
+    }
+    out.into_iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(r, n)| with_run_int(&r, 1, n))
+        .collect()
 }
 
 /// A table's text (a cell or an ordered set's) edited by `edit`, against the writer list
@@ -386,6 +950,11 @@ fn edit_table_text(
     put_len(4, writers, &mut lent);
     let edited = edit(&lent)?;
     let new_writers = bytes(&fields(&edited)?, 4).next()?.to_vec();
+    // Apple keeps this list sorted by uuid and reads a writer number as a place in that
+    // order; a writer appended out of order would hand the phone's characters to another
+    // writer (docs/notes-tables-crdt.md). Row and column writes do not renumber, so they are
+    // refused when the list would come out unsorted.
+    TableWriters::read(&new_writers)?;
     let mut back = Vec::with_capacity(edited.len());
     for (tag, raw) in raw_fields(&edited)? {
         if tag != 4 {
@@ -1142,4 +1711,342 @@ pub fn cells(document: &[u8]) -> Option<Vec<Vec<String>>> {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 2×2 table a phone made and nobody typed in (iOS, 2026-10-21), gzip + base64.
+    const PHONE_BLANK: &[&str] = &[
+        "H4sIAAAAAAAC/+NgEJrCx8EgwCDVy8fFxsUCZDJKBWT5cQhIaXEwCKkpqRhAgS4WAgak2DgYhZgMGIE0M5BmBtKs",
+        "QJoDSLMBaV4pHi4uiNlAHpOUbpY2B6OUOgeTkLKSonNQSGJSTqpzfk5pbp5LZlFqcklmfp5PalpJSH5QZnpGidR5",
+        "xibG04xcixi5qrh8hNje798DRFICYANBLgfTGoxgEUagCJMUmNZgkhLj4gDK/QcCfqA6OFuLiYMRhIVEgF4UcN8/",
+        "Zdc0O58NW/8ompg/bY4GijIKCXRslzZpf+khtX1CwmqWOrGjQipcAlxMBiBvsUhBAwoswg4UYYOJIKlixVDFDhOR",
+        "4sni4mACBg6LEBMajwmFx4zCY6F1SFy+5dZXeNKjYYXps9Rqi3hhSEiULeB1iFVzXbrz8ZdVur7zYqB+5AL6iBPF",
+        "jzxAEW60kACp4sJQxYM1JFhReGwoPHYUHoeUmhHEfE6gaXwo5nMDRQTh5sPUAXUZ8KOoAyVMAbg6vSAdIQYsIYkj",
+        "3EhWj+wOIQx3CNPLHUocmSmpeSWZJZVKYslF2DKeEktxak6aEltyUVB+ebESZ2iop4tnXkpqhRJnchFEbbESd3Jq",
+        "Tg6UoyWenJ+rl1hQkJOq5xzkEqLnF+xXmpuUWoRFIrikKDMvXUsUQwJki5YYmjCwZCgFcrQ0MMSDUtMzi0tSi3xL",
+        "c0oywxJzSlN9UhOLS7SUiVCJYTvQmqLUVC1JrMJ++SmpWNzrkliSiF04VcsQIZyXX5JarOfp7JyTX5oSXJmXDPS9",
+        "f1IWMKQdgYFdBowG1zJgdCD7EKbFDegfkI7g1BxIxASXgAxXwlQZEuJYmpKZH5SanF+UAgpebcJq9NyKEtNzQVar",
+        "YlMcUpSYV5xclFlQEpwKUSaOrgxabGNKAPWDJIwEHnPIZbx94qQ1MeuT0uaqqWuNBNq5omP9WF339HemNm5q7ftn",
+        "hFHKGglcUoqI7r3svah/1rrP+k5J+4wwymcjgVOTnsYvMnO+Nl2xUaJ21UQzI4ySy0jgMMe39l/s/mH7/LPf5135",
+        "8tQIoxyzkuGS4sJwpRATsFpi4mAEAHKl+GwZBwAA",
+    ];
+
+    /// A table a phone made and then typed into, cell by cell, with a row added and one
+    /// removed along the way (iOS, 2026-10-21). Its cells' text is replaced by synthetic text
+    /// of the same lengths; every merge record, run and clock is the phone's.
+    const PHONE_TYPED: &[&str] = &[
+        "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",
+    ];
+
+    fn phone(parts: &[&str]) -> Vec<u8> {
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(parts.concat())
+            .unwrap();
+        inflate(&raw).unwrap()
+    }
+
+    fn editor(first: u8) -> CellEditor {
+        CellEditor {
+            replica: [first; 16],
+            unix_seconds: 1_792_600_000,
+            paragraph: [0x5a; 16],
+        }
+    }
+
+    fn data(document: &[u8]) -> Vec<u8> {
+        let version = fields(live_version(document).unwrap().1).unwrap();
+        let data = bytes(&version, 3).next().unwrap().to_vec();
+        data
+    }
+
+    fn writers(document: &[u8]) -> TableWriters {
+        TableWriters::read(bytes(&fields(&data(document)).unwrap(), 7).next().unwrap()).unwrap()
+    }
+
+    /// Data fields 1 (version vector) and 6 (uuids), as written.
+    fn structure_clocks(document: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let d = data(document);
+        let f = fields(&d).unwrap();
+        (
+            bytes(&f, 1).map(<[u8]>::to_vec).collect(),
+            bytes(&f, 6).map(<[u8]>::to_vec).collect(),
+        )
+    }
+
+    /// Each object's texts as pieces whose writer is a uuid, not a number: who wrote what.
+    /// A piece with its writer as a uuid (none for the markers): writer, clock, length, deleted.
+    type Owned = (Option<[u8; 16]>, u64, u64, bool);
+
+    fn attributed(document: &[u8]) -> Vec<Vec<Owned>> {
+        let list = writers(document);
+        let d = data(document);
+        bytes(&fields(&d).unwrap(), 3)
+            .map(|o| {
+                let (kind, body) = match fields(o).unwrap().first().unwrap() {
+                    (k, Wire::Bytes(b)) => (*k, *b),
+                    _ => unreachable!(),
+                };
+                let text = match kind {
+                    10 => body.to_vec(),
+                    16 => {
+                        let a = bytes(&fields(body).unwrap(), 1).next().unwrap();
+                        let s = bytes(&fields(a).unwrap(), 1).next().unwrap();
+                        bytes(&fields(s).unwrap(), 1).next().unwrap().to_vec()
+                    }
+                    _ => return Vec::new(),
+                };
+                read_pieces(&text)
+                    .unwrap()
+                    .iter()
+                    .map(|p| {
+                        let who = (p.id.0 > 0).then(|| list.0[p.id.0 as usize - 1].0);
+                        (who, p.id.1, p.length, p.deleted)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Field numbers in order, a repeat folded into one.
+    fn tags(message: &[u8]) -> Vec<u64> {
+        let mut out: Vec<u64> = Vec::new();
+        for (t, _) in fields(message).unwrap() {
+            if out.last() != Some(&t) {
+                out.push(t);
+            }
+        }
+        out
+    }
+
+    fn cell_text(document: &[u8], row: usize, column: usize) -> Vec<u8> {
+        let at = cell_object(document, row, column).unwrap();
+        let d = data(document);
+        let object = bytes(&fields(&d).unwrap(), 3).nth(at).unwrap().to_vec();
+        let text = bytes(&fields(&object).unwrap(), 10)
+            .next()
+            .unwrap()
+            .to_vec();
+        text
+    }
+
+    fn dominates(after: &TableWriters, before: &TableWriters) -> bool {
+        let ge =
+            before.0.iter().all(|(u, c)| {
+                after.0.iter().find(|(v, _)| v == u).is_some_and(|(_, d)| {
+                    d.len() >= c.len() && d.iter().zip(c).all(|(x, y)| x >= y)
+                })
+            });
+        ge && after != before
+    }
+
+    #[test]
+    fn the_phone_documents_read_as_phone_tables() {
+        assert_eq!(
+            cells(&phone(PHONE_BLANK)).unwrap(),
+            vec![vec![String::new(); 2]; 2]
+        );
+        let typed = cells(&phone(PHONE_TYPED)).unwrap();
+        assert_eq!(typed.len(), 2);
+        assert_eq!(typed[1][1], "");
+        assert_eq!(typed[0][0].encode_utf16().count(), 6);
+        // One writer, the phone, its list sorted as every list Apple writes is.
+        assert_eq!(writers(&phone(PHONE_TYPED)).0.len(), 1);
+    }
+
+    /// Writers that sort before the phone's (as this installation's 6b… does) and after it.
+    #[test]
+    fn an_edit_to_a_phone_typed_table_reads_back_and_its_clocks_dominate() {
+        let base = phone(PHONE_TYPED);
+        for first in [0x10, 0x6b, 0xf0] {
+            let out = with_cell_by(&base, 1, 1, "Synthetic", &editor(first)).unwrap();
+            let mut expected = cells(&base).unwrap();
+            expected[1][1] = "Synthetic".into();
+            assert_eq!(cells(&out).unwrap(), expected);
+            assert!(dominates(&writers(&out), &writers(&base)));
+            // And an edit on top of that one dominates it in turn, as the same writer.
+            let again = with_cell_by(&out, 1, 1, "Synth", &editor(first)).unwrap();
+            assert_eq!(cells(&again).unwrap()[1][1], "Synth");
+            assert!(dominates(&writers(&again), &writers(&out)));
+            assert_eq!(writers(&again).0.len(), 2);
+            // The table's structure clock is a phone's to move, not a text edit's.
+            assert_eq!(structure_clocks(&again), structure_clocks(&base));
+        }
+    }
+
+    #[test]
+    fn a_round_trip_keeps_every_phone_replica_and_who_wrote_what() {
+        let base = phone(PHONE_TYPED);
+        let before = attributed(&base);
+        // Into the middle of a typed cell, by a writer that sorts first.
+        let old = cells(&base).unwrap()[0][1].clone();
+        let mut text = old.clone();
+        text.insert_str(4, "XY");
+        let out = with_cell_by(&base, 0, 1, &text, &editor(0x01)).unwrap();
+        assert_eq!(cells(&out).unwrap()[0][1], text);
+        let after = attributed(&out);
+        let edited = cell_object(&base, 0, 1).unwrap();
+        for (i, (b, a)) in before.iter().zip(&after).enumerate() {
+            if i == edited {
+                // Every character the phone wrote is still the phone's, live or deleted.
+                let live = |v: &[Owned]| {
+                    v.iter()
+                        .filter(|p| p.0.is_some())
+                        .flat_map(|&(w, c, n, d)| (c..c + n).map(move |k| (w, k, d)))
+                        .collect::<Vec<_>>()
+                };
+                let mine = Some([0x01; 16]);
+                let theirs: Vec<_> = live(a).into_iter().filter(|p| p.0 != mine).collect();
+                assert_eq!(theirs, live(b));
+            } else {
+                assert_eq!(a, b, "object {i} attributed as the phone wrote it");
+            }
+        }
+        // Every replica entry the phone wrote is kept: its clocks, the structure's clock and
+        // its uuids.
+        let w = writers(&out);
+        for (u, c) in &writers(&base).0 {
+            assert_eq!(w.0.iter().find(|(v, _)| v == u).map(|x| &x.1), Some(c));
+        }
+        assert_eq!(structure_clocks(&out), structure_clocks(&base));
+        assert_eq!(w.0[0].0, [0x01; 16], "the new writer at its sorted place");
+    }
+
+    /// What a write changes, against what a phone's own edits changed (blank → typed): the
+    /// same fields in the same order, at every level, and nothing else.
+    #[test]
+    fn a_write_mirrors_a_phone_write_field_for_field() {
+        let blank = phone(PHONE_BLANK);
+        let typed = phone(PHONE_TYPED);
+        let ours = with_cell_by(&blank, 0, 0, "Hi there", &editor(0xf0)).unwrap();
+
+        // The document: version vector, the empty field 2 a phone adds, objects, keys, types,
+        // uuids, writers.
+        assert_eq!(tags(&data(&ours)), tags(&data(&typed)));
+        assert_eq!(tags(&data(&ours)), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert!(!fields(&data(&blank)).unwrap().iter().any(|(t, _)| *t == 2));
+
+        // The cell: text, records, runs.
+        let phone_cell = cell_text(&typed, 0, 0);
+        let our_cell = cell_text(&ours, 0, 0);
+        assert_eq!(tags(&our_cell), tags(&phone_cell));
+        assert_eq!(tags(&our_cell), vec![2, 3, 5]);
+        let pieces = |c: &[u8]| -> Vec<Vec<u8>> {
+            bytes(&fields(c).unwrap(), 3).map(<[u8]>::to_vec).collect()
+        };
+        let (p, o) = (pieces(&phone_cell), pieces(&our_cell));
+        assert_eq!(p.len(), 3, "start, the typed stretch, end");
+        assert_eq!(o.len(), 3);
+        for (a, b) in p.iter().zip(&o) {
+            assert_eq!(tags(a), tags(b));
+            for t in [1, 3] {
+                assert_eq!(
+                    tags(bytes(&fields(a).unwrap(), t).next().unwrap()),
+                    vec![1, 2]
+                );
+                assert_eq!(
+                    tags(bytes(&fields(b).unwrap(), t).next().unwrap()),
+                    vec![1, 2]
+                );
+            }
+        }
+        // The run: length, paragraph style {9: uuid}, time.
+        let runs = |c: &[u8]| -> Vec<Vec<u8>> {
+            bytes(&fields(c).unwrap(), 5).map(<[u8]>::to_vec).collect()
+        };
+        let (pr, or) = (runs(&phone_cell), runs(&our_cell));
+        assert_eq!(or.len(), 1);
+        assert_eq!(tags(&pr[0]), tags(&or[0]));
+        assert_eq!(tags(&or[0]), vec![1, 2, 13]);
+        let style = |r: &[u8]| bytes(&fields(r).unwrap(), 2).next().unwrap().to_vec();
+        assert_eq!(tags(&style(&pr[0])), vec![9]);
+        assert_eq!(style(&or[0]), [&[0x4a, 16][..], &[0x5a; 16]].concat());
+        assert_eq!(int(&fields(&or[0]).unwrap(), 13), Some(1_792_600_000));
+
+        // The writers: each entry {1: uuid, 2: {1: chars}, 2: {1: stamps}}, sorted.
+        let w = writers(&ours);
+        assert_eq!(w.0.len(), 2);
+        assert!(w.0.iter().all(|(_, c)| c.len() == 2));
+        assert_eq!(w.0[1], ([0xf0; 16], vec![8, 1]));
+        assert_eq!(w.0[0], writers(&blank).0[0], "the phone's entry as it was");
+
+        // Nothing else moved: every other object byte for byte, the structure clock too.
+        let edited = cell_object(&blank, 0, 0).unwrap();
+        let (b, o) = (data(&blank), data(&ours));
+        let objects = |d: &[u8]| -> Vec<Vec<u8>> {
+            bytes(&fields(d).unwrap(), 3).map(<[u8]>::to_vec).collect()
+        };
+        for (i, (x, y)) in objects(&b).iter().zip(objects(&o).iter()).enumerate() {
+            if i != edited {
+                assert_eq!(x, y, "object {i}");
+            }
+        }
+        assert_eq!(structure_clocks(&ours), structure_clocks(&blank));
+    }
+
+    /// A deletion is stamped when it is made, as each of the phone's are; the characters stay.
+    #[test]
+    fn a_deletion_is_stamped_and_kept_as_a_phone_keeps_one() {
+        let blank = phone(PHONE_BLANK);
+        let one = with_cell_by(&blank, 1, 0, "Hello", &editor(0xf0)).unwrap();
+        let two = with_cell_by(&one, 1, 0, "Help", &editor(0xf0)).unwrap();
+        assert_eq!(cells(&two).unwrap()[1][0], "Help");
+        let pieces = read_pieces(&cell_text(&two, 1, 0)).unwrap();
+        let me = 2;
+        let deleted: Vec<_> = pieces.iter().filter(|p| p.deleted).collect();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(
+            (deleted[0].id, deleted[0].length),
+            ((me, 3), 2),
+            "\"lo\" kept, deleted"
+        );
+        assert_eq!(deleted[0].stamp, (me, 1), "stamped with the next timestamp");
+        let typed = pieces
+            .iter()
+            .find(|p| !p.deleted && p.id == (me, 5))
+            .unwrap();
+        assert_eq!((typed.length, typed.stamp), (1, (me, 2)));
+        // The runs still cover the text exactly.
+        let runs: u64 = bytes(&fields(&cell_text(&two, 1, 0)).unwrap(), 5)
+            .map(|r| run_units(r).unwrap())
+            .sum();
+        assert_eq!(runs, 4);
+        assert_eq!(writers(&two).0[1].1, vec![6, 3]);
+    }
+
+    /// A list this app once wrote out of order cannot be read the way Apple reads it, so it is
+    /// not written to.
+    #[test]
+    fn an_unsorted_writer_list_is_refused() {
+        let mut w = writers(&phone(PHONE_BLANK));
+        w.0.insert(0, ([0xff; 16], vec![1, 1]));
+        assert!(TableWriters::read(&w.encode()).is_none());
+    }
 }

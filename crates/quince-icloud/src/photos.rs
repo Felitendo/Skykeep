@@ -11,23 +11,36 @@ use crate::Result;
 use base64::Engine;
 use quince_core::photos::{Album, Kind, Photo};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const CONTAINER: &str = "com.apple.photos.cloud";
 pub const ZONE: &str = "PrimarySync";
 /// The library's sync token, in the library's sync state.
 pub const SERVICE: &str = "photos";
 
-/// What a walk of the zone brought.
+/// What one pass of the change feed brought.
 pub struct PhotosFetch {
     pub records: Vec<Value>,
+    /// Where the next pass carries on from. When the pass did not finish, this is a position
+    /// partway through, and the next pass picks up from it rather than starting over.
     pub token: Option<String>,
-    /// From a token: only what changed. Without one: everything, and anything not in it is gone.
+    /// The position this pass began at, when it began at one Apple took.
+    pub from: Option<String>,
+    /// From a token: only what changed. Without one (none held, or the one held refused):
+    /// a whole read from the beginning, and what it never sees is gone.
     pub incremental: bool,
     pub complete: bool,
 }
 
-/// The change feed from `since` (or from the start).
+/// How many pages of the change feed one pass reads (500 records each). A library larger
+/// than this is read over several passes, each carrying on where the last stopped.
+const PASS_PAGES: usize = 100;
+
+/// One pass of the change feed from `since` (or from the start).
+///
+/// A `since` that Apple will not read any more (an expired or malformed change token) is
+/// dropped and the pass reads from the start instead, and says so: that is a whole read,
+/// not a pass over what changed.
 pub async fn fetch(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -35,13 +48,75 @@ pub async fn fetch(
     since: Option<&str>,
 ) -> Result<PhotosFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let walk = client.all_records(ZONE, since).await?;
+    if let Some(from) = since.map(str::trim).filter(|t| !t.is_empty()) {
+        match walk(&client, Some(from)).await {
+            Ok((records, token, complete)) => {
+                return Ok(PhotosFetch {
+                    records,
+                    token,
+                    from: Some(from.to_string()),
+                    incremental: true,
+                    complete,
+                })
+            }
+            Err(e) if refused_token(&e) => {
+                quiet!("photos: the change token was refused; reading from the start");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let (records, token, complete) = walk(&client, None).await?;
     Ok(PhotosFetch {
-        records: walk.records,
-        token: walk.token,
-        incremental: since.is_some(),
-        complete: walk.complete,
+        records,
+        token,
+        from: None,
+        incremental: false,
+        complete,
     })
+}
+
+/// Whether an error is Apple refusing the change token, rather than anything else.
+///
+/// The cloudkit layer names a refused continuation `StaleCursor`; an expired token
+/// (`CHANGE_TOKEN_EXPIRED`) or a `BAD_REQUEST` about the token comes up as the zone refused,
+/// with Apple's words, which speak of the token.
+fn refused_token(e: &crate::Error) -> bool {
+    match e {
+        crate::Error::StaleCursor => true,
+        crate::Error::Protocol(text) => {
+            let text = text.to_lowercase();
+            text.contains("token") || text.contains("continuation")
+        }
+        _ => false,
+    }
+}
+
+/// Up to `PASS_PAGES` pages from `since`: the records, where to carry on from, and whether
+/// the feed was read to its end.
+async fn walk(
+    client: &ZoneClient<'_>,
+    since: Option<&str>,
+) -> Result<(Vec<Value>, Option<String>, bool)> {
+    let mut records = Vec::new();
+    let mut token = since.map(str::to_string);
+    for page_no in 0..PASS_PAGES {
+        let page = client.changes(ZONE, token.as_deref()).await?;
+        // A token answered with no position at all was not taken: an expired one can come
+        // back as the zone's error code alone, which reads as an empty zone.
+        if page_no == 0 && since.is_some() && page.sync_token.is_none() {
+            return Err(crate::Error::StaleCursor);
+        }
+        records.extend(page.records);
+        token = page.sync_token;
+        if !page.more_coming {
+            return Ok((records, token, true));
+        }
+        // "More coming" with no position to carry on from would loop forever.
+        if token.is_none() {
+            break;
+        }
+    }
+    Ok((records, token, false))
 }
 
 /// Where each of a photo's pictures can be downloaded now. They expire: never stored.
@@ -284,18 +359,50 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     p
 }
 
-/// A pass applied to the library: everything replaced on a full pass, merged on an incremental
-/// one. Answers how many photos changed, and every master's links seen, for the app to keep.
+/// A pass applied to the library, merged in as it comes, so a large library shows as it fills.
+///
+/// A pass over what changed is only that. A whole read (one from the start, or one carrying
+/// on from exactly where the last pass of it stopped) also notes what it saw, and when it
+/// reaches the end lets go of whatever it never saw: nothing is pruned on a read that has not
+/// finished. Answers how many photos changed, and every master's links seen, for the app to
+/// keep.
 pub fn apply(
     library: &mut quince_core::Library,
     fetched: PhotosFetch,
 ) -> Result<(usize, HashMap<String, Links>)> {
+    // One pass is one change: a failure or crash part way leaves the library as it was.
+    library.atomically(|library| apply_whole(library, fetched))
+}
+
+fn apply_whole(
+    library: &mut quince_core::Library,
+    fetched: PhotosFetch,
+) -> Result<(usize, HashMap<String, Links>)> {
     let PhotosFetch {
-        records,
+        records: fresh,
         token,
+        from,
         incremental,
         complete,
     } = fetched;
+    let walking = if incremental {
+        let carrying_on = from.is_some() && library.photo_walk_cursor()? == from;
+        if !carrying_on {
+            library.forget_photo_walk()?;
+        }
+        carrying_on
+    } else {
+        library.begin_photo_walk()?;
+        library.mark_full_sync(SERVICE)?;
+        true
+    };
+    // What the last pass held back comes first, so this pass's own records win over it.
+    let records: Vec<Value> = library
+        .photo_walk_held()?
+        .iter()
+        .filter_map(|r| serde_json::from_str(r).ok())
+        .chain(fresh)
+        .collect();
     let mut masters: HashMap<String, &Value> = HashMap::new();
     let mut assets: Vec<&Value> = Vec::new();
     let mut gone: Vec<String> = Vec::new();
@@ -380,53 +487,79 @@ pub fn apply(
         .map(|(k, m)| (k.clone(), links_of(m)))
         .collect();
     let mut photos = Vec::new();
+    // Masters an asset in this pass was built from, and assets whose master is not here yet.
+    let mut used: HashSet<&str> = HashSet::new();
+    let mut waiting: Vec<&Value> = Vec::new();
     for a in assets {
         let master = a
             .pointer("/fields/masterRef/value/recordName")
             .and_then(Value::as_str);
-        let built = match master.and_then(|m| masters.get(m)) {
-            Some(m) => photo_of(a, m),
+        let built = match master.and_then(|m| masters.get(m).map(|r| (m, r))) {
+            Some((name, m)) => {
+                used.insert(name);
+                photo_of(a, m)
+            }
             // Only the asset changed: its flags laid over the photo already known.
             None => field::record_name(a)
                 .and_then(|id| library.photo(&id).ok().flatten())
                 .map(|p| with_asset(p, a)),
         };
-        if let Some(p) = built {
-            photos.push(p);
+        match built {
+            Some(p) => photos.push(p),
+            None if master.is_some() => waiting.push(a),
+            None => {}
         }
     }
     let changed = photos.len() + gone.len();
-    if incremental {
-        library.put_photos(&photos)?;
-        library.forget_photos(&gone)?;
-        library.put_album_items(&in_albums)?;
-        library.forget_album_items(&out_of_albums)?;
-        if albums_seen {
-            let mut all = library.albums()?;
-            all.retain(|a| !albums_touched.contains(&a.id) && !gone.contains(&a.id));
-            for id in albums_touched.iter().chain(&gone) {
-                if !albums.iter().any(|b| &b.id == id) {
-                    library.forget_album(id)?;
-                }
+    library.put_photos(&photos)?;
+    library.forget_photos(&gone)?;
+    library.put_album_items(&in_albums)?;
+    library.forget_album_items(&out_of_albums)?;
+    let album_ids: Vec<String> = albums.iter().map(|a| a.id.clone()).collect();
+    let mut all = library.albums()?;
+    let known: HashSet<String> = all.iter().map(|a| a.id.clone()).collect();
+    let gone_albums: HashSet<&String> = gone.iter().filter(|g| known.contains(*g)).collect();
+    if albums_seen || !gone_albums.is_empty() {
+        all.retain(|a| !albums_touched.contains(&a.id) && !gone_albums.contains(&a.id));
+        for id in albums_touched.iter().chain(gone_albums.iter().copied()) {
+            if !album_ids.contains(id) {
+                library.forget_album(id)?;
             }
-            all.extend(albums);
-            library.replace_albums(&all)?;
+        }
+        all.extend(albums);
+        library.replace_albums(&all)?;
+        library.forget_orphan_albums()?;
+    }
+    if walking {
+        let seen: Vec<String> = photos.iter().map(|p| p.id.clone()).collect();
+        let items: Vec<(String, String)> = in_albums
+            .iter()
+            .map(|(album, asset, _)| (album.clone(), asset.clone()))
+            .collect();
+        let carry_on_from = if complete { None } else { token.as_deref() };
+        library.note_photo_walk(&seen, &album_ids, &items, carry_on_from)?;
+        if complete {
+            library.finish_photo_walk()?;
             library.forget_orphan_albums()?;
         }
-    } else if complete {
-        // A full pass that finished is the whole truth; one that stopped early is not, and
-        // pruning on it would drop photos that are fine.
-        library.replace_photos(&photos)?;
-        library.replace_albums(&albums)?;
-        library.replace_album_items(&in_albums)?;
-        library.forget_orphan_albums()?;
-    } else {
-        library.put_photos(&photos)?;
-        library.put_album_items(&in_albums)?;
     }
-    if complete {
-        library.mark_synced(SERVICE, token.as_deref())?;
+    // An asset and its master split across the end of an unfinished pass: the half that came
+    // is held for the next pass, where the other half is.
+    let mut held: Vec<(String, String)> = Vec::new();
+    if !complete {
+        let unused = masters
+            .iter()
+            .filter(|(name, _)| !used.contains(name.as_str()))
+            .map(|(_, r)| *r);
+        for r in unused.chain(waiting) {
+            if let Some(name) = field::record_name(r) {
+                held.push((name, r.to_string()));
+            }
+        }
     }
+    library.hold_for_photo_walk(&held)?;
+    // Unfinished, this is where the next pass carries on from, so each pass gets further.
+    library.mark_synced(SERVICE, token.as_deref())?;
     Ok((changed, links))
 }
 
@@ -1154,6 +1287,35 @@ mod tests {
 
     /// A full pass replaces the library; a later asset-only change (deleted) is laid over the
     /// photo already known; an expunged asset goes.
+    /// A pass that fails as it stores its position — its last write, standing in for a crash
+    /// part way — stores none of the photos it had already put in.
+    #[test]
+    fn a_pass_that_fails_part_way_stores_none_of_itself() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        lib.conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER crash_i BEFORE INSERT ON main.sync_state
+                   BEGIN SELECT RAISE(ABORT, 'crash mid-apply'); END;
+                 CREATE TEMP TRIGGER crash_u BEFORE UPDATE ON main.sync_state
+                   BEGIN SELECT RAISE(ABORT, 'crash mid-apply'); END;",
+            )
+            .unwrap();
+        let pass = PhotosFetch {
+            records: vec![master(), asset(json!({}))],
+            token: Some("T1".into()),
+            from: None,
+            incremental: false,
+            complete: true,
+        };
+        assert!(apply(&mut lib, pass).is_err());
+        assert!(lib
+            .photos(quince_core::photos::View::Library)
+            .unwrap()
+            .is_empty());
+        assert_eq!(lib.sync_token(SERVICE).unwrap(), None);
+        assert!(lib.conn().is_autocommit());
+    }
+
     #[test]
     fn passes_build_and_keep_the_library() {
         let mut lib = quince_core::Library::in_memory().unwrap();
@@ -1164,6 +1326,7 @@ mod tests {
                 json!({"recordName": "A1-IN-AL", "recordType": "CPLContainerRelation", "fields": {"containerId": {"value": "AL"}, "itemId": {"value": "A1"}, "position": {"value": 1024}}}),
             ],
             token: Some("T1".into()),
+            from: None,
             incremental: false,
             complete: true,
         };
@@ -1177,6 +1340,7 @@ mod tests {
         let change = PhotosFetch {
             records: vec![asset(json!({"isDeleted": 1}))],
             token: Some("T2".into()),
+            from: None,
             incremental: true,
             complete: true,
         };
@@ -1197,6 +1361,7 @@ mod tests {
         let expunged = PhotosFetch {
             records: vec![json!({"recordName": "A1", "deleted": true})],
             token: Some("T3".into()),
+            from: None,
             incremental: true,
             complete: true,
         };
@@ -1219,6 +1384,7 @@ mod tests {
         let pass = |records, incremental| PhotosFetch {
             records,
             token: Some("T".into()),
+            from: None,
             incremental,
             complete: true,
         };
@@ -1263,6 +1429,7 @@ mod tests {
         let pass = |records, incremental| PhotosFetch {
             records,
             token: Some("T".into()),
+            from: None,
             incremental,
             complete: true,
         };
@@ -1364,6 +1531,7 @@ mod tests {
         let pass = |records, incremental| PhotosFetch {
             records,
             token: Some("T".into()),
+            from: None,
             incremental,
             complete: true,
         };
@@ -1503,5 +1671,253 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(modifies.len(), 1);
         assert!(!String::from_utf8_lossy(&modifies[0].body).contains("KEPT"));
+    }
+
+    fn master_named(name: &str) -> Value {
+        let mut m = master();
+        m["recordName"] = json!(name);
+        m
+    }
+
+    fn asset_named(name: &str, master: &str) -> Value {
+        let mut a = asset(json!({}));
+        a["recordName"] = json!(name);
+        a["fields"]["masterRef"] = json!({"value": {"recordName": master}});
+        a
+    }
+
+    fn ids(lib: &quince_core::Library) -> Vec<String> {
+        let mut ids: Vec<String> = lib
+            .photos(quince_core::photos::View::Library)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// A library too large for one pass is read over several: each pass is stored as it
+    /// comes and the next carries on from where it stopped, an asset whose master fell in
+    /// the other pass is still made whole, and only once the read reaches the end is what it
+    /// never saw let go.
+    #[test]
+    fn a_large_library_is_read_over_several_passes() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let before = |records| PhotosFetch {
+            records,
+            token: Some("T0".into()),
+            from: None,
+            incremental: false,
+            complete: true,
+        };
+        apply(
+            &mut lib,
+            before(vec![master_named("MX"), asset_named("AX", "MX")]),
+        )
+        .unwrap();
+        assert_eq!(ids(&lib), ["AX"]);
+
+        // The daily whole read begins, and stops partway with a master's asset still to come.
+        let first = PhotosFetch {
+            records: vec![
+                master_named("M1"),
+                asset_named("A1", "M1"),
+                master_named("M2"),
+            ],
+            token: Some("C1".into()),
+            from: None,
+            incremental: false,
+            complete: false,
+        };
+        apply(&mut lib, first).unwrap();
+        assert_eq!(
+            ids(&lib),
+            ["A1", "AX"],
+            "seen so far shows; nothing pruned yet"
+        );
+        assert_eq!(
+            lib.sync_token(SERVICE).unwrap().as_deref(),
+            Some("C1"),
+            "the next pass carries on from here"
+        );
+
+        let second = PhotosFetch {
+            records: vec![asset_named("A2", "M2")],
+            token: Some("T1".into()),
+            from: Some("C1".into()),
+            incremental: true,
+            complete: true,
+        };
+        apply(&mut lib, second).unwrap();
+        assert_eq!(
+            ids(&lib),
+            ["A1", "A2"],
+            "the split photo is whole; the one the read never saw is gone"
+        );
+        assert_eq!(lib.sync_token(SERVICE).unwrap().as_deref(), Some("T1"));
+        assert_eq!(
+            lib.photo("A2").unwrap().unwrap().filename.as_deref(),
+            Some("IMG_0001.JPG")
+        );
+
+        // An ordinary pass afterwards prunes nothing.
+        let after = PhotosFetch {
+            records: vec![master_named("M3"), asset_named("A3", "M3")],
+            token: Some("T2".into()),
+            from: Some("T1".into()),
+            incremental: true,
+            complete: true,
+        };
+        apply(&mut lib, after).unwrap();
+        assert_eq!(ids(&lib), ["A1", "A2", "A3"]);
+    }
+
+    /// A pass over what changed that is too long for one pass keeps its place too, rather
+    /// than reading the same pages again next time; and it is never taken for a whole read.
+    #[test]
+    fn a_long_pass_over_changes_keeps_its_place() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let whole = PhotosFetch {
+            records: vec![master_named("M1"), asset_named("A1", "M1")],
+            token: Some("T0".into()),
+            from: None,
+            incremental: false,
+            complete: true,
+        };
+        apply(&mut lib, whole).unwrap();
+        let part = PhotosFetch {
+            records: vec![master_named("M2"), asset_named("A2", "M2")],
+            token: Some("C1".into()),
+            from: Some("T0".into()),
+            incremental: true,
+            complete: false,
+        };
+        apply(&mut lib, part).unwrap();
+        assert_eq!(lib.sync_token(SERVICE).unwrap().as_deref(), Some("C1"));
+        let rest = PhotosFetch {
+            records: vec![],
+            token: Some("T1".into()),
+            from: Some("C1".into()),
+            incremental: true,
+            complete: true,
+        };
+        apply(&mut lib, rest).unwrap();
+        assert_eq!(ids(&lib), ["A1", "A2"], "nothing pruned");
+    }
+
+    fn zone_reply(zone: Value) -> wiremock::ResponseTemplate {
+        wiremock::ResponseTemplate::new(200).set_body_json(json!({ "zones": [zone] }))
+    }
+
+    /// The whole library as Apple answers a walk from the start.
+    async fn library_server(refusal: Value) -> wiremock::MockServer {
+        use wiremock::matchers::{body_string_contains, method, path_regex};
+        use wiremock::{Mock, MockServer};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .and(body_string_contains("old-token"))
+            .respond_with(zone_reply(refusal))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "records": [master_named("M1"), asset_named("A1", "M1"),
+                            master_named("M2"), asset_named("A2", "M2")],
+                "syncToken": "fresh",
+                "moreComing": false
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// A change token Apple will no longer read (expired, or refused as a bad request) is
+    /// dropped and the library read whole: not taken as "nothing changed", and nothing it
+    /// still has deleted.
+    #[tokio::test]
+    async fn a_refused_change_token_reads_the_library_whole() {
+        let refusals = [
+            json!({"serverErrorCode": "CHANGE_TOKEN_EXPIRED", "reason": "change token expired"}),
+            json!({"serverErrorCode": "CHANGE_TOKEN_EXPIRED"}),
+            json!({"serverErrorCode": "BAD_REQUEST", "reason": "Unknown sync continuation type"}),
+            json!({"serverErrorCode": "BAD_REQUEST", "reason": "Invalid sync token"}),
+        ];
+        for refusal in refusals {
+            let server = library_server(refusal.clone()).await;
+            let http = reqwest::Client::new();
+            let fetched = fetch(&http, &server.uri(), vec![], Some("old-token"))
+                .await
+                .unwrap_or_else(|e| panic!("{refusal}: a refused token is recovered from: {e}"));
+            assert!(
+                !fetched.incremental,
+                "{refusal}: a whole read, not a pass over changes"
+            );
+            assert!(fetched.from.is_none() && fetched.complete);
+            assert_eq!(fetched.token.as_deref(), Some("fresh"));
+
+            let mut lib = quince_core::Library::in_memory().unwrap();
+            let had = PhotosFetch {
+                records: vec![
+                    master_named("M1"),
+                    asset_named("A1", "M1"),
+                    master_named("MX"),
+                    asset_named("AX", "MX"),
+                ],
+                token: Some("old-token".into()),
+                from: None,
+                incremental: false,
+                complete: true,
+            };
+            apply(&mut lib, had).unwrap();
+            let (changed, _) = apply(&mut lib, fetched).unwrap();
+            assert_eq!(changed, 2, "{refusal}: not reported as nothing changed");
+            assert_eq!(
+                ids(&lib),
+                ["A1", "A2"],
+                "{refusal}: kept, added, and only the gone one pruned"
+            );
+            assert_eq!(lib.sync_token(SERVICE).unwrap().as_deref(), Some("fresh"));
+        }
+    }
+
+    /// Other trouble is not mistaken for a refused token.
+    #[tokio::test]
+    async fn other_trouble_is_not_a_refused_token() {
+        let server = library_server(
+            json!({"serverErrorCode": "QUOTA_EXCEEDED", "reason": "Quota exceeded"}),
+        )
+        .await;
+        let http = reqwest::Client::new();
+        assert!(fetch(&http, &server.uri(), vec![], Some("old-token"))
+            .await
+            .is_err());
+    }
+
+    /// One pass reads at most `PASS_PAGES` pages and says where it got to, so the next
+    /// carries on from there instead of starting over.
+    #[tokio::test]
+    async fn a_pass_stops_at_its_budget_and_says_where() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "records": [master_named("M1")], "syncToken": "further", "moreComing": true
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let fetched = fetch(&http, &server.uri(), vec![], None).await.unwrap();
+        assert!(!fetched.complete);
+        assert_eq!(fetched.token.as_deref(), Some("further"));
+        assert_eq!(fetched.records.len(), PASS_PAGES);
+        let again = fetch(&http, &server.uri(), vec![], Some("further"))
+            .await
+            .unwrap();
+        assert!(again.incremental && again.from.as_deref() == Some("further"));
     }
 }

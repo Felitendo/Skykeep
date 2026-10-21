@@ -54,6 +54,7 @@ step "calendar calendars" node .uiverify/calendar-collections.mjs
 step "drive names"       node .uiverify/drive-names.mjs
 step "notes autoformat"  node .uiverify/notes-autoformat.mjs
 step "reminder ticks"    node .uiverify/reminders-tick.mjs
+step "waiting to sync"   node .uiverify/outbox-pending.mjs
 step "photos"            node .uiverify/photos.mjs
 step "photo albums"      node .uiverify/photos-albums.mjs
 step "photos at scale"   node .uiverify/photos-scale.mjs
@@ -109,6 +110,7 @@ step "webkit: calendars"  env ENGINE=webkit node .uiverify/calendar-collections.
 step "webkit: drive names" env ENGINE=webkit node .uiverify/drive-names.mjs
 step "webkit: autoformat" env ENGINE=webkit node .uiverify/notes-autoformat.mjs
 step "webkit: ticks"     env ENGINE=webkit node .uiverify/reminders-tick.mjs
+step "webkit: unsent"    env ENGINE=webkit node .uiverify/outbox-pending.mjs
 step "webkit: photos"    env ENGINE=webkit node .uiverify/photos.mjs
 step "webkit: albums"    env ENGINE=webkit node .uiverify/photos-albums.mjs
 step "webkit: at scale"  env ENGINE=webkit node .uiverify/photos-scale.mjs

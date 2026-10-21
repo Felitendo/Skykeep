@@ -123,6 +123,21 @@ async fn context(client: &Arc<Mutex<Client>>) -> Context {
     }
 }
 
+/// Told each time one service's part of a pass has been stored, before the rest are done.
+static LANDED: std::sync::OnceLock<Box<dyn Fn(&'static str) + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// What to do when a service lands: set once, by the app, to tell the open screens.
+pub fn on_landed(f: impl Fn(&'static str) + Send + Sync + 'static) {
+    let _ = LANDED.set(Box::new(f));
+}
+
+fn landed(service: &'static str) {
+    if let Some(f) = LANDED.get() {
+        f(service);
+    }
+}
+
 /// Refresh every service the account has, and report on each.
 ///
 /// Never returns an error: a refresh that partly failed is a normal outcome with a partial
@@ -143,10 +158,16 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
     let ctx = context(client).await;
     let (from, to, zone) = default_window();
 
-    let mut reports = Vec::with_capacity(COVERED.len());
+    // The services fetched side by side, not one after another: each has its own pass lock,
+    // and waiting on Photos' whole library before Reminders was asked anything left every
+    // screen empty through a first sync. Each one says it has landed as it does, so its
+    // screen fills then rather than when the slowest is done.
 
-    if wanted("calendar") {
-        reports.push(match ctx.calendar.as_deref() {
+    let calendar = async {
+        if !wanted("calendar") {
+            return None;
+        }
+        let report = match ctx.calendar.as_deref() {
             None => unavailable("calendar", "Calendar"),
             Some(root) => {
                 // Fetch and store as one, never across a save: see `CALENDAR_PASS`.
@@ -179,11 +200,16 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                 )
                 .await
             }
-        });
-    }
+        };
+        landed(report.service);
+        Some(report)
+    };
 
-    if wanted("reminders") {
-        reports.push(match ctx.cloudkit.as_deref() {
+    let reminders = async {
+        if !wanted("reminders") {
+            return None;
+        }
+        let report = match ctx.cloudkit.as_deref() {
             None => unavailable("reminders", "Reminders"),
             Some(root) => {
                 let _one = crate::REMINDERS_PASS.lock().await;
@@ -221,11 +247,16 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                 )
                 .await
             }
-        });
-    }
+        };
+        landed(report.service);
+        Some(report)
+    };
 
-    if wanted("notes") {
-        reports.push(match ctx.cloudkit.as_deref() {
+    let notes = async {
+        if !wanted("notes") {
+            return None;
+        }
+        let report = match ctx.cloudkit.as_deref() {
             None => unavailable("notes", "Notes"),
             Some(root) => {
                 // One notes pass at a time, from reading the position through storing what came
@@ -248,6 +279,8 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     fetched,
                     move |library, f| {
                         let (folders, notes, _) = quince_icloud::notes::apply_cloudkit(library, f)?;
+                        // Edits still on their way to Apple stay as typed here.
+                        crate::outbox::replay(library, crate::outbox::NOTES)?;
                         if full {
                             library.mark_full_sync("notes")?;
                         }
@@ -260,11 +293,16 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                 )
                 .await
             }
-        });
-    }
+        };
+        landed(report.service);
+        Some(report)
+    };
 
-    if wanted("contacts") {
-        reports.push(match ctx.contacts.as_deref() {
+    let contacts = async {
+        if !wanted("contacts") {
+            return None;
+        }
+        let report = match ctx.contacts.as_deref() {
             None => unavailable("contacts", "Contacts"),
             Some(root) => {
                 // Fetch and store as one, never across a save: see `CONTACTS_PASS`. The book
@@ -299,6 +337,8 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                                 usize::try_from(n).unwrap_or(0)
                             }
                         };
+                        // Cards saved here and still on their way to Apple stay as saved.
+                        crate::outbox::replay(library, crate::outbox::CONTACTS)?;
                         if full {
                             library.mark_full_sync("contacts")?;
                         }
@@ -307,14 +347,19 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                 )
                 .await
             }
-        });
-    }
+        };
+        landed(report.service);
+        Some(report)
+    };
 
     // Drive is read a folder at a time as it is opened; the pass keeps its top level current,
     // so what changed there on another device is here before anyone looks, and its freshness
     // is stated with the rest. Fetched and stored as one — see `DRIVE_PASS`.
-    if wanted("drive") {
-        reports.push(match ctx.drive.as_deref() {
+    let drive = async {
+        if !wanted("drive") {
+            return None;
+        }
+        let report = match ctx.drive.as_deref() {
             None => unavailable("drive", "iCloud Drive"),
             Some(root) => {
                 let _one = crate::DRIVE_PASS.lock().await;
@@ -342,13 +387,18 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                 )
                 .await
             }
-        });
-    }
+        };
+        landed(report.service);
+        Some(report)
+    };
 
     // Photos: the whole library through the change feed once, then only what changed — under
     // half a second when nothing did. Fetched and stored as one: see `PHOTOS_PASS`.
-    if wanted("photos") {
-        reports.push(match ctx.cloudkit.as_deref() {
+    let photos = async {
+        if !wanted("photos") {
+            return None;
+        }
+        let report = match ctx.cloudkit.as_deref() {
             None => unavailable("photos", "Photos"),
             Some(root) => {
                 let _one = crate::PHOTOS_PASS.lock().await;
@@ -375,14 +425,36 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                             library.mark_full_sync(quince_icloud::photos::SERVICE)?;
                         }
                         crate::photos::remember(links);
-                        let n = library.photos(quince_core::photos::View::Library)?.len();
+                        // Counted, not read: every row of the library loaded to say how many
+                        // there were held the library's lock through each pass.
+                        let n = library
+                            .photo_counts()?
+                            .into_iter()
+                            .find(|(v, _)| *v == quince_core::photos::View::Library)
+                            .map_or(0, |(_, n)| usize::try_from(n).unwrap_or(0));
                         Ok(format!("{n} photo{}", plural(n)))
                     },
                 )
                 .await
             }
-        });
+        };
+        landed(report.service);
+        Some(report)
+    };
+
+    let (calendar, reminders, notes, contacts, drive, photos) =
+        tokio::join!(calendar, reminders, notes, contacts, drive, photos);
+    // Apple answered: whatever waits to be sent goes now, not on the outbox's own timer.
+    if [&reminders, &notes, &contacts]
+        .iter()
+        .any(|r| r.as_ref().is_some_and(|r| r.outcome == Outcome::Ok))
+    {
+        crate::outbox::kick();
     }
+    let reports: Vec<ServiceReport> = [calendar, reminders, notes, contacts, drive, photos]
+        .into_iter()
+        .flatten()
+        .collect();
 
     let available: Vec<&str> = reports
         .iter()
@@ -493,7 +565,20 @@ where
             last_synced_at: None,
         };
     }
-    let result = fetched.and_then(|value| apply(&mut library, value));
+    // SQLite is synchronous: a full pass's apply (a whole photo library, every reminder and its
+    // alarms) is CPU and disk work that would otherwise sit on one of the runtime's few
+    // workers, stalling every task queued behind it there — the pictures the window is asking
+    // for among them. Run in place, its worker hands those tasks on first.
+    let started = std::time::Instant::now();
+    // And as one change: the records, the changes still waiting laid over them and the new
+    // position land together, or — failing, or the app dying part way — none of them do.
+    let result = tokio::task::block_in_place(|| {
+        fetched.and_then(|value| library.atomically(|library| apply(library, value)))
+    });
+    let took = started.elapsed();
+    if took > std::time::Duration::from_millis(50) {
+        quiet!("{service}: stored in {} ms", took.as_millis());
+    }
     match result {
         Ok(detail) => ServiceReport {
             service,

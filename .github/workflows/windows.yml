@@ -1,9 +1,11 @@
 # Pomander for Windows, proven on Windows before anyone downloads it:
 #   1. test  — the whole test suite on a Windows machine, the real Credential Manager included;
+#      ui    — every interface suite in Edge (WebView2's engine), each screen photographed;
 #   2. build — the .msi and the per-user .exe installer, only if every test passed;
 #   3. smoke — the .exe installed silently, Pomander launched, its window seen on screen, and a
 #              screenshot kept, so an installer that cannot even start is never handed over.
-# Run by hand (Actions → Windows build → Run workflow) or by a release tag; never on every push.
+# Run by hand (Actions → Windows build → Run workflow) or by a release (release.yml); never on
+# every push.
 name: Windows build
 
 on:
@@ -13,8 +15,12 @@ on:
         description: "Run the whole test suite on Windows before building"
         type: boolean
         default: true
-  push:
-    tags: ["v*"]
+  # A release (release.yml) builds Windows through this same, proven pipeline.
+  workflow_call:
+    inputs:
+      test_first:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -32,11 +38,66 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # HEIC decoding: libheif with libde265, decoding only, linked in statically.
+      - uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-libheif-libde265-x64-windows-static-md-v1
+      - name: HEIC decoder
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif[core,libde265]:x64-windows-static-md"
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
       - run: npm ci
       # The window's files must exist for the app crate to compile.
       - run: npm run build
       - name: Tests, on Windows
         run: cargo test --workspace --no-fail-fast
+
+  # Every interface suite in Microsoft Edge — the engine WebView2 is — with Windows' own fonts,
+  # and every screen photographed light and dark, to be looked at.
+  ui:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_first }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vite build
+      - name: Interface suites, in Edge
+        shell: pwsh
+        env:
+          ENGINE: msedge
+        run: |
+          $shots = "$PWD\shots"; New-Item -ItemType Directory -Force $shots | Out-Null
+          $env:TMPDIR = $shots
+          $preview = Start-Process npx -ArgumentList "vite","preview","--port","4173","--strictPort" -PassThru -WindowStyle Hidden
+          for ($i = 0; $i -lt 30; $i++) { try { Invoke-WebRequest http://localhost:4173 -UseBasicParsing | Out-Null; break } catch { Start-Sleep 1 } }
+          node .uiverify/look-all.mjs $shots 1400 850 dark
+          node .uiverify/look-all.mjs "$shots" 1400 850 light
+          Get-ChildItem $shots -Filter "all-*.png" | ForEach-Object { Rename-Item $_.FullName ($_.Name -replace "^all-", "screen-") -ErrorAction SilentlyContinue }
+          $failed = @()
+          $suites = Get-ChildItem .uiverify -Filter *.mjs | Where-Object {
+            $_.Name -notmatch '^(look|dbg|engine|stub|assert)' -and $_.Name -notmatch '\.test\.mjs$' -and (Select-String -Path $_.FullName -Pattern 'engine.mjs' -Quiet)
+          }
+          foreach ($t in $suites) {
+            node $t.FullName *> "$shots\$($t.BaseName).log"
+            if ($LASTEXITCODE -ne 0) { $failed += $t.Name; "FAIL $($t.Name)" } else { "ok   $($t.Name)" }
+          }
+          Stop-Process -Id $preview.Id -ErrorAction SilentlyContinue
+          "$($suites.Count - $failed.Count) of $($suites.Count) suites passed in Edge"
+          if ($failed.Count) { $failed | Set-Content "$shots\FAILED.txt"; exit 1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pomander-ui-in-edge
+          path: shots
+          if-no-files-found: ignore
 
   build:
     needs: test
@@ -54,6 +115,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+      # HEIC decoding: libheif with libde265, decoding only, linked in statically.
+      - uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-libheif-libde265-x64-windows-static-md-v1
+      - name: HEIC decoder
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif[core,libde265]:x64-windows-static-md"
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
       - run: npm ci
       - name: Build the installers
         # The build machine's paths are never written into the program.
@@ -65,14 +137,14 @@ jobs:
         run: |
           $files = Get-ChildItem target/release/bundle -Recurse -Include *.msi,*.exe
           $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
-            Set-Content target/release/bundle/SHA256SUMS.txt
+            Set-Content target/release/bundle/SHA256SUMS-windows.txt
       - uses: actions/upload-artifact@v4
         with:
           name: pomander-windows
           path: |
             target/release/bundle/msi/*.msi
             target/release/bundle/nsis/*.exe
-            target/release/bundle/SHA256SUMS.txt
+            target/release/bundle/SHA256SUMS-windows.txt
           if-no-files-found: error
 
   smoke:
@@ -95,6 +167,11 @@ jobs:
           if (-not $exe) { $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter pomander.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
           if (-not $exe) { throw "Pomander was not installed" }
           "installed at $($exe.FullName)"
+          # Alerts are sent as the app the Start menu knows; without that ID on its entry they
+          # came from "Windows PowerShell".
+          $entry = Get-StartApps | Where-Object { $_.Name -eq "Pomander" } | Select-Object -First 1
+          if (-not $entry -or $entry.AppID -ne "io.github.yashwanthkamireddi.Pomander") { throw "Start menu entry has app ID '$($entry.AppID)', not io.github.yashwanthkamireddi.Pomander" }
+          "start menu app ID: $($entry.AppID)"
           $p = Start-Process $exe.FullName -PassThru
           $title = ""
           for ($i = 0; $i -lt 30 -and -not $title; $i++) {

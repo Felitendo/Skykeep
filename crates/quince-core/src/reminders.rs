@@ -310,7 +310,7 @@ impl Library {
     /// "deleted". Using the replacing variant there would wipe the whole library on the
     /// first incremental refresh.
     pub fn merge_reminder_lists(&mut self, lists: &[ReminderList]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled,
@@ -353,7 +353,7 @@ impl Library {
         reminder_guids: &[String],
         list_guids: &[String],
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut drop_reminder = tx.prepare("DELETE FROM reminders WHERE guid = ?1")?;
             for guid in reminder_guids {
@@ -379,7 +379,7 @@ impl Library {
         sections: &[ReminderSection],
         gone: &[String],
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut put = tx.prepare(
                 "INSERT INTO reminder_sections (guid, list_guid, title, created_at, updated_at)
@@ -422,7 +422,7 @@ impl Library {
         list_guid: &str,
         placed: &[(String, String)],
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             tx.execute(
                 "UPDATE reminders SET section_guid = NULL WHERE list_guid = ?1",
@@ -619,7 +619,7 @@ impl Library {
 
     /// Replace the set of lists, dropping any Apple no longer reports.
     pub fn put_reminder_lists(&mut self, lists: &[ReminderList]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminder_lists (guid, title, colour, ctag, sort_order, enabled,
@@ -674,7 +674,7 @@ impl Library {
     /// the code knew what to do with it, that record would otherwise stay on screen
     /// forever. This is the floor under that.
     pub fn retain_reminders(&mut self, keep: &[String]) -> Result<usize> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         let removed = {
             let mut known: std::collections::HashSet<&str> =
                 keep.iter().map(String::as_str).collect();
@@ -725,8 +725,41 @@ impl Library {
         Ok(())
     }
 
+    /// A reminder as changed (or made) here, before Apple has it: the fields a person edits,
+    /// leaving Apple's own copy of the record (`raw`) and its change tag as they were, since
+    /// those are what the write to Apple is made against.
+    pub fn put_reminder_local(&mut self, r: &Reminder) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO reminders (guid, list_guid, title, notes, due_at, completed_at,
+                                    priority, flagged, parent_guid, timezone, updated_at, all_day)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(guid) DO UPDATE SET
+               list_guid = excluded.list_guid, title = excluded.title,
+               notes = excluded.notes, due_at = excluded.due_at,
+               completed_at = excluded.completed_at, priority = excluded.priority,
+               flagged = excluded.flagged, parent_guid = excluded.parent_guid,
+               timezone = excluded.timezone, all_day = excluded.all_day,
+               updated_at = excluded.updated_at",
+            params![
+                r.guid,
+                r.list_guid,
+                r.title,
+                r.notes,
+                r.due_at,
+                r.completed_at,
+                r.priority,
+                i64::from(r.flagged),
+                r.parent_guid,
+                r.timezone,
+                now(),
+                i64::from(r.all_day)
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn put_reminders(&mut self, reminders: &[Reminder]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO reminders (guid, list_guid, title, notes, due_at, completed_at,
@@ -797,7 +830,7 @@ impl Library {
 
     /// Replace the folders lists are filed under.
     pub fn put_reminder_groups(&mut self, groups: &[ReminderGroup]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         tx.execute("DELETE FROM reminder_groups", [])?;
         {
             let mut stmt = tx.prepare(
@@ -2074,6 +2107,1161 @@ mod list_sorting_tests {
         assert_eq!(
             titles(&library("priority_desc", &[])),
             ["alpha", "Delta", "Bravo", "Charlie"]
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Details Apple keeps beside a reminder: tags, a link, early alerts, custom smart lists.
+// ---------------------------------------------------------------------------------------
+
+/// One tag on one reminder: Apple's `Hashtag` record. The name is stored without the `#`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderHashtag {
+    pub guid: String,
+    pub reminder_guid: String,
+    pub name: String,
+}
+
+/// One attachment on a reminder: Apple's `Attachment` record. Only `URL` ones carry a link;
+/// `File` and `Image` are listed so their presence is known, never their bytes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderAttachment {
+    pub guid: String,
+    pub reminder_guid: String,
+    /// Apple's `Type`: `URL`, `File` or `Image`.
+    pub kind: String,
+    pub url: Option<String>,
+    pub uti: Option<String>,
+}
+
+/// An early alert ("remind me 30 minutes early"), one entry of the reminder's
+/// `DueDateDeltaAlertsData`. `count` is how far before the due date, as a positive number;
+/// Apple stores it negative. `unit` is Apple's: 0 minutes (the only one on the account
+/// measured), then, by the order iOS offers them, 1 hours, 2 days, 3 weeks, 4 months.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EarlyAlert {
+    pub id: String,
+    pub count: i64,
+    pub unit: i64,
+}
+
+/// Everything about one reminder this section reads, for its detail view.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderDetail {
+    pub guid: String,
+    /// Tag names, without `#`, sorted as the phone shows them.
+    pub tags: Vec<String>,
+    pub url: Option<String>,
+    pub early_alerts: Vec<EarlyAlert>,
+    /// How many file or image attachments it has, which this app does not show yet.
+    pub other_attachments: usize,
+}
+
+/// A tag across the whole account, and how many reminders still to do carry it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TagCount {
+    pub name: String,
+    pub open: usize,
+}
+
+/// A `SmartList` record: a built-in one (`today`, `flagged`, `assigned`…) or a custom one,
+/// whose filter is kept as Apple's JSON and decoded with [`SmartFilter::decode`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderSmartList {
+    pub guid: String,
+    /// The last part of Apple's `SmartListType`: `custom`, `today`, `flagged`, `assigned`…
+    pub kind: String,
+    pub title: Option<String>,
+    pub colour: Option<String>,
+    pub emblem: Option<String>,
+    pub pinned: bool,
+    pub sorting: Option<String>,
+    /// `FilterData` as Apple wrote it (JSON), for a custom list.
+    pub filter: Option<String>,
+}
+
+/// What one sync pass read of the details. A whole pass replaces everything stored; an
+/// incremental one lays itself over it.
+#[derive(Debug, Clone, Default)]
+pub struct ReminderDetailsPass {
+    pub whole: bool,
+    pub hashtags: Vec<ReminderHashtag>,
+    pub attachments: Vec<ReminderAttachment>,
+    /// Every reminder record in the pass with its early alerts — an empty list included, so a
+    /// reminder whose alert was taken off on the phone loses it here — and the account id
+    /// Apple writes inside them.
+    pub early_alerts: Vec<(String, Option<String>, Vec<EarlyAlert>)>,
+    pub smart_lists: Vec<ReminderSmartList>,
+    /// Names of records Apple reports gone; any of the four kinds.
+    pub gone: Vec<String>,
+}
+
+/// A custom smart list's filter, decoded from `FilterData`.
+///
+/// Only `{"priorities":["medium"]}` has been seen on a real account. The other keys are read
+/// from the shapes Apple's filter editor offers (tags, date, priority, flagged, lists, and
+/// whether all or any must match), leniently; anything not understood is named in `unknown`
+/// rather than guessed at, and [`Library::reminders_in_smart_list`] says so.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartFilter {
+    /// All criteria must hold (Apple's default), or any one.
+    pub match_all: bool,
+    pub tags: Option<TagFilter>,
+    pub date: Option<DateFilter>,
+    /// Apple's scale: 1 high, 5 medium, 9 low, 0 none.
+    pub priorities: Vec<i64>,
+    pub flagged: Option<bool>,
+    /// List record names.
+    pub lists: Vec<String>,
+    /// Keys, or values, this decoder did not understand.
+    pub unknown: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TagFilter {
+    /// Lower-cased, without `#`.
+    pub names: Vec<String>,
+    /// Every named tag (true) or any one of them.
+    pub all: bool,
+    /// "Any tag": a reminder carrying at least one.
+    pub any_tag: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum DateFilter {
+    /// Has any due date.
+    Any,
+    /// Due today (overdue counts, as in Today).
+    Today,
+    /// Due before now and not done.
+    Overdue,
+    /// Due within `[from, to)`, Unix seconds.
+    Range { from: i64, to: i64 },
+    /// Due within the next `count` units from the start of today (`past`: the last ones).
+    Relative {
+        count: i64,
+        unit: String,
+        past: bool,
+    },
+}
+
+/// Seconds between the Unix epoch and Apple's.
+const APPLE_EPOCH: i64 = 978_307_200;
+
+/// A date in a filter as Unix seconds, whichever clock Apple wrote it in.
+fn filter_moment(v: &serde_json::Value) -> Option<i64> {
+    #[allow(clippy::cast_possible_truncation)]
+    let n = v.as_f64()? as i64;
+    Some(if n > 100_000_000_000 {
+        n / 1000
+    } else if n < 1_200_000_000 {
+        // Apple's epoch: seconds since 2001, which stays below this until 2039.
+        n + APPLE_EPOCH
+    } else {
+        n
+    })
+}
+
+fn priority_level(word: &str) -> Option<i64> {
+    match word.to_ascii_lowercase().as_str() {
+        "high" => Some(1),
+        "medium" => Some(5),
+        "low" => Some(9),
+        "none" => Some(0),
+        _ => None,
+    }
+}
+
+/// Whether `priority` falls in the band `level` names, as EventKit bands them.
+fn in_priority_band(priority: i64, level: i64) -> bool {
+    match level {
+        1 => (1..=4).contains(&priority),
+        5 => priority == 5,
+        9 => (6..=9).contains(&priority),
+        _ => priority == 0,
+    }
+}
+
+fn tag_key(name: &str) -> String {
+    name.trim().trim_start_matches('#').to_lowercase()
+}
+
+fn strings_in(v: &serde_json::Value) -> Vec<String> {
+    let one = |x: &serde_json::Value| -> Option<String> {
+        x.as_str().map(ToString::to_string).or_else(|| {
+            ["name", "identifier", "id", "recordName"]
+                .iter()
+                .find_map(|k| x.get(*k).and_then(|s| s.as_str()).map(ToString::to_string))
+        })
+    };
+    match v {
+        serde_json::Value::Array(items) => items.iter().filter_map(one).collect(),
+        other => one(other).into_iter().collect(),
+    }
+}
+
+/// "and"/"all" is all; "or"/"any" is any.
+fn all_or_any(v: &serde_json::Value) -> Option<bool> {
+    let word = v.as_str()?.to_ascii_lowercase();
+    if word.contains("all") || word == "and" {
+        Some(true)
+    } else if word.contains("any") || word == "or" {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+impl SmartFilter {
+    /// Decode Apple's `FilterData` JSON. Never fails: what is not understood is listed.
+    #[must_use]
+    pub fn decode(json: &str) -> Self {
+        let mut out = SmartFilter {
+            match_all: true,
+            ..Default::default()
+        };
+        let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json)
+        else {
+            out.unknown.push("(not JSON)".into());
+            return out;
+        };
+        for (key, value) in &map {
+            match key.as_str() {
+                "minimumSupportedVersion" | "version" => {}
+                "operation" | "matchingOperation" | "combination" | "match" => {
+                    match all_or_any(value) {
+                        Some(all) => out.match_all = all,
+                        None => out.unknown.push(key.clone()),
+                    }
+                }
+                "priorities" | "priority" => {
+                    for word in strings_in(value) {
+                        match priority_level(&word) {
+                            Some(level) => out.priorities.push(level),
+                            None => out.unknown.push(format!("priority {word}")),
+                        }
+                    }
+                    if let Some(n) = value.as_array() {
+                        for level in n.iter().filter_map(serde_json::Value::as_i64) {
+                            out.priorities.push(level);
+                        }
+                    }
+                }
+                "flagged" | "isFlagged" => match value {
+                    serde_json::Value::Bool(b) => out.flagged = Some(*b),
+                    serde_json::Value::Object(o) => {
+                        match o.values().find_map(serde_json::Value::as_bool) {
+                            Some(b) => out.flagged = Some(b),
+                            None => out.unknown.push(key.clone()),
+                        }
+                    }
+                    serde_json::Value::Number(n) => out.flagged = Some(n.as_i64() != Some(0)),
+                    _ => out.unknown.push(key.clone()),
+                },
+                "lists" | "listIDs" | "listIdentifiers" => {
+                    let ids = match value {
+                        serde_json::Value::Object(o) => o
+                            .iter()
+                            .filter(|(k, _)| k.to_ascii_lowercase().contains("list"))
+                            .flat_map(|(_, v)| strings_in(v))
+                            .collect(),
+                        other => strings_in(other),
+                    };
+                    out.lists.extend(ids.into_iter().map(|id| {
+                        if id.contains('/') {
+                            id
+                        } else {
+                            format!("List/{}", id.to_ascii_uppercase())
+                        }
+                    }));
+                }
+                "hashtags" | "tags" | "hashtagLabels" => {
+                    out.tags = Some(decode_tags(value, &mut out.unknown))
+                }
+                "date" | "dueDate" => out.date = decode_date(value, &mut out.unknown),
+                other => out.unknown.push(other.to_string()),
+            }
+        }
+        out
+    }
+
+    /// Whether this filter would show a reminder, given its tags (lower-cased) and `now`.
+    fn holds(&self, r: &Reminder, tags: &[String], now: i64) -> bool {
+        let mut checks: Vec<bool> = Vec::new();
+        if let Some(t) = &self.tags {
+            let has = |n: &String| tags.contains(n);
+            checks.push(if t.any_tag && t.names.is_empty() {
+                !tags.is_empty()
+            } else if t.all {
+                t.names.iter().all(has)
+            } else {
+                t.names.iter().any(has)
+            });
+        }
+        if let Some(d) = &self.date {
+            checks.push(date_holds(d, r, now));
+        }
+        if !self.priorities.is_empty() {
+            checks.push(
+                self.priorities
+                    .iter()
+                    .any(|&level| in_priority_band(r.priority, level)),
+            );
+        }
+        if let Some(f) = self.flagged {
+            checks.push(r.flagged == f);
+        }
+        if !self.lists.is_empty() {
+            checks.push(
+                self.lists
+                    .iter()
+                    .any(|l| l.eq_ignore_ascii_case(&r.list_guid)),
+            );
+        }
+        if checks.is_empty() {
+            return false;
+        }
+        if self.match_all {
+            checks.iter().all(|c| *c)
+        } else {
+            checks.iter().any(|c| *c)
+        }
+    }
+}
+
+fn decode_tags(value: &serde_json::Value, unknown: &mut Vec<String>) -> TagFilter {
+    let mut t = TagFilter {
+        all: false,
+        ..Default::default()
+    };
+    match value {
+        serde_json::Value::Object(o) => {
+            for (k, v) in o {
+                let lower = k.to_ascii_lowercase();
+                if lower.contains("operation") || lower == "mode" || lower == "match" {
+                    match all_or_any(v) {
+                        Some(all) => t.all = all,
+                        None => unknown.push(format!("tags.{k}")),
+                    }
+                } else if lower.contains("any") && v.as_bool().is_some() {
+                    t.any_tag = v.as_bool().unwrap_or(false);
+                } else if v.is_array() || v.is_string() {
+                    t.names.extend(strings_in(v).iter().map(|n| tag_key(n)));
+                } else {
+                    unknown.push(format!("tags.{k}"));
+                }
+            }
+        }
+        serde_json::Value::Bool(true) => t.any_tag = true,
+        other => t.names.extend(strings_in(other).iter().map(|n| tag_key(n))),
+    }
+    t.names.sort();
+    t.names.dedup();
+    t
+}
+
+fn decode_date(value: &serde_json::Value, unknown: &mut Vec<String>) -> Option<DateFilter> {
+    if value.as_bool() == Some(true) {
+        return Some(DateFilter::Any);
+    }
+    let kind = value
+        .as_str()
+        .or_else(|| {
+            ["type", "kind", "dateType"]
+                .iter()
+                .find_map(|k| value.get(*k)?.as_str())
+        })
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let get = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|k| value.get(*k))
+            .and_then(filter_moment)
+    };
+    let from = get(&["start", "startDate", "from", "lowerBound"]);
+    let to = get(&["end", "endDate", "to", "upperBound"]);
+    if let (Some(from), Some(to)) = (from, to) {
+        return Some(DateFilter::Range { from, to });
+    }
+    let count = ["count", "value", "amount"]
+        .iter()
+        .find_map(|k| value.get(*k)?.as_i64());
+    let unit = ["unit", "component"]
+        .iter()
+        .find_map(|k| value.get(*k))
+        .and_then(|u| {
+            u.as_str().map(str::to_ascii_lowercase).or_else(|| {
+                u.as_i64().and_then(|n| {
+                    ["day", "week", "month", "year"]
+                        .get(usize::try_from(n).ok()?)
+                        .map(|s| (*s).to_string())
+                })
+            })
+        });
+    match (kind.as_str(), count, unit) {
+        (k, Some(count), Some(unit)) if !k.contains("today") => Some(DateFilter::Relative {
+            count,
+            unit,
+            past: k.contains("past") || k.contains("last") || count < 0,
+        }),
+        (k, _, _) if k.contains("today") => Some(DateFilter::Today),
+        (k, _, _) if k.contains("overdue") || k.contains("past") => Some(DateFilter::Overdue),
+        (k, _, _) if k.contains("any") || k == "scheduled" || k == "hasdate" => {
+            Some(DateFilter::Any)
+        }
+        _ => {
+            unknown.push(format!("date {value}"));
+            None
+        }
+    }
+}
+
+fn date_holds(d: &DateFilter, r: &Reminder, now: i64) -> bool {
+    let Some(due) = r.due_at else {
+        return false;
+    };
+    let zone = jiff::tz::TimeZone::system();
+    let today = jiff::Timestamp::from_second(now)
+        .ok()
+        .map(|t| t.to_zoned(zone.clone()).date());
+    let day_start = |date: jiff::civil::Date| {
+        date.to_zoned(zone.clone())
+            .map_or(now, |z| z.timestamp().as_second())
+    };
+    match d {
+        DateFilter::Any => true,
+        DateFilter::Overdue => due < now,
+        DateFilter::Today => {
+            let end = today.and_then(|t| t.tomorrow().ok()).map_or(now, day_start);
+            if r.all_day {
+                due < all_day_bound(end)
+            } else {
+                due < end
+            }
+        }
+        DateFilter::Range { from, to } => due >= *from && due < *to,
+        DateFilter::Relative { count, unit, past } => {
+            let Some(today) = today else { return false };
+            let n = count.abs().clamp(0, 10_000);
+            let span = match unit.as_str() {
+                u if u.starts_with("week") => jiff::Span::new().weeks(n),
+                u if u.starts_with("month") => jiff::Span::new().months(n),
+                u if u.starts_with("year") => jiff::Span::new().years(n),
+                _ => jiff::Span::new().days(n),
+            };
+            let start = day_start(today);
+            if *past {
+                let from = today.checked_sub(span).map_or(start, day_start);
+                due >= from && due < start
+            } else {
+                let to = today.checked_add(span).map_or(start, day_start);
+                due >= start && due < to
+            }
+        }
+    }
+}
+
+/// What a custom smart list holds now, and which parts of its filter could not be read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartListContents {
+    pub reminders: Vec<Reminder>,
+    /// Non-empty when part of Apple's filter was not understood: those parts were left out,
+    /// so the list may hold more or fewer than the phone shows.
+    pub unknown: Vec<String>,
+}
+
+impl Library {
+    /// Store one pass of reminder details. See [`ReminderDetailsPass`].
+    pub fn put_reminder_details(&mut self, pass: &ReminderDetailsPass) -> Result<()> {
+        let tx = self.conn.savepoint()?;
+        {
+            if pass.whole {
+                tx.execute_batch(
+                    "DELETE FROM reminder_hashtags; DELETE FROM reminder_attachments;
+                     DELETE FROM reminder_smart_lists;",
+                )?;
+            }
+            let stamp = now();
+            for gone in &pass.gone {
+                tx.execute(
+                    "DELETE FROM reminder_hashtags WHERE guid = ?1",
+                    params![gone],
+                )?;
+                tx.execute(
+                    "DELETE FROM reminder_attachments WHERE guid = ?1",
+                    params![gone],
+                )?;
+                tx.execute(
+                    "DELETE FROM reminder_smart_lists WHERE guid = ?1",
+                    params![gone],
+                )?;
+                tx.execute(
+                    "DELETE FROM reminder_early_alerts WHERE reminder_guid = ?1",
+                    params![gone],
+                )?;
+            }
+            let mut tag = tx.prepare(
+                "INSERT INTO reminder_hashtags (guid, reminder_guid, name, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(guid) DO UPDATE SET reminder_guid = excluded.reminder_guid,
+                   name = excluded.name, updated_at = excluded.updated_at",
+            )?;
+            for h in &pass.hashtags {
+                tag.execute(params![h.guid, h.reminder_guid, h.name, stamp])?;
+            }
+            let mut attach = tx.prepare(
+                "INSERT INTO reminder_attachments (guid, reminder_guid, kind, url, uti, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(guid) DO UPDATE SET reminder_guid = excluded.reminder_guid,
+                   kind = excluded.kind, url = excluded.url, uti = excluded.uti,
+                   updated_at = excluded.updated_at",
+            )?;
+            for a in &pass.attachments {
+                attach.execute(params![
+                    a.guid,
+                    a.reminder_guid,
+                    a.kind,
+                    a.url,
+                    a.uti,
+                    stamp
+                ])?;
+            }
+            let mut clear =
+                tx.prepare("DELETE FROM reminder_early_alerts WHERE reminder_guid = ?1")?;
+            let mut alert = tx.prepare(
+                "INSERT OR REPLACE INTO reminder_early_alerts (id, reminder_guid, count, unit, account_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (reminder, account, alerts) in &pass.early_alerts {
+                clear.execute(params![reminder])?;
+                for a in alerts {
+                    alert.execute(params![a.id, reminder, a.count, a.unit, account])?;
+                }
+            }
+            let mut smart = tx.prepare(
+                "INSERT INTO reminder_smart_lists (guid, kind, title, colour, emblem, pinned,
+                                                   sorting, filter, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(guid) DO UPDATE SET kind = excluded.kind, title = excluded.title,
+                   colour = excluded.colour, emblem = excluded.emblem, pinned = excluded.pinned,
+                   sorting = excluded.sorting, filter = excluded.filter,
+                   updated_at = excluded.updated_at",
+            )?;
+            for s in &pass.smart_lists {
+                smart.execute(params![
+                    s.guid,
+                    s.kind,
+                    s.title,
+                    s.colour,
+                    s.emblem,
+                    i64::from(s.pinned),
+                    s.sorting,
+                    s.filter,
+                    stamp
+                ])?;
+            }
+            // A reminder that is gone takes its details with it.
+            tx.execute_batch(
+                "DELETE FROM reminder_hashtags WHERE reminder_guid NOT IN (SELECT guid FROM reminders);
+                 DELETE FROM reminder_attachments WHERE reminder_guid NOT IN (SELECT guid FROM reminders);
+                 DELETE FROM reminder_early_alerts WHERE reminder_guid NOT IN (SELECT guid FROM reminders);",
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// One reminder's tags, link and early alerts.
+    pub fn reminder_detail(&self, guid: &str) -> Result<ReminderDetail> {
+        let mut tags: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT DISTINCT name FROM reminder_hashtags WHERE reminder_guid = ?1")?;
+            let rows = stmt.query_map(params![guid], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        tags.sort_by(|a, b| crate::fold::natural(a, b));
+        tags.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        let mut stmt = self.conn.prepare(
+            "SELECT kind, url FROM reminder_attachments WHERE reminder_guid = ?1 ORDER BY guid",
+        )?;
+        let attachments = stmt
+            .query_map(params![guid], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let url = attachments
+            .iter()
+            .find(|(kind, url)| kind == "URL" && url.is_some())
+            .and_then(|(_, url)| url.clone());
+        let other_attachments = attachments.iter().filter(|(k, _)| k != "URL").count();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, count, unit FROM reminder_early_alerts WHERE reminder_guid = ?1
+             ORDER BY unit, count, id",
+        )?;
+        let early_alerts = stmt
+            .query_map(params![guid], |r| {
+                Ok(EarlyAlert {
+                    id: r.get(0)?,
+                    count: r.get(1)?,
+                    unit: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ReminderDetail {
+            guid: guid.to_string(),
+            tags,
+            url,
+            early_alerts,
+            other_attachments,
+        })
+    }
+
+    /// One reminder's tag records, for a write that removes one by name.
+    pub fn reminder_hashtags(&self, guid: &str) -> Result<Vec<ReminderHashtag>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, reminder_guid, name FROM reminder_hashtags WHERE reminder_guid = ?1",
+        )?;
+        let rows = stmt.query_map(params![guid], |r| {
+            Ok(ReminderHashtag {
+                guid: r.get(0)?,
+                reminder_guid: r.get(1)?,
+                name: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every tag on the account, as the tag browser lists them: one entry per name however it
+    /// is capitalised, with how many reminders still to do carry it.
+    pub fn reminder_tags(&self) -> Result<Vec<TagCount>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT h.name, h.reminder_guid, r.completed_at IS NULL AND l.enabled = 1
+             FROM reminder_hashtags h
+             JOIN reminders r ON r.guid = h.reminder_guid
+             JOIN reminder_lists l ON l.guid = r.list_guid",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut by: std::collections::BTreeMap<
+            String,
+            (String, std::collections::HashSet<String>),
+        > = std::collections::BTreeMap::new();
+        for (name, reminder, open) in rows {
+            let entry = by
+                .entry(tag_key(&name))
+                .or_insert_with(|| (name.clone(), std::collections::HashSet::new()));
+            if open {
+                entry.1.insert(reminder);
+            }
+        }
+        let mut out: Vec<TagCount> = by
+            .into_values()
+            .map(|(name, open)| TagCount {
+                name,
+                open: open.len(),
+            })
+            .collect();
+        out.sort_by(|a, b| crate::fold::natural(&a.name, &b.name));
+        Ok(out)
+    }
+
+    /// Reminders still to do carrying a tag, matched however it is capitalised.
+    pub fn reminders_tagged(&self, name: &str) -> Result<Vec<Reminder>> {
+        let key = tag_key(name);
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM reminders r JOIN reminder_lists l ON l.guid = r.list_guid
+             WHERE l.enabled = 1 AND r.completed_at IS NULL AND r.guid IN
+               (SELECT reminder_guid FROM reminder_hashtags WHERE lower(name) = ?1)
+             ORDER BY r.due_at IS NULL, r.due_at, r.priority DESC, r.title
+             LIMIT {MOST_AT_ONCE}",
+            prefixed_columns()
+        ))?;
+        // SQLite lowers ASCII only; the match is checked again in Rust below for the rest.
+        let rows = stmt.query_map(params![key], reminder_row)?;
+        let mut found: Vec<Reminder> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|(r, _)| r)
+            .collect();
+        if found.is_empty() && !key.is_ascii() {
+            let tagged: std::collections::HashSet<String> = self
+                .all_tags_by_reminder()?
+                .into_iter()
+                .filter(|(_, tags)| tags.contains(&key))
+                .map(|(r, _)| r)
+                .collect();
+            found = self
+                .open_reminders()?
+                .into_iter()
+                .filter(|r| tagged.contains(&r.guid))
+                .take(MOST_AT_ONCE)
+                .collect();
+        }
+        Ok(found)
+    }
+
+    fn all_tags_by_reminder(&self) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT reminder_guid, name FROM reminder_hashtags")?;
+        let mut by: std::collections::HashMap<String, Vec<String>> = Default::default();
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (reminder, name) = row?;
+            by.entry(reminder).or_default().push(tag_key(&name));
+        }
+        Ok(by)
+    }
+
+    fn open_reminders(&self) -> Result<Vec<Reminder>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM reminders r JOIN reminder_lists l ON l.guid = r.list_guid
+             WHERE l.enabled = 1 AND r.completed_at IS NULL
+             ORDER BY r.due_at IS NULL, r.due_at, r.priority DESC, r.title",
+            prefixed_columns()
+        ))?;
+        let rows = stmt.query_map([], reminder_row)?;
+        Ok(rows
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|(r, _)| r)
+            .collect())
+    }
+
+    /// The account's smart lists, built-in and custom, as Apple holds them.
+    pub fn reminder_smart_lists(&self) -> Result<Vec<ReminderSmartList>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, kind, title, colour, emblem, pinned, sorting, filter
+             FROM reminder_smart_lists ORDER BY kind != 'custom', title, guid",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ReminderSmartList {
+                guid: r.get(0)?,
+                kind: r.get(1)?,
+                title: r.get(2)?,
+                colour: r.get(3)?,
+                emblem: r.get(4)?,
+                pinned: r.get::<_, i64>(5)? != 0,
+                sorting: r.get(6)?,
+                filter: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// What a custom smart list holds at `now`, worked out here from its filter.
+    pub fn reminders_in_smart_list(&self, guid: &str, now: i64) -> Result<SmartListContents> {
+        let filter = self
+            .reminder_smart_lists()?
+            .into_iter()
+            .find(|s| s.guid == guid)
+            .and_then(|s| s.filter);
+        let Some(filter) = filter else {
+            return Ok(SmartListContents {
+                reminders: Vec::new(),
+                unknown: vec!["(no filter)".into()],
+            });
+        };
+        let filter = SmartFilter::decode(&filter);
+        Ok(SmartListContents {
+            reminders: self.reminders_matching(&filter, now)?,
+            unknown: filter.unknown,
+        })
+    }
+
+    /// Reminders still to do that a decoded filter holds.
+    pub fn reminders_matching(&self, filter: &SmartFilter, now: i64) -> Result<Vec<Reminder>> {
+        let tags = self.all_tags_by_reminder()?;
+        let none: Vec<String> = Vec::new();
+        Ok(self
+            .open_reminders()?
+            .into_iter()
+            .filter(|r| filter.holds(r, tags.get(&r.guid).unwrap_or(&none), now))
+            .take(MOST_AT_ONCE)
+            .collect())
+    }
+
+    /// The account id Apple writes inside early alerts, from any reminder that has one: a new
+    /// alert is written with the same.
+    pub fn early_alert_account(&self) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT account_id FROM reminder_early_alerts WHERE account_id IS NOT NULL LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// A section made or renamed here, shown before the next pass brings Apple's copy.
+    pub fn put_reminder_section_local(&mut self, section: &ReminderSection) -> Result<()> {
+        self.put_reminder_sections(std::slice::from_ref(section), &[])
+    }
+
+    /// One reminder moved into a section of its list, or out of every one, here at once.
+    /// A section not in this library, or in another list, places nothing.
+    pub fn set_reminder_section(&mut self, reminder: &str, section: Option<&str>) -> Result<()> {
+        match section {
+            None => {
+                self.conn.execute(
+                    "UPDATE reminders SET section_guid = NULL WHERE guid = ?1",
+                    params![reminder],
+                )?;
+            }
+            Some(section) => {
+                self.conn.execute(
+                    "UPDATE reminders SET section_guid = ?2 WHERE guid = ?1
+                       AND EXISTS (SELECT 1 FROM reminder_sections s
+                                   WHERE s.guid = ?2 AND s.list_guid = reminders.list_guid)",
+                    params![reminder, section],
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// [`REMINDER_COLUMNS`] qualified with `r.`, for queries that join the list.
+fn prefixed_columns() -> String {
+    "r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at, r.priority, r.flagged,
+     r.parent_guid, r.recur_frequency, r.recur_interval, r.etag, r.timezone, r.section_guid,
+     r.all_day,
+     CASE WHEN json_valid(r.raw) THEN json_extract(r.raw, '$.fields.CreationDate.value') END"
+        .to_string()
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    fn reminder(guid: &str, list: &str) -> Reminder {
+        Reminder {
+            guid: guid.into(),
+            list_guid: list.into(),
+            title: guid.into(),
+            ..Default::default()
+        }
+    }
+
+    fn library() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        let list = |g: &str| ReminderList {
+            guid: g.into(),
+            title: g.into(),
+            enabled: true,
+            ..Default::default()
+        };
+        lib.put_reminder_lists(&[list("List/A"), list("List/B")])
+            .unwrap();
+        let mut high = reminder("Reminder/1", "List/A");
+        high.priority = 1;
+        let mut flagged = reminder("Reminder/2", "List/B");
+        flagged.flagged = true;
+        flagged.priority = 5;
+        let mut done = reminder("Reminder/3", "List/A");
+        done.completed_at = Some(1);
+        lib.put_reminders(&[high, flagged, done, reminder("Reminder/4", "List/B")])
+            .unwrap();
+        let tag = |g: &str, r: &str, n: &str| ReminderHashtag {
+            guid: g.into(),
+            reminder_guid: r.into(),
+            name: n.into(),
+        };
+        lib.put_reminder_details(&ReminderDetailsPass {
+            whole: true,
+            hashtags: vec![
+                tag("Hashtag/a", "Reminder/1", "work"),
+                tag("Hashtag/b", "Reminder/2", "Work"),
+                tag("Hashtag/c", "Reminder/2", "home"),
+                tag("Hashtag/d", "Reminder/3", "work"),
+            ],
+            attachments: vec![
+                ReminderAttachment {
+                    guid: "Attachment/u".into(),
+                    reminder_guid: "Reminder/1".into(),
+                    kind: "URL".into(),
+                    url: Some("https://example.com/x".into()),
+                    uti: Some("public.url".into()),
+                },
+                ReminderAttachment {
+                    guid: "Attachment/f".into(),
+                    reminder_guid: "Reminder/1".into(),
+                    kind: "Image".into(),
+                    url: None,
+                    uti: Some("public.jpeg".into()),
+                },
+            ],
+            early_alerts: vec![(
+                "Reminder/1".into(),
+                Some("ACCT".into()),
+                vec![EarlyAlert {
+                    id: "E1".into(),
+                    count: 30,
+                    unit: 0,
+                }],
+            )],
+            smart_lists: vec![ReminderSmartList {
+                guid: "SmartList/S".into(),
+                kind: "custom".into(),
+                title: Some("Medium".into()),
+                filter: Some(r#"{"priorities":["medium"]}"#.into()),
+                ..Default::default()
+            }],
+            gone: vec![],
+        })
+        .unwrap();
+        lib
+    }
+
+    #[test]
+    fn a_reminder_detail_has_its_tags_link_and_early_alert() {
+        let lib = library();
+        let d = lib.reminder_detail("Reminder/1").unwrap();
+        assert_eq!(d.tags, vec!["work".to_string()]);
+        assert_eq!(d.url.as_deref(), Some("https://example.com/x"));
+        assert_eq!(d.other_attachments, 1);
+        assert_eq!(
+            d.early_alerts,
+            vec![EarlyAlert {
+                id: "E1".into(),
+                count: 30,
+                unit: 0
+            }]
+        );
+        assert_eq!(lib.early_alert_account().unwrap().as_deref(), Some("ACCT"));
+        assert_eq!(
+            lib.reminder_detail("Reminder/4").unwrap(),
+            ReminderDetail {
+                guid: "Reminder/4".into(),
+                ..Default::default()
+            }
+        );
+    }
+
+    /// One entry per tag however it is capitalised, counting only reminders still to do.
+    #[test]
+    fn tags_are_listed_once_with_open_counts() {
+        let lib = library();
+        let tags = lib.reminder_tags().unwrap();
+        let names: Vec<(&str, usize)> = tags.iter().map(|t| (t.name.as_str(), t.open)).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&("home", 1)));
+        assert!(names
+            .iter()
+            .any(|(n, c)| n.eq_ignore_ascii_case("work") && *c == 2));
+        let tagged: Vec<String> = lib
+            .reminders_tagged("#WORK")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.guid)
+            .collect();
+        assert_eq!(tagged.len(), 2);
+        assert!(
+            !tagged.contains(&"Reminder/3".to_string()),
+            "done ones are not shown"
+        );
+    }
+
+    /// An incremental pass lays itself over what is stored; a gone record goes; a reminder
+    /// that comes back without its alert loses it.
+    #[test]
+    fn an_incremental_pass_merges_and_forgets() {
+        let mut lib = library();
+        lib.put_reminder_details(&ReminderDetailsPass {
+            whole: false,
+            early_alerts: vec![("Reminder/1".into(), None, vec![])],
+            gone: vec!["Hashtag/a".into(), "Attachment/u".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        let d = lib.reminder_detail("Reminder/1").unwrap();
+        assert!(d.tags.is_empty());
+        assert_eq!(d.url, None);
+        assert!(d.early_alerts.is_empty());
+        assert_eq!(lib.reminder_detail("Reminder/2").unwrap().tags.len(), 2);
+        assert_eq!(lib.reminder_smart_lists().unwrap().len(), 1, "kept");
+    }
+
+    /// A reminder deleted takes its details with it.
+    #[test]
+    fn details_of_a_deleted_reminder_go() {
+        let mut lib = library();
+        lib.forget_reminders(&["Reminder/2".into()], &[]).unwrap();
+        lib.put_reminder_details(&ReminderDetailsPass::default())
+            .unwrap();
+        assert!(lib
+            .reminder_tags()
+            .unwrap()
+            .iter()
+            .all(|t| t.name != "home"));
+    }
+
+    /// The one filter measured on a real account.
+    #[test]
+    fn the_measured_priority_filter_decodes_and_matches() {
+        let lib = library();
+        let got = lib.reminders_in_smart_list("SmartList/S", 0).unwrap();
+        assert!(got.unknown.is_empty());
+        assert_eq!(
+            got.reminders
+                .iter()
+                .map(|r| r.guid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Reminder/2"]
+        );
+    }
+
+    #[test]
+    fn common_filters_decode() {
+        let f = SmartFilter::decode(
+            r##"{"hashtags":{"hashtags":["#Work","home"],"operation":"or"},
+                "flagged":true,"priorities":["high","low"],
+                "lists":["0AB1-X"],"operation":"any",
+                "date":{"type":"today"},"minimumSupportedVersion":20230430}"##,
+        );
+        assert!(!f.match_all);
+        let tags = f.tags.clone().unwrap();
+        assert_eq!(tags.names, vec!["home".to_string(), "work".to_string()]);
+        assert!(!tags.all);
+        assert_eq!(f.flagged, Some(true));
+        assert_eq!(f.priorities, vec![1, 9]);
+        assert_eq!(f.lists, vec!["List/0AB1-X".to_string()]);
+        assert_eq!(f.date, Some(DateFilter::Today));
+        assert!(f.unknown.is_empty(), "{:?}", f.unknown);
+
+        let range = SmartFilter::decode(r#"{"date":{"start":800000000,"end":800086400}}"#);
+        assert_eq!(
+            range.date,
+            Some(DateFilter::Range {
+                from: 800_000_000 + APPLE_EPOCH,
+                to: 800_086_400 + APPLE_EPOCH
+            })
+        );
+        let relative =
+            SmartFilter::decode(r#"{"date":{"type":"relative","count":3,"unit":"day"}}"#);
+        assert!(matches!(
+            relative.date,
+            Some(DateFilter::Relative {
+                count: 3,
+                past: false,
+                ..
+            })
+        ));
+    }
+
+    /// What is not understood is named, not guessed.
+    #[test]
+    fn unknown_filter_parts_are_reported() {
+        let f = SmartFilter::decode(r#"{"location":{"x":1},"priorities":["urgent"]}"#);
+        assert!(f.unknown.iter().any(|u| u == "location"));
+        assert!(f.unknown.iter().any(|u| u.contains("urgent")));
+        assert!(!SmartFilter::decode("not json").unknown.is_empty());
+    }
+
+    #[test]
+    fn all_and_any_combine_as_apple_does() {
+        let lib = library();
+        let ids = |f: &str| -> Vec<String> {
+            let mut v: Vec<String> = lib
+                .reminders_matching(&SmartFilter::decode(f), 0)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.guid)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            ids(r#"{"hashtags":["work"],"flagged":true}"#),
+            vec!["Reminder/2"]
+        );
+        assert_eq!(
+            ids(r#"{"hashtags":["work"],"flagged":true,"operation":"any"}"#),
+            vec!["Reminder/1", "Reminder/2"]
+        );
+        assert_eq!(
+            ids(r#"{"lists":["List/B"]}"#),
+            vec!["Reminder/2", "Reminder/4"]
+        );
+        assert_eq!(
+            ids(r#"{"hashtags":{"hashtags":["work","home"],"operation":"and"}}"#),
+            vec!["Reminder/2"]
+        );
+        assert!(ids("{}").is_empty(), "no criteria holds nothing");
+    }
+
+    #[test]
+    fn date_filters_hold_against_the_clock() {
+        let now = 1_800_000_000;
+        let mut due = reminder("R", "L");
+        due.due_at = Some(now - 60);
+        assert!(date_holds(&DateFilter::Overdue, &due, now));
+        assert!(date_holds(&DateFilter::Today, &due, now));
+        assert!(date_holds(&DateFilter::Any, &due, now));
+        let week = DateFilter::Relative {
+            count: 7,
+            unit: "day".into(),
+            past: false,
+        };
+        due.due_at = Some(now + 3 * 86_400);
+        assert!(date_holds(&week, &due, now));
+        due.due_at = Some(now + 30 * 86_400);
+        assert!(!date_holds(&week, &due, now));
+        due.due_at = None;
+        assert!(!date_holds(&DateFilter::Any, &due, now));
+    }
+
+    #[test]
+    fn a_reminder_moves_into_a_section_of_its_own_list_only() {
+        let mut lib = library();
+        lib.put_reminder_section_local(&ReminderSection {
+            guid: "ListSection/S".into(),
+            list_guid: "List/A".into(),
+            title: "Soon".into(),
+            created_at: None,
+        })
+        .unwrap();
+        lib.set_reminder_section("Reminder/1", Some("ListSection/S"))
+            .unwrap();
+        lib.set_reminder_section("Reminder/2", Some("ListSection/S"))
+            .unwrap();
+        assert_eq!(
+            lib.reminder("Reminder/1")
+                .unwrap()
+                .unwrap()
+                .section_guid
+                .as_deref(),
+            Some("ListSection/S")
+        );
+        assert_eq!(
+            lib.reminder("Reminder/2").unwrap().unwrap().section_guid,
+            None
+        );
+        lib.set_reminder_section("Reminder/1", None).unwrap();
+        assert_eq!(
+            lib.reminder("Reminder/1").unwrap().unwrap().section_guid,
+            None
         );
     }
 }

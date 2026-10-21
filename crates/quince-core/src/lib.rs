@@ -44,6 +44,26 @@ fn account_tables(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
+/// Run every migration past the library's version, each with its version bump as one
+/// transaction: a migration that fails part way, or a crash in the middle of one, leaves the
+/// library at the version before it with none of it applied — never half a schema change
+/// that the next open would try to make again over itself, nor a change made whose version
+/// was never written.
+fn migrate_with(conn: &mut Connection, migrations: &[&str]) -> Result<()> {
+    let current: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    for (version, sql) in migrations.iter().enumerate() {
+        let target = u32::try_from(version).unwrap_or(u32::MAX) + 1;
+        if current < target {
+            let tx = conn.transaction()?;
+            tx.execute_batch(sql)?;
+            // `user_version` lives in the database header, written inside the transaction.
+            tx.pragma_update(None, "user_version", i64::from(target))?;
+            tx.commit()?;
+        }
+    }
+    Ok(())
+}
+
 /// A handle to the local library.
 pub struct Library {
     conn: Connection,
@@ -68,25 +88,57 @@ impl Library {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        let library = Self { conn };
+        let mut library = Self { conn };
         library.migrate()?;
         Ok(library)
     }
 
     /// Bring the schema up to date. Idempotent, and safe to call on every open.
-    fn migrate(&self) -> Result<()> {
-        let current: u32 = self
-            .conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        for (version, sql) in schema::MIGRATIONS.iter().enumerate() {
-            let target = u32::try_from(version).unwrap_or(u32::MAX) + 1;
-            if current < target {
-                self.conn.execute_batch(sql)?;
-                self.conn
-                    .pragma_update(None, "user_version", i64::from(target))?;
+    fn migrate(&mut self) -> Result<()> {
+        migrate_with(&mut self.conn, schema::MIGRATIONS)
+    }
+
+    /// Run `apply` as one change to the library: everything it stores lands, or — if it
+    /// fails, or the process dies part way — none of it does, and the library is as it was.
+    ///
+    /// A sync pass stores a service's records, tombstones, order and position in many calls;
+    /// each was its own transaction, so a failure or a crash between them left half a pass —
+    /// rows pruned and their replacements never stored, or records stored under a position
+    /// that said they were not. Nests: every write in this crate is a savepoint, so one call
+    /// inside another is part of the outer one.
+    pub fn atomically<T, E>(
+        &mut self,
+        apply: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<Error>,
+    {
+        const NAME: &str = "quince_atomically";
+        self.conn
+            .execute_batch(&format!("SAVEPOINT {NAME}"))
+            .map_err(|e| E::from(Error::from(e)))?;
+        let undo = |conn: &Connection| {
+            let _ = conn.execute_batch(&format!("ROLLBACK TO {NAME}; RELEASE {NAME}"));
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(&mut *self)));
+        match outcome {
+            Ok(Ok(value)) => match self.conn.execute_batch(&format!("RELEASE {NAME}")) {
+                Ok(()) => Ok(value),
+                Err(e) => {
+                    undo(&self.conn);
+                    Err(E::from(Error::from(e)))
+                }
+            },
+            Ok(Err(e)) => {
+                undo(&self.conn);
+                Err(e)
+            }
+            // Left open, every later write would sit inside this savepoint and never commit.
+            Err(panic) => {
+                undo(&self.conn);
+                std::panic::resume_unwind(panic)
             }
         }
-        Ok(())
     }
 
     pub fn schema_version(&self) -> Result<u32> {
@@ -122,7 +174,7 @@ impl Library {
     /// Signed out and back in as someone else, the last account's data stayed and the new
     /// one's was laid over it, from the old account's sync positions.
     pub fn forget_account(&mut self) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         for table in account_tables(&tx)? {
             tx.execute(&format!("DELETE FROM \"{table}\""), [])?;
         }
@@ -233,6 +285,125 @@ mod tests {
             "this computer's settings kept"
         );
         assert_eq!(lib.state("drive_folder_on").unwrap().as_deref(), Some("1"));
+    }
+
+    /// A migration that fails part way leaves nothing of itself and the version where it was;
+    /// the ones before it stay applied. Run again (fixed), it applies whole.
+    #[test]
+    fn a_failed_migration_leaves_the_library_at_the_version_before_it() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let good = "CREATE TABLE a (x INTEGER);";
+        // The first statement would succeed on its own; the second fails.
+        let bad = "CREATE TABLE b (x INTEGER); INSERT INTO nowhere VALUES (1);";
+        assert!(migrate_with(&mut conn, &[good, bad]).is_err());
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1, "the version bump went with the migration");
+        let has = |conn: &Connection, t: &str| -> bool {
+            conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = ?1)",
+                [t],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(has(&conn, "a"), "the migration before it stays");
+        assert!(!has(&conn, "b"), "nothing of the failed one persists");
+        let fixed = "CREATE TABLE b (x INTEGER);";
+        migrate_with(&mut conn, &[good, fixed]).unwrap();
+        assert!(has(&conn, "b"));
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    /// The same on disk, through a real file: what a crash mid-migration would find on reopen.
+    #[test]
+    fn a_failed_migration_is_not_on_disk_either() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            let _ = migrate_with(
+                &mut conn,
+                &[
+                    "CREATE TABLE a (x INTEGER);",
+                    "ALTER TABLE a ADD COLUMN y INTEGER; SELECT RAISE(ABORT, 'boom');",
+                ],
+            );
+        }
+        let conn = Connection::open(&path).unwrap();
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+        let columns: i64 = conn
+            .query_row("SELECT count(*) FROM pragma_table_info('a')", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            columns, 1,
+            "the column of the failed migration is not there"
+        );
+    }
+
+    /// One change made of many core writes — each its own savepoint — is all or nothing.
+    #[test]
+    fn an_atomic_change_that_fails_leaves_nothing_behind() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.set_state("kept", "before").unwrap();
+        let failed: std::result::Result<(), Error> = lib.atomically(|l| {
+            l.set_state("kept", "after")?;
+            l.mark_synced("notes", Some("new-token"))?;
+            l.forget_account()?;
+            // A failure after all of that: none of it may persist.
+            Err(Error::Sqlite(rusqlite::Error::InvalidQuery))
+        });
+        assert!(failed.is_err());
+        assert_eq!(lib.state("kept").unwrap().as_deref(), Some("before"));
+        assert_eq!(lib.sync_token("notes").unwrap(), None);
+        assert!(lib.conn().is_autocommit(), "nothing left open");
+
+        lib.atomically(|l| -> Result<()> {
+            l.set_state("kept", "after")?;
+            // Nested: part of the outer change.
+            l.atomically(|l| l.set_state("inner", "1"))
+        })
+        .unwrap();
+        assert_eq!(lib.state("kept").unwrap().as_deref(), Some("after"));
+        assert_eq!(lib.state("inner").unwrap().as_deref(), Some("1"));
+
+        // A nested change that fails takes only itself back when the outer one carries on.
+        lib.atomically(|l| -> Result<()> {
+            l.set_state("outer", "1")?;
+            let _ = l.atomically(|l| -> Result<()> {
+                l.set_state("inner", "2")?;
+                Err(Error::Sqlite(rusqlite::Error::InvalidQuery))
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(lib.state("outer").unwrap().as_deref(), Some("1"));
+        assert_eq!(lib.state("inner").unwrap().as_deref(), Some("1"));
+    }
+
+    /// A panic part way rolls back and leaves the connection usable, not stuck inside a
+    /// savepoint that would swallow every later write.
+    #[test]
+    fn a_panic_in_an_atomic_change_rolls_it_back() {
+        let mut lib = Library::in_memory().unwrap();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<()> = lib.atomically(|l| {
+                l.set_state("k", "v").unwrap();
+                panic!("mid-apply");
+            });
+        }));
+        assert!(caught.is_err());
+        assert!(lib.conn().is_autocommit());
+        assert_eq!(lib.state("k").unwrap(), None);
     }
 
     #[test]

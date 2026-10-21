@@ -59,7 +59,7 @@ impl Library {
     /// Removal cascades to their events, which is what should happen when a calendar is
     /// deleted on another device.
     pub fn put_calendars(&mut self, calendars: &[Calendar]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO calendars (guid, title, colour, ctag, sort_order, enabled,
@@ -108,7 +108,7 @@ impl Library {
 
     /// Upsert events. Existing rows for the same guid are updated in place.
     pub fn put_events(&mut self, events: &[Event]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO events (guid, calendar_guid, title, location, starts_at, ends_at,
@@ -269,7 +269,7 @@ impl Library {
 
     /// Drop events Apple no longer has.
     pub fn forget_events(&mut self, guids: &[String]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare("DELETE FROM events WHERE guid = ?1")?;
             for guid in guids {

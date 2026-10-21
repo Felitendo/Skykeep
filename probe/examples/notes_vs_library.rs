@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
     let walk = zc.all_records("Notes", None).await?;
     let db = rusqlite::Connection::open_with_flags(
         std::path::PathBuf::from(std::env::var("HOME")?)
-            .join(".local/share/dev.quince.client/library.db"),
+            .join(".local/share/io.github.yashwanthkamireddi.Pomander/library.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let mut apple = std::collections::HashSet::new();

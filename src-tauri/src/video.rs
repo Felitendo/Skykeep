@@ -3,6 +3,13 @@
 //! a page of ours may not load `file://`. So the disk cache's videos are served over HTTP on
 //! the loopback interface: a port of the system's choosing, a fresh secret in every path, only
 //! cached videos by asset id, in the ranges the player asks for, streamed from disk.
+//!
+//! Only the window can read it. The port is open to every program and every user on this
+//! computer, and to any web page a browser here shows, so a request is answered only when it
+//! carries the secret (122 random bits, made at each start and given to the window alone), is
+//! addressed to `127.0.0.1:<port>` by name (a page that rebinds its own name to this computer
+//! still says its own name), and comes from no web page (no `Origin` but the app's). No CORS
+//! header is ever sent, so a page that guessed everything still could not read the answer.
 
 use crate::photos::{self, Film, Size};
 use std::sync::OnceLock;
@@ -45,10 +52,26 @@ where
     F: Fn(String, Size) -> Fut + Clone + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Film, String>> + Send,
 {
-    while let Ok((stream, _)) = listener.accept().await {
-        let (find, secret) = (find.clone(), secret.clone());
+    let Ok(addr) = listener.local_addr() else {
+        return;
+    };
+    let host = format!("127.0.0.1:{}", addr.port());
+    while let Ok((stream, peer)) = listener.accept().await {
+        // Bound to loopback, so nothing else can connect; checked all the same.
+        if !peer.ip().is_loopback() {
+            continue;
+        }
+        let (find, secret, host) = (find.clone(), secret.clone(), host.clone());
         tauri::async_runtime::spawn(async move {
-            let _ = answer(find, &secret, stream).await;
+            let _ = answer(
+                find,
+                &Gate {
+                    secret: &secret,
+                    host: &host,
+                },
+                stream,
+            )
+            .await;
         });
     }
 }
@@ -62,8 +85,33 @@ struct Asked {
     head: bool,
 }
 
+/// What a request must show to be answered: the secret in its path, and this server's own
+/// address as its `Host`.
+struct Gate<'a> {
+    secret: &'a str,
+    host: &'a str,
+}
+
+/// The same bytes, compared in a time that does not tell how many matched.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+/// Every value a header is given, in order: a request that names two hosts is refused, not
+/// read one way here and another elsewhere.
+fn headers<'a>(lines: &'a [String], name: &str) -> Vec<&'a str> {
+    lines
+        .iter()
+        .skip(1)
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim().eq_ignore_ascii_case(name).then_some(v.trim())
+        })
+        .collect()
+}
+
 /// The request line and headers, read up to the blank line; anything not ours is `None`.
-fn parse(secret: &str, lines: &[String]) -> Option<Asked> {
+fn parse(gate: &Gate<'_>, lines: &[String]) -> Option<Asked> {
     let mut first = lines.first()?.split_whitespace();
     let method = first.next()?;
     let head = match method {
@@ -72,17 +120,29 @@ fn parse(secret: &str, lines: &[String]) -> Option<Asked> {
         _ => return None,
     };
     let path = first.next()?.split('?').next()?;
-    let rest = path.strip_prefix('/')?.strip_prefix(secret)?;
+    // Addressed to this server by its own address: a web page whose name was rebound to this
+    // computer (DNS rebinding) still sends its own name.
+    match headers(lines, "host").as_slice() {
+        [host] if same(host.as_bytes(), gate.host.as_bytes()) => {}
+        _ => return None,
+    }
+    // Asked by the window's player, never by a web page: one sends an `Origin` of its own.
+    if headers(lines, "origin")
+        .iter()
+        .any(|o| !matches!(*o, "tauri://localhost" | "http://tauri.localhost"))
+    {
+        return None;
+    }
+    let rest = path.strip_prefix('/')?;
+    let (key, rest) = rest.split_at_checked(gate.secret.len())?;
+    if !same(key.as_bytes(), gate.secret.as_bytes()) {
+        return None;
+    }
     let (id, size) = photos::requested(&format!("pic{rest}"))?;
     if !matches!(size, Size::Original | Size::Video) {
         return None;
     }
-    let range = lines.iter().skip(1).find_map(|l| {
-        let (k, v) = l.split_once(':')?;
-        k.trim()
-            .eq_ignore_ascii_case("range")
-            .then(|| v.trim().to_string())
-    });
+    let range = headers(lines, "range").first().map(|v| (*v).to_string());
     Some(Asked {
         id,
         size,
@@ -91,7 +151,7 @@ fn parse(secret: &str, lines: &[String]) -> Option<Asked> {
     })
 }
 
-async fn answer<F, Fut>(find: F, secret: &str, stream: TcpStream) -> std::io::Result<()>
+async fn answer<F, Fut>(find: F, gate: &Gate<'_>, stream: TcpStream) -> std::io::Result<()>
 where
     F: Fn(String, Size) -> Fut,
     Fut: std::future::Future<Output = Result<Film, String>>,
@@ -112,7 +172,7 @@ where
         lines.push(line);
     }
     let mut stream = reader.into_inner();
-    let Some(asked) = parse(secret, &lines) else {
+    let Some(asked) = parse(gate, &lines) else {
         return status(&mut stream, "404 Not Found", "").await;
     };
     let Ok(film) = find(asked.id.clone(), asked.size).await else {
@@ -228,7 +288,14 @@ mod tests {
     use super::*;
 
     /// One raw request to the server, and its whole answer: head and body.
+    /// Sent as the window's player sends it, addressed to the server by its own address — unless
+    /// the request names a host of its own.
     async fn get(port: u16, request: &str) -> (String, Vec<u8>) {
+        let request = if request.to_ascii_lowercase().contains("\r\nhost:") {
+            request.to_string()
+        } else {
+            request.replacen("\r\n", &format!("\r\nHost: 127.0.0.1:{port}\r\n"), 1)
+        };
         let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         s.write_all(request.as_bytes()).await.unwrap();
         let mut all = Vec::new();
@@ -262,7 +329,7 @@ mod tests {
                 }
             }));
 
-            let (head, body) = get(port, "GET /k3y/v1/original HTTP/1.1\r\nHost: x\r\n\r\n").await;
+            let (head, body) = get(port, "GET /k3y/v1/original HTTP/1.1\r\n\r\n").await;
             assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
             assert!(
                 head.contains("Accept-Ranges: bytes") && head.contains("Content-Type: video/mp4")
@@ -308,6 +375,31 @@ mod tests {
             assert!(head.starts_with("HTTP/1.1 404"), "{head}");
             let (head, _) = get(port, "GET /k3y/v2/original HTTP/1.1\r\n\r\n").await;
             assert!(head.starts_with("HTTP/1.1 404"), "{head}");
+            // The secret alone is not enough: a page whose name was rebound to this computer,
+            // a request with no host, a web page's own request — none is read.
+            for refused in [
+                "GET /k3y/v1/original HTTP/1.1\r\nHost: evil.example:80\r\n\r\n".to_string(),
+                format!("GET /k3y/v1/original HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n"),
+                format!(
+                    "GET /k3y/v1/original HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                     Host: evil.example\r\n\r\n"
+                ),
+                "GET /k3y/v1/original HTTP/1.0\r\nHost:\r\n\r\n".to_string(),
+                "GET /k3y/v1/original HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n".to_string(),
+            ] {
+                let (head, body) = get(port, &refused).await;
+                assert!(head.starts_with("HTTP/1.1 404"), "{refused}: {head}");
+                assert!(
+                    body.is_empty() && !head.contains("Access-Control"),
+                    "{head}"
+                );
+            }
+            let (head, _) = get(
+                port,
+                "GET /k3y/v1/original HTTP/1.1\r\nOrigin: tauri://localhost\r\n\r\n",
+            )
+            .await;
+            assert!(head.starts_with("HTTP/1.1 200"), "{head}");
             std::fs::remove_dir_all(&dir).ok();
         });
     }
@@ -393,16 +485,22 @@ mod tests {
         );
     }
 
-    fn lines(s: &[&str]) -> Vec<String> {
-        s.iter().map(|l| l.to_string()).collect()
+    /// A request to a server whose secret is `s3cret`, addressed to it as the player does.
+    fn ask(s: &[&str]) -> Option<Asked> {
+        let mut l: Vec<String> = s.iter().map(|l| l.to_string()).collect();
+        l.insert(1, "Host: 127.0.0.1:9".into());
+        parse(
+            &Gate {
+                secret: "s3cret",
+                host: "127.0.0.1:9",
+            },
+            &l,
+        )
     }
 
     #[test]
     fn only_our_secret_and_only_videos() {
-        let ok = parse(
-            "s3cret",
-            &lines(&["GET /s3cret/abc-1/original HTTP/1.1", "Range: bytes=0-"]),
-        );
+        let ok = ask(&["GET /s3cret/abc-1/original HTTP/1.1", "Range: bytes=0-"]);
         assert_eq!(
             ok,
             Some(Asked {
@@ -412,35 +510,14 @@ mod tests {
                 head: false
             })
         );
-        let live = parse("s3cret", &lines(&["HEAD /s3cret/abc/video HTTP/1.1"])).unwrap();
+        let live = ask(&["HEAD /s3cret/abc/video HTTP/1.1"]).unwrap();
         assert!(live.head && live.size == Size::Video && live.range.is_none());
         // Someone else's guess, a picture, a path out of the cache, another method.
-        assert_eq!(
-            parse("s3cret", &lines(&["GET /wrong/abc/original HTTP/1.1"])),
-            None
-        );
-        assert_eq!(
-            parse("s3cret", &lines(&["GET /s3cret/abc/full HTTP/1.1"])),
-            None
-        );
-        assert_eq!(
-            parse("s3cret", &lines(&["GET /s3cret/../x/original HTTP/1.1"])),
-            None
-        );
-        assert_eq!(
-            parse(
-                "s3cret",
-                &lines(&["GET /s3cret/a%2F..%2Fb/original HTTP/1.1"])
-            ),
-            None
-        );
-        assert_eq!(
-            parse("s3cret", &lines(&["POST /s3cret/abc/original HTTP/1.1"])),
-            None
-        );
-        assert_eq!(
-            parse("s3cret", &lines(&["GET /s3cretabc/original HTTP/1.1"])),
-            None
-        );
+        assert_eq!(ask(&["GET /wrong/abc/original HTTP/1.1"]), None);
+        assert_eq!(ask(&["GET /s3cret/abc/full HTTP/1.1"]), None);
+        assert_eq!(ask(&["GET /s3cret/../x/original HTTP/1.1"]), None);
+        assert_eq!(ask(&["GET /s3cret/a%2F..%2Fb/original HTTP/1.1"]), None);
+        assert_eq!(ask(&["POST /s3cret/abc/original HTTP/1.1"]), None);
+        assert_eq!(ask(&["GET /s3cretabc/original HTTP/1.1"]), None);
     }
 }

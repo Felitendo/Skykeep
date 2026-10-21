@@ -722,20 +722,10 @@ fn rebuild_note_with(
     Some(out)
 }
 
-/// A text object rewritten to say `new_text`, as a device would edit it: the merge records
-/// edited in step and every other field copied through. The same message shape serves a
-/// note's body and each cell of a Notes table, so a table's cells are edited by this too.
-/// `None` when the object is not one this can rewrite truthfully.
-pub(crate) fn rewrite_text_object(
-    object: &[u8],
-    old_text: &str,
-    new_text: &str,
-) -> Option<Vec<u8>> {
-    rebuild_note(object, old_text, new_text)
-}
-
-/// [`rewrite_text_object`] for one edit at a known place: `removed` characters from character
-/// `at` replaced by `inserted`.
+/// A text object rewritten as a device would edit it — the merge records edited in step and
+/// every other field copied through — for one edit at a known place: `removed` characters
+/// from character `at` replaced by `inserted`. The same message shape serves a note's body
+/// and a Notes table's texts (its rows' and columns' ordered sets).
 pub(crate) fn rewrite_text_object_at(
     object: &[u8],
     old_text: &str,
@@ -1131,9 +1121,25 @@ pub fn set_runs(original: &[u8], runs: &[Run]) -> Option<Vec<u8>> {
 /// `old`: each one already in `old`, none used twice, and each on a run of exactly one
 /// object-replacement character.
 fn attachments_sound(old: &[Vec<u8>], new: &[Vec<u8>], units: &[u16]) -> Option<()> {
+    attachments_sound_with(old, new, units, None)
+}
+
+/// [`attachments_sound`], with one attachment `added` allowed that `old` did not have — a
+/// fresh id, never one `old` already used — which must then appear exactly once.
+fn attachments_sound_with(
+    old: &[Vec<u8>],
+    new: &[Vec<u8>],
+    units: &[u16],
+    added: Option<&[u8]>,
+) -> Option<()> {
     let id_of =
         |run: &[u8]| bytes_field(run, ATTACHMENT_INFO).and_then(|info| bytes_field(&info, 1));
-    let had: std::collections::HashSet<Vec<u8>> = old.iter().filter_map(|r| id_of(r)).collect();
+    let mut had: std::collections::HashSet<Vec<u8>> = old.iter().filter_map(|r| id_of(r)).collect();
+    if let Some(added) = added {
+        if !had.insert(added.to_vec()) {
+            return None;
+        }
+    }
     let mut used = std::collections::HashSet::new();
     let mut at = 0usize;
     for run in new {
@@ -1148,6 +1154,9 @@ fn attachments_sound(old: &[Vec<u8>], new: &[Vec<u8>], units: &[u16]) -> Option<
             }
         }
         at += length;
+    }
+    if added.is_some_and(|added| !used.contains(added)) {
+        return None;
     }
     Some(())
 }
@@ -1183,6 +1192,189 @@ pub fn attachments_sound_in_base64(original: &str, edited: &str) -> bool {
         &units,
     )
     .is_some()
+}
+
+/// [`attachments_sound_in_base64`] for a write that adds one attachment: `edited` may refer
+/// to `added` — an id `original` never used — and must, exactly once, on its own
+/// object-replacement character; every other reference is held to the same rule as an edit.
+#[must_use]
+pub fn attachments_sound_adding_in_base64(original: &str, edited: &str, added: &str) -> bool {
+    let (Ok(old), Ok(new)) = (B64.decode(original.trim()), B64.decode(edited.trim())) else {
+        return false;
+    };
+    let Some(text) = inflate(&new)
+        .and_then(|plain| field_at(&plain, TEXT_PATH).map(<[u8]>::to_vec))
+        .and_then(|t| String::from_utf8(t).ok())
+    else {
+        return false;
+    };
+    let units: Vec<u16> = text.encode_utf16().collect();
+    attachments_sound_with(
+        &debug_attribute_runs(&old),
+        &debug_attribute_runs(&new),
+        &units,
+        Some(added.as_bytes()),
+    )
+    .is_some()
+}
+
+/// A note's attribute runs, whole, in order.
+fn runs_in(note: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let mut runs = Vec::new();
+    let mut reader = Reader::new(note);
+    while !reader.done() {
+        let key = reader.varint()?;
+        let (field, wire) = (key >> 3, key & 7);
+        if field == ATTRIBUTE_RUN && wire == WIRE_LEN {
+            let n = usize::try_from(reader.varint()?).ok()?;
+            runs.push(reader.take(n)?.to_vec());
+        } else {
+            reader.skip(wire)?;
+        }
+    }
+    Some(runs)
+}
+
+/// A note with its attribute runs replaced by `runs`, written where the first one stood and
+/// every other field copied through.
+fn with_runs(note: &[u8], runs: &[Vec<u8>]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(note.len() + 64);
+    let mut reader = Reader::new(note);
+    let mut wrote = false;
+    while !reader.done() {
+        let begin = reader.at;
+        let key = reader.varint()?;
+        let (field, wire) = (key >> 3, key & 7);
+        reader.skip(wire)?;
+        if field == ATTRIBUTE_RUN && wire == WIRE_LEN {
+            if !wrote {
+                for r in runs {
+                    out.extend_from_slice(&length_delimited(ATTRIBUTE_RUN, r));
+                }
+                wrote = true;
+            }
+        } else {
+            out.extend_from_slice(note.get(begin..reader.at)?);
+        }
+    }
+    if !wrote {
+        for r in runs {
+            out.extend_from_slice(&length_delimited(ATTRIBUTE_RUN, r));
+        }
+    }
+    Some(out)
+}
+
+/// The run Notes gives an attachment's one character, as a phone writes it (measured on a
+/// picture added on his iPhone): `1` length 1, `12` the attachment — `1` its id, `2` its
+/// type identifier — `13` when it was placed (Unix seconds), then `2` the paragraph's setting,
+/// which every run of a paragraph shares.
+fn attachment_run(id: &str, uti: &str, stamp: u64, paragraph: Option<&[u8]>) -> Vec<u8> {
+    let mut info = length_delimited(1, id.as_bytes());
+    info.extend(length_delimited(2, uti.as_bytes()));
+    let mut run = varint_field(1, 1);
+    run.extend(length_delimited(ATTACHMENT_INFO, &info));
+    run.extend(varint_field(13, stamp));
+    if let Some(p) = paragraph {
+        run.extend(length_delimited(2, p));
+    }
+    run
+}
+
+/// A note with an attachment placed at UTF-16 offset `at`: one object-replacement character
+/// (U+FFFC) inserted there, the merge records edited for that one insertion as a device edits
+/// them, and the character given a run of its own naming the attachment.
+///
+/// Everything else is copied through: the text around it, every other run, the versions. The
+/// new run takes the setting of the paragraph it lands in — its style, its checklist item —
+/// from that paragraph's own runs, so a picture put in a checklist line stays in that line.
+/// `None`, and nothing to write, for an offset past the end or inside a surrogate pair, and for
+/// any document [`replace_text`] would refuse.
+#[must_use]
+pub fn insert_attachment(
+    original: &[u8],
+    at: u64,
+    id: &str,
+    uti: &str,
+    stamp: u64,
+) -> Option<Vec<u8>> {
+    let plain = inflate(original)?;
+    let current = field_at(&plain, TEXT_PATH)?;
+    // The same proof an edit needs: the document can be walked and put back byte for byte.
+    if rewrite(&plain, TEXT_PATH, current)? != plain {
+        return None;
+    }
+    let old_text = std::str::from_utf8(current).ok()?;
+    let units: Vec<u16> = old_text.encode_utf16().collect();
+    let place = usize::try_from(at).ok()?;
+    if place > units.len()
+        || units
+            .get(place)
+            .is_some_and(|u| (0xDC00..0xE000).contains(u))
+    {
+        return None;
+    }
+    let note = field_at(&plain, &TEXT_PATH[..2])?;
+    // Runs that do not describe the text are not built on.
+    if runs_in(note)?.iter().map(|r| run_length(r)).sum::<u64>() != units.len() as u64 {
+        return None;
+    }
+    let mut new_units = units;
+    new_units.insert(place, 0xFFFC);
+    let new_text = String::from_utf16(&new_units).ok()?;
+    let rebuilt = rebuild_note_with(note, old_text, &new_text, &[(at, 0, 1)])?;
+    let runs = runs_in(&rebuilt)?;
+
+    // Which run speaks for the paragraph: the one over its newline, or — the last paragraph,
+    // which has none — over its last character other than the new one.
+    let newline = new_units[place + 1..]
+        .iter()
+        .position(|&u| u == u16::from(b'\n'))
+        .map(|i| place + 1 + i);
+    let speaker = newline
+        .or_else(|| (new_units.len() > place + 1).then(|| new_units.len() - 1))
+        .or_else(|| (place > 0 && new_units[place - 1] != u16::from(b'\n')).then(|| place - 1));
+    let run_over = |unit: usize| {
+        let mut end = 0usize;
+        runs.iter().find(|r| {
+            end += usize::try_from(run_length(r)).unwrap_or(usize::MAX);
+            unit < end
+        })
+    };
+    let paragraph = speaker.and_then(run_over).and_then(|r| bytes_field(r, 2));
+
+    let mut out = Vec::with_capacity(runs.len() + 2);
+    let mut start = 0u64;
+    for run in &runs {
+        let end = start + run_length(run);
+        if (start..end).contains(&at) {
+            if at > start {
+                out.push(set_varint_field(run, 1, at - start)?);
+            }
+            out.push(attachment_run(id, uti, stamp, paragraph.as_deref()));
+            if end > at + 1 {
+                out.push(set_varint_field(run, 1, end - at - 1)?);
+            }
+        } else {
+            out.push(run.clone());
+        }
+        start = end;
+    }
+    let placed = with_runs(&rebuilt, &out)?;
+    ensure_versions(&rewrite(&plain, &TEXT_PATH[..2], &placed)?)
+}
+
+/// [`insert_attachment`] over the base64 a CloudKit field carries, gzipped on the way back.
+#[must_use]
+pub fn insert_attachment_in_base64(
+    original: &str,
+    at: u64,
+    id: &str,
+    uti: &str,
+    stamp: u64,
+) -> Option<String> {
+    let raw = B64.decode(original.trim()).ok()?;
+    Some(B64.encode(gzip(&insert_attachment(&raw, at, id, uti, stamp)?)))
 }
 
 /// The text and its formatting together: the text replaced as [`replace_text`] replaces it,

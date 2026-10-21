@@ -55,6 +55,11 @@ fn trouble_with(zone_result: &Value) -> Option<ZoneTrouble> {
     let reason = zone_result.get("reason").and_then(Value::as_str);
     match code {
         Some("ZONE_NOT_FOUND") => Some(ZoneTrouble::Missing),
+        // An expired change token, with or without a reason. Without this arm a bare
+        // `CHANGE_TOKEN_EXPIRED` matched nothing below and read as an empty, finished page:
+        // "nothing changed", on a token that would never be read again — every change made
+        // elsewhere from then on never arrived.
+        Some("CHANGE_TOKEN_EXPIRED") => Some(ZoneTrouble::StaleCursor),
         // Apple says BAD_REQUEST for a cursor it will not read, with the reason naming the
         // continuation: "Unknown sync continuation type", "Invalid continuation format".
         Some("BAD_REQUEST")
@@ -62,8 +67,10 @@ fn trouble_with(zone_result: &Value) -> Option<ZoneTrouble> {
         {
             Some(ZoneTrouble::StaleCursor)
         }
-        // A reason with no code at all still means the zone was refused.
-        Some(_) | None if reason.is_some() => Some(ZoneTrouble::Other("refused")),
+        // A reason with no code at all still means the zone was refused; so does a code with
+        // no reason — any code at all is Apple saying something went wrong with the zone.
+        Some(_) => Some(ZoneTrouble::Other("refused")),
+        None if reason.is_some() => Some(ZoneTrouble::Other("refused")),
         _ => None,
     }
 }
@@ -251,12 +258,18 @@ impl<'a> ZoneClient<'a> {
     }
 
     async fn walk(&self, zone: &str, since: Option<&str>) -> Result<ZoneWalk> {
+        let since = since.map(str::trim).filter(|t| !t.is_empty());
         let mut records = Vec::new();
         let mut token = since.map(ToString::to_string);
         let mut complete = false;
 
-        for _ in 0..MAX_PAGES {
+        for page_no in 0..MAX_PAGES {
             let page = self.changes(zone, token.as_deref()).await?;
+            // A cursor answered with no position at all was not taken: an expired one can
+            // come back as an empty zone result, which read as "nothing changed" for good.
+            if page_no == 0 && token.is_some() && page.sync_token.is_none() {
+                return Err(Error::StaleCursor);
+            }
             records.extend(page.records);
             token = page.sync_token;
             if !page.more_coming {
@@ -270,6 +283,7 @@ impl<'a> ZoneClient<'a> {
         }
         Ok(ZoneWalk {
             records,
+            from_start: since.is_none(),
             token,
             complete,
         })
@@ -286,6 +300,22 @@ pub struct ZoneWalk {
     pub records: Vec<Value>,
     pub token: Option<String>,
     pub complete: bool,
+    /// Read from the zone's beginning — no cursor asked for, or the cursor refused and the
+    /// walk started over. A walk from a cursor carries only changes, where absence means
+    /// unchanged; one started over after a refused cursor carries everything and is as
+    /// authoritative as a first pass (`ZoneWalk::whole`).
+    pub from_start: bool,
+}
+
+impl ZoneWalk {
+    /// Whether this walk read the zone from its beginning — asked for no cursor, or its cursor
+    /// refused and the walk started over — and to its end. Only such a walk is the whole truth
+    /// that rows missing from it may be pruned by; any other carries changes, or part of the
+    /// zone, where absence means nothing.
+    #[must_use]
+    pub fn whole(&self) -> bool {
+        self.from_start && self.complete
+    }
 }
 
 /// Field helpers. CloudKit wraps every value as `{"type": …, "value": …}`.
@@ -906,19 +936,40 @@ impl ZoneClient<'_> {
         record_name: &str,
         record_type: &str,
         change_tag: Option<&str>,
-        mut changes: Value,
+        changes: Value,
     ) -> Result<Value> {
-        let current = self.lookup_record(zone, record_name).await?;
-        stamp_tokens(&mut changes, current.as_ref());
-        let tag = change_tag.map(ToString::to_string).or_else(|| {
-            current
+        // The token map is one field written whole, worked out from the record as read. The
+        // plain retry resent it after a conflict: every counter a phone had raised in between
+        // went back to what it was before, and the phone's next merge could prefer an older
+        // value of a field this write never touched. So each try is stamped from a fresh read,
+        // and written only over that version.
+        let mut tag = change_tag.map(ToString::to_string);
+        for _ in 0..5 {
+            let current = self.lookup_record(zone, record_name).await?;
+            let mut stamped = changes.clone();
+            stamp_tokens(&mut stamped, current.as_ref());
+            let Some(fresh) = current
                 .as_ref()
                 .and_then(|c| c.get("recordChangeTag"))
                 .and_then(Value::as_str)
-                .map(ToString::to_string)
-        });
-        self.update_record(zone, record_name, record_type, tag.as_deref(), changes)
-            .await
+            else {
+                // Nothing there to stamp against: Apple's own answer to the write says why.
+                return self
+                    .update_record(zone, record_name, record_type, tag.as_deref(), stamped)
+                    .await;
+            };
+            // The caller's tag first, as before: a change made elsewhere since it was read is
+            // still laid under this one, field by field, on the fresh read below.
+            let first = tag.take().unwrap_or_else(|| fresh.to_string());
+            match self
+                .update_record_exact(zone, record_name, record_type, &first, stamped)
+                .await
+            {
+                Err(Error::Conflict) => continue,
+                other => return other,
+            }
+        }
+        Err(Error::Conflict)
     }
 
     /// [`Self::update_record_signed`] with no retry: a conflict comes back as
@@ -1020,18 +1071,29 @@ impl ZoneClient<'_> {
         record_type: &str,
         fields: Value,
     ) -> Result<Value> {
-        self.modify(
-            zone,
-            json!({
-                "operationType": "create",
-                "record": {
-                    "recordName": record_name,
-                    "recordType": record_type,
-                    "fields": fields,
-                },
-            }),
-        )
-        .await
+        let made = self
+            .modify(
+                zone,
+                json!({
+                    "operationType": "create",
+                    "record": {
+                        "recordName": record_name,
+                        "recordType": record_type,
+                        "fields": fields,
+                    },
+                }),
+            )
+            .await;
+        match made {
+            // The connection dropped with the request out: Apple may have made it and the
+            // answer been lost. Said to have failed, it was made again under a new name — a
+            // second reminder, a second note. The name is ours, so Apple is asked.
+            Err(Error::Network(e)) => match self.lookup_record(zone, record_name).await {
+                Ok(Some(record)) => Ok(json!({ "records": [record] })),
+                _ => Err(Error::Network(e)),
+            },
+            other => other,
+        }
     }
 
     /// Create a record CloudKit names itself, as icloud.com creates a Photos album: no
@@ -1497,6 +1559,138 @@ mod conflict_tests {
         );
     }
 
+    /// A signed write that lost to a phone's is stamped again from the phone's version: the
+    /// retry resent the token map worked out from the first read, putting back every counter
+    /// the phone had raised in between — here the phone's title edit, which a field this
+    /// write never touched then lost to an older title on the next merge.
+    #[tokio::test]
+    async fn a_signed_retry_keeps_the_tokens_another_device_raised() {
+        let server = MockServer::start().await;
+        let map = |title: u64| {
+            json!({ "map": { "titleDocument": { "counter": title, "modificationTime": 1.0, "replicaID": "phone" } } })
+                .to_string()
+        };
+        // First read: the title's token at 1. Second read: the phone has raised it to 7.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [{
+                "recordName": "Reminder/1", "recordChangeTag": "t1",
+                "fields": { "ResolutionTokenMap": { "type": "STRING", "value": map(1) } } }] })),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [{
+                "recordName": "Reminder/1", "recordChangeTag": "t2",
+                "fields": { "ResolutionTokenMap": { "type": "STRING", "value": map(7) } } }] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .and(wiremock::matchers::body_string_contains("\"t1\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "reason": "oplock", "serverErrorCode": "CONFLICT" }] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "Reminder/1", "recordChangeTag": "t3" }] })))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        client
+            .update_record_signed(
+                "Reminders",
+                "Reminder/1",
+                "Reminder",
+                Some("t1"),
+                json!({ "Flagged": { "type": "NUMBER_INT64", "value": 1 } }),
+            )
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let last = requests
+            .iter()
+            .rev()
+            .find(|r| r.url.path().ends_with("/modify"))
+            .unwrap();
+        let body: Value = serde_json::from_slice(&last.body).unwrap();
+        let record = &body["operations"][0]["record"];
+        assert_eq!(record["recordChangeTag"], "t2");
+        let tokens: Value = serde_json::from_str(
+            record["fields"]["ResolutionTokenMap"]["value"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            tokens["map"]["titleDocument"]["counter"], 7,
+            "the phone's raised token is kept, not put back to 1"
+        );
+        assert_eq!(tokens["map"]["flagged"]["counter"], 1);
+    }
+
+    /// A create whose answer was lost on the way back is found at Apple under the name it was
+    /// sent with and reported made, not failed — failed, it was made a second time.
+    #[tokio::test]
+    async fn a_create_whose_answer_was_lost_is_found_not_made_twice() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(
+                        json!({ "records": [{ "recordName": "N1", "recordChangeTag": "t" }] }),
+                    ),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "N1", "recordChangeTag": "t" }] })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(300))
+            .build()
+            .unwrap();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.notes", vec![]);
+        let made = client
+            .create_record("Notes", "N1", "Note", json!({}))
+            .await
+            .expect("made at Apple, so made");
+        assert_eq!(made["records"][0]["recordName"], "N1");
+
+        // Not there: the failure stands, for the caller to keep and try again.
+        let empty = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(2)))
+            .mount(&empty)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "N1", "serverErrorCode": "NOT_FOUND" }] })))
+            .mount(&empty)
+            .await;
+        let client = ZoneClient::new(&http, &empty.uri(), "com.apple.notes", vec![]);
+        assert!(matches!(
+            client.create_record("Notes", "N1", "Note", json!({})).await,
+            Err(Error::Network(_))
+        ));
+    }
+
     /// CloudKit rejects an update with no change tag as a malformed request, not as a
     /// conflict — so there is nothing to recover from afterwards. The local copy genuinely
     /// may not have one: a record created a moment ago has a name before it has a tag, and
@@ -1686,6 +1880,94 @@ mod trouble_tests {
         assert_eq!(walk.records.len(), 1);
         assert_eq!(walk.token.as_deref(), Some("fresh"));
         assert!(walk.complete);
+        assert!(walk.whole(), "started over, the walk is the whole zone");
+    }
+
+    /// An expired change token — with Apple's reason, or as the bare code alone — is a cursor
+    /// to start over from, never "nothing changed". The bare code used to match nothing and
+    /// read as an empty, finished page, so the dead token was kept and nothing ever arrived.
+    #[tokio::test]
+    async fn an_expired_change_token_starts_the_walk_over() {
+        for expired in [
+            json!({ "serverErrorCode": "CHANGE_TOKEN_EXPIRED" }),
+            json!({ "serverErrorCode": "CHANGE_TOKEN_EXPIRED", "reason": "change token expired" }),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/changes/zone"))
+                .and(wiremock::matchers::body_string_contains("old-token"))
+                .respond_with(zone_reply(expired.clone()))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/changes/zone"))
+                .respond_with(zone_reply(json!({
+                    "records": [record("Note/1", "Note")],
+                    "syncToken": "fresh",
+                    "moreComing": false
+                })))
+                .mount(&server)
+                .await;
+            let http = reqwest::Client::new();
+            let uri = server.uri();
+            let client = client(&http, &uri, "com.apple.notes");
+            let walk = client
+                .all_records("Notes", Some("old-token"))
+                .await
+                .unwrap_or_else(|e| panic!("{expired}: an expired token is started over: {e}"));
+            assert_eq!(walk.records.len(), 1, "{expired}");
+            assert_eq!(walk.token.as_deref(), Some("fresh"), "{expired}");
+            assert!(walk.whole(), "{expired}: a full read, so it may prune");
+        }
+    }
+
+    /// A cursor answered with no position at all was not taken, whatever the zone result
+    /// said: it is started over, not stored as "nothing changed" with no token.
+    #[tokio::test]
+    async fn a_cursor_answered_with_no_position_starts_the_walk_over() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .and(wiremock::matchers::body_string_contains("old-token"))
+            .respond_with(zone_reply(json!({ "records": [], "moreComing": false })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "records": [record("Note/1", "Note")],
+                "syncToken": "fresh",
+                "moreComing": false
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let uri = server.uri();
+        let client = client(&http, &uri, "com.apple.notes");
+        let walk = client
+            .all_records("Notes", Some("old-token"))
+            .await
+            .unwrap();
+        assert_eq!(walk.records.len(), 1);
+        assert!(walk.whole());
+    }
+
+    /// A walk from a cursor Apple took carries only changes: never whole, never pruned by.
+    #[tokio::test]
+    async fn a_walk_from_a_good_cursor_is_not_whole() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "records": [], "syncToken": "next", "moreComing": false
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let uri = server.uri();
+        let client = client(&http, &uri, "com.apple.notes");
+        let walk = client.all_records("Notes", Some("good")).await.unwrap();
+        assert!(walk.complete && !walk.whole());
     }
 
     /// Trouble that is not a missing zone or a bad cursor is still worth telling somebody

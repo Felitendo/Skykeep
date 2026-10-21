@@ -13,6 +13,213 @@ pub struct ContactMethod {
     pub value: String,
 }
 
+/// A postal address as Apple keeps it: each part on its own, so one can be changed without
+/// retyping the rest. Field names match Apple's `streetAddresses[].field` keys when
+/// serialised, which is also what an edit names a field by.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PostalAddress {
+    pub label: Option<String>,
+    /// Every line before the town, newlines and all.
+    pub street: Option<String>,
+    pub sub_locality: Option<String>,
+    pub city: Option<String>,
+    pub sub_administrative_area: Option<String>,
+    pub state: Option<String>,
+    pub postal_code: Option<String>,
+    pub country: Option<String>,
+    /// Apple's two-letter code, lower case on the cards it writes.
+    pub country_code: Option<String>,
+}
+
+/// The parts of an address, by the names Apple's service uses for them.
+pub const ADDRESS_FIELDS: [&str; 8] = [
+    "street",
+    "subLocality",
+    "city",
+    "subAdministrativeArea",
+    "state",
+    "postalCode",
+    "country",
+    "countryCode",
+];
+
+impl PostalAddress {
+    /// One part by Apple's name for it; `None` for a name that is not a part.
+    #[must_use]
+    pub fn field(&self, name: &str) -> Option<&Option<String>> {
+        Some(match name {
+            "street" => &self.street,
+            "subLocality" => &self.sub_locality,
+            "city" => &self.city,
+            "subAdministrativeArea" => &self.sub_administrative_area,
+            "state" => &self.state,
+            "postalCode" => &self.postal_code,
+            "country" => &self.country,
+            "countryCode" => &self.country_code,
+            _ => return None,
+        })
+    }
+
+    /// Set one part by Apple's name for it, blank meaning cleared. False for a name that is
+    /// not a part.
+    pub fn set_field(&mut self, name: &str, value: Option<&str>) -> bool {
+        let slot = match name {
+            "street" => &mut self.street,
+            "subLocality" => &mut self.sub_locality,
+            "city" => &mut self.city,
+            "subAdministrativeArea" => &mut self.sub_administrative_area,
+            "state" => &mut self.state,
+            "postalCode" => &mut self.postal_code,
+            "country" => &mut self.country,
+            "countryCode" => &mut self.country_code,
+            _ => return false,
+        };
+        *slot = clean(value);
+        true
+    }
+
+    /// No part holds anything (the label alone is not an address).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        ADDRESS_FIELDS
+            .iter()
+            .all(|f| self.field(f).is_none_or(Option::is_none))
+    }
+
+    /// The lines a person would write on an envelope, in the order the address's country
+    /// writes them: a postcode before the town in Germany and France, the town and postcode
+    /// on lines of their own in the UK, largest to smallest in Japan.
+    #[must_use]
+    pub fn formatted(&self) -> String {
+        let template = match self.country_key() {
+            Some("us") => US,
+            Some("gb") => GB,
+            Some("in") => IN,
+            Some("de" | "fr") => DE_FR,
+            Some("jp") => JP,
+            _ => DEFAULT,
+        };
+        let mut lines: Vec<String> = Vec::new();
+        for line in template {
+            let mut text = String::new();
+            for (name, separator) in *line {
+                let Some(part) = self.field(name).and_then(Option::as_deref) else {
+                    continue;
+                };
+                if !text.is_empty() {
+                    text.push_str(separator);
+                }
+                text.push_str(part);
+            }
+            // A street keeps its own line breaks, each trimmed.
+            lines.extend(
+                text.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(ToString::to_string),
+            );
+        }
+        lines.join("\n")
+    }
+
+    /// Which country's layout applies: Apple's code when the card has one, else the name.
+    #[must_use]
+    pub fn country_key(&self) -> Option<&'static str> {
+        self.country_code
+            .as_deref()
+            .and_then(country_from_code)
+            .or_else(|| self.country.as_deref().and_then(country_code_for))
+    }
+}
+
+fn clean(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
+/// One line of an address layout: each part with what goes before it when a part already
+/// sits on the line. A missing part leaves no gap.
+type Line = &'static [(&'static str, &'static str)];
+
+const US: &[Line] = &[
+    &[("street", "")],
+    &[("subLocality", "")],
+    &[("city", ""), ("state", ", "), ("postalCode", " ")],
+    &[("country", "")],
+];
+const GB: &[Line] = &[
+    &[("street", "")],
+    &[("subLocality", "")],
+    &[("city", "")],
+    &[("subAdministrativeArea", "")],
+    &[("postalCode", "")],
+    &[("country", "")],
+];
+const IN: &[Line] = &[
+    &[("street", "")],
+    &[("subLocality", "")],
+    &[("city", ""), ("postalCode", " ")],
+    &[("state", "")],
+    &[("country", "")],
+];
+const DE_FR: &[Line] = &[
+    &[("street", "")],
+    &[("postalCode", ""), ("city", " ")],
+    &[("country", "")],
+];
+const JP: &[Line] = &[
+    &[("postalCode", "")],
+    &[("state", ""), ("city", " "), ("subLocality", " ")],
+    &[("street", "")],
+    &[("country", "")],
+];
+const DEFAULT: &[Line] = &[
+    &[("street", "")],
+    &[("subLocality", "")],
+    &[("city", ""), ("state", " "), ("postalCode", " ")],
+    &[("country", "")],
+];
+
+/// The countries with a layout of their own, by Apple's code.
+fn country_from_code(code: &str) -> Option<&'static str> {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "us" => Some("us"),
+        "gb" | "uk" => Some("gb"),
+        "in" => Some("in"),
+        "de" => Some("de"),
+        "fr" => Some("fr"),
+        "jp" => Some("jp"),
+        _ => None,
+    }
+}
+
+/// Apple's two-letter code for a country typed by name, for the countries this app lays out
+/// by their own rules. `None` for any other.
+#[must_use]
+pub fn country_code_for(name: &str) -> Option<&'static str> {
+    let name = crate::fold::fold(name.trim());
+    let name = name.trim_end_matches('.');
+    Some(match name {
+        "united states"
+        | "united states of america"
+        | "usa"
+        | "us"
+        | "u.s.a"
+        | "u.s"
+        | "america" => "us",
+        "united kingdom" | "uk" | "u.k" | "great britain" | "britain" | "england" | "scotland"
+        | "wales" | "northern ireland" | "gb" => "gb",
+        "india" | "bharat" | "in" => "in",
+        "germany" | "deutschland" | "de" => "de",
+        "france" | "fr" => "fr",
+        "japan" | "nippon" | "日本" | "jp" => "jp",
+        _ => return None,
+    })
+}
+
 /// Everything needed to put one person's picture on screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContactPhoto {
@@ -103,7 +310,17 @@ fn now() -> i64 {
 impl Library {
     /// Replace the address book, dropping anyone Apple no longer reports.
     pub fn put_contacts(&mut self, contacts: &[Contact]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        self.store_contacts(contacts, true)
+    }
+
+    /// Store one card as it now stands — made or edited here, before Apple has it — leaving
+    /// everyone else as they are.
+    pub fn put_contact(&mut self, contact: &Contact) -> Result<()> {
+        self.store_contacts(std::slice::from_ref(contact), false)
+    }
+
+    fn store_contacts(&mut self, contacts: &[Contact], whole_book: bool) -> Result<()> {
+        let tx = self.conn.savepoint()?;
         {
             let mut upsert = tx.prepare(
                 "INSERT INTO contacts (guid, first_name, middle_name, last_name, company, is_company,
@@ -160,7 +377,9 @@ impl Library {
             }
 
             let keep: Vec<&str> = contacts.iter().map(|c| c.guid.as_str()).collect();
-            if keep.is_empty() {
+            if !whole_book {
+                // One card: no one else is touched.
+            } else if keep.is_empty() {
                 tx.execute("DELETE FROM contacts", [])?;
             } else {
                 let placeholders = vec!["?"; keep.len()].join(",");
@@ -172,6 +391,125 @@ impl Library {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Store the structured addresses a read of the address book found, by card. A whole
+    /// book replaces every stored address; otherwise only the cards named are touched.
+    ///
+    /// Every card named must already be stored (its addresses hang off it), which holds when
+    /// they come from the same read as [`Library::put_contacts`].
+    pub fn put_addresses(
+        &mut self,
+        book: &[(String, Vec<PostalAddress>)],
+        whole_book: bool,
+    ) -> Result<()> {
+        let tx = self.conn.savepoint()?;
+        if whole_book {
+            tx.execute("DELETE FROM contact_addresses", [])?;
+        }
+        {
+            let mut clear = tx.prepare("DELETE FROM contact_addresses WHERE contact_guid = ?1")?;
+            let mut add = tx.prepare(ADD_ADDRESS)?;
+            for (guid, addresses) in book {
+                clear.execute(params![guid])?;
+                insert_addresses(&mut add, guid, addresses)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// One card's addresses as just edited here: the structured parts, and the flattened
+    /// lines kept with its other methods (which search and older views read), in the place
+    /// its addresses already held among them.
+    pub fn set_contact_addresses(&mut self, guid: &str, addresses: &[PostalAddress]) -> Result<()> {
+        let tx = self.conn.savepoint()?;
+        {
+            let mut methods: Vec<ContactMethod> = {
+                let mut stmt = tx.prepare(
+                    "SELECT kind, label, value FROM contact_methods
+                     WHERE contact_guid = ?1 ORDER BY position",
+                )?;
+                let rows = stmt.query_map(params![guid], |row| {
+                    Ok(ContactMethod {
+                        kind: row.get(0)?,
+                        label: row.get(1)?,
+                        value: row.get(2)?,
+                    })
+                })?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            let at = methods
+                .iter()
+                .position(|m| m.kind == "address")
+                .unwrap_or_else(|| {
+                    // Where a read puts them: after phones, emails and links.
+                    methods
+                        .iter()
+                        .rposition(|m| matches!(m.kind.as_str(), "phone" | "email" | "url"))
+                        .map_or(0, |i| i + 1)
+                });
+            methods.retain(|m| m.kind != "address");
+            let lines = addresses
+                .iter()
+                .filter(|a| !a.is_empty())
+                .map(|a| ContactMethod {
+                    kind: "address".into(),
+                    label: a.label.clone(),
+                    value: a.formatted(),
+                });
+            let at = at.min(methods.len());
+            methods.splice(at..at, lines);
+
+            tx.execute(
+                "DELETE FROM contact_methods WHERE contact_guid = ?1",
+                params![guid],
+            )?;
+            let mut add = tx.prepare(
+                "INSERT INTO contact_methods (contact_guid, kind, label, value, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (i, m) in methods.iter().enumerate() {
+                add.execute(params![
+                    guid,
+                    m.kind,
+                    m.label,
+                    m.value,
+                    i64::try_from(i).unwrap_or(0)
+                ])?;
+            }
+            tx.execute(
+                "DELETE FROM contact_addresses WHERE contact_guid = ?1",
+                params![guid],
+            )?;
+            let mut add = tx.prepare(ADD_ADDRESS)?;
+            insert_addresses(&mut add, guid, addresses)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// One card's addresses, part by part, in Apple's order.
+    pub fn contact_addresses(&self, guid: &str) -> Result<Vec<PostalAddress>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT label, street, sub_locality, city, sub_administrative_area, state,
+                    postal_code, country, country_code
+             FROM contact_addresses WHERE contact_guid = ?1 ORDER BY position",
+        )?;
+        let rows = stmt.query_map(params![guid], |row| {
+            Ok(PostalAddress {
+                label: row.get(0)?,
+                street: row.get(1)?,
+                sub_locality: row.get(2)?,
+                city: row.get(3)?,
+                sub_administrative_area: row.get(4)?,
+                state: row.get(5)?,
+                postal_code: row.get(6)?,
+                country: row.get(7)?,
+                country_code: row.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Where one person's picture lives, without reading the rest of the address book.
@@ -267,6 +605,34 @@ impl Library {
         keyed.sort_by(|(a, _), (b, _)| crate::fold::natural(a, b));
         Ok(keyed.into_iter().map(|(_, c)| c).collect())
     }
+}
+
+const ADD_ADDRESS: &str = "INSERT INTO contact_addresses
+    (contact_guid, position, label, street, sub_locality, city, sub_administrative_area, state,
+     postal_code, country, country_code)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
+
+fn insert_addresses(
+    add: &mut rusqlite::Statement<'_>,
+    guid: &str,
+    addresses: &[PostalAddress],
+) -> Result<()> {
+    for (i, a) in addresses.iter().filter(|a| !a.is_empty()).enumerate() {
+        add.execute(params![
+            guid,
+            i64::try_from(i).unwrap_or(0),
+            a.label,
+            a.street,
+            a.sub_locality,
+            a.city,
+            a.sub_administrative_area,
+            a.state,
+            a.postal_code,
+            a.country,
+            a.country_code
+        ])?;
+    }
+    Ok(())
 }
 
 /// Only the digits of a number, so its formatting stops mattering.
@@ -467,5 +833,149 @@ mod tests {
             .unwrap();
         lib.put_contacts(&[contact("1", Some("A"), None)]).unwrap();
         assert_eq!(lib.contacts(None).unwrap().len(), 1);
+    }
+
+    fn address(
+        street: &str,
+        city: &str,
+        state: &str,
+        postcode: &str,
+        country: &str,
+    ) -> PostalAddress {
+        let part = |v: &str| (!v.is_empty()).then(|| v.to_string());
+        PostalAddress {
+            label: Some("HOME".into()),
+            street: part(street),
+            city: part(city),
+            state: part(state),
+            postal_code: part(postcode),
+            country: part(country),
+            ..PostalAddress::default()
+        }
+    }
+
+    #[test]
+    fn an_address_is_laid_out_the_way_its_country_writes_it() {
+        let us = address("1 Main St", "Springfield", "IL", "62701", "United States");
+        assert_eq!(
+            us.formatted(),
+            "1 Main St\nSpringfield, IL 62701\nUnited States"
+        );
+        let de = address("Hauptstraße 5", "Berlin", "", "10115", "Germany");
+        assert_eq!(de.formatted(), "Hauptstraße 5\n10115 Berlin\nGermany");
+        let mut fr = address("5 Rue de la Paix", "Paris", "", "75002", "");
+        fr.country_code = Some("FR".into());
+        assert_eq!(fr.formatted(), "5 Rue de la Paix\n75002 Paris");
+        let uk = address("10 Downing St", "London", "", "SW1A 2AA", "UK");
+        assert_eq!(uk.formatted(), "10 Downing St\nLondon\nSW1A 2AA\nUK");
+        let india = address(
+            "12 MG Road\nIndiranagar",
+            "Bengaluru",
+            "Karnataka",
+            "560038",
+            "India",
+        );
+        assert_eq!(
+            india.formatted(),
+            "12 MG Road\nIndiranagar\nBengaluru 560038\nKarnataka\nIndia"
+        );
+        let jp = address("1-1 Chiyoda", "Chiyoda-ku", "Tokyo", "100-0001", "Japan");
+        assert_eq!(
+            jp.formatted(),
+            "100-0001\nTokyo Chiyoda-ku\n1-1 Chiyoda\nJapan"
+        );
+        // Anywhere else: town, region and postcode on one line, and no gaps.
+        let other = address("", "Lagos", "", "100001", "Nigeria");
+        assert_eq!(other.formatted(), "Lagos 100001\nNigeria");
+    }
+
+    #[test]
+    fn a_country_typed_by_name_finds_its_code() {
+        assert_eq!(country_code_for("United States of America"), Some("us"));
+        assert_eq!(country_code_for(" Deutschland "), Some("de"));
+        assert_eq!(country_code_for("U.K."), Some("gb"));
+        assert_eq!(country_code_for("Narnia"), None);
+        // Apple's code outranks a name that disagrees with it.
+        let mut a = address("", "Paris", "", "75002", "Germany");
+        a.country_code = Some("fr".into());
+        assert_eq!(a.country_key(), Some("fr"));
+    }
+
+    #[test]
+    fn a_part_is_set_by_apples_name_for_it() {
+        let mut a = PostalAddress::default();
+        assert!(a.is_empty());
+        assert!(a.set_field("postalCode", Some(" 560038 ")));
+        assert_eq!(a.postal_code.as_deref(), Some("560038"));
+        assert!(a.set_field("postalCode", Some("  ")));
+        assert_eq!(a.postal_code, None, "blank clears");
+        assert!(!a.set_field("planet", Some("Earth")));
+    }
+
+    #[test]
+    fn addresses_are_kept_part_by_part_and_go_with_their_card() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_contacts(&[contact("1", Some("A"), None), contact("2", Some("B"), None)])
+            .unwrap();
+        let home = address("1 Main St", "Springfield", "IL", "62701", "USA");
+        lib.put_addresses(
+            &[
+                ("1".into(), vec![home.clone(), PostalAddress::default()]),
+                ("2".into(), vec![home.clone()]),
+            ],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            lib.contact_addresses("1").unwrap(),
+            std::slice::from_ref(&home),
+            "blanks dropped"
+        );
+
+        // A whole book replaces every address; a card Apple stopped reporting takes its own.
+        lib.put_contacts(&[contact("1", Some("A"), None)]).unwrap();
+        assert!(lib.contact_addresses("2").unwrap().is_empty());
+        lib.put_addresses(&[], true).unwrap();
+        assert!(lib.contact_addresses("1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_edited_address_replaces_its_flattened_lines_in_place() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut c = contact("1", Some("A"), None);
+        c.methods.push(ContactMethod {
+            kind: "address".into(),
+            label: Some("HOME".into()),
+            value: "old".into(),
+        });
+        c.methods.push(ContactMethod {
+            kind: "profile".into(),
+            label: None,
+            value: "@a".into(),
+        });
+        lib.put_contacts(&[c]).unwrap();
+        let moved = address("2 New Rd", "Pune", "MH", "411001", "India");
+        lib.set_contact_addresses("1", std::slice::from_ref(&moved))
+            .unwrap();
+
+        assert_eq!(lib.contact_addresses("1").unwrap(), [moved]);
+        let kinds: Vec<(String, String)> = lib.contacts(None).unwrap()[0]
+            .methods
+            .iter()
+            .map(|m| (m.kind.clone(), m.value.clone()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("phone".into(), "+911".into()),
+                ("address".into(), "2 New Rd\nPune 411001\nMH\nIndia".into()),
+                ("profile".into(), "@a".into()),
+            ]
+        );
+        assert_eq!(
+            lib.contacts(Some("pune")).unwrap().len(),
+            1,
+            "searchable at once"
+        );
     }
 }

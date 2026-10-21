@@ -14,10 +14,14 @@ macro_rules! quiet {
 
 mod alerts;
 mod apps;
+mod contacts_cmds;
 mod cpu;
+mod intake;
 mod login;
+mod migrate;
 mod mount;
 mod mount_photos;
+mod notes_cmds;
 mod outbox;
 mod photos;
 #[cfg(target_os = "linux")]
@@ -31,6 +35,8 @@ mod poster {
 }
 mod push;
 mod refresh;
+mod reminders_cmds;
+mod settings;
 mod video;
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
@@ -139,15 +145,21 @@ async fn refresh_reminders(
             .sync_token("reminders")
             .map_err(|e| e.to_string())?
     };
+    let asked_for = asked_as(&params);
     let fetched = quince_icloud::reminders::fetch_cloudkit(http, root, params, since.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     {
         let mut library = data.0.lock().await;
-        quince_icloud::reminders::apply_cloudkit(&mut library, fetched)
+        owned_by(&library, asked_for.as_deref())?;
+        // Changes still on their way to Apple stay as made here — stored with the pass, as one.
+        library
+            .atomically(|library| {
+                quince_icloud::reminders::apply_cloudkit(library, fetched)?;
+                outbox::replay_reminders(library)?;
+                Ok::<_, quince_icloud::Error>(())
+            })
             .map_err(|e| e.to_string())?;
-        // Changes still on their way to Apple stay as made here.
-        outbox::replay_reminders(&mut library).map_err(|e| e.to_string())?;
     }
     alerts::changed();
     Ok(())
@@ -175,12 +187,19 @@ async fn refresh_notes(
         .await
         .sync_token("notes")
         .map_err(|e| e.to_string())?;
+    let asked_for = asked_as(&params);
     let fetched = quince_icloud::notes::fetch_cloudkit(http, root, params, since.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     let mut library = data.0.lock().await;
-    quince_icloud::notes::apply_cloudkit(&mut library, fetched)
-        .map(|_| ())
+    owned_by(&library, asked_for.as_deref())?;
+    // Edits still on their way to Apple stay as typed here — stored with the pass, as one.
+    library
+        .atomically(|library| {
+            quince_icloud::notes::apply_cloudkit(library, fetched)?;
+            outbox::replay(library, outbox::NOTES)?;
+            Ok::<_, quince_icloud::Error>(())
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -211,15 +230,10 @@ fn note_part(path: &str) -> Option<(String, quince_icloud::note_media::Part)> {
     (!id.is_empty()).then(|| (id.to_string(), part))
 }
 
-/// A note attachment's picture, from disk when it has been fetched before, from Apple when
-/// not — kept, so a note opens on its pictures at once the next time.
-async fn note_media_cached(
-    app: &tauri::AppHandle,
-    id: &str,
-    part: quince_icloud::note_media::Part,
-) -> Result<Vec<u8>, String> {
-    let safe: String = id
-        .chars()
+/// A note attachment's id as part of a file name in `note-media`: letters, digits and dashes,
+/// so an id from a request is never a path.
+fn media_file_id(id: &str) -> String {
+    id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' {
                 c
@@ -227,7 +241,17 @@ async fn note_media_cached(
                 '_'
             }
         })
-        .collect();
+        .collect()
+}
+
+/// A note attachment's picture, from disk when it has been fetched before, from Apple when
+/// not — kept, so a note opens on its pictures at once the next time.
+async fn note_media_cached(
+    app: &tauri::AppHandle,
+    id: &str,
+    part: quince_icloud::note_media::Part,
+) -> Result<Vec<u8>, String> {
+    let safe = media_file_id(id);
     let name = match part {
         quince_icloud::note_media::Part::Preview => "preview",
         quince_icloud::note_media::Part::File => "file",
@@ -275,16 +299,7 @@ async fn note_media_shown(
     if !drawing && !quince_media::is_heif(&bytes) {
         return Ok(bytes);
     }
-    let safe: String = id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
+    let safe = media_file_id(id);
     let name = match (drawing, dark) {
         (true, true) => format!("{safe}-ink-dark.png"),
         (true, false) => format!("{safe}-ink.png"),
@@ -308,6 +323,24 @@ async fn note_media_shown(
         let _ = tokio::fs::rename(&part_path, &shown).await;
     }
     Ok(jpeg)
+}
+
+/// Show a file the app saved in its folder, in the file manager, chosen: a "Saved to
+/// Downloads" toast's Show in Folder. Only a file in Downloads — what the app itself saves
+/// there — never any other path the page might name.
+#[tauri::command]
+async fn download_reveal(path: String, app: tauri::AppHandle) -> UiResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let downloads = app.path().download_dir().map_err(|e| e.to_string())?;
+    let downloads = std::fs::canonicalize(&downloads).map_err(|e| e.to_string())?;
+    let file =
+        std::fs::canonicalize(&path).map_err(|_| "That file isn’t there any more.".to_string())?;
+    if !file.starts_with(&downloads) {
+        return Err("Only a file in Downloads can be shown.".into());
+    }
+    app.opener()
+        .reveal_item_in_dir(&file)
+        .map_err(|e| e.to_string())
 }
 
 /// A plain report of how this install is doing, for a bug report: versions, the system, and
@@ -424,26 +457,195 @@ async fn note_attachment_open(
         .await
         .map_err(|e| e.to_string())?;
     let bytes = note_media_cached(&app, &id, quince_icloud::note_media::Part::File).await?;
-    let name = info
-        .filename
-        .filter(|n| !n.contains('/') && !n.starts_with('.'))
-        .unwrap_or_else(|| format!("Attachment {}", &id[..id.len().min(8)]));
-    let dir = state_dir(&app).join("note-files").join(
-        id.chars()
-            .filter(char::is_ascii_alphanumeric)
-            .collect::<String>(),
-    );
+    let folder: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
+    if folder.is_empty() {
+        return Err("That attachment is not one Pomander knows.".into());
+    }
+    // The name is whoever shared the note's to choose: made a plain file name here, never a
+    // path, and never one that pretends to be something else.
+    let name = attachment_name(info.filename.as_deref(), &folder);
+    let dir = state_dir(&app).join("note-files").join(&folder);
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| e.to_string())?;
-    let path = dir.join(name);
+    let path = dir.join(&name);
     tokio::fs::write(&path, &bytes)
         .await
         .map_err(|e| e.to_string())?;
+    // Readable by this user alone, and never runnable, whatever was there before.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     use tauri_plugin_opener::OpenerExt;
+    // A program, a script or a launcher is shown in its folder, not opened: opening it would
+    // run it, and a shared note can carry one from anyone.
+    if runs_code(&name, &bytes) {
+        return app
+            .opener()
+            .reveal_item_in_dir(&path)
+            .map_err(|e| e.to_string());
+    }
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+/// A note attachment's file name as it is saved: Apple's name for it with anything that could
+/// make it a path (`/`, `\\`, `:`, `..`), hide it (a leading dot), or show it as something it
+/// is not (direction marks that turn `exe.pdf` around) taken out; a name Windows keeps for a
+/// device made harmless. Nothing left, and it is named after the attachment.
+pub(crate) fn attachment_name(given: Option<&str>, id: &str) -> String {
+    let cleaned: String = given
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    c,
+                    '/' | '\\'
+                        | ':'
+                        | '*'
+                        | '?'
+                        | '"'
+                        | '<'
+                        | '>'
+                        | '|'
+                        | '\u{200E}'
+                        | '\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{FEFF}'
+                )
+        })
+        .collect();
+    let trimmed = cleaned
+        .trim_start_matches(['.', ' '])
+        .trim_end_matches(['.', ' ']);
+    // Long enough for any real name, short enough for every file system.
+    let mut name: String = trimmed.chars().take(120).collect();
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    if device {
+        name.insert(0, '_');
+    }
+    if name.is_empty() {
+        name = format!("Attachment {}", id.chars().take(8).collect::<String>());
+    }
+    name
+}
+
+/// Whether opening this file would run it rather than show it: a program, a script, a
+/// launcher or an installer, by its name or by what its first bytes say it is.
+pub(crate) fn runs_code(name: &str, bytes: &[u8]) -> bool {
+    const RUN: &[&str] = &[
+        // Linux
+        "desktop",
+        "kdelnk",
+        "sh",
+        "bash",
+        "zsh",
+        "csh",
+        "ksh",
+        "fish",
+        "run",
+        "bin",
+        "out",
+        "elf",
+        "so",
+        "appimage",
+        "flatpak",
+        "flatpakref",
+        "flatpakrepo",
+        "snap",
+        "deb",
+        "rpm",
+        "pkg",
+        "py",
+        "pyw",
+        "pyc",
+        "pl",
+        "rb",
+        "php",
+        "lua",
+        "tcl",
+        "jar",
+        "jnlp",
+        "class",
+        // Windows
+        "exe",
+        "com",
+        "scr",
+        "pif",
+        "msi",
+        "msix",
+        "msp",
+        "msc",
+        "appx",
+        "bat",
+        "cmd",
+        "ps1",
+        "psm1",
+        "psd1",
+        "vbs",
+        "vbe",
+        "js",
+        "jse",
+        "wsf",
+        "wsh",
+        "ws",
+        "hta",
+        "cpl",
+        "inf",
+        "reg",
+        "lnk",
+        "url",
+        "scf",
+        "chm",
+        "application",
+        "appref-ms",
+        "gadget",
+        "library-ms",
+        "settingcontent-ms",
+        "dll",
+        "sys",
+        "iso",
+        "img",
+        "vhd",
+        "vhdx",
+        // macOS
+        "app",
+        "command",
+        "tool",
+        "workflow",
+        "scpt",
+        "terminal",
+        "webloc",
+        "inetloc",
+        "dmg",
+        "mpkg",
+    ];
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    RUN.contains(&ext.as_str())
+        || bytes.starts_with(b"#!")
+        || bytes.starts_with(b"\x7fELF")
+        || bytes.starts_with(b"MZ")
+        || bytes.starts_with(b"[Desktop Entry]")
+        || bytes.starts_with(&[0xCF, 0xFA, 0xED, 0xFE])
+        || bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE])
 }
 
 /// The contact a `quince://` request asks for the photo of.
@@ -511,6 +713,9 @@ async fn auth_status(auth: State<'_, Auth>) -> UiResult<Status> {
 /// Try the stored session. `false` just means a sign-in is needed — not an error.
 #[tauri::command]
 async fn auth_resume(app: tauri::AppHandle, auth: State<'_, Auth>) -> UiResult<&'static str> {
+    if LIVE.load(Ordering::SeqCst) {
+        return Ok("library");
+    }
     let outcome = {
         let mut client = auth.client.lock().await;
         let outcome = resume_session(&mut client).await?;
@@ -554,6 +759,8 @@ async fn folders_up(app: &tauri::AppHandle) {
 
 /// Emitted when a lapsed session signed itself back in only as far as Apple's code.
 const NEEDS_CODE: &str = "quince://needs-code";
+/// A session Apple will take back only with the password.
+const NEEDS_SIGNIN: &str = "quince://needs-signin";
 
 /// Make sure the session is alive before a refresh uses it, signing back in if it lapsed.
 ///
@@ -561,12 +768,34 @@ const NEEDS_CODE: &str = "quince://needs-code";
 /// refresh failing quietly from then on. Checked here, a lapse is mended before it is felt;
 /// one that needs a code brings the code screen up instead.
 async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
+    // Said once per lapse, not on every pass after it.
+    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let mut guard = client.lock().await;
     if guard.session().webservices.is_none() {
         return;
     }
-    if matches!(guard.heartbeat().await, Ok(false)) && guard.awaiting_code() {
-        app.emit(NEEDS_CODE, ()).ok();
+    match guard.heartbeat().await {
+        Ok(false) if guard.awaiting_code() => {
+            LIVE.store(false, Ordering::SeqCst);
+            app.emit(NEEDS_CODE, ()).ok();
+        }
+        // Apple will not take the session back without the password: every sync would fail
+        // quietly from here on. The window says so where it is open, and the desktop once,
+        // for someone with only the tray running.
+        Ok(false) => {
+            LIVE.store(false, Ordering::SeqCst);
+            app.emit(NEEDS_SIGNIN, ()).ok();
+            if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                alerts::tell(
+                    app,
+                    "Sign in to keep iCloud up to date",
+                    "Apple signed Pomander out. Your copy on this computer is still here.",
+                );
+            }
+        }
+        Ok(true) => TOLD.store(false, std::sync::atomic::Ordering::Relaxed),
+        // Not reaching Apple says nothing about the session.
+        Err(_) => {}
     }
 }
 
@@ -724,6 +953,50 @@ async fn account_now(auth: &Auth) -> Option<String> {
         .map(account_tag)
 }
 
+/// The account a request's parameters ask as (its `dsid`), as the library names accounts.
+fn asked_as(params: &[(String, String)]) -> Option<String> {
+    params
+        .iter()
+        .find(|(k, _)| k == "dsid")
+        .map(|(_, dsid)| account_tag(dsid))
+}
+
+/// Whether what was read with one account's session may be stored in this library: never in a
+/// library another account owns. A pass after a write read with the session the write was
+/// sent with; another Apple ID signing in meanwhile swapped the library under it, and that
+/// pass stored the first account's notes, reminders and sync position in the second's.
+fn owned_by(library: &quince_core::Library, asked_for: Option<&str>) -> Result<(), String> {
+    let owner = library.state(ACCOUNT_KEY).ok().flatten();
+    match (owner.as_deref(), asked_for) {
+        (Some(owner), Some(asked)) if owner != asked => Err(
+            "Signed in to another account while this was on its way, so nothing was stored.".into(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod account_write_tests {
+    use super::*;
+
+    #[test]
+    fn what_one_account_read_is_never_stored_in_anothers_library() {
+        let mut lib = Library::in_memory().unwrap();
+        let params = |dsid: &str| vec![("dsid".to_string(), dsid.to_string())];
+        lib.set_state(ACCOUNT_KEY, &account_tag("111")).unwrap();
+        let a = asked_as(&params("111"));
+        let b = asked_as(&params("222"));
+        assert!(owned_by(&lib, a.as_deref()).is_ok());
+        assert!(
+            owned_by(&lib, b.as_deref()).is_err(),
+            "the other account's read is refused"
+        );
+        // A library from before accounts were told apart, and a request with no account, pass.
+        assert!(owned_by(&Library::in_memory().unwrap(), b.as_deref()).is_ok());
+        assert!(owned_by(&lib, None).is_ok());
+    }
+}
+
 /// Whether the library still belongs to `account`, taken when a command began: a result that
 /// came back after a sign-out, or another account's sign-in, is never stored over its data.
 fn still_owned(library: &quince_core::Library, account: Option<&str>) -> Result<(), String> {
@@ -742,8 +1015,14 @@ async fn signed_in(app: &tauri::AppHandle, client: &mut Client) -> Result<(), St
         let _ = client.sign_out();
         return Err(e);
     }
+    LIVE.store(true, Ordering::SeqCst);
     Ok(())
 }
+
+/// This process holds a signed-in session, its library claimed: a window opened now (an app's
+/// own, from the tray or its launcher) is told so at once. Asking Apple again first, behind the
+/// sign-in lock a running sync may hold, kept every app window waiting about five seconds.
+static LIVE: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 async fn auth_sign_in(
@@ -884,6 +1163,9 @@ async fn account_unsent(app: tauri::AppHandle, data: State<'_, Data>) -> UiResul
 async fn auth_sign_out(keep: bool, app: tauri::AppHandle, auth: State<'_, Auth>) -> UiResult<()> {
     // The folders go with the session they were served by — before the auth lock is taken,
     // since what they are still answering may be waiting on it.
+    LIVE.store(false, Ordering::SeqCst);
+    // A notes password typed this session goes with the session.
+    notes_cmds::forget_passwords();
     tauri::async_runtime::spawn_blocking(mount::release)
         .await
         .map_err(|e| e.to_string())?;
@@ -1193,7 +1475,7 @@ async fn event_save(
         notes: draft.notes.filter(|s| !s.trim().is_empty()),
         // Apple rejects a write whose etag is not the version it holds, which is what stops
         // this from landing on top of a change made on a phone.
-        etag: existing.and_then(|e| e.etag),
+        etag: existing.as_ref().and_then(|e| e.etag.clone()),
     };
 
     let ctag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &event.calendar_guid);
@@ -1205,10 +1487,10 @@ async fn event_save(
         }
         None => None,
     };
-    let kept = quince_icloud::sync::save_event_with_alerts(
+    let first = quince_icloud::sync::save_event_with_alerts(
         &http,
         &root,
-        params,
+        params.clone(),
         ctag.as_deref(),
         &event,
         draft.alerts.as_deref(),
@@ -1217,7 +1499,57 @@ async fn event_save(
         from.as_ref()
             .map(|(old, tag)| (old.as_str(), tag.as_deref())),
     )
-    .await
+    .await;
+    // Refused because the event changed on another device since it was read: as Calendar
+    // settles it, Apple's copy is read again and this edit laid over it — their changes to
+    // other fields kept, this edit's own fields this edit's — and saved once more against
+    // Apple's newest version. One of a repeating series is not merged: which days a change
+    // there reaches is Apple's to settle, so it is refused as before.
+    let kept = match (first, existing.as_ref()) {
+        (Err(quince_icloud::Error::Conflict), Some(base))
+            if !quince_icloud::calendar::is_occurrence(&guid) =>
+        {
+            let client = quince_icloud::calendar::CalendarClient::new(&http, &root, params.clone());
+            // Gone from where it was: deleted (or moved away) elsewhere. Never written back.
+            let Some(theirs) = client
+                .current_event(base)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                return Err("This event was deleted on another device, so it wasn’t saved.".into());
+            };
+            let merged = quince_icloud::calendar::merge_edit(base, &event, &theirs);
+            // Where it is at Apple now, and where it is going, with each calendar's tag read
+            // afresh: the refusal may have been for the calendar's tag as much as the event's.
+            let fresh_tag = |guid: String| {
+                let client = &client;
+                async move { client.current_ctag(&guid).await.ok().flatten() }
+            };
+            let ctag = fresh_tag(merged.calendar_guid.clone()).await;
+            let from = if theirs.calendar_guid != merged.calendar_guid {
+                Some((
+                    theirs.calendar_guid.clone(),
+                    fresh_tag(theirs.calendar_guid.clone()).await,
+                ))
+            } else {
+                None
+            };
+            quince_icloud::sync::save_event_with_alerts(
+                &http,
+                &root,
+                params,
+                ctag.as_deref(),
+                &merged,
+                draft.alerts.as_deref(),
+                draft.repeat_changed.then_some(draft.repeat.as_ref()),
+                draft.scope,
+                from.as_ref()
+                    .map(|(old, tag)| (old.as_str(), tag.as_deref())),
+            )
+            .await
+        }
+        (result, _) => result,
+    }
     .map_err(|e| e.to_string())?;
     let mut library = data.0.lock().await;
     still_owned(&library, account.as_deref())?;
@@ -1563,6 +1895,85 @@ async fn reminder_set_done(
     set_done(&auth, &data, &guid, &list_guid, done).await
 }
 
+/// What the window is told when a reminder it acted on is not in the library at all: deleted
+/// on another device and synced away, or still a stand-in for one being added. Not a sentence
+/// for a person — the window answers it by quietly reading the list again (RemindersView).
+pub const REMINDER_GONE: &str = "reminder-gone";
+
+/// The stored reminder a write is made against, found by its id alone.
+///
+/// The window also sends the list it saw the reminder in, and that used to be required to
+/// match. It goes stale without anything being wrong: moved to another list on the phone and
+/// synced in, or moved here with a tick queued behind the move, the reminder was still there
+/// and still the one meant — and the write was refused with a red "no longer in the local
+/// library" over a list that plainly showed it. A record id belongs to one reminder whatever
+/// list holds it, and the write goes to the list the record is in now.
+fn reminder_to_write(
+    library: &Library,
+    guid: &str,
+) -> Result<quince_core::reminders::Reminder, String> {
+    library
+        .reminder(guid)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| REMINDER_GONE.to_string())
+}
+
+#[cfg(test)]
+mod reminder_write_tests {
+    use super::*;
+    use quince_core::reminders::{Reminder, ReminderList};
+
+    fn library() -> Library {
+        let mut lib = Library::in_memory().unwrap();
+        let list = |g: &str| ReminderList {
+            guid: g.into(),
+            title: g.into(),
+            enabled: true,
+            ..Default::default()
+        };
+        lib.put_reminder_lists(&[list("A"), list("B")]).unwrap();
+        lib.put_reminders(&[Reminder {
+            guid: "r".into(),
+            list_guid: "A".into(),
+            title: "r".into(),
+            ..Default::default()
+        }])
+        .unwrap();
+        lib
+    }
+
+    #[test]
+    fn a_reminder_is_found_by_its_id_whatever_list_holds_it() {
+        let mut lib = library();
+        assert_eq!(reminder_to_write(&lib, "r").unwrap().list_guid, "A");
+        // Moved on the phone and synced in while the window still showed it under A.
+        lib.put_reminders(&[Reminder {
+            guid: "r".into(),
+            list_guid: "B".into(),
+            title: "r".into(),
+            ..Default::default()
+        }])
+        .unwrap();
+        let found = reminder_to_write(&lib, "r").unwrap();
+        assert_eq!(
+            found.list_guid, "B",
+            "the write goes where the record is now"
+        );
+    }
+
+    #[test]
+    fn one_truly_gone_is_reported_for_a_quiet_reread_not_as_a_sentence() {
+        let mut lib = library();
+        lib.forget_reminders(&["r".into()], &[]).unwrap();
+        assert_eq!(reminder_to_write(&lib, "r").unwrap_err(), REMINDER_GONE);
+        // A stand-in for a reminder still being added is not in the library either.
+        assert_eq!(
+            reminder_to_write(&lib, "pending:1").unwrap_err(),
+            REMINDER_GONE
+        );
+    }
+}
+
 /// Tick a reminder off or put it back — from the window, or from an alert's button.
 ///
 /// In the library at once and queued for Apple (see outbox.rs): the window never waits on the
@@ -1572,16 +1983,13 @@ async fn set_done(
     auth: &State<'_, Auth>,
     data: &State<'_, Data>,
     guid: &str,
-    list_guid: &str,
+    // Where the caller saw it; the record says where it is now (reminder_to_write).
+    _list_guid: &str,
     done: bool,
 ) -> UiResult<()> {
     let reminder = {
         let library = data.0.lock().await;
-        library
-            .reminder(guid)
-            .map_err(|e| e.to_string())?
-            .filter(|r| r.list_guid == list_guid)
-            .ok_or("That reminder is no longer in the local library.")?
+        reminder_to_write(&library, guid)?
     };
     if !(done && reminder.repeats()) {
         let now = jiff::Timestamp::now().as_second();
@@ -1606,7 +2014,8 @@ async fn set_done(
         .await
         .map_err(|e| e.to_string())?;
 
-    refresh_reminders(&http, &root, params, data, false).await
+    // Made at Apple: a refresh failing now is not the tick failing (see `settle`).
+    settle(refresh_reminders(&http, &root, params, data, false).await)
 }
 
 /// Set or clear how often a reminder comes back.
@@ -1616,7 +2025,8 @@ async fn set_done(
 #[tauri::command]
 async fn reminder_set_repeat(
     guid: String,
-    list_guid: String,
+    // The list the window saw it in: a hint that can be stale, never checked (reminder_to_write).
+    #[allow(unused_variables)] list_guid: String,
     repeat: Option<quince_icloud::reminders::Repeat>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
@@ -1625,11 +2035,7 @@ async fn reminder_set_repeat(
 
     let reminder = {
         let library = data.0.lock().await;
-        library
-            .reminder(&guid)
-            .map_err(|e| e.to_string())?
-            .filter(|r| r.list_guid == list_guid)
-            .ok_or("That reminder is no longer in the local library.")?
+        reminder_to_write(&library, &guid)?
     };
 
     quince_icloud::reminders::set_recurrence_cloudkit(
@@ -1671,160 +2077,77 @@ async fn reminder_create(
     due_at: Option<i64>,
     all_day: Option<bool>,
     flagged: Option<bool>,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
-) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-    let guid =
-        quince_icloud::reminders::create_cloudkit(&http, &root, params.clone(), &list_guid, &title)
-            .await
-            .map_err(|e| e.to_string())?;
-    if due_at.is_some() || flagged.is_some() {
-        let made = quince_core::reminders::Reminder {
-            guid,
-            list_guid: list_guid.clone(),
-            title: title.clone(),
-            ..Default::default()
-        };
-        let edit = quince_icloud::reminders::ReminderEdit {
-            due_at: due_at.map(Some),
-            all_day,
-            flagged,
-            ..Default::default()
-        };
-        // The reminder exists at Apple now, whatever happens next: a failure here must not
-        // read as "nothing was made", or the title put back and entered again made a second.
-        if let Err(e) =
-            quince_icloud::reminders::edit_cloudkit(&http, &root, params.clone(), &made, &edit)
-                .await
-        {
-            quiet!("a new reminder's date or flag was not set: {e}");
-        }
+) -> UiResult<String> {
+    // Said now, not when the queue reaches Apple: nothing to send would be refused there.
+    if title.trim().is_empty() {
+        return Err("A reminder needs a title.".into());
     }
-
-    refresh_reminders(&http, &root, params, &data, false).await
+    if list_guid.trim().is_empty() {
+        return Err("A reminder has to go in a list, and this account has none yet.".into());
+    }
+    // In the library at once under a name chosen here, and queued for Apple (outbox.rs): made
+    // offline, it is there now and reaches Apple when Apple can be reached — made once.
+    let guid = {
+        let mut library = data.0.lock().await;
+        outbox::record_reminder_create(
+            &mut library,
+            &outbox::Create {
+                list_guid,
+                title,
+                due_at,
+                all_day,
+                flagged,
+            },
+        )
+        .map_err(|e| e.to_string())?
+    };
+    outbox::kick();
+    alerts::changed();
+    Ok(guid)
 }
 
 #[tauri::command]
 async fn reminder_delete(
     guid: String,
-    list_guid: String,
-    auth: State<'_, Auth>,
+    // The list the window saw it in: a hint that can be stale, never checked (reminder_to_write).
+    #[allow(unused_variables)] list_guid: String,
     data: State<'_, Data>,
 ) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-
-    let reminder = {
-        let library = data.0.lock().await;
-        library
-            .reminder(&guid)
-            .map_err(|e| e.to_string())?
-            .filter(|r| r.list_guid == list_guid)
-            .ok_or("That reminder is no longer in the local library.")?
-    };
-
-    // Its subtasks go with it, as on the phone: left behind they came back at the top level
-    // here and stayed in iCloud.
-    let children = data.0.lock().await.subtasks_of(&guid).unwrap_or_default();
-    quince_icloud::reminders::delete_cloudkit(&http, &root, params.clone(), &reminder)
-        .await
-        .map_err(|e| e.to_string())?;
-    for child in &children {
-        if let Err(e) =
-            quince_icloud::reminders::delete_cloudkit(&http, &root, params.clone(), child).await
-        {
-            quiet!("a subtask did not go with its reminder: {e}");
-        }
+    // Gone from the library at once, its subtasks with it, as on the phone; queued for Apple.
+    {
+        let mut library = data.0.lock().await;
+        let reminder = reminder_to_write(&library, &guid)?;
+        outbox::record_reminder_delete(&mut library, &reminder).map_err(|e| e.to_string())?;
     }
-
-    refresh_reminders(&http, &root, params, &data, false).await
+    outbox::kick();
+    alerts::changed();
+    Ok(())
 }
 
 /// Apply an edit — title, notes, due date, flag, completion — in one write.
 #[tauri::command]
 async fn reminder_edit(
     guid: String,
-    list_guid: String,
+    // The list the window saw it in: a hint that can be stale, never checked (reminder_to_write).
+    #[allow(unused_variables)] list_guid: String,
     edit: quince_icloud::reminders::ReminderEdit,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-
-    let reminder = {
-        let library = data.0.lock().await;
-        library
-            .reminder(&guid)
-            .map_err(|e| e.to_string())?
-            .filter(|r| r.list_guid == list_guid)
-            .ok_or("That reminder is no longer in the local library.")?
-    };
-
-    quince_icloud::reminders::edit_cloudkit(&http, &root, params.clone(), &reminder, &edit)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Moved to another list, a reminder takes its subtasks with it, as on the phone: left
-    // behind, they sat in the old list nested under a parent that was no longer in it.
-    if let Some(to) = edit.list_guid.as_deref().filter(|to| *to != list_guid) {
-        let children: Vec<quince_core::reminders::Reminder> = {
-            let library = data.0.lock().await;
-            library.subtasks_of(&guid).unwrap_or_default()
-        };
-        let follow = quince_icloud::reminders::ReminderEdit {
-            list_guid: Some(to.to_string()),
-            ..Default::default()
-        };
-        for child in &children {
-            if let Err(e) = quince_icloud::reminders::edit_cloudkit(
-                &http,
-                &root,
-                params.clone(),
-                child,
-                &follow,
-            )
-            .await
-            {
-                quiet!("a subtask did not follow its reminder: {e}");
-            }
-        }
+    if edit.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return Err("A reminder needs a title.".into());
     }
-
-    // A due date on its own notifies nobody. Every reminder on a real account that has a
-    // time carries an Alarm pointing at an AlarmTrigger, and one written here used to have
-    // the date and no alarm — so a phone showed the right time and then said nothing when it
-    // came. The alert is part of setting a date, not a separate thing to remember.
-    //
-    // The edit is already on Apple by now. If the alert fails, the library is still re-read
-    // before saying so: returning early left the old date on screen though Apple had the new
-    // one, and the next edit was made against a reminder that was not there any more.
-    // An all-day reminder rings no alarm, as on the phone.
-    // Made all-day, a reminder keeps no timed alarm: the old one kept ringing at the time it
-    // used to have.
-    let alarm_change = if edit.all_day == Some(true) {
-        Some(None)
-    } else {
-        edit.due_at
-    };
-    let alarm = match alarm_change {
-        Some(due) => {
-            let zone = jiff::tz::TimeZone::system();
-            quince_icloud::reminders::set_alarm_cloudkit(
-                &http,
-                &root,
-                params.clone(),
-                &guid,
-                due,
-                zone.iana_name().unwrap_or("UTC"),
-            )
-            .await
-            .map_err(|e| format!("The date was saved, but its alert was not: {e}"))
-        }
-        None => Ok(()),
-    };
-
-    refresh_reminders(&http, &root, params, &data, false).await?;
-    alarm
+    // In the library at once and queued for Apple (outbox.rs). Sent, it is one write of the
+    // fields changed, its subtasks follow a move, and a date carries its alert, as on the
+    // phone — whenever Apple can be reached.
+    {
+        let mut library = data.0.lock().await;
+        let reminder = reminder_to_write(&library, &guid)?;
+        outbox::record_reminder_edit(&mut library, &reminder, &edit).map_err(|e| e.to_string())?;
+    }
+    outbox::kick();
+    alerts::changed();
+    Ok(())
 }
 
 /// One of Apple's smart lists. `until` is the end of today in the viewer's own timezone,
@@ -2183,10 +2506,8 @@ async fn note_save(
     // The formatting the editor began from, over `base`: a line not restyled since keeps
     // what Apple holds now, so a tick made on the phone is not undone.
     base_runs: Option<Vec<quince_icloud::ckdocument::Run>>,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
     let note = note_by_guid(&data, &guid).await?;
     if !note.editable {
         return Err(
@@ -2194,50 +2515,16 @@ async fn note_save(
                 .into(),
         );
     }
-    let saved = quince_icloud::notes::edit_rich_cloudkit_from(
-        &http,
-        &root,
-        params.clone(),
-        &note,
-        base.as_deref(),
-        &body,
-        runs.as_deref(),
-        base_runs.as_deref(),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    // Apple has it; a refresh failing now must not read as the save failing.
-    if let Err(e) = resync_notes(&http, &root, params, &data).await {
-        quiet!("notes refresh after a save: {e}");
+    // Kept in the library first — durable, and what every read shows — then sent behind
+    // (outbox.rs), merged with whatever Apple holds by then against the text it was typed
+    // over. Offline, it waits there, across a restart, until Apple can be reached.
+    {
+        let mut library = data.0.lock().await;
+        outbox::record_note_save(&mut library, &guid, &body, base, runs, base_runs)
+            .map_err(|e| e.to_string())?;
     }
-
-    // Apple accepted the body, but its change feed does not always carry our own write back
-    // on the very next pass. Without this the editor re-reads the old text a moment after
-    // saving, which reads as the edit having been lost. Only the text is set: the note's
-    // formatting and the rest come from Apple's own copy.
-    let (title, snippet) = quince_icloud::notes::title_and_snippet(&saved);
-    let mut library = data.0.lock().await;
-    library
-        .set_note_text(
-            &guid,
-            &saved,
-            &title,
-            Some(snippet.as_str()).filter(|s| !s.is_empty()),
-        )
-        .map_err(|e| e.to_string())?;
-    if let Some(runs) = runs {
-        let laid = if saved == body {
-            runs
-        } else {
-            quince_icloud::ckdocument::carry_runs(&body, &runs, &saved)
-        };
-        if let Ok(json) = serde_json::to_string(&laid) {
-            library
-                .set_note_runs(&guid, &json)
-                .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(saved)
+    outbox::kick();
+    Ok(body)
 }
 
 /// Write a new note and return the record name Apple gave it.
@@ -2466,12 +2753,18 @@ async fn resync_contacts(
     params: Vec<(String, String)>,
     data: &State<'_, Data>,
 ) -> Result<(), String> {
+    let asked_for = asked_as(&params);
     let people = quince_icloud::contacts::fetch(http, root, params)
         .await
         .map_err(|e| e.to_string())?;
     let mut library = data.0.lock().await;
-    quince_icloud::contacts::apply(&mut library, people)
-        .map(|_| ())
+    owned_by(&library, asked_for.as_deref())?;
+    library
+        .atomically(|library| {
+            quince_icloud::contacts::apply(library, people)?;
+            outbox::replay(library, outbox::CONTACTS)?;
+            Ok::<_, quince_icloud::Error>(())
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -2589,38 +2882,19 @@ async fn contact_save(
     contact: Contact,
     // The card as the form opened it: only what differs from it is written.
     base: Option<Contact>,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
-    let _one = CONTACTS_PASS.lock().await;
-    let (http, root, params) = contacts_context(&auth).await?;
-    let (_, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let guid = if contact.guid.is_empty() {
-        quince_icloud::contacts::create(&http, &root, params.clone(), &tokens, &contact)
-            .await
-            .map_err(|e| e.to_string())?
-    } else {
-        let card = quince_icloud::contacts::card(&http, &root, params.clone(), &contact.guid)
-            .await
-            .map_err(|e| e.to_string())?;
-        quince_icloud::contacts::update_from(
-            &http,
-            &root,
-            params.clone(),
-            &tokens,
-            &contact,
-            card.as_ref(),
-            base.as_ref(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        contact.guid.clone()
+    if contact.guid.is_empty() && quince_icloud::contacts::blank_card(&contact) {
+        return Err("Add a name, a phone number or an email address first.".into());
+    }
+    // In the library at once — a new card under the id it will have at Apple — and queued
+    // (outbox.rs). Sent, an edit starts from Apple's own card, so everything this app does not
+    // model — a photo, related names, social profiles — is written back untouched.
+    let guid = {
+        let mut library = data.0.lock().await;
+        outbox::record_contact_save(&mut library, &contact, base).map_err(|e| e.to_string())?
     };
-
-    settle(resync_contacts(&http, &root, params, &data).await)?;
+    outbox::kick();
     Ok(guid)
 }
 
@@ -2866,10 +3140,12 @@ async fn resync_drive_folder(
     folder_id: &str,
 ) -> Result<(), String> {
     let _one = DRIVE_PASS.lock().await;
+    let asked_for = asked_as(&params);
     let items = quince_icloud::drive::fetch_folder(http, root, params, folder_id)
         .await
         .map_err(|e| e.to_string())?;
     let mut library = data.0.lock().await;
+    owned_by(&library, asked_for.as_deref())?;
     quince_icloud::drive::store_folder(&mut library, folder_id, &items)
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -3751,6 +4027,30 @@ async fn sync_all(
     Ok(result)
 }
 
+/// Refresh only the services named — one app's "update now" — and report on those.
+///
+/// The event carries the whole library's freshness, not this partial report: every open
+/// screen and the account's status read the event as the complete picture, and a report of
+/// one service would have made the others look never synced.
+#[tauri::command]
+async fn sync_some(
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+    services: Vec<String>,
+) -> UiResult<refresh::Refresh> {
+    let client = Arc::clone(&auth.client);
+    keep_signed_in(&app, &client).await;
+    let names: Vec<&str> = services.iter().map(String::as_str).collect();
+    let result = refresh::some(&client, &data.0, &names).await;
+    alerts::changed();
+    if names.contains(&"contacts") {
+        warm_contact_photos(app.clone());
+    }
+    app.emit(SYNCED, refresh::status(&data.0).await).ok();
+    Ok(result)
+}
+
 /// What the library already knows about its own freshness, with nothing fetched.
 #[tauri::command]
 async fn sync_status(data: State<'_, Data>) -> UiResult<refresh::Refresh> {
@@ -4105,32 +4405,49 @@ fn show_window(app: &tauri::AppHandle) {
 /// closed, and can be opened again or quit from there.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::PredefinedMenuItem;
-    use tauri::menu::{Menu, MenuItem};
+    use tauri::menu::{Menu, MenuItem, Submenu};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    // Five lines, as a menu-bar extra keeps it: the window, the apps folded under one, the two
+    // quick notes a person reaches for, and Quit. Syncing needs no button (it runs by itself)
+    // and Settings lives in the window; a longer menu was a list nobody could scan.
     let open = MenuItem::with_id(app, "open", "Open Pomander", true, None::<&str>)?;
-    // Each app on its own, as its launcher entry opens it.
     let each: Vec<MenuItem<tauri::Wry>> = apps::APPS
         .iter()
         .map(|(key, name)| MenuItem::with_id(app, format!("app:{key}"), *name, true, None::<&str>))
         .collect::<tauri::Result<_>>()?;
+    let each_ref: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = each
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
+        .collect();
+    let apps_menu = Submenu::with_items(app, "Open App", true, &each_ref)?;
+    let new_reminder = MenuItem::with_id(app, "new:reminder", "New Reminder", true, None::<&str>)?;
+    let new_note = MenuItem::with_id(app, "new:note", "New Note", true, None::<&str>)?;
     let line = PredefinedMenuItem::separator(app)?;
     let line2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Pomander", true, None::<&str>)?;
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&open, &line];
-    items.extend(
-        each.iter()
-            .map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>),
-    );
-    items.push(&line2);
-    items.push(&quit);
-    let menu = Menu::with_items(app, &items)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &open,
+            &apps_menu,
+            &line,
+            &new_reminder,
+            &new_note,
+            &line2,
+            &quit,
+        ],
+    )?;
     let mut tray = TrayIconBuilder::with_id("quince")
         .tooltip("Pomander")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // A click opens the window, as a tray icon does on Windows (and in most Linux panels);
+        // the menu is the right click's. A Mac menu-bar extra opens its menu on any click.
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_window(app),
             "quit" => shutdown(app, 0),
+            "new:reminder" => intake::capture(app, "reminder"),
+            "new:note" => intake::capture(app, "note"),
             other => {
                 if let Some(key) = other.strip_prefix("app:") {
                     apps::open(app, key);
@@ -4144,11 +4461,21 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                show_window(tray.app_handle());
+                if !cfg!(target_os = "macos") {
+                    show_window(tray.app_handle());
+                }
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
+    // The icon drawn for small sizes, not the window's: on Windows that is the .ico's first
+    // entry, 256px, which the tray shrank to 16px into a blur. The 32px one halves cleanly at
+    // 100% scaling and is shown as drawn at 200%.
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")) {
+        Ok(icon) => tray = tray.icon(icon),
+        Err(_) => {
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+        }
     }
     tray.build(app)?;
     Ok(())
@@ -4158,10 +4485,25 @@ fn main() {
     login::note_launch();
     steady_drawing();
     smooth_video();
+    // After the two above (they set the environment, which only a single thread may) and
+    // before anything opens the library, the webview its storage, or the window-state plugin
+    // its file: the folders moved from the old identifier, or — if they could not be — this
+    // launch run under the old one, from them as they are (migrate.rs).
+    let mut context = tauri::generate_context!();
+    let current = context.config().identifier.clone();
+    let identifier = migrate::at_launch(&current);
+    if identifier != current {
+        context.config_mut().identifier = identifier;
+    }
     tauri::Builder::default()
         // One Quince at a time: opening it again brings back the one already running, which
         // may be sitting in the tray with its window closed.
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            // A file opened with Pomander, or a quick capture (`--new reminder`): handled
+            // here, in the one already running.
+            if intake::arrived(app, &args, std::path::Path::new(&cwd)) {
+                return;
+            }
             // `--app notes` from a launcher entry: that app's window, in this same process.
             match apps::asked(&args) {
                 Some(key) => apps::open(app, key),
@@ -4185,11 +4527,16 @@ fn main() {
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("links")
                 .on_navigation(|webview, url| {
+                    // The app's own page only: Windows serves it as tauri.localhost. Any other
+                    // address on this computer (a server some other program runs on localhost)
+                    // is somewhere else, opened outside; only a development build, whose page
+                    // comes from the dev server, counts localhost as its own.
                     let inside =
                         matches!(url.scheme(), "tauri" | "quince" | "about" | "data" | "blob")
-                            || url
-                                .host_str()
-                                .is_some_and(|h| h == "tauri.localhost" || h == "localhost");
+                            || url.host_str().is_some_and(|h| {
+                                h == "tauri.localhost"
+                                    || (cfg!(debug_assertions) && h == "localhost")
+                            });
                     if !inside {
                         use tauri_plugin_opener::OpenerExt;
                         if let Err(e) = webview
@@ -4208,12 +4555,21 @@ fn main() {
         // in the tray. Where no tray could be made there is nowhere to come back from, so
         // there closing quits as it always did.
         .on_window_event(|window, event| {
-            // An app's own window closes for good, giving its memory back; the whole-library
-            // window is put away, as the engine keeps running behind the tray.
+            // The whole-library window is put away, as the engine keeps running behind the
+            // tray. An app's own window is put away too, so opening it again is instant rather
+            // than a new web view built from nothing — and given back for good once it has
+            // gone unused for a while, so six put-away windows do not sit on memory.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && window.app_handle().tray_by_id("quince").is_some() {
+                if window.app_handle().tray_by_id("quince").is_none() {
+                    return;
+                }
+                if window.label() == "main" {
                     api.prevent_close();
                     window.hide().ok();
+                } else if window.label().starts_with("app-") {
+                    api.prevent_close();
+                    window.hide().ok();
+                    apps::put_away(window);
                 }
             }
         })
@@ -4331,7 +4687,6 @@ fn main() {
         })
         .setup(|app| {
             video::serve(app.handle().clone());
-            outbox::start(app.handle().clone());
             let dir = state_dir(app.handle());
             keep_private(&dir);
             let client = Arc::new(Mutex::new(Client::new(&dir)?));
@@ -4344,6 +4699,10 @@ fn main() {
             let mut library = Library::open(&dir)?;
             adopt_writer(&mut library);
             app.manage(Data(Mutex::new(library)));
+            // The sender of edits made offline, started once what it sends with — the session
+            // and the library — is in place: started first, its opening pass found neither and
+            // its task died, and nothing waiting was sent all session.
+            outbox::start(app.handle().clone());
             // A photo cache past what this computer can spare now — the disk filled since —
             // is brought back under its budget first thing.
             let trim = app.handle().clone();
@@ -4395,6 +4754,15 @@ fn main() {
             spawn_heartbeat(Arc::clone(&client));
             push::spawn(app.handle().clone(), Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
+            // Each service's part of a pass, told to the open screens as it is stored.
+            let landing = app.handle().clone();
+            refresh::on_landed(move |_| {
+                let app = landing.clone();
+                tauri::async_runtime::spawn(async move {
+                    let status = refresh::status(&app.state::<Data>().0).await;
+                    app.emit(SYNCED, status).ok();
+                });
+            });
             alerts::spawn(app.handle().clone());
             alerts::spawn_events(app.handle().clone());
             // A tiling compositor places, sizes and closes windows itself; a title bar with
@@ -4409,7 +4777,11 @@ fn main() {
                 quiet!("no tray on this desktop, so closing the window quits: {e}");
             }
             let launched: Vec<String> = std::env::args().collect();
-            if let Some(key) = apps::asked(&launched) {
+            let here = std::env::current_dir().unwrap_or_default();
+            // Started to open a file, or for a quick capture: that window is what shows.
+            if intake::arrived(app.handle(), &launched, &here) {
+                LAUNCHED_AS_APP.store(true, Ordering::SeqCst);
+            } else if let Some(key) = apps::asked(&launched) {
                 LAUNCHED_AS_APP.store(true, Ordering::SeqCst);
                 apps::open(app.handle(), key);
             }
@@ -4419,6 +4791,9 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            outbox::outbox_status,
+            outbox::outbox_resend,
+            outbox::outbox_discard,
             auth_status,
             auth_resume,
             auth_sign_in,
@@ -4431,7 +4806,13 @@ fn main() {
             account_unsent,
             search_everything,
             apps::app_open,
+            intake::intake_pending,
+            intake::intake_capture_close,
+            intake::intake_open_main,
             login::login_item_status,
+            settings::local_storage,
+            settings::local_storage_clear,
+            settings::alerts_shown,
             mount::drive_kept,
             mount::drive_keep,
             login::login_item_set,
@@ -4440,6 +4821,7 @@ fn main() {
             settings_get,
             settings_set,
             sync_all,
+            sync_some,
             sync_status,
             calendar_sync,
             calendar_events,
@@ -4519,6 +4901,7 @@ fn main() {
             note_attachment_info,
             note_attachment_open,
             diagnostics_save,
+            download_reveal,
             note_paragraph,
             note_save,
             note_create,
@@ -4537,6 +4920,24 @@ fn main() {
             contact_set_me,
             contact_list_write,
             contact_delete,
+            contacts_cmds::contact_addresses,
+            contacts_cmds::contact_address_edit,
+            notes_cmds::note_unlock,
+            notes_cmds::note_lock_hint,
+            notes_cmds::note_lock_forget,
+            notes_cmds::note_attach_file,
+            reminders_cmds::reminder_detail,
+            reminders_cmds::reminder_tags,
+            reminders_cmds::reminders_tagged,
+            reminders_cmds::reminder_smart_lists,
+            reminders_cmds::reminders_in_smart_list,
+            reminders_cmds::reminder_tag_add,
+            reminders_cmds::reminder_tag_remove,
+            reminders_cmds::reminder_url_set,
+            reminders_cmds::reminder_early_alert_set,
+            reminders_cmds::reminder_section_create,
+            reminders_cmds::reminder_section_rename,
+            reminders_cmds::reminder_section_move,
             drive_sync_folder,
             drive_children,
             drive_download,
@@ -4558,7 +4959,7 @@ fn main() {
             reminder_set_done,
             reminder_set_repeat,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Pomander failed to start")
         .run(|_app, event| {
             // The iCloud Drive folder goes with the app: left mounted, it would answer
@@ -4571,6 +4972,72 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+
+    /// A shared note's attachment is saved under a plain name in its own folder, whatever its
+    /// sender called it, and a program in one is shown in its folder, never run.
+    #[test]
+    fn a_note_attachment_cannot_escape_or_run() {
+        use super::{attachment_name, runs_code};
+        for (given, want) in [
+            (Some("Report.pdf"), "Report.pdf"),
+            (Some("../../.bashrc"), "bashrc"),
+            (Some("..\\..\\x.txt"), "x.txt"),
+            (Some("C:evil.txt"), "Cevil.txt"),
+            (Some(".hidden"), "hidden"),
+            (Some("invoice\u{202E}fdp.exe"), "invoicefdp.exe"),
+            (Some("a\nb\0c.pdf"), "abc.pdf"),
+            (Some("CON.txt"), "_CON.txt"),
+            (Some("com1"), "_com1"),
+            (Some("trailing. . "), "trailing"),
+            (Some("/"), "Attachment ABC"),
+            (Some(".."), "Attachment ABC"),
+            (None, "Attachment ABC"),
+        ] {
+            let name = attachment_name(given, "ABC");
+            assert_eq!(name, want, "{given:?}");
+            let dir = std::path::Path::new("/data/note-files/ABC");
+            assert_eq!(dir.join(&name).parent(), Some(dir), "{given:?}");
+        }
+        assert!(attachment_name(Some(&"x".repeat(1000)), "A").len() <= 120);
+        for runs in [
+            "evil.desktop",
+            "x.SH",
+            "setup.exe",
+            "a.pdf.jar",
+            "Run.AppImage",
+            "s.lnk",
+        ] {
+            assert!(runs_code(runs, b"%PDF-"), "{runs}");
+        }
+        assert!(runs_code("notes.txt", b"#!/bin/sh\nrm -rf ~"));
+        assert!(runs_code("photo.jpg", b"\x7fELF\x02\x01"));
+        assert!(runs_code("Attachment 1", b"[Desktop Entry]\nExec=sh"));
+        assert!(!runs_code("Report.pdf", b"%PDF-1.7"));
+        assert!(!runs_code("IMG_0001.HEIC", b"\0\0\0\x18ftypheic"));
+    }
+
+    /// No `quince://` request reaches a file outside the folders its kind is kept in.
+    #[test]
+    fn the_scheme_reads_nothing_outside_its_folders() {
+        for path in [
+            "/pic/..%2F..%2Fcookies.json/original",
+            "/pic/../original",
+            "/pic/a%2Fb/original",
+            "/pic//original",
+            "/pic/%2e%2e/fit512",
+        ] {
+            assert_eq!(super::photos::requested(path), None, "{path}");
+            assert_eq!(super::photos::requested_fit(path), None, "{path}");
+        }
+        assert_eq!(super::photos::requested_upload("/up/..%2Fx"), None);
+        let dir = std::path::Path::new("/data");
+        let guid = super::photo_guid(Some("photo"), "/..%2F..%2Fetc%2Fpasswd").unwrap();
+        let at = super::photo_path(dir, &guid, "../../sig/..");
+        assert_eq!(at.parent(), Some(dir.join("faces").as_path()));
+        let (id, _) = super::note_part("/note/..%2F..%2Fcookies.json/file").unwrap();
+        let safe = super::media_file_id(&id);
+        assert_eq!(safe, "______cookies_json");
+    }
 
     /// Two Apple IDs on one computer: each one's library and caches set aside whole while the
     /// other is signed in, and back exactly as they were — never mixed, never deleted — with

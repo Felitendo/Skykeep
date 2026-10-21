@@ -69,7 +69,7 @@ fn now() -> i64 {
 
 impl Library {
     pub fn put_note_folders(&mut self, folders: &[NoteFolder]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO note_folders (guid, title, sort_order, parent_guid, updated_at)
@@ -152,7 +152,7 @@ impl Library {
     }
 
     pub fn put_notes(&mut self, notes: &[Note]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO notes (guid, folder_guid, title, snippet, body, locked, pinned,
@@ -202,7 +202,7 @@ impl Library {
     /// consumed one before it was understood would leave a deleted note on screen forever —
     /// and saving one of those writes it back to iCloud.
     pub fn retain_notes(&mut self, keep: &[String]) -> Result<usize> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         let removed = {
             let mut known: std::collections::HashSet<&str> =
                 keep.iter().map(String::as_str).collect();
@@ -227,7 +227,7 @@ impl Library {
     }
 
     pub fn forget_notes(&mut self, note_guids: &[String]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare("DELETE FROM notes WHERE guid = ?1")?;
             for guid in note_guids {
@@ -298,7 +298,7 @@ impl Library {
     /// Forget folders Apple has deleted. A note still pointing at one is left unfiled here
     /// rather than lost; the next pass files it wherever Apple has it.
     pub fn remove_note_folders(&mut self, guids: &[String]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         for guid in guids {
             tx.execute(
                 "UPDATE notes SET folder_guid = NULL WHERE folder_guid = ?1",

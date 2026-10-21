@@ -211,7 +211,7 @@ fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
 impl Library {
     /// Photos written or replaced, by asset id.
     pub fn put_photos(&mut self, photos: &[Photo]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO photos (id, master, taken_at, added_at, kind, width, height, duration,
@@ -276,7 +276,7 @@ impl Library {
 
     /// Photos gone from iCloud for good (expunged), by asset id.
     pub fn forget_photos(&mut self, ids: &[String]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         for id in ids {
             tx.execute("DELETE FROM photos WHERE id = ?1", params![id])?;
         }
@@ -470,7 +470,7 @@ impl Library {
 
     /// Files added to the upload queue, waiting.
     pub fn queue_uploads(&mut self, uploads: &[Upload]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         for u in uploads {
             tx.execute(
                 "INSERT OR IGNORE INTO photo_uploads (id, batch, path, name, state, error, asset, added_at, album)
@@ -572,7 +572,7 @@ impl Library {
 
     /// The albums, replaced by `albums`.
     pub fn replace_albums(&mut self, albums: &[Album]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         tx.execute("DELETE FROM photo_albums", [])?;
         for a in albums {
             tx.execute(
@@ -594,7 +594,7 @@ impl Library {
 
     /// Which photos are in which album: `(album, asset, position)`, added or moved.
     pub fn put_album_items(&mut self, items: &[(String, String, i64)]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         for (album, asset, position) in items {
             tx.execute(
                 "INSERT INTO photo_album_items (album, asset, position) VALUES (?1, ?2, ?3)
@@ -608,7 +608,7 @@ impl Library {
 
     /// Photos taken out of albums: `(album, asset)`.
     pub fn forget_album_items(&mut self, items: &[(String, String)]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         for (album, asset) in items {
             tx.execute(
                 "DELETE FROM photo_album_items WHERE album = ?1 AND asset = ?2",
@@ -663,7 +663,7 @@ impl Library {
     /// An album gone, and which photos were in it with it. Apple leaves a deleted album's
     /// relation records standing, so they are dropped here.
     pub fn forget_album(&mut self, id: &str) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         tx.execute("DELETE FROM photo_albums WHERE id = ?1", params![id])?;
         tx.execute(
             "DELETE FROM photo_album_items WHERE album = ?1",
@@ -749,6 +749,142 @@ impl Library {
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+}
+
+/// A whole read of Photos that takes more than one pass.
+///
+/// A large library is more change feed than one pass reads, so a whole read goes on across
+/// passes from where the last one stopped. What each pass brings is stored at once, so the
+/// library fills as it goes; what the read has seen is noted, so that when it reaches the end,
+/// and only then, whatever it never saw is let go. The position it carries on from is kept
+/// here too, and a pass is only taken as part of the read when it began at exactly that
+/// position: one from anywhere else knows nothing of what the read saw before it.
+///
+/// Records that arrive without their other half at the end of an unfinished pass (an asset
+/// whose master is in the next page, or a master whose asset is) are held until it comes.
+const WALK_TABLES: &str = "
+    CREATE TABLE IF NOT EXISTS photo_walk (
+        kind TEXT NOT NULL,
+        id   TEXT NOT NULL,
+        PRIMARY KEY (kind, id)
+    ) STRICT, WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS photo_walk_held (
+        id     TEXT PRIMARY KEY,
+        record TEXT NOT NULL
+    ) STRICT;
+";
+
+impl Library {
+    fn walk_tables(&self) -> Result<()> {
+        self.conn.execute_batch(WALK_TABLES)?;
+        Ok(())
+    }
+
+    /// A whole read starting from the beginning: anything an earlier one noted or held is
+    /// dropped.
+    pub fn begin_photo_walk(&mut self) -> Result<()> {
+        self.walk_tables()?;
+        self.conn
+            .execute_batch("DELETE FROM photo_walk; DELETE FROM photo_walk_held;")?;
+        Ok(())
+    }
+
+    /// Where the whole read underway carries on from, if one is.
+    pub fn photo_walk_cursor(&self) -> Result<Option<String>> {
+        self.walk_tables()?;
+        Ok(self
+            .conn
+            .query_row("SELECT id FROM photo_walk WHERE kind = 'cursor'", [], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// The whole read underway, forgotten without letting anything go.
+    pub fn forget_photo_walk(&mut self) -> Result<()> {
+        self.walk_tables()?;
+        self.conn.execute("DELETE FROM photo_walk", [])?;
+        Ok(())
+    }
+
+    /// What a pass of the whole read stored, and where the next pass carries on from (none:
+    /// the read starts over).
+    pub fn note_photo_walk(
+        &mut self,
+        photos: &[String],
+        albums: &[String],
+        items: &[(String, String)],
+        cursor: Option<&str>,
+    ) -> Result<()> {
+        self.walk_tables()?;
+        let tx = self.conn.savepoint()?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT OR IGNORE INTO photo_walk (kind, id) VALUES (?1, ?2)")?;
+            for id in photos {
+                stmt.execute(params!["photo", id])?;
+            }
+            for id in albums {
+                stmt.execute(params!["album", id])?;
+            }
+            for (album, asset) in items {
+                stmt.execute(params!["item", format!("{album}\u{1f}{asset}")])?;
+            }
+        }
+        tx.execute("DELETE FROM photo_walk WHERE kind = 'cursor'", [])?;
+        if let Some(cursor) = cursor {
+            tx.execute(
+                "INSERT INTO photo_walk (kind, id) VALUES ('cursor', ?1)",
+                params![cursor],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The whole read reached the end: every photo, album and album's photo it never saw is
+    /// gone from iCloud, and goes here.
+    pub fn finish_photo_walk(&mut self) -> Result<()> {
+        self.walk_tables()?;
+        let tx = self.conn.savepoint()?;
+        tx.execute_batch(
+            "DELETE FROM photos
+               WHERE id NOT IN (SELECT id FROM photo_walk WHERE kind = 'photo');
+             DELETE FROM photo_albums
+               WHERE id NOT IN (SELECT id FROM photo_walk WHERE kind = 'album');
+             DELETE FROM photo_album_items
+               WHERE album || char(31) || asset
+                     NOT IN (SELECT id FROM photo_walk WHERE kind = 'item');
+             DELETE FROM photo_walk;",
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records held from an unfinished pass, as JSON, for the next pass to read first.
+    pub fn photo_walk_held(&self) -> Result<Vec<String>> {
+        self.walk_tables()?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT record FROM photo_walk_held ORDER BY rowid")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The records held for the next pass, by record name, in place of those held before.
+    pub fn hold_for_photo_walk(&mut self, records: &[(String, String)]) -> Result<()> {
+        self.walk_tables()?;
+        let tx = self.conn.savepoint()?;
+        tx.execute("DELETE FROM photo_walk_held", [])?;
+        for (id, record) in records {
+            tx.execute(
+                "INSERT OR REPLACE INTO photo_walk_held (id, record) VALUES (?1, ?2)",
+                params![id, record],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 }
 

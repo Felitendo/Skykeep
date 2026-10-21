@@ -291,6 +291,10 @@ pub struct FolderStatus {
     pub problem: Option<String>,
     /// Files written into it and not yet at Apple (the Drive folder).
     pub waiting: Option<quince_vfs::writes::Waiting>,
+    /// Whether this system can have the folder at all: Linux's FUSE only, until Windows has
+    /// it through the Cloud Files API. Not offered where it cannot be, rather than offered and
+    /// refused.
+    pub available: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -463,6 +467,7 @@ fn status(app: &AppHandle, which: Which, problem: Option<String>) -> FolderStatu
         path: at.to_string_lossy().into_owned(),
         problem,
         waiting,
+        available: cfg!(target_os = "linux"),
     }
 }
 

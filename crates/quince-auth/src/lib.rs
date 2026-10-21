@@ -101,9 +101,9 @@ const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("that Apple ID or password wasn't accepted")]
+    #[error("That Apple ID or password wasn't accepted.")]
     BadCredentials,
-    #[error("that code didn't match. Check your iPhone and try again")]
+    #[error("That code didn't match. Check your iPhone and try again.")]
     BadCode,
     #[error("Apple didn't return a trust token, so this session wouldn't survive a restart")]
     NoTrustToken,
@@ -114,7 +114,7 @@ pub enum Error {
     Network(#[from] reqwest::Error),
     #[error("Apple sent back something unexpected: {0}")]
     Protocol(String),
-    #[error("too many attempts just now — try again in {seconds}s")]
+    #[error("Too many attempts. Try again in {seconds} seconds.")]
     CoolingDown { seconds: u64 },
     #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
     ReauthRequired,
@@ -572,8 +572,16 @@ impl Client {
                 self.session.consecutive_failures = 0;
                 self.session.retry_after = None;
             }
-            // Not reaching Apple is not a failed attempt: no cooldown for being offline.
-            Err(Error::CoolingDown { .. } | Error::Network(_)) => {}
+            // Only Apple turning the attempt down counts. Not reaching Apple, or this computer
+            // failing afterwards (a keyring that would not take the session), is no wrong
+            // password: counted, it held a person back from trying again once it was fixed.
+            Err(
+                Error::CoolingDown { .. }
+                | Error::Network(_)
+                | Error::Keyring(_)
+                | Error::Io(_)
+                | Error::Json(_),
+            ) => {}
             Err(e) => {
                 self.session.consecutive_failures =
                     self.session.consecutive_failures.saturating_add(1);
@@ -1060,7 +1068,58 @@ pub fn is_apple_host(host: &str) -> bool {
 /// Every HTTP client Pomander makes starts here: Apple's servers, and nothing else, can be
 /// reached at all (see [`AppleOnly`]).
 pub fn apple_only() -> reqwest::ClientBuilder {
-    HttpClient::builder().dns_resolver(Arc::new(AppleOnly))
+    let mut builder = HttpClient::builder()
+        .dns_resolver(Arc::new(AppleOnly))
+        // The resolver alone is not enough: a URL with an address in it (`https://1.2.3.4/`)
+        // is never looked up, and through a proxy the proxy looks the name up, not us. So
+        // every request's own URL is checked first, a redirect's included; one that is not
+        // Apple's is sent to a "proxy" that cannot be found — by the resolver above, so the
+        // refusal reads the same — and never leaves the machine.
+        .proxy(reqwest::Proxy::custom(|url| {
+            (!url_is_apples(url)).then(|| REFUSED.to_string())
+        }));
+    // Setting a proxy turns off the system's own (`HTTPS_PROXY` and the rest), which Apple's
+    // hosts still go through when one is set, as they did before.
+    for (scheme, names) in [
+        (
+            "https",
+            ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"],
+        ),
+        (
+            "http",
+            ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"],
+        ),
+    ] {
+        let Some(via) = names
+            .iter()
+            .find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
+        else {
+            continue;
+        };
+        let proxy =
+            reqwest::Proxy::custom(move |url| (url.scheme() == scheme).then(|| via.clone()))
+                .no_proxy(reqwest::NoProxy::from_env());
+        builder = builder.proxy(proxy);
+    }
+    builder
+}
+
+/// Where a request that is not Apple's is pointed: a name the resolver refuses.
+const REFUSED: &str = "http://refused.pomander.invalid";
+
+/// Whether a request's URL may be sent: an Apple host by name, or this computer.
+fn url_is_apples(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    match host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+    {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => is_apple_host(host),
+    }
 }
 
 /// The one way Pomander's client finds a server: a host that is not Apple's is never looked

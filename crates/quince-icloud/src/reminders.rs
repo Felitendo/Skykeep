@@ -391,6 +391,10 @@ mod tests {
 
 use crate::cloudkit::{field, ZoneClient};
 
+/// Tags, links, early alerts, smart lists and section moves.
+#[path = "reminders_details.rs"]
+pub mod details;
+
 const CONTAINER: &str = "com.apple.reminders";
 const ZONE: &str = "Reminders";
 
@@ -771,6 +775,7 @@ pub async fn fetch_cloudkit(
 ) -> Result<RemindersFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let walk = client.all_records(ZONE, since).await?;
+    let whole = walk.whole();
     let memberships = fetch_memberships(http, &walk.records).await;
     Ok(RemindersFetch {
         memberships,
@@ -778,12 +783,22 @@ pub async fn fetch_cloudkit(
         token: walk.token,
         // A walk that stopped at its page cap saw only part of the zone, so it cannot be
         // treated as the whole truth however it was asked for.
-        incremental: since.is_some() || !walk.complete,
+        // A cursor Apple refused (expired) started the walk over from the beginning: that
+        // walk is the whole zone, and rows deleted while the cursor sat unused are pruned by it.
+        incremental: !whole,
     })
 }
 
 /// Store a fetched pass. Touches no network.
 pub fn apply_cloudkit(
+    library: &mut quince_core::Library,
+    fetched: RemindersFetch,
+) -> Result<(usize, usize, Option<String>)> {
+    // One pass is one change: a failure or crash part way leaves the library as it was.
+    library.atomically(|library| apply_cloudkit_whole(library, fetched))
+}
+
+fn apply_cloudkit_whole(
     library: &mut quince_core::Library,
     fetched: RemindersFetch,
 ) -> Result<(usize, usize, Option<String>)> {
@@ -811,6 +826,11 @@ pub fn apply_cloudkit(
     let mut rules: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
     // Reminders whose record lists repeat rules, whether or not the rules came in this pass.
     let mut with_rules: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Tags, links, early alerts and smart lists, stored after the reminders they hang off.
+    let mut details = quince_core::reminders::ReminderDetailsPass {
+        whole: !incremental,
+        ..Default::default()
+    };
 
     for record in &records {
         let Some(name) = field::record_name(record) else {
@@ -832,6 +852,7 @@ pub fn apply_cloudkit(
                 gone_reminders.push(name.clone());
                 gone_sections.push(name.clone());
                 gone_alarms.push(name.clone());
+                details.gone.push(name.clone());
                 gone_lists.push(name);
             }
             continue;
@@ -850,8 +871,22 @@ pub fn apply_cloudkit(
                         with_rules.insert(name.clone());
                     }
                     reminders.extend(reminder_from_record(record));
+                    let (account, alerts) = details::early_alerts_from_record(record);
+                    details.early_alerts.push((name, account, alerts));
                 }
             }
+            "Hashtag" => match (removed, details::hashtag_from_record(record)) {
+                (false, Some(tag)) => details.hashtags.push(tag),
+                _ => details.gone.push(name),
+            },
+            "Attachment" => match (removed, details::attachment_from_record(record)) {
+                (false, Some(a)) => details.attachments.push(a),
+                _ => details.gone.push(name),
+            },
+            "SmartList" => match (removed, details::smart_list_from_record(record)) {
+                (false, Some(list)) => details.smart_lists.push(list),
+                _ => details.gone.push(name),
+            },
             // Only List records are the lists people made. ListSection is a heading inside
             // one, and SmartList is a built-in filter — Today, Scheduled, Flagged — which
             // carries a SmartListType instead of a Name and appeared as phantom entries
@@ -1051,6 +1086,8 @@ pub fn apply_cloudkit(
         let keep: Vec<String> = reminders.iter().map(|r| r.guid.clone()).collect();
         library.retain_reminders(&keep)?;
     }
+    // After the prune above, so a reminder gone takes its details with it in this same pass.
+    library.put_reminder_details(&details)?;
     library.mark_synced("reminders", token.as_deref())?;
     Ok((lists.len(), reminders.len(), token))
 }
@@ -1175,11 +1212,55 @@ pub async fn create_cloudkit(
         ));
     }
 
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    let record_name = format!(
+    let record_name = new_reminder_name();
+    create_cloudkit_named(
+        http,
+        ckdatabasews_root,
+        params,
+        &record_name,
+        list_guid,
+        title,
+    )
+    .await?;
+    Ok(record_name)
+}
+
+/// A record name for a reminder made here, chosen before it is sent — so the same name can be
+/// shown at once, queued, and sent again without making a second.
+pub fn new_reminder_name() -> String {
+    format!(
         "Reminder/{}",
         uuid::Uuid::new_v4().to_string().to_uppercase()
-    );
+    )
+}
+
+/// [`create_cloudkit`] under a name chosen beforehand, exactly once: sent again — the answer
+/// lost, the app closed before it heard, a queue replayed — a reminder Apple already holds
+/// under that name is left as it is, not made twice.
+pub async fn create_cloudkit_named(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    record_name: &str,
+    list_guid: &str,
+    title: &str,
+) -> Result<()> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(Error::Protocol("a reminder needs a title".into()));
+    }
+    if list_guid.trim().is_empty() {
+        return Err(Error::Protocol(
+            "a reminder has to go in a list, and this account has none yet".into(),
+        ));
+    }
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    if client.lookup_record(ZONE, record_name).await?.is_some() {
+        // Made already; its place in the list is made sure of (adding twice adds once).
+        let _ = place_in_list(&client, list_guid, record_name, None).await;
+        return Ok(());
+    }
+    let record_name = record_name.to_string();
     let stamp = now_millis();
 
     client
@@ -1207,7 +1288,7 @@ pub async fn create_cloudkit(
     // failure here costs its place in the order, never the reminder.
     let _ = place_in_list(&client, list_guid, &record_name, None).await;
 
-    Ok(record_name)
+    Ok(())
 }
 
 /// Add a reminder to the end of a list's `ReminderIDs`, and take it out of the list it left.
@@ -2208,6 +2289,50 @@ mod incremental_tests {
             .unwrap();
         assert!(library.reminders_in("List/a", true).unwrap().is_empty());
     }
+
+    /// A change token Apple has expired — sent as the bare code — is a full read, not
+    /// "nothing changed": the pass starts over, takes the new token, and prunes what was
+    /// deleted while the token sat unused (its tombstone long gone).
+    #[tokio::test]
+    async fn an_expired_token_is_a_full_read_that_prunes() {
+        let http = reqwest::Client::new();
+        let mut library = Library::in_memory().unwrap();
+        let first = serve(json!({ "zones": [{
+            "records": [list("List/a", "GYM"), reminder("Reminder/1", "Squats"),
+                        reminder("Reminder/2", "Deadlifts")],
+            "syncToken": "t1", "moreComing": false }] }))
+        .await;
+        sync_cloudkit(&http, &first.uri(), vec![], &mut library, None)
+            .await
+            .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone$"))
+            .and(wiremock::matchers::body_string_contains("\"t1\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "zones": [{
+                "zoneID": { "zoneName": "Reminders" },
+                "serverErrorCode": "CHANGE_TOKEN_EXPIRED" }] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "zones": [{
+                "records": [list("List/a", "GYM"), reminder("Reminder/1", "Squats")],
+                "syncToken": "t9", "moreComing": false }] })))
+            .mount(&server)
+            .await;
+        let (_, _, token) = sync_cloudkit(&http, &server.uri(), vec![], &mut library, Some("t1"))
+            .await
+            .unwrap();
+        assert_eq!(token.as_deref(), Some("t9"), "the fresh token is kept");
+        let left = library.reminders_in("List/a", true).unwrap();
+        assert_eq!(
+            left.iter().map(|r| r.guid.as_str()).collect::<Vec<_>>(),
+            vec!["Reminder/1"],
+            "deleted while the token sat unused, it is pruned by the full read"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2313,8 +2438,10 @@ mod write_tests {
             "the caller needs the record name: {name}"
         );
 
-        let sent: Value =
-            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        // Asked first whether the name is taken (a create sent again makes nothing more).
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests[0].url.path().ends_with("/records/lookup"));
+        let sent: Value = serde_json::from_slice(&requests[1].body).unwrap();
         let record = &sent["operations"][0]["record"];
         assert_eq!(sent["operations"][0]["operationType"], "create");
         assert_eq!(record["recordType"], "Reminder");
@@ -2330,6 +2457,53 @@ mod write_tests {
             Some("🥛 Buy milk"),
             "the title must decode back to what was typed"
         );
+    }
+
+    /// Sent again under the same name — the answer lost, or a queue replayed after a crash —
+    /// a reminder Apple already holds is not made a second time.
+    #[tokio::test]
+    async fn a_create_sent_again_makes_nothing_more() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{ "recordName": "Reminder/ONCE", "recordType": "Reminder",
+                              "recordChangeTag": "t1", "fields": {} }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "x" }] })),
+            )
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        create_cloudkit_named(
+            &http,
+            &server.uri(),
+            vec![],
+            "Reminder/ONCE",
+            "List/abc",
+            "Once",
+        )
+        .await
+        .unwrap();
+        let creates = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                serde_json::from_slice::<Value>(&r.body)
+                    .ok()
+                    .and_then(|b| b.pointer("/operations/0/operationType").cloned())
+                    == Some(json!("create"))
+            })
+            .count();
+        assert_eq!(creates, 0, "already at Apple: no second create");
     }
 
     #[tokio::test]
@@ -4772,5 +4946,63 @@ mod list_order_write_tests {
             tokens["map"]["reminderIDsMergeableOrdering"]["counter"],
             124
         );
+    }
+}
+
+#[cfg(test)]
+mod atomic_apply_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A pass that fails as it stores its position — its last write, standing in for a crash
+    /// part way — leaves every reminder it had already removed or stored as it was.
+    #[test]
+    fn a_pass_that_fails_part_way_stores_none_of_itself() {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        library
+            .put_reminder_lists(&[ReminderList {
+                guid: "List/a".into(),
+                title: "A".into(),
+                enabled: true,
+                ..Default::default()
+            }])
+            .unwrap();
+        library
+            .put_reminders(&[Reminder {
+                guid: "Reminder/1".into(),
+                list_guid: "List/a".into(),
+                title: "Kept".into(),
+                ..Default::default()
+            }])
+            .unwrap();
+        library.mark_synced("reminders", Some("old")).unwrap();
+        library
+            .conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER crash_i BEFORE INSERT ON main.sync_state
+                   BEGIN SELECT RAISE(ABORT, 'crash mid-apply'); END;
+                 CREATE TEMP TRIGGER crash_u BEFORE UPDATE ON main.sync_state
+                   BEGIN SELECT RAISE(ABORT, 'crash mid-apply'); END;",
+            )
+            .unwrap();
+        let failed = apply_cloudkit(
+            &mut library,
+            RemindersFetch {
+                memberships: std::collections::HashMap::new(),
+                records: vec![json!({ "recordName": "Reminder/1", "deleted": true })],
+                token: Some("new".into()),
+                incremental: true,
+            },
+        );
+        assert!(failed.is_err());
+        assert!(
+            library.reminder("Reminder/1").unwrap().is_some(),
+            "the removal rolled back with the rest"
+        );
+        assert_eq!(
+            library.sync_token("reminders").unwrap().as_deref(),
+            Some("old")
+        );
+        assert!(library.conn().is_autocommit());
     }
 }

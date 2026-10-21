@@ -8,8 +8,43 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const KEYRING_SERVICE: &str = "dev.quince.client";
 const KEYRING_ENTRY: &str = "session";
+
+/// Identifiers the app was published under before, newest first: the keyring services its
+/// session may still be under, and the folders `src-tauri/src/migrate.rs` moves. The current
+/// identifier is never written here — it is tauri.conf.json's. Renaming the app means adding
+/// the identifier being replaced to the front of this list.
+pub const PREVIOUS_IDENTIFIERS: &[&str] = &["dev.quince.client"];
+
+/// The keyring services: the one the session is kept under (the app's identifier), and the
+/// ones it was kept under before — read when the current one holds nothing, moved across
+/// (written, read back, only then deleted there), never written.
+struct Services {
+    current: String,
+    previous: Vec<&'static str>,
+}
+
+/// The app's identifier, from tauri.conf.json itself, so every client — the app, a probe, a
+/// test — uses the same service without being told, and a rename is one edit there.
+fn configured_identifier() -> Option<String> {
+    let conf: serde_json::Value =
+        serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).ok()?;
+    Some(conf.get("identifier")?.as_str()?.to_string())
+}
+
+fn services() -> Result<&'static Services, String> {
+    static SERVICES: std::sync::OnceLock<Services> = std::sync::OnceLock::new();
+    Ok(SERVICES.get_or_init(|| {
+        let current =
+            configured_identifier().unwrap_or_else(|| PREVIOUS_IDENTIFIERS[0].to_string());
+        let previous = PREVIOUS_IDENTIFIERS
+            .iter()
+            .copied()
+            .filter(|p| *p != current)
+            .collect();
+        Services { current, previous }
+    }))
+}
 
 /// Headers Apple rotates across responses. Any of them can appear on any call, so we capture
 /// after every request rather than only at the end of sign-in.
@@ -204,7 +239,14 @@ pub fn account_fingerprint(apple_id: &str) -> String {
 /// itself signed out. The app's own directory keeps the name it always had, so nobody is
 /// signed out by this change; any other directory gets an entry of its own.
 fn entry_name(state_dir: &Path) -> String {
-    if state_dir.ends_with(KEYRING_SERVICE) {
+    // The app's directory under either identifier: the data directory moves with the
+    // identifier, and a launch that could not move it still runs from the old one.
+    let ours = services().is_ok_and(|s| {
+        std::iter::once(s.current.as_str())
+            .chain(s.previous.iter().copied())
+            .any(|id| state_dir.ends_with(id))
+    });
+    if ours {
         return KEYRING_ENTRY.to_string();
     }
     use sha2::{Digest, Sha256};
@@ -227,24 +269,38 @@ trait Secrets {
     fn delete(&self, name: &str) -> Result<(), String>;
 }
 
-/// The system keyring, under this app's service name.
-struct SystemKeyring;
+/// The system keyring, under one service name.
+struct SystemKeyring(&'static str);
+
+/// Where the session is kept now.
+fn current() -> Result<SystemKeyring, String> {
+    Ok(SystemKeyring(services()?.current.as_str()))
+}
+
+/// Where it was kept under earlier identifiers: read, and moved, newest first.
+fn previous() -> Result<Vec<SystemKeyring>, String> {
+    Ok(services()?
+        .previous
+        .iter()
+        .map(|p| SystemKeyring(p))
+        .collect())
+}
 
 impl Secrets for SystemKeyring {
     fn get(&self, name: &str) -> Result<Option<String>, String> {
-        match keyring::Entry::new(KEYRING_SERVICE, name).and_then(|e| e.get_password()) {
+        match keyring::Entry::new(self.0, name).and_then(|e| e.get_password()) {
             Ok(v) => Ok(Some(v)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(e.to_string()),
         }
     }
     fn set(&self, name: &str, value: &str) -> Result<(), String> {
-        keyring::Entry::new(KEYRING_SERVICE, name)
+        keyring::Entry::new(self.0, name)
             .and_then(|e| e.set_password(value))
             .map_err(|e| e.to_string())
     }
     fn delete(&self, name: &str) -> Result<(), String> {
-        match keyring::Entry::new(KEYRING_SERVICE, name).and_then(|e| e.delete_credential()) {
+        match keyring::Entry::new(self.0, name).and_then(|e| e.delete_credential()) {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.to_string()),
         }
@@ -342,6 +398,48 @@ fn delete_secret(k: &dyn Secrets, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The secret under `name`, from `current`; or, where that holds nothing, from the first of
+/// `earlier` that has it (`legacy`) — moved across on the way.
+///
+/// The move is a copy first: written to `current`, read back and compared, and only then
+/// deleted from `legacy`. Any step failing leaves `legacy` as it was and answers its value, so
+/// the session is never lost to a keyring that refuses a write, and the move is tried again on
+/// the next read. A `current` that will not answer at all (locked) is an error, as it always
+/// was: never read as "nothing there", which would fall through to a stale legacy entry.
+fn read_moving(
+    current: &dyn Secrets,
+    earlier: &[&dyn Secrets],
+    name: &str,
+    size: Option<usize>,
+) -> Result<Option<String>, String> {
+    if let Some(found) = read_secret(current, name)? {
+        return Ok(Some(found));
+    }
+    // An earlier service not answering is no reason to fail a read that found nothing.
+    let Some((legacy, old)) = earlier
+        .iter()
+        .find_map(|k| read_secret(*k, name).ok().flatten().map(|v| (*k, v)))
+    else {
+        return Ok(None);
+    };
+    let landed = write_secret(current, name, &old, size)
+        .and_then(|()| read_secret(current, name))
+        .is_ok_and(|back| back.as_deref() == Some(old.as_str()));
+    if landed {
+        if let Err(e) = delete_secret(legacy, name) {
+            // Harmless: `current` answers from now on, and save and clear delete it again.
+            quiet!("quince: keyring: the old entry stayed after the move: {e}");
+        }
+    } else {
+        quiet!(
+            "quince: keyring: could not move the session to the new name; still read from the old"
+        );
+        // Nothing half-written left under the new name to be read in place of the old.
+        let _ = delete_secret(current, name);
+    }
+    Ok(Some(old))
+}
+
 impl Store {
     /// Production: secrets in the OS keyring.
     pub fn keyring(state_dir: &Path) -> std::io::Result<Self> {
@@ -412,7 +510,11 @@ impl Store {
     /// the sign-in screen, and signing in then replaced the entry and its trust token.
     pub fn try_load(&self) -> Result<Session, crate::Error> {
         let json = match &self.backend {
-            Backend::Keyring(_) => match read_secret(&SystemKeyring, self.name()) {
+            Backend::Keyring(_) => match current().and_then(|now| {
+                let before = previous()?;
+                let before: Vec<&dyn Secrets> = before.iter().map(|k| k as &dyn Secrets).collect();
+                read_moving(&now, &before, self.name(), part_size())
+            }) {
                 Ok(Some(j)) => j,
                 Ok(None) => return Ok(Session::default()),
                 Err(e) => return Err(crate::Error::Keyring(e)),
@@ -429,14 +531,20 @@ impl Store {
         let json = serde_json::to_string(session)?;
         match &self.backend {
             Backend::Keyring(_) => {
-                write_secret(&SystemKeyring, self.name(), &json, part_size())
+                let now = current().map_err(crate::Error::Keyring)?;
+                write_secret(&now, self.name(), &json, part_size())
                     .map_err(crate::Error::Keyring)?;
+                // Anything still under an earlier name is older than this: gone, so a later
+                // sign-out cannot bring it back.
+                for before in previous().unwrap_or_default() {
+                    let _ = delete_secret(&before, self.name());
+                }
 
                 // Storing the trust token is the whole reason sign-in survives a restart, so
                 // prove it landed rather than assume. A keyring that accepts a write and
                 // loses it looks identical to working until the user reopens the app.
                 if session.trust_token.is_some() {
-                    let stored = read_secret(&SystemKeyring, self.name()).ok().flatten();
+                    let stored = read_secret(&now, self.name()).ok().flatten();
                     if stored.as_deref() != Some(json.as_str()) {
                         return Err(crate::Error::Keyring(
                             "the system keyring accepted the sign-in but did not keep it. \
@@ -456,7 +564,12 @@ impl Store {
     pub fn clear(&self) -> Result<(), crate::Error> {
         match &self.backend {
             Backend::Keyring(_) => {
-                delete_secret(&SystemKeyring, self.name()).map_err(crate::Error::Keyring)?;
+                let now = current().map_err(crate::Error::Keyring)?;
+                delete_secret(&now, self.name()).map_err(crate::Error::Keyring)?;
+                // And under every earlier name, or the next read would move it back.
+                for before in previous().map_err(crate::Error::Keyring)? {
+                    delete_secret(&before, self.name()).map_err(crate::Error::Keyring)?;
+                }
             }
             Backend::File(path) => {
                 if path.exists() {
@@ -662,8 +775,23 @@ mod entry_tests {
     use super::*;
 
     #[test]
+    fn the_service_is_the_identifier_in_tauri_conf() {
+        let s = services().unwrap();
+        assert_eq!(Some(s.current.clone()), configured_identifier());
+        assert!(!s.previous.contains(&s.current.as_str()));
+        assert_eq!(s.previous, PREVIOUS_IDENTIFIERS);
+    }
+
+    #[test]
     fn each_library_keeps_its_own_session_and_the_app_keeps_its_old_one() {
-        let app = Path::new("/home/someone/.local/share/dev.quince.client");
+        let share = Path::new("/home/someone/.local/share");
+        let app = &share.join(&services().unwrap().current);
+        let before = &share.join(PREVIOUS_IDENTIFIERS[0]);
+        assert_eq!(
+            entry_name(before),
+            "session",
+            "nor by the identifier changing"
+        );
         let probe = Path::new("/home/someone/.local/share/quince-probe");
         assert_eq!(
             entry_name(app),
@@ -750,5 +878,225 @@ mod parts_tests {
         write_secret(&k, "s", &"q".repeat(2500), Some(1000)).unwrap();
         k.delete("s#2").unwrap();
         assert!(read_secret(&k, "s").is_err());
+    }
+}
+
+/// The session moving from the old identifier's keyring service to the new one.
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    /// A keyring in memory. `refuse`: every write fails. `forget`: writes are accepted and
+    /// dropped — the keyring that says yes and keeps nothing. `locked`: nothing answers.
+    #[derive(Default)]
+    struct Mock {
+        held: RefCell<BTreeMap<String, String>>,
+        refuse: bool,
+        forget: bool,
+        locked: bool,
+    }
+    impl Secrets for Mock {
+        fn get(&self, name: &str) -> Result<Option<String>, String> {
+            if self.locked {
+                return Err("locked".into());
+            }
+            Ok(self.held.borrow().get(name).cloned())
+        }
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            if self.refuse || self.locked {
+                return Err("refused".into());
+            }
+            if !self.forget {
+                self.held.borrow_mut().insert(name.into(), value.into());
+            }
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<(), String> {
+            if self.locked {
+                return Err("locked".into());
+            }
+            self.held.borrow_mut().remove(name);
+            Ok(())
+        }
+    }
+
+    fn holding(name: &str, value: &str, size: Option<usize>) -> Mock {
+        let k = Mock::default();
+        write_secret(&k, name, value, size).unwrap();
+        k
+    }
+
+    #[test]
+    fn the_session_moves_and_the_old_entry_goes_only_after() {
+        let old = holding("session", "{\"trust\":\"t\"}", None);
+        let new = Mock::default();
+        let read = read_moving(&new, &[&old], "session", None).unwrap();
+        assert_eq!(read.as_deref(), Some("{\"trust\":\"t\"}"));
+        assert_eq!(
+            new.held.borrow().get("session").map(String::as_str),
+            Some("{\"trust\":\"t\"}")
+        );
+        assert!(old.held.borrow().is_empty(), "moved, not copied");
+        // Read again: from the new name, the old one is not needed.
+        assert_eq!(read_moving(&new, &[&old], "session", None).unwrap(), read);
+    }
+
+    #[test]
+    fn a_session_in_parts_moves_whole_with_every_part() {
+        // Windows: the Credential Manager's targets are `session` and `session#1..n`.
+        let big = "w".repeat(3500);
+        let old = holding("session", &big, Some(1000));
+        assert_eq!(old.held.borrow().len(), 5);
+        let new = Mock::default();
+        assert_eq!(
+            read_moving(&new, &[&old], "session", Some(1000)).unwrap(),
+            Some(big.clone())
+        );
+        assert_eq!(
+            new.held.borrow().get("session").map(String::as_str),
+            Some("pomander-parts:4")
+        );
+        assert_eq!(read_secret(&new, "session").unwrap(), Some(big));
+        assert!(
+            old.held.borrow().is_empty(),
+            "every part gone from the old name"
+        );
+    }
+
+    #[test]
+    fn a_new_keyring_that_refuses_keeps_the_old_entry_and_reads_it() {
+        let old = holding("session", "s", None);
+        let new = Mock {
+            refuse: true,
+            ..Mock::default()
+        };
+        assert_eq!(
+            read_moving(&new, &[&old], "session", None)
+                .unwrap()
+                .as_deref(),
+            Some("s")
+        );
+        assert_eq!(
+            old.held.borrow().get("session").map(String::as_str),
+            Some("s")
+        );
+    }
+
+    #[test]
+    fn a_new_keyring_that_drops_the_write_keeps_the_old_entry() {
+        let old = holding("session", "s", None);
+        let new = Mock {
+            forget: true,
+            ..Mock::default()
+        };
+        assert_eq!(
+            read_moving(&new, &[&old], "session", None)
+                .unwrap()
+                .as_deref(),
+            Some("s")
+        );
+        assert_eq!(
+            old.held.borrow().get("session").map(String::as_str),
+            Some("s")
+        );
+    }
+
+    #[test]
+    fn a_locked_keyring_is_an_error_not_a_fall_back_to_the_old_entry() {
+        let old = holding("session", "stale", None);
+        let new = Mock {
+            locked: true,
+            ..Mock::default()
+        };
+        assert!(read_moving(&new, &[&old], "session", None).is_err());
+        assert_eq!(old.held.borrow().len(), 1, "untouched");
+    }
+
+    #[test]
+    fn the_new_entry_wins_over_a_leftover_old_one() {
+        let old = holding("session", "older", None);
+        let new = holding("session", "newer", None);
+        assert_eq!(
+            read_moving(&new, &[&old], "session", None)
+                .unwrap()
+                .as_deref(),
+            Some("newer")
+        );
+    }
+
+    #[test]
+    fn the_first_earlier_name_holding_it_is_moved_and_the_rest_left() {
+        let older = holding("session", "oldest", None);
+        let old = holding("session", "old", None);
+        let empty = Mock::default();
+        let new = Mock::default();
+        assert_eq!(
+            read_moving(&new, &[&empty, &old, &older], "session", None)
+                .unwrap()
+                .as_deref(),
+            Some("old")
+        );
+        assert!(old.held.borrow().is_empty());
+    }
+
+    #[test]
+    fn nothing_under_either_name_is_nothing() {
+        assert_eq!(
+            read_moving(&Mock::default(), &[&Mock::default()], "session", None).unwrap(),
+            None
+        );
+    }
+
+    /// The real Secret Service, isolated: run only by the script that starts a private session
+    /// bus and a throwaway gnome-keyring (QUINCE_ISOLATED_KEYRING names its bus), never
+    /// against the person's own keyring.
+    #[test]
+    #[ignore = "needs an isolated Secret Service; see the comment"]
+    fn the_move_through_a_real_secret_service() {
+        let Ok(bus) = std::env::var("QUINCE_ISOLATED_KEYRING") else {
+            return;
+        };
+        assert_eq!(
+            std::env::var("DBUS_SESSION_BUS_ADDRESS").ok().as_deref(),
+            Some(bus.as_str()),
+            "refusing: not on the isolated bus"
+        );
+        let name = "session";
+        let (now, before) = (
+            SystemKeyring("org.example.Renamed"),
+            SystemKeyring("dev.quince.client"),
+        );
+        before.set(name, "{\"trust\":\"isolated\"}").unwrap();
+        assert_eq!(now.get(name).unwrap(), None);
+        let read = read_moving(&now, &[&before], name, None).unwrap();
+        assert_eq!(read.as_deref(), Some("{\"trust\":\"isolated\"}"));
+        assert_eq!(
+            now.get(name).unwrap().as_deref(),
+            Some("{\"trust\":\"isolated\"}")
+        );
+        assert_eq!(before.get(name).unwrap(), None);
+        now.delete(name).unwrap();
+
+        // A client nobody configured (a probe's own library): through Store, as it reads it.
+        let dir = std::env::temp_dir().join(format!("quince-probe-{}", std::process::id()));
+        let store = Store::keyring(&dir).unwrap();
+        let entry = entry_name(&dir);
+        assert_ne!(entry, KEYRING_ENTRY, "a probe has its own entry");
+        let (now, before) = (current().unwrap(), SystemKeyring(PREVIOUS_IDENTIFIERS[0]));
+        before.set(&entry, "{}").unwrap();
+        assert!(store.try_load().is_ok(), "read, never failed");
+        assert_eq!(
+            now.get(&entry).unwrap().as_deref(),
+            Some("{}"),
+            "moved in place"
+        );
+        assert_eq!(before.get(&entry).unwrap(), None);
+        // A second run: read from the current service, nothing lost.
+        assert!(store.try_load().is_ok());
+        assert_eq!(now.get(&entry).unwrap().as_deref(), Some("{}"));
+        now.delete(&entry).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

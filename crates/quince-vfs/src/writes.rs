@@ -207,11 +207,86 @@ impl Writes {
             .map(|(i, p)| (*i, p))
             .collect();
         if let Ok(json) = serde_json::to_vec(&keep) {
+            // Each waiting file's bytes on the disk before the journal names them, and the
+            // journal on the disk before it replaces the last: after a power cut, a journal
+            // naming bytes the disk never kept would send an empty file over the real one.
+            for (ino, p) in &keep {
+                if let Ok(f) = std::fs::File::open(self.staging(*ino, &p.name)) {
+                    let _ = f.sync_all();
+                }
+            }
             let part = self.journal().with_extension("json.part");
-            if std::fs::write(&part, json).is_ok() {
+            let written = std::fs::File::create(&part).and_then(|mut f| {
+                std::io::Write::write_all(&mut f, &json)?;
+                f.sync_all()
+            });
+            if written.is_ok() {
                 let _ = std::fs::rename(&part, self.journal());
             }
         }
+    }
+
+    /// Where a waiting file's bytes are held while every waiting file moves to its new inode:
+    /// apart from every inode's own folder, so no move lands on another's.
+    fn held(&self, old: u64) -> PathBuf {
+        self.dir.join(".restore").join(old.to_string())
+    }
+
+    /// What was waiting when the folder last went away, moved to the inodes it has now —
+    /// `place` gives each one its new number.
+    ///
+    /// Inode numbers start again from the same place at every mount, so a file's old number
+    /// is often another's new one, or its own: moved straight across, a file whose new number
+    /// was its old one had its folder emptied by the clean-up after the move, and two files
+    /// trading numbers had one's bytes laid over or deleted with the other's — a file saved
+    /// offline and carried over two restarts was lost. Every one is first set aside, out of
+    /// the way of all numbers, then placed; one set aside when the app stopped in between is
+    /// found there again.
+    ///
+    /// # Errors
+    /// When the disk refuses a move. Nothing is deleted before its bytes are where they go.
+    pub fn take_back(
+        &self,
+        mut place: impl FnMut(&Pending) -> u64,
+    ) -> std::io::Result<Vec<(u64, Pending)>> {
+        // Set aside by a start that stopped half-way: back where the journal says they are.
+        if let Ok(entries) = std::fs::read_dir(self.dir.join(".restore")) {
+            for entry in entries.flatten() {
+                let Some(old) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|n| n.parse::<u64>().ok())
+                else {
+                    continue;
+                };
+                let home = self.dir.join(old.to_string());
+                if !home.exists() {
+                    std::fs::rename(entry.path(), &home)?;
+                }
+            }
+        }
+        let waiting = self.load();
+        std::fs::create_dir_all(self.dir.join(".restore"))?;
+        for (old, _) in &waiting {
+            // A copy left set aside beside the one the journal names (load() saw it at home)
+            // is the older of the two.
+            if self.held(*old).exists() {
+                std::fs::remove_dir_all(self.held(*old))?;
+            }
+            std::fs::rename(self.dir.join(old.to_string()), self.held(*old))?;
+        }
+        let mut placed = Vec::with_capacity(waiting.len());
+        for (old, pending) in waiting {
+            let ino = place(&pending);
+            let to = self.staging(ino, &pending.name);
+            if let Some(dir) = to.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::rename(self.held(old).join(&pending.name), &to)?;
+            let _ = std::fs::remove_dir_all(self.held(old));
+            placed.push((ino, pending));
+        }
+        Ok(placed)
     }
 
     /// What was waiting when the folder last went away, with where its bytes are.
@@ -389,5 +464,73 @@ mod tests {
         assert_eq!(again[0].0, 7);
         assert_eq!(again[0].1.name, "a.txt");
         assert_eq!(again[0].1.open, 0, "nothing is open after a restart");
+    }
+
+    fn waiting(name: &str) -> Pending {
+        Pending {
+            folder: "F".into(),
+            name: name.into(),
+            replaces: None,
+            open: 0,
+            dirty: true,
+            generation: 1,
+            modified: SystemTime::now(),
+            sender: false,
+            quiet_since: None,
+            sending: false,
+            failure: None,
+        }
+    }
+
+    fn stage(w: &Writes, ino: u64, name: &str, bytes: &[u8]) {
+        std::fs::create_dir_all(w.staging(ino, name).parent().unwrap()).unwrap();
+        std::fs::write(w.staging(ino, name), bytes).unwrap();
+        w.items.lock().unwrap().insert(ino, waiting(name));
+    }
+
+    /// Inode numbers start from the same place every mount. A file given back its own number
+    /// had its bytes deleted by the clean-up after the move; two trading numbers lost one.
+    #[test]
+    fn files_carried_over_a_restart_keep_their_bytes_whatever_numbers_they_get() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = Writes::new(dir.path()).unwrap();
+        stage(&w, 2, "a.txt", b"first");
+        stage(&w, 3, "b.txt", b"second");
+        stage(&w, 4, "c.txt", b"third");
+        w.save();
+        let again = Writes::new(dir.path()).unwrap();
+        // c keeps 4; a and b trade.
+        let placed = again
+            .take_back(|p| match p.name.as_str() {
+                "a.txt" => 3,
+                "b.txt" => 2,
+                _ => 4,
+            })
+            .unwrap();
+        assert_eq!(placed.len(), 3);
+        for (ino, p) in &placed {
+            let bytes = std::fs::read(again.staging(*ino, &p.name)).unwrap();
+            let want: &[u8] = match p.name.as_str() {
+                "a.txt" => b"first",
+                "b.txt" => b"second",
+                _ => b"third",
+            };
+            assert_eq!(bytes, want, "{} at {ino}", p.name);
+        }
+    }
+
+    /// Stopped after setting the files aside and before placing them: the next start finds
+    /// them where they were set aside, not missing.
+    #[test]
+    fn files_set_aside_when_the_app_stopped_are_found_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = Writes::new(dir.path()).unwrap();
+        stage(&w, 9, "a.txt", b"kept");
+        w.save();
+        std::fs::create_dir_all(dir.path().join(".restore")).unwrap();
+        std::fs::rename(dir.path().join("9"), dir.path().join(".restore").join("9")).unwrap();
+        let placed = Writes::new(dir.path()).unwrap().take_back(|_| 2).unwrap();
+        assert_eq!(placed.len(), 1);
+        assert_eq!(std::fs::read(w.staging(2, "a.txt")).unwrap(), b"kept");
     }
 }

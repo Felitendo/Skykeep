@@ -1,0 +1,142 @@
+# Pomander as a Flatpak, for Flathub.
+#
+# NOT YET BUILT: the development machine has no flatpak-builder, so this manifest has never run.
+# packaging/flatpak/README.md lists what was checked, what was not, and the open questions.
+#
+# The Tauri identifier (src-tauri/tauri.conf.json) is this app ID, so the window's Wayland app
+# ID, the per-app windows (<id>.Notes, …) and the single-instance D-Bus name
+# (<id>.SingleInstance, which the sandbox may own by default) all agree with it.
+#
+# Runtime: GNOME 51, the current stable. Checked 2026-10-21 against gnome-build-meta: branch
+# gnome-51, tags 51.0 (2026-09-16) and 51.1 (2026-10-18); it is built on freedesktop-sdk 26.08.
+# Its gnome-51 elements ship webkit2gtk-4.1, gtk3, libsecret, libnotify, GStreamer and libheif
+# (via freedesktop-sdk), so none of those are bundled here.
+#
+# HEIC: the runtime's libheif is built with plugin loading and no HEVC decoder of its own; the
+# libde265 plugin comes from org.freedesktop.Platform.codecs-extra, an extension the runtime
+# downloads automatically (it is declared without no-autodownload in the GNOME 51 platform
+# metadata). That HEIC actually decodes in the sandbox is unverified — see the README.
+# Checked 2026-10-21: freedesktop-sdk release/26.08 lists components/libheif.bst in platform.bst,
+# built -DWITH_LIBDE265=OFF, confirming the above. So there is no libheif module here.
+#
+# FUSE: no fuse3 module either. fuser is built with default-features = false, its pure-Rust mount
+# path, which links no libfuse; it needs only /dev/fuse and a fusermount3 at run time, and the
+# FUSE folders are switched off in this package anyway (see finish-args).
+app-id: io.github.yashwanthkamireddi.Pomander
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  # Both exist with a branch/26.08, the freedesktop-sdk under GNOME 51 (checked 2026-10-21).
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.node24
+command: pomander
+
+finish-args:
+  # iCloud.
+  - --share=network
+  # The window: Wayland first, X11 only where there is no Wayland.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # The Apple ID session is kept in the Secret Service keyring (keyring crate, Secret Service
+  # over D-Bus). Without this the app starts but cannot stay signed in.
+  - --talk-name=org.freedesktop.secrets
+  # Reminder alerts (notify-rust, org.freedesktop.Notifications over D-Bus).
+  - --talk-name=org.freedesktop.Notifications
+  # The tray icon (libayatana-appindicator, StatusNotifierItem).
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # Files saved from Drive and Photos land in ~/Downloads: the app writes there directly
+  # (main.rs, photos.rs: download_dir()), not through the file-chooser portal, so without this
+  # every "save" fails inside the sandbox. Narrow and routinely accepted on Flathub; remove it
+  # once saving goes through the portal.
+  - --filesystem=xdg-download
+
+  # Deliberately NOT granted (README, "Permissions left out"):
+  #
+  # Drive and Photos as folders (FUSE). Mounting needs /dev/fuse (--device=all) and a working
+  # fusermount3, which cannot be setuid inside the sandbox; in practice that means reaching
+  # out to the host (flatpak-spawn --host, i.e. --talk-name=org.freedesktop.Flatpak), a full
+  # sandbox escape Flathub will question. Off; the folders are unavailable in the Flatpak.
+  # - --device=all
+  #
+  # Waking on resume from sleep (alerts.rs listens for logind's PrepareForSleep). Without it
+  # the app falls back to its ten-minute ceiling, which it already handles.
+  # - --system-talk-name=org.freedesktop.login1
+
+modules:
+  # The tray. libayatana-appindicator is not in the GNOME runtime; Flathub's shared module
+  # builds it. Clone flathub/shared-modules here first (README, "Build locally"); in the
+  # Flathub repository it is a git submodule at this path.
+  - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
+
+  - name: pomander
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node24/bin
+      env:
+        # Offline: every crate and npm package comes from the generated sources below.
+        CARGO_HOME: /run/build/pomander/cargo
+        CARGO_NET_OFFLINE: 'true'
+        XDG_CACHE_HOME: /run/build/pomander/flatpak-node/cache
+        npm_config_cache: /run/build/pomander/flatpak-node/npm-cache
+        npm_config_offline: 'true'
+        # esbuild's binary, placed by node-sources.json for the build architecture.
+        ESBUILD_BINARY_PATH: /run/build/pomander/flatpak-node/cache/esbuild/bin/esbuild-current
+    build-commands:
+      # The frontend into dist/, which tauri::generate_context! embeds at compile time.
+      - npm ci --offline --no-audit --no-fund
+      - npm run build
+      # The app. tauri/custom-protocol is what `tauri build` turns on: without it the binary
+      # is a dev build (cfg(dev)) — dev CSP and dev behaviour in a release package.
+      - cargo --offline build --release --locked -p quince-app --features tauri/custom-protocol
+      - install -Dm755 target/release/quince-app ${FLATPAK_DEST}/bin/pomander
+
+      # The main launcher entry and the metainfo: written for this app ID, kept beside this
+      # manifest (packaging/flatpak/), and added as file sources below.
+      - desktop-file-validate ${FLATPAK_ID}.desktop
+      - install -Dm644 ${FLATPAK_ID}.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+
+      # The six per-app entries, already named under this app ID (Flatpak exports only desktop
+      # files whose names start with it). Exec stays `pomander --app …`; flatpak rewrites it to
+      # `flatpak run --command=pomander io.github.yashwanthkamireddi.Pomander --app …` when it
+      # exports the file.
+      - |
+        for entry in packaging/apps/${FLATPAK_ID}.*.desktop; do
+          desktop-file-validate "$entry"
+          install -Dm644 "$entry" "${FLATPAK_DEST}/share/applications/${entry##*/}"
+        done
+        test "$(ls ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.*.desktop | wc -l)" -eq 7
+
+      - install -Dm644 ${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+
+      # Icons: the vector original, and the rendered sizes.
+      - install -Dm644 src-tauri/icons/icon.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
+      - install -Dm644 src-tauri/icons/32x32.png ${FLATPAK_DEST}/share/icons/hicolor/32x32/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/64x64.png ${FLATPAK_DEST}/share/icons/hicolor/64x64/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/128x128.png ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/128x128@2x.png ${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/icon.png ${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/${FLATPAK_ID}.png
+
+      - install -Dm644 LICENSE ${FLATPAK_DEST}/share/licenses/${FLATPAK_ID}/LICENSE
+    sources:
+      # LOCAL BUILDS: the repository two levels up, at its committed HEAD — only committed
+      # files are copied, so target/, node_modules/ and anything untracked never enter the
+      # build. Commit before building; set `branch:` to build another branch.
+      #
+      # FLATHUB: replace with the public repository at a release tag, e.g.
+      #   - type: git
+      #     url: https://github.com/YashwanthKamireddi/Pomander.git
+      #     tag: v0.1.0
+      #     commit: <full sha of that tag>
+      - type: git
+        path: ../..
+      # Not part of the git checkout, so they work before packaging/flatpak/ is committed.
+      - type: file
+        path: io.github.yashwanthkamireddi.Pomander.desktop
+      - type: file
+        path: io.github.yashwanthkamireddi.Pomander.metainfo.xml
+      # Regenerate both whenever Cargo.lock or package-lock.json changes (README).
+      - cargo-sources.json
+      - node-sources.json

@@ -19,8 +19,10 @@ Apple, and nothing else:
 This is enforced, not only promised: every network client Pomander makes is built by
 `quince_auth::apple_only()`, whose resolver refuses to look up any host outside `apple.com`,
 `icloud.com` and `icloud-content.com` (and their `.com.cn` twins) — a request anywhere else
-fails before a connection exists. The test `crates/quince-auth/tests/apple_only.rs` holds it
-to that.
+fails before a connection exists. A URL that names an address instead of a host
+(`https://1.2.3.4/`) is never looked up, so each request's URL is checked too, a redirect's
+included: anything that is not Apple's by name (or this computer, `127.0.0.1`) is refused the
+same way. The test `crates/quince-auth/tests/apple_only.rs` holds it to that.
 
 There are no Pomander servers. There is no telemetry, analytics, crash reporting or update
 check. Nothing is sent anywhere but Apple, and only what is needed to show and change your
@@ -33,7 +35,7 @@ place opens in this computer's own map app (a `geo:` link), never a website.
 
 ## What Pomander keeps, and where
 
-Everything is in your user's data folder (`~/.local/share/dev.quince.client` on Linux),
+Everything is in your user's data folder (`~/.local/share/io.github.yashwanthkamireddi.Pomander` on Linux),
 which is readable by you alone (mode 700):
 
 - **Your password, Apple Account and session tokens:** in the system keyring (GNOME
@@ -49,6 +51,28 @@ Signing out asks whether to keep a copy on this computer. Removing it deletes th
 its caches and Pomander's file-manager thumbnails. Another Apple Account signing in never sees
 the last one's data: each account's library is set aside whole and brought back only for
 that account.
+
+## What runs on this computer
+
+- **Videos** are played from a server on `127.0.0.1` only (WebKitGTK's player reads only
+  http). It answers only a request that carries a secret made fresh at every start and given
+  to Pomander's window alone, is addressed to `127.0.0.1:<its port>` (so a web page that
+  rebinds its own name to this computer is refused), and carries no web page's `Origin`. It
+  sends no CORS headers. Another program or user on this computer, or a page in your browser,
+  cannot read your videos from it.
+- **Pictures** reach the window through Pomander's own `quince://` scheme, which only
+  Pomander's windows can load. Every id in it is checked to be an id — letters, digits,
+  dashes — before it names a file, so no request reads anything outside Pomander's caches.
+- **The window** loads only Pomander's own bundled page, never a website, and may ask
+  Tauri for no more than it uses: events, its version, a window title, and the open and save
+  dialogs.
+- **A note's attachment** you open is saved under a cleaned-up name (never a path, a hidden
+  file, or a name that reverses itself to hide its type) in your private data folder, not
+  executable, and handed to the app this computer uses for it. A program, script, launcher or
+  installer — by its name or its first bytes — is shown in its folder instead of opened, since
+  opening it would run it, and a shared note can carry one from anyone.
+- **The iCloud Drive and Photos folders** (FUSE) are mounted for you alone (no
+  `allow_other`), with no set-user-id or device files, and nothing in them is executable.
 
 ## Advanced Data Protection
 

@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
     let (http, p) = (client.http().clone(), client.service_params());
     let db = rusqlite::Connection::open_with_flags(
         std::path::PathBuf::from(std::env::var("HOME")?)
-            .join(".local/share/dev.quince.client/library.db"),
+            .join(".local/share/io.github.yashwanthkamireddi.Pomander/library.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let title = format!("Quince mount test {}", std::process::id());

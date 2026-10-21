@@ -182,23 +182,16 @@ impl DriveFs {
     /// When the folder for the bytes cannot be made.
     pub fn with_writes(mut self, dir: &Path) -> std::io::Result<Self> {
         let writes = Arc::new(Writes::new(dir)?);
-        let waiting = writes.load();
         self.inner_mut().writes = Some(Arc::clone(&writes));
-        for (old, pending) in waiting {
-            let ino = self
-                .0
+        // Each to the inode it has now (see `Writes::take_back`: never moved straight across).
+        let waiting = writes.take_back(|pending| {
+            self.0
                 .inodes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .local(&pending.folder, &pending.name);
-            // Its bytes moved to the inode it has now.
-            let from = writes.staging(old, &pending.name);
-            let to = writes.staging(ino, &pending.name);
-            if let Some(dir) = to.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            std::fs::rename(&from, &to)?;
-            writes.drop_staging(old);
+                .local(&pending.folder, &pending.name)
+        })?;
+        for (ino, pending) in waiting {
             writes
                 .items
                 .lock()
@@ -1784,6 +1777,9 @@ pub fn mount(fs: DriveFs, at: &Path) -> std::io::Result<fuser::BackgroundSession
         MountOption::Subtype("quince".into()),
         MountOption::NoSuid,
         MountOption::NoDev,
+        // Files from iCloud are never run from here (none is given an executable mode
+        // either): one put in a shared folder by someone else stays a file to open.
+        MountOption::NoExec,
         MountOption::NoAtime,
         MountOption::DefaultPermissions,
     ];

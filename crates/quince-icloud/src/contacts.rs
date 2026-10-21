@@ -4,8 +4,12 @@
 //! CloudKit, so `/co/startup` is the whole of it.
 
 use crate::{Error, Result};
-use quince_core::contacts::{Contact, ContactMethod};
+use quince_core::contacts::{Contact, ContactMethod, PostalAddress, ADDRESS_FIELDS};
 use serde_json::Value;
+
+/// Editing a card's postal addresses part by part.
+#[path = "contacts_address.rs"]
+pub mod address;
 
 fn string(v: &Value, key: &str) -> Option<String> {
     v.get(key)
@@ -39,33 +43,55 @@ fn methods_from(v: &Value, key: &str, kind: &str) -> Vec<ContactMethod> {
 
 /// Apple's postal address: a structured object, not a string.
 ///
-/// Flattened into the lines a person would write on an envelope, in the order they would
-/// write them. Reading it as a string — which is what every other method array holds —
-/// simply skipped it, so the one contact with an address showed none.
+/// Flattened into the lines a person would write on an envelope, in the order the address's
+/// country writes them. Reading it as a string — which is what every other method array
+/// holds — simply skipped it, so the one contact with an address showed none.
 fn address_from(entry: &Value) -> Option<String> {
+    postal_from(entry).map(|a| a.formatted())
+}
+
+/// One of Apple's `streetAddresses` entries, part by part. Measured on a real account:
+/// `{ "label": "HOME", "field": { "street", "city", "state", "postalCode", "country" } }`,
+/// the street holding its own line breaks; `countryCode`, `subLocality` and
+/// `subAdministrativeArea` are read when a card has them. A field that is a plain string
+/// reads as the street. `None` when nothing is in it.
+fn postal_from(entry: &Value) -> Option<PostalAddress> {
     let field = entry.get("field")?;
+    let mut address = PostalAddress {
+        label: string(entry, "label"),
+        ..PostalAddress::default()
+    };
     if let Some(text) = field.as_str() {
-        return Some(text.trim().to_string()).filter(|s| !s.is_empty());
+        address.street = Some(text.trim().to_string()).filter(|s| !s.is_empty());
+    } else {
+        for key in ADDRESS_FIELDS {
+            let value = field.get(key).and_then(Value::as_str);
+            address.set_field(key, value);
+        }
     }
+    (!address.is_empty()).then_some(address)
+}
 
-    let part = |key: &str| string(field, key);
-    let mut lines: Vec<String> = Vec::new();
-    if let Some(street) = part("street") {
-        lines.extend(street.lines().map(str::trim).map(ToString::to_string));
-    }
-    // City, state and postcode share a line, as they do on an envelope.
-    let locality: Vec<String> = ["city", "state", "postalCode"]
-        .iter()
-        .filter_map(|k| part(k))
-        .collect();
-    if !locality.is_empty() {
-        lines.push(locality.join(" "));
-    }
-    if let Some(country) = part("country") {
-        lines.push(country);
-    }
-
-    (!lines.is_empty()).then(|| lines.join("\n"))
+/// Every card's addresses, part by part, as the library keeps them beside the card.
+#[must_use]
+pub fn parse_addresses(body: &Value) -> Vec<(String, Vec<PostalAddress>)> {
+    body.get("contacts")
+        .and_then(Value::as_array)
+        .map(|cards| {
+            cards
+                .iter()
+                .filter_map(|card| {
+                    let guid = string(card, "contactId")?;
+                    let addresses = card
+                        .get("streetAddresses")
+                        .and_then(Value::as_array)
+                        .map(|list| list.iter().filter_map(postal_from).collect())
+                        .unwrap_or_default();
+                    Some((guid, addresses))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn contact_from(v: &Value) -> Option<Contact> {
@@ -250,6 +276,7 @@ pub async fn fetch_book_with_tokens(
             contacts: parse(&body),
             lists: parse_lists(&body),
             me: me_card(&body),
+            addresses: parse_addresses(&body),
         },
         Tokens {
             sync: token("syncToken")?,
@@ -428,7 +455,28 @@ fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contac
         if existing.is_some() && kind_unchanged(kind) {
             continue;
         }
-        object.insert(key.into(), of_kind(kind));
+        // Edited from a base over Apple's current card: the edit laid over Apple's list, not
+        // the form's list written whole — a number added on the phone while the form was open
+        // here stays, as a name changed there does.
+        let merged = match (base, existing) {
+            (Some(base), Some(card)) => {
+                let of = |c: &Contact| -> Vec<(String, Option<String>)> {
+                    c.methods
+                        .iter()
+                        .filter(|m| m.kind == kind && !m.value.trim().is_empty())
+                        .map(|m| (m.value.trim().to_string(), m.label.clone()))
+                        .collect()
+                };
+                let theirs = card
+                    .get(key)
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                Some(merge_methods(&theirs, &of(base), &of(contact)))
+            }
+            _ => None,
+        };
+        object.insert(key.into(), merged.unwrap_or_else(|| of_kind(kind)));
     }
 
     // Laid over Apple's current card, the write is against that card's version; otherwise
@@ -444,6 +492,49 @@ fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contac
         object.insert("etag".into(), Value::String(etag));
     }
     card
+}
+
+/// One kind of a card's numbers or addresses, as Apple holds it now (`theirs`), with the change
+/// the form made (`base` to `mine`) laid over it: what the form took out goes, what it put in
+/// is added — an edited entry in the old one's place — and everything else Apple has stays as
+/// Apple has it, entries made on another device included.
+fn merge_methods(
+    theirs: &[Value],
+    base: &[(String, Option<String>)],
+    mine: &[(String, Option<String>)],
+) -> Value {
+    let matches = |entry: &Value, (value, label): &(String, Option<String>)| {
+        entry.get("field").and_then(Value::as_str).map(str::trim) == Some(value.as_str())
+            && entry.get("label").and_then(Value::as_str) == label.as_deref()
+    };
+    let entry = |(value, label): &(String, Option<String>)| {
+        let mut e = serde_json::Map::new();
+        e.insert("field".into(), Value::String(value.clone()));
+        if let Some(label) = label {
+            e.insert("label".into(), Value::String(label.clone()));
+        }
+        Value::Object(e)
+    };
+    let removed: Vec<&(String, Option<String>)> =
+        base.iter().filter(|b| !mine.contains(b)).collect();
+    let mut added = mine
+        .iter()
+        .filter(|m| !base.contains(m) && !theirs.iter().any(|t| matches(t, m)))
+        .collect::<Vec<_>>()
+        .into_iter();
+    let mut out = Vec::with_capacity(theirs.len() + mine.len());
+    for t in theirs {
+        if removed.iter().any(|r| matches(t, r)) {
+            // Edited rather than taken out: the new entry where the old one was.
+            if let Some(a) = added.next() {
+                out.push(entry(a));
+            }
+        } else {
+            out.push(t.clone());
+        }
+    }
+    out.extend(added.map(entry));
+    Value::Array(out)
 }
 
 async fn write(
@@ -517,9 +608,58 @@ pub async fn create(
         ));
     }
     // Apple's own client mints the id rather than asking the service for one.
-    let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+    let guid = new_contact_id();
+    // A fresh id: no card can hold it yet.
+    write_new(http, root, params, tokens, &guid, contact).await?;
+    Ok(guid)
+}
+
+/// An id for a card made here, minted before it is sent — Apple's own client does the same —
+/// so the card can be shown at once, queued, and sent again without making a second.
+pub fn new_contact_id() -> String {
+    uuid::Uuid::new_v4().to_string().to_uppercase()
+}
+
+/// Whether a card is empty of everything Apple would keep.
+pub fn blank_card(contact: &Contact) -> bool {
+    let blank = |v: &Option<String>| v.as_deref().is_none_or(|s| s.trim().is_empty());
+    blank(&contact.first_name)
+        && blank(&contact.last_name)
+        && blank(&contact.company)
+        && contact.methods.iter().all(|m| m.value.trim().is_empty())
+}
+
+/// [`create`] under an id chosen beforehand. Sent again, it makes no second card: a card
+/// Apple already holds under that id is left as it is.
+pub async fn create_named(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    guid: &str,
+    contact: &Contact,
+) -> Result<()> {
+    if blank_card(contact) {
+        return Err(Error::Refused(
+            "Add a name, a phone number or an email address first.".into(),
+        ));
+    }
+    if card(http, root, params.clone(), guid).await?.is_some() {
+        return Ok(());
+    }
+    write_new(http, root, params, tokens, guid, contact).await
+}
+
+async fn write_new(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    guid: &str,
+    contact: &Contact,
+) -> Result<()> {
     let mut fresh = contact.clone();
-    fresh.guid.clone_from(&guid);
+    fresh.guid = guid.to_string();
     fresh.etag = None;
 
     write(
@@ -531,7 +671,7 @@ pub async fn create(
         card_from(&fresh, None),
     )
     .await?;
-    Ok(guid)
+    Ok(())
 }
 
 /// Save changes to a contact.
@@ -649,6 +789,8 @@ pub struct AddressBook {
     pub lists: Vec<ContactList>,
     /// The card that is this person's own, if they have said.
     pub me: Option<String>,
+    /// Each card's postal addresses, part by part.
+    pub addresses: Vec<(String, Vec<PostalAddress>)>,
 }
 
 /// Where the my-card id is kept between passes.
@@ -1286,6 +1428,7 @@ pub async fn fetch(
         contacts: parse(&body),
         lists: parse_lists(&body),
         me: me_card(&body),
+        addresses: parse_addresses(&body),
     })
 }
 
@@ -1374,12 +1517,25 @@ async fn startup(
             all.extend(more);
         }
     }
+    // Stopped at the page limit with cards still unread: stored, the book would be short, and
+    // every card it missed would read as deleted.
+    if have < wanted {
+        return Err(Error::Protocol(
+            "The address book is larger than Pomander reads in one go, so it was not stored short."
+                .into(),
+        ));
+    }
     Ok(body)
 }
 
 /// Store a fetched address book. Touches no network.
 pub fn apply(library: &mut quince_core::Library, book: AddressBook) -> Result<usize> {
+    library.atomically(|library| apply_whole(library, book))
+}
+
+fn apply_whole(library: &mut quince_core::Library, book: AddressBook) -> Result<usize> {
     library.put_contacts(&book.contacts)?;
+    library.put_addresses(&book.addresses, true)?;
     library.set_state(
         LISTS_KEY,
         &serde_json::to_string(&book.lists).unwrap_or_else(|_| "[]".into()),
@@ -1447,6 +1603,57 @@ mod list_tests {
         assert_eq!(card["streetAddresses"][0]["field"]["city"], "Pune");
         assert_eq!(card["etag"], "new", "against the version Apple holds now");
     }
+    /// The form changed one number while the phone added another: the change goes over
+    /// Apple's list, and the phone's number stays — written whole, the form's list dropped it.
+    #[test]
+    fn a_number_added_on_the_phone_survives_an_edit_of_another() {
+        use quince_core::contacts::ContactMethod;
+        let phone = |v: &str, l: Option<&str>| ContactMethod {
+            kind: "phone".into(),
+            label: l.map(Into::into),
+            value: v.into(),
+        };
+        let mut base = super::parse(
+            &serde_json::json!({ "contacts": [{ "contactId": "C1", "firstName": "A" }] }),
+        )
+        .remove(0);
+        base.methods = vec![phone("+1 100", Some("home")), phone("+1 200", Some("work"))];
+        let mut mine = base.clone();
+        mine.methods = vec![phone("+1 101", Some("home")), phone("+1 200", Some("work"))];
+        let apple = serde_json::json!({
+            "contactId": "C1", "etag": "e2", "firstName": "A",
+            "phones": [
+                { "field": "+1 100", "label": "home" },
+                { "field": "+1 200", "label": "work" },
+                { "field": "+1 300", "label": "mobile" }
+            ],
+        });
+        let card = super::card_merged(&mine, Some(&apple), Some(&base));
+        let fields: Vec<&str> = card["phones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["field"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            fields,
+            ["+1 101", "+1 200", "+1 300"],
+            "the edit in place, the phone's kept"
+        );
+
+        // Taken out here: gone, the phone's still kept.
+        let mut fewer = base.clone();
+        fewer.methods = vec![phone("+1 200", Some("work"))];
+        let card = super::card_merged(&fewer, Some(&apple), Some(&base));
+        let fields: Vec<&str> = card["phones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["field"].as_str().unwrap())
+            .collect();
+        assert_eq!(fields, ["+1 200", "+1 300"]);
+    }
+
     #[test]
     fn a_refused_group_write_is_an_error_not_a_save() {
         let busy = serde_json::json!({ "errors": [{ "groupId": "G", "etag": "e", "errorCode": 409, "errorMessage": "Conflict" }] });
@@ -1614,6 +1821,36 @@ mod tests {
             .and(path("/co/contacts/card/"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({ "contacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        assert!(fetch(&reqwest::Client::new(), &server.uri(), vec![])
+            .await
+            .is_err());
+    }
+
+    /// A book still unread when the page limit is reached is refused too: returned as it
+    /// stood, every card past the limit read as deleted.
+    #[tokio::test]
+    async fn a_book_past_the_page_limit_is_refused_not_stored_short() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let order: Vec<String> = (0..300).map(|i| format!("c{i}")).collect();
+        Mock::given(method("GET"))
+            .and(path("/co/startup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "syncToken": "S", "prefToken": "P", "contactsOrder": order,
+                "contacts": [{ "contactId": "c0" }], "groups": []
+            })))
+            .mount(&server)
+            .await;
+        // One card a page: 200 pages leave a hundred unread.
+        Mock::given(method("GET"))
+            .and(path("/co/contacts/card/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "contacts": [{ "contactId": "x" }] })),
             )
             .mount(&server)
             .await;
@@ -1885,6 +2122,48 @@ mod write_tests {
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
+    /// A create sent again under its id — the answer lost, a queue replayed after a crash —
+    /// finds the card at Apple and writes nothing; one not there yet is written once.
+    #[tokio::test]
+    async fn a_named_create_is_made_once() {
+        let server = MockServer::start().await;
+        Mock::given(path_regex(r".*/co/startup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "contacts": [{ "contactId": "G1", "firstName": "Ada", "etag": "e" }],
+                "syncToken": "s", "prefToken": "p"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/contacts/card$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "contacts": [] })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        create_named(&http, &server.uri(), vec![], &tokens(), "G1", &person())
+            .await
+            .unwrap();
+        let writes = |rs: &[Request]| {
+            rs.iter()
+                .filter(|r| r.url.path().ends_with("/card"))
+                .count()
+        };
+        assert_eq!(
+            writes(&server.received_requests().await.unwrap()),
+            0,
+            "already there"
+        );
+        create_named(&http, &server.uri(), vec![], &tokens(), "G2", &person())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(writes(&requests), 1, "made once");
+        let card: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+        assert_eq!(
+            card["contacts"][0]["contactId"], "G2",
+            "under the id chosen beforehand"
+        );
+    }
+
     /// A create gets a fresh id and no etag: an etag would claim to be replacing something.
     #[tokio::test]
     async fn a_create_mints_its_own_id() {
@@ -2047,7 +2326,8 @@ mod shape_tests {
             .expect("the address is read");
         assert_eq!(
             address.value,
-            "12 Example Street\nSpringfield\nSpringfield ST 123456\nIndia"
+            // India's order: town and PIN together, the state on its own line.
+            "12 Example Street\nSpringfield\nSpringfield 123456\nST\nIndia"
         );
         assert_eq!(address.label.as_deref(), Some("HOME"));
     }
@@ -2218,5 +2498,61 @@ mod odd_card_tests {
             let card = card_from(&contact, Some(&odd));
             assert_eq!(card["firstName"], "Ada", "{odd} still produces the card");
         }
+    }
+}
+
+#[cfg(test)]
+mod atomic_apply_tests {
+    use super::*;
+    use quince_core::contacts::Contact;
+
+    fn person(guid: &str) -> Contact {
+        Contact {
+            guid: guid.into(),
+            first_name: Some(guid.into()),
+            middle_name: None,
+            last_name: None,
+            company: None,
+            is_company: false,
+            birthday: None,
+            notes: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
+            etag: None,
+            methods: vec![],
+        }
+    }
+
+    /// The book is stored (pruning whoever is not in it) and then its lists: a failure storing
+    /// the lists — a crash part way — must not leave the people pruned and the rest unwritten.
+    #[test]
+    fn a_book_that_fails_part_way_stores_none_of_itself() {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        library.put_contacts(&[person("A")]).unwrap();
+        library
+            .conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER crash BEFORE INSERT ON main.app_state
+                   BEGIN SELECT RAISE(ABORT, 'crash mid-apply'); END;",
+            )
+            .unwrap();
+        let failed = apply(
+            &mut library,
+            AddressBook {
+                contacts: vec![person("B")],
+                lists: vec![],
+                me: None,
+                addresses: vec![],
+            },
+        );
+        assert!(failed.is_err());
+        let guids: Vec<String> = library
+            .contacts(None)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.guid)
+            .collect();
+        assert_eq!(guids, vec!["A".to_string()], "the old book, whole");
     }
 }

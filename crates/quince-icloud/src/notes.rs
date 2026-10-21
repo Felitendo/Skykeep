@@ -15,6 +15,13 @@ use serde_json::Value;
 const CONTAINER: &str = "com.apple.notes";
 const ZONE: &str = "Notes";
 
+/// A picture or file added to a note (behind `attach::NOTE_ATTACH_WRITES`).
+#[path = "notes_attach.rs"]
+pub mod attach;
+/// Password-locked notes, opened read-only.
+#[path = "notes_locked.rs"]
+pub mod locked;
+
 /// The first folder in a note's `Folders` list, where it has one.
 fn first_folder(record: &Value) -> Option<String> {
     record
@@ -156,6 +163,7 @@ pub async fn fetch_cloudkit(
 ) -> Result<NotesFetch> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let mut walk = client.all_records(ZONE, since).await?;
+    let whole = walk.whole();
     // Long notes' files, eight at a time: one after another, a first pass over an account
     // with many long notes waited on each download in turn.
     let wanted: Vec<(usize, String)> = walk
@@ -180,7 +188,9 @@ pub async fn fetch_cloudkit(
         token: walk.token,
         // A walk cut short by the page cap is not the whole truth, whatever it was asked
         // for — pruning against a partial view would delete records that are perfectly fine.
-        incremental: since.is_some() || !walk.complete,
+        // A cursor Apple refused (expired) started the walk over from the beginning: that
+        // walk is the whole zone, and rows deleted while the cursor sat unused are pruned by it.
+        incremental: !whole,
     })
 }
 
@@ -256,6 +266,14 @@ fn put_asset_body(record: &mut Value, bytes: &[u8]) {
 pub const TEMPLATE_KEY: &str = "notes.document_template";
 
 pub fn apply_cloudkit(
+    library: &mut quince_core::Library,
+    fetched: NotesFetch,
+) -> Result<(usize, usize, Option<String>)> {
+    // One pass is one change: a failure or crash part way leaves the library as it was.
+    library.atomically(|library| apply_cloudkit_whole(library, fetched))
+}
+
+fn apply_cloudkit_whole(
     library: &mut quince_core::Library,
     fetched: NotesFetch,
 ) -> Result<(usize, usize, Option<String>)> {
@@ -722,20 +740,123 @@ pub fn merge_edits(base: &str, mine: &str, theirs: &str) -> Option<String> {
         return Some(theirs.to_string());
     }
     let b: Vec<char> = base.chars().collect();
-    let m = script(&b, &mine.chars().collect::<Vec<_>>());
-    let t = script(&b, &theirs.chars().collect::<Vec<_>>());
+    let m = hunks(&script(&b, &mine.chars().collect::<Vec<_>>()), b.len());
+    let t = hunks(&script(&b, &theirs.chars().collect::<Vec<_>>()), b.len());
     let mut out = String::with_capacity(mine.len().max(theirs.len()) + 16);
-    for gap in 0..=b.len() {
-        let (ta, ma) = (&t.added[gap], &m.added[gap]);
-        out.extend(ta.iter());
-        if ma != ta {
-            out.extend(ma.iter());
+    let mut at = 0;
+    for (from, to, mine_hunks, their_hunks) in clusters(&m, &t) {
+        out.extend(&b[at..from]);
+        let ours = render(&b, mine_hunks, from, to);
+        let other = render(&b, their_hunks, from, to);
+        if mine_hunks.is_empty() {
+            out.extend(other);
+        } else if their_hunks.is_empty() || ours == other {
+            out.extend(ours);
+        } else if extends(&ours, &other) {
+            // One is the other written further: most often Apple holding an earlier save of
+            // this very text, read back late. Both kept, every save wrote the note once more
+            // (a long note pasted in became five copies of itself).
+            out.extend(ours);
+        } else if extends(&other, &ours) {
+            out.extend(other);
+        } else {
+            out.extend(other);
+            out.extend(ours);
         }
-        if gap < b.len() && !m.removed[gap] && !t.removed[gap] {
-            out.push(b[gap]);
-        }
+        at = to;
     }
+    out.extend(&b[at..]);
     Some(out)
+}
+
+/// One change to `base`: its characters `start..end` replaced by `text` (an insertion where
+/// the two are equal).
+struct Hunk {
+    start: usize,
+    end: usize,
+    text: Vec<char>,
+}
+
+/// An edit as its separate changes, in order: each a run of removed characters with what was
+/// added around and among them, or an addition alone.
+fn hunks(script: &Script, len: usize) -> Vec<Hunk> {
+    let mut out = Vec::new();
+    let mut gap = 0;
+    while gap <= len {
+        if script.added[gap].is_empty() && !(gap < len && script.removed[gap]) {
+            gap += 1;
+            continue;
+        }
+        let start = gap;
+        let mut text = Vec::new();
+        loop {
+            text.extend(&script.added[gap]);
+            if gap < len && script.removed[gap] {
+                gap += 1;
+            } else {
+                break;
+            }
+        }
+        out.push(Hunk {
+            start,
+            end: gap,
+            text,
+        });
+        // The character at `gap` stays; the next change can start no sooner than after it.
+        gap += 1;
+    }
+    out
+}
+
+/// The two edits' changes, grouped where they meet: a group is every change on either side
+/// that touches the same stretch of `base` (or the same point in it), with that stretch.
+fn clusters<'a>(
+    mine: &'a [Hunk],
+    theirs: &'a [Hunk],
+) -> Vec<(usize, usize, &'a [Hunk], &'a [Hunk])> {
+    let (mut i, mut j) = (0, 0);
+    let mut out = Vec::new();
+    while i < mine.len() || j < theirs.len() {
+        let first = match (mine.get(i), theirs.get(j)) {
+            (Some(a), Some(b)) => a.start.min(b.start),
+            (Some(a), None) => a.start,
+            (None, Some(b)) => b.start,
+            (None, None) => break,
+        };
+        let (i0, j0) = (i, j);
+        let mut end = first;
+        loop {
+            if let Some(h) = mine.get(i).filter(|h| h.start <= end) {
+                end = end.max(h.end);
+                i += 1;
+            } else if let Some(h) = theirs.get(j).filter(|h| h.start <= end) {
+                end = end.max(h.end);
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        out.push((first, end, &mine[i0..i], &theirs[j0..j]));
+    }
+    out
+}
+
+/// `base[from..to]` as one side's changes leave it.
+fn render(base: &[char], changes: &[Hunk], from: usize, to: usize) -> Vec<char> {
+    let mut out = Vec::new();
+    let mut at = from;
+    for h in changes {
+        out.extend(&base[at..h.start]);
+        out.extend(&h.text);
+        at = h.end;
+    }
+    out.extend(&base[at..to]);
+    out
+}
+
+/// Whether `longer` is `shorter` with more written before or after it.
+fn extends(longer: &[char], shorter: &[char]) -> bool {
+    longer.len() > shorter.len() && (longer.starts_with(shorter) || longer.ends_with(shorter))
 }
 
 /// Set one paragraph of a note — a style from the Aa menu, or a checklist tick — written
@@ -2424,6 +2545,32 @@ mod merge_tests {
         assert_eq!(merge_edits("a", "ab", "a").as_deref(), Some("ab"));
     }
 
+    /// Apple holding an earlier save of this very text (its own write read back late, or a
+    /// base that was not moved on): the text is written once, not once more per save. A
+    /// 42,000-character note pasted in had become five copies of itself.
+    #[test]
+    fn an_earlier_save_of_the_same_text_is_not_written_twice() {
+        let long: String = (0..4000).map(|i| format!("line {i}\n")).collect();
+        let first = &long[..long.len() / 2];
+        // Base empty, Apple has half of it, the editor all of it.
+        assert_eq!(
+            merge_edits("", &long, first).as_deref(),
+            Some(long.as_str())
+        );
+        // Base the note's first line; the same, and with the editor further still.
+        let more = format!("{long}and more");
+        assert_eq!(
+            merge_edits("line 0\n", &more, &long).as_deref(),
+            Some(more.as_str())
+        );
+        // A title typed after, at the start, on top of a late copy.
+        let titled = format!("Title\n{long}");
+        assert_eq!(
+            merge_edits("", &titled, &long).as_deref(),
+            Some(titled.as_str())
+        );
+    }
+
     #[test]
     fn text_beyond_ascii_is_cut_by_character() {
         assert_eq!(merge_edits("ü 𝐔", "ü 𝐔 x", "Ü 𝐔").as_deref(), Some("Ü 𝐔 x"));
@@ -2621,4 +2768,70 @@ pub async fn set_table_cell_cloudkit(
         .and_then(Value::as_str)
         .and_then(crate::table::cells_from_base64)
         .ok_or_else(|| Error::Protocol("Apple kept a table this cannot read back".into()))
+}
+
+#[cfg(test)]
+mod atomic_apply_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A failure as the pass stores its position — the last thing it writes — standing in for
+    /// a crash part way through.
+    fn fail_on_position(library: &quince_core::Library) {
+        library
+            .conn()
+            .execute_batch(
+                "CREATE TEMP TRIGGER crash_i BEFORE INSERT ON main.sync_state
+                   BEGIN SELECT RAISE(ABORT, 'crash mid-apply'); END;
+                 CREATE TEMP TRIGGER crash_u BEFORE UPDATE ON main.sync_state
+                   BEGIN SELECT RAISE(ABORT, 'crash mid-apply'); END;",
+            )
+            .unwrap();
+    }
+
+    /// A pass that fails part way leaves the library as it was: the note it had already
+    /// removed is still there, and the position is the old one.
+    #[test]
+    fn a_pass_that_fails_part_way_stores_none_of_itself() {
+        let mut library = quince_core::Library::in_memory().unwrap();
+        library
+            .put_notes(&[Note {
+                guid: "N1".into(),
+                folder_guid: None,
+                title: "Kept".into(),
+                snippet: None,
+                body: Some("Kept".into()),
+                locked: false,
+                pinned: false,
+                created_at: None,
+                modified_at: None,
+                editable: true,
+                etag: None,
+                runs: None,
+            }])
+            .unwrap();
+        library.mark_synced("notes", Some("old")).unwrap();
+        fail_on_position(&library);
+        let pass = || NotesFetch {
+            records: vec![json!({ "recordName": "N1", "deleted": true })],
+            token: Some("new".into()),
+            incremental: true,
+        };
+        assert!(apply_cloudkit(&mut library, pass()).is_err());
+        assert!(
+            library.note("N1").unwrap().is_some(),
+            "the removal rolled back"
+        );
+        assert_eq!(library.sync_token("notes").unwrap().as_deref(), Some("old"));
+        assert!(library.conn().is_autocommit());
+
+        // Nothing failing, the same pass lands whole.
+        library
+            .conn()
+            .execute_batch("DROP TRIGGER temp.crash_i; DROP TRIGGER temp.crash_u;")
+            .unwrap();
+        apply_cloudkit(&mut library, pass()).unwrap();
+        assert!(library.note("N1").unwrap().is_none());
+        assert_eq!(library.sync_token("notes").unwrap().as_deref(), Some("new"));
+    }
 }

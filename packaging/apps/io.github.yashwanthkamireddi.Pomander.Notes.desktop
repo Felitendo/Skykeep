@@ -7,9 +7,15 @@ Name=Notes
 GenericName=Notes for iCloud
 Comment=Notes from iCloud, on this computer
 Exec=pomander --app notes
-Icon=dev.quince.client
+Icon=io.github.yashwanthkamireddi.Pomander
 Terminal=false
 Categories=Office;
 Keywords=Pomander;iCloud;notes;memo;
 StartupNotify=true
-StartupWMClass=dev.quince.client.Notes
+Actions=new-note;
+StartupWMClass=io.github.yashwanthkamireddi.Pomander.Notes
+
+# A quick capture: one field, Enter, and it is in iCloud (src-tauri/src/intake.rs).
+[Desktop Action new-note]
+Name=New Note
+Exec=pomander --new note

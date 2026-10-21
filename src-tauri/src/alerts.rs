@@ -10,7 +10,6 @@
 use crate::{Auth, Data};
 use quince_core::alarms::DueAlarm;
 use std::time::Duration;
-#[cfg(all(unix, not(target_os = "macos")))]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
@@ -27,7 +26,6 @@ const LONGEST_SLEEP: Duration = Duration::from_secs(10 * 60);
 const STILL_WORTH_SAYING: i64 = 6 * 60 * 60;
 
 /// Snooze, as the phone offers it.
-#[cfg(all(unix, not(target_os = "macos")))]
 const SNOOZE: i64 = 60 * 60;
 
 /// The app's icon, carried in the binary so an alert shows it on any desktop. A notification
@@ -36,6 +34,116 @@ const SNOOZE: i64 = 60 * 60;
 /// always resolves. So it is written once beside the library and named by path.
 const ICON: &[u8] = include_bytes!("../icons/128x128@2x.png");
 static ICON_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// What a press on a reminder's alert does — Linux's notification actions and Windows' toast
+/// buttons alike: complete this occurrence, put it off an hour, or open it in Reminders.
+fn answer(app: &AppHandle, due: &DueAlarm, due_then: Option<Option<i64>>, action: &str) {
+    match action {
+        "complete" => {
+            let app = app.clone();
+            let due = due.clone();
+            tauri::async_runtime::block_on(async move {
+                let auth = app.state::<Auth>();
+                let data = app.state::<Data>();
+                let now = data
+                    .0
+                    .lock()
+                    .await
+                    .reminder(&due.reminder_guid)
+                    .ok()
+                    .flatten();
+                let same = now
+                    .as_ref()
+                    .is_some_and(|r| r.completed_at.is_none() && Some(r.due_at) == due_then);
+                if !same {
+                    quiet!("an alert was answered after its reminder had moved on");
+                } else if let Err(e) =
+                    crate::set_done(&auth, &data, &due.reminder_guid, &due.list_guid, true).await
+                {
+                    quiet!("an alert's reminder could not be completed: {e}");
+                }
+                // Every open screen looks again, as after any pass.
+                let report = crate::refresh::status(&data.0).await;
+                app.emit(crate::SYNCED, &report).ok();
+            });
+        }
+        "snooze" => {
+            let app = app.clone();
+            let guid = due.reminder_guid.clone();
+            tauri::async_runtime::block_on(async move {
+                let data = app.state::<Data>();
+                let mut library = data.0.lock().await;
+                library.snooze_reminder(&guid, now() + SNOOZE).ok();
+            });
+            changed();
+        }
+        "default" => {
+            crate::show_window(app);
+            app.emit(OPEN_REMINDER, &due.reminder_guid).ok();
+        }
+        _ => {}
+    }
+}
+
+/// A plain notice from the app itself — not a reminder or an event — sent as Pomander, and
+/// opening the window when clicked where the desktop allows it.
+pub fn tell(app: &AppHandle, title: &str, body: &str) {
+    let app = app.clone();
+    let (title, body) = (title.to_string(), body.to_string());
+    std::thread::spawn(move || {
+        let mut notice = notify_rust::Notification::new();
+        #[cfg(windows)]
+        notice.app_id(&app.config().identifier);
+        notice
+            .appname("Pomander")
+            .summary(&title)
+            .body(&body)
+            .icon(icon_path(&app).unwrap_or("quince"));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            notice
+                .hint(notify_rust::Hint::DesktopEntry(
+                    app.config().identifier.clone(),
+                ))
+                .action("default", "Open");
+            if let Ok(handle) = notice.show() {
+                handle.wait_for_action(|action| {
+                    if action == "default" {
+                        crate::show_window(&app);
+                    }
+                });
+            }
+        }
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        notice.show().ok();
+    });
+}
+
+/// An alert's sound, as the desktop's own sound theme has it ("alarm-clock-elapsed"). A
+/// notification server that plays sounds is asked to play it; one that does not — Quickshell,
+/// mako, dunst and others say no "sound" capability — leaves it to the app, as the spec says,
+/// and it is played here through libcanberra, which keeps to the sound theme and to the
+/// desktop's "event sounds" switch. Without this every alert on such a desktop was silent.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn chime(alert: &mut notify_rust::Notification) {
+    const SOUND: &str = "alarm-clock-elapsed";
+    static SERVER_PLAYS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let server_plays = *SERVER_PLAYS.get_or_init(|| {
+        notify_rust::get_capabilities().is_ok_and(|c| c.iter().any(|x| x == "sound"))
+    });
+    if server_plays {
+        alert.hint(notify_rust::Hint::SoundName(SOUND.into()));
+        return;
+    }
+    // Not waited on: an alert never stands behind its sound.
+    std::process::Command::new("canberra-gtk-play")
+        .args(["--id", SOUND, "--description", "Pomander alert"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok();
+}
 
 fn icon_path(app: &AppHandle) -> Option<&'static str> {
     ICON_PATH
@@ -52,7 +160,6 @@ fn icon_path(app: &AppHandle) -> Option<&'static str> {
 }
 
 /// Emitted to the window to open a reminder an alert was clicked for.
-#[cfg(all(unix, not(target_os = "macos")))]
 pub const OPEN_REMINDER: &str = "quince://open-reminder";
 
 /// Tell the task to look again: the reminders or their alarms may have changed.
@@ -168,39 +275,65 @@ fn show(app: AppHandle, due: DueAlarm) {
             .map(ToString::to_string)
             .or_else(|| due.list_title.clone())
             .unwrap_or_default();
-        // The phone's choices on the alert are the freedesktop notification spec's actions. Windows
-        // and macOS take no buttons through this crate, so the alert says what is due and
-        // the reminder is completed or put off in the app.
-        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        // The occurrence this alert is for: a repeating reminder ticked since (here or on the
+        // phone) has moved on, and a press on this alert must not move it on again.
+        let due_then = {
+            let app = app.clone();
+            let guid = due.reminder_guid.clone();
+            tauri::async_runtime::block_on(async move {
+                let data = app.state::<Data>();
+                let library = data.0.lock().await;
+                library.reminder(&guid).ok().flatten().map(|r| r.due_at)
+            })
+        };
+        // On Windows the phone's choices are the toast's own buttons, and the toast is sent as
+        // the app the Start menu knows (the installer stamps its shortcut with this ID; without
+        // it every alert came from "Windows PowerShell"), with Windows' reminder chime.
+        #[cfg(windows)]
         {
-            notify_rust::Notification::new()
-                .appname("Pomander")
-                .summary(&due.title)
-                .body(&body)
-                .icon(icon_path(&app).unwrap_or("quince"))
-                .show()
-                .ok();
+            use tauri_winrt_notification::{Duration as Shown, Scenario, Sound, Toast};
+            let answering = app.clone();
+            let due_answered = due.clone();
+            let mut toast = Toast::new(&app.config().identifier)
+                .title(&due.title)
+                .text1(&body)
+                .sound(Some(Sound::Reminder))
+                .duration(Shown::Long)
+                .scenario(Scenario::Reminder)
+                .add_button("Mark as Completed", "complete")
+                .add_button("Remind Me in 1 Hour", "snooze")
+                .on_activated(move |action| {
+                    answer(
+                        &answering,
+                        &due_answered,
+                        due_then,
+                        action.as_deref().unwrap_or("default"),
+                    );
+                    Ok(())
+                });
+            if let Some(icon) = icon_path(&app) {
+                toast = toast.icon(
+                    std::path::Path::new(icon),
+                    tauri_winrt_notification::IconCrop::Square,
+                    "Pomander",
+                );
+            }
+            toast.show().ok();
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            // The occurrence this alert is for: a repeating reminder ticked since (here or on the
-            // phone) has moved on, and a press on this alert must not move it on again.
-            let due_then = {
-                let app = app.clone();
-                let guid = due.reminder_guid.clone();
-                tauri::async_runtime::block_on(async move {
-                    let data = app.state::<Data>();
-                    let library = data.0.lock().await;
-                    library.reminder(&guid).ok().flatten().map(|r| r.due_at)
-                })
-            };
-            let shown = notify_rust::Notification::new()
+            let mut alert = notify_rust::Notification::new();
+            chime(&mut alert);
+            let shown = alert
                 .appname("Pomander")
                 .summary(&due.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))
                 .hint(notify_rust::Hint::Category("reminder".into()))
-                .hint(notify_rust::Hint::DesktopEntry("quince".into()))
+                .hint(notify_rust::Hint::DesktopEntry(format!(
+                    "{}.Reminders",
+                    app.config().identifier
+                )))
                 .hint(notify_rust::Hint::Resident(true))
                 .action("default", "Open")
                 .action("complete", "Mark as Completed")
@@ -210,52 +343,7 @@ fn show(app: AppHandle, due: DueAlarm) {
             let Ok(handle) = shown else {
                 return;
             };
-            handle.wait_for_action(|action| match action {
-                "complete" => {
-                    let app = app.clone();
-                    let due = due.clone();
-                    tauri::async_runtime::block_on(async move {
-                        let auth = app.state::<Auth>();
-                        let data = app.state::<Data>();
-                        let now = data
-                            .0
-                            .lock()
-                            .await
-                            .reminder(&due.reminder_guid)
-                            .ok()
-                            .flatten();
-                        let same = now.as_ref().is_some_and(|r| {
-                            r.completed_at.is_none() && Some(r.due_at) == due_then
-                        });
-                        if !same {
-                            quiet!("an alert was answered after its reminder had moved on");
-                        } else if let Err(e) =
-                            crate::set_done(&auth, &data, &due.reminder_guid, &due.list_guid, true)
-                                .await
-                        {
-                            quiet!("an alert's reminder could not be completed: {e}");
-                        }
-                        // Every open screen looks again, as after any pass.
-                        let report = crate::refresh::status(&data.0).await;
-                        app.emit(crate::SYNCED, &report).ok();
-                    });
-                }
-                "snooze" => {
-                    let app = app.clone();
-                    let guid = due.reminder_guid.clone();
-                    tauri::async_runtime::block_on(async move {
-                        let data = app.state::<Data>();
-                        let mut library = data.0.lock().await;
-                        library.snooze_reminder(&guid, now() + SNOOZE).ok();
-                    });
-                    changed();
-                }
-                "default" => {
-                    crate::show_window(&app);
-                    app.emit(OPEN_REMINDER, &due.reminder_guid).ok();
-                }
-                _ => {}
-            });
+            handle.wait_for_action(|action| answer(&app, &due, due_then, action));
         }
     });
 }
@@ -374,7 +462,16 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
         }
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         {
-            notify_rust::Notification::new()
+            let mut toast = notify_rust::Notification::new();
+            // Windows names a toast's sender by the app ID it claims, matched to the Start
+            // menu shortcut the installer stamps with the same ID; without it every alert
+            // came from "Windows PowerShell".
+            #[cfg(windows)]
+            toast.app_id(&app.config().identifier);
+            // Windows' own reminder chime; without a sound named the toast was silent.
+            #[cfg(windows)]
+            toast.sound_name("Reminder");
+            toast
                 .appname("Pomander")
                 .summary(&event.title)
                 .body(&body)
@@ -384,13 +481,18 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            let shown = notify_rust::Notification::new()
+            let mut alert = notify_rust::Notification::new();
+            chime(&mut alert);
+            let shown = alert
                 .appname("Pomander")
                 .summary(&event.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))
                 .hint(notify_rust::Hint::Category("calendar".into()))
-                .hint(notify_rust::Hint::DesktopEntry("quince".into()))
+                .hint(notify_rust::Hint::DesktopEntry(format!(
+                    "{}.Calendar",
+                    app.config().identifier
+                )))
                 .action("default", "Open")
                 .show();
             if let Ok(handle) = shown {

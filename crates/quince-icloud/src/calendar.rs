@@ -420,6 +420,44 @@ pub struct EventRepeat {
     pub count: Option<i64>,
 }
 
+/// An edit made here, laid over the event as another device has since left it — what a save
+/// refused as a conflict is saved as instead, the way Calendar settles two edits.
+///
+/// `base` is the event as this edit began from it, `mine` the edit, `theirs` Apple's copy now.
+/// A field changed only there keeps their change; a field changed here is this edit's, even
+/// where they changed it too — the edit being saved is the one the person is looking at. When
+/// it happens is one field, not four: a start from one side and an end from the other could
+/// make an event that ends before it begins. The etag is Apple's latest, which is what lets
+/// the write through.
+pub fn merge_edit(base: &Event, mine: &Event, theirs: &Event) -> Event {
+    fn pick<T: PartialEq + Clone>(base: &T, mine: &T, theirs: &T) -> T {
+        if mine == base {
+            theirs.clone()
+        } else {
+            mine.clone()
+        }
+    }
+    let when = |e: &Event| (e.starts_at, e.ends_at, e.all_day, e.timezone.clone());
+    let (starts_at, ends_at, all_day, timezone) = pick(&when(base), &when(mine), &when(theirs));
+    Event {
+        guid: mine.guid.clone(),
+        calendar_guid: pick(
+            &base.calendar_guid,
+            &mine.calendar_guid,
+            &theirs.calendar_guid,
+        ),
+        title: pick(&base.title, &mine.title, &theirs.title),
+        location: pick(&base.location, &mine.location, &theirs.location),
+        starts_at,
+        ends_at,
+        all_day,
+        timezone,
+        url: pick(&base.url, &mine.url, &theirs.url),
+        notes: pick(&base.notes, &mine.notes, &theirs.notes),
+        etag: theirs.etag.clone(),
+    }
+}
+
 /// Apple's calendar service.
 pub struct CalendarClient<'a> {
     http: &'a reqwest::Client,
@@ -844,6 +882,28 @@ impl<'a> CalendarClient<'a> {
         Ok(event_of(&body).map(|_| body))
     }
 
+    /// The event as Apple holds it now, read from the calendar and day it was last known in,
+    /// or `None` where Apple no longer has it there — deleted, or moved away, on another
+    /// device. Read-only.
+    pub async fn current_event(&self, known: &Event) -> Result<Option<Event>> {
+        let day = day_of(known.starts_at, event_zone(known).as_deref());
+        let Some(body) = self.event_detail_body(known, &day).await? else {
+            return Ok(None);
+        };
+        match event_of(&body) {
+            Some(found) => event_from(&found),
+            None => Ok(None),
+        }
+    }
+
+    /// A calendar's ctag as Apple holds it now, for a write retried after a refusal.
+    pub async fn current_ctag(&self, guid: &str) -> Result<Option<String>> {
+        Ok(self
+            .collection_detail(guid)
+            .await?
+            .and_then(|c| c.get("ctag").and_then(Value::as_str).map(str::to_string)))
+    }
+
     /// Apple's event object, in the shape its own web client sends.
     ///
     /// When Apple already has the event, its own record is the starting point and only the
@@ -1264,6 +1324,70 @@ pub fn changed_collections(answer: &Value) -> Vec<(String, Option<String>)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn meeting() -> Event {
+        Event {
+            guid: "EV".into(),
+            calendar_guid: "work".into(),
+            title: "Planning".into(),
+            location: Some("Room 1".into()),
+            starts_at: 1_000_000,
+            ends_at: 1_003_600,
+            all_day: false,
+            timezone: Some("Asia/Kolkata".into()),
+            url: None,
+            notes: None,
+            etag: Some("v1".into()),
+        }
+    }
+
+    /// Edits to different fields on two devices both survive; Apple's newest etag goes with it.
+    #[test]
+    fn a_conflict_on_different_fields_keeps_both_edits() {
+        let base = meeting();
+        let mut mine = base.clone();
+        mine.title = "Planning, moved".into();
+        mine.starts_at += 3600;
+        mine.ends_at += 3600;
+        let mut theirs = base.clone();
+        theirs.location = Some("Room 7".into());
+        theirs.notes = Some("Bring the numbers".into());
+        theirs.etag = Some("v2".into());
+        let merged = merge_edit(&base, &mine, &theirs);
+        assert_eq!(merged.title, "Planning, moved");
+        assert_eq!(merged.starts_at, base.starts_at + 3600);
+        assert_eq!(merged.ends_at, base.ends_at + 3600);
+        assert_eq!(merged.location.as_deref(), Some("Room 7"));
+        assert_eq!(merged.notes.as_deref(), Some("Bring the numbers"));
+        assert_eq!(merged.etag.as_deref(), Some("v2"));
+    }
+
+    /// The same field changed on both: this edit's, and their other changes are still kept.
+    /// When it happens moves as one — never their start with this end.
+    #[test]
+    fn a_conflict_on_the_same_field_keeps_this_edit_for_it() {
+        let base = meeting();
+        let mut mine = base.clone();
+        mine.title = "Mine".into();
+        mine.ends_at += 1800;
+        let mut theirs = base.clone();
+        theirs.title = "Theirs".into();
+        theirs.starts_at += 7200;
+        theirs.ends_at += 7200;
+        theirs.url = Some("https://example.com".into());
+        theirs.etag = Some("v3".into());
+        let merged = merge_edit(&base, &mine, &theirs);
+        assert_eq!(merged.title, "Mine");
+        assert_eq!(
+            (merged.starts_at, merged.ends_at),
+            (base.starts_at, base.ends_at + 1800)
+        );
+        assert_eq!(merged.url.as_deref(), Some("https://example.com"));
+        assert_eq!(merged.etag.as_deref(), Some("v3"));
+        // Nothing edited here: theirs, whole.
+        let untouched = merge_edit(&base, &base, &theirs);
+        assert_eq!(untouched, theirs);
+    }
 
     fn coloured(colour: &str) -> Calendar {
         Calendar {

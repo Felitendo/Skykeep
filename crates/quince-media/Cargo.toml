@@ -11,8 +11,9 @@ fast_image_resize = "6.1.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 png = "0.17"
 
-# HEIC decoded with libheif where the system has it (Linux packages it everywhere). On Windows
-# it is not built yet: HEIC is shown at Apple's own JPEG sizes there until the system's own
-# decoder (the Windows Imaging Component) is used.
-[target.'cfg(not(windows))'.dependencies]
+# HEIC decoded with libheif: the system's on Linux, and on Windows one built in by vcpkg
+# (`libheif[core,libde265]`, decoding only; see the Windows workflow) — not Windows' own
+# decoder, which needs two Store extensions most machines do not have. Left out only of the
+# MinGW cross-check, which has no vcpkg.
+[target.'cfg(not(all(windows, target_env = "gnu")))'.dependencies]
 libheif-rs = "3.0.0"

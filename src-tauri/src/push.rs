@@ -59,10 +59,7 @@ async fn watch_contacts(
     let mut tokens: Option<quince_icloud::contacts::Tokens> = None;
     let mut backoff = Duration::from_secs(5);
     loop {
-        let visible = app
-            .get_webview_window("main")
-            .and_then(|w| w.is_visible().ok())
-            .unwrap_or(false);
+        let visible = shown(&app);
         tokio::time::sleep(if visible { LOOK } else { LOOK_HIDDEN }).await;
         let session = {
             let guard = client.lock().await;
@@ -105,6 +102,13 @@ async fn watch_contacts(
     }
 }
 
+/// Whether the window is in front of anyone: shown and not minimized. A minimized window is
+/// still "visible" to Windows (and to Tauri there), and was asked at the open window's pace.
+fn shown(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window("main")
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
+}
+
 /// How often Calendar and Contacts are asked whether anything changed: often while the window is open,
 /// rarely from the tray, where only an alert depends on it.
 const LOOK: Duration = Duration::from_secs(4);
@@ -128,10 +132,7 @@ async fn watch_calendar(
     let mut seeded = false;
     let mut backoff = Duration::from_secs(5);
     loop {
-        let visible = app
-            .get_webview_window("main")
-            .and_then(|w| w.is_visible().ok())
-            .unwrap_or(false);
+        let visible = shown(&app);
         tokio::time::sleep(if visible { LOOK } else { LOOK_HIDDEN }).await;
         let session = {
             let guard = client.lock().await;

@@ -55,10 +55,10 @@ pub struct LoginItem {
 #[cfg(not(windows))]
 fn entry(app: &AppHandle) -> Option<PathBuf> {
     use tauri::Manager;
-    app.path()
-        .config_dir()
-        .ok()
-        .map(|c| c.join("autostart").join("dev.quince.client.desktop"))
+    app.path().config_dir().ok().map(|c| {
+        c.join("autostart")
+            .join(format!("{}.desktop", app.config().identifier))
+    })
 }
 
 /// The command that starts this Quince hidden: the AppImage itself when run from one (its
@@ -76,12 +76,16 @@ fn command() -> String {
 }
 
 /// A program path as the Desktop Entry spec wants it in Exec: in double quotes, with `"`,
-/// `` ` ``, `$` and `\` escaped.
+/// `` ` ``, `$` and `\` escaped, and `%` doubled — alone it starts a field code (`%f`, `%u`),
+/// which the launcher would replace with something else.
 fn quoted(path: &str) -> String {
     let mut out = String::from("\"");
     for c in path.chars() {
         if matches!(c, '"' | '`' | '$' | '\\') {
             out.push('\\');
+        }
+        if c == '%' {
+            out.push('%');
         }
         out.push(c);
     }
@@ -90,9 +94,9 @@ fn quoted(path: &str) -> String {
 }
 
 #[cfg(not(windows))]
-fn desktop_file(command: &str) -> String {
+fn desktop_file(command: &str, icon: &str) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName=Pomander\nComment=Keeps iCloud in sync in the background\nExec={command}\nIcon=dev.quince.client\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n"
+        "[Desktop Entry]\nType=Application\nName=Pomander\nComment=Keeps iCloud in sync in the background\nExec={command}\nIcon={icon}\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
     )
 }
 
@@ -212,7 +216,8 @@ pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, Strin
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&path, desktop_file(&command())).map_err(|e| e.to_string())?;
+        std::fs::write(&path, desktop_file(&command(), &app.config().identifier))
+            .map_err(|e| e.to_string())?;
     } else if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
@@ -224,6 +229,7 @@ mod tests {
     use super::*;
 
     /// The Exec line survives any path: spaces quoted, the spec's special characters escaped.
+    #[cfg(not(windows))]
     #[test]
     fn the_exec_line_is_quoted_as_the_spec_says() {
         assert_eq!(
@@ -231,7 +237,8 @@ mod tests {
             "\"/opt/Quince App/quince\""
         );
         assert_eq!(quoted("/a/$HOME\"x`\\"), "\"/a/\\$HOME\\\"x\\`\\\\\"");
-        let file = desktop_file("\"/usr/bin/quince-app\" --background");
+        assert_eq!(quoted("/opt/100%u/q"), "\"/opt/100%%u/q\"");
+        let file = desktop_file("\"/usr/bin/quince-app\" --background", "org.example.App");
         assert!(file.contains("Exec=\"/usr/bin/quince-app\" --background\n"));
         assert!(file.starts_with("[Desktop Entry]\nType=Application\n"));
     }

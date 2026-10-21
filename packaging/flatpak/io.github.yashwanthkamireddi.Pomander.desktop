@@ -1,0 +1,46 @@
+[Desktop Entry]
+Type=Application
+Name=Pomander
+GenericName=iCloud Client
+Comment=Your iCloud, on this computer
+Exec=pomander %U
+Icon=io.github.yashwanthkamireddi.Pomander
+Terminal=false
+Categories=Office;Calendar;ContactManagement;
+Keywords=iCloud;calendar;reminders;notes;contacts;sync;
+MimeType=text/calendar;text/vcard;text/x-vcard;
+StartupNotify=true
+StartupWMClass=io.github.yashwanthkamireddi.Pomander
+Actions=new-reminder;new-note;notes;reminders;calendar;contacts;drive;photos;
+
+[Desktop Action new-reminder]
+Name=New Reminder
+Exec=pomander --new reminder
+
+[Desktop Action new-note]
+Name=New Note
+Exec=pomander --new note
+
+[Desktop Action notes]
+Name=Notes
+Exec=pomander --app notes
+
+[Desktop Action reminders]
+Name=Reminders
+Exec=pomander --app reminders
+
+[Desktop Action calendar]
+Name=Calendar
+Exec=pomander --app calendar
+
+[Desktop Action contacts]
+Name=Contacts
+Exec=pomander --app contacts
+
+[Desktop Action drive]
+Name=Drive
+Exec=pomander --app drive
+
+[Desktop Action photos]
+Name=Photos
+Exec=pomander --app photos

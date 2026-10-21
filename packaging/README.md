@@ -43,3 +43,25 @@ that looks finished and has never been run. It is next, on a machine that can bu
 
 `webkit2gtk-4.1` for the window, `libsecret` for the keyring. The app starts without the
 second and cannot stay signed in, which is most of the point of it.
+
+## Opening files and quick capture
+
+Calendar (`.ics`) and contact (`.vcf`) files open in Pomander's import sheet
+(`src-tauri/src/intake.rs`): read on this computer, shown, and added only when confirmed.
+
+- **Linux:** the main entry declares `MimeType=text/calendar;text/vcard;text/x-vcard;` and takes
+  `%U`; the metainfo files list the same types under `<provides>`. The per-app entries do not
+  claim them, so "Open With" offers one "Pomander", not a second "Calendar" beside GNOME's.
+- **Windows:** `bundle.fileAssociations` in `tauri.conf.json` registers `.ics`/`.ical` and
+  `.vcf`/`.vcard` in both the NSIS and MSI installers; Explorer passes the path on the command
+  line, and a second launch hands it to the running Pomander (single instance).
+
+`pomander --new reminder` and `pomander --new note` open the quick-capture window. They are
+`Actions=` on the main entry and on the Reminders and Notes entries (right-click in a dock or
+launcher).
+
+**Windows jump-list tasks are not set up.** A jump list's tasks are written by the running app
+through the shell's `ICustomDestinationList` COM interface; neither Tauri nor its NSIS/MSI
+templates have a way to declare them. Adding them means a Windows-only call at startup
+(`windows` crate, `Win32_UI_Shell`) registering two `IShellLink` tasks with the arguments
+above. Until then, the same commands work from a shortcut's Target field.

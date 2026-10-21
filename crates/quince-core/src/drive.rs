@@ -56,7 +56,7 @@ impl Library {
     /// Scoped to the folder rather than the whole tree: Drive is fetched a level at a time,
     /// so anything outside this folder is simply not part of this answer.
     pub fn put_drive_children(&mut self, parent_id: &str, items: &[DriveItem]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO drive_items (drivewsid, parent_id, name, extension, kind, size,

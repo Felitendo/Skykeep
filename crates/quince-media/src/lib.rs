@@ -99,16 +99,16 @@ fn cut(image: image::DynamicImage, crop: Option<Crop>) -> image::DynamicImage {
 ///
 /// # Errors
 /// When the bytes are not a HEIF image libheif can decode.
-#[cfg(windows)]
+#[cfg(all(windows, target_env = "gnu"))]
 pub fn heic_to_jpeg(_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    Err("HEIC pictures are not decoded on Windows yet.".into())
+    Err("HEIC pictures are not decoded in this build.".into())
 }
 
-/// A HEIC picture made a JPEG (see the Windows variant above for where it is not).
+/// A HEIC picture made a JPEG (see the variant above for the one build where it is not).
 ///
 /// # Errors
 /// When the bytes are not a HEIF image libheif can decode.
-#[cfg(not(windows))]
+#[cfg(not(all(windows, target_env = "gnu")))]
 pub fn heic_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
     let lib = LibHeif::new();
