@@ -886,42 +886,45 @@ impl Library {
         Ok(found)
     }
 
+    /// One reminder by its id, wherever it is and however long its list: what a change waiting
+    /// to be sent is checked against. (Through a list, one past the most a list returns was
+    /// taken for deleted and its change dropped unsent.)
+    pub fn reminder(&self, guid: &str) -> Result<Option<Reminder>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {REMINDER_COLUMNS} FROM reminders WHERE guid = ?1"),
+                params![guid],
+                reminder_row,
+            )
+            .optional()?
+            .map(|(r, _)| r))
+    }
+
+    /// A reminder's subtasks, every one, wherever they are.
+    pub fn subtasks_of(&self, parent: &str) -> Result<Vec<Reminder>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {REMINDER_COLUMNS} FROM reminders WHERE parent_guid = ?1"
+        ))?;
+        let rows = stmt.query_map(params![parent], reminder_row)?;
+        Ok(rows
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|(r, _)| r)
+            .collect())
+    }
+
     pub fn reminders_in(&self, list_guid: &str, include_done: bool) -> Result<Vec<Reminder>> {
         let list = self
             .reminder_lists()?
             .into_iter()
             .find(|l| l.guid == list_guid);
-        let mut stmt = self.conn.prepare(
-            "SELECT guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
-                    parent_guid, recur_frequency, recur_interval, etag, timezone, section_guid, all_day,
-                    CASE WHEN json_valid(raw)
-                         THEN json_extract(raw, '$.fields.CreationDate.value') END
-             FROM reminders
-             WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)",
-        )?;
-        let rows = stmt.query_map(params![list_guid, i64::from(include_done)], |row| {
-            Ok((
-                Reminder {
-                    guid: row.get(0)?,
-                    list_guid: row.get(1)?,
-                    title: row.get(2)?,
-                    notes: row.get(3)?,
-                    due_at: row.get(4)?,
-                    completed_at: row.get(5)?,
-                    priority: row.get(6)?,
-                    flagged: row.get::<_, i64>(7)? != 0,
-                    parent_guid: row.get(8)?,
-                    recur_frequency: row.get(9)?,
-                    recur_interval: row.get(10)?,
-                    etag: row.get(11)?,
-                    raw: None,
-                    timezone: row.get(12)?,
-                    section_guid: row.get(13)?,
-                    all_day: row.get::<_, i64>(14)? != 0,
-                },
-                row.get::<_, Option<i64>>(15).unwrap_or(None),
-            ))
-        })?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {REMINDER_COLUMNS} FROM reminders
+             WHERE list_guid = ?1 AND (?2 = 1 OR completed_at IS NULL)"
+        ))?;
+        let rows = stmt.query_map(params![list_guid, i64::from(include_done)], reminder_row)?;
         let mut found = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let (sorting, order) = list
             .map(|l| (l.sorting, l.reminder_order))
@@ -930,6 +933,37 @@ impl Library {
         found.truncate(MOST_AT_ONCE);
         Ok(found.into_iter().map(|(r, _)| r).collect())
     }
+}
+
+/// The columns a reminder is read from, in the order [`reminder_row`] takes them.
+const REMINDER_COLUMNS: &str =
+    "guid, list_guid, title, notes, due_at, completed_at, priority, flagged,
+    parent_guid, recur_frequency, recur_interval, etag, timezone, section_guid, all_day,
+    CASE WHEN json_valid(raw) THEN json_extract(raw, '$.fields.CreationDate.value') END";
+
+/// A reminder, and when it was made, from a row of [`REMINDER_COLUMNS`].
+fn reminder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(Reminder, Option<i64>)> {
+    Ok((
+        Reminder {
+            guid: row.get(0)?,
+            list_guid: row.get(1)?,
+            title: row.get(2)?,
+            notes: row.get(3)?,
+            due_at: row.get(4)?,
+            completed_at: row.get(5)?,
+            priority: row.get(6)?,
+            flagged: row.get::<_, i64>(7)? != 0,
+            parent_guid: row.get(8)?,
+            recur_frequency: row.get(9)?,
+            recur_interval: row.get(10)?,
+            etag: row.get(11)?,
+            raw: None,
+            timezone: row.get(12)?,
+            section_guid: row.get(13)?,
+            all_day: row.get::<_, i64>(14)? != 0,
+        },
+        row.get::<_, Option<i64>>(15).unwrap_or(None),
+    ))
 }
 
 #[cfg(test)]

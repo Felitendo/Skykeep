@@ -555,7 +555,9 @@ export function RemindersView() {
       .slice(0, index)
       .reverse()
       .find((x) => !x.parentGuid);
-    if (!above) return Promise.resolve(null);
+    // One with subtasks of its own stays where it is: nested, they would be two deep, which
+    // Apple does not keep, and they vanished from the list.
+    if (!above || flat.some((x) => x.parentGuid === r.guid)) return Promise.resolve(null);
     return write(
       r,
       () => api.reminderEdit(r.guid, r.listGuid, { parentGuid: above.guid }),
@@ -1473,10 +1475,9 @@ export function RemindersView() {
                               >
                                 Move Out of Subtasks
                               </button>
-                            ) : (
+                            ) : items.some((x) => x.parentGuid === reminder.guid) ? null : (
                               <button
                                 className="rx-link"
-                                
                                 onClick={() => void indent(reminder)}
                               >
                                 Make Subtask
@@ -1550,9 +1551,11 @@ export function RemindersView() {
               { label: r.flagged ? "Unflag" : "Flag", run: () => void flag(r) },
               { label: r.completedAt ? "Mark as Not Completed" : "Mark as Completed", run: () => void toggle(r) },
               null,
-              r.parentGuid
-                ? { label: "Outdent", run: () => void outdent(r) }
-                : { label: "Indent", run: () => void indent(r) },
+              ...(r.parentGuid
+                ? [{ label: "Outdent", run: () => void outdent(r) }]
+                : items.some((x) => x.parentGuid === r.guid)
+                  ? []
+                  : [{ label: "Indent", run: () => void indent(r) }]),
               // Only where there is somewhere else to go: an empty submenu is a dead end.
               ...(lists.some((l) => l.guid !== r.listGuid)
                 ? [{

@@ -183,6 +183,17 @@ fn show(app: AppHandle, due: DueAlarm) {
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
+            // The occurrence this alert is for: a repeating reminder ticked since (here or on the
+            // phone) has moved on, and a press on this alert must not move it on again.
+            let due_then = {
+                let app = app.clone();
+                let guid = due.reminder_guid.clone();
+                tauri::async_runtime::block_on(async move {
+                    let data = app.state::<Data>();
+                    let library = data.0.lock().await;
+                    library.reminder(&guid).ok().flatten().map(|r| r.due_at)
+                })
+            };
             let shown = notify_rust::Notification::new()
                 .appname("Quince")
                 .summary(&due.title)
@@ -206,7 +217,19 @@ fn show(app: AppHandle, due: DueAlarm) {
                     tauri::async_runtime::block_on(async move {
                         let auth = app.state::<Auth>();
                         let data = app.state::<Data>();
-                        if let Err(e) =
+                        let now = data
+                            .0
+                            .lock()
+                            .await
+                            .reminder(&due.reminder_guid)
+                            .ok()
+                            .flatten();
+                        let same = now.as_ref().is_some_and(|r| {
+                            r.completed_at.is_none() && Some(r.due_at) == due_then
+                        });
+                        if !same {
+                            quiet!("an alert was answered after its reminder had moved on");
+                        } else if let Err(e) =
                             crate::set_done(&auth, &data, &due.reminder_guid, &due.list_guid, true)
                                 .await
                         {

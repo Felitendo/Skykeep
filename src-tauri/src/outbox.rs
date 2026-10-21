@@ -60,16 +60,22 @@ enum Outcome {
 }
 
 /// Whether Apple could not be reached (keep it) rather than said no (drop it).
-fn transient(e: &Error) -> bool {
-    matches!(
-        e,
+/// How many times an answer this app does not understand is retried before the change is
+/// given up and said to be refused — a fault that will never clear held every change queued
+/// after it forever, each shown as made.
+const PROTOCOL_TRIES: i64 = 5;
+
+fn transient(e: &Error, tries: i64) -> bool {
+    match e {
         Error::Network(_)
-            | Error::ReauthRequired
-            | Error::Protocol(_)
-            | Error::StaleCursor
-            | Error::Io(_)
-            | Error::Storage(_)
-    )
+        | Error::ReauthRequired
+        | Error::StaleCursor
+        | Error::Busy
+        | Error::Io(_)
+        | Error::Storage(_) => true,
+        Error::Protocol(_) => tries < PROTOCOL_TRIES,
+        _ => false,
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -105,6 +111,20 @@ async fn drain_reminders(app: &AppHandle) -> Outcome {
     let report = drain(&data.0, &crate::REMINDERS_PASS, |reminder, d| {
         let (http, root, params) = (http.clone(), root.clone(), params.clone());
         async move {
+            // A change made on another device after this one was queued wins; the pass after
+            // sending reads Apple's version back.
+            if quince_icloud::reminders::tick_overtaken(
+                &http,
+                &root,
+                params.clone(),
+                &reminder,
+                d.done,
+                d.at,
+            )
+            .await?
+            {
+                return Ok(());
+            }
             quince_icloud::reminders::set_completed_cloudkit(
                 &http, &root, params, &reminder, d.done,
             )
@@ -170,11 +190,7 @@ where
         let _pass = pass.lock().await;
         let reminder = {
             let lib = library.lock().await;
-            lib.reminder_list_of(&p.record)
-                .ok()
-                .flatten()
-                .and_then(|l| lib.reminders_in(&l, true).ok())
-                .and_then(|rs| rs.into_iter().find(|r| r.guid == p.record))
+            lib.reminder(&p.record).ok().flatten()
         };
         let Some(reminder) = reminder else {
             // Gone from the library (deleted here or elsewhere): nothing left to send.
@@ -195,7 +211,7 @@ where
                 let _ = library.lock().await.outbox_done(p.id);
                 report.sent = true;
             }
-            Err(e) if transient(&e) => {
+            Err(e) if transient(&e, p.tries) => {
                 let _ = library.lock().await.outbox_retry(p.id, &e.to_string());
                 report.outcome = Outcome::Later;
                 return report;

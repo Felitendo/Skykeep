@@ -960,10 +960,16 @@ pub fn apply_cloudkit(
         Default::default()
     };
     for reminder in &mut reminders {
+        // A rule counts only for a reminder that still lists one: a repeat cleared on the phone
+        // can leave its rule record in the zone, and taken as repeating, the reminder could
+        // not be ticked ("Apple did not say on what schedule").
+        if !with_rules.contains(&reminder.guid) {
+            continue;
+        }
         if let Some((frequency, interval)) = rules.get(&reminder.guid) {
             reminder.recur_frequency = Some(*frequency);
             reminder.recur_interval = Some(*interval);
-        } else if with_rules.contains(&reminder.guid) {
+        } else {
             if let Some(&(frequency, interval)) = stored_repeats.get(&reminder.guid) {
                 reminder.recur_frequency = Some(frequency);
                 reminder.recur_interval = interval;
@@ -1468,6 +1474,38 @@ pub async fn edit_cloudkit(
     reminder: &Reminder,
     edit: &ReminderEdit,
 ) -> Result<()> {
+    // A title or notes edit is built from the document as it stood: if another device wrote
+    // first it is built again from theirs, never resent over it.
+    if edit.title.is_some() || edit.notes.is_some() {
+        match edit_once(
+            http,
+            ckdatabasews_root,
+            params.clone(),
+            reminder,
+            edit,
+            true,
+        )
+        .await
+        {
+            Err(Error::Conflict) => {
+                return edit_once(http, ckdatabasews_root, params, reminder, edit, true).await;
+            }
+            other => return other,
+        }
+    }
+    edit_once(http, ckdatabasews_root, params, reminder, edit, false).await
+}
+
+/// One try at [`edit_cloudkit`]; `exact` writes only over the version read, a conflict
+/// coming back as [`Error::Conflict`].
+async fn edit_once(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder: &Reminder,
+    edit: &ReminderEdit,
+    exact: bool,
+) -> Result<()> {
     if edit.is_empty() {
         return Ok(());
     }
@@ -1493,13 +1531,24 @@ pub async fn edit_cloudkit(
     } else {
         None
     };
-    let document = |field: &str, text: &str| -> String {
-        current
+    // A document there that cannot be edited exactly is refused, never written over with a new
+    // one: a fresh document drops the records devices merge by, and a phone merging it with its
+    // own copy could show the title doubled or lose it.
+    let document = |field: &str, text: &str| -> Result<String> {
+        match current
             .as_ref()
             .and_then(|rec| rec.pointer(&format!("/fields/{field}/value")))
             .and_then(Value::as_str)
-            .and_then(|existing| crate::ckdocument::replace_text_in_base64(existing, text))
-            .unwrap_or_else(|| crate::ckdocument::text_to_base64(text))
+            .filter(|existing| !existing.is_empty())
+        {
+            None => Ok(crate::ckdocument::text_to_base64(text)),
+            Some(existing) => crate::ckdocument::replace_text_in_base64(existing, text).ok_or_else(|| {
+                Error::Refused(
+                    "Quince can’t safely change this reminder’s text yet, so nothing was changed. Editing it on an Apple device is safe."
+                        .into(),
+                )
+            }),
+        }
     };
 
     if let Some(title) = &edit.title {
@@ -1507,7 +1556,7 @@ pub async fn edit_cloudkit(
             "TitleDocument".into(),
             serde_json::json!({
                 "type": "ENCRYPTED_BYTES",
-                "value": document("TitleDocument", title.trim()),
+                "value": document("TitleDocument", title.trim())?,
             }),
         );
     }
@@ -1520,7 +1569,7 @@ pub async fn edit_cloudkit(
             "NotesDocument".into(),
             serde_json::json!({
                 "type": "ENCRYPTED_BYTES",
-                "value": document("NotesDocument", text),
+                "value": document("NotesDocument", text)?,
             }),
         );
     }
@@ -1610,9 +1659,24 @@ pub async fn edit_cloudkit(
         .and_then(Value::as_str)
         .or(reminder.etag.as_deref());
 
-    client
-        .update_record_signed(ZONE, &reminder.guid, "Reminder", tag, Value::Object(fields))
-        .await?;
+    match (exact, tag) {
+        (true, Some(tag)) => {
+            client
+                .update_record_signed_exact(
+                    ZONE,
+                    &reminder.guid,
+                    "Reminder",
+                    tag,
+                    Value::Object(fields),
+                )
+                .await?
+        }
+        _ => {
+            client
+                .update_record_signed(ZONE, &reminder.guid, "Reminder", tag, Value::Object(fields))
+                .await?
+        }
+    };
     // Moved to another list: it joins the end of that list's order and leaves the old one's,
     // as on the phone. The move itself has happened either way.
     if let Some(list_guid) = edit
@@ -1823,6 +1887,41 @@ fn in_list(r: &Value, list_guid: &str) -> bool {
             == Some(list_guid)
 }
 
+/// Whether a tick made here at `made_at` (seconds) has been overtaken at Apple: the reminder
+/// is gone, already ticked as wanted (a one-off), or changed on another device after it was
+/// made — a later change there wins, as it would had both been made online. A few seconds'
+/// grace for the two clocks.
+pub async fn tick_overtaken(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder: &Reminder,
+    done: bool,
+    made_at: i64,
+) -> Result<bool> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let Some(current) = client.lookup_record(ZONE, &reminder.guid).await? else {
+        return Ok(true);
+    };
+    let completed = current
+        .pointer("/fields/Completed/value")
+        .and_then(Value::as_i64)
+        .is_some_and(|v| v != 0);
+    if !reminder.repeats() && completed == done {
+        return Ok(true);
+    }
+    let changed = [
+        current.pointer("/fields/LastModifiedDate/value"),
+        current.pointer("/modified/timestamp"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_i64)
+    .max()
+    .unwrap_or(0);
+    Ok(changed > (made_at + 5) * 1000)
+}
+
 /// Tick a CloudKit reminder off, or put it back.
 ///
 /// Sends only the fields that change, guarded by the record's change tag, so a reminder
@@ -1895,10 +1994,19 @@ pub async fn set_completed_cloudkit(
             &reminder.guid,
             "Reminder",
             reminder.etag.as_deref(),
-            serde_json::json!({
-                "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" },
-                "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
-            }),
+            {
+                let mut fields = serde_json::json!({
+                    "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" },
+                    "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
+                });
+                // When it was ticked, as the phone records it: without it a reminder ticked
+                // again here kept the date it was first completed on, everywhere.
+                if done {
+                    fields["CompletionDate"] =
+                        serde_json::json!({ "value": now_millis(), "type": "TIMESTAMP" });
+                }
+                fields
+            },
         )
         .await?;
     Ok(())

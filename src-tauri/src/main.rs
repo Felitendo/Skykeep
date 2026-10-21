@@ -1526,10 +1526,9 @@ async fn set_done(
     let reminder = {
         let library = data.0.lock().await;
         library
-            .reminders_in(list_guid, true)
+            .reminder(guid)
             .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|r| r.guid == guid)
+            .filter(|r| r.list_guid == list_guid)
             .ok_or("That reminder is no longer in the local library.")?
     };
     if !(done && reminder.repeats()) {
@@ -1575,10 +1574,9 @@ async fn reminder_set_repeat(
     let reminder = {
         let library = data.0.lock().await;
         library
-            .reminders_in(&list_guid, true)
+            .reminder(&guid)
             .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|r| r.guid == guid)
+            .filter(|r| r.list_guid == list_guid)
             .ok_or("That reminder is no longer in the local library.")?
     };
 
@@ -1642,9 +1640,14 @@ async fn reminder_create(
             flagged,
             ..Default::default()
         };
-        quince_icloud::reminders::edit_cloudkit(&http, &root, params.clone(), &made, &edit)
-            .await
-            .map_err(|e| e.to_string())?;
+        // The reminder exists at Apple now, whatever happens next: a failure here must not
+        // read as "nothing was made", or the title put back and entered again made a second.
+        if let Err(e) =
+            quince_icloud::reminders::edit_cloudkit(&http, &root, params.clone(), &made, &edit)
+                .await
+        {
+            quiet!("a new reminder's date or flag was not set: {e}");
+        }
     }
 
     refresh_reminders(&http, &root, params, &data, false).await
@@ -1662,16 +1665,25 @@ async fn reminder_delete(
     let reminder = {
         let library = data.0.lock().await;
         library
-            .reminders_in(&list_guid, true)
+            .reminder(&guid)
             .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|r| r.guid == guid)
+            .filter(|r| r.list_guid == list_guid)
             .ok_or("That reminder is no longer in the local library.")?
     };
 
+    // Its subtasks go with it, as on the phone: left behind they came back at the top level
+    // here and stayed in iCloud.
+    let children = data.0.lock().await.subtasks_of(&guid).unwrap_or_default();
     quince_icloud::reminders::delete_cloudkit(&http, &root, params.clone(), &reminder)
         .await
         .map_err(|e| e.to_string())?;
+    for child in &children {
+        if let Err(e) =
+            quince_icloud::reminders::delete_cloudkit(&http, &root, params.clone(), child).await
+        {
+            quiet!("a subtask did not go with its reminder: {e}");
+        }
+    }
 
     refresh_reminders(&http, &root, params, &data, false).await
 }
@@ -1690,10 +1702,9 @@ async fn reminder_edit(
     let reminder = {
         let library = data.0.lock().await;
         library
-            .reminders_in(&list_guid, true)
+            .reminder(&guid)
             .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|r| r.guid == guid)
+            .filter(|r| r.list_guid == list_guid)
             .ok_or("That reminder is no longer in the local library.")?
     };
 
@@ -1706,12 +1717,7 @@ async fn reminder_edit(
     if let Some(to) = edit.list_guid.as_deref().filter(|to| *to != list_guid) {
         let children: Vec<quince_core::reminders::Reminder> = {
             let library = data.0.lock().await;
-            library
-                .reminders_in(&list_guid, true)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|r| r.parent_guid.as_deref() == Some(guid.as_str()))
-                .collect()
+            library.subtasks_of(&guid).unwrap_or_default()
         };
         let follow = quince_icloud::reminders::ReminderEdit {
             list_guid: Some(to.to_string()),

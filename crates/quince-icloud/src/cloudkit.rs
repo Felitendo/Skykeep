@@ -145,9 +145,9 @@ impl<'a> ZoneClient<'a> {
             }
             if tries >= BUSY_TRIES {
                 quiet!("cloudkit: still busy after {tries} tries ({status})");
-                return Err(Error::Refused(
-                    "iCloud is busy right now. Nothing was changed — try again in a minute.".into(),
-                ));
+                // Busy, not refused: nothing was applied, and a change waiting to be sent is
+                // kept for later rather than dropped as if Apple had turned it down.
+                return Err(Error::Busy);
             }
             let asked = serde_json::from_str::<Value>(&text)
                 .ok()
@@ -833,12 +833,7 @@ impl ZoneClient<'_> {
                     ))
                     .await;
                 }
-                Err(Error::Busy) => {
-                    return Err(Error::Refused(
-                        "iCloud is busy right now. Nothing was changed — try again in a minute."
-                            .into(),
-                    ))
-                }
+                Err(Error::Busy) => return Err(Error::Busy),
                 other => return other,
             }
         }
@@ -923,6 +918,23 @@ impl ZoneClient<'_> {
                 .map(ToString::to_string)
         });
         self.update_record(zone, record_name, record_type, tag.as_deref(), changes)
+            .await
+    }
+
+    /// [`Self::update_record_signed`] with no retry: a conflict comes back as
+    /// [`Error::Conflict`], for a caller whose fields were built from the record as it stood
+    /// (a reminder's title document) and must be built again, not resent.
+    pub async fn update_record_signed_exact(
+        &self,
+        zone: &str,
+        record_name: &str,
+        record_type: &str,
+        change_tag: &str,
+        mut changes: Value,
+    ) -> Result<Value> {
+        let current = self.lookup_record(zone, record_name).await?;
+        stamp_tokens(&mut changes, current.as_ref());
+        self.update_record_exact(zone, record_name, record_type, change_tag, changes)
             .await
     }
 

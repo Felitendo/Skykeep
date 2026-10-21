@@ -42,7 +42,13 @@ async fn main() -> Result<()> {
             .unwrap_or_default()
             .iter()
             .filter_map(|x| x.attachment.clone())
-            .map(|a| if std::env::var("FULL").is_ok() { a } else { a.chars().take(4).collect() })
+            .map(|a| {
+                if std::env::var("FULL").is_ok() {
+                    a
+                } else {
+                    a.chars().take(4).collect()
+                }
+            })
             .collect();
         println!(
             "{} | {:30} | deleted {} | folder {} | atts {} | created {} | {:?} | modified {}",

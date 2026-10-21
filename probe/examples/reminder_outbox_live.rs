@@ -65,6 +65,28 @@ async fn main() -> Result<()> {
             completed().await?
         );
         anyhow::ensure!(completed().await?);
+        // Ticked here, the time it was ticked is Apple's own field, as the phone writes it.
+        let rec = zc
+            .lookup_record("Reminders", &guid)
+            .await?
+            .ok_or_else(|| anyhow!("gone"))?;
+        let when = rec
+            .pointer("/fields/CompletionDate/value")
+            .and_then(serde_json::Value::as_i64);
+        let now = jiff::Timestamp::now().as_second();
+        println!(
+            "CompletionDate written: {:?} ({}s ago)",
+            when,
+            when.map_or(-1, |w| now - w / 1000)
+        );
+        anyhow::ensure!(when.is_some_and(|w| (now - w / 1000).abs() < 120));
+        // A queued tick Apple already holds steps aside; an old untick, overtaken by the tick
+        // made since, steps aside; an untick made after Apple's last change goes.
+        let held = r::tick_overtaken(&http, &root, p.clone(), &reminder, true, now).await?;
+        let old = r::tick_overtaken(&http, &root, p.clone(), &reminder, false, 1).await?;
+        let fresh = r::tick_overtaken(&http, &root, p.clone(), &reminder, false, now + 60).await?;
+        println!("overtaken: already held {held}, older than Apple's {old}, newer {fresh}");
+        anyhow::ensure!(held && old && !fresh);
         // Untick then, sent on the change tag the library held before the tick — stale, as the
         // worker's would be until the next pass.
         lib.outbox_push("reminders", &guid, "done", "{\"done\":false,\"at\":1}")?;

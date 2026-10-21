@@ -205,6 +205,10 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     move |library, f| {
                         let (lists, count, _) =
                             quince_icloud::reminders::apply_cloudkit(library, f)?;
+                        // Changes still on their way to Apple stay as made here: without this
+                        // a reminder ticked offline showed open again after every pass, and
+                        // its alert could ring for something already done.
+                        crate::outbox::replay_reminders(library)?;
                         if full {
                             library.mark_full_sync("reminders")?;
                         }
