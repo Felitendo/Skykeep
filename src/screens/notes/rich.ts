@@ -34,6 +34,23 @@ const ATTACHMENT = "￼";
 export const tableCells = new Map<string, string[][]>();
 const LINE_BREAK = " ";
 
+/** A paragraph's settings from the element its toDOM made; nothing set when it is not one. */
+function paragraphAttrs(p: HTMLElement) {
+  const raw = p.getAttribute("data-style");
+  const n = raw === null || raw === "none" ? NaN : Number(raw);
+  const style = Number.isInteger(n) && Object.values(STYLE).includes(n as never) ? n : null;
+  const css = p.getAttribute("style") ?? "";
+  const indent = Number(/--indent:\s*(\d+)/.exec(css)?.[1] ?? 0);
+  const start = Number(/counter-set:\s*nf-num\s+(\d+)/.exec(css)?.[1] ?? NaN);
+  return {
+    style,
+    indent,
+    checked: style === STYLE.checklist ? p.getAttribute("data-checked") === "true" : null,
+    start: style === STYLE.numbered && start > 1 ? start : null,
+    quote: p.getAttribute("data-quote") === "true",
+  };
+}
+
 export const schema = new Schema({
   nodes: {
     doc: { content: "paragraph+" },
@@ -48,7 +65,10 @@ export const schema = new Schema({
         /** A block quote line. */
         quote: { default: false },
       },
-      parseDOM: [{ tag: "p" }],
+      // Read back exactly what toDOM writes, so a copy pasted within Pomander keeps each
+      // line's style, tick, indent and numbering. A `<p>` from anywhere else has none of these
+      // and stays plain body.
+      parseDOM: [{ tag: "p", getAttrs: (d) => paragraphAttrs(d as HTMLElement) }],
       toDOM: (node) => [
         "p",
         {

@@ -550,7 +550,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_folder_set":
           if (window.__driveFolderRefuse) return { ...window.__driveFolder, on: false, problem: window.__driveFolderRefuse };
           return (window.__driveFolder = { on: args.on, path: "/home/test/iCloud Drive", problem: null, waiting: args.on ? { files: 0, sending: 0, failure: null } : null });
-        case "drive_folder_open": (window.__opened ??= []).push("drive"); return null;
+        case "drive_folder_open": if (window.__driveOpenFail) throw window.__driveOpenFail; (window.__opened ??= []).push("drive"); return null;
         case "photos_folder_status": return window.__photosFolder ??= { on: false, path: "/home/test/iCloud Photos", problem: null };
         case "photos_folder_set": return (window.__photosFolder = { on: args.on, path: "/home/test/iCloud Photos", problem: null });
         case "photos_folder_open": (window.__opened ??= []).push("photos"); return null;
@@ -583,6 +583,15 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_thumbnails": return driveFixture ? { "FILE::d": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='60'><rect width='80' height='60' fill='%23eee'/></svg>" } : {};
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
+        // The local copy's room, as settings.rs measures it; clearing takes away only the cached pictures.
+        case "local_storage": return (window.__local ??= { library: 13_800_000, photos: 4_812_000_000, notes: 456_000_000, drive: 24_000, other: 7_400_000, total: 5_289_224_000, clearable: 4_480_000_000 });
+        case "local_storage_clear": {
+          if (window.__clearFail) throw window.__clearFail;
+          const l = (window.__local ??= { library: 13_800_000, photos: 4_812_000_000, notes: 456_000_000, drive: 24_000, other: 7_400_000, total: 5_289_224_000, clearable: 4_480_000_000 });
+          window.__cleared = (window.__cleared ?? 0) + 1;
+          return (window.__local = { ...l, photos: l.photos - (l.clearable - l.notes - 3_000), notes: 0, drive: l.drive - 3_000, total: l.total - l.clearable, clearable: 0 });
+        }
+        case "alerts_shown": return window.__alertsShown ?? true;
         case "diagnostics_save": (window.__diagnostics = (window.__diagnostics ?? 0) + 1); return "/home/user/Downloads/Pomander diagnostics 2026-10-18 20.00.txt";
         case "account_info": return { name: "Asha Rao", email: "asha@example.com", photoContact: window.__mePhoto ?? null, webAccessAllowed: window.__webAccess ?? true, dataProtection: false };
         case "settings_get": return { reminderAlerts: true, eventAlerts: true, ...(window.__settings ?? {}) };
@@ -626,6 +635,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (args.folderId === window.__driveGone) throw "This folder was deleted or moved on another device.";
           return driveItems.length;
         case "drive_download": return "/home/user/Downloads/file.pdf";
+        case "download_reveal": (window.__revealed ??= []).push(args.path); return null;
         case "drive_move": (window.__moves ??= []).push(args); await new Promise((r) => setTimeout(r, 600)); return null;
         case "drive_create_folder": case "drive_rename": (window.__driveNames ??= []).push(args); return null;
         case "drive_delete": return null;
@@ -657,6 +667,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__loginRefuse) throw window.__loginRefuse;
           return (window.__login = { ...(window.__login ?? {}), on: args.on, command: "\"/usr/bin/quince-app\" --background", honoured: window.__login?.honoured ?? true });
         case "account_unsent":   return window.__unsent ?? { changes: 0, files: 0, photos: 0 };
+        // Changes waiting for Apple, and ones it refused: a test sets `window.__outbox`.
+        case "outbox_status":    return window.__outbox ?? { waiting: [], refused: [] };
+        case "outbox_resend": case "outbox_discard": {
+          (window.__outboxCalls ??= []).push([cmd, args.id]);
+          if (window.__outbox) window.__outbox = { ...window.__outbox, refused: window.__outbox.refused.filter((r) => r.id !== args.id) };
+          return null;
+        }
         // One refresh covers every service, so there is one command to stub rather than
         // a pair per screen.
         case "sync_all":
@@ -702,4 +719,19 @@ export async function openScreen(page, name) {
   // Each app's code arrives on its own; the screen is open once it is drawn.
   const root = { Calendar: ".cx", Notes: ".notes", Reminders: ".rx", Contacts: ".contacts", "iCloud Drive": ".drive" }[name];
   if (root) await page.locator(root).first().waitFor({ state: "attached", timeout: 10000 });
+}
+
+/* Answer every yes-or-no confirmation sheet (components/Confirm) by going ahead — a question
+   with several answers is left to the suite — keeping each question's
+   title in window.__asked — what page.on("dialog") did for the browser's own confirm(). */
+export function autoConfirm() {
+  const watch = () => new MutationObserver(() => {
+    const sheet = document.querySelector(".confirm:not([data-answered]):not(:has(.is-stacked))");
+    if (!sheet) return;
+    sheet.setAttribute("data-answered", "");
+    (window.__asked ??= []).push(sheet.querySelector("h2")?.textContent ?? "");
+    sheet.querySelector(".confirm-answer")?.click();
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  if (document.documentElement) watch();
+  else document.addEventListener("DOMContentLoaded", watch);
 }

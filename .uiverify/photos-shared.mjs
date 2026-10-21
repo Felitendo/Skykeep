@@ -34,8 +34,8 @@ ok(await page.evaluate(() => window.__shared.some((a) => a.name === "Beach Trip"
 // Deleted from its menu, after asking.
 await page.locator(".px-albums-page .px-card", { hasText: "Beach Trip" }).click({ button: "right" });
 await page.locator(".row-menu").getByText("Delete Shared Album").click();
-ok(/everyone it is shared with/.test(await page.locator(".px-ask").innerText()), "deleting asks first, saying it goes for everyone");
-await page.locator(".px-ask .is-act").click();
+ok(/everyone it is shared with/.test(await page.locator(".confirm").innerText()), "deleting asks first, saying it goes for everyone");
+await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(250);
 ok(!(await cards()).join().includes("Beach Trip") && !(await page.evaluate(() => window.__shared.some((a) => a.name === "Beach Trip"))), "and it is gone, here and at Apple");
 // One shared with this account cannot be deleted from here.
@@ -49,7 +49,7 @@ await page.getByRole("button", { name: "New Shared Album" }).first().click();
 await page.getByLabel("Album Name").fill("Nope");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(300);
-ok(!(await cards()).join().includes("Nope") && /refused/.test(await page.locator(".notice").innerText().catch(() => "")), "a refusal takes it back and says why");
+ok(!(await cards()).join().includes("Nope") && /refused/.test(await page.locator(".toast.is-error").innerText().catch(() => "")), "a refusal takes it back and says why");
 await page.evaluate(() => { window.__sharedFail = false; });
 
 // Back to the library.

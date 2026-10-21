@@ -21,6 +21,38 @@ export type MenuEntry =
 type Anchor = { x: number; y: number; alignRight: boolean };
 
 /**
+ * Type-select, as every Mac menu and list has it: letters typed in quick succession go to the
+ * line that begins with them; the same letter again steps on through the lines that begin
+ * with it. A pause (a second) starts afresh.
+ *
+ * Returns a function that takes a key and the line now lit, and gives the line to light, or
+ * null when the key is not typing (or nothing matches).
+ */
+export function useTypeSelect(labels: () => string[]) {
+  const typed = useRef({ text: "", at: 0 });
+  return (e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }, from: number): number | null => {
+    if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return null;
+    const now = performance.now();
+    const fresh = now - typed.current.at > 1000;
+    // A space begins nothing; mid-word it is part of what is typed.
+    if (e.key === " " && fresh) return null;
+    typed.current = { text: (fresh ? "" : typed.current.text) + e.key.toLowerCase(), at: now };
+    const text = typed.current.text;
+    const names = labels().map((l) => l.toLowerCase());
+    const n = names.length;
+    // One letter, again and again: the next line after this one that begins with it.
+    const repeat = [...text].every((c) => c === text[0]);
+    const want = repeat ? text[0] : text;
+    const start = repeat ? from + 1 : Math.max(0, from);
+    for (let k = 0; k < n; k++) {
+      const i = (start + k + n) % n;
+      if (names[i].startsWith(want)) return i;
+    }
+    return null;
+  };
+}
+
+/**
  * A menu as macOS draws one: under the ⋯ that opened it or at the pointer for a right-click,
  * kept on screen; arrows to move, Return to choose, Escape or a click elsewhere to leave.
  * A line with a submenu shows ▸ and opens it beside itself on hover, Return or →, to the
@@ -113,6 +145,7 @@ function Panel({
   // Nothing highlighted until the pointer or a key says so, as a Mac menu opens.
   const [active, setActive] = useState(focusFirst ? 0 : -1);
   const [sub, setSub] = useState<{ index: number; byKeyboard: boolean } | null>(null);
+  const typeSelect = useTypeSelect(() => items.map((e) => e.label));
   /**
    * Menu aim, as macOS has it: with a submenu open, a pointer heading into it — inside the
    * triangle from where it just was to the submenu's near edge — may cross other lines
@@ -207,6 +240,11 @@ function Panel({
         tabIndex={-1}
         style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: "hidden" }}
         onMouseEnter={onArrive}
+        // The pointer gone off the menu takes its highlight with it, as on the Mac — unless a
+        // submenu is open from the lit line, which stays lit while it is.
+        onMouseLeave={() => {
+          if (!sub) setActive(-1);
+        }}
         onMouseMove={(e) => {
           last.current = { x: e.clientX, y: e.clientY };
         }}
@@ -217,7 +255,20 @@ function Panel({
             e.preventDefault();
             setActive((a) => (a < 0 ? (by > 0 ? 0 : items.length - 1) : (a + by + items.length) % items.length));
           };
-          if (e.key === "Escape" || e.key === "ArrowLeft") {
+          const typedTo = typeSelect(e, active);
+          if (typedTo !== null) {
+            e.preventDefault();
+            setActive(typedTo);
+          } else if (e.key.length === 1 && e.key !== " ") {
+            // A letter nothing begins with: used up here, as a Mac menu takes it.
+            e.preventDefault();
+          } else if (e.key === "Home" || e.key === "PageUp") {
+            e.preventDefault();
+            setActive(0);
+          } else if (e.key === "End" || e.key === "PageDown") {
+            e.preventDefault();
+            setActive(items.length - 1);
+          } else if (e.key === "Escape" || e.key === "ArrowLeft") {
             e.preventDefault();
             e.stopPropagation();
             onBack();

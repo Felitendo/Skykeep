@@ -54,7 +54,7 @@ ok((await page.getByRole("button", { name: "Favorite", exact: true }).count()) =
 const flags = await page.evaluate(() => window.__flags.map((f) => `${f.id}:${f.flag}:${f.on}`));
 ok(JSON.stringify(flags) === JSON.stringify(["p2:favorite:true", "p2:favorite:false"]), `and each goes to iCloud  ${JSON.stringify(flags)}`);
 await page.getByRole("button", { name: "Delete", exact: true }).click();
-await page.locator(".px-ask .is-act").click();
+await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(300);
 const next = await page.locator(".px-stage .px-shown").first().evaluate((i) => i.getAttribute("data-picture") ?? i.getAttribute("src"));
 ok(/p3|p4/.test(next ?? "") && (await page.locator(".px-tile").count()) === 4, "Delete, once agreed, takes it out and shows the next");
@@ -79,14 +79,14 @@ await page.evaluate(() => { window.__flagFail = true; });
 await page.locator(".px-tile").nth(1).dblclick();
 await page.getByRole("button", { name: "Favorite", exact: true }).click();
 await page.waitForTimeout(300);
-ok((await page.getByRole("button", { name: "Favorite", exact: true }).count()) === 1 && (await page.locator(".notice").count()) === 1,
+ok((await page.getByRole("button", { name: "Favorite", exact: true }).count()) === 1 && (await page.locator(".toast.is-error").count()) === 1,
   "a change iCloud refuses goes back, and says why");
-ok(await page.locator(".notice").evaluate((n) => {
+ok(await page.locator(".toast.is-error").evaluate((n) => {
   const r = n.getBoundingClientRect();
   return n.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
 }), "and says it in front of the open photo, not hidden behind it");
 await page.evaluate(() => { window.__flagFail = false; });
-await page.getByRole("button", { name: "Dismiss" }).click();
+await page.locator(".toast.is-error").getByRole("button", { name: "Dismiss" }).click();
 await page.keyboard.press("Escape");
 // It goes back into its tile first, then is gone.
 await page.waitForTimeout(650);
@@ -168,7 +168,7 @@ ok((await page.locator('.px-tile[aria-selected="true"]').count()) === 0, "a clic
 // Hide, as Photos hides: asked, out of the library, into Hidden (under Utilities), and back.
 await page.locator(".px-tile").nth(1).click({ button: "right" });
 await page.locator(".row-menu").getByText("Hide Photo").click();
-await page.locator(".px-ask .is-act").click();
+await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(300);
 ok((await page.locator(".px-tile").count()) === 4, "Hide Photo takes it out of the library at once");
 await page.locator(".px-source", { hasText: "Hidden" }).click();
@@ -237,13 +237,13 @@ ok((await page.getByRole("button", { name: "Delete All" }).count()) === 1, "with
 await page.locator(".px-tile").first().click();
 ok((await page.locator(".px-word").allInnerTexts()).join() === "Recover,Delete", "with one selected, Recover and Delete");
 await page.locator(".px-word", { hasText: /^Delete$/ }).click();
-const asked = await page.locator(".px-ask").innerText();
-ok((await page.locator(".px-ask .px-ask-symbol").count()) === 1 && (await page.locator(".px-ask button").first().evaluate((b) => b === document.activeElement)),
+const asked = await page.locator(".confirm").innerText();
+ok((await page.locator(".confirm .confirm-symbol").count()) === 1 && (await page.locator(".confirm button").first().evaluate((b) => b === document.activeElement)),
   "asked in a sheet, as icloud.com asks: the trash symbol, Cancel holding the focus");
 await page.keyboard.press("Escape");
-ok((await page.locator(".px-ask").count()) === 0 && (await page.locator(".px-tile").count()) === 1, "Escape cancels: nothing deleted");
+ok((await page.locator(".confirm").count()) === 0 && (await page.locator(".px-tile").count()) === 1, "Escape cancels: nothing deleted");
 await page.locator(".px-word", { hasText: /^Delete$/ }).click();
-await page.locator(".px-ask .is-act").click();
+await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(300);
 ok(/permanently/.test(asked) && /cannot be undone/.test(asked), `Delete asks first, in Photos' words  "${asked.split("\n")[0]}"`);
 ok((await page.locator(".px-tile").count()) === 0 && (await page.evaluate(() => window.__flags.at(-1).flag)) === "expunged",
@@ -292,9 +292,7 @@ ok((await page.locator(".px-up-title").innerText()) === "2 of 3 Items Not Upload
 ok(/can’t add this kind/.test(await panel.innerText()), "and why");
 await panel.getByRole("button", { name: "Done" }).click();
 await page.waitForTimeout(60);
-ok(/is-leaving/.test((await panel.getAttribute("class")) ?? ""), "Done slides it away");
-await page.waitForTimeout(400);
-ok((await page.locator(".px-up").count()) === 0, "and it is gone");
+ok((await page.locator(".px-up").count()) === 0, "Done puts it away at once");
 // Stop Upload, for a batch still going.
 await page.evaluate(() => { window.__pick = ["/home/test/Pictures/ferry.jpg"]; });
 await page.getByRole("button", { name: "Add Photos" }).click();

@@ -3,12 +3,12 @@
  * for how many across; a photo opens on a dark stage with the arrows to go through them. Everything draws from the local library at once; thumbnails come
  * from the disk cache and are fetched once.
  */
-import { useActiveRef } from "../lib/screen";
+import { useActiveRef, useScreenActive } from "../lib/screen";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, ChevronRight, Ellipsis, GalleryThumbnails, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Search as SearchIcon, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Ellipsis, GalleryThumbnails, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -22,13 +22,16 @@ import {
   turnStyle,
   type Turn,
 } from "../lib/ipc";
-import { useSync } from "../lib/sync";
-import { Notice } from "../components/Notice";
+import { Arriving, EmptyState } from "../components/EmptyState";
+import { SearchField } from "../components/SearchField";
+import { PaneTitle } from "../components/PaneTitle";
+import { useArriving, useSync } from "../lib/sync";
+import { toast, toastSaved, useErrorToast, useToastClearance } from "../components/Toast";
 import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
 import { Slideshow } from "./photos/Slideshow";
-import { useAsk } from "./photos/Ask";
+import { useConfirm } from "../components/Confirm";
 import { VideoPlayer } from "./photos/VideoPlayer";
 import { JumpTo, type MonthCover } from "./photos/JumpTo";
 import { SharedAlbums } from "./photos/SharedAlbums";
@@ -120,6 +123,40 @@ const clock = (s: number | null) => {
   const m = Math.floor(s / 60);
   return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 };
+
+/** Whether two reads of one photo are the same in every field. */
+function samePhoto(a: Photo, b: Photo): boolean {
+  for (const k in b) {
+    const x = (a as Record<string, unknown>)[k];
+    const y = (b as Record<string, unknown>)[k];
+    if (x === y) continue;
+    if (Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => v === y[i])) continue;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * A fresh read laid over the last one: each photo unchanged keeps the object it had, and a list
+ * unchanged throughout is the last list itself. Every pass, and each service landing in one,
+ * reads the library again; a read that came back new objects for the same photos drew every
+ * month and every tile of the grid again for nothing.
+ */
+function keepSame(before: Photo[] | null, read: Photo[]): Photo[] {
+  if (!before || before.length === 0) return read;
+  const had = new Map(before.map((p) => [p.id, p]));
+  let same = before.length === read.length;
+  const out = read.map((p, i) => {
+    const old = had.get(p.id);
+    if (old && samePhoto(old, p)) {
+      if (before[i] !== old) same = false;
+      return old;
+    }
+    same = false;
+    return p;
+  });
+  return same ? before : out;
+}
 
 /** A photo's frame when fitted: its own shape, as large as the square cell lets it be. */
 const fitFrame = (p: Photo): React.CSSProperties =>
@@ -272,6 +309,29 @@ const Tile = memo(function Tile({
   act: Acts;
 }) {
   const born = useRef(performance.now());
+  // The thumbnail goes under the tile's picture only when that picture cannot be made, or is
+  // still not here after a long moment (made from Apple, not the disk). Nearly every picture is made ahead (photos_prepare) and lands at once, and
+  // the thumbnail asked for alongside it doubled each tile's requests — every one a trip through
+  // the webview's scheme handler — and its bytes, ~69 KB of thumbnail against ~19 KB of
+  // picture, decoded and then covered. Set on the element itself: no tile draws again for it.
+  const pic = useRef<HTMLSpanElement | null>(null);
+  const landed = useRef(false);
+  const under = useCallback(() => {
+    if (!landed.current && pic.current) pic.current.style.backgroundImage = `url("${pictureSrc(photo.id, "thumb")}")`;
+  }, [photo.id]);
+  const src = tileSrc(photo, cell, fit);
+  const first = useRef(true);
+  useEffect(() => {
+    // A new size asked for (the window resized, zoomed): the thumbnail may be wanted again.
+    if (!first.current) landed.current = false;
+    first.current = false;
+    if (landed.current) return undefined;
+    // Long enough that a grid filling in from the disk never asks for it — a full grid's worth
+    // of pictures through the scheme handler at once takes a while, and thumbnails asked for
+    // then only queued behind them — short enough to cover a picture made from the network.
+    const t = window.setTimeout(under, 1500);
+    return () => window.clearTimeout(t);
+  }, [src, under]);
   return (
     <button
       role="listitem"
@@ -312,15 +372,16 @@ const Tile = memo(function Tile({
       {/* The picture's own frame: the whole tile when squares, the photo's own shape when
           fitted — what the badges and the selection sit on. */}
       <span
+        ref={pic}
         className="px-pic"
-        // The thumbnail underneath while the picture made for this tile's size comes.
-        style={{ ...(fit && photo.width && photo.height ? fitFrame(photo) : {}), backgroundImage: `url("${pictureSrc(photo.id, "thumb")}")` }}
+        // The thumbnail underneath while the picture made for this tile's size comes (see under).
+        style={fit && photo.width && photo.height ? fitFrame(photo) : undefined}
       >
         {/* Fetched as soon as its month is built, well ahead of the screen — not left to the
             engine's own lazy margin, which a fast scroll outran — and made the size it is
             drawn at, so the engine never shrinks it. */}
         <img
-          src={tileSrc(photo, cell, fit)}
+          src={src}
           alt=""
           decoding="async"
           draggable={false}
@@ -328,8 +389,10 @@ const Tile = memo(function Tile({
           // its way: it fades in over the thumbnail rather than snapping from soft to sharp.
           // Never made: the thumbnail stays.
           onLoad={(e) => {
+            landed.current = true;
             e.currentTarget.dataset.in = performance.now() - born.current > 80 ? "fade" : "now";
           }}
+          onError={under}
         />
         {photo.kind === "video" && (
           <span className="px-badge px-duration">
@@ -489,6 +552,7 @@ const Month = memo(function Month({
 
 export function PhotosView() {
   const { revision } = useSync();
+  const arriving = useArriving("photos");
   const [view, setView] = useState<PhotoView>("library");
   /** An album open instead of a view. */
   const [album, setAlbum] = useState<PhotoAlbum | null>(null);
@@ -525,6 +589,7 @@ export function PhotosView() {
   const [inBurst, setInBurst] = useState<{ from: string; count: number } | null>(null);
   const [counts, setCounts] = useState<Partial<Record<PhotoView, number>>>({});
   const [error, setError] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
   const [zoom, setZoom] = useState(1);
   // Squares that fill each cell, or each photo whole in its own shape — icloud.com's toggle,
   // kept on this machine.
@@ -546,7 +611,6 @@ export function PhotosView() {
     });
   const [open, setOpen] = useState<number | null>(null);
   const [info, setInfo] = useState(false);
-  const [saved, setSaved] = useState<string | null>(null);
   /** A slideshow playing: what it shows, and where it begins. */
   const [show, setShow] = useState<{ list: Photo[]; start: number } | null>(null);
   /** Photos selected in the grid, as on a Mac: a click selects, a double-click opens. */
@@ -614,16 +678,25 @@ export function PhotosView() {
       api.photosAlbums(),
     ]);
     if (mine !== reads.current) return;
-    setPhotos(list);
-    setDrawn({ view, album, query: searching });
+    setPhotos((before) => keepSame(before, list));
+    // The same view read again is the same view drawn: a new object here built every month
+    // afresh and faded the grid in again at each landing.
+    setDrawn((d) => (d.view === view && d.album === album && d.query === searching ? d : { view, album, query: searching }));
     setCounts(Object.fromEntries(c));
     setAlbums(a);
     // An album deleted elsewhere is not left open, empty.
     if (album && !a.some(([x]) => x.id === album.id)) setAlbum(null);
   }, [view, album, searching]);
+  // A pass that lands while another screen is in front is read when this one comes back, once,
+  // not at every landing: a screen out of sight is still mounted (lib/screen), and each pass
+  // lands a service at a time.
+  const active = useScreenActive();
+  const seen = useRef(revision);
+  if (active) seen.current = revision;
+  const due = seen.current;
   useEffect(() => {
     read().catch((e) => setError(messageOf(e)));
-  }, [read, revision]);
+  }, [read, due]);
 
   // Grouped by month, as the library reads; an album is one grid in its own order.
   const months = useMemo(() => {
@@ -755,6 +828,17 @@ export function PhotosView() {
   // as large as fits, never past 1.5× its own pixels, its shape exact. Known before it loads,
   // so its thumbnail fills that box at once and the sharper picture lands without anything
   // moving; and a window being resized redraws it every frame with no script in the way.
+  // A photo's shape as its picture turned out, where that is not the shape Apple records:
+  // Apple keeps the sensor's width and height, before the turn the camera wrote into the file,
+  // and an engine that honours that turn (WebView2 does) drew an upright photo inside a frame
+  // lying on its side, with the thumbnail painted under it showing at both sides, stretched.
+  const [trueShape, setTrueShape] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const learnShape = (p: Photo, img: HTMLImageElement) => {
+    if (!img.naturalWidth || !img.naturalHeight || !p.width || !p.height) return;
+    const seen = img.naturalWidth / img.naturalHeight;
+    if (Math.abs(seen - p.width / p.height) < 0.02 || trueShape.get(p.id) === seen) return;
+    setTrueShape((was) => new Map(was).set(p.id, seen));
+  };
   const fitted = (p: Photo): React.CSSProperties => {
     // The grid's thumbnail, already decoded, painted under the picture: never a black stage.
     const under = { backgroundImage: `url("${pictureSrc(p.id, "thumb")}")` };
@@ -762,11 +846,14 @@ export function PhotosView() {
     // Both sides set, each the smaller of the room across and the room down in the photo's own
     // proportion: WebKit sized a replaced image's height from its width alone, ignoring
     // aspect-ratio, and drew every photo square.
-    const r = (p.width / p.height).toFixed(6);
+    const ratio = trueShape.get(p.id) ?? p.width / p.height;
+    const r = ratio.toFixed(6);
+    const long = Math.max(p.width, p.height) * 1.5;
+    const [w, h] = ratio >= 1 ? [long, long / ratio] : [long * ratio, long];
     return {
       ...under,
-      width: `min(100cqw, ${r} * 100cqh, ${Math.round(p.width * 1.5)}px)`,
-      height: `min(100cqw / ${r}, 100cqh, ${Math.round(p.height * 1.5)}px)`,
+      width: `min(100cqw, ${r} * 100cqh, ${Math.round(w)}px)`,
+      height: `min(100cqw / ${r}, 100cqh, ${Math.round(h)}px)`,
       maxWidth: "none",
       maxHeight: "none",
     };
@@ -951,6 +1038,8 @@ export function PhotosView() {
       }
       return !v;
     });
+  // A toast says its piece above the filmstrip, never on it.
+  useToastClearance(open !== null && (photos?.length ?? 0) > 1 && (!fullscreen || thumbs) ? (fullscreen ? 52 : 70) : 0);
   const [barUp, setBarUp] = useState(true);
   const barTimer = useRef<number | undefined>(undefined);
   const fullBar = useRef<HTMLElement | null>(null);
@@ -1145,7 +1234,7 @@ export function PhotosView() {
    * Favorite, Delete and Recover show at once, as on the phone; Apple's answer only matters if
    * it refuses, which puts the photo back as it was and says why.
    */
-  const [ask, asking] = useAsk();
+  const [ask, asking] = useConfirm();
   const change = (p: Photo, flag: Flag, on: boolean) => changeAll([p], flag, on);
   const changeAll = async (list: Photo[], flag: Flag, on: boolean) => {
     if (list.length === 0) return;
@@ -1295,7 +1384,7 @@ export function PhotosView() {
     setAlbums((list) => list.map((x) => (x[0].id === a.id ? [x[0], x[1] + ids.length] : x)));
     try {
       await api.photosAlbumAdd(a.id, ids);
-      setSaved(ids.length === 1 ? `Added to ${a.name}` : `${ids.length} added to ${a.name}`);
+      toast({ message: ids.length === 1 ? `Added to ${a.name}` : `${ids.length} added to ${a.name}`, tone: "done" });
       read().catch(() => {});
     } catch (e) {
       setAlbums(before);
@@ -1510,7 +1599,7 @@ export function PhotosView() {
   const albumEntries = (ids: string[]): MenuEntry[] => [
     ...albums.filter(([a]) => !a.folder && a.id !== album?.id && !a.id.startsWith("new:")).map(([a]) => ({ label: a.name, run: () => void addTo(a, ids) })),
     ...(albums.length ? [null] : []),
-    { label: "New Album…", run: () => setNaming({ id: null, then: ids, draft: "" }) },
+    { label: "New Album", run: () => setNaming({ id: null, then: ids, draft: "" }) },
   ];
 
   const photoMenu = (p: Photo, at: { x: number; y: number; alignRight: boolean }) => {
@@ -1537,7 +1626,7 @@ export function PhotosView() {
                 { label: anyPlain ? "Favorite" : "Unfavorite", run: () => void changeAll(group, "favorite", anyPlain) },
                 null,
                 { label: `Download ${n} Items`, run: () => void downloadAs(group, "originals") },
-                { label: "More Download Options…", run: () => setOptions(group) },
+                { label: "More Download Options", run: () => setOptions(group) },
                 null,
                 { label: "Start Slideshow", run: () => startShow(p) },
                 { label: "Add to Album", submenu: albumEntries(group.map((x) => x.id)) },
@@ -1562,7 +1651,7 @@ export function PhotosView() {
         : [
             { label: p.favorite ? "Unfavorite" : "Favorite", run: () => void change(p, "favorite", !p.favorite) },
             { label: "Download", run: () => void download(p) },
-            { label: "More Download Options…", run: () => setOptions([p]) },
+            { label: "More Download Options", run: () => setOptions([p]) },
             { label: "Start Slideshow", run: () => startShow(p) },
             null,
             { label: "Add to Album", submenu: albumEntries([p.id]) },
@@ -1672,7 +1761,7 @@ export function PhotosView() {
 
   const nameField = (
     <input
-      className="px-source px-naming"
+      className="field px-naming"
       aria-label="Album name"
       autoFocus
       value={naming?.draft ?? ""}
@@ -1766,7 +1855,7 @@ export function PhotosView() {
   const download = async (p: Photo) => {
     try {
       const where = await api.photoDownload(p.id);
-      setSaved(`Saved to ${where}`);
+      toastSaved(where);
     } catch (e) {
       setError(messageOf(e));
     }
@@ -1794,7 +1883,7 @@ export function PhotosView() {
     let last = "";
     try {
       for (const p of list) last = await api.photoDownload(p.id, want);
-      setSaved(list.length === 1 ? `Saved to ${last}` : `${list.length} saved to Downloads`);
+      toastSaved(last, list.length);
     } catch (e) {
       setError(messageOf(e));
     }
@@ -2121,7 +2210,7 @@ export function PhotosView() {
               <ChevronRight className="px-chevron" size={12} strokeWidth={2.4} aria-hidden="true" />
             </button>
             <button
-              className="px-source px-parent"
+              className="source-row px-source px-parent"
               aria-current={albumsPage && folderPage === a.id}
               onClick={() => openFolder(a.id)}
               onDoubleClick={() => setNaming({ id: a.id, then: [], draft: a.name })}
@@ -2142,7 +2231,7 @@ export function PhotosView() {
               }}
             >
               <FolderIcon size={16} strokeWidth={1.8} className="px-glyph" aria-hidden="true" />
-              <span className="px-label">{a.name}</span>
+              <span className="source-name px-label">{a.name}</span>
             </button>
           </div>,
         );
@@ -2152,7 +2241,7 @@ export function PhotosView() {
       rows.push(
         <button
           key={a.id}
-          className="px-source px-depth"
+          className="source-row px-source px-depth"
           style={indent}
           aria-current={!albumsPage && album?.id === a.id}
           onClick={() => {
@@ -2183,8 +2272,8 @@ export function PhotosView() {
           ) : (
             <AlbumGlyph />
           )}
-          <span className="px-label">{a.name}</span>
-          {n ? <span className="px-count">{n}</span> : null}
+          <span className="source-name px-label">{a.name}</span>
+          {n ? <span className="count px-count">{n}</span> : null}
         </button>,
       );
     }
@@ -2194,7 +2283,7 @@ export function PhotosView() {
   const source = (v: (typeof VIEWS)[number]) => (
     <button
       key={v.key}
-      className="px-source"
+      className="source-row px-source"
       aria-current={!album && !albumsPage && !sharedPage && view === v.key}
       onClick={() => {
         setView(v.key);
@@ -2206,26 +2295,26 @@ export function PhotosView() {
       }}
     >
       <v.Icon className="px-glyph" size={16} strokeWidth={1.8} aria-hidden="true" />
-      <span className="px-label">{v.label}</span>
-      {counts[v.key] ? <span className="px-count">{counts[v.key]}</span> : null}
+      <span className="source-name px-label">{v.label}</span>
+      {counts[v.key] ? <span className="count px-count">{counts[v.key]}</span> : null}
     </button>
   );
 
   return (
     <div className={`px${dropping ? " is-dropping" : ""}`} data-drop-label={album ? `Add to ${album.name}` : "Add to Library"}>
       <aside className="px-side" aria-label="Photos">
-        <p className="px-side-heading">Photos</p>
+        <p className="side-heading px-side-heading">Photos</p>
         {VIEWS.map(source)}
         {/* Collections, as icloud.com lists them: Albums and Media Types open to what they
             hold, then Rated, Hidden and Recently Deleted. */}
-        <p className="px-side-heading px-side-gap">Collections</p>
+        <p className="side-heading px-side-heading px-side-gap">Collections</p>
         <div className="px-parent-row">
           {/* The chevron opens the list here; the row itself opens the Albums page. */}
           <button className="px-twisty" aria-label={branches.albums ? "Hide Albums" : "Show Albums"} aria-expanded={branches.albums} onClick={() => branch("albums")}>
             <ChevronRight className="px-chevron" size={12} strokeWidth={2.4} aria-hidden="true" />
           </button>
           <button
-            className="px-source px-parent"
+            className="source-row px-source px-parent"
             aria-current={albumsPage && folderPage === null}
             onClick={() => {
               setAlbumsPage(true);
@@ -2236,9 +2325,9 @@ export function PhotosView() {
             }}
           >
             <AlbumGlyph />
-            <span className="px-label">Albums</span>
+            <span className="source-name px-label">Albums</span>
           </button>
-          <button className="px-side-add" aria-label="New Album" title="New Album or Folder" aria-haspopup="menu" onClick={(e) => {
+          <button className="icon-button small px-side-add" aria-label="New Album" title="New Album or Folder" aria-haspopup="menu" onClick={(e) => {
             const b = e.currentTarget.getBoundingClientRect();
             newIn(null, { x: b.left, y: b.bottom + 4, alignRight: false });
           }}>
@@ -2250,10 +2339,10 @@ export function PhotosView() {
             {albumRows(null, 0)}
           </div>
         )}
-        <button className="px-source px-parent" aria-expanded={branches.media} onClick={() => branch("media")}>
+        <button className="source-row px-source px-parent" aria-expanded={branches.media} onClick={() => branch("media")}>
           <ChevronRight className="px-chevron" size={12} strokeWidth={2.4} aria-hidden="true" />
           <Layers size={16} strokeWidth={1.8} className="px-glyph" aria-hidden="true" />
-          <span className="px-label">Media Types</span>
+          <span className="source-name px-label">Media Types</span>
         </button>
         {branches.media && (
           <div className="px-children" role="group" aria-label="Media Types">
@@ -2263,9 +2352,9 @@ export function PhotosView() {
         )}
         {UTILITIES.map(source)}
         {/* Sharing, as icloud.com lists it: the shared albums this account has made or joined. */}
-        <p className="px-side-heading px-side-gap">Sharing</p>
+        <p className="side-heading px-side-heading px-side-gap">Sharing</p>
         <button
-          className="px-source"
+          className="source-row px-source"
           aria-current={sharedPage}
           onClick={() => {
             setSharedPage(true);
@@ -2275,7 +2364,7 @@ export function PhotosView() {
           }}
         >
           <Users className="px-glyph" size={16} strokeWidth={1.8} aria-hidden="true" />
-          <span className="px-label">Shared Albums</span>
+          <span className="source-name px-label">Shared Albums</span>
         </button>
       </aside>
 
@@ -2292,19 +2381,18 @@ export function PhotosView() {
                 <>
                   <header className="px-albums-head">
                     {folder && (
-                      <div className="px-capsule">
-                        <button className="px-cap" aria-label="Back" title="Back" onClick={() => openFolder(folder.parent ?? null)}>
+                      <div className="toolbar-group">
+                        <button className="tool px-cap" aria-label="Back" title="Back" onClick={() => openFolder(folder.parent ?? null)}>
                           <ChevronLeft size={17} strokeWidth={2} aria-hidden="true" />
                         </button>
                       </div>
                     )}
-                    <div className="px-heading">
-                      <h1>{folder ? folder.name : "Albums"}</h1>
-                      <p className="px-span">{here.length === 1 ? "1 Item" : `${here.length} Items`}</p>
-                    </div>
-                    <div className="px-capsule">
+                    <PaneTitle className="px-heading" countClassName="px-span" count={here.length === 1 ? "1 Item" : `${here.length} Items`}>
+                      {folder ? folder.name : "Albums"}
+                    </PaneTitle>
+                    <div className="toolbar-group">
                       <button
-                        className="px-cap"
+                        className="tool px-cap"
                         aria-label="New Album or Folder"
                         title="New Album or Folder"
                         aria-haspopup="menu"
@@ -2318,9 +2406,9 @@ export function PhotosView() {
                     </div>
                   </header>
                   {here.length === 0 ? (
-                    <p className="px-empty">
+                    <EmptyState className="px-empty">
                       {folder ? "This folder is empty. Make an album in it with +." : "No albums yet. Make one with +, then add photos to it from their menu or by dragging them onto it."}
-                    </p>
+                    </EmptyState>
                   ) : (
                     <div className="px-cards" role="list">
                       {here.map(([a, n, cover]) => (
@@ -2379,42 +2467,43 @@ export function PhotosView() {
         {/* As in Photos on macOS 26: the title and the controls float over the library, which
             scrolls beneath them and fades out at the top edge. */}
         <header className="px-bar" ref={bar}>
-          <div className="px-heading">
-            <h1>{title}</h1>
-            {selected.length > 0 ? (
-              <p className="px-span px-picked">{pickedWords(selected)}</p>
-            ) : (
-              drawn.query ? (
-                <p className="px-span">{photos?.length === 1 ? "1 Result" : `${(photos?.length ?? 0).toLocaleString()} Results`}</p>
-              ) : (
-                (here ?? span) && <p className="px-span">{here ?? span}</p>
-              )
-            )}
-          </div>
+          <PaneTitle
+            className="px-heading"
+            countClassName="px-span"
+            count={
+              selected.length > 0
+                ? pickedWords(selected)
+                : drawn.query
+                  ? photos?.length === 1 ? "1 Result" : `${(photos?.length ?? 0).toLocaleString()} Results`
+                  : (here ?? span) || undefined
+            }
+          >
+            {title}
+          </PaneTitle>
           <div className="px-tools">
           {view === "recentlyDeleted" && !album && photos && photos.length > 0 && (
             // Recently Deleted's own toolbar, in Photos' words: Recover and Delete for what is
             // selected, Delete All when nothing is.
-            <div className="px-capsule px-words">
+            <div className="toolbar-group px-words">
               {selected.length > 0 ? (
                 <>
-                  <button className="px-word" onClick={() => void changeAll(selected, "deleted", false)}>
+                  <button className="tool has-label is-accent px-word" onClick={() => void changeAll(selected, "deleted", false)}>
                     Recover
                   </button>
-                  <button className="px-word is-danger" onClick={() => void changeAll(selected, "expunged", true)}>
+                  <button className="tool has-label danger px-word" onClick={() => void changeAll(selected, "expunged", true)}>
                     Delete
                   </button>
                 </>
               ) : (
-                <button className="px-word is-danger" onClick={() => void changeAll(photos, "expunged", true)}>
+                <button className="tool has-label danger px-word" onClick={() => void changeAll(photos, "expunged", true)}>
                   Delete All
                 </button>
               )}
             </div>
           )}
-          <div className="px-capsule">
+          <div className="toolbar-group">
             <button
-              className="px-cap is-glyph-state"
+              className="tool px-cap is-glyph-state"
               aria-label={fit ? "Show Square Photos" : "Show Whole Photos"}
               aria-pressed={fit}
               title={fit ? "Square photos" : "Whole photos"}
@@ -2424,9 +2513,9 @@ export function PhotosView() {
             </button>
           </div>
           {sort && (
-            <div className="px-capsule">
+            <div className="toolbar-group">
               <button
-                className="px-cap"
+                className="tool px-cap"
                 aria-label="Sort"
                 aria-haspopup="menu"
                 title="Sort"
@@ -2449,9 +2538,9 @@ export function PhotosView() {
             </div>
           )}
           {monthCovers.length > 1 && (
-            <div className="px-capsule">
+            <div className="toolbar-group">
               <button
-                className="px-cap"
+                className="tool px-cap"
                 aria-label="Go to a Month"
                 aria-haspopup="dialog"
                 aria-expanded={jumping !== null}
@@ -2463,56 +2552,47 @@ export function PhotosView() {
             </div>
           )}
           {jumping && <JumpTo months={monthCovers} at={jumping} current={here ?? monthCovers[0]?.label ?? null} onPick={goToMonth} onClose={() => setJumping(null)} />}
-          <div className="px-capsule" role="group" aria-label="Zoom">
-            <button className="px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
+          <div className="toolbar-group" role="group" aria-label="Zoom">
+            <button className="tool px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
               <Minus size={15} strokeWidth={2.2} aria-hidden="true" />
             </button>
-            <button className="px-cap" aria-label="Zoom In" title="Zoom In (Ctrl +)" disabled={zoom === ACROSS.length - 1} onClick={() => setZoom((z) => Math.min(ACROSS.length - 1, z + 1))}>
+            <button className="tool px-cap" aria-label="Zoom In" title="Zoom In (Ctrl +)" disabled={zoom === ACROSS.length - 1} onClick={() => setZoom((z) => Math.min(ACROSS.length - 1, z + 1))}>
               <Plus size={15} strokeWidth={2.2} aria-hidden="true" />
             </button>
           </div>
-          <div className="px-capsule">
-            <button className="px-cap px-add" onClick={() => void choose()} title="Add photos and videos" aria-label="Add Photos">
+          <div className="toolbar-group">
+            <button className="tool px-cap px-add" onClick={() => void choose()} title="Add photos and videos" aria-label="Add Photos">
               <ImagePlus size={16} strokeWidth={1.9} aria-hidden="true" />
             </button>
           </div>
           {/* Search, as icloud.com's toolbar has it: names, titles, captions, keywords, years and
               months, from the library on this machine — nothing typed leaves it. */}
-          <label className="px-capsule px-search">
-            <SearchIcon size={15} strokeWidth={2} aria-hidden="true" />
-            <input
-              type="search"
-              aria-label="Search Photos"
-              placeholder="Search Photos"
-              value={query}
-              spellCheck={false}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  endSearch();
-                  e.currentTarget.blur();
-                }
-              }}
-            />
-            {query && (
-              <button className="px-search-clear" aria-label="Clear Search" onClick={endSearch}>
-                <X size={11} strokeWidth={3} aria-hidden="true" />
-              </button>
-            )}
-          </label>
+          <SearchField
+            inToolbar
+            className="px-search"
+            aria-label="Search Photos"
+            placeholder="Search Photos"
+            value={query}
+            onChange={setQuery}
+            onClear={endSearch}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                endSearch();
+                e.currentTarget.blur();
+              }
+            }}
+          />
           </div>
         </header>
 
-        {error && (
-          <div className="px-notice">
-            <Notice message={error} onDismiss={() => setError(null)} />
-          </div>
-        )}
 
-        {photos && photos.length === 0 && (
-          <p className="px-empty">
+        {photos && photos.length === 0 && !drawn.query && (
+          <Arriving service="photos" what="photos" className="px-empty" />
+        )}
+        {photos && photos.length === 0 && !(arriving && !drawn.query) && (
+          <EmptyState className="px-empty">
             {drawn.query
               ? `No photos match “${drawn.query}”. Search finds names, titles, captions, keywords, years and months.`
               : album
@@ -2522,7 +2602,7 @@ export function PhotosView() {
               : view === "favorites"
                 ? "Mark a photo with the heart and it shows here."
                 : "No photos here yet."}
-          </p>
+          </EmptyState>
         )}
 
         <div
@@ -2683,12 +2763,12 @@ export function PhotosView() {
             </header>
             ) : (
             <header key="bar" className="px-viewer-bar">
-              <div className="px-capsule">
-                <button className="px-cap" aria-label="Close" title="Close (Esc)" onClick={close}>
+              <div className="toolbar-group">
+                <button className="tool px-cap" aria-label="Close" title="Close (Esc)" onClick={close}>
                   <X size={17} strokeWidth={2} />
                 </button>
                 <button
-                  className="px-cap"
+                  className="tool px-cap"
                   aria-label={fullscreen ? "Exit Full Screen" : "Enter Full Screen"}
                   aria-pressed={fullscreen}
                   title={fullscreen ? "Exit Full Screen" : "Enter Full Screen"}
@@ -2698,20 +2778,20 @@ export function PhotosView() {
                 </button>
               </div>
               {when}
-              <div className="px-capsule">
+              <div className="toolbar-group">
               {view === "recentlyDeleted" && !album ? (
                 <>
-                  <button className="px-cap" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
+                  <button className="tool px-cap" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
                     <RotateCcw size={17} />
                   </button>
-                  <button className="px-cap" aria-label="Delete Permanently" title="Delete permanently (Delete)" onClick={() => void change(shown, "expunged", true)}>
+                  <button className="tool px-cap" aria-label="Delete Permanently" title="Delete permanently (Delete)" onClick={() => void change(shown, "expunged", true)}>
                     <Trash2 size={17} />
                   </button>
                 </>
               ) : (
                 <>
                   <button
-                    className="px-cap"
+                    className="tool px-cap"
                     aria-label={shown.favorite ? "Unfavorite" : "Favorite"}
                     aria-pressed={shown.favorite}
                     title={shown.favorite ? "Unfavorite (.)" : "Favorite (.)"}
@@ -2720,7 +2800,7 @@ export function PhotosView() {
                     <Heart size={17} fill={shown.favorite ? "currentColor" : "none"} />
                   </button>
                   <button
-                    className="px-cap"
+                    className="tool px-cap"
                     aria-label="Add to Album"
                     aria-haspopup="menu"
                     title="Add to Album"
@@ -2732,25 +2812,25 @@ export function PhotosView() {
                     <CopyPlus size={17} />
                   </button>
                   {album ? (
-                    <button className="px-cap" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown])}>
+                    <button className="tool px-cap" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown])}>
                       <CopyMinus size={17} />
                     </button>
                   ) : (
-                    <button className="px-cap" aria-label="Delete" title="Delete (Delete)" onClick={() => void change(shown, "deleted", true)}>
+                    <button className="tool px-cap" aria-label="Delete" title="Delete (Delete)" onClick={() => void change(shown, "deleted", true)}>
                       <Trash2 size={17} />
                     </button>
                   )}
                 </>
               )}
               </div>
-              <div className="px-capsule">
-                <button className="px-cap" aria-label="Start Slideshow" title="Start Slideshow" onClick={() => startShow(shown)}>
+              <div className="toolbar-group">
+                <button className="tool px-cap" aria-label="Start Slideshow" title="Start Slideshow" onClick={() => startShow(shown)}>
                   <MonitorPlay size={17} />
                 </button>
-                <button className="px-cap" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
+                <button className="tool px-cap" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
                   <Download size={17} />
                 </button>
-                <button className="px-cap" aria-label="Info" aria-pressed={info} title="Info (I)" onClick={() => setInfo((v) => !v)}>
+                <button className="tool px-cap" aria-label="Info" aria-pressed={info} title="Info (I)" onClick={() => setInfo((v) => !v)}>
                   <Info size={17} />
                 </button>
               </div>
@@ -2842,6 +2922,7 @@ export function PhotosView() {
                     onLoad={(e) => {
                       const img = e.currentTarget;
                       const url = viewSrc(shown);
+                      learnShape(shown, img);
                       const done = () => {
                         decoded.add(url);
                         painted.current = shown;
@@ -3075,11 +3156,6 @@ export function PhotosView() {
           </div>
         )}
       </section>
-      {saved && (
-        <p className="drive-saved px-saved" role="status" onClick={() => setSaved(null)}>
-          {saved}
-        </p>
-      )}
       {menu && <RowMenu at={menu.at} entries={menu.entries} onClose={() => setMenu(null)} />}
       {asking}
       {/* Drawn at the top of the page: inside the screen, whose content moves by a transform,

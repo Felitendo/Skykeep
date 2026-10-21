@@ -33,13 +33,43 @@ export function fadeIn(el: HTMLElement | null, { from = 0, duration = 150 }: { f
   running.set(el, requestAnimationFrame(step));
 }
 
+/** The same fade the other way, then `done` — for something small leaving, as a toast. */
+export function fadeOut(el: HTMLElement | null, done: () => void, duration = 120) {
+  if (!el || (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) {
+    done();
+    return;
+  }
+  cancelAnimationFrame(running.get(el) ?? 0);
+  // Gone on time even where frames are not drawn (a window out of sight draws none).
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    running.delete(el);
+    done();
+  };
+  window.setTimeout(finish, duration + 250);
+  const start = performance.now();
+  const step = (now: number) => {
+    const t = Math.min(1, (now - start) / duration);
+    // Ease in: gathering pace as it goes, so the end is not watched.
+    el.style.opacity = String(1 - t * t);
+    if (t >= 1) {
+      finish();
+      return;
+    }
+    running.set(el, requestAnimationFrame(step));
+  };
+  running.set(el, requestAnimationFrame(step));
+}
+
 /**
  * Every sheet, as it is added anywhere in the app, fades in this way — set before the first frame
  * is painted (a mutation observer runs before painting), so none shows whole for a frame first.
  * The full-window dims behind them simply appear: a large surface is never animated.
  */
 export function fadeSheetsIn() {
-  const sheets = ".modal-sheet, .px-sheet";
+  const sheets = ".modal-sheet";
   new MutationObserver((changes) => {
     for (const change of changes) {
       for (const node of change.addedNodes) {

@@ -38,9 +38,9 @@ export function AdjustDate({ photo, onSave, onClose }: { photo: Photo; onSave: (
   const changed = next !== null && next !== photo.takenAt && next > -2_208_988_800 && next < 253_402_300_800;
   const shown = new Date(photo.takenAt * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
   return (
-    <div className="px-sheet-scrim" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-veil" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <form
-        className="px-sheet"
+        className="modal-sheet px-sheet"
         role="dialog"
         aria-modal="true"
         aria-label="Adjust Date and Time"
@@ -49,7 +49,7 @@ export function AdjustDate({ photo, onSave, onClose }: { photo: Photo; onSave: (
           if (changed && next !== null) onSave(next);
         }}
       >
-        <button type="button" className="px-sheet-x" aria-label="Close" onClick={onClose}>
+        <button type="button" className="icon-button small round sheet-close" aria-label="Close" onClick={onClose}>
           <X size={16} strokeWidth={2.2} aria-hidden="true" />
         </button>
         <h2>Adjust Date and Time</h2>
@@ -63,7 +63,7 @@ export function AdjustDate({ photo, onSave, onClose }: { photo: Photo; onSave: (
           <label htmlFor="px-adjusted">Adjusted:</label>
           <input
             id="px-adjusted"
-            className="px-date-field"
+            className="field px-date-field"
             type="datetime-local"
             step={1}
             value={value}
@@ -71,11 +71,11 @@ export function AdjustDate({ photo, onSave, onClose }: { photo: Photo; onSave: (
             onChange={(e) => setValue(e.target.value)}
           />
         </div>
-        <div className="px-sheet-buttons">
-          <button type="button" className="px-sheet-button" onClick={onClose}>
+        <div className="sheet-actions">
+          <button type="button" className="quiet" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="px-sheet-button is-primary" disabled={!changed}>
+          <button type="submit" className="primary" disabled={!changed}>
             Save
           </button>
         </div>

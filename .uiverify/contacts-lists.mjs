@@ -3,12 +3,12 @@
 // menu or by dragging, someone taken out, a list deleted — shows the moment it is made,
 // though Apple takes most of a second to answer. A change Apple refuses goes back.
 import { engine } from "./engine.mjs";
-import { SERVICES, installStub, openScreen } from "./stub.mjs";
+import { SERVICES, autoConfirm, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, contactsFixture: true });
 const page = await ctx.newPage();
-page.on("dialog", (d) => d.accept());
+await ctx.addInitScript(autoConfirm);
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Contacts");
 await page.waitForTimeout(400);
@@ -85,13 +85,13 @@ await page.waitForTimeout(quick);
 const drawn = await count("Office");
 await page.waitForTimeout(1100);
 check(drawn === 1 && (await count("Office")) === 0, "a refused add shows, then goes back");
-check(await page.locator(".notice").first().isVisible().catch(() => false), "and says why");
+check(await page.locator(".toast.is-error").first().isVisible().catch(() => false), "and says why");
 await page.evaluate(() => { window.__listFail = false; });
 
 // Deleted.
 await row("Office").hover();
 await row("Office").getByRole("button", { name: "Actions for Office" }).click();
-await page.getByRole("menuitem", { name: "Delete List…" }).click();
+await page.getByRole("menuitem", { name: "Delete List" }).click();
 await page.waitForTimeout(quick);
 check((await row("Office").count()) === 0, "a deleted list leaves the column at once");
 await page.waitForTimeout(900);

@@ -11,7 +11,7 @@ const page = await ctx.newPage();
 page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
 // Every question agreed to, as soon as it is asked.
 await page.addInitScript(() => addEventListener("DOMContentLoaded", () =>
-  new MutationObserver(() => document.querySelector(".px-ask .is-act")?.click()).observe(document.body, { childList: true, subtree: true })));
+  new MutationObserver(() => document.querySelector(".confirm .confirm-answer")?.click()).observe(document.body, { childList: true, subtree: true })));
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Photos");
 await page.waitForTimeout(400);
@@ -102,7 +102,7 @@ await page.locator(".row-menu").getByText("New Album", { exact: true }).click();
 await page.getByLabel("Album name").fill("Nope");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(300);
-ok(!(await albumNames()).includes("Nope") && (await page.locator(".notice").count()) === 1, "an album iCloud refuses goes away again, and says why");
+ok(!(await albumNames()).includes("Nope") && (await page.locator(".toast.is-error").count()) === 1, "an album iCloud refuses goes away again, and says why");
 
 // Folders, as icloud.com has them: New Folder, named in place; an album made in it sits in it;
 // the folder's page shows what it holds; deleting it takes what it holds with it.

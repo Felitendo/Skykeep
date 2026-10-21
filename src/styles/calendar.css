@@ -30,26 +30,6 @@
   overflow-y: auto;
 }
 .cx-cals { display: flex; flex-direction: column; gap: 2px; }
-.cx-side-heading {
-  margin: 10px 0 4px;
-  color: var(--text-3);
-  font-size: var(--t-11);
-  font-weight: 600;
-}
-.cx-side-heading:first-child { margin-top: 0; }
-
-.cx-cal {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 26px;
-  padding: 0 6px;
-  border-radius: 6px;
-  font-size: var(--t-13);
-  cursor: default;
-}
-.cx-cal:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.cx-cal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Apple's calendar checkbox: a rounded square in the calendar's own colour. */
 .cx-cal input {
@@ -153,22 +133,7 @@
 }
 .cx-title strong { font-weight: 700; }
 .cx-title-brief { display: none; }
-.cx-bar > .segmented { flex: none; }
-/* Search, at the toolbar's end as in Calendar. */
-.cx-search {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  width: 168px;
-  height: 26px;
-  padding: 0 8px;
-  border-radius: var(--r-field);
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-  color: var(--text-3);
-}
-.cx-search:focus-within { box-shadow: 0 0 0 3px var(--accent-ring); }
-.cx-search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--t-13); outline: none; }
-.cx-search input::placeholder { color: var(--text-3); }
+.cx-search { width: 168px; }
 @container cx-page (max-width: 860px) { .cx-search { width: 120px; } }
 @container cx-page (max-width: 560px) { .cx-search { width: 34px; padding: 0 9px; } .cx-search:focus-within { width: 150px; } }
 
@@ -180,9 +145,6 @@
   margin: 0 18px 10px;
   padding: 4px;
   overflow-y: auto;
-  border-radius: 12px;
-  background: var(--glass-thick);
-  box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--shadow-sheet);
 }
 .cx-found-row {
   display: grid;
@@ -206,39 +168,6 @@
 .cx-found-none { margin: 0; padding: 10px; color: var(--text-3); font-size: var(--t-13); }
 
 .cx-tools { flex: none; display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
-.cx-step { display: inline-flex; align-items: center; gap: 2px; }
-
-.cx-icon {
-  display: grid;
-  place-items: center;
-  min-width: 28px;
-  height: 26px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--text-2);
-  font: inherit;
-  font-size: 18px;
-  line-height: 1;
-  cursor: default;
-}
-.cx-icon.small { min-width: 22px; height: 22px; font-size: 15px; }
-.cx-icon:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
-.cx-today {
-  height: 24px;
-  padding: 0 10px;
-  border: 1px solid var(--field-edge);
-  border-radius: 6px;
-  background: var(--field);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  cursor: default;
-}
-.cx-icon:focus-visible, .cx-today:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 40%, transparent); }
-
-.cx .notice { margin: 0 18px 10px; }
 
 /* ---- month ---------------------------------------------------------------------- */
 
@@ -269,7 +198,9 @@
   border-right: 1px solid var(--separator);
   overflow: hidden;
 }
-.cx-day:last-child { border-right: 0; }
+/* The seventh day, not the last child: a week's bars come after its days, and with one in the
+   week Saturday had kept a hairline down the grid's right edge that the other weeks had not. */
+.cx-day:nth-child(7) { border-right: 0; }
 .cx-day.is-weekend { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
 .cx-day.is-selected { background: color-mix(in srgb, var(--sys-blue) 7%, transparent); }
 .cx-day-hit {
@@ -599,7 +530,7 @@
   gap: 8px;
   width: 300px;
   padding: 14px 14px 12px;
-  border-radius: 14px;
+  border-radius: var(--r-float);
   background: var(--glass-thick);
   box-shadow: var(--glass-float);
   /* Opacity and a small lift only, on the compositor: scaling from the corner read as a
@@ -624,9 +555,11 @@
   font: inherit;
   outline: none;
 }
-.cx-pop-title { padding: 0; font-size: var(--t-17); font-weight: 700; }
+/* Under `.cx-popover` to outrank its `input { font: inherit }`, which had set the title in the
+   body's 13px regular — a field, not a title. */
+.cx-popover .cx-pop-title { padding: 0; font-size: var(--t-17); font-weight: 700; }
 .cx-pop-title::placeholder, .cx-pop-line::placeholder, .cx-pop-notes::placeholder { color: var(--text-3); }
-.cx-pop-line { padding: 0; font-size: var(--t-13); }
+.cx-popover .cx-pop-line { padding: 0; font-size: var(--t-13); }
 .cx-pop-rows { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--separator); border-bottom: 1px solid var(--separator); }
 .cx-pop-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; font-size: var(--t-13); }
 .cx-pop-row > span:first-child { color: var(--text-2); text-align: right; }
@@ -666,37 +599,10 @@
 }
 .cx-pop-row input[type="checkbox"]:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 45%, transparent); outline-offset: 1px; }
 /* Notes grow with what is written, as in Calendar; no grip in the corner. */
-.cx-pop-notes { min-height: 2.6em; max-height: 9em; padding: 0; font-size: var(--t-13); resize: none; field-sizing: content; }
+.cx-popover .cx-pop-notes { min-height: 2.6em; max-height: 9em; padding: 0; font-size: var(--t-13); resize: none; field-sizing: content; }
 .cx-pop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .cx-pop-actions > span { display: flex; gap: 6px; }
-.cx-pop-delete { padding: 4px 6px; border: 0; background: none; color: var(--sys-red); font: inherit; font-size: var(--t-13); cursor: default; }
 .cx-pop-note { margin: 0; color: var(--text-3); font-size: var(--t-11); }
-
-.cx-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 24px;
-  z-index: 45;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 9px 10px 9px 16px;
-  transform: translateX(-50%);
-  border-radius: var(--r-pill);
-  background: var(--glass-thick);
-  box-shadow: var(--glass-float);
-  font-size: var(--t-13);
-}
-.cx-toast-undo {
-  padding: 3px 10px;
-  border: 0;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--sys-blue) 16%, transparent);
-  color: var(--sys-blue);
-  font: inherit;
-  font-weight: 600;
-  cursor: default;
-}
 
 /* The bottom edge of an event that can be changed: drag it to change when it ends. */
 .cx-block-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 7px; cursor: ns-resize; }
@@ -769,31 +675,6 @@
 :root[data-theme="dark"] .cx-reminder, :root[data-theme="dark"] .cx-item.is-reminder .cx-item-title, :root[data-theme="dark"] .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 50%, #fff); }
 .cx-reminder.is-done, .cx-item.is-reminder.is-done .cx-item-title { color: var(--text-3); }
 
-/* ── The toolbar in Liquid Glass ────────────────────────────────────────────────────────
-   As macOS 27's Calendar sets it: each group of controls is a capsule of glass floating
-   over the window — the view switcher, New, the ‹ Today › stepper, search — rather than
-   flat controls printed on it. Concentric: a segment's cap is the capsule's radius less
-   its inset. */
-.cx-bar .segmented,
-.cx-step,
-.cx-search,
-.cx-tools > .cx-icon {
-  height: 32px;
-  border-radius: var(--r-pill);
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), 0 1px 5px rgba(0, 0, 0, 0.06);
-}
-.cx-bar .segmented { align-items: center; padding: 3px; gap: 0; }
-.cx-bar .segment { height: 26px; padding: 0 12px; border-radius: var(--r-pill); font-size: var(--t-13); }
-.cx-step { padding: 0 3px; gap: 0; }
-.cx-step .cx-icon { height: 26px; min-width: 26px; border-radius: var(--r-pill); }
-.cx-step .cx-today { height: 26px; border: 0; border-radius: var(--r-pill); background: none; padding: 0 8px; }
-.cx-step .cx-today:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
-.cx-tools > .cx-icon { min-width: 32px; padding: 0; color: var(--text); }
-.cx-search { padding: 0 12px; }
-
 /* Go to Date… (⇧⌘T): a small date field under Today. Opaque and drawn at once, as the other
    popovers are, because a blurred or animated layer flickers in WebKitGTK. */
 .cx-step { position: relative; }
@@ -806,27 +687,11 @@
   display: flex;
   gap: 6px;
   padding: 8px;
-  border-radius: 12px;
-  background: var(--glass-thick);
-  box-shadow: var(--glass-specular), var(--glass-lift);
 }
-.cx-goto input { font: inherit; }
-.cx-goto button { padding: 0 12px; border-radius: var(--r-pill); }
 
 /* New Calendar: a quiet + at the end of the iCloud heading, as the Mac's sidebar has. */
-.cx-side-heading { display: flex; align-items: center; justify-content: space-between; }
-.cx-side-add {
-  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px;
-  background: none; box-shadow: none; color: var(--text-2);
-  font-size: 15px; line-height: 1; cursor: pointer;
-}
-.cx-side-add:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
-.cx-side-add:focus-visible { outline: 3px solid var(--accent-ring); }
-/* A calendar's name being typed, in the row it will take. */
-.cx-cal-rename {
-  width: 100%; height: 26px; margin: 0; padding: 0 6px;
-  border-radius: 6px; font: inherit; font-size: var(--t-13);
-}
+.cx-side-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; padding-right: 0; }
+.cx-side-heading:first-child { margin-top: 0; }
 
 /* An event's time zone: its city, with the offset quieter beside it; a field that finds one. */
 .cx-zone {

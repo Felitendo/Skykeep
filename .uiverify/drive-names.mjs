@@ -12,7 +12,7 @@ await page.locator(".nav-item", { hasText: "Drive" }).click();
 await page.waitForTimeout(500);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
-const notice = () => page.locator(".notice").allInnerTexts();
+const notice = () => page.locator(".toast.is-error").allInnerTexts();
 const sent = () => page.evaluate(() => (window.__driveNames ?? []).length);
 
 await page.getByRole("button", { name: "New Folder" }).click();

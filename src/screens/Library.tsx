@@ -1,8 +1,12 @@
+import { ToastHost } from "../components/Toast";
+import { EmptyState } from "../components/EmptyState";
+import { StatusLine } from "../components/StatusLine";
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelLeft } from "lucide-react";
 import { api, messageOf, OPEN_REMINDER } from "../lib/ipc";
-import { SyncProvider } from "../lib/sync";
+import { SyncProvider, useSync } from "../lib/sync";
 import { AccountCard } from "../components/Account";
 
 /*
@@ -10,22 +14,39 @@ import { AccountCard } from "../components/Account";
  * five — Notes' editor alone is a few hundred kilobytes. The rest are fetched as soon as the
  * window is up, before anyone could reach them, so switching never waits on a load.
  */
-const loaders = {
-  calendar: () => import("./calendar/CalendarView").then((m) => ({ default: m.CalendarView })),
-  reminders: () => import("./RemindersView").then((m) => ({ default: m.RemindersView })),
-  notes: () => import("./NotesView").then((m) => ({ default: m.NotesView })),
-  contacts: () => import("./ContactsView").then((m) => ({ default: m.ContactsView })),
-  drivews: () => import("./DriveView").then((m) => ({ default: m.DriveView })),
-  photos: () => import("./PhotosView").then((m) => ({ default: m.PhotosView })),
-  settings: () => import("./SettingsView").then((m) => ({ default: m.SettingsView })),
+/**
+ * An app's code, fetched once. Once it is here, the screen is drawn in the same frame as the
+ * click that opens it: `lazy` alone suspends on first use even when the code arrived long ago
+ * (a promise answers a tick later), and that tick was a frame with nothing in the content —
+ * the old screen gone, the new one not yet drawn. Handed back at once, it never suspends.
+ */
+function screen<P extends object>(load: () => Promise<React.ComponentType<P>>) {
+  let mod: { default: React.ComponentType<P> } | null = null;
+  const fetch = () => load().then((c) => (mod = { default: c }));
+  const Screen = lazy(() =>
+    mod
+      ? // A thenable that answers straight away: `lazy` takes it as already resolved.
+        ({ then: (done: (m: { default: React.ComponentType<P> }) => void) => done(mod!) } as unknown as Promise<{ default: React.ComponentType<P> }>)
+      : fetch(),
+  );
+  return { Screen, fetch };
+}
+const apps = {
+  calendar: screen(() => import("./calendar/CalendarView").then((m) => m.CalendarView)),
+  reminders: screen(() => import("./RemindersView").then((m) => m.RemindersView)),
+  notes: screen(() => import("./NotesView").then((m) => m.NotesView)),
+  contacts: screen(() => import("./ContactsView").then((m) => m.ContactsView)),
+  drivews: screen(() => import("./DriveView").then((m) => m.DriveView)),
+  photos: screen(() => import("./PhotosView").then((m) => m.PhotosView)),
+  settings: screen(() => import("./SettingsView").then((m) => m.SettingsView)),
 };
-const CalendarView = lazy(loaders.calendar);
-const RemindersView = lazy(loaders.reminders);
-const NotesView = lazy(loaders.notes);
-const ContactsView = lazy(loaders.contacts);
-const DriveView = lazy(loaders.drivews);
-const PhotosView = lazy(loaders.photos);
-const SettingsView = lazy(loaders.settings);
+const CalendarView = apps.calendar.Screen;
+const RemindersView = apps.reminders.Screen;
+const NotesView = apps.notes.Screen;
+const ContactsView = apps.contacts.Screen;
+const DriveView = apps.drivews.Screen;
+const PhotosView = apps.photos.Screen;
+const SettingsView = apps.settings.Screen;
 import { ScreenBoundary } from "../components/ScreenBoundary";
 import { ScreenActive } from "../lib/screen";
 import { AppIcon } from "../components/AppIcon";
@@ -47,6 +68,32 @@ const SCREENS: { key: string; name: string }[] = [
   { key: "calendar", name: "Calendar" },
   { key: "contacts", name: "Contacts" },
 ];
+
+/** The sync service behind a screen, where its key differs: Drive's screen is Apple's `drivews`. */
+const SERVICE_OF: Record<string, string> = { drivews: "drive" };
+const serviceOf = (screen: string) => SERVICE_OF[screen] ?? screen;
+
+/**
+ * Ctrl+R and F5 update the app in front, as they reload a page in a browser — and never
+ * reload the window itself, which would throw away every open screen. In Settings they
+ * update the whole account.
+ */
+function UpdateKeys({ screen }: { screen: string | null }) {
+  const { refresh, refreshService } = useSync();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const reload = e.key === "F5" || ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "r");
+      if (!reload) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      if (screen && SCREENS.some((s) => s.key === screen)) void refreshService(serviceOf(screen));
+      else void refresh();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [screen, refresh, refreshService]);
+  return null;
+}
 
 /** The screen open last time, so the app reopens where it was left. */
 const LAST_KEY = "quince.library.screen";
@@ -149,11 +196,25 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
     };
   }, [selected]);
 
+  // The window is named for what it shows: an app's own window that has moved on to Photos
+  // is not "Notes" any more. Outside Tauri, or where not permitted, the title simply stays.
+  useEffect(() => {
+    if (!selected) return;
+    const title = selected === "settings" ? "Settings" : SCREENS.find((s) => s.key === selected)?.name;
+    if (!title) return;
+    document.title = title;
+    try {
+      void getCurrentWindow().setTitle(title).catch(() => {});
+    } catch {
+      // Not in a Tauri window.
+    }
+  }, [selected]);
+
   // The other apps' code, fetched while nothing else is happening.
   useEffect(() => {
     if (!ready) return undefined;
     const t = window.setTimeout(() => {
-      for (const load of Object.values(loaders)) void load().catch(() => {});
+      for (const app of Object.values(apps)) void app.fetch().catch(() => {});
     }, 300);
     return () => window.clearTimeout(t);
   }, [ready]);
@@ -248,6 +309,7 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
 
   return (
     <SyncProvider>
+      <UpdateKeys screen={selected} />
       <div className={`library enter-library${sidebarOpen ? " is-sidebar-open" : ""}${rail ? " is-rail" : ""}`}>
         {/* Only in a narrow window, where the sidebar gives its room to the content. */}
         <button
@@ -264,7 +326,7 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
           <div className="sidebar-head">
             <h2>iCloud</h2>
             <button
-              className="sidebar-fold"
+              className="icon-button sidebar-fold"
               aria-label={rail ? "Show Sidebar Names" : "Fold Sidebar to Icons"}
               aria-pressed={rail}
               title={rail ? "Show Sidebar Names" : "Fold Sidebar to Icons"}
@@ -275,15 +337,18 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
           </div>
           {!rail && <GlobalSearch available={services} onOpen={(screen) => choose(screen)} />}
           {services.map(item)}
-          {!ready && !error && <p className="badge">Loading…</p>}
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
+          {!ready && !error && <StatusLine tone="pending">Loading…</StatusLine>}
+          {error && <StatusLine tone="error">{error}</StatusLine>}
 
           <div className="sidebar-foot">
-            <AccountCard current={selected === "settings"} onOpen={() => choose("settings")} />
+            <AccountCard
+              current={selected === "settings"}
+              onOpen={() => choose("settings")}
+              app={(() => {
+                const app = SCREENS.find((s) => s.key === selected);
+                return app && webAccess !== false ? { service: serviceOf(app.key), name: app.name } : null;
+              })()}
+            />
           </div>
         </nav>
 
@@ -335,12 +400,13 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
             </>
           )}
           {ready && services.length === 0 && (
-            <p className="cal-empty">
+            <EmptyState>
               Apple hasn’t offered Reminders, Notes, iCloud Drive, Calendar or Contacts to
               this account yet.
-            </p>
+            </EmptyState>
           )}
         </main>
+        <ToastHost />
       </div>
     </SyncProvider>
   );

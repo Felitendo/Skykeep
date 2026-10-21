@@ -1,6 +1,12 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePending } from "../lib/pending";
-import { Notice } from "../components/Notice";
+import { useErrorToast } from "../components/Toast";
+import { useConfirm } from "../components/Confirm";
+import { EmptyState } from "../components/EmptyState";
+import { SearchField } from "../components/SearchField";
+import { PaneTitle } from "../components/PaneTitle";
+import { Unsent, Waiting } from "../components/Unsent";
+import { useOutbox } from "../lib/outbox";
 import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
 import { save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { editorDate, groupNotes, listDate, mergeEdits, splitTitle } from "./notes/model";
@@ -13,7 +19,8 @@ import { FormatPanel } from "./notes/FormatPanel";
 import { NotePicture } from "./notes/NotePicture";
 import { OPEN_NOTE_EVENT } from "./notes/links";
 import { useReveal } from "../lib/reveal";
-import { useSync } from "../lib/sync";
+import { Arriving } from "../components/EmptyState";
+import { useArriving, useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
 const ALL = "__all__";
@@ -105,7 +112,10 @@ export function NotesView() {
   const [detail, setDetail] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
+  const [confirm, confirmSheet] = useConfirm();
   const { revision } = useSync();
+  const arriving = useArriving("notes");
   // Tables on screen keep up with a phone's edits, as the note's text does.
   useEffect(() => {
     if (revision) refreshTables();
@@ -131,6 +141,8 @@ export function NotesView() {
   });
 
   const { hold, over } = usePending<Note>();
+  /** Edits kept here and not yet at Apple, and any Apple turned down. */
+  const outbox = useOutbox("notes");
   const read = useCallback(async () => {
     api
       .noteCounts()
@@ -162,7 +174,8 @@ export function NotesView() {
     return () => {
       cancelled = true;
     };
-  }, [read, revision]);
+    // `outbox.tick`: an edit sent, or turned down, changes what the library holds.
+  }, [read, revision, outbox.tick]);
 
   /**
    * Every write goes to Apple first and the library is re-read after, so nothing on screen
@@ -287,9 +300,12 @@ export function NotesView() {
       .then((text) => {
         if (cancelled || text === null) return;
         // Never over what is being typed. A refresh follows every save, and adopting its
-        // answer under someone's cursor is how a half-saved note replaced a whole one.
+        // answer under someone's cursor is how a half-saved note replaced a whole one. Typing
+        // already kept, with nothing new since, is not being typed: what Apple made of it —
+        // merged with another device's edit, once sent — is taken in.
         setDraft((typing) => {
-          if (typing === null) setLoadedBody({ guid: openGuid, text });
+          const settled = typing !== null && !pending.current && base.current?.guid === openGuid && typing === base.current.text;
+          if (typing === null || settled) setLoadedBody({ guid: openGuid, text });
           return typing;
         });
       })
@@ -299,7 +315,7 @@ export function NotesView() {
     return () => {
       cancelled = true;
     };
-  }, [openGuid, revision]);
+  }, [openGuid, revision, outbox.tick]);
 
   /** How the open note is set, from Apple's attribute runs, read with its body. */
   const [loadedRuns, setLoadedRuns] = useState<{ guid: string; runs: Run[] } | null>(null);
@@ -317,7 +333,7 @@ export function NotesView() {
       () => {},
     );
     return () => { cancelled = true; };
-  }, [openGuid, revision]);
+  }, [openGuid, revision, outbox.tick]);
 
   /** What the open note says, or null while that is still unknown. */
   const body = open && loadedBody?.guid === open.guid ? loadedBody.text : null;
@@ -366,7 +382,12 @@ export function NotesView() {
       const ok = await write(async () => {
         saved = await api.noteSave(next.guid, next.body, from, next.runs, next.runs ? fromRuns : null);
       });
-      if (!ok || saved === null) return;
+      if (!ok || saved === null) {
+        // Not sent: the edit goes back in line (unless newer typing already replaced it), to
+        // go with the next pause, the next sync or leaving the note — never dropped.
+        if (!pending.current) pending.current = next;
+        return;
+      }
       const kept: string = saved;
       const keptRunsForBase = next.runs ? (kept === next.body ? next.runs : carryRuns(next.body, next.runs, kept)) : null;
       base.current = { guid: next.guid, text: kept, runs: keptRunsForBase };
@@ -400,6 +421,12 @@ export function NotesView() {
     return run;
   }, [write]);
 
+  // An edit that could not be sent goes again when a sync has just succeeded — Apple is
+  // reachable — rather than waiting for more typing.
+  useEffect(() => {
+    if (pending.current) void flush();
+  }, [revision, flush]);
+
   const type = useCallback(
     (typed: string, typedRuns: Run[]) => {
       // Nothing may be typed into a note whose text has not arrived.
@@ -429,10 +456,17 @@ export function NotesView() {
 
   // Leaving the note takes whatever is outstanding with it, before the draft is cleared; the
   // next note's edit begins from what that note reads, never from this one's.
-  useEffect(() => () => {
-    void flush().then(() => {
-      if (base.current && base.current.guid !== openGuid) base.current = null;
-    });
+  // Only the note being left loses its base. Compared with the note now open instead, this
+  // closure's `openGuid` is the old one: a new note made from a draft (null → its guid) had
+  // its base wiped the moment it became real, and the next save merged from a lagging copy —
+  // which wrote the whole text again on every save.
+  useEffect(() => {
+    const leaving = openGuid;
+    return () => {
+      void flush().then(() => {
+        if (leaving && base.current?.guid === leaving) base.current = null;
+      });
+    };
   }, [openGuid, flush]);
   useEffect(() => {
     if (base.current && base.current.guid !== openGuid) base.current = null;
@@ -590,7 +624,14 @@ export function NotesView() {
   };
   const deleteFolder = async (f: NoteFolder) => {
     // Apple's own words for it.
-    if (!window.confirm(`Are you sure you want to delete \u201c${f.title}\u201d?\n\nAll notes and any subfolders will be deleted.`)) return;
+    const sure = await confirm({
+      title: `Delete \u201c${f.title}\u201d?`,
+      body: "All notes and any subfolders will be deleted.",
+      action: "Delete",
+      danger: true,
+      symbol: "trash",
+    });
+    if (!sure) return;
     setFolders((fs) => fs.filter((x) => x.guid !== f.guid && x.parentGuid !== f.guid));
     if (folder === f.guid) setFolder(ALL);
     try {
@@ -606,7 +647,13 @@ export function NotesView() {
     if (!open) return;
     if (
       open.folderGuid === TRASH_FOLDER &&
-      !window.confirm("This note will be deleted immediately. You can’t undo this action.")
+      !(await confirm({
+        title: "Delete this note now?",
+        body: "It will be deleted immediately. You can’t undo this action.",
+        action: "Delete",
+        danger: true,
+        symbol: "trash",
+      }))
     ) {
       return;
     }
@@ -618,7 +665,7 @@ export function NotesView() {
     const next = order[at + 1] ?? order[at - 1] ?? null;
     setOpenGuid(next);
     await write(() => api.noteDelete(gone), (rows) => rows.filter((n) => n.guid !== gone));
-  }, [open, write, notes]);
+  }, [open, write, notes, confirm]);
 
   /** Out of Recently Deleted and back into Notes — Apple's "Notes" folder where there is one. */
   const recover = useCallback(async () => {
@@ -770,11 +817,11 @@ export function NotesView() {
         }}
       />
       <aside className="notes-folders" aria-label="Note folders" ref={foldersRef}>
-        <p className="notes-side-heading">iCloud</p>
-        <button className="notes-folder" aria-current={folder === ALL} onClick={() => setFolder(ALL)}>
+        <p className="side-heading">iCloud</p>
+        <button className="source-row notes-folder" aria-current={folder === ALL} onClick={() => setFolder(ALL)}>
           <FolderOpen className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
-          <span className="notes-folder-name">All iCloud</span>
-          <span className="notes-folder-count">{counts.all || ""}</span>
+          <span className="source-name notes-folder-name">All iCloud</span>
+          <span className="count notes-folder-count">{counts.all || ""}</span>
         </button>
         {nestFolders(folders)
           .filter(({ folder: f }) => f.guid !== TRASH_FOLDER)
@@ -784,7 +831,7 @@ export function NotesView() {
               return (
                 <input
                   key={f.guid}
-                  className="notes-folder notes-folder-rename"
+                  className="field notes-folder-rename"
                   defaultValue={f.title}
                   aria-label={`Rename ${f.title}`}
                   autoFocus
@@ -811,18 +858,18 @@ export function NotesView() {
                 }}
               >
                 <button
-                  className="notes-folder"
+                  className="source-row notes-folder"
                   aria-current={folder === f.guid}
                   onClick={() => setFolder(f.guid)}
                   style={depth > 0 ? { paddingLeft: `${8 + depth * 16}px` } : undefined}
                 >
                   <Folder className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
-                  <span className="notes-folder-name" title={f.title}>{f.title}</span>
-                  <span className="notes-folder-count">{counts.per.get(f.guid) || ""}</span>
+                  <span className="source-name notes-folder-name" title={f.title}>{f.title}</span>
+                  <span className="count notes-folder-count">{counts.per.get(f.guid) || ""}</span>
                 </button>
                 {own && (
                   <button
-                    className="notes-folder-more"
+                    className="icon-button small round row-more notes-folder-more"
                     aria-label={`Actions for ${f.title}`}
                     aria-haspopup="menu"
                     onClick={(e) => {
@@ -838,16 +885,16 @@ export function NotesView() {
           })}
         {folders.some((f) => f.guid === TRASH_FOLDER) && (
           <button
-            className="notes-folder"
+            className="source-row notes-folder"
             aria-current={folder === TRASH_FOLDER}
             onClick={() => setFolder(TRASH_FOLDER)}
           >
             <Trash2 className="notes-folder-glyph" size={16} strokeWidth={2} aria-hidden="true" />
-            <span className="notes-folder-name">Recently Deleted</span>
-            <span className="notes-folder-count">{counts.per.get(TRASH_FOLDER) || ""}</span>
+            <span className="source-name notes-folder-name">Recently Deleted</span>
+            <span className="count notes-folder-count">{counts.per.get(TRASH_FOLDER) || ""}</span>
           </button>
         )}
-        <button className="notes-new-folder" onClick={() => void newFolder(null)}>
+        <button className="side-add" onClick={() => void newFolder(null)}>
           <FolderPlus size={15} strokeWidth={2} aria-hidden="true" />
           New Folder
         </button>
@@ -866,15 +913,10 @@ export function NotesView() {
       </aside>
 
       <section className="notes-list" aria-label="Notes">
-        <header className="notes-list-head">
-          <div className="notes-list-title">
-            <h1>{heading}</h1>
-            <span className="notes-list-count">
-              {notes.length} {notes.length === 1 ? "note" : "notes"}
-            </span>
-          </div>
+        <header className="pane-head notes-list-head">
+          <PaneTitle count={`${notes.length} ${notes.length === 1 ? "note" : "notes"}`}>{heading}</PaneTitle>
           <button
-            className="notes-icon"
+            className="icon-button"
             aria-label="New note"
             title="New Note"
             onClick={() => void create()}
@@ -883,13 +925,12 @@ export function NotesView() {
             <SquarePen size={18} strokeWidth={2} aria-hidden="true" />
           </button>
         </header>
-        <input
+        <SearchField
           className="notes-search"
-          type="search"
           placeholder="Search"
           aria-label="Search notes"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={setQuery}
           onKeyDown={(e) => {
             if (e.key === "Escape") setQuery("");
           }}
@@ -908,7 +949,7 @@ export function NotesView() {
           />
         </div>
 
-        {error && <Notice message={error} onDismiss={() => setError(null)} />}
+        <Unsent refused={outbox.refused} what="an edit to a note" onResend={(r) => void outbox.resend(r)} onDiscard={(r) => void outbox.discard(r)} />
 
         <div className="note-rows" role="list">
           {sections.map((section) => (
@@ -935,8 +976,11 @@ export function NotesView() {
           ))}
         </div>
 
-        {loaded && notes.length === 0 && !error && (
-          <p className="cal-empty notes-empty">{searching ? "No results." : "No notes here."}</p>
+        {loaded && notes.length === 0 && !error && !(arriving && !searching) && (
+          <EmptyState className="notes-empty">{searching ? "No results." : "No notes here."}</EmptyState>
+        )}
+        {notes.length === 0 && !searching && (
+          <Arriving service="notes" what="notes" className="notes-empty" />
         )}
       </section>
 
@@ -957,16 +1001,18 @@ export function NotesView() {
             <p className="note-when">
               {busy || (!saveFailed && (dirty || composing?.body.trim()))
                 ? "Saving…"
-                : saved
+                : open && outbox.waiting.has(open.guid)
+                  ? <Waiting shown />
+                  : saved
                   ? "Saved"
                   : editorDate(composing ? Math.floor(Date.now() / 1000) : (open?.modifiedAt ?? null))}
             </p>
             {!composing && open && !open.locked && (
-              <div className="note-bar-actions">
+              <div className="toolbar-group note-bar-actions">
                 {!inTrash && open.editable && (
                   <>
                     <button
-                      className={`notes-icon notes-aa${formatAt ? " is-on" : ""}`}
+                      className={`tool notes-aa${formatAt ? " is-on" : ""}`}
                       aria-label="Format"
                       aria-haspopup="dialog"
                       aria-expanded={Boolean(formatAt)}
@@ -982,7 +1028,7 @@ export function NotesView() {
                       Aa
                     </button>
                     <button
-                      className={`notes-icon${status?.checklist ? " is-on" : ""}`}
+                      className="tool"
                       aria-label="Make a checklist"
                       aria-pressed={Boolean(status?.checklist)}
                       title="Make a checklist"
@@ -1026,7 +1072,7 @@ export function NotesView() {
                 />}
                 {!inTrash && !open.locked && (
                   <button
-                    className="notes-icon"
+                    className="tool"
                     aria-label="Export as Markdown"
                     title="Export as Markdown"
                     onClick={() => void exportNote()}
@@ -1037,7 +1083,7 @@ export function NotesView() {
                 )}
                 {!inTrash && (
                   <button
-                    className="notes-icon"
+                    className="tool"
                     aria-label={open.pinned ? "Unpin Note" : "Pin Note"}
                     aria-pressed={open.pinned}
                     title={open.pinned ? "Unpin Note" : "Pin Note"}
@@ -1052,17 +1098,17 @@ export function NotesView() {
                   </button>
                 )}
                 {inTrash && (
-                  <button className="quiet" onClick={() => void recover()} disabled={busy}>
+                  <button className="tool has-label is-accent" onClick={() => void recover()} disabled={busy}>
                     Recover
                   </button>
                 )}
                 {inTrash ? (
-                  <button className="quiet danger" onClick={() => void remove()}>
+                  <button className="tool has-label danger" onClick={() => void remove()}>
                     Delete Now
                   </button>
                 ) : (
                   <button
-                    className="notes-icon danger"
+                    className="tool"
                     aria-label="Delete"
                     title="Delete"
                     onClick={() => void remove()}
@@ -1107,16 +1153,14 @@ export function NotesView() {
             />
           </div>
         ) : open?.locked ? (
-          <p className="cal-empty">
+          <EmptyState>
             This note is locked. Apple keeps it encrypted, so there is nothing here to show —
             open it on a device where you can enter its password.
-          </p>
+          </EmptyState>
         ) : open && body === null ? (
           /* Nothing to type into until the note's own text has arrived: an empty box over a
              note whose body had not loaded would write that emptiness back. */
-          <p className="note-loading" aria-live="polite">
-            Opening…
-          </p>
+          <EmptyState busy className="note-loading">Opening…</EmptyState>
         ) : open ? (
           <div className="note-editor is-readonly">
             <h1 className="note-title">{splitTitle(body ?? "").title}</h1>
@@ -1135,9 +1179,10 @@ export function NotesView() {
             </p>
           </div>
         ) : (
-          loaded && <p className="cal-empty">Select a note.</p>
+          loaded && <EmptyState className="note-pick">Select a note.</EmptyState>
         )}
       </article>
+      {confirmSheet}
     </div>
   );
 }

@@ -30,6 +30,14 @@ type Sync = {
   refresh: () => Promise<void>;
   /** The last refresh that failed outright, rather than a single service reporting trouble. */
   error: string | null;
+  /** Refresh one service alone — one app's "update now". Never starts a second pass of it. */
+  refreshService: (service: string) => Promise<void>;
+  /** The services being refreshed on their own right now. */
+  updating: readonly string[];
+  /** Why a service's own refresh failed outright, by service. */
+  serviceErrors: Readonly<Record<string, string>>;
+  /** When the whole-account pass in flight began (unix seconds), or null. */
+  passStartedAt: number | null;
 };
 
 const Context = createContext<Sync | null>(null);
@@ -44,11 +52,16 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   // A second click while a pass is running would mean two walks of the same zones.
   const inFlight = useRef(false);
+  const [updating, setUpdating] = useState<string[]>([]);
+  const [serviceErrors, setServiceErrors] = useState<Record<string, string>>({});
+  const [passStartedAt, setPassStartedAt] = useState<number | null>(null);
+  const serviceInFlight = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     setSyncing(true);
+    setPassStartedAt(Math.floor(Date.now() / 1000));
     setError(null);
     try {
       setReport(await api.syncAll());
@@ -57,6 +70,37 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     } finally {
       inFlight.current = false;
       setSyncing(false);
+      setPassStartedAt(null);
+      setRevision((n) => n + 1);
+    }
+  }, []);
+
+  const refreshService = useCallback(async (service: string) => {
+    if (serviceInFlight.current.has(service)) return;
+    serviceInFlight.current.add(service);
+    setUpdating([...serviceInFlight.current]);
+    setServiceErrors(({ [service]: _gone, ...rest }) => rest);
+    try {
+      const part = await api.syncSome([service]);
+      // The backend's event brings the whole picture; this keeps the answer on screen even
+      // where no event arrives, by folding this service's own report into the last one.
+      setReport((was) =>
+        was
+          ? {
+              ...was,
+              services: [
+                ...was.services.filter((s) => !part.services.some((p) => p.service === s.service)),
+                ...part.services,
+              ],
+            }
+          : part,
+      );
+    } catch (e) {
+      const reason = messageOf(e);
+      setServiceErrors((was) => ({ ...was, [service]: reason }));
+    } finally {
+      serviceInFlight.current.delete(service);
+      setUpdating([...serviceInFlight.current]);
       setRevision((n) => n + 1);
     }
   }, []);
@@ -113,8 +157,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const value = useMemo(
-    () => ({ report, syncing, revision, refresh, error }),
-    [report, syncing, revision, refresh, error]
+    () => ({ report, syncing, revision, refresh, error, refreshService, updating, serviceErrors, passStartedAt }),
+    [report, syncing, revision, refresh, error, refreshService, updating, serviceErrors, passStartedAt]
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
@@ -136,4 +180,43 @@ export function freshness(asOf: number | null): string {
   if (hours < 24) return `Updated ${hours} hr ago`;
   const days = Math.floor(hours / 24);
   return days === 1 ? "Updated yesterday" : `Updated ${days} days ago`;
+}
+
+/**
+ * Whether a service's first copy is still on its way: never synced here, and a pass running
+ * (or not yet reported). An empty screen then means "coming", not "you have none" — saying the
+ * second while the first is true told a person with years of reminders that they had none.
+ */
+export function useArriving(service: string): boolean {
+  const { report, syncing, error } = useSync();
+  if (error) return false;
+  const mine = report?.services.find((s) => s.service === service);
+  if (mine?.outcome === "failed" || mine?.outcome === "unavailable") return false;
+  if (mine?.lastSyncedAt) return false;
+  return syncing || report === null;
+}
+
+/** One service as an app shows it: whether it is being fetched, and how it last went. */
+export type ServiceState = {
+  /** Being fetched now — on its own, or as part of a whole-account pass it has not landed from. */
+  working: boolean;
+  /** Why it did not update, when it did not. */
+  failure: string | null;
+  lastSyncedAt: number | null;
+  unavailable: boolean;
+};
+
+/**
+ * One service's own state, for the app showing it. During a whole-account pass a service
+ * counts as working only until its own part has landed — the passes run side by side, and
+ * Reminders is done long before Photos is.
+ */
+export function useServiceState(service: string): ServiceState {
+  const { report, syncing, passStartedAt, updating, serviceErrors } = useSync();
+  const mine = report?.services.find((s) => s.service === service);
+  const lastSyncedAt = mine?.lastSyncedAt ?? null;
+  const landed = passStartedAt !== null && lastSyncedAt !== null && lastSyncedAt >= passStartedAt;
+  const working = updating.includes(service) || (syncing && !landed && mine?.outcome !== "unavailable");
+  const failure = serviceErrors[service] ?? (mine?.outcome === "failed" ? (mine.detail ?? "It didn’t update") : null);
+  return { working, failure, lastSyncedAt, unavailable: mine?.outcome === "unavailable" };
 }

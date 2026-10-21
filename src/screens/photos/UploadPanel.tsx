@@ -4,7 +4,8 @@
  * and, at the end, what did not go and why ("Duplicate item."), until Done slides it away. A
  * clean finish goes by itself after a moment.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Progress, Spinner } from "../../components/Spinner";
+import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Check, CloudAlert, CloudUpload, Info, X } from "lucide-react";
 import type { UploadEvent } from "../../lib/ipc";
@@ -59,17 +60,9 @@ export function UploadPanel({
   const percent = (most.current = Math.max(most.current, total ? sent / total : 0));
   const processing = active && files.every((u) => ended(u) || u.state === "verifying");
 
-  // Leaving slides out first, then the panel goes.
-  const [leaving, setLeaving] = useState(false);
-  const close = useCallback(() => {
-    const still = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (still) return onDismiss();
-    setLeaving(true);
-    window.setTimeout(() => {
-      setLeaving(false);
-      onDismiss();
-    }, 240);
-  }, [onDismiss]);
+  // Gone at once, as it came: a panel the window's height sliding was a large layer moving,
+  // the kind WebKitGTK on Hyprland flickers.
+  const close = onDismiss;
 
   // A clean finish goes by itself; anything that did not go waits to be read.
   useEffect(() => {
@@ -94,14 +87,14 @@ export function UploadPanel({
   const batches = [...new Set(files.filter((u) => !ended(u)).map((u) => u.batch))];
 
   return (
-    <aside className={`px-up${leaving ? " is-leaving" : ""}`} aria-label="Uploads" aria-live="polite">
+    <aside className="px-up" aria-label="Uploads" aria-live="polite">
       <header className="px-up-head">
         {active ? (
-          <button className="px-up-link" onClick={() => batches.forEach((b) => void cancel([], b))}>
+          <button className="link px-up-link" onClick={() => batches.forEach((b) => void cancel([], b))}>
             Stop Upload
           </button>
         ) : (
-          <button className="px-up-link" onClick={close}>
+          <button className="link px-up-link" onClick={close}>
             Done
           </button>
         )}
@@ -116,9 +109,7 @@ export function UploadPanel({
         )}
         <h2 className="px-up-title">{title}</h2>
         {active && (
-          <div className="px-up-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent * 100)}>
-            <span style={{ transform: `scaleX(${percent})` }} />
-          </div>
+          <Progress value={percent} label="Uploaded so far" className="px-up-bar" />
         )}
       </div>
       <ul className="px-up-rows">
@@ -143,12 +134,12 @@ export function UploadPanel({
               {u.state === "waiting" && (
                 <>
                   <span className="px-up-pending">Pending</span>
-                  <button className="px-up-stop" aria-label={`Stop ${u.name}`} title="Stop" onClick={() => void cancel([u.id])}>
+                  <button className="icon-button small round px-up-stop" aria-label={`Stop ${u.name}`} title="Stop" onClick={() => void cancel([u.id])}>
                     <X size={11} strokeWidth={3} aria-hidden="true" />
                   </button>
                 </>
               )}
-              {(u.state === "sending" || u.state === "verifying") && <span className="px-up-spin" aria-label="Uploading" />}
+              {(u.state === "sending" || u.state === "verifying") && <Spinner label="Uploading" />}
               {u.state === "done" && <Check className="px-up-ok" size={15} strokeWidth={2.4} aria-label="Uploaded" />}
               {u.state === "failed" && <Info className="px-up-why" size={15} strokeWidth={2} aria-label={u.error ?? "Not uploaded"} />}
             </span>

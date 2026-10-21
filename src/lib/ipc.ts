@@ -1,6 +1,21 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export type Status = { hasStoredSession: boolean; signedIn: boolean };
+
+/** A change made here waiting for Apple. */
+export type WaitingChange = { service: string; record: string; kind: string };
+/** A change Apple turned down for good, kept with what it held. */
+export type RefusedChange = {
+  id: number;
+  service: string;
+  record: string;
+  kind: string;
+  reason: string;
+  madeAt: number;
+  /** What was typed: the note's text, the reminder's title, the person's name. */
+  content: string;
+};
+export type OutboxStatus = { waiting: WaitingChange[]; refused: RefusedChange[] };
 export type SignInResult = "complete" | "needs_two_factor";
 
 export type TrustedPhone = { id: number; maskedNumber: string };
@@ -55,12 +70,16 @@ export const SYNCED = "quince://synced";
 export const OPEN_REMINDER = "quince://open-reminder";
 /** A lapsed session signed itself back in only as far as Apple's code. */
 export const NEEDS_CODE = "quince://needs-code";
+/** Apple signed the session out and wants the password again. */
+export const NEEDS_SIGNIN = "quince://needs-signin";
 
 export const api = {
   /** One refresh for every service. Never rejects for a single service failing. */
   syncAll: () => invoke<Refresh>("sync_all"),
   /** What the library already knows about its own freshness, fetching nothing. */
   syncStatus: () => invoke<Refresh>("sync_status"),
+  /** A refresh of only the services named — one app's "update now". */
+  syncSome: (services: string[]) => invoke<Refresh>("sync_some", { services }),
 
   status: () => invoke<Status>("auth_status"),
   /** Where a returning person goes: their library, the code Apple wants, or sign-in. */
@@ -76,6 +95,12 @@ export const api = {
   signOut: (keep: boolean) => invoke<void>("auth_sign_out", { keep }),
   /** What of the account has not reached iCloud yet: asked before a sign-out. */
   unsent: () => invoke<{ changes: number; files: number; photos: number }>("account_unsent"),
+  /** What waits to reach Apple, and what Apple turned down. */
+  outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
+  /** A refused change, sent again. */
+  outboxResend: (id: number) => invoke<void>("outbox_resend", { id }),
+  /** A refused change let go of: Apple's version stands. */
+  outboxDiscard: (id: number) => invoke<void>("outbox_discard", { id }),
   services: () => invoke<string[]>("account_services"),
 
   eventSave: (draft: EventWrite) => invoke<string>("event_save", { draft }),
@@ -199,7 +224,7 @@ export const api = {
     listGuid: string,
     title: string,
     implied: { dueAt?: number; allDay?: boolean; flagged?: boolean } = {},
-  ) => invoke<void>("reminder_create", { listGuid, title, ...implied }),
+  ) => invoke<string>("reminder_create", { listGuid, title, ...implied }),
   reminderDelete: (guid: string, listGuid: string) =>
     invoke<void>("reminder_delete", { guid, listGuid }),
 
@@ -241,7 +266,10 @@ export const api = {
   noteBody: (guid: string) => invoke<string | null>("note_body", { guid }),
   noteExportMarkdown: (body: string, runs: unknown[], path: string) =>
     invoke<void>("note_export_markdown", { body, runs, path }),
-  /** Answers with the text Apple now holds — ours, or ours combined with another device's. */
+  /**
+   * Kept on this computer at once and sent behind (the outbox), merged then with whatever
+   * Apple holds against `base`. Answers with the text as kept.
+   */
   noteSave: (
     guid: string,
     body: string,
@@ -314,6 +342,8 @@ export const api = {
   /** Settings' switches, as the backend obeys them. */
   /** Write a plain diagnostic report to Downloads; answers where. Nothing is sent anywhere. */
   diagnosticsSave: () => invoke<string>("diagnostics_save"),
+  /** Show a file saved to Downloads in the file manager. */
+  downloadReveal: (path: string) => invoke<void>("download_reveal", { path }),
   settingsGet: () => invoke<{ reminderAlerts: boolean; eventAlerts: boolean }>("settings_get"),
   settingsSet: (key: "reminderAlerts" | "eventAlerts", on: boolean) => invoke<void>("settings_set", { key, on }),
   drivePutBack: (item: DriveItem) => invoke<void>("drive_put_back", { item }),
@@ -782,4 +812,66 @@ export type DriveFolder = {
   problem: string | null;
   /** Files written into the folder and not yet at Apple (the Drive folder only). */
   waiting?: { files: number; sending: number; failure: string | null } | null;
+  /** False where this system cannot have the folder yet (Windows): the row is not shown. */
+  available: boolean;
+};
+
+/** How much room the local copy takes on this computer, in bytes on disk (src-tauri/src/settings.rs). */
+export type LocalStorage = {
+  library: number;
+  photos: number;
+  notes: number;
+  drive: number;
+  other: number;
+  total: number;
+  /** What Clear Cached Pictures gives back. */
+  clearable: number;
+};
+
+export const settingsApi = {
+  localStorage: () => invoke<LocalStorage>("local_storage"),
+  /** Removes only pictures Apple still has; answers the room used after. */
+  localStorageClear: () => invoke<LocalStorage>("local_storage_clear"),
+  /** False when this desktop has no notification service; null where unknown or always shown. */
+  alertsShown: () => invoke<boolean | null>("alerts_shown"),
+};
+
+/* ── Intake: files opened with Pomander, and quick capture (src-tauri/src/intake.rs) ── */
+
+/** Told to a window when a file has arrived for it; it collects with `intakeApi.pending`. */
+export const INTAKE = "quince://intake";
+/** Told to the quick-capture window when it is asked for again, with the kind now wanted. */
+export const CAPTURE = "quince://capture";
+
+/** An event read from a calendar file: what `eventSave` takes, less the calendar. */
+export type ImportEvent = {
+  title: string;
+  location: string | null;
+  startsAt: number;
+  endsAt: number;
+  allDay: boolean;
+  timezone: string | null;
+  notes: string | null;
+  url: string | null;
+  alerts: number[] | null;
+  repeat: EventRepeat | null;
+  /** The same title at the same time is already in a calendar here: left out. */
+  duplicate: boolean;
+};
+
+export type ImportContact = { name: string; detail: string | null; known: boolean };
+
+/** What a file opened with Pomander holds, read on this computer before anything is sent. */
+export type Arrival =
+  | { kind: "events"; file: string; events: ImportEvent[]; refused: { title: string; reason: string }[] }
+  | { kind: "contacts"; file: string; path: string; contacts: ImportContact[] }
+  | { kind: "unreadable"; file: string; reason: string };
+
+export const intakeApi = {
+  /** What has arrived for this window, taken from the queue. */
+  pending: () => invoke<Arrival[]>("intake_pending"),
+  /** The quick-capture window, closed. */
+  captureClose: () => invoke<void>("intake_capture_close"),
+  /** The main window, for signing in. */
+  openMain: () => invoke<void>("intake_open_main"),
 };

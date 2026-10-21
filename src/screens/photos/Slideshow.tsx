@@ -141,20 +141,20 @@ export function Slideshow({ photos, start, onClose }: { photos: Photo[]; start: 
         src={screenSrc(photo)}
         alt={photo.filename ?? "Photo"}
       />
-      <div className="px-show-bar px-capsule" role="toolbar" aria-label="Slideshow controls">
-        <button className="px-cap" aria-label="Previous" onClick={() => go(-1)}>
+      <div className="px-show-bar toolbar-group" role="toolbar" aria-label="Slideshow controls">
+        <button className="tool px-cap" aria-label="Previous" onClick={() => go(-1)}>
           <ChevronLeft size={18} />
         </button>
-        <button className="px-cap" aria-label={playing ? "Pause" : "Play"} onClick={() => setPlaying((p) => !p)}>
+        <button className="tool px-cap" aria-label={playing ? "Pause" : "Play"} onClick={() => setPlaying((p) => !p)}>
           {playing ? <Pause size={17} fill="currentColor" strokeWidth={0} /> : <Play size={17} fill="currentColor" strokeWidth={0} />}
         </button>
-        <button className="px-cap" aria-label="Next" onClick={() => go(1)}>
+        <button className="tool px-cap" aria-label="Next" onClick={() => go(1)}>
           <ChevronRight size={18} />
         </button>
         <span className="px-show-count" aria-live="polite">
           {at + 1} of {list.length}
         </span>
-        <button className="px-cap" aria-label="End Slideshow" title="End Slideshow (Esc)" onClick={onClose}>
+        <button className="tool px-cap" aria-label="End Slideshow" title="End Slideshow (Esc)" onClick={onClose}>
           <X size={17} />
         </button>
       </div>

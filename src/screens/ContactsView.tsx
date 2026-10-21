@@ -1,7 +1,13 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Face } from "../components/Face";
-import { Notice } from "../components/Notice";
-import { ChevronLeft, Plus, UsersRound, UserRound } from "lucide-react";
+import { Unsent, Waiting } from "../components/Unsent";
+import { useOutbox } from "../lib/outbox";
+import { toast, toastSaved, useErrorToast } from "../components/Toast";
+import { ConfirmSheet, useConfirm } from "../components/Confirm";
+import { EmptyState } from "../components/EmptyState";
+import { SearchField } from "../components/SearchField";
+import { PaneTitle } from "../components/PaneTitle";
+import { ChevronLeft, Plus, UserPlus, UsersRound, UserRound } from "lucide-react";
 import {
   api,
   displayName,
@@ -11,10 +17,11 @@ import {
   type ContactList,
   type ContactMethod,
 } from "../lib/ipc";
-import { useSync } from "../lib/sync";
+import { Arriving } from "../components/EmptyState";
+import { useArriving, useSync } from "../lib/sync";
+import { useActiveRef, useScreenActive } from "../lib/screen";
 import { Picker } from "../components/Picker";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
-import { Portal } from "../components/Portal";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { dateText } from "../lib/when";
 import { useReveal } from "../lib/reveal";
@@ -109,7 +116,16 @@ export function ContactsView() {
   const [detail, setDetail] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
+  const [confirm, confirmSheet] = useConfirm();
   const { revision } = useSync();
+  // A pass that lands while another screen is in front is read when this one comes back, once,
+  // not at every landing: a screen out of sight stays mounted (lib/screen).
+  const active = useScreenActive();
+  const seen = useRef(revision);
+  if (active) seen.current = revision;
+  const due = seen.current;
+  const arriving = useArriving("contacts");
   /** The card being written, or null while simply looking. */
   const [draft, setDraft] = useState<Contact | null>(null);
   /** Details whose label is being typed rather than picked, by their place on the card. */
@@ -125,6 +141,13 @@ export function ContactsView() {
     setCustomAt(new Set());
   };
   const [busy, setBusy] = useState(false);
+  /** The detail whose label was just clicked to copy it, said for a moment. */
+  const [copied, setCopied] = useState<string | null>(null);
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = window.setTimeout(() => setCopied(null), 1200);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
   const [lists, setLists] = useState<ContactList[]>([]);
   /** The list being looked at, or ALL. */
   const [list, setList] = useState<string>(ALL);
@@ -144,8 +167,6 @@ export function ContactsView() {
   const [contactMenu, setContactMenu] = useState<(MenuAt & { contact: Contact; lists: boolean }) | null>(null);
   /** The card that is this person's own. */
   const [me, setMe] = useState<string | null>(null);
-  /** A moment's word that something finished — a file saved, cards brought in. */
-  const [done, setDone] = useState<string | null>(null);
   const [moreMenu, setMoreMenu] = useState<MenuAt | null>(null);
   /** A contact being deleted while a list is open: out of the list, or gone everywhere? */
   const [deleting, setDeleting] = useState<Contact | null>(null);
@@ -158,6 +179,8 @@ export function ContactsView() {
   /** List writes go to Apple one after another, in the order they were made. */
   const queue = useRef<Promise<unknown>>(Promise.resolve());
 
+  /** Cards saved here and not yet at Apple, and any Apple turned down. */
+  const outbox = useOutbox("contacts");
   const read = useCallback(async (query: string) => {
     const found = await api.contactsList(query.trim() || null);
     setContacts(Array.isArray(found) ? found : []);
@@ -178,20 +201,15 @@ export function ContactsView() {
     return () => {
       cancelled = true;
     };
-    // Re-reading on every keystroke is the point: the filter runs in SQLite.
-  }, [read, search, revision]);
+    // Re-reading on every keystroke is the point: the filter runs in SQLite. `outbox.tick`: a
+    // card sent, or turned down, changes what the library holds.
+  }, [read, search, due, outbox.tick]);
 
   const readLists = useCallback(async () => {
     const [found, mine] = await Promise.all([api.contactLists(), api.contactMe()]);
     setLists(Array.isArray(found) ? found : []);
     setMe(typeof mine === "string" ? mine : null);
   }, []);
-  // The word is a moment, not something that lingers over the next thing done.
-  useEffect(() => {
-    if (!done) return undefined;
-    const timer = window.setTimeout(() => setDone(null), 4000);
-    return () => window.clearTimeout(timer);
-  }, [done]);
 
   /** People out as a vCard, named as icloud.com names the file. */
   const exportCards = async (people: Contact[], label?: string) => {
@@ -202,7 +220,7 @@ export function ContactsView() {
       : label ?? "iCloud vCards";
     try {
       const path = await api.contactsExport(people.map((c) => c.guid), `${name}.vcf`);
-      setDone(`Saved to ${path}`);
+      toastSaved(path);
     } catch (e) {
       setError(messageOf(e));
     }
@@ -221,7 +239,7 @@ export function ContactsView() {
       const [added, failed, known] = await api.contactsImport(paths);
       await Promise.all([read(search), readLists()]);
       const people = (n: number) => `${n} ${n === 1 ? "contact" : "contacts"}`;
-      setDone(
+      toast(
         [
           `${people(added)} imported`,
           known ? `${people(known)} already in Contacts ${known === 1 ? "was" : "were"} left out` : "",
@@ -248,7 +266,7 @@ export function ContactsView() {
   };
   useEffect(() => {
     readLists().catch((e) => setError(messageOf(e)));
-  }, [readLists, revision]);
+  }, [readLists, due]);
   // A list deleted elsewhere is not left open, empty, with nothing to say why.
   useEffect(() => {
     if (list !== ALL && !lists.some((l) => l.guid === list)) setList(ALL);
@@ -314,9 +332,17 @@ export function ContactsView() {
   };
   const deleteList = (l: ContactList) => {
     // icloud.com's own words for it.
-    if (!window.confirm(`Delete \u201c${l.name}\u201d?\n\nThis list will be deleted from every device. The contacts in it stay in Contacts.`)) return;
-    if (list === l.guid) setList(ALL);
-    void changeList((ls) => ls.filter((x) => x.guid !== l.guid), { guid: l.guid, delete: true });
+    void confirm({
+      title: `Delete \u201c${l.name}\u201d?`,
+      body: "This list will be deleted from every device. The contacts in it stay in Contacts.",
+      action: "Delete",
+      danger: true,
+      symbol: "trash",
+    }).then((sure) => {
+      if (!sure) return;
+      if (list === l.guid) setList(ALL);
+      void changeList((ls) => ls.filter((x) => x.guid !== l.guid), { guid: l.guid, delete: true });
+    });
   };
   const addToList = (l: ContactList, people: string[]) => {
     const fresh = people.filter((p) => !l.members.some((m) => m.toUpperCase() === p.toUpperCase()));
@@ -342,7 +368,7 @@ export function ContactsView() {
       return [
         ...into.map((l) => ({ label: l.name, run: () => addToList(l, [c.guid]) })),
         ...(into.length ? [null] : []),
-        { label: "New List\u2026", run: () => void createList("Untitled List", [c.guid]) },
+        { label: "New List", run: () => void createList("Untitled List", [c.guid]) },
       ];
     }
     return [
@@ -352,8 +378,8 @@ export function ContactsView() {
       null,
       { label: "Edit Contact", run: () => { setOpenGuid(c.guid); edit(c); } },
       ...(me === c.guid ? [] : [{ label: "Make This My Card", run: () => void makeMine(c) }]),
-      { label: "Export vCard\u2026", run: () => void exportCards([c]) },
-      { label: "Delete Contact\u2026", danger: true, run: () => {
+      { label: "Export vCard", run: () => void exportCards([c]) },
+      { label: "Delete Contact", danger: true, run: () => {
         askDelete(c);
       } },
     ];
@@ -398,7 +424,10 @@ export function ContactsView() {
    */
   const askDelete = (c: Contact) => {
     if (openList) setDeleting(c);
-    else if (window.confirm(`Delete ${displayName(c)}?`)) void removeContact(c.guid);
+    else
+      void confirm({ title: `Delete ${displayName(c)}?`, body: "The card is deleted from Contacts on every device.", action: "Delete", danger: true, symbol: "trash" }).then(
+        (sure) => sure && void removeContact(c.guid),
+      );
   };
 
   const removeContact = useCallback(
@@ -424,21 +453,218 @@ export function ContactsView() {
     [contacts, openGuid]
   );
   // Who is still here of those picked — a search or a list change narrows them.
-  const pickedPeople = useMemo(() => sortedContacts(shown.filter((c) => picked.includes(c.guid))), [shown, picked]);
+  const pickedPeople = useMemo(() => {
+    const chosen = new Set(picked);
+    return sortedContacts(shown.filter((c) => chosen.has(c.guid)));
+  }, [shown, picked]);
   const multi = pickedPeople.length > 1;
+  const pickedSet = useMemo(() => new Set(picked), [picked]);
+  /** How many of each list's people are here, counted once per change rather than per render. */
+  const listCounts = useMemo(() => {
+    const here = new Set(contacts.map((c) => c.guid.toUpperCase()));
+    return new Map(lists.map((l) => [l.guid, l.members.filter((m) => here.has(m.toUpperCase())).length]));
+  }, [contacts, lists]);
   const removeMany = async (people: Contact[]) => {
-    if (!window.confirm(`Delete ${people.length} contacts?\n\nThey will be deleted from Contacts on every device.`)) return;
+    const sure = await confirm({
+      title: `Delete ${people.length} contacts?`,
+      body: "They will be deleted from Contacts on every device.",
+      action: "Delete",
+      danger: true,
+      symbol: "trash",
+    });
+    if (!sure) return;
     setPicked([]);
     await write(async () => {
       for (const c of people) await api.contactDelete(c.guid);
     });
   };
 
+  /**
+   * Sorted once per change to who is shown, not on every render: typing in the card's form
+   * re-sorted the whole address book with each key, and redrew every row with it.
+   */
+  const sorted = useMemo(() => sortedContacts(shown), [shown]);
+  /** Each person's letter, worked out once per list rather than twice per row per render. */
+  const lettered = useMemo(() => sorted.map((c, i, all) => {
+    const letter = letterOf(c);
+    return { contact: c, letter, starts: i === 0 || letterOf(all[i - 1]) !== letter };
+  }), [sorted]);
+  const rowsRef = useRef<HTMLUListElement | null>(null);
+  const [listFocused, setListFocused] = useState(false);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  /** The row for a person brought into view and given focus, as the arrows and the index do. */
+  const showRow = (guid: string, focus: boolean) =>
+    requestAnimationFrame(() => {
+      const row = rowsRef.current?.querySelector<HTMLButtonElement>(`.contact-row[data-guid="${CSS.escape(guid)}"]`);
+      row?.scrollIntoView({ block: "nearest" });
+      if (focus) row?.focus({ preventScroll: true });
+    });
+
+  /**
+   * What a row does, as one object that never changes, so a row is redrawn only when what it
+   * shows changes — with a long address book, a click redrew every row in it. The handlers
+   * read the selection as it is at the moment they run.
+   */
+  const latest = useRef({ picked, openGuid, sorted });
+  latest.current = { picked, openGuid, sorted };
+  const rowActions = useMemo<RowActions>(
+    () => ({
+      click: (contact, e) => {
+        const { picked, openGuid, sorted } = latest.current;
+        if (e.metaKey || e.ctrlKey) {
+          // Command/Ctrl-click adds or takes away one, keeping the rest.
+          const base = picked.length ? picked : openGuid ? [openGuid] : [];
+          const next = base.includes(contact.guid) ? base.filter((g) => g !== contact.guid) : [...base, contact.guid];
+          setPicked(next.length > 1 ? next : []);
+          if (next.length === 1) setOpenGuid(next[0]);
+          return;
+        }
+        if (e.shiftKey && openGuid) {
+          // Shift-click takes everyone between the last picked and this one.
+          const order = sorted.map((c) => c.guid);
+          const [a, z] = [order.indexOf(openGuid), order.indexOf(contact.guid)].sort((x, y) => x - y);
+          if (a >= 0) {
+            const range = order.slice(a, z + 1);
+            setPicked(range.length > 1 ? range : []);
+            return;
+          }
+        }
+        setPicked([]);
+        setOpenGuid(contact.guid);
+        setDetail(true);
+      },
+      dragStart: (contact, e) => {
+        const { picked } = latest.current;
+        e.dataTransfer.effectAllowed = "copy";
+        e.dataTransfer.setData("text/plain", displayName(contact));
+        setDragging(picked.includes(contact.guid) ? picked : [contact.guid]);
+      },
+      dragEnd: () => {
+        setDragging(null);
+        setDropOn(null);
+      },
+      menu: (contact, e) => {
+        e.preventDefault();
+        setOpenGuid(contact.guid);
+        setContactMenu({ x: e.clientX, y: e.clientY, alignRight: false, contact, lists: false });
+      },
+    }),
+    [],
+  );
+
+  /** The letters the shown names begin with, for the index down the list's edge. */
+  const letters = useMemo(() => lettered.filter((r) => r.starts).map((r) => r.letter), [lettered]);
+  /** The index earns its column only when the list is longer than the window shows. */
+  const [overflowing, setOverflowing] = useState(false);
+  useEffect(() => {
+    const list = rowsRef.current;
+    if (!list || typeof ResizeObserver === "undefined") return undefined;
+    const measure = () => setOverflowing(list.scrollHeight > list.clientHeight + 1);
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(list);
+    return () => watch.disconnect();
+  }, [sorted]);
+  const jumpTo = (letter: string) => {
+    const list = rowsRef.current;
+    const head = list?.querySelector<HTMLElement>(`.contact-letter[data-letter="${CSS.escape(letter)}"]`);
+    if (list && head) list.scrollTop = head.offsetTop;
+  };
+
+  // The keys Contacts on the Mac answers (Ctrl in place of Command here): ⌘N a new card,
+  // ⌘F the search, the arrows walk the list — Shift with them widens the selection — Return
+  // edits the card, Delete deletes it, and Escape leaves a card being written unsaved.
+  const live = useActiveRef();
+  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  keys.current = (e: KeyboardEvent) => {
+    if (!live.current || e.defaultPrevented) return;
+    // A menu, a picker's list or a sheet open over the screen has the keys to itself.
+    if (document.querySelector('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]')) return;
+    const target = e.target as HTMLElement | null;
+    const inSearch = target === searchRef.current;
+    const typing = !inSearch && !!target?.closest?.("input, textarea, select, [contenteditable]");
+    const command = (e.metaKey || e.ctrlKey) && !e.altKey;
+    const k = e.key.toLowerCase();
+    if (command && !e.shiftKey && k === "n") {
+      e.preventDefault();
+      if (!busy) {
+        setPicked([]);
+        setDraft(blank());
+      }
+      return;
+    }
+    if (command && !e.shiftKey && k === "f") {
+      e.preventDefault();
+      if (draft) return;
+      setDetail(false);
+      searchRef.current?.focus();
+      searchRef.current?.select();
+      return;
+    }
+    if (draft) {
+      // Escape, from a field or not, leaves the card being written, as Cancel does.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDraft(null);
+      }
+      return;
+    }
+    if (typing || e.altKey || command) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (sorted.length === 0) return;
+      e.preventDefault();
+      const order = sorted.map((c) => c.guid);
+      const at = openGuid ? order.indexOf(openGuid) : -1;
+      const nextAt = Math.min(order.length - 1, Math.max(0, at + (e.key === "ArrowDown" ? 1 : -1)));
+      const next = order[at < 0 ? 0 : nextAt];
+      if (e.shiftKey && openGuid && at >= 0) {
+        // Shift and an arrow: the run from where it began to here, as in Finder.
+        const base = picked.length ? picked : [openGuid];
+        const anchor = base[0];
+        const [a, z] = [order.indexOf(anchor), order.indexOf(next)].sort((x, y) => x - y);
+        const range = order.slice(a, z + 1);
+        setPicked(range.length > 1 ? (anchor === range[0] ? range : [anchor, ...range.filter((g) => g !== anchor)]) : []);
+        setOpenGuid(next);
+      } else {
+        setPicked([]);
+        setOpenGuid(next);
+      }
+      showRow(next, !inSearch);
+      return;
+    }
+    if (inSearch) {
+      // Return in the search field goes to the first match, as Contacts does.
+      if (e.key === "Enter" && sorted.length) {
+        e.preventDefault();
+        setOpenGuid(sorted[0].guid);
+        setDetail(true);
+        showRow(sorted[0].guid, true);
+      }
+      return;
+    }
+    if (e.key === "Enter" && open && !multi && !busy) {
+      // A button with the focus would press itself; Return on the list means "edit".
+      if (target?.closest?.("button") && !target.closest(".contact-row")) return;
+      e.preventDefault();
+      edit(open);
+    } else if ((e.key === "Delete" || e.key === "Backspace") && !busy) {
+      if (target?.closest?.(".contact-detail button")) return;
+      e.preventDefault();
+      if (multi) void removeMany(pickedPeople);
+      else if (open) askDelete(open);
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keys.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     // A contact being written is always what shows; it has its own Cancel.
     <div className={`contacts${detail || draft ? " is-detail" : ""}`}>
       <aside className="contacts-lists" aria-label="Contact lists">
-        <p className="notes-side-heading">iCloud</p>
+        <p className="side-heading">iCloud</p>
         <ListRow
           name="All Contacts"
           count={contacts.length}
@@ -453,7 +679,7 @@ export function ContactsView() {
             <ListRow
               key={l.guid}
               name={l.name}
-              count={l.members.filter((m) => contacts.some((c) => c.guid.toUpperCase() === m.toUpperCase())).length}
+              count={listCounts.get(l.guid) ?? 0}
               current={list === l.guid}
               menuOpen={listMenu?.list.guid === l.guid}
               dropping={dropOn === l.guid}
@@ -479,7 +705,7 @@ export function ContactsView() {
         {naming === "new" && (
           <NameField initial="Untitled List" label="New list name" onDone={(name) => { setNaming(null); void createList(name); }} onCancel={() => setNaming(null)} />
         )}
-        <button className="notes-new-folder" onClick={() => setNaming("new")}>
+        <button className="side-add" onClick={() => setNaming("new")}>
           <Plus size={15} strokeWidth={2} aria-hidden="true" />
           New List
         </button>
@@ -490,24 +716,21 @@ export function ContactsView() {
             entries={[
               { label: "Rename List", run: () => setNaming(listMenu.list.guid) },
               null,
-              { label: "Delete List\u2026", danger: true, run: () => deleteList(listMenu.list) },
+              { label: "Delete List", danger: true, run: () => deleteList(listMenu.list) },
             ]}
           />
         )}
       </aside>
 
       <section className="contacts-list" aria-label="Contacts">
-        <header className="cal-bar">
-          <div className="cal-nav">
-            {/* The count is the sidebar's, beside the list's name; said twice it was noise. */}
-            <h1>{openList?.name ?? "Contacts"}</h1>
-          </div>
-          <div className="cal-actions">
-            <button className="quiet" disabled={busy} onClick={() => setDraft(blank())}>
-              New contact
+        <header className="pane-head contacts-head">
+          <PaneTitle count={`${shown.length} ${shown.length === 1 ? "contact" : "contacts"}`}>{openList?.name ?? "Contacts"}</PaneTitle>
+          <div className="contacts-head-actions">
+            <button className="icon-button" aria-label="New contact" title="New Contact" disabled={busy} onClick={() => setDraft(blank())}>
+              <UserPlus size={18} strokeWidth={2} aria-hidden="true" />
             </button>
             <button
-              className="quiet"
+              className="icon-button"
               aria-label="More"
               aria-haspopup="menu"
               title="More"
@@ -522,13 +745,13 @@ export function ContactsView() {
           </div>
         </header>
 
-        <input
+        <SearchField
+          ref={searchRef}
           className="contacts-search"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={setSearch}
           placeholder="Search"
           aria-label="Search contacts"
-          type="search"
         />
 
         {/* Shown only when the lists column has folded away. */}
@@ -541,21 +764,28 @@ export function ContactsView() {
           />
         </div>
 
-        {error && <Notice message={error} onDismiss={() => setError(null)} />}
-        {done && <p className="drive-saved" role="status">{done}</p>}
+        <Unsent refused={outbox.refused} what="a change to a contact" onResend={(r) => void outbox.resend(r)} onDiscard={(r) => void outbox.discard(r)} />
         {moreMenu && (
           <RowMenu
             at={moreMenu}
             onClose={() => setMoreMenu(null)}
             entries={[
-              { label: "Import Contacts\u2026", run: () => void importCards() },
-              { label: openList ? `Export \u201c${openList.name}\u201d\u2026` : "Export All Contacts\u2026", run: () => void exportCards(sortedContacts(shown), openList?.name) },
+              { label: "Import Contacts", run: () => void importCards() },
+              { label: openList ? `Export \u201c${openList.name}\u201d` : "Export All Contacts", run: () => void exportCards(sorted, openList?.name) },
             ]}
           />
         )}
 
+        <div className="contact-rows-wrap">
         <ul
-          className="contact-rows"
+          className={`contact-rows${listFocused ? " is-focused" : ""}`}
+          ref={rowsRef}
+          // Whether the focus is in the list, for the selection's colour — a class rather than
+          // :focus-within, which made WebKit restyle every row at each arrow press.
+          onFocus={() => setListFocused(true)}
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setListFocused(false);
+          }}
           onKeyDown={(e) => {
             // Command/Ctrl-A: everyone shown.
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
@@ -567,85 +797,73 @@ export function ContactsView() {
             }
           }}
         >
-          {sortedContacts(shown).map((contact, i, all) => (
+          {lettered.map(({ contact, letter, starts }) => (
             <Fragment key={contact.guid}>
-            {(i === 0 || letterOf(all[i - 1]) !== letterOf(contact)) && (
-              <li className="contact-letter" aria-hidden="true">{letterOf(contact)}</li>
+            {starts && (
+              <li className="contact-letter" data-letter={letter} aria-hidden="true">{letter}</li>
             )}
-            <li
-              // Dragged onto a list, a person joins it — as in Contacts on the Mac.
+            <ContactRow
+              contact={contact}
+              current={multi ? pickedSet.has(contact.guid) : openGuid === contact.guid}
+              mine={me === contact.guid}
               draggable={lists.length > 0}
-              onDragStart={(e) => {
-                e.dataTransfer.effectAllowed = "copy";
-                e.dataTransfer.setData("text/plain", displayName(contact));
-                setDragging(picked.includes(contact.guid) ? picked : [contact.guid]);
-              }}
-              onDragEnd={() => { setDragging(null); setDropOn(null); }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setOpenGuid(contact.guid);
-                setContactMenu({ x: e.clientX, y: e.clientY, alignRight: false, contact, lists: false });
-              }}
-            >
-              <button
-                className="contact-row"
-                aria-current={multi ? picked.includes(contact.guid) : openGuid === contact.guid}
-                onClick={(e) => {
-                  if (e.metaKey || e.ctrlKey) {
-                    // Command/Ctrl-click adds or takes away one, keeping the rest.
-                    const base = picked.length ? picked : openGuid ? [openGuid] : [];
-                    const next = base.includes(contact.guid) ? base.filter((g) => g !== contact.guid) : [...base, contact.guid];
-                    setPicked(next.length > 1 ? next : []);
-                    if (next.length === 1) setOpenGuid(next[0]);
-                    return;
-                  }
-                  if (e.shiftKey && openGuid) {
-                    // Shift-click takes everyone between the last picked and this one.
-                    const order = all.map((c) => c.guid);
-                    const [a, z] = [order.indexOf(openGuid), order.indexOf(contact.guid)].sort((x, y) => x - y);
-                    if (a >= 0) {
-                      const range = order.slice(a, z + 1);
-                      setPicked(range.length > 1 ? range : []);
-                      return;
-                    }
-                  }
-                  setPicked([]);
-                  setOpenGuid(contact.guid);
-                  setDetail(true);
-                }}
-              >
-                <Avatar contact={contact} />
-                <span className="contact-row-name">{displayName(contact)}</span>
-                {me === contact.guid && <span className="contact-me" title="My Card">me</span>}
-              </button>
-            </li>
+              waiting={outbox.waiting.has(contact.guid)}
+              actions={rowActions}
+            />
             </Fragment>
           ))}
         </ul>
+        {/* The letters down the edge, as icloud.com and the phone index a long list: a press,
+            or a drag along them, goes straight to that letter. */}
+        {letters.length > 1 && overflowing && (
+          <nav
+            className="contact-index"
+            aria-label="Jump to letter"
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              const letter = (e.target as HTMLElement).closest?.<HTMLElement>(".contact-index button")?.dataset.letter;
+              if (letter) jumpTo(letter);
+              e.currentTarget.setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!e.currentTarget.hasPointerCapture?.(e.pointerId)) return;
+              const under = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+              const letter = under?.closest?.<HTMLElement>(".contact-index button")?.dataset.letter;
+              if (letter) jumpTo(letter);
+            }}
+          >
+            {letters.map((l) => (
+              <button key={l} type="button" tabIndex={-1} data-letter={l} aria-label={`Contacts under ${l}`} onClick={() => jumpTo(l)}>
+                {l}
+              </button>
+            ))}
+          </nav>
+        )}
+        </div>
 
-        {loaded && shown.length === 0 && !error && (
-          <p className="cal-empty">{search ? "No matches." : openList ? "No one in this list yet." : "No contacts yet."}</p>
+        {shown.length === 0 && !search && <Arriving service="contacts" what="contacts" />}
+        {loaded && shown.length === 0 && !error && !(arriving && !search) && (
+          <EmptyState className="contact-empty">{search ? "No matches." : openList ? "No one in this list yet." : "No contacts yet."}</EmptyState>
         )}
         {deleting && openList && (
-          <Portal>
-            <div className="modal-veil" onClick={() => setDeleting(null)}>
-              <div className="modal-sheet cx-ask" role="alertdialog" aria-label="Delete contact" onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => { if (e.key === "Escape") setDeleting(null); }}>
-                <h2>Delete {displayName(deleting)}?</h2>
-                <p>Remove this contact from &ldquo;{openList.name}&rdquo;, or delete the card from Contacts on every device.</p>
-                <div className="cx-ask-actions">
-                  <button className="primary" autoFocus onClick={() => { const c = deleting; setDeleting(null); removeFromList(openList, [c.guid]); }}>
-                    Remove from List
-                  </button>
-                  <button className="quiet danger" onClick={() => { const c = deleting; setDeleting(null); void removeContact(c.guid); }}>
-                    Delete Card
-                  </button>
-                  <button className="quiet" onClick={() => setDeleting(null)}>Cancel</button>
-                </div>
-              </div>
-            </div>
-          </Portal>
+          <ConfirmSheet<"list" | "card">
+            title={`Delete ${displayName(deleting)}?`}
+            label="Delete contact"
+            body={<>Remove this contact from &ldquo;{openList.name}&rdquo;, or delete the card from Contacts on every device.</>}
+            choices={[
+              { label: "Remove from List", value: "list", primary: true, focus: true },
+              { label: "Delete Card", value: "card", danger: true },
+            ]}
+            onAnswer={(how) => {
+              const c = deleting;
+              setDeleting(null);
+              if (how === "list") removeFromList(openList, [c.guid]);
+              else void removeContact(c.guid);
+            }}
+            onCancel={() => setDeleting(null)}
+          />
         )}
+        {confirmSheet}
         {contactMenu && (
           <RowMenu
             at={contactMenu}
@@ -738,7 +956,7 @@ export function ContactsView() {
                           options={[
                             ...(m.label === null && !custom ? [{ value: "", label: "no label" }] : []),
                             ...standard.map((v) => ({ value: v, label: labelText(v) })),
-                            { value: CUSTOM, label: "custom…" },
+                            { value: CUSTOM, label: "Custom" },
                           ]}
                         />
                         {custom && (
@@ -883,7 +1101,7 @@ export function ContactsView() {
                 entries={[
                   ...lists.filter((l) => !l.guid.startsWith("pending-")).map((l) => ({ label: l.name, run: () => addToList(l, pickedPeople.map((c) => c.guid)) })),
                   ...(lists.length ? [null] : []),
-                  { label: "New List\u2026", run: () => void createList("Untitled List", pickedPeople.map((c) => c.guid)) },
+                  { label: "New List", run: () => void createList("Untitled List", pickedPeople.map((c) => c.guid)) },
                 ]}
               />
             )}
@@ -905,14 +1123,31 @@ export function ContactsView() {
             </div>
 
             <dl className="contact-methods">
-              {open.methods.map((m, i) => (
-                <div key={`${m.kind}-${i}`}>
-                  <dt>{(m.label && labelText(m.label)) || KIND_LABEL[m.kind] || m.kind}</dt>
+              {open.methods.map((m, i) => {
+                const key = `${m.kind}-${i}`;
+                const label = (m.label && labelText(m.label)) || KIND_LABEL[m.kind] || m.kind;
+                return (
+                <div key={key}>
+                  {/* The label copies what is beside it, as a click on one does in Contacts. */}
+                  <dt>
+                    <button
+                      type="button"
+                      className="contact-copy"
+                      title={`Copy ${label}`}
+                      aria-label={`Copy ${label}`}
+                      onClick={() => void copyText(m.value).then((ok) => ok && setCopied(key))}
+                    >
+                      <span className={copied === key ? "is-hidden" : undefined}>{label}</span>
+                      <span className={copied === key ? undefined : "is-hidden"} aria-hidden={copied !== key}>copied</span>
+                    </button>
+                  </dt>
                   <dd>
                     {m.kind === "email" ? (
                       <a href={`mailto:${m.value}`}>{m.value}</a>
                     ) : m.kind === "phone" ? (
-                      <a href={`tel:${m.value}`}>{m.value}</a>
+                      <a href={`tel:${m.value.replace(/[^\d+#*,;]/g, "")}`}>{m.value}</a>
+                    ) : m.kind === "url" ? (
+                      <a href={webHref(m.value)}>{m.value}</a>
                     ) : m.kind === "address" ? (
                       // A postal address is several lines and stays that way.
                       <span className="contact-address">{m.value}</span>
@@ -921,7 +1156,8 @@ export function ContactsView() {
                     )}
                   </dd>
                 </div>
-              ))}
+                );
+              })}
               {open.birthday && (
                 <div>
                   <dt>birthday</dt>
@@ -931,7 +1167,7 @@ export function ContactsView() {
             </dl>
 
             {open.methods.length === 0 && !open.birthday && (
-              <p className="cal-empty">No phone numbers or addresses saved.</p>
+              <p className="contact-none">No phone numbers or addresses saved.</p>
             )}
             {open.notes && <p className="contact-notes">{open.notes}</p>}
 
@@ -964,12 +1200,83 @@ export function ContactsView() {
             </div>
           </>
         ) : (
-          loaded && <p className="cal-empty">Select a contact.</p>
+          loaded && <EmptyState className="contact-pick">Select a contact.</EmptyState>
         )}
       </article>
     </div>
   );
 }
+
+type RowActions = {
+  click: (contact: Contact, e: React.MouseEvent) => void;
+  dragStart: (contact: Contact, e: React.DragEvent) => void;
+  dragEnd: () => void;
+  menu: (contact: Contact, e: React.MouseEvent) => void;
+};
+
+/**
+ * One person in the list. Drawn again only when what it shows changes — its name, its picture,
+ * whether it is selected — so a click or a key in a long address book touches two rows, not
+ * every one. The layout of a row off screen is skipped too (content-visibility, in the CSS).
+ */
+const ContactRow = memo(function ContactRow({ contact, current, mine, draggable, waiting, actions }: {
+  contact: Contact;
+  current: boolean;
+  mine: boolean;
+  draggable: boolean;
+  /** Saved here, not yet at Apple. */
+  waiting: boolean;
+  actions: RowActions;
+}) {
+  return (
+    <li
+      // Dragged onto a list, a person joins it — as in Contacts on the Mac.
+      draggable={draggable}
+      onDragStart={(e) => actions.dragStart(contact, e)}
+      onDragEnd={actions.dragEnd}
+      onContextMenu={(e) => actions.menu(contact, e)}
+    >
+      <button
+        className="contact-row"
+        data-guid={contact.guid}
+        aria-current={current}
+        onClick={(e) => actions.click(contact, e)}
+      >
+        <Avatar contact={contact} />
+        <span className="contact-row-name">{displayName(contact)}</span>
+        {mine && <span className="contact-me" title="My Card">me</span>}
+        <Waiting shown={waiting} />
+      </button>
+    </li>
+  );
+});
+
+/** Text onto the clipboard; the older way where the newer one is refused. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+    field.remove();
+    return copied;
+  }
+}
+
+/** A link a person typed without its scheme still opens: "example.com" is the web. */
+const webHref = (value: string) => (/^[a-z][a-z0-9+.-]*:/i.test(value.trim()) ? value.trim() : `https://${value.trim()}`);
 
 /** A row in the lists column: All Contacts, or one list, with its count and ⋯. */
 function ListRow({
@@ -1009,14 +1316,14 @@ function ListRow({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <button className="notes-folder" aria-current={current} onClick={onOpen}>
+      <button className="source-row notes-folder" aria-current={current} onClick={onOpen}>
         <Glyph className="contacts-list-glyph" size={16} strokeWidth={2} aria-hidden="true" />
-        <span className="notes-folder-name">{name}</span>
-        <span className="notes-folder-count">{count || ""}</span>
+        <span className="source-name notes-folder-name">{name}</span>
+        <span className="count notes-folder-count">{count || ""}</span>
       </button>
       {onMenu && (
         <button
-          className="notes-folder-more"
+          className="icon-button small round row-more notes-folder-more"
           aria-label={`Actions for ${name}`}
           aria-haspopup="menu"
           onClick={(e) => {
@@ -1041,7 +1348,7 @@ function NameField({ initial, label, onDone, onCancel }: {
   const settled = useRef(false);
   return (
     <input
-      className="notes-folder notes-folder-rename"
+      className="field notes-folder-rename"
       defaultValue={initial}
       aria-label={label}
       autoFocus

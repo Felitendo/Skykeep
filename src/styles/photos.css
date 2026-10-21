@@ -25,68 +25,13 @@
   border-right: 1px solid var(--separator);
   overflow-y: auto;
 }
-.px-side-heading {
-  margin: 6px 8px 4px;
-  color: var(--text-3);
-  font-size: var(--t-11);
-  font-weight: 600;
-}
-.px-source {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 30px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 7px;
-  background: none;
-  box-shadow: none;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  text-align: start;
-  cursor: default;
-}
-.px-source { justify-content: flex-start; gap: 8px; }
 .px-glyph { flex: none; color: var(--accent); }
-.px-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-.px-source:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.px-source[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
-.px-source:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
 .px-albums { display: flex; flex-direction: column; gap: 1px; }
 .px-side-gap { margin-top: 14px; }
 .px-side-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
 .px-side-row .px-side-heading { margin-bottom: 4px; }
-.px-side-add {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  margin-right: 4px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-3);
-  opacity: 0;
-  transition: none;
-}
-/* As in Finder and Photos: the + shows when the sidebar is pointed at or the keys reach it. */
-.px-side:hover .px-side-add,
-.px-side-add:focus-visible { opacity: 1; }
-.px-side-add:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
-.px-naming {
-  width: 100%;
-  font: inherit;
-  outline: 2px solid var(--accent-ring);
-  outline-offset: -2px;
-  background: var(--surface, transparent);
-  cursor: text;
-}
-.px-count { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: var(--t-12, 12px); }
 
 /* ---- the library ------------------------------------------------------------------------- */
-/* Above the photo viewer too: a change refused while a photo was open said so behind it, unseen. */
-.px-notice { position: absolute; z-index: 7; top: 62px; left: 18px; right: 18px; max-width: 420px; }
 .px-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .px-bar {
   position: absolute;
@@ -106,69 +51,8 @@
 /* The controls, as one: beside the title in a wide window, all together under it in a narrow
    one — never split between the two rows. */
 .px-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-start; gap: 8px; max-width: 100%; }
-.px-bar h1 {
-  margin: 0;
-  font-size: var(--t-22, 22px);
-  font-weight: 700;
-  letter-spacing: -0.015em;
-  line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.px-span { margin: 1px 0 0; color: var(--text-2); font-size: var(--t-13); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.px-span { font-weight: 500; }
 
-/* Liquid Glass, as Photos' toolbar has it: small capsules floating over the photos. The live
-   blur is kept to these few small, still surfaces — never to what moves, which WebKitGTK
-   would re-blur on every frame of a scroll. */
-.px-capsule {
-  display: flex;
-  height: 34px;
-  padding: 0 3px;
-  border-radius: 17px;
-  /* No live blur: these sit over a scrolling grid and a photo that moves, and WebKitGTK blurs
-     what is behind again on every frame of either — the stutter in scrolling and the flash as a
-     photo opened. The glass is in the rim, the lift and a fill near enough to solid. */
-  background: color-mix(in srgb, var(--sheet) 90%, transparent);
-  box-shadow: var(--glass-float);
-}
-.px-cap {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 0;
-  border-radius: 17px;
-  background: transparent;
-  color: var(--text);
-  cursor: default;
-  transition: background-color 120ms ease;
-}
-.px-cap:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
-.px-cap:active:not(:disabled) { transform: scale(0.9); }
-.px-cap:disabled { color: var(--text-3); opacity: 0.55; }
-.px-cap:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
-
-/* Words in a capsule — Recently Deleted's Recover, Delete, Delete All — as Photos sets them. */
-.px-words { padding: 0 4px; }
-.px-word {
-  height: 34px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 17px;
-  background: transparent;
-  color: var(--accent);
-  font: inherit;
-  font-size: var(--t-13);
-  font-weight: 600;
-  cursor: default;
-  transition: background-color 120ms ease;
-}
-.px-word.is-danger { color: var(--danger); }
-.px-word:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
-.px-word:active { transform: scale(0.95); }
-.px-word:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
 /* Time left on a deleted photo's tile; red in its last days. */
 .px-badge.px-left { left: 6px; right: auto; }
 .px-badge.px-left.is-soon { color: #ff6961; }
@@ -201,7 +85,6 @@
   font-weight: 600;
   pointer-events: none;
 }
-.px-empty { margin: 18vh auto 0; max-width: 36ch; color: var(--text-2); text-align: center; }
 
 /* The library runs up under the floating bar and fades out at the top edge — Apple's scroll
    edge effect. Done with a still layer in the window's colour over the top, not a mask on the
@@ -341,11 +224,6 @@
 .px-viewer-when { flex: 1; display: flex; flex-direction: column; align-items: center; line-height: 1.25; pointer-events: none; }
 .px-viewer-when strong { font-size: var(--t-13); font-weight: 600; }
 .px-viewer-when span { color: var(--text-2); font-size: var(--t-11); }
-.px-cap[aria-pressed="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
-/* A button whose glyph already says which way it is set (square or whole photos), as
-   icloud.com draws it: no pressed fill as well — a fill that never left read as a hover stuck
-   on it. */
-.px-cap.is-glyph-state[aria-pressed="true"]:not(:hover) { background: none; }
 .px-stage { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; overflow: hidden; padding: 62px 64px 70px; container-type: size; }
 .px-stage img, .px-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
 /* The photo's frame: what zooms and pans. The full picture lies over the screen-sized one,
@@ -406,7 +284,7 @@
   max-height: calc(100% - 72px);
   margin: 0;
   padding: 12px 16px 14px;
-  border-radius: 16px;
+  border-radius: var(--r-float);
   background: var(--glass-thick);
   box-shadow: var(--glass-float);
   font-size: var(--t-13);
@@ -415,17 +293,6 @@
 .px-info dt { margin-top: 10px; color: var(--text-2); font-size: var(--t-11); font-weight: 600; }
 .px-info dt:first-child { margin-top: 0; }
 .px-info dd { margin: 2px 0 0; overflow-wrap: anywhere; }
-.px-saved {
-  position: absolute;
-  left: 232px;
-  bottom: 14px;
-  z-index: 6;
-  margin: 0;
-  padding: 7px 12px;
-  border-radius: 9px;
-  background: var(--glass-thick);
-  box-shadow: var(--glass-specular), var(--glass-lift);
-}
 .px-video {
   position: relative;
   display: grid;
@@ -451,8 +318,6 @@
 }
 .px-video:hover .px-play { background: rgba(0, 0, 0, 0.65); }
 
-/* An album under photos being dragged to it: lit, as a Mac sidebar lights a drop target. */
-.px-source[data-drop] { background: var(--accent-tint); box-shadow: inset 0 0 0 2px var(--accent); }
 /* What is dragged: the photo, with how many when it is more than one. */
 .px-ghost { position: fixed; top: -200px; left: -200px; width: 72px; height: 72px; }
 .px-ghost img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3); }
@@ -584,20 +449,11 @@
   /* Solid, as icloud.com's: the toolbar's controls must not show through the words. */
   background: var(--sheet);
   box-shadow: inset 0.5px 0 0 var(--separator), -18px 0 40px rgba(0, 0, 0, 0.18);
-  animation: px-up-in 320ms var(--spring-smooth) both;
 }
-.px-up.is-leaving { animation: px-up-out 240ms ease-in both; }
-@keyframes px-up-in { from { transform: translateX(100%); } to { transform: none; } }
-@keyframes px-up-out { from { transform: none; opacity: 1; } to { transform: translateX(100%); opacity: 0.6; } }
-@media (prefers-reduced-motion: reduce) { .px-up, .px-up.is-leaving { animation: none; } }
 .px-up-head { padding: 12px 16px 0; }
-.px-up-link { padding: 4px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: var(--t-13); font-weight: 500; cursor: default; }
-.px-up-link:hover { text-decoration: underline; }
 .px-up-hero { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 22px 16px; text-align: center; }
 .px-up-icon { color: var(--accent); }
 .px-up-title { margin: 0; font-size: var(--t-15, 15px); font-weight: 700; }
-.px-up-bar { width: 100%; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; }
-.px-up-bar span { display: block; height: 100%; background: var(--accent); transform-origin: left; transition: transform 240ms ease-out; }
 .px-up-rows { flex: 1; min-height: 0; margin: 0; padding: 0 8px 12px; list-style: none; overflow-y: auto; }
 .px-up-row { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; }
 .px-up-thumb { flex: none; width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: color-mix(in srgb, var(--text) 8%, transparent); }
@@ -606,36 +462,13 @@
 .px-up-sub { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
 .px-up-row.is-failed .px-up-sub { color: var(--text-2); }
 .px-up-end { flex: none; display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--t-12, 12px); }
-.px-up-stop {
-  display: grid;
-  place-items: center;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: var(--text-3);
-  color: var(--bg);
-  cursor: default;
-}
-.px-up-stop:hover { background: var(--text-2); }
 .px-up-ok { color: #30d158; }
 .px-up-why { color: var(--text-3); }
-.px-up-spin {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
-  border-top-color: var(--accent);
-  animation: px-spin 800ms linear infinite;
-}
-@keyframes px-spin { to { transform: rotate(360deg); } }
 
 /* ---- the Albums page: every album as a card with its cover, as icloud.com's ------------------ */
 .px-main[data-page="albums"] > :not(.px-albums-page) { display: none; }
 .px-albums-page { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 18px 24px; }
 .px-albums-head { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 18px; }
-.px-albums-head h1 { margin: 0; font-size: var(--t-22, 22px); font-weight: 700; letter-spacing: -0.015em; }
 .px-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 22px 18px; }
 .px-card {
   display: flex;
@@ -775,42 +608,14 @@
 }
 .px-keyword-field:focus { box-shadow: 0 0 0 2px var(--accent-ring); }
 
-/* ---- a sheet over Photos — Download Options — as icloud.com's: centred, solid, the rest dimmed */
-.px-sheet-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  display: grid;
-  place-items: center;
-  background: rgba(0, 0, 0, 0.42);
-}
-.px-sheet {
-  position: relative;
-  width: min(380px, calc(100vw - 32px));
-  padding: 22px 24px 18px;
-  border-radius: 16px;
-  background: var(--sheet);
-  box-shadow: var(--glass-float);
-  color: var(--text);
-  /* Fades in from the page, frame by frame (fadeSheetsIn), never a compositor animation. */
-}
-.px-sheet h2 { margin: 6px 0 12px; text-align: center; font-size: var(--t-15, 15px); font-weight: 700; }
-.px-sheet-x {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--text);
-  cursor: default;
-}
-.px-sheet-x:hover { background: color-mix(in srgb, var(--text) 9%, transparent); }
+.px-sheet { width: min(380px, calc(100vw - 32px)); gap: 0; padding: 22px 24px 18px; }
+.px-sheet h2 { margin: 6px 0 12px; text-align: center; }
+.px-dl-go { color: var(--accent-strong); background: var(--fill); }
+.px-date-field { padding: 6px 10px; font-variant-numeric: tabular-nums; }
+.px-search { width: 200px; }
+@media (max-width: 1000px) { .px-search { width: 140px; } }
+.px-naming { width: 100%; }
+.px-shared-name { width: 100%; min-height: 34px; font-size: var(--t-15); }
 .px-dl-pics { display: flex; justify-content: center; gap: 4px; }
 .px-dl-pics img { width: 58px; height: 58px; border-radius: 8px; object-fit: cover; background: color-mix(in srgb, var(--text) 8%, transparent); }
 .px-dl-count { margin: 6px 0 14px; text-align: center; font-size: var(--t-13); font-weight: 600; }
@@ -819,21 +624,6 @@
 .px-dl-row span { display: flex; flex-direction: column; }
 .px-dl-row strong { font-size: var(--t-13); font-weight: 600; }
 .px-dl-row small { color: var(--text-2); font-size: var(--t-12, 12px); }
-.px-dl-go {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 0;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--text) 9%, transparent);
-  color: var(--accent);
-  cursor: default;
-  transition: none;
-}
-.px-dl-go:hover { background: color-mix(in srgb, var(--text) 14%, transparent); }
-.px-dl-go:active { transform: scale(0.92); }
 
 /* Adjust Date and Time. */
 .px-taken { display: block; }
@@ -841,7 +631,7 @@
 .px-date-zone { margin: 8px 0 14px; text-align: center; color: var(--text-2); font-size: var(--t-12, 12px); }
 .px-date-grid { display: grid; grid-template-columns: auto 1fr; gap: 10px 10px; align-items: center; font-size: var(--t-13); }
 .px-date-grid > span, .px-date-grid > label { text-align: right; }
-.px-date-was, .px-date-field {
+.px-date-was {
   padding: 7px 10px;
   border-radius: 8px;
   background: var(--field, transparent);
@@ -851,56 +641,6 @@
   font-variant-numeric: tabular-nums;
 }
 .px-date-was { color: var(--text-2); }
-.px-date-field { border: 0; outline: none; }
-.px-date-field:focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-ring); }
-.px-sheet-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
-.px-sheet-button {
-  height: 34px;
-  border: 0;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--text) 10%, transparent);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  font-weight: 600;
-  cursor: default;
-  transition: none;
-}
-.px-sheet-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 15%, transparent); }
-.px-sheet-button:active:not(:disabled) { transform: scale(0.97); }
-.px-sheet-button.is-primary { background: var(--accent); color: #fff; }
-.px-sheet-button.is-primary:hover:not(:disabled) { background: var(--accent-strong); }
-.px-sheet-button:disabled { opacity: 0.45; }
-
-/* The search field, a capsule at the toolbar's end as icloud.com's. */
-.px-search { align-items: center; gap: 6px; width: 200px; padding: 0 10px; color: var(--text-2); cursor: text; }
-.px-search input {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  outline: none;
-}
-.px-search input::-webkit-search-cancel-button { display: none; }
-.px-search input::placeholder { color: var(--text-3); }
-.px-search:focus-within { box-shadow: var(--glass-float), 0 0 0 3px var(--accent-ring); }
-.px-search-clear {
-  display: grid;
-  place-items: center;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: var(--text-3);
-  color: var(--sheet);
-  cursor: default;
-}
-@media (max-width: 1000px) { .px-search { width: 140px; } }
 
 /* Folders nest: each level a step in, as the Mac sidebar steps them. */
 .px-albums .px-depth.px-source,
@@ -908,31 +648,6 @@
 .px-albums .px-parent-row.px-depth .px-twisty { left: calc(10px + var(--depth, 0) * 14px); }
 .px-albums .px-parent-row.px-depth .px-parent { padding-left: calc(30px + var(--depth, 0) * 14px); }
 .px-card.is-folder .px-card-pic { color: var(--accent); }
-
-/* ---- a question before a change, as icloud.com's Photos asks it: centred, a symbol over the
-   question in bold, one quiet line, Cancel and the action side by side and equal ----------- */
-.px-ask { width: min(400px, 92vw); align-items: center; text-align: center; gap: 10px; padding: 26px 30px 26px; }
-.px-ask-symbol { display: grid; place-items: center; color: var(--accent); margin-bottom: 4px; }
-.px-ask-symbol.is-danger { color: var(--accent); }
-.px-ask h2 { white-space: normal; font-size: var(--t-17); font-weight: 700; line-height: 1.3; text-wrap: balance; }
-.px-ask p { margin: 0; font-size: var(--t-13); color: var(--text-2, color-mix(in srgb, var(--text) 70%, transparent)); text-wrap: balance; }
-.px-ask-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; margin-top: 14px; }
-.px-ask-actions button {
-  height: 36px;
-  border: 0;
-  border-radius: 9px;
-  font: inherit;
-  font-size: var(--t-15, 15px);
-  font-weight: 500;
-  color: var(--text);
-  background: color-mix(in srgb, var(--text) 12%, transparent);
-}
-.px-ask-actions button:hover { background: color-mix(in srgb, var(--text) 17%, transparent); }
-.px-ask-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.px-ask-actions .is-act { color: var(--accent); }
-.px-ask-actions.is-stacked { grid-template-columns: 1fr; gap: 8px; }
-.px-ask .signout-unsent { color: var(--text); font-weight: 500; }
-.px-ask-actions .is-act.danger { color: var(--danger); }
 
 /* ---- a video, as Photos plays one: the film alone, its controls in a capsule floating over
    its foot that fades while the pointer rests (always there while paused) ----------------- */
@@ -1058,8 +773,8 @@
   grid-template-columns: 84px 1fr;
   width: 400px;
   max-height: min(460px, 70vh);
-  border-radius: 14px;
-  background: var(--sheet);
+  border-radius: var(--r-float);
+  background: var(--glass-thick);
   box-shadow: var(--glass-float);
   overflow: hidden;
   outline: none;
@@ -1109,23 +824,6 @@
    white frame, a question mark, the file's name); what is under it shows. */
 img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }
 
-/* Shared Albums: nothing shared yet, and the name for a new one. */
-.px-shared-empty { display: grid; justify-items: start; gap: 12px; }
-.px-shared-empty p { margin: 0; }
-.px-shared-name {
-  width: 100%;
-  height: 34px;
-  margin: 4px 0 2px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 8px;
-  font: inherit;
-  font-size: var(--t-15, 15px);
-  color: var(--text);
-  background: var(--field, color-mix(in srgb, var(--text) 8%, transparent));
-  box-shadow: inset 0 0 0 1px var(--field-edge, var(--separator));
-}
-.px-shared-name:focus { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-ring); }
 /* The last picture painted, in the same place as the frame over it (the stage's one cell). */
 .px-stage > .px-under, .px-stage > .px-pan { grid-area: 1 / 1; }
 .px-under { background-size: 100% 100%; }

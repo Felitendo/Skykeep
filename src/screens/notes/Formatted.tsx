@@ -8,6 +8,8 @@
  * lay over the text directly. Runs that do not add up to the text — a note edited here since
  * the last sync — are not guessed at: the caller shows the plain text instead.
  */
+import { useEffect, useRef } from "react";
+import { describe, drawMedia } from "./NoteEditor";
 import { addressesIn, openLinkAt } from "./links";
 export type Run = {
   length: number;
@@ -125,8 +127,27 @@ function withAddresses(text: string): React.ReactNode {
   return out;
 }
 
+/**
+ * An attachment where it stands in a note shown read-only: drawn as the editor draws it — the
+ * picture, the scan, the file's chip — not an invisible character on an empty line.
+ */
+function Attachment({ id }: { id: string }) {
+  const host = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    let gone = false;
+    void describe(id).then((info) => {
+      if (!gone && info && host.current) drawMedia(host.current, info);
+    });
+    return () => {
+      gone = true;
+    };
+  }, [id]);
+  return <span ref={host} className="nf-attachment" />;
+}
+
 function Inline({ span }: { span: Span }) {
   const { run, text } = span;
+  if (run.attachment && text.includes("\ufffc")) return <Attachment id={run.attachment} />;
   let node: React.ReactNode = run.link ? text : withAddresses(text);
   if (run.bold) node = <strong>{node}</strong>;
   if (run.italic) node = <em>{node}</em>;

@@ -50,8 +50,12 @@ ok(JSON.stringify(sent) === JSON.stringify([true, false]), `and Apple gets both 
 // Apple refuses a change that was queued behind the window: the reason is said, and the list
 // is read again (Apple's version back over the tick).
 const readsBefore = await page.evaluate(() => (window.__reads ??= 0));
-await page.evaluate(() => window.__emit("quince://outbox-refused", { service: "reminders", record: "r2", message: "This reminder was changed on another device first." }));
+await page.evaluate(() => {
+  // Kept, not dropped: the backend holds it as refused, with what it was.
+  window.__outbox = { waiting: [], refused: [{ id: 7, service: "reminders", record: "r2", kind: "done", reason: "This reminder was changed on another device first.", madeAt: 0, content: "Plan tomorrow" }] };
+  window.__emit("quince://outbox-refused", { service: "reminders", record: "r2", message: "This reminder was changed on another device first." });
+});
 await page.waitForTimeout(300);
-ok(/changed on another device/.test(await page.locator(".notice").innerText().catch(() => "")), "a change Apple refuses is put back, and the window says why");
+ok(/changed on another device/.test(await page.locator(".toast.is-error, .unsent").first().innerText().catch(() => "")), "a change Apple refuses is put back, and the window says why");
 await b.close();
 process.exitCode = failures ? 1 : 0;

@@ -73,7 +73,7 @@ let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 
 await page.getByRole("button", { name: "Upload", exact: true }).click();
-await page.getByRole("menuitem", { name: "Folder…" }).click();
+await page.getByRole("menuitem", { name: "Folder" }).click();
 await page.waitForTimeout(700);
 const early = await page.evaluate(() => window.__early);
 ok(/Holiday/.test(early) && /Preparing/.test(early), `a folder upload says what it is doing from the start  [${early.replace(/\s+/g, " ")}]`);

@@ -1,7 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { QuickCapture } from "./components/QuickCapture";
 import "./styles/tokens.css";
+import "./styles/kit.css";
 import "./styles/app.css";
 import "./styles/reminders.css";
 import "./styles/calendar.css";
@@ -41,9 +43,12 @@ document.addEventListener("contextmenu", (e) => {
   if (!editable) e.preventDefault();
 });
 
+// The quick-capture window (`pomander --new reminder`) is one field, not the library.
+const capture = new URLSearchParams(window.location.search).get("capture");
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    {capture === "reminder" || capture === "note" ? <QuickCapture initial={capture} /> : <App />}
   </React.StrictMode>
 );
 

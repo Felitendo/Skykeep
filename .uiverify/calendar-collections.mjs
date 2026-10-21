@@ -2,12 +2,12 @@
 // one; a name in use is refused with Apple's words; right-click renames, recolours, deletes;
 // the default calendar offers no Delete.
 import { engine } from "./engine.mjs";
-import { SERVICES, installStub, openScreen } from "./stub.mjs";
+import { SERVICES, autoConfirm, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, calendarFixture: true });
 const page = await ctx.newPage();
-page.on("dialog", (d) => void d.accept());
+await ctx.addInitScript(autoConfirm);
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Calendar");
 await page.waitForTimeout(400);
@@ -51,6 +51,6 @@ await page.keyboard.press("Escape");
 await page.locator(".cx-cal", { hasText: "Trips" }).click({ button: "right" });
 await page.getByRole("menuitem", { name: /Delete Calendar/ }).click();
 await page.waitForTimeout(400);
-ok(!(await names()).includes("Trips"), "Delete Calendar…, once confirmed, removes it");
+ok(!(await names()).includes("Trips"), "Delete Calendar, once confirmed, removes it");
 await b.close();
 process.exitCode = failures ? 1 : 0;

@@ -4405,21 +4405,12 @@ fn show_window(app: &tauri::AppHandle) {
 /// closed, and can be opened again or quit from there.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::PredefinedMenuItem;
-    use tauri::menu::{Menu, MenuItem, Submenu};
+    use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-    // Five lines, as a menu-bar extra keeps it: the window, the apps folded under one, the two
-    // quick notes a person reaches for, and Quit. Syncing needs no button (it runs by itself)
-    // and Settings lives in the window; a longer menu was a list nobody could scan.
+    // Four plain lines, nothing nested: the window, the two quick notes a person reaches for
+    // from anywhere, and Quit. A submenu was slow to draw in the panel and one more step;
+    // each app has its own launcher and is a click away in the window.
     let open = MenuItem::with_id(app, "open", "Open Pomander", true, None::<&str>)?;
-    let each: Vec<MenuItem<tauri::Wry>> = apps::APPS
-        .iter()
-        .map(|(key, name)| MenuItem::with_id(app, format!("app:{key}"), *name, true, None::<&str>))
-        .collect::<tauri::Result<_>>()?;
-    let each_ref: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = each
-        .iter()
-        .map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
-        .collect();
-    let apps_menu = Submenu::with_items(app, "Open App", true, &each_ref)?;
     let new_reminder = MenuItem::with_id(app, "new:reminder", "New Reminder", true, None::<&str>)?;
     let new_note = MenuItem::with_id(app, "new:note", "New Note", true, None::<&str>)?;
     let line = PredefinedMenuItem::separator(app)?;
@@ -4427,15 +4418,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit Pomander", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[
-            &open,
-            &apps_menu,
-            &line,
-            &new_reminder,
-            &new_note,
-            &line2,
-            &quit,
-        ],
+        &[&open, &line, &new_reminder, &new_note, &line2, &quit],
     )?;
     let mut tray = TrayIconBuilder::with_id("quince")
         .tooltip("Pomander")
@@ -4448,11 +4431,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "quit" => shutdown(app, 0),
             "new:reminder" => intake::capture(app, "reminder"),
             "new:note" => intake::capture(app, "note"),
-            other => {
-                if let Some(key) = other.strip_prefix("app:") {
-                    apps::open(app, key);
-                }
-            }
+            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {

@@ -32,7 +32,7 @@ await page.locator("button.drive-row-hit", { hasText: "Invoice" }).dblclick();
 await page.waitForTimeout(200);
 const sent = await page.evaluate(() => window.__downloads?.at(-1));
 ok(sent?.drivewsid === "FILE::r1" && sent?.item?.name === "Invoice-0001", "a double-click saves it, with the file's details sent along");
-ok(/Saved to/.test(await page.locator(".drive-saved").innerText()), "and says where");
+ok(/Saved to Downloads/.test(await page.locator(".toast").innerText()) && (await page.locator(".toast").getByRole("button", { name: "Show in Folder" }).count()) === 1, "and says where, with a way to see it");
 await page.locator(".crumb", { hasText: "iCloud Drive" }).click();
 ok((await page.locator(".drive-group").count()) === 0, "the breadcrumb goes back to iCloud Drive");
 await b.close();

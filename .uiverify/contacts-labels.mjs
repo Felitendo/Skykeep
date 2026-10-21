@@ -23,14 +23,14 @@ ok(/mobile/.test(await first.innerText()) && (await page.getByLabel("Custom labe
   "an existing \"mobile\" shows as Apple's own, not as a custom label");
 await first.click();
 const offered = await page.getByRole("option").allInnerTexts();
-ok(["mobile", "iPhone", "Apple Watch", "work", "custom…"].every((x) => offered.some((o) => o.replace("✓", "").trim() === x)), `Apple's phone labels are offered  ${JSON.stringify(offered)}`);
+ok(["mobile", "iPhone", "Apple Watch", "work", "Custom"].every((x) => offered.some((o) => o.replace("✓", "").trim() === x)), `Apple's phone labels are offered  ${JSON.stringify(offered)}`);
 await page.getByRole("option", { name: "work", exact: true }).click();
 
 const second = page.getByLabel("Label for detail 2");
 await second.click();
-await page.getByRole("option", { name: "custom…" }).click();
+await page.getByRole("option", { name: "Custom" }).click();
 const typed = page.getByLabel("Custom label for detail 2");
-ok((await typed.count()) === 1, "custom… opens a field to type a label in");
+ok((await typed.count()) === 1, "Custom opens a field to type a label in");
 await typed.fill("gym");
 
 await page.getByRole("button", { name: "Save" }).click();

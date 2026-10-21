@@ -3,6 +3,10 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
+  /* Painted once, on a layer of its own that never moves: behind a scrolling page, WebKit
+     otherwise painted both gradients again on every frame. (A still layer, never animated.) */
+  transform: translateZ(0);
+  contain: strict;
   background:
     radial-gradient(110% 80% at 8% -10%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 58%),
     radial-gradient(90% 70% at 100% 108%, color-mix(in srgb, var(--text) 5%, transparent), transparent 52%);
@@ -10,57 +14,106 @@
 
 /* ---- shell ------------------------------------------------------------------ */
 
+/*
+ * Signed out. The sheet hangs from a fixed point a little above the middle rather than being
+ * centred: centred, every line that came or went — an error, the disclosure opening — moved
+ * the whole sheet, the icon included. Anchored, things below a change move and nothing above.
+ */
 .shell {
   height: 100%;
+  /* Always a scroll box, so a sheet that grows past the window (the disclosure open, in a
+     short window) does not jump sideways as a scrollbar arrives. The track is transparent
+     and there is no thumb until there is something to scroll; the 10px it takes on the
+     right is given back on the left, so the sheet stays centred. (scrollbar-gutter would
+     say this in one line, but WebKit does not support it.) */
+  overflow-y: scroll;
   display: grid;
-  place-items: center;
-  padding: 32px;
+  justify-items: center;
+  align-content: start;
+  padding: clamp(28px, calc(50vh - 260px), 24vh) 24px 32px 34px;
+
+  /* The one filled control takes the app's own accent — the same blue the app it opens into
+     uses, as Apple's own sign-in sheets do. Said outright here: with no app open yet,
+     tokens.css hands :root the brand gold in light (white on it is 2.8:1), and a custom
+     property resolves where it is declared, so the ring is re-derived too. The fill is the
+     deeper blue, which carries white at 5.6:1 where the bright one manages 3.5:1. */
+  --accent: #0088ff;
+  --accent-strong: #0068d6;
+  --accent-ring: color-mix(in srgb, #0088ff 34%, transparent);
+  --go: #0068d6;
+  --go-text: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shell {
+    --accent: #0091ff;
+    --accent-strong: #0091ff;
+    --accent-ring: color-mix(in srgb, #0091ff 34%, transparent);
+  }
+}
+:root[data-theme="dark"] .shell {
+  --accent: #0091ff;
+  --accent-strong: #0091ff;
+  --accent-ring: color-mix(in srgb, #0091ff 34%, transparent);
+}
+
+/* "Not Now", under the primary when signing in again can wait: the same capsule and height
+   in the quiet fill, so the pair reads as one choice with one default. */
+.sheet > .quiet {
+  width: 100%;
+  height: 40px;
+  margin-top: 8px;
+  font-size: var(--t-15);
 }
 
 /* ---- the sign-in sheet ------------------------------------------------------- */
 
 .sheet {
   width: 100%;
-  max-width: 344px;
+  max-width: 320px;
   text-align: center;
 }
 
 /* The icon's own grid leaves a margin round the tile, so it is drawn a little larger than
    the tile is meant to look. */
 .mark {
-  width: 92px;
-  height: 92px;
-  margin: -10px auto 10px;
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 14px;
   display: block;
   user-select: none;
 }
 
+/* Type scale: 22 title, 15 fields and the button, 13 lede and messages, 12 footnotes,
+   11 the disclosure. Weights are 600 and 400 only — Segoe UI and the Linux fallbacks
+   all have both, and nothing is synthesised. */
 .sheet h1 {
-  margin: 0 0 7px;
+  margin: 0;
   font-size: var(--t-22);
   font-weight: 600;
-  letter-spacing: -0.021em;
-  line-height: 1.2;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+  text-wrap: balance;
 }
 
 .lede {
-  margin: 0 auto 24px;
-  max-width: 36ch;
+  margin: 6px auto 24px;
+  max-width: 34ch;
   color: var(--text-2);
   font-size: var(--t-13);
-  line-height: 1.5;
+  line-height: 1.45;
+  text-wrap: balance;
 }
 
 /* macOS groups related fields into one bordered block with a hairline between them,
    rather than floating separate inputs. */
 .field-group {
   border: 1px solid var(--field-edge);
-  border-radius: var(--r-field);
+  border-radius: 10px;
   background: var(--field);
   box-shadow: var(--shadow-field);
   overflow: hidden;
   text-align: left;
-  transition: border-color 140ms var(--ease);
+  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease), opacity 140ms var(--ease);
 }
 
 .field-group:hover { border-color: var(--field-edge-hover); }
@@ -70,181 +123,166 @@
   box-shadow: var(--shadow-field), 0 0 0 3px var(--accent-ring);
 }
 
+.field-group.is-invalid { border-color: var(--danger); }
+.field-group.is-invalid:focus-within {
+  box-shadow: var(--shadow-field), 0 0 0 3px color-mix(in srgb, var(--danger) 26%, transparent);
+}
+
 .field-group input {
+  display: block;
   width: 100%;
+  height: 42px;
   border: 0;
+  margin: 0;
   background: transparent;
   color: var(--text);
   font: inherit;
   font-size: var(--t-15);
-  padding: 10px 12px;
+  padding: 0 13px;
   outline: none;
 }
 
-.field-group input::placeholder { color: var(--text-3); }
+.field-group input::placeholder { color: var(--text-3); opacity: 1; }
 .field-group input + input { border-top: 1px solid var(--separator); }
+/* Held while Apple answers: the fields stay put and simply quieten. */
+.field-group input:disabled { color: var(--text-2); }
+.sheet[aria-busy="true"] .field-group { opacity: 0.6; }
 
-/* ---- buttons ----------------------------------------------------------------- */
+/* ---- the sign-in sheet's own buttons ------------------------------------------- */
 
-/*
- * White on the plain quince gold measures 2.8:1 — well under the 4.5:1 white text needs, and
- * it stood that way until an Upload button put a primary control on an audited screen for the
- * first time. The deeper gold measures 6.3:1 and is the same hue, so the accent is unchanged
- * and the label is legible.
- */
-.primary {
-  border: 0;
-  /* A capsule, as macOS 27's regular-size buttons are. */
-  border-radius: var(--r-pill);
-  background: var(--accent-deep);
-  color: #fff;
-  font: inherit;
-  font-size: var(--t-13);
-  font-weight: 550;
-  min-height: 28px;
-  padding: 5px 16px;
-  cursor: pointer;
+/* The one thing on the screen, so it takes the width. Its height never changes: the busy
+   spinner and the countdown sit inside the same 40px. */
+.sheet .primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 40px;
+  margin-top: 16px;
+  padding: 0 16px;
+  background: var(--go);
+  color: var(--go-text);
+  font-size: var(--t-15);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 160ms var(--ease), color 160ms var(--ease);
 }
-
-/* A Mac button keeps its colour under the pointer; pressing darkens its own colour. */
-.primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent-deep) 84%, #000); }
-.primary:disabled {
-  background: color-mix(in srgb, var(--text) 11%, transparent);
+.sheet .primary:active:not(:disabled) { background: color-mix(in srgb, var(--go) 86%, #000); }
+/* Nothing to send yet, or Apple asked for a wait: plainly not pressable. */
+.sheet .primary:disabled {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
   color: var(--text-3);
-  cursor: default;
 }
-.primary:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 2px; }
-
-/* A secondary button, as macOS 27 draws one at regular size: a capsule of quiet fill and
-   no outline (Button/Radius 1000 from Large up in Apple's kit). It used to be bare
-   coloured text that underlined on hover, which reads as a link; then a hairline-bordered
-   plateau, which is the pre-Tahoe shape. */
-.quiet {
-  border: 0;
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-  box-shadow: none;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  font-weight: 510;
-  cursor: pointer;
-  min-height: 28px;
-  padding: 4px 14px;
-  border-radius: var(--r-pill);
-  white-space: nowrap;
+/* Signing in is not "unavailable": the button keeps its colour and only softens. */
+.sheet[aria-busy="true"] .primary:disabled {
+  background: color-mix(in srgb, var(--go) 72%, transparent);
+  color: var(--go-text);
 }
 
-.quiet:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 11%, transparent);
-}
-.quiet:active:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 16%, transparent);
-}
-
-.quiet:disabled { color: var(--text-3); cursor: default; }
-.quiet:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
-
-/* The sign-in screen's button is the one thing on the screen, so it takes the width and
-   the weight. Everywhere else it is one control among several. */
-.shell .primary { margin-top: 18px; width: 100%; font-size: var(--t-15); padding: 10px 16px; }
-
-.quiet.danger { color: var(--danger); }
-.quiet.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
-
-/* The sign-in screen's own buttons sit under a form and need the gap they had. */
-.shell .quiet { margin-top: 14px; }
+/* The secondary ways out of a sheet: the kit's text button, a little roomier. */
+.sheet .link { padding: 4px 8px; }
 
 /* ---- footnotes --------------------------------------------------------------- */
 
+/* The line under the sheet's main control. Its height is kept whether it is empty, says
+   "Checking", or holds a two-line error, so nothing under it moves when it changes. */
+.sheet-status {
+  min-height: 38px;
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.sheet-status > p { margin: 0; max-width: 34ch; font-size: var(--t-13); line-height: 1.4; }
+
 .assurance {
-  margin: 22px auto 0;
+  margin: 0 auto;
   max-width: 40ch;
   color: var(--text-2);
-  font-size: var(--t-11);
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.5;
 }
+.sheet-status > .assurance { max-width: none; font-size: 12px; line-height: 1.6; }
 
-.disclaimer {
-  margin: 10px auto 0;
-  color: var(--text-3);
-  font-size: var(--t-11);
-}
-
-.notice {
-  margin: 16px auto 0;
-  max-width: 34ch;
-  color: var(--text-2);
-  font-size: var(--t-13);
-}
+.sheet-foot { margin-top: 28px; display: grid; justify-items: center; gap: 4px; }
 
 /* Recovery options stay folded away until asked for: the code field is the task. */
 .help {
-  margin: 18px auto 0;
-  max-width: 38ch;
+  margin: -6px auto 0;
   text-align: left;
-  padding: 14px 15px;
-  border-radius: var(--r-field);
+  padding: 14px 16px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--text) 4.5%, transparent);
 }
 
 .help p {
-  margin: 0 0 10px;
-  color: var(--text-2);
-  font-size: var(--t-11);
-  line-height: 1.55;
+  margin: 0;
+  /* A step darker than secondary text: on the panel's tint, --text-2 falls just short of
+     4.5:1. */
+  color: color-mix(in srgb, var(--text) 74%, var(--bg));
+  font-size: 12px;
+  line-height: 1.5;
 }
-
-.help p:last-child { margin-bottom: 0; }
 .help strong { color: var(--text); font-weight: 600; }
+.help .help-warn { color: var(--danger); margin-bottom: 8px; }
+.help > :first-child { margin-top: 0; }
 
 .help-actions {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  margin: 0 0 10px;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 0;
 }
+.help-actions .quiet { font-variant-numeric: tabular-nums; }
 
-.help-actions .quiet { margin-top: 0; padding: 3px 6px; }
-
-.error {
-  margin: 16px auto 0;
-  max-width: 32ch;
-  color: var(--danger);
-  font-size: var(--t-13);
-  line-height: 1.45;
+.help .help-tip {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--separator);
 }
 
 /* ---- six-digit code ---------------------------------------------------------- */
 
 .code {
   display: flex;
-  gap: 7px;
+  gap: 8px;
   justify-content: center;
 }
 
-.code .gap { width: 9px; }
+.code .gap { width: 10px; }
 
 .code input {
-  width: 40px;
-  height: 50px;
+  width: 42px;
+  height: 52px;
+  padding: 0;
   text-align: center;
-  font-size: var(--t-22);
+  font: inherit;
+  font-size: 24px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--text);
   background: var(--field);
   border: 1px solid var(--field-edge);
-  border-radius: var(--r-field);
+  border-radius: 10px;
   box-shadow: var(--shadow-field);
+  caret-color: var(--accent);
   outline: none;
-  transition: border-color 120ms var(--ease), box-shadow 120ms var(--ease);
+  transition: border-color 120ms var(--ease), box-shadow 120ms var(--ease), opacity 140ms var(--ease);
 }
+
+.code input:hover:not(:disabled) { border-color: var(--field-edge-hover); }
 
 .code input:focus {
   border-color: var(--accent);
   box-shadow: var(--shadow-field), 0 0 0 3px var(--accent-ring);
 }
+
+.code.is-invalid input { border-color: var(--danger); }
+.code.is-invalid input:focus {
+  box-shadow: var(--shadow-field), 0 0 0 3px color-mix(in srgb, var(--danger) 26%, transparent);
+}
+.code input:disabled { opacity: 0.55; }
 
 /* ---- library ----------------------------------------------------------------- */
 
@@ -379,20 +417,6 @@
   gap: 4px;
 }
 
-/* A footer link, not a control to press by accident: the one place a bordered button
-   would be heavier than what it does. */
-.sidebar-signout {
-  align-self: flex-start;
-  font-size: var(--t-11);
-  border: 0;
-  background: none;
-  box-shadow: none;
-  color: var(--accent-strong);
-  padding: 4px 8px;
-}
-
-.sidebar-signout:hover:not(:disabled) { background: none; text-decoration: underline; }
-
 .sidebar h2 {
   margin: 6px 8px 10px;
   font-size: var(--t-11);
@@ -407,7 +431,8 @@
   gap: 10px;
   min-height: 34px;
   white-space: nowrap;
-  transition: background 120ms ease;
+  /* No transition here: what the base state is reached by — the current app changing, the
+     pointer leaving — happens at once, so the selection moves crisply, as in a Mac sidebar. */
   width: 100%;
   border: 0;
   background: none;
@@ -465,12 +490,6 @@
 .nav-name { overflow: hidden; text-overflow: ellipsis; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 6px; min-height: 28px; }
 .sidebar-head h2 { margin: 0 8px; }
-.sidebar-fold {
-  display: grid; place-items: center; width: 28px; height: 28px; padding: 0; flex: none;
-  border: 0; border-radius: 7px; background: none; box-shadow: none; color: var(--text-2); cursor: pointer;
-}
-.sidebar-fold:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
-.sidebar-fold:focus-visible { outline: 3px solid var(--accent-ring); }
 /* Folded: the icons alone, centred, names gone; the foot keeps only its status dot. */
 @media (min-width: 901px) {
   .is-rail .sidebar { width: 60px; }
@@ -481,54 +500,34 @@
 }
 @media (max-width: 900px) { .sidebar-fold { display: none; } }
 @media (prefers-reduced-motion: reduce) { .content, .sidebar, .nav-item { transition: none; } }
-.nav-item:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.nav-item:hover { background: color-mix(in srgb, var(--text) 6%, transparent); transition: background-color var(--motion-hover) var(--motion-ease-out); }
+/* Pressed: a shade deeper at once, as a Mac sidebar row darkens under the click. */
+.nav-item:active:not([aria-current="true"]) { background: color-mix(in srgb, var(--text) 12%, transparent); transition: none; }
 /* The current app: a neutral highlight, as a Tahoe sidebar draws one, the label unchanged in
    colour. Tinting it with the app's accent made three apps — Reminders, Drive, Contacts —
    select in the same blue; the icon is what tells them apart. */
-.nav-item[aria-current="true"] { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); font-weight: 590; }
-.nav-item:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
-
-.nav-toggle {
-  margin-top: 6px;
-  color: var(--text-2);
-}
+.nav-item[aria-current="true"] { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); font-weight: 590; transition: none; }
+.nav-item:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
 
 .badge {
   font-size: var(--t-11);
   color: var(--text-3);
   flex: none;
-  opacity: 0.62;
+  opacity: 0.85;
 }
-
-/* The count beside a screen's title, as Reminders shows it: the same size as the heading,
-   in a lighter weight and colour, so it reads as part of the title rather than as a stray
-   digit that wandered in from somewhere. */
-.cal-nav > .badge {
-  font-size: var(--t-22);
-  font-weight: 400;
-  color: var(--text-3);
-  opacity: 1;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.021em;
-}
-
-.nav-item[aria-current="true"] .nav-toggle {
-  margin-top: 6px;
-  color: var(--text-2);
-}
-
-.badge { opacity: 0.85; }
 
 /* Full-bleed, so it passes under the floating sidebar as it scrolls. */
 .content {
   height: 100%;
   overflow-y: auto;
-  padding: 28px 34px 28px var(--side, 236px);
+  padding: 28px 34px 28px var(--side, 220px);
   /* No transition: folding the sidebar slides the content on the compositor instead
      (Library's slideContent) — a padding animated here re-laid out the whole screen on
      every frame. */
 }
-.library { --side: 236px; }
+/* The content begins 16px past the sidebar's card (8px in, 196px wide), open or folded alike:
+   a wider gutter here left a band of nothing between the sidebar and every app. */
+.library { --side: 220px; }
 .library.is-rail { --side: 84px; }
 
 .sidebar-toggle, .sidebar-scrim, .compact-back { display: none; }
@@ -577,7 +576,7 @@
     color: var(--text);
     cursor: default;
   }
-  .sidebar-toggle:focus-visible { outline: 3px solid var(--accent-ring); }
+  .sidebar-toggle:focus-visible { outline: var(--focus-ring); }
   .is-sidebar-open .sidebar-scrim {
     position: absolute;
     z-index: 25;
@@ -623,192 +622,18 @@
  */
 .content p:not([class]) { margin: 0 0 18px; color: var(--text-2); font-size: var(--t-15); max-width: 62ch; }
 
-.toolbar { display: flex; justify-content: flex-end; margin-bottom: 10px; }
-
 /* ---- the one orchestrated moment: sign-in dissolving into the library ---------- */
 
-.enter-sheet { animation: sheet-in 420ms var(--ease) both; }
+/* Opacity only, short, and not held afterwards ("backwards", not "both"): a sheet that moved
+   or scaled in sat in an animated compositor layer, and WebKitGTK on Hyprland flickers those. */
+.enter-sheet { animation: sheet-in 200ms ease-out backwards; }
+@media (prefers-reduced-motion: reduce) { .enter-sheet { animation: none; } }
 /* The library simply appears: a whole-window animation, held at its last frame forever by
    "both", kept the entire app inside an animated layer of WebKitGTK's — and every animation
    handed to the compositor glitched on his screen. */
 
 @keyframes sheet-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.985); }
-  to   { opacity: 1; transform: none; }
-}
-
-
-/* ---- calendar: month grid ------------------------------------------------------
-   Apple's Calendar is a month grid, not a list. Weekday header, six rows of seven, the day
-   number in the corner, events as coloured chips, today marked with the accent. */
-
-.cal { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-
-.cal-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-/* Title and its count sit together, as one thing. */
-.cal-nav { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-
-.cal-nav h1 {
-  margin: 0;
-  font-size: var(--t-22);
-  font-weight: 600;
-  letter-spacing: -0.021em;
-}
-
-/* Only the calendar needs a reserved width, and only so the arrows either side of a month
-   name stay put as it changes. Everywhere else it left the count stranded beside a short
-   title with nothing between them. */
-.cal .cal-nav h1 { min-width: 8.5ch; margin-right: 10px; }
-
-.chev {
-  width: 26px;
-  height: 24px;
-  border: 1px solid var(--field-edge);
-  background: var(--field);
-  color: var(--text);
-  border-radius: var(--r-field);
-  font-size: var(--t-15);
-  line-height: 1;
-  cursor: pointer;
-}
-
-.chev:hover { background: color-mix(in srgb, var(--text) 7%, var(--field)); }
-.chev:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 1px; }
-
-.today-btn {
-  height: 24px;
-  padding: 0 11px;
-  border: 1px solid var(--field-edge);
-  background: var(--field);
-  color: var(--text);
-  border-radius: var(--r-field);
-  font: inherit;
-  font-size: var(--t-13);
-  cursor: pointer;
-}
-
-.today-btn:hover { background: color-mix(in srgb, var(--text) 7%, var(--field)); }
-.today-btn:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 1px; }
-
-.cal-actions { display: flex; align-items: center; gap: 12px; }
-
-.daynum {
-  align-self: flex-start;
-  font-size: var(--t-11);
-  font-weight: 550;
-  color: var(--text-2);
-  min-width: 18px;
-  height: 18px;
-  line-height: 18px;
-  text-align: center;
-  border-radius: var(--r-pill);
-  font-variant-numeric: tabular-nums;
-}
-
-/* White on the standard gold falls below 4.5:1, so today's badge uses a deeper shade. */
-.daynum.is-today {
-  background: var(--accent-deep);
-  color: #fff;
-  font-weight: 650;
-}
-
-.chips { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-
-.chip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  font-size: var(--t-11);
-  line-height: 1.35;
-  padding: 1px 4px;
-  border-radius: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.chip:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
-
-.chip-dot { width: 6px; height: 6px; border-radius: var(--r-pill); flex: none; }
-.chip-time { color: var(--text-2); font-variant-numeric: tabular-nums; flex: none; }
-.chip-title { overflow: hidden; text-overflow: ellipsis; }
-
-/* An all-day event reads as a filled bar, the way Apple shows it. */
-.chip.all-day { color: #fff; font-weight: 550; }
-.chip.all-day:hover { filter: brightness(1.06); }
-
-.chip.more { color: var(--text-3); }
-
-.cal-empty { margin-top: 14px; color: var(--text-2); max-width: 54ch; }
-
-/* The content pane holds the grid, so it must not scroll independently. */
-.content[data-screen="calendar"] { display: flex; flex-direction: column; overflow: hidden; }
-
-.rem-lists {
-  overflow-y: auto;
-  padding-right: 4px;
-  border-right: 1px solid var(--separator);
-}
-
-.rem-list {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  border: 0;
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  text-align: left;
-  padding: 6px 8px;
-  border-radius: var(--r-field);
-  cursor: pointer;
-}
-
-.rem-list:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.rem-list[aria-current="true"] { background: var(--accent-tint); font-weight: 550; }
-.rem-list:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
-.rem-list-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* A reminder in the calendar reads as a task, not an event: a ring rather than a dot. */
-.chip.reminder .chip-title { color: var(--text); }
-
-.chip-ring {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--r-pill);
-  border: 1.5px solid var(--text-3);
-  flex: none;
-  box-sizing: border-box;
-}
-
-.chip.reminder.is-done .chip-title,
-.chip.reminder.is-done .chip-time {
-  color: var(--text-3);
-  text-decoration: line-through;
-}
-
-.chip.reminder.is-done .chip-ring {
-  background: var(--text-3);
-  border-color: var(--text-3);
-}
-
-.pin { color: var(--accent); font-size: 9px; margin-right: 5px; vertical-align: 2px; }
-
-.quiet.danger { color: var(--danger); }
-
-/* Four columns do not fit a half-screen window: at 958px the body was reduced to about
-   200px, wrapping every few words. Below this width the folder column folds away and its
-   choice moves into the list, which is what Apple does when space runs out. */
-@media (max-width: 1180px) {
+  from { opacity: 0; }
 }
 
 /* ---- contacts -------------------------------------------------------------------
@@ -832,10 +657,10 @@
   border-right: 1px solid var(--separator);
 }
 .contacts-list-glyph { flex: none; color: var(--text-2); }
-.contacts-lists .notes-folder-row.is-drop .notes-folder {
-  background: var(--accent-tint);
-  box-shadow: inset 0 0 0 2px var(--accent);
-}
+.contacts-head { margin-bottom: 8px; }
+.contacts-head-actions { display: flex; gap: 2px; }
+.contacts-search { margin-bottom: 8px; }
+.contact-none { margin: 14px 0 0; color: var(--text-2); }
 .contacts-list-picker { display: none; margin-bottom: 8px; }
 .contacts-list-picker .picker { width: 100%; }
 /* The lists fold into a picker above the people first. */
@@ -863,26 +688,22 @@
   padding: 0 14px 0 0;
 }
 
-.contacts-list .cal-bar { flex-direction: column; align-items: flex-start; gap: 4px; margin-bottom: 8px; }
-.contacts-list .cal-nav h1 { font-size: var(--t-17); }
-
-.contacts-search {
-  width: 100%;
-  font: inherit;
-  font-size: var(--t-13);
-  color: var(--text);
-  background: var(--field);
-  border: 1px solid var(--field-edge);
-  border-radius: var(--r-field);
-  padding: 5px 9px;
-  margin-bottom: 8px;
-  outline: none;
+/* The list and the letter index beside it share what is left of the column's height. */
+.contact-rows-wrap { display: flex; flex: 1 1 auto; min-height: 0; }
+.contact-rows { position: relative; flex: 1 1 auto; min-width: 0; list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+/* A long address book lays out and paints only the rows in view. */
+.contact-rows > li:not(.contact-letter) { content-visibility: auto; contain-intrinsic-size: auto 38px; }
+.contact-index {
+  display: flex; flex-direction: column; justify-content: center; flex: none;
+  width: 16px; margin-left: 2px; padding: 4px 0;
+  touch-action: none; user-select: none; -webkit-user-select: none;
 }
-
-.contacts-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
-.contacts-search::placeholder { color: var(--text-3); }
-
-.contact-rows { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+.contact-index button {
+  flex: 0 1 18px; min-height: 0; padding: 0; border: 0; background: none;
+  color: var(--accent-strong); font: inherit; font-size: 10px; font-weight: 600; line-height: 1;
+  cursor: pointer;
+}
+.contact-index button:hover { color: var(--text); }
 
 .contact-row {
   display: flex;
@@ -903,8 +724,8 @@
 .contact-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 /* As macOS selects: the accent with white text while the list has focus, grey after. */
 .contact-row[aria-current="true"] { background: color-mix(in srgb, var(--text) 11%, transparent); }
-.contact-rows:focus-within .contact-row[aria-current="true"] { background: var(--accent); color: var(--on-accent); }
-.contact-rows:focus-within .contact-row[aria-current="true"] .avatar:not(:has(img)) { background: rgba(255, 255, 255, 0.28); color: #fff; }
+.contact-rows.is-focused .contact-row[aria-current="true"] { background: var(--accent); color: var(--on-accent); }
+.contact-rows.is-focused .contact-row[aria-current="true"] .avatar:not(:has(img)) { background: rgba(255, 255, 255, 0.28); color: #fff; }
 .contact-row:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
 .contact-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Several picked: their faces fanned, the count, and what can be done to all of them. */
@@ -914,7 +735,7 @@
 .contact-many h2 { margin: 0; font-size: var(--t-17); }
 /* "me" beside this person's own card, as Contacts marks it. */
 .contact-me { margin-left: auto; color: var(--text-3); font-size: var(--t-11); }
-.contact-rows:focus-within .contact-row[aria-current="true"] .contact-me { color: var(--on-accent-2); }
+.contact-rows.is-focused .contact-row[aria-current="true"] .contact-me { color: var(--on-accent-2); }
 
 .avatar {
   width: 26px;
@@ -979,7 +800,18 @@
   border-top: 1px solid var(--separator);
 }
 
-.contact-methods dt { color: var(--text-2); font-size: var(--t-11); padding-top: 2px; }
+/* Labels right-aligned against their values, grey and small, as Contacts on the Mac sets a card. */
+.contact-methods dt { color: var(--text-2); font-size: var(--t-11); padding-top: 3px; text-align: right; }
+.contact-copy {
+  display: inline-grid; justify-items: end; padding: 0; border: 0; background: none;
+  color: inherit; font: inherit; text-align: right; cursor: copy;
+}
+/* The two words swap at once: a CSS fade is the kind WebKitGTK glitches (lib/fade.ts). */
+.contact-copy > span { grid-area: 1 / 1; }
+.contact-copy > span.is-hidden { opacity: 0; }
+.contact-copy > span:last-child { color: var(--accent-strong); }
+.contact-copy:hover > span:first-child { color: var(--text); }
+.contact-copy:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 2px; border-radius: 3px; }
 .contact-methods dd { margin: 0; font-size: var(--t-15); overflow-wrap: anywhere; }
 
 /* A postal address is several lines and reads as several lines. */
@@ -1016,18 +848,38 @@
   background: none;
   color: var(--text-2);
   font: inherit;
-  font-size: var(--t-15);
-  padding: 2px 5px;
-  border-radius: var(--r-field);
+  font-size: var(--t-13);
+  padding: 0 4px;
+  border-radius: 5px;
   cursor: pointer;
 }
 
-.crumb:hover { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
-.crumb[aria-current="true"] { color: var(--text); font-weight: 600; }
-.crumb:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 1px; }
+.crumb:hover { background: var(--fill); color: var(--text); }
+/* The folder open is the pane's title (PaneTitle); the path back sits small above it. */
+.pane-title h1 > .crumb { padding: 0; font: inherit; letter-spacing: inherit; color: var(--text); text-align: start; cursor: default; }
+.pane-title h1 > .crumb:hover { background: none; }
+.crumb:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 .crumb-sep { color: var(--text-3); padding: 0 1px; }
 
 .drive-rows { list-style: none; margin: 8px 0 0; padding: 0; overflow-y: auto; min-height: 0; }
+/* A folder of thousands lays out and paints only the rows in view. */
+.drive-rows:not(.is-grid) > li[data-id] { content-visibility: auto; contain-intrinsic-size: auto 39px; }
+.drive-col-turn { white-space: pre; }
+/* Quick Look: Apple's picture of the file, large, on a sheet that fades in (lib/fade.ts). */
+.drive-peek { width: min(520px, 92vw); max-height: 88vh; align-items: center; text-align: center; gap: 6px; }
+.drive-peek-face {
+  display: grid; place-items: center; width: 160px; height: 160px; margin: 6px auto 10px;
+  border-radius: 22px; background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.drive-peek-face > svg { transform: scale(4); }
+.drive-peek-face.has-thumb { width: auto; height: auto; max-width: 100%; background: none; }
+.drive-peek-face.has-thumb img {
+  display: block; max-width: min(460px, 84vw); max-height: 52vh; min-width: 160px; object-fit: contain;
+  border-radius: 8px; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(0, 0, 0, 0.2);
+}
+.drive-peek-name { margin: 0; font-size: var(--t-15); font-weight: 600; overflow-wrap: anywhere; }
+.drive-peek-facts { margin: 0; color: var(--text-2); font-size: var(--t-12, 12px); }
+.drive-peek-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
 /* Grid, as icloud.com and Finder's icon view lay it out: a large mark, the name under it in
    two lines at most, the size and date left to List. Actions stay on hover, over the tile. */
 .drive-rows.is-grid {
@@ -1132,60 +984,12 @@
   border-bottom: 1px solid var(--separator);
 }
 
-.drive-saved {
-  margin: 6px 0 0;
-  font-size: var(--t-11);
-  color: var(--accent-strong);
-  animation: rem-moved-in 240ms var(--ease-spring) both;
-}
-
 /* The icon carries its own colour and needs no plate behind it. */
 .drive-badge {
   display: grid;
   place-items: center;
   height: 22px;
 }
-
-.drive-spinner {
-  width: 13px;
-  height: 13px;
-  border-radius: var(--r-pill);
-  border: 1.6px solid color-mix(in srgb, var(--text) 22%, transparent);
-  border-top-color: var(--text-2);
-  animation: drive-spin 640ms linear infinite;
-}
-
-@keyframes drive-spin { to { transform: rotate(360deg); } }
-
-@media (prefers-reduced-motion: reduce) {
-  .drive-spinner { animation-duration: 2s; }
-}
-
-/*
- * What can be done to a row.
- *
- * These used to borrow the Reminders row-action style, whose reveal rule keys off a class
- * these rows do not have — so they were left at zero opacity and no amount of hovering
- * brought them back. Downloading, renaming, moving and deleting were all implemented and
- * none of them could be reached.
- */
-.drive-action {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border: 0;
-  border-radius: var(--r-field);
-  background: none;
-  color: var(--text-2);
-  cursor: pointer;
-  transition: background 120ms var(--ease), color 120ms var(--ease);
-}
-
-.drive-action:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
-.drive-action.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
-.drive-action:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
-.drive-action:disabled { opacity: 0.4; cursor: default; }
 
 /* A button whose icon sits with its label rather than replacing it. */
 .with-glyph {
@@ -1207,9 +1011,8 @@
   place-items: center;
   border-radius: var(--r-plateau);
   border: 2px dashed var(--accent-ring);
-  background: color-mix(in srgb, var(--accent-tint) 70%, transparent);
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
+  /* A tint, not a blur: a window-sized backdrop blur is WebKitGTK's costliest frame. */
+  background: color-mix(in srgb, var(--accent-tint) 80%, transparent);
   color: var(--accent-strong);
   font-size: var(--t-13);
   font-weight: 600;
@@ -1230,6 +1033,8 @@
  */
 @container (max-width: 560px) {
   .drive-row { position: relative; }
+  /* Set as Files on iPhone sets a row: name, then size and date; the kind has no place. */
+  .drive-row-hit > .drive-kind { display: none; }
   .drive-row-hit {
     grid-template-columns: 28px auto minmax(0, 1fr);
     grid-template-areas: "badge name name" "badge size date";
@@ -1260,33 +1065,6 @@
   .drive-row:hover .drive-row-actions,
   .drive-row-actions:focus-within { pointer-events: auto; }
 }
-
-/* ---- reminders: smart lists, inline editing, flags ------------------------------ */
-
-/* Lines up with the list names beneath it, not with their icons — the heading used to sit
-   nineteen pixels to their left, which read as a column that had slipped. 8px of row
-   padding, a 16px icon, and the 8px gap between them is where the names begin. */
-/*
- * Sits on the same left edge as the icons in the rows beneath it, which is where Apple puts a
- * section heading in a source list. It was inset a further 24px to line up with the row
- * *labels* instead, leaving it adrift of both the cards above and the icons below.
- */
-.rem-lists-heading {
-  margin: 14px 0 4px;
-  padding-left: 8px;
-  font-size: var(--t-11);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--text-3);
-}
-
-@keyframes rem-moved-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: none; }
-}
-
-.rem-list.add { color: var(--text-3); }
-.rem-list.add:hover { color: var(--text-2); }
 
 .cal-form-actions {
   grid-column: 1 / -1;
@@ -1355,7 +1133,7 @@
   margin: 0;
   padding: 5px;
   list-style: none;
-  border-radius: 12px;
+  border-radius: var(--r-float);
   background: var(--glass-thick);
   box-shadow: var(--glass-float);
   color: var(--text);
@@ -1396,41 +1174,6 @@
 }
 
 .picker-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-
-/* ── Scope control ──────────────────────────────────────────────────────────────────────
-   Calendar's Day / Week / Month / Year, as a segmented control: one recessed track with a
-   raised cap over the active segment, which is the macOS shape. */
-.segmented {
-  display: inline-flex;
-  padding: 2px;
-  gap: 2px;
-  border-radius: var(--r-field);
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-}
-
-.segment {
-  border: 0;
-  background: none;
-  font: inherit;
-  font-size: var(--t-11);
-  font-weight: 510;
-  color: var(--text-2);
-  padding: 3px 10px;
-  border-radius: 5px;
-  cursor: pointer;
-  transition: background 140ms var(--ease), color 140ms var(--ease);
-}
-
-.segment:hover { color: var(--text); }
-
-.segment[aria-pressed="true"] {
-  background: var(--sheet);
-  color: var(--text);
-  font-weight: 590;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14), 0 0 0 0.5px var(--glass-edge);
-}
-
-.segment:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 1px; }
 
 /* ── Editing a contact ──────────────────────────────────────────────────────────────────
    The card and the editor are the same surface: the same measure, the same rhythm, so
@@ -1503,52 +1246,6 @@
 /* Apple's label picked from a list; a custom one typed under it, in the same column. */
 .contact-label-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 
-/* ── Modal sheet ────────────────────────────────────────────────────────────────────────
-   The Move dialog is the app's first modal, so this is the shape everything after it will
-   share: a dimmed veil behind a raised sheet, in the macOS sheet's proportions rather than
-   a full-screen dialog. */
-.modal-veil {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: grid;
-  place-items: center;
-  /* A dim, not a blur: macOS dims the window behind a sheet, and a blur of the whole
-     window under glass was glass on glass — and in WebKitGTK the costliest frame there is. */
-  background: rgba(0, 0, 0, 0.2);
-  /* At once: a full-window dim is never animated (the sheet on it fades in; see fadeSheetsIn). */
-}
-
-
-.modal-sheet {
-  width: min(440px, 92vw);
-  max-height: min(560px, 84vh);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 20px 22px;
-  border-radius: var(--r-window);
-  background: var(--glass-thick);
-  box-shadow: var(--glass-float);
-  /* Simply there, as the menus and popovers are: grown in on a spring, the sheet glitched
-     as it came in on WebKitGTK. The window dims behind it. */
-}
-
-@keyframes modal-sheet-in {
-  from { opacity: 0; scale: 0.94; }
-  60% { opacity: 1; }
-  to { opacity: 1; scale: 1; }
-}
-
-.modal-sheet h2 {
-  margin: 0;
-  font-size: var(--t-17);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .move-sheet-list {
   flex: 1;
   min-height: 120px;
@@ -1560,6 +1257,7 @@
   border-radius: var(--r-plateau);
 }
 
+.move-sheet-none { padding: 10px 12px; color: var(--text-2); }
 .move-sheet-row {
   grid-template-columns: 28px 1fr;
   padding: 7px 9px;
@@ -1606,44 +1304,56 @@
  * the screen is not read, and a page nobody reads discloses nothing.
  */
 .disclosure {
-  margin-top: 12px;
+  margin-top: 6px;
   font-size: var(--t-11);
-  color: var(--text-3);
+  color: var(--text-2);
   text-align: left;
 }
 
 .disclosure > summary {
   cursor: pointer;
   list-style: none;
-  text-align: center;
-  padding: 4px;
-  border-radius: var(--r-field);
+  width: fit-content;
+  margin: 0 auto;
+  padding: 4px 8px;
+  border-radius: 6px;
+  user-select: none;
 }
 
 .disclosure > summary::-webkit-details-marker { display: none; }
+/* Drawn, not a ⌄ character: Segoe UI has no such glyph and Windows put a comma there. */
 .disclosure > summary::after {
-  content: " ⌄";
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 0 3px 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
   opacity: 0.7;
 }
-.disclosure[open] > summary::after { content: " ⌃"; }
-.disclosure > summary:hover { color: var(--text-2); }
+.disclosure[open] > summary::after { transform: rotate(-135deg); margin-bottom: 0; }
+.disclosure > summary:hover { color: var(--text); }
 .disclosure > summary:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .disclosure-body {
-  margin-top: 6px;
-  padding: 10px 12px;
-  border-radius: var(--r-field);
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  color: var(--text-2);
+  font-size: 12px;
   background: color-mix(in srgb, var(--text) 4%, transparent);
-  max-height: 210px;
+  max-height: min(210px, 34vh);
   overflow-y: auto;
 }
 
 .disclosure-body p { margin: 0 0 8px; line-height: 1.5; }
 .disclosure-body p:last-child { margin-bottom: 0; }
-.disclosure-body strong { color: var(--text-2); font-weight: 600; }
+.disclosure-body strong { color: var(--text); font-weight: 600; }
 .disclosure-body code {
   font-size: 0.95em;
   padding: 1px 4px;
@@ -1665,7 +1375,7 @@
   flex-direction: column;
   min-width: 150px;
   padding: 5px;
-  border-radius: 12px;
+  border-radius: var(--r-float);
   background: var(--glass-thick);
   box-shadow: var(--glass-float);
 }
@@ -1694,7 +1404,7 @@
   display: flex;
   flex-direction: column;
   border: 1px solid var(--glass-edge);
-  border-radius: 12px;
+  border-radius: var(--r-float);
   background: var(--glass-thick);
   box-shadow: var(--shadow-sheet), var(--glass-specular);
   overflow: hidden;
@@ -1708,39 +1418,8 @@
 }
 .upload-tray-title { font-size: var(--t-13); font-weight: 600; }
 .upload-tray-percent { color: var(--text-2); font-size: var(--t-13); font-variant-numeric: tabular-nums; }
-.upload-tray-close {
-  padding: 2px 10px;
-  border: 0;
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--text) 10%, transparent);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-11);
-  font-weight: 600;
-  cursor: default;
-}
-.upload-tray-close:focus-visible { outline: 3px solid var(--accent-ring); }
 
-.upload-bar {
-  height: 4px;
-  margin: 0 14px 8px;
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--text) 10%, transparent);
-  overflow: hidden;
-}
-/* The fill grows by scale, on the compositor: a width animated here laid out the tray on
-   every step, and coming back to the window replayed every step at once as a glitch. */
-.upload-bar > span {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-  transform-origin: left center;
-  transform: scaleX(0);
-  transition: transform 200ms var(--ease);
-}
-.upload-tray.is-instant .upload-bar > span { transition: none; }
+.upload-tray > .upload-bar { margin: 0 14px 8px; }
 .upload-bar.small { height: 3px; margin: 4px 0 0; }
 
 .upload-rows { margin: 0; padding: 0 6px 8px; list-style: none; overflow-y: auto; }
@@ -1771,38 +1450,6 @@
 .upload-row.is-failed .upload-state,
 .upload-row.is-failed .upload-where { color: var(--danger); }
 
-/* Something went wrong: said once, plainly, beside a way to put it away. Shared by every
-   screen. */
-.notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 0 10px;
-  padding: 8px 8px 8px 12px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--text);
-  font-size: var(--t-13);
-  line-height: 1.4;
-}
-.notice > svg { flex: none; margin-top: 2px; color: var(--danger); }
-.notice p { flex: 1; min-width: 0; margin: 0; }
-.notice-close {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--text-2);
-  cursor: default;
-}
-.notice-close:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
-.notice-close:focus-visible { outline: 3px solid var(--accent-ring); }
-
 /* A screen that failed to draw, in place of the screen — the rest of the app carries on. */
 .screen-failed { max-width: 46ch; margin: 64px auto 0; text-align: center; color: var(--text-2); }
 .screen-failed p { margin: 0 0 12px; font-size: var(--t-13); }
@@ -1816,7 +1463,7 @@
 .info-sheet { width: min(400px, calc(100vw - 32px)); padding: 0 0 8px; }
 .info-head { display: flex; align-items: center; justify-content: center; position: relative; padding: 14px 16px; border-bottom: 1px solid var(--separator); }
 .info-head h2 { margin: 0; font-size: var(--t-15); font-weight: 600; }
-.info-done { position: absolute; right: 10px; font-weight: 600; color: var(--sys-blue); }
+.info-done { position: absolute; right: 10px; font-weight: 600; }
 .info-mark { display: grid; place-items: center; margin: 18px auto 10px; width: 96px; height: 96px; border-radius: 16px; background: color-mix(in srgb, var(--text) 6%, transparent); }
 .info-mark > * { transform: scale(2.6); }
 .info-name { margin: 0 20px 14px; text-align: center; font-weight: 600; word-break: break-word; }
@@ -1832,9 +1479,12 @@
 .row-menu {
   position: fixed; z-index: 60; min-width: 200px; padding: 5px;
   display: flex; flex-direction: column; outline: none;
-  border-radius: 12px;
+  border-radius: var(--r-float);
   background: var(--glass-thick);
   box-shadow: var(--glass-float);
+  /* Opens and closes at once, as a macOS menu does, and as the pop-up's menu and search's
+     results do — one rule for every menu. A 120ms fade-and-drop was tried here and flashed on
+     his WebKitGTK (the compositor layer it needs is built on the first frame). */
 }
 .row-menu-item {
   display: flex; align-items: center; gap: 12px; width: 100%; min-height: 24px; padding: 0 12px;
@@ -1853,18 +1503,20 @@
 .drive-more { font-size: 9px; letter-spacing: 1px; }
 .drive-row.is-menu { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .drive-row.is-menu .drive-row-actions { opacity: 1; }
-.drive-count { margin: 0 auto 0 10px; color: var(--text-3); font-size: var(--t-12, 12px); white-space: nowrap; }
 /* Selected, as Finder marks it: the accent behind the row, its text in white. */
 .drive-row.is-selected { background: var(--sys-blue, #0a84ff); }
 .drive-row.is-selected .drive-name, .drive-row.is-selected .drive-meta { color: #fff; }
 .drive-rows.is-grid .drive-row.is-selected { background: color-mix(in srgb, var(--sys-blue, #0a84ff) 28%, transparent); box-shadow: inset 0 0 0 2px var(--sys-blue, #0a84ff); }
 .drive-rows.is-grid .drive-row.is-selected .drive-name { color: var(--text); }
 /* With focus elsewhere the selection stays, quietly — grey, the text its own colour. */
-.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected { background: color-mix(in srgb, var(--text) 11%, transparent); }
-.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected .drive-name { color: var(--text); }
-.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected .drive-meta { color: var(--text-2); }
-.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected .drive-more { color: var(--text); }
-.drive-rows:not(.is-grid):not(:focus-within) .drive-row.is-selected .drive-badge > svg { filter: none; }
+/* "Focused" is a class the list sets as the focus comes into it and leaves, not :focus-within:
+   WebKit restyled every row under a :focus-within ancestor at each move of the focus between
+   rows — 130 ms an arrow press in a folder of thousands. The same for Contacts' list. */
+.drive-rows:not(.is-grid):not(.is-focused) .drive-row.is-selected { background: color-mix(in srgb, var(--text) 11%, transparent); }
+.drive-rows:not(.is-grid):not(.is-focused) .drive-row.is-selected .drive-name { color: var(--text); }
+.drive-rows:not(.is-grid):not(.is-focused) .drive-row.is-selected .drive-meta { color: var(--text-2); }
+.drive-rows:not(.is-grid):not(.is-focused) .drive-row.is-selected .drive-more { color: var(--text); }
+.drive-rows:not(.is-grid):not(.is-focused) .drive-row.is-selected .drive-badge > svg { filter: none; }
 /* Apple's own picture of a file: small in a list, the tile's face in Grid, as icloud.com. */
 .drive-thumb { width: 22px; height: 22px; object-fit: contain; border-radius: 3px; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25); background: #fff; }
 .drive-rows.is-grid .drive-badge:has(.drive-thumb) { transform: none; height: 76px; }
@@ -1894,25 +1546,20 @@
 .drive-col.is-on { color: var(--text-2); font-weight: 600; }
 .drive-col:hover { color: var(--text); }
 .drive-kind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Drive's bar: the path and its count stay one line and give way first; the controls wrap
-   beneath only when the window is too narrow for both. At 760px the title broke in two and
-   ran into its own count. */
-.drive > .cal-bar { flex-wrap: wrap; row-gap: 10px; }
-.drive > .cal-bar .crumbs { flex-wrap: nowrap; overflow: hidden; }
-.drive > .cal-bar .crumb { white-space: nowrap; }
-.drive > .cal-bar .drive-title { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
-/* The name's first letter in line with its count's. */
-.drive > .cal-bar .drive-title .crumbs { margin-left: -5px; }
-.drive > .cal-bar .drive-count { margin: 0; overflow: hidden; text-overflow: ellipsis; }
-.drive > .cal-bar .cal-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+/* Drive's bar: the title takes what room there is; the controls wrap beneath only when the
+   window is too narrow for both. */
+.drive-bar { flex-wrap: wrap; row-gap: 10px; margin-bottom: 10px; }
+.drive-bar .crumbs { display: flex; flex-wrap: wrap; margin-left: -4px; }
+.drive-tools { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; }
+.drive-tools .primary { min-height: var(--h-tool); }
 /* Sized by Drive's own width, not the window's: half a screen, a folded sidebar, a wide
    one — each lays out the same for the same room. */
 .drive { container-type: inline-size; }
 @container (max-width: 880px) {
   /* Too narrow for the named controls beside the name: icons alone, their names kept for
      anyone who cannot see them (title, aria). */
-  .drive > .cal-bar .with-glyph:not(.primary) { font-size: 0; gap: 0; padding-inline: 9px; }
-  .drive > .cal-bar .with-glyph:not(.primary) svg { font-size: initial; }
+  .drive-bar .with-glyph:not(.primary) { font-size: 0; gap: 0; padding-inline: 7px; }
+  .drive-bar .with-glyph:not(.primary) svg { font-size: initial; }
 }
 /* Narrower, the kind column goes (above the narrowest, which sets rows as Files on iPhone). */
 @container (min-width: 561px) and (max-width: 640px) {
@@ -1921,7 +1568,7 @@
 }
 @container (max-width: 560px) {
   /* Too narrow for both: the controls go under the name, starting at its edge. */
-  .drive > .cal-bar .cal-actions { width: 100%; justify-content: flex-start; }
+  .drive-tools { width: 100%; justify-content: flex-start; }
   /* Rows set as Files on iPhone sets them have no columns to head; the sort menu stays. */
   .drive-head { display: none; }
 }
@@ -1936,53 +1583,17 @@
 .drive-group { margin: 14px 0 4px; padding: 0 10px; color: var(--text); font-size: var(--t-13); font-weight: 700; }
 .drive-recents section:first-of-type .drive-group { margin-top: 4px; }
 
-/* ── Liquid Glass, shared across the apps ──────────────────────────────────────────────
-   macOS 27's search field is a capsule of soft fill (130×24/36, r100 in Apple's kit), in a
-   sidebar or a toolbar alike — never a bordered box. */
-:root :is(.notes-search, .rx-search, .contacts-search) {
-  border: 0;
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-  min-height: 28px;
-  padding-inline: 12px;
-}
-.contacts-search:focus { box-shadow: 0 0 0 3px var(--accent-ring); }
-
-/* A toolbar's pop-up buttons are capsules beside the capsule buttons they sit with. */
-:root :is(.cal-actions, .note-bar-actions) .picker-button {
-  min-height: 28px;
-  border-radius: var(--r-pill);
-  padding-inline: 12px;
-}
-
-/* A note's tools float together in one glass capsule, as Notes on macOS 27 groups them. */
-.note-bar-actions {
-  gap: 2px;
-  padding: 2px 4px;
-  border-radius: var(--r-pill);
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), 0 1px 5px rgba(0, 0, 0, 0.06);
-}
-.note-bar-actions .notes-icon { border-radius: var(--r-pill); }
-.note-bar-actions .picker-button { background: none; }
-.note-bar-actions .picker-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
-
-
 /* ── The account, at the foot of the sidebar ──────────────────────────────────────────── */
 .sidebar-account {
   display: flex; align-items: center; gap: 9px; width: 100%; min-height: 44px;
   padding: 6px 8px; border: 0; border-radius: var(--r-field); background: none;
   color: var(--text); font: inherit; text-align: left; cursor: pointer;
 }
-.sidebar-account:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.sidebar-account[aria-current="true"] { background: color-mix(in srgb, var(--text) 10%, transparent); }
-.sidebar-account:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
-.sidebar-account-text { display: flex; flex-direction: column; min-width: 0; }
+.sidebar-account:hover { background: color-mix(in srgb, var(--text) 6%, transparent); transition: background-color var(--motion-hover) var(--motion-ease-out); }
+.sidebar-account:active:not([aria-current="true"]) { background: color-mix(in srgb, var(--text) 12%, transparent); transition: none; }
+.sidebar-account[aria-current="true"] { background: color-mix(in srgb, var(--text) 10%, transparent); transition: none; }
+.sidebar-account:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
 .sidebar-account-name { font-size: var(--t-13); font-weight: 590; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-account-status { display: flex; align-items: center; gap: 5px; color: var(--text-2); font-size: var(--t-11); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sidebar-account-status.is-trouble { color: var(--danger); }
 /* Apple's monogram: initials on a soft grey gradient disc. */
 .account-avatar {
   flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
@@ -2015,7 +1626,9 @@
 .settings-group {
   border-radius: 12px;
   background: color-mix(in srgb, var(--text) 4%, transparent);
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 8%, transparent);
+  /* Edges and hairlines as borders, not inset shadows: WebKit repainted every shadow on each
+     frame of a scroll, and Settings stuttered (25ms frames, 16ms without). */
+  border: 0.5px solid color-mix(in srgb, var(--text) 8%, transparent);
   overflow: hidden;
 }
 .settings-row {
@@ -2023,48 +1636,37 @@
   font-size: var(--t-13);
 }
 /* Separators inset past the icon, as Apple draws them between rows of a group. */
-.settings-row + .settings-row { box-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--text) 10%, transparent); }
+.settings-row + .settings-row { border-top: 1px solid color-mix(in srgb, var(--text) 7%, transparent); }
 .settings-row.is-stacked { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 14px; }
 .settings-row-line { display: flex; justify-content: space-between; gap: 10px; }
 .settings-label { flex: 1; min-width: 0; }
 .settings-hint { color: var(--text-2); font-size: var(--t-11); line-height: 1.4; }
 .settings-value { color: var(--text-2); font-variant-numeric: tabular-nums; text-align: right; }
 .settings-value.is-trouble { color: var(--danger); max-width: 60%; }
-.settings-error { margin: 0 0 12px; color: var(--danger); }
+/* A section whose figure belongs to all of it carries it on its heading's line. */
+.settings-heading-line { display: flex; justify-content: space-between; gap: 10px; margin-right: 14px; }
+.settings-heading-value { font-weight: 400; font-variant-numeric: tabular-nums; }
+/* The mark of a row no app's icon fits: a plain tile the apps' icons' size and shape. */
+.settings-glyph {
+  flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px;
+  color: #fff; background: linear-gradient(#a1a1a6, #8e8e93);
+}
+.settings-stack .settings-hint.settings-hint-wrap { white-space: normal; }
+.settings-row > .quiet { flex: none; }
+.settings-value { flex: none; }
 .settings-note { margin: 8px 12px 0; color: var(--text-2); font-size: var(--t-11); }
 .settings-account { display: flex; align-items: center; gap: 14px; padding: 14px 16px; }
 .settings-account-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .settings-account-text strong { font-size: var(--t-17); font-weight: 600; }
 .settings-account-text span { color: var(--text-2); font-size: var(--t-13); overflow: hidden; text-overflow: ellipsis; }
-.settings-confirm { display: flex; gap: 6px; }
-.settings .segmented { padding: 2px; border-radius: var(--r-pill); }
-.settings .segment { border-radius: var(--r-pill); padding: 3px 12px; font-size: var(--t-13); }
 .storage-bar { height: 8px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--text) 10%, transparent); overflow: hidden; }
 .storage-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
-
-/* The switch, as macOS 27 draws it (Toggle: track 38×22 at this size, knob inset 2): green
-   when on, the knob sliding on the snappy spring. */
-.switch {
-  position: relative; flex: none; width: 38px; height: 22px; padding: 0; border: 0;
-  border-radius: var(--r-pill); background: color-mix(in srgb, var(--text) 16%, transparent);
-  cursor: pointer; transition: background-color 180ms ease;
-}
-.switch[aria-checked="true"] { background: #34c759; }
-.switch-knob {
-  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
-  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
-  transition: translate var(--spring-snappy-d) var(--spring-snappy);
-}
-.switch[aria-checked="true"] .switch-knob { translate: 16px 0; }
-.switch:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 2px; }
-.switch:disabled { opacity: 0.5; }
 
 /* Advanced Data Protection with web access off: one plain answer, Apple's own switch. */
 .web-access-off { max-width: 520px; margin: 12vh auto 0; text-align: center; }
 .web-access-off h1 { font-size: var(--t-22); font-weight: 700; margin: 0 0 12px; }
 .web-access-off p { color: var(--text-2); font-size: var(--t-15); line-height: 1.5; margin: 0 0 12px; }
 .web-access-off b { color: var(--text); font-weight: 600; }
-.settings-gap { margin-top: 12px; }
 
 /* A new folder in the grid, named as Finder names one: the field fits its cell under the
    icon, its text centred. At the field's own width it overflowed the 112px cell and was cut
@@ -2074,19 +1676,7 @@
 
 /* Uploads that can still be stopped have a ✕; the tray's Cancel stops every one of them. */
 .upload-tray-actions { display: flex; align-items: center; gap: 10px; }
-.upload-stop {
-  flex: none; display: grid; place-items: center; width: 20px; height: 20px; margin-left: 6px; padding: 0;
-  border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 10%, transparent);
-  color: var(--text-2); font-size: 10px; cursor: pointer;
-}
-.upload-stop:hover { background: color-mix(in srgb, var(--text) 18%, transparent); color: var(--text); }
 .upload-row.is-cancelled .upload-name { color: var(--text-3); }
-/* Still finding what is in a folder: no total yet, so no share of one — a segment gliding
-   across instead of a number that would only shrink. */
-.upload-bar.is-waiting > span { width: 30%; animation: upload-finding 1.2s var(--ease) infinite alternate; }
-@keyframes upload-finding { from { transform: translateX(-10%); } to { transform: translateX(240%); } }
-.upload-bar.is-waiting > span { transform: none; }
-@media (prefers-reduced-motion: reduce) { .upload-bar.is-waiting > span { animation: none; width: 100%; opacity: 0.4; } }
 
 /* A kept screen's box is the screen's own (it lays out as before, straight in the content);
    one out of sight is not drawn at all. */
@@ -2105,20 +1695,6 @@
    A field at the head of the sidebar, as Finder's; what it finds over the window under it,
    grouped by app as Spotlight groups it. */
 .gsearch { margin: 0 0 8px; }
-.gsearch-field {
-  display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border-radius: 8px;
-  background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text-2);
-}
-.gsearch-field:focus-within { outline: 2px solid var(--accent-ring, var(--accent)); outline-offset: -1px; }
-.gsearch-field input {
-  flex: 1; min-width: 0; height: 100%; border: 0; background: none; color: var(--text); font: inherit;
-  font-size: var(--t-13); outline: none;
-}
-.gsearch-field input::-webkit-search-cancel-button { display: none; }
-.gsearch-clear {
-  display: grid; place-items: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%;
-  background: color-mix(in srgb, var(--text) 30%, transparent); color: var(--bg); cursor: pointer;
-}
 .gsearch-results {
   position: fixed; z-index: 70; width: min(420px, calc(100vw - 24px)); max-height: min(70vh, 560px);
   overflow-y: auto; padding: 6px; border-radius: 12px;
@@ -2136,7 +1712,7 @@
   font: inherit; font-weight: 500; color: var(--accent); cursor: default;
 }
 .gsearch-more:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.gsearch-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gsearch-more:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 .gsearch-row {
   display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 4px 8px; border: 0;
   border-radius: 7px; background: none; color: inherit; font: inherit; text-align: start; cursor: default;
@@ -2148,3 +1724,44 @@
 .gsearch-title { font-size: var(--t-13); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gsearch-detail { font-size: var(--t-11); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gsearch-none { margin: 0; padding: 10px; font-size: var(--t-13); color: var(--text-2); }
+
+/* ---- a session Apple signed out -------------------------------------------- */
+
+/* One line across the top of the window, over the library — never in place of it: a toast
+   (kit.css) that stays, at the top since it is about the whole window, not one app. */
+.lapsed { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50; max-width: calc(100vw - 32px); padding-right: 5px; }
+.lapsed > button { min-height: 26px; padding-inline: 12px; }
+
+/* ---- the sidebar's foot: freshness, then the account ------------------------- */
+
+.sidebar-foot-stack { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* The freshness line is the update control, as a whole: quiet text that, under the pointer,
+   says what a click does — no extra glyph standing apart in the corner. */
+.sidebar-sync {
+  /* Lined up with the account below: the dot on the avatar's centre (8px in, 30px wide), the
+     words on the name's edge (8 + 30 + 9). */
+  position: relative; display: flex; align-items: center; gap: 21px; min-width: 0;
+  padding: 4px 8px 4px 20px; border: 0; border-radius: var(--r-field); background: none; text-align: left;
+  color: var(--text-2); font: inherit; font-size: var(--t-11); cursor: default;
+}
+.sidebar-sync-text, .sidebar-sync-now { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-sync-now { position: absolute; left: 47px; right: 8px; opacity: 0; color: var(--text); }
+.sidebar-sync:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.sidebar-sync:hover:not(:disabled) .sidebar-sync-text { opacity: 0; }
+.sidebar-sync:hover:not(:disabled) .sidebar-sync-now { opacity: 1; }
+.sidebar-sync:active:not(:disabled) { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.sidebar-sync:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
+.sidebar-sync.is-trouble { color: var(--danger); }
+/* Working: the dot becomes a small ring turning in place — the same spot, the same size. */
+.sidebar-sync.is-working .sync-dot {
+  background: none; border: 1.5px solid color-mix(in srgb, var(--text) 22%, transparent);
+  border-top-color: var(--text-2); animation: sync-spin 800ms linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .sidebar-sync.is-working .sync-dot { animation: none; opacity: 0.6; } }
+.sidebar-foot-stack .sidebar-account { align-items: center; }
+.sidebar-foot-stack .sidebar-account-name { flex: 1; min-width: 0; }
+.is-rail .sidebar-sync { justify-content: center; padding-inline: 0; }
+.is-rail .sidebar-sync-text, .is-rail .sidebar-sync-now { display: none; }
+.is-rail .sidebar-foot-stack .sidebar-account-name { display: none; }
+.sidebar .status-line { padding: 4px 8px; font-size: var(--t-11); }
+.drive-bar .drive-title { flex: 1 1 14ch; }

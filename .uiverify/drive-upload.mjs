@@ -66,11 +66,11 @@ const ok = (pass, yes, no) => {
 await page.getByRole("button", { name: "Upload", exact: true }).click();
 const items = await page.getByRole("menuitem").allInnerTexts();
 ok(
-  JSON.stringify(items) === JSON.stringify(["Files…", "Folder…"]),
+  JSON.stringify(items) === JSON.stringify(["Files", "Folder"]),
   "Upload offers files or a whole folder",
   `Upload offered ${JSON.stringify(items)}`
 );
-await page.getByRole("menuitem", { name: "Files…" }).click();
+await page.getByRole("menuitem", { name: "Files" }).click();
 await page.waitForTimeout(1200);
 
 const midway = await page.evaluate(() => window.__midway);
@@ -96,7 +96,7 @@ const usable = await page.getByRole("button", { name: "Upload", exact: true }).i
 ok(usable, "the window stays usable, and another upload can start", "Upload was left disabled");
 
 await page.getByRole("button", { name: "Upload", exact: true }).click();
-await page.getByRole("menuitem", { name: "Folder…" }).click();
+await page.getByRole("menuitem", { name: "Folder" }).click();
 await page.waitForTimeout(1000);
 const calls = await page.evaluate(() => window.__uploadCalls.map((c) => c.paths));
 ok(JSON.stringify(calls[1]) === JSON.stringify(["/home/me/Holiday"]),

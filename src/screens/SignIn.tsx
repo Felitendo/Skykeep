@@ -1,14 +1,53 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Mark } from "../components/Mark";
+import { Spinner } from "../components/Spinner";
+import { StatusLine } from "../components/StatusLine";
 import { api, messageOf, type SignInResult } from "../lib/ipc";
+import { onWindows } from "../lib/platform";
 
-export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
+// Where the copy is kept, as this system names it.
+const STORE = onWindows ? "%APPDATA%\\io.github.yashwanthkamireddi.Pomander" : "~/.local/share/io.github.yashwanthkamireddi.Pomander";
+
+/**
+ * An error as a sentence: some of the engine's messages start in lower case and end without
+ * a stop ("couldn't reach Apple: check your connection"), which reads as a log line.
+ */
+export function sentence(message: string) {
+  const s = message.trim();
+  if (!s) return "Something went wrong. Try again.";
+  const capped = s[0].toUpperCase() + s.slice(1);
+  return /[.!?]$/.test(capped) ? capped : `${capped}.`;
+}
+
+export function SignIn({
+  onResult,
+  onCancel,
+}: {
+  onResult: (r: SignInResult) => void;
+  /** Back to the library: offered when signing in again after Apple signed the session out. */
+  onCancel?: () => void;
+}) {
   const [appleId, setAppleId] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+  // A wait Apple's limits ask for, counted down where it is said, and the button held until
+  // it is over — not a number frozen at the moment it was said.
+  const [wait, setWait] = useState(0);
+  useEffect(() => {
+    if (wait <= 0) return;
+    const t = setTimeout(() => setWait((w) => w - 1), 1000);
+    return () => clearTimeout(t);
+  }, [wait]);
 
-  const ready = appleId.trim().length > 0 && password.length > 0 && !busy;
+  const ready = appleId.trim().length > 0 && password.length > 0 && !busy && wait <= 0;
+
+  // Back to the password once a try has come back, so the next one is a type and an Enter.
+  // After the fields are enabled again: a disabled field cannot take focus.
+  useEffect(() => {
+    if (!busy && error) passwordRef.current?.focus();
+  }, [busy, error]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -18,54 +57,94 @@ export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
     try {
       onResult(await api.signIn(appleId.trim(), password));
     } catch (err) {
-      setError(messageOf(err));
+      const message = messageOf(err);
+      const seconds = /Try again in (\d+) seconds/.exec(message);
+      if (seconds) {
+        setWait(Number(seconds[1]));
+        setError(null);
+      } else {
+        // Apple's refusal names no field, so neither can this; it can say what to do.
+        setError(
+          /Apple ID or password/.test(message)
+            ? "Apple ID or password is incorrect. Check both and try again."
+            : sentence(message),
+        );
+      }
     } finally {
       setPassword("");
       setBusy(false);
     }
   }
 
+  function edit(set: (v: string) => void) {
+    return (e: React.ChangeEvent<HTMLInputElement>) => {
+      set(e.target.value);
+      if (error) setError(null);
+    };
+  }
+
   return (
-    <form className="sheet enter-sheet" onSubmit={submit}>
+    <form className="sheet enter-sheet" onSubmit={submit} aria-busy={busy} noValidate>
       <Mark className="mark" />
       <h1>Sign in with your Apple ID</h1>
-      <p className="lede">
-        Pomander keeps your iCloud on this computer, so it opens instantly and works offline.
-      </p>
+      <p className="lede">Your iCloud, kept on this computer.</p>
 
-      <div className="field-group">
+      <div className={`field-group${error ? " is-invalid" : ""}`}>
         <input
           value={appleId}
-          onChange={(e) => setAppleId(e.target.value)}
+          onChange={edit(setAppleId)}
+          // Enter on the Apple ID with no password yet goes on to the password, as a Mac
+          // sheet does; with both filled it signs in.
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !password) {
+              e.preventDefault();
+              if (appleId.trim()) passwordRef.current?.focus();
+            }
+          }}
           type="email"
           autoComplete="username"
+          autoCapitalize="off"
+          spellCheck={false}
           placeholder="Apple ID"
           aria-label="Apple ID"
+          aria-invalid={!!error}
           autoFocus
           disabled={busy}
         />
         <input
+          ref={passwordRef}
           value={password}
-          onChange={(e) => setPassword(e.target.value)}
+          onChange={edit(setPassword)}
           type="password"
           autoComplete="current-password"
           placeholder="Password"
           aria-label="Password"
+          aria-invalid={!!error}
+          aria-describedby={error ? "signin-error" : undefined}
           disabled={busy}
         />
       </div>
 
-      <button className="primary" type="submit" disabled={!ready}>
-        {busy ? "Signing in…" : "Sign in"}
+      <button className="primary" type="submit" disabled={!ready} aria-disabled={!ready}>
+        {busy && <Spinner small />}
+        <span>{busy ? "Signing in" : wait > 0 ? `Try again in ${wait}s` : "Sign in"}</span>
       </button>
+      {onCancel && (
+        <button type="button" className="quiet" onClick={onCancel}>
+          Not Now
+        </button>
+      )}
 
-      {error && <p className="error" role="alert">{error}</p>}
+      {/* One slot under the button, its height kept: an error takes the assurance's place
+          rather than pushing the screen about. */}
+      <div className="sheet-status">
+        {error ? (
+          <StatusLine tone="error" id="signin-error">{error}</StatusLine>
+        ) : (
+          <p className="assurance">Your password never leaves this computer.</p>
+        )}
+      </div>
 
-      <p className="assurance">
-        Your password never leaves this computer. Pomander proves you know it without sending
-        it, and keeps it in your system keyring so it can sign itself back in. Signing out
-        erases it.
-      </p>
       {/*
         * What somebody is owed before they type an Apple ID into software a stranger wrote.
         *
@@ -74,29 +153,26 @@ export function SignIn({ onResult }: { onResult: (r: SignInResult) => void }) {
         * the rest a click away for anyone who wants it.
         */}
       <details className="disclosure">
-        <summary>An independent project. Not affiliated with Apple.</summary>
+        <summary>How Pomander keeps you private</summary>
         <div className="disclosure-body">
           <p>
-            <strong>Unofficial.</strong> Pomander reaches iCloud through interfaces Apple has
-            not published. Apple can change them without notice, and when that happens
-            something here will stop working until it is put right.
+            <strong>Private by design.</strong> Your password never leaves this computer.
+            Pomander proves you know it without sending it, and keeps your session in your
+            system keyring. No Pomander account, no Pomander servers: it talks only to Apple.
           </p>
           <p>
-            <strong>Your password never leaves this computer.</strong> Pomander proves you know
-            it without sending it, and keeps the result in your system keyring. There is no
-            Pomander account and no Pomander server — there is nowhere else for any of this to go.
+            <strong>Your iCloud, right here.</strong> Your calendar, reminders, notes, contacts
+            and Drive live on this computer in <code>{STORE}</code>, so everything opens
+            instantly and works offline.
           </p>
           <p>
-            <strong>What it keeps, and where.</strong> A copy of your calendar, reminders,
-            notes, contacts and the listing of your Drive, in a database under{" "}
-            <code>~/.local/share/dev.quince.client</code>. Signing out removes the session;
-            deleting that folder removes the copy.
+            <strong>Sealed by Apple.</strong> Health, Messages, Keychain and your other
+            end-to-end encrypted data stay protected on your Apple devices, just as Apple
+            designed.
           </p>
           <p>
-            <strong>What no client can read.</strong> Health, Messages, Keychain, Home, Safari
-            history and Screen Time are encrypted end to end — Apple's own servers hold no key
-            to them, so no app can show them. Pomander says they are unavailable rather than
-            quietly leaving them out.
+            <strong>Independent.</strong> Made by an independent developer, not affiliated with
+            Apple, and kept in step as iCloud evolves.
           </p>
         </div>
       </details>

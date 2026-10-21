@@ -17,7 +17,7 @@ await page.evaluate(() => { window.__driveGone = "FOLDER::a"; });
 await page.locator(".drive-row-hit", { hasText: "Downloads" }).dblclick();
 await page.waitForTimeout(600);
 ok(!(await crumbs()).some((t) => t.includes("Downloads")), `stepped back out of the gone folder  ${JSON.stringify(await crumbs())}`);
-ok((await page.locator(".notice", { hasText: "deleted or moved on another device" }).count()) === 1, "and says why");
+ok((await page.locator(".toast.is-error", { hasText: "deleted or moved on another device" }).count()) === 1, "and says why");
 ok((await page.locator(".drive-row-hit", { hasText: "Semester Plan" }).count()) === 1, "showing the folder above");
 await b.close();
 process.exitCode = failures ? 1 : 0;

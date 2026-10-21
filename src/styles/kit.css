@@ -1,0 +1,544 @@
+/* The kit: every control and surface the apps share, drawn once.
+ *
+ * Each app keeps its own classes as hooks — for its layout and its tests — but the look of a
+ * button, a search field, a row of a source list, a toast or a question comes from here, so the
+ * same kind of thing looks and behaves the same in Notes, Reminders, Calendar, Contacts,
+ * iCloud Drive, Photos and Settings. Sizes, fills and radii are tokens (styles/tokens.css).
+ *
+ * Motion is the shell's rule: only small things change, by colour or by a frame-by-frame fade
+ * from the page (lib/fade.ts); nothing large moves or scales, since WebKitGTK on Hyprland
+ * flickers what it hands to the compositor. Menus and popovers appear at once. */
+
+/* ---- buttons ------------------------------------------------------------------------------ */
+
+/* A capsule, as macOS 27's regular-size buttons are: the filled one is the single action that
+   matters on its surface; the quiet one is everything else. */
+.primary,
+.quiet {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--h-control);
+  padding: 4px 14px;
+  border: 0;
+  border-radius: var(--r-pill);
+  box-shadow: none;
+  font: inherit;
+  font-size: var(--t-13);
+  font-weight: 510;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/*
+ * White on the plain quince gold measures 2.8:1 — well under the 4.5:1 white text needs. The
+ * deeper shade of each accent is the same hue at 4.5:1 or better.
+ */
+.primary { background: var(--accent-deep); color: #fff; font-weight: 550; padding-inline: 16px; }
+/* A Mac button keeps its colour under the pointer; pressing darkens its own colour. */
+.primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent-deep) 84%, #000); }
+.primary.danger { background: var(--danger-deep); }
+.primary.danger:active:not(:disabled) { background: color-mix(in srgb, var(--danger-deep) 84%, #000); }
+.primary:disabled { background: var(--fill-selected); color: var(--text-3); cursor: default; }
+
+/* A quiet fill, no outline (Button/Radius 1000 from Large up in Apple's kit). */
+.quiet { background: var(--fill); color: var(--text); }
+.quiet:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 11%, transparent); }
+.quiet:active:not(:disabled) { background: color-mix(in srgb, var(--text) 16%, transparent); }
+.quiet:disabled { color: var(--text-3); cursor: default; }
+.quiet.danger { color: var(--danger); }
+.quiet.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+/* Words that act — a secondary way out, a toggle of what is shown — in the accent. */
+.link {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  box-shadow: none;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: pointer;
+}
+.link:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+.link:disabled { color: var(--text-3); cursor: default; }
+.link.danger { color: var(--danger); }
+
+/* A symbol alone: in a row, a list's header, a sheet's corner. Quiet until pointed at. */
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--h-control);
+  height: var(--h-control);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-field);
+  background: none;
+  box-shadow: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-13);
+  line-height: 1;
+  cursor: default;
+}
+.icon-button:hover:not(:disabled) { background: var(--fill); color: var(--text); }
+.icon-button:active:not(:disabled) { background: var(--fill-press); }
+.icon-button:is([aria-pressed="true"], .is-on) { background: var(--fill-selected); color: var(--text); }
+.icon-button.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.icon-button:disabled { opacity: 0.4; }
+.icon-button.small { width: var(--h-mini); height: var(--h-mini); border-radius: 6px; }
+.icon-button.round { border-radius: 50%; }
+
+:is(.primary, .quiet, .link, .icon-button, .tool):focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
+
+/* ---- toolbars ----------------------------------------------------------------------------- */
+
+/* A group of a toolbar's controls, as macOS 27 floats them: one capsule, its controls round
+   inside it, concentric. Nearly solid rather than a live blur — these sit over scrolling
+   photos and lists, and WebKitGTK blurs what is behind again on every frame of a scroll. */
+.toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 0;
+  height: var(--h-tool);
+  padding: 0 2px;
+  border-radius: var(--r-pill);
+  background: var(--tool-bg);
+  box-shadow: var(--tool-lift);
+}
+.tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: var(--h-control);
+  height: var(--h-control);
+  padding: 0 5px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: none;
+  box-shadow: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  font-weight: 510;
+  white-space: nowrap;
+  cursor: default;
+}
+.tool.has-label { padding: 0 10px; }
+.tool:hover:not(:disabled) { background: var(--fill); }
+.tool:active:not(:disabled) { background: var(--fill-press); }
+.tool:is([aria-pressed="true"], .is-on) { background: var(--fill-selected); }
+.tool:disabled { color: var(--text-3); }
+.tool.is-accent { color: var(--accent-strong); font-weight: 600; }
+.tool.danger { color: var(--danger); font-weight: 600; }
+/* A symbol that already says how it is set — a flag that is on — takes no pressed fill too. */
+.is-glyph-state[aria-pressed="true"]:not(:hover) { background: none; }
+/* A pop-up button in a toolbar is one more of its controls: no fill of its own. */
+.toolbar-group .picker-button { min-height: var(--h-control); border-radius: var(--r-pill); padding-inline: 10px; background: none; }
+.toolbar-group .picker-button:hover:not(:disabled) { background: var(--fill); }
+/* A segmented control in a toolbar is one more group: its chosen segment the same fill. */
+.toolbar-group.segmented { padding: 0 2px; gap: 0; }
+.toolbar-group .segment { height: var(--h-control); padding: 0 12px; border-radius: var(--r-pill); font-size: var(--t-13); }
+.toolbar-group .segment[aria-pressed="true"] { background: var(--fill-selected); box-shadow: none; }
+
+/* A pane's head (components/PaneTitle): the title with its column's whole width and the count
+   on its own line beneath; the controls beside it keep their size and never squeeze it. A long
+   title wraps to two balanced lines, then steps down a size (.is-small, measured); the clamp
+   is the last resort. */
+.pane-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; min-width: 0; }
+.pane-head > :not(.pane-title) { flex: none; }
+.pane-title { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+:root .pane-title h1 {
+  margin: 0;
+  font-size: var(--t-22);
+  font-weight: 700;
+  letter-spacing: -0.016em;
+  line-height: 1.2;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+:root .pane-title h1.is-small { font-size: var(--t-17); }
+.pane-count { margin: 0; color: var(--text-2); font-size: var(--t-13); font-weight: 400; font-variant-numeric: tabular-nums; }
+
+/* ---- fields ------------------------------------------------------------------------------- */
+
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: var(--h-control);
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+  color: var(--text-3);
+  cursor: text;
+}
+.search-field > svg { flex: none; }
+.search-field input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  outline: none;
+}
+.search-field input::placeholder { color: var(--text-3); opacity: 1; }
+.search-field input::-webkit-search-cancel-button { display: none; }
+.search-field:focus-within { box-shadow: var(--ring); }
+.search-field.toolbar-group { height: var(--h-tool); padding: 0 12px; background: var(--tool-bg); }
+.search-field.toolbar-group:focus-within { box-shadow: var(--tool-lift), var(--ring); }
+.search-clear {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-3);
+  color: var(--sheet);
+  cursor: default;
+}
+.search-clear:hover { background: var(--text-2); }
+
+/* A text field: the field's own fill on a hairline, the accent ring when typing. */
+.field {
+  min-width: 0;
+  min-height: var(--h-control);
+  padding: 4px 9px;
+  border: 1px solid var(--field-edge);
+  border-radius: var(--r-field);
+  background: var(--field);
+  box-shadow: var(--shadow-field);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  outline: none;
+}
+.field::placeholder { color: var(--text-3); opacity: 1; }
+.field:hover:not(:disabled):not(:focus) { border-color: var(--field-edge-hover); }
+.field:focus { border-color: var(--accent); box-shadow: var(--shadow-field), var(--ring); }
+textarea.field { padding-block: 5px; resize: vertical; }
+
+/* ---- source lists: an app's own sidebar of folders, lists, albums, calendars -------------- */
+
+.side-heading { margin: 0 0 4px; padding: 0 8px; color: var(--text-3); font-size: var(--t-11); font-weight: 600; }
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: var(--h-row);
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-field);
+  background: none;
+  box-shadow: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: left;
+  cursor: default;
+}
+/* The highlight is the row's, not its button's alone: the ⋯ over the row took the hover off
+   the button, and the highlight blinked out and back. Held while the row's menu is open. */
+.source-row:hover, :is(:hover, .is-menu) > .source-row:has(~ .row-more) { background: var(--fill-hover); }
+.source-row[aria-current="true"] { background: var(--fill-press); }
+.source-row:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
+.source-row[data-drop], .is-drop > .source-row { background: var(--accent-tint); outline: 2px solid var(--accent); outline-offset: -2px; }
+.source-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.count { flex: none; min-width: 26px; color: var(--text-3); font-size: var(--t-13); font-variant-numeric: tabular-nums; text-align: right; }
+/* A row's ⋯, over where its count sits, waiting until the row is pointed at — shown and
+   hidden at once, never faded (a fade here is the compositor's, and flickered). Opacity, not
+   visibility: hidden, it could not be reached with Tab. */
+.row-more { position: absolute; right: 6px; opacity: 0; }
+:hover > .row-more, .is-menu > .row-more, .row-more:focus-visible { opacity: 1; }
+:is(:hover, .is-menu) > .source-row:has(~ .row-more) .count { visibility: hidden; }
+/* Adding one more, at the foot of the column, as Notes and Reminders put it. */
+.side-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding: 10px 8px 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: default;
+}
+.side-add:hover { color: var(--text); }
+.side-add:focus-visible { outline: var(--focus-ring); border-radius: var(--r-field); }
+
+/* ---- under way ---------------------------------------------------------------------------- */
+
+.spinner {
+  flex: none;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+  animation: spin 800ms linear infinite;
+}
+.spinner.is-small { width: 12px; height: 12px; border-width: 1.6px; }
+@keyframes spin { to { transform: rotate(1turn); } }
+
+.progress {
+  position: relative;
+  display: block;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--fill-selected);
+  overflow: hidden;
+}
+.progress > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform 200ms var(--ease);
+}
+.progress.is-instant > span { transition: none; }
+.progress.is-waiting > span { width: 30%; transform: none; animation: progress-finding 1.2s var(--ease) infinite alternate; }
+@keyframes progress-finding { from { translate: -10% 0; } to { translate: 240% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.4s !important; }
+  .progress.is-waiting > span { animation: none; width: 100%; opacity: 0.4; }
+}
+
+/* A line of status in place (components/StatusLine). */
+.status-line { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--text-2); font-size: var(--t-13); line-height: 1.4; }
+.status-line.is-error { color: var(--danger); }
+
+/* ---- empty and waiting ------------------------------------------------------------------- */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 40ch;
+  margin: 0 auto;
+  padding: 48px 20px;
+  color: var(--text-3);
+  text-align: center;
+}
+.empty-state p { margin: 0; color: var(--text-2); font-size: var(--t-13); line-height: 1.45; text-wrap: balance; }
+.empty-state-icon { display: grid; place-items: center; color: var(--text-3); }
+.empty-state .primary { margin-top: 4px; }
+
+/* ---- floating surfaces -------------------------------------------------------------------- */
+
+/* Menus, pop-ups, popovers: thick glass, rim, edge and lift — the whole recipe, one radius. */
+.popover {
+  border-radius: var(--r-float);
+  background: var(--glass-thick);
+  box-shadow: var(--glass-float);
+  color: var(--text);
+}
+
+/* ---- toasts (components/Toast) ------------------------------------------------------------ */
+
+/* At the foot of the content, centred over it — not the window: the sidebar is not where the
+   work is — and above whatever sits at the foot (--toast-clear). */
+.toast-host {
+  position: absolute;
+  z-index: 70;
+  left: var(--side, 220px);
+  right: 0;
+  bottom: calc(24px + var(--toast-clear, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  pointer-events: none;
+}
+@media (max-width: 900px) { .toast-host { left: 0; } }
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(520px, 100%);
+  min-height: 38px;
+  padding: 5px 6px 5px 14px;
+  border-radius: var(--r-float);
+  background: var(--glass-thick);
+  box-shadow: var(--glass-float);
+  color: var(--text);
+  font-size: var(--t-13);
+  line-height: 1.35;
+  pointer-events: auto;
+}
+.toast p { flex: 1; min-width: 0; margin: 0; padding: 4px 0; overflow-wrap: anywhere; }
+.toast-glyph { flex: none; }
+.toast.is-done .toast-glyph { color: var(--sys-green); }
+.toast.is-error .toast-glyph { color: var(--danger); }
+.toast-action {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: var(--t-13);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default;
+}
+.toast-action:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.toast-action:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
+.toast-close { color: var(--text-3); }
+
+/* A change Apple turned down for good (components/Unsent): in the flow, until decided. */
+.unsent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 10px 0;
+  padding: 10px 12px;
+  border-radius: var(--r-float);
+  background: color-mix(in srgb, var(--danger) 8%, var(--sheet));
+  box-shadow: 0 0 0 0.5px var(--glass-edge);
+  font-size: var(--t-13);
+}
+.unsent .toast-glyph { margin-top: 2px; color: var(--danger); }
+.unsent-body { flex: 1; min-width: 0; }
+.unsent p { margin: 0; }
+.unsent-content { color: var(--text-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.unsent-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+/* Beside something saved here that Apple does not have yet. */
+.sync-waiting { color: var(--text-3); font-size: var(--t-11); white-space: nowrap; }
+
+/* ---- sheets and questions (components/Confirm) -------------------------------------------- */
+
+/* A dimmed window behind a raised sheet, in a macOS sheet's proportions. The dim is a dim, not
+   a blur — a blur of the whole window under glass was glass on glass, and WebKitGTK's
+   costliest frame — and simply appears: the sheet on it fades in (lib/fade fadeSheetsIn). */
+.modal-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.2);
+}
+.modal-sheet {
+  position: relative;
+  width: min(440px, 92vw);
+  max-height: min(560px, 84vh);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 22px;
+  border-radius: var(--r-window);
+  background: var(--glass-thick);
+  box-shadow: var(--glass-float);
+  color: var(--text);
+}
+.modal-sheet h2 {
+  margin: 0;
+  font-size: var(--t-15);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A sheet's way out, at its corner. */
+.sheet-close { position: absolute; top: 10px; left: 10px; }
+/* A sheet's answers, at its foot: Cancel, then the action. */
+.sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+.confirm { width: min(320px, 92vw); align-items: center; gap: 6px; padding: 22px 20px 16px; text-align: center; }
+.confirm-symbol { display: grid; place-items: center; margin-bottom: 4px; color: var(--accent); }
+.confirm h2 { white-space: normal; line-height: 1.3; text-wrap: balance; }
+.confirm p { margin: 0; color: var(--text-2); font-size: var(--t-13); line-height: 1.45; text-wrap: balance; }
+.confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; margin-top: 14px; }
+.confirm-actions.is-stacked { grid-template-columns: 1fr; }
+.confirm-actions > button { width: 100%; }
+
+/* ---- small controls ---------------------------------------------------------------------- */
+
+/* A segmented control: one recessed track, a raised cap over the chosen segment. */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--r-pill);
+  background: var(--fill);
+}
+.segment {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--t-13);
+  font-weight: 510;
+  color: var(--text-2);
+  padding: 3px 12px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+.segment:hover { color: var(--text); }
+.segment[aria-pressed="true"] {
+  background: var(--sheet);
+  color: var(--text);
+  font-weight: 590;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14), 0 0 0 0.5px var(--glass-edge);
+}
+.segment:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
+
+/* The switch, as macOS draws it: a capsule in the accent when on, the knob sliding on the
+   snappy spring (a small thing moving a short way, its own layer only). */
+.switch {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.switch[aria-checked="true"], input:checked + .switch { background: var(--accent-deep); }
+.switch-knob, .switch::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  transition: translate var(--spring-snappy-d) var(--spring-snappy);
+}
+/* A switch drawn for a checkbox carries its knob itself. */
+span.switch::after { content: ""; }
+.switch[aria-checked="true"] .switch-knob, input:checked + .switch::after { translate: 16px 0; }
+.switch:focus-visible, input:focus-visible + .switch { outline: var(--focus-ring); outline-offset: 2px; }
+.switch:disabled, input:disabled + .switch { opacity: 0.5; }

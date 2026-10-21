@@ -25,12 +25,12 @@ await page.locator("li", { hasText: "Old notes" }).getByRole("button", { name: "
 await page.waitForTimeout(100);
 ok(!(await names()).includes("Old notes.pdf"), "Recover takes it off the list at once");
 
-page.once("dialog", (d) => d.dismiss());
 await page.locator("li", { hasText: "Wallpaper" }).getByRole("button", { name: "Delete Now" }).click();
+await page.locator(".confirm").getByRole("button", { name: "Cancel" }).click();
 await page.waitForTimeout(200);
 ok((await names()).includes("Wallpaper.jpg"), "declining Delete Now keeps it");
-page.once("dialog", (d) => d.accept());
 await page.locator("li", { hasText: "Wallpaper" }).getByRole("button", { name: "Delete Now" }).click();
+await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(200);
 const calls = await page.evaluate(() => window.__trashCalls);
 ok(JSON.stringify(calls) === JSON.stringify([["drive_put_back", "FILE::t1"], ["drive_delete_forever", "FILE::t2"]]),

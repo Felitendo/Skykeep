@@ -5,12 +5,14 @@
  * (or taken back, with Apple's reason); one of this account's is deleted from its menu, asked
  * first, for everyone it was shared with.
  */
+import { EmptyState } from "../../components/EmptyState";
+import { PaneTitle } from "../../components/PaneTitle";
 import { useEffect, useRef, useState } from "react";
 import { Plus, Users } from "lucide-react";
 import { api, type SharedAlbum } from "../../lib/ipc";
 import { Portal } from "../../components/Portal";
 import { RowMenu, type MenuEntry } from "../../components/RowMenu";
-import type { Question } from "./Ask";
+import type { Question } from "../../components/Confirm";
 
 export function SharedAlbums({ ask, onError }: { ask: (q: Question) => Promise<boolean>; onError: (message: string) => void }) {
   const [albums, setAlbums] = useState<SharedAlbum[] | null>(null);
@@ -61,23 +63,19 @@ export function SharedAlbums({ ask, onError }: { ask: (q: Question) => Promise<b
   return (
     <div className="px-albums-page">
       <header className="px-albums-head">
-        <div className="px-heading">
-          <h1>Shared Albums</h1>
-          <p className="px-span">{albums === null ? " " : n === 1 ? "1 Item" : `${n} Items`}</p>
-        </div>
-        <div className="px-capsule">
-          <button className="px-cap" aria-label="New Shared Album" title="New Shared Album" onClick={() => setNaming(true)}>
+        <PaneTitle className="px-heading" countClassName="px-span" count={albums === null ? "\u00a0" : n === 1 ? "1 Item" : `${n} Items`}>
+          Shared Albums
+        </PaneTitle>
+        <div className="toolbar-group">
+          <button className="tool px-cap" aria-label="New Shared Album" title="New Shared Album" onClick={() => setNaming(true)}>
             <Plus size={16} strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
       </header>
       {albums !== null && n === 0 ? (
-        <div className="px-empty px-shared-empty">
-          <p>No shared albums yet. Make one to share photos with the people you choose.</p>
-          <button className="primary" onClick={() => setNaming(true)}>
-            New Shared Album
-          </button>
-        </div>
+        <EmptyState className="px-empty px-shared-empty" action={{ label: "New Shared Album", run: () => setNaming(true) }}>
+          No shared albums yet. Make one to share photos with the people you choose.
+        </EmptyState>
       ) : (
         <div className="px-cards" role="list" aria-busy={albums === null}>
           {(albums ?? []).map((a) => (
@@ -122,7 +120,7 @@ function NameSheet({ onCancel, onCreate }: { onCancel: () => void; onCreate: (na
     <Portal>
       <div className="modal-veil" onClick={onCancel}>
         <form
-          className="modal-sheet px-ask"
+          className="modal-sheet confirm"
           role="dialog"
           aria-label="New Shared Album"
           onClick={(e) => e.stopPropagation()}
@@ -138,12 +136,12 @@ function NameSheet({ onCancel, onCreate }: { onCancel: () => void; onCreate: (na
           }}
         >
           <h2>New Shared Album</h2>
-          <input ref={field} className="px-shared-name" placeholder="Album Name" aria-label="Album Name" value={name} onChange={(e) => setName(e.target.value)} />
-          <div className="px-ask-actions">
-            <button type="button" onClick={onCancel}>
+          <input ref={field} className="field px-shared-name" placeholder="Album Name" aria-label="Album Name" value={name} onChange={(e) => setName(e.target.value)} />
+          <div className="confirm-actions">
+            <button type="button" className="quiet" onClick={onCancel}>
               Cancel
             </button>
-            <button type="submit" className="is-act" disabled={!name.trim()}>
+            <button type="submit" className="primary confirm-answer" disabled={!name.trim()}>
               Create
             </button>
           </div>

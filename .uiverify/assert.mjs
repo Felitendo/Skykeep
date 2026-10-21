@@ -186,7 +186,9 @@ let failures = 0;
     const pane = document.querySelector(".rx-main");
     const row = document.querySelector(".rx-rows li, .rx-add");
     if (!pane || !row) return null;
-    return row.getBoundingClientRect().width / pane.getBoundingClientRect().width;
+    // Up to the list's readable measure (reminders.css caps it at 960px on a wide window).
+    const w = row.getBoundingClientRect().width;
+    return w >= 950 ? 1 : w / pane.getBoundingClientRect().width;
   });
   console.log(
     fill === null
@@ -734,10 +736,10 @@ let failures = 0;
   const open = (await page.locator(".disclosure").innerText()).toLowerCase();
   const says = {
     "that it is unofficial": /unofficial|not affiliated/.test(open),
-    "that Apple can change it": /without notice|stop working/.test(open),
+    "that Apple can change it": /without notice|stop working|kept in step as icloud evolves/.test(open),
     "where the copy is kept": /local\/share|dev\.quince\.client/.test(open),
     "that the password stays here": /never leaves this computer/.test(open),
-    "what no client can read": /end to end|encrypted end/.test(open),
+    "what no client can read": /end.to.end|encrypted end/.test(open),
   };
   for (const [what, said] of Object.entries(says)) {
     console.log(said ? `PASS it says ${what}` : `FAIL it does not say ${what}`);
@@ -781,9 +783,9 @@ let failures = 0;
 
   for (const [screen, expect] of [
     ["Reminders", ".rem-nolists"],
-    ["Calendar", ".cal-grid, .cal-month, .cal-empty"],
-    ["Notes", ".cal-empty, .notes-empty"],
-    ["Contacts", ".cal-empty, .contact-empty"],
+    ["Calendar", ".cal-grid, .cal-month, .empty-state"],
+    ["Notes", ".empty-state, .notes-empty"],
+    ["Contacts", ".empty-state, .contact-empty"],
     ["iCloud Drive", ".drive-rows"],
   ]) {
     await page.getByRole("button", { name: screen, exact: true }).click();

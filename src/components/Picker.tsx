@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Portal } from "./Portal";
+import { useTypeSelect } from "./RowMenu";
 
 export type PickerOption = { value: string; label: string };
 
@@ -187,6 +188,7 @@ export function Picker({
     };
   }, [open]);
 
+  const typeSelect = useTypeSelect(() => options.map((o) => o.label));
   const onListKey = (e: React.KeyboardEvent) => {
     // From the highlight as it stands after any key not yet drawn, not as last rendered.
     const move = (to: (at: number) => number) => {
@@ -199,6 +201,15 @@ export function Picker({
       }
       setActive((at) => Math.max(0, Math.min(to(at), options.length - 1)));
     };
+    // Typing goes to the choice that begins with it, as a Mac pop-up's menu does.
+    const typedTo = typeSelect(e, litNow.current ? active : -1);
+    if (typedTo !== null) {
+      e.preventDefault();
+      byKeyboard.current = true;
+      setLit(true);
+      setActive(typedTo);
+      return;
+    }
     if (e.key === "ArrowDown") move((at) => at + 1);
     else if (e.key === "ArrowUp") move((at) => at - 1);
     else if (e.key === "Home") move(() => 0);

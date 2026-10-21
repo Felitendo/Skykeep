@@ -64,7 +64,7 @@ await page.evaluate(() => {
   window.__blank = 0;
   window.__lostFocus = 0;
   new MutationObserver(() => {
-    if (document.querySelector(".note-body .cal-empty")?.textContent?.includes("Select a note")) {
+    if (document.querySelector(".note-body .note-pick")?.textContent?.includes("Select a note")) {
       window.__blank++;
     }
   }).observe(document.body, { subtree: true, childList: true, characterData: true });

@@ -4,31 +4,6 @@
  * and collided — one class name meant a button in one place and a notice in another — so
  * this file is the only place Reminders is styled. */
 
-:root {
-  /* Apple's system colours, which are what its built-in views are drawn in. They shift
-     between light and dark, so they are not the same six hex values in both. */
-  --sys-blue: #0088ff;
-  --sys-red: #ff383c;
-  --sys-gray: #8e8e93;
-  --sys-orange: #ff8d28;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --sys-blue: #0091ff;
-    --sys-red: #ff4245;
-    --sys-gray: #98989d;
-    --sys-orange: #ff9230;
-  }
-}
-/* The same, when Settings chooses Dark whatever the system says. */
-:root[data-theme="dark"] {
-    --sys-blue: #0091ff;
-    --sys-red: #ff4245;
-    --sys-gray: #98989d;
-    --sys-orange: #ff9230;
-  }
-
 .content[data-screen="reminders"] { display: flex; flex-direction: column; overflow: hidden; }
 
 .rx {
@@ -51,31 +26,6 @@
   padding: 2px 12px 16px;
   border-right: 1px solid var(--separator);
 }
-
-.rx-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  margin-bottom: 10px;
-  padding: 0 8px;
-  border-radius: var(--r-field);
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-  color: var(--text-3);
-}
-.rx-search svg { width: 13px; height: 13px; flex: none; }
-.rx-search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  outline: none;
-}
-.rx-search input::placeholder { color: var(--text-3); }
-.rx-search:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sys-blue) 35%, transparent); }
 
 /* The tiles: glyph top left, count top right, name beneath. Chosen, a tile takes its own
    colour and everything on it turns white — which is how Apple marks the open one. */
@@ -147,46 +97,10 @@
 .rx-tile[aria-current="true"] .rx-tile-glyph { background: #fff; color: color-mix(in srgb, var(--tile) 82%, #000); }
 .rx-tile[aria-current="true"] .rx-tile-name { color: #fff; }
 
-/* On the same left edge as the list badges beneath it, where a source list puts a heading. */
-.rx-side-heading {
-  margin: 0 0 4px;
-  padding: 0 5px;
-  color: var(--text-3);
-  font-size: var(--t-11);
-  font-weight: 600;
-}
-
 .rx-lists { display: flex; flex-direction: column; gap: 1px; }
 
 .rx-list-row { position: relative; display: flex; align-items: center; }
 .rx-list-row.nested { padding-left: 18px; }
-
-.rx-list,
-.rx-group-row {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 8px 0 5px;
-  border: 0;
-  border-radius: 7px;
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  text-align: left;
-  cursor: default;
-}
-/* The highlight follows the row, not the list's button alone: the ⋯ sits over the row
-   beside the button, and moving onto it took the hover off the button — the highlight
-   blinked out and back. Held while the row's menu is open too. */
-.rx-list-row:hover .rx-list, .rx-list-row.is-menu .rx-list,
-.rx-group-row:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.rx-list[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
-.rx-list:focus-visible,
-.rx-group-row:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 40%, transparent); outline-offset: -1px; }
 
 .rx-badge {
   display: grid;
@@ -209,64 +123,17 @@
 }
 .rx-group-glyph svg { width: 17px; height: 17px; }
 
-.rx-list-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rx-group-row { width: 100%; }
 .rx-group-row .rx-list-name { font-weight: 600; }
-
-.rx-list-count {
-  /* Wide enough for the ⋯ that takes its place, so nothing beside it moves when it does. */
-  min-width: 26px;
-  color: var(--text-3);
-  font-size: var(--t-13);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
 
 .rx-chevron { display: grid; place-items: center; color: var(--text-3); transition: transform 180ms var(--ease); }
 .rx-chevron svg { width: 12px; height: 12px; }
 .rx-group-row[aria-expanded="true"] .rx-chevron { transform: rotate(90deg); }
 
-/* The list's ⋯ waits until it is pointed at, over where its count sits — the same control
-   Notes' and Contacts' rows have (.notes-folder-more). */
-.rx-list-more { right: 8px; }
-.rx-list-row:hover .rx-list-more, .rx-list-row:focus-within .rx-list-more { opacity: 1; }
-.rx-list-row:hover .rx-list-count,
-.rx-list-row:focus-within .rx-list-count { visibility: hidden; }
-.rx-list-row.is-menu .rx-list-more { opacity: 1; }
-.rx-list-row.is-menu .rx-list-count { visibility: hidden; }
-
-.rx-rename {
-  flex: 1;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--field-edge);
-  border-radius: 7px;
-  background: var(--field);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  outline: none;
-}
-.rx-rename:focus { border-color: var(--sys-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sys-blue) 30%, transparent); }
 .rx-new-list { display: flex; margin-top: 4px; }
-
-.rx-add-list {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: auto;
-  padding: 10px 8px 0;
-  border: 0;
-  background: none;
-  color: var(--text-2);
-  font: inherit;
-  font-size: var(--t-13);
-  cursor: default;
-}
-.rx-add-list svg { width: 14px; height: 14px; }
-.rx-add-list:hover { color: var(--text); }
-
-.rx-side-empty { margin: 4px 8px; color: var(--text-3); font-size: var(--t-13); }
+.rx-new-list .field, .rx-list-row > .field { flex: 1; }
+.rx-search { margin-bottom: 10px; }
+.rx-field .field { width: 100%; }
 
 /* ---- the open view ---------------------------------------------------------- */
 
@@ -279,43 +146,9 @@
    glance — while the pane scrolls at its own edge. */
 .rx-main > * { max-width: 960px; }
 
-/* The view's name in its own colour, its count at the far end of the same line. */
-.rx-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 2px 14px 10px 0;
-  color: var(--accent-strong);
-}
-.rx-head h1 {
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
-}
-.rx-head-count { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.15; }
-
-.rx-subhead { display: flex; justify-content: flex-end; padding: 0 14px 6px 0; margin-top: -4px; }
-
-.rx-link {
-  padding: 2px 0;
-  border: 0;
-  background: none;
-  color: var(--sys-blue);
-  font: inherit;
-  font-size: var(--t-13);
-  cursor: default;
-}
-.rx-link:hover { text-decoration: underline; }
-.rx-link.danger { color: var(--sys-red); }
-.rx-link:disabled { opacity: 0.5; }
-
+/* The view's name in its own colour (the kit's pane head). */
+.rx-head { padding: 2px 14px 10px 0; }
+.rx-head h1 { color: var(--accent-strong); }
 
 .rx-capped {
   margin: 0 14px 8px 0;
@@ -467,26 +300,6 @@
 .rx-icon-button.rx-flag.on { opacity: 1; }
 .rx-icon-button.rx-flag.on { color: var(--sys-orange); }
 
-.rx-icon-button {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--text-3);
-  font: inherit;
-  font-size: var(--t-13);
-  cursor: default;
-}
-.rx-icon-button svg { width: 15px; height: 15px; }
-.rx-icon-button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
-.rx-icon-button.danger:hover { color: var(--sys-red); }
-.rx-icon-button:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 40%, transparent); opacity: 1; }
-.rx-icon-button:disabled { opacity: 0.4; }
-
 .rx-detail {
   display: flex;
   flex-direction: column;
@@ -503,21 +316,6 @@
   align-items: center;
 }
 .rx-field > span { color: var(--text-2); font-size: var(--t-11); }
-.rx-field input,
-.rx-field textarea {
-  width: 100%;
-  padding: 5px 8px;
-  border: 1px solid var(--field-edge);
-  border-radius: 6px;
-  background: var(--field);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  outline: none;
-  resize: vertical;
-}
-.rx-field input:focus,
-.rx-field textarea:focus { border-color: var(--sys-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sys-blue) 28%, transparent); }
 .rx-hint { margin: -2px 0 0 74px; color: var(--text-3); font-size: var(--t-11); }
 .rx-detail-actions { display: flex; justify-content: space-between; margin-top: 2px; }
 
@@ -544,8 +342,6 @@
 .rx-add-target { max-width: 160px; }
 .rx-add-target .picker-button { font-size: var(--t-11); padding: 3px 8px; }
 
-.rx-empty { margin: 28px 0 0; color: var(--text-3); font-size: var(--t-15); text-align: center; }
-
 /* One column at a time, as on iPhone: the lists, or the list picked from them. Searching
    keeps the field and shows what it found beneath it. */
 @media (max-width: 720px) {
@@ -565,27 +361,19 @@
 .rx-info h2 { margin: 0; font-size: var(--t-15); font-weight: 600; }
 .rx-info-mark { display: grid; place-items: center; width: 84px; height: 84px; border-radius: 50%; color: #fff; box-shadow: 0 6px 18px color-mix(in srgb, currentColor 0%, rgba(0,0,0,0.35)); transition: background 160ms ease; }
 .rx-info-mark svg { width: 40px; height: 40px; }
-.rx-info-name { width: 100%; padding: 8px 10px; border: 1px solid var(--separator); border-radius: 8px; background: color-mix(in srgb, var(--text) 5%, transparent); font: inherit; font-size: var(--t-15); font-weight: 600; text-align: center; outline: none; }
-.rx-info-name:focus { border-color: currentColor; }
+.rx-info-name { width: 100%; font-size: var(--t-15); font-weight: 600; text-align: center; }
+.rx-info .sheet-actions { width: 100%; justify-content: space-between; }
 .rx-info-colours { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
 .rx-info-swatch { width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; box-shadow: none; cursor: pointer; transition: transform 120ms ease; }
 .rx-info-swatch.is-on { box-shadow: 0 0 0 2px var(--sheet, var(--bg)), 0 0 0 4px var(--text-3); }
-.rx-info-actions { display: flex; justify-content: space-between; width: 100%; margin-top: 4px; }
 
 /* Date, then the Time switch, then the time once it is on — the phone's order, on one line. */
 .rx-due { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .rx-field .rx-due .rx-due-day { width: auto; flex: 0 1 11em; }
 .rx-field .rx-due .time-field { width: 10.5ch; flex: none; }
-/* The phone's switch: a pill that fills with the accent when on. */
+/* The kit's switch, drawn for a checkbox: the input itself out of sight, still there to reach. */
 .rx-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; flex: none; color: var(--text-2); font-size: var(--t-13); cursor: pointer; }
 .rx-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.rx-switch-track { position: relative; width: 34px; height: 20px; border-radius: 10px; background: color-mix(in srgb, var(--text) 22%, transparent); transition: background 160ms ease; }
-.rx-switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.3); transition: transform 160ms ease; }
-/* On, it takes the accent, as a macOS switch does — green is the phone's. */
-.rx-switch input:checked + .rx-switch-track { background: var(--sys-blue, #0a84ff); }
-.rx-switch input:checked + .rx-switch-track::after { transform: translateX(14px); }
-.rx-switch input:focus-visible + .rx-switch-track { outline: 2px solid var(--sys-blue); outline-offset: 2px; }
-.rx-switch input:disabled + .rx-switch-track { opacity: 0.4; }
 
 /* Dragging: the row lifted, and a line where it would land, as Reminders draws them. */
 .rx-row[draggable="true"] { cursor: grab; }

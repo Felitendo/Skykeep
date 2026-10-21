@@ -40,14 +40,14 @@ const offered = await page.locator(".note-bar-actions button").allInnerTexts();
 ok(offered.includes("Recover") && offered.includes("Delete Now"),
   "a deleted note offers Recover and Delete Now", `it offered ${JSON.stringify(offered)}`);
 
-page.once("dialog", (d) => d.dismiss());
 await page.getByRole("button", { name: "Delete Now" }).click();
+await page.locator(".confirm").getByRole("button", { name: "Cancel" }).click();
 await page.waitForTimeout(300);
 ok(await page.evaluate(() => window.__deletes === 0),
   "Delete Now does nothing until it is confirmed", "Delete Now deleted without asking");
 
-page.once("dialog", (d) => d.accept());
 await page.getByRole("button", { name: "Delete Now" }).click();
+await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(300);
 ok(await page.evaluate(() => window.__deletes === 1), "confirmed, it deletes", "confirmed, nothing happened");
 

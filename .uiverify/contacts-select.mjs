@@ -1,12 +1,12 @@
 // Several contacts at once, as Contacts on the Mac: Ctrl-click adds one, Shift-click a run,
 // Ctrl-A everyone; the card shows how many, and what is done is done to them all.
 import { engine } from "./engine.mjs";
-import { SERVICES, installStub, openScreen } from "./stub.mjs";
+import { SERVICES, autoConfirm, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, contactsFixture: true });
 const page = await ctx.newPage();
-page.on("dialog", (d) => d.accept());
+await ctx.addInitScript(autoConfirm);
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Contacts");
 await page.waitForTimeout(400);

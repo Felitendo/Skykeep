@@ -1,0 +1,75 @@
+/* ── Import sheet: a file opened with Pomander (components/ImportSheet.tsx) ─────────────── */
+
+/* Under the menus (z-index 80), so its calendar picker opens over it. */
+.modal-veil.ix-veil { z-index: 70; }
+.ix-sheet { width: min(480px, 92vw); gap: 10px; }
+.ix-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ix-head h2 { flex: 0 1 auto; min-width: 0; }
+.ix-head .picker { flex: none; max-width: 50%; }
+.ix-file { margin: -6px 0 0; font-size: var(--t-11); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ix-list {
+  flex: 1;
+  min-height: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-plateau);
+}
+.ix-list li { display: grid; gap: 1px; padding: 8px 12px; }
+.ix-list li + li { border-top: 1px solid var(--separator); }
+.ix-title { font-size: var(--t-13); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ix-sub { font-size: 12px; color: var(--text-2); line-height: 1.35; }
+.ix-list li.is-skipped .ix-title { color: var(--text-3); }
+.ix-list li.is-refused .ix-title { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--text-3); }
+.ix-list li.is-refused .ix-sub { color: var(--text-2); }
+
+.ix-reason { margin: 0; font-size: var(--t-13); color: var(--text-2); line-height: 1.4; white-space: pre-line; }
+.ix-error { color: var(--danger); }
+
+/* ── Quick capture: its own small window (components/QuickCapture.tsx) ──────────────────── */
+
+html:has(.qc), html:has(.qc) body, html:has(.qc) #root { height: 100%; margin: 0; overflow: hidden; }
+.qc {
+  height: 100%;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  padding: 14px 16px 12px;
+  background: var(--sheet);
+  color: var(--text);
+}
+.qc-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* The app it goes into, in its own colour: a reminder's empty circle, a note's page corner. */
+.qc-mark { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--accent); }
+.qc-mark[data-kind="note"] { border-radius: 4px; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.qc-field {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--t-22);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  padding: 4px 0;
+}
+.qc-field::placeholder { color: var(--text-3); }
+.qc-field:disabled { opacity: 0.6; }
+.qc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--separator);
+  min-width: 0;
+}
+.qc-note { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-error { color: var(--danger); }
+.qc-link { padding: 0; font-size: inherit; }

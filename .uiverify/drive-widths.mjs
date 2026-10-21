@@ -18,7 +18,7 @@ for (const [w, h] of [[1920, 1040], [960, 1040], [700, 900], [480, 800]]) {
   await openScreen(page, "iCloud Drive").catch(() => openScreen(page, "Drive"));
   await page.waitForTimeout(150);
   const box = () => page.evaluate(() => {
-    const bar = document.querySelector(".drive > .cal-bar"), up = [...bar.querySelectorAll("button")].find((x) => /Upload/.test(x.textContent));
+    const bar = document.querySelector(".drive > .drive-bar"), up = [...bar.querySelectorAll("button")].find((x) => /Upload/.test(x.textContent));
     const r = bar.getBoundingClientRect(), u = up.getBoundingClientRect();
     return { h: Math.round(r.height), upTop: Math.round(u.top), upRight: Math.round(u.right), right: Math.round(r.right),
       scroll: document.querySelector("main.content").scrollWidth - document.querySelector("main.content").clientWidth,
@@ -32,7 +32,7 @@ for (const [w, h] of [[1920, 1040], [960, 1040], [700, 900], [480, 800]]) {
     `${w}px: the bar does not move when the count arrives  (${before.h}→${after.h}px high, Upload at ${before.upTop}→${after.upTop}; "${after.count}")`);
   ok(after.upRight <= after.right + 1 && after.scroll <= 0, `${w}px: nothing runs off the edge`);
   if (w === 960) {
-    const recents = page.locator(".drive > .cal-bar button[title='Recents']");
+    const recents = page.locator(".drive > .drive-bar button[title='Recents']");
     ok((await recents.evaluate((e) => getComputedStyle(e).fontSize)) === "0px" && (await recents.getAttribute("title")) === "Recents",
       "960px: the controls are icons, each still named");
   }

@@ -28,7 +28,7 @@ ok((await page.evaluate(() => window.__settings?.eventAlerts)) === false, "and t
 await page.evaluate(() => { window.__settingsFail = true; });
 await sw.click();
 await page.waitForTimeout(100);
-ok((await sw.getAttribute("aria-checked")) === "false" && (await page.locator(".settings-error").isVisible()), "a setting that could not be kept goes back, and says why");
+ok((await sw.getAttribute("aria-checked")) === "false" && (await page.locator(".toast.is-error").isVisible()), "a setting that could not be kept goes back, and says why");
 await page.evaluate(() => { window.__settingsFail = false; });
 
 await page.getByRole("button", { name: "Dark", exact: true }).click();
@@ -70,7 +70,7 @@ await page.locator(".sidebar-account").click();
 await page.waitForSelector(".settings");
 await page.getByRole("button", { name: "Save Diagnostic Report" }).click();
 await page.waitForTimeout(150);
-ok((await page.evaluate(() => window.__diagnostics)) === 1 && /Saved to Downloads\/Pomander diagnostics/.test(await page.locator(".settings").innerText()), "a diagnostic report is saved, and the screen says where");
+ok((await page.evaluate(() => window.__diagnostics)) === 1 && /Saved to Downloads/.test(await page.locator(".toast").last().innerText()), "a diagnostic report is saved, and the screen says where");
 
 // The account's picture is the photo on the person's own card, where it has one.
 // (A plain browser cannot load quince:// — the picture falls back to initials, as it should —

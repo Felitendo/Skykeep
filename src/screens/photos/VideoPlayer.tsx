@@ -147,8 +147,8 @@ export function VideoPlayer({
         onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
         onError={onError}
       />
-      <div className="px-player-bar px-capsule" role="toolbar" aria-label="Video controls" onClick={(e) => e.stopPropagation()}>
-        <button className="px-cap" aria-label={playing ? "Pause" : "Play"} onClick={toggle}>
+      <div className="px-player-bar toolbar-group" role="toolbar" aria-label="Video controls" onClick={(e) => e.stopPropagation()}>
+        <button className="tool px-cap" aria-label={playing ? "Pause" : "Play"} onClick={toggle}>
           {playing ? <Pause size={17} strokeWidth={0} fill="currentColor" /> : <Play size={17} strokeWidth={0} fill="currentColor" />}
         </button>
         <span className="px-player-time" ref={said}>
@@ -197,7 +197,7 @@ export function VideoPlayer({
           −0:00
         </span>
         <button
-          className="px-cap"
+          className="tool px-cap"
           aria-label={muted ? "Unmute" : "Mute"}
           onClick={() => {
             const v = film.current;

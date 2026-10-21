@@ -11,7 +11,7 @@ page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); proc
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
-await page.locator(".account-card, [aria-label*='Settings'], .sidebar-foot button").first().click();
+await page.locator(".sidebar-account").click();
 await page.waitForTimeout(400);
 const sw = page.getByRole("switch", { name: "iCloud Drive folder" });
 ok((await sw.getAttribute("aria-checked")) === "false", "off until turned on");

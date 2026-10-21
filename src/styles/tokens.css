@@ -92,6 +92,21 @@
   /* .bouncy — the one moment that earns it: something arriving, the library opening. */
   --spring-bouncy: linear(0, 0.0167, 0.0609, 0.1247, 0.2015, 0.2858, 0.3731, 0.4599, 0.5437, 0.6223, 0.6945, 0.7596, 0.817, 0.8669, 0.9092, 0.9446, 0.9734, 0.9963, 1.0139, 1.0269, 1.0361, 1.0419, 1.045, 1.046, 1.0452, 1.0432, 1.0403, 1.0368, 1.0329, 1.0289, 1.0249, 1.0211, 1.0174, 1.0141, 1.0111, 1.0085, 1.0062, 1.0042, 1.0026, 1.0012, 1.0002, 0.9994, 0.9988, 0.9983, 0.9981, 0.9979, 0.9979, 0.9979, 1);
   --spring-bouncy-d: 700ms;
+  /* The shell's motion, in one place. On his WebKitGTK every animation that moved or scaled
+     a large layer — the content, the photo viewer, the sidebar — flickered, so the rules are:
+     large surfaces change at once (or fade colour, never opacity, at most --motion-fade);
+     only small things — a highlight, a chip — move, and never further than this. */
+  /* A hover or highlight answering the pointer: quick enough never to trail it. */
+  --motion-hover: 100ms;
+  /* Something small arriving or leaving in place: a notice. */
+  --motion-fade: 140ms;
+  /* Arriving: fast out of the gate, settling gently (decelerate). */
+  --motion-ease-out: cubic-bezier(0.2, 0, 0, 1);
+  /* Leaving: gathering pace as it goes (accelerate), so the end is not watched. */
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  /* Keyboard focus, the same ring on everything in the shell. */
+  --focus-ring: 3px solid var(--accent-ring);
+
   /* A press: in fast, so the control answers the finger; out on the snappy spring. */
   --press-scale: 0.96;
   --press-in: 90ms;
@@ -102,6 +117,37 @@
   --r-plateau: 10px;
   --r-field: 7px;
   --r-pill: 999px;
+  /* A menu, popover or toast: the floating surfaces, all one radius. */
+  --r-float: 12px;
+
+  /* The kit's sizes (styles/kit.css). One height per kind of control, everywhere:
+     a button, field or pop-up 28; a toolbar capsule 32, its controls 28 inside it; a row
+     of a source list 30; a small icon button inside a row 22. */
+  --h-control: 28px;
+  --h-tool: 32px;
+  --h-row: 30px;
+  --h-mini: 22px;
+
+  /* The neutral fills every control and row is drawn with, so a hover, a press and a
+     selection read the same in every app. */
+  --fill: color-mix(in srgb, var(--text) 7%, transparent);
+  --fill-hover: color-mix(in srgb, var(--text) 6%, transparent);
+  --fill-press: color-mix(in srgb, var(--text) 12%, transparent);
+  --fill-selected: color-mix(in srgb, var(--text) 11%, transparent);
+  --ring: 0 0 0 3px var(--accent-ring);
+  /* Filled red, under white text at 4.5:1 in either appearance. */
+  --danger-deep: #c1121f;
+  /* A toolbar's capsules (kit.css .toolbar-group): nearly solid, a rim, a short lift. */
+  --tool-bg: color-mix(in srgb, var(--sheet) 90%, transparent);
+  --tool-drop: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --tool-lift: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--tool-drop);
+
+  /* Apple's system colours, as its built-in views draw them; the dark set shifts them. */
+  --sys-blue: #0088ff;
+  --sys-red: #ff383c;
+  --sys-gray: #8e8e93;
+  --sys-orange: #ff8d28;
+  --sys-green: #34c759;
 
   /* Apple's sheet-presentation curve. Decisive out, no bounce. */
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
@@ -135,6 +181,8 @@
     --field-edge-hover: rgba(255, 255, 255, 0.28);
     --danger: #ff6b6b;
     --note-c1: #bf5af2; --note-c2: #ff375f; --note-c3: #ff9f0a; --note-c4: #63e6e2; --note-c5: #0a84ff;
+    --sys-blue: #0091ff; --sys-red: #ff4245; --sys-gray: #98989d; --sys-orange: #ff9230; --sys-green: #30d158;
+    --tool-drop: 0 2px 10px rgba(0, 0, 0, 0.4);
     --shadow-sheet: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
     --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
     --glass: rgba(40, 40, 44, 0.56);
@@ -160,6 +208,8 @@
     --field-edge-hover: rgba(255, 255, 255, 0.28);
     --danger: #ff6b6b;
     --note-c1: #bf5af2; --note-c2: #ff375f; --note-c3: #ff9f0a; --note-c4: #63e6e2; --note-c5: #0a84ff;
+    --sys-blue: #0091ff; --sys-red: #ff4245; --sys-gray: #98989d; --sys-orange: #ff9230; --sys-green: #30d158;
+    --tool-drop: 0 2px 10px rgba(0, 0, 0, 0.4);
     --shadow-sheet: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
     --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
     --glass: rgba(40, 40, 44, 0.56);
@@ -210,23 +260,20 @@ body {
 /* A control gives under a press and springs back, as Apple's do — buttons, icons, pop-up
    buttons, segments. Not a row of a list: Apple's rows take a highlight, they do not
    shrink. Only the pressed thing moves; hovering changes nothing but colour. */
-:is(.quiet, .primary, .danger, .rx-icon-button, .notes-icon, .cx-icon, .cx-today, .cx-more,
-  .sidebar-toggle, .segment, .picker-button, .notes-aa, .notes-new-folder, .rx-add-list,
-  .info-done, .compact-back, .notice-close, .upload-tray-close, .with-glyph, .cx-toast-undo,
-  .cx-pop-delete):not(:disabled) {
+:is(.quiet, .primary, .icon-button, .tool, .segment, .picker-button, .sidebar-toggle,
+  .compact-back, .toast-action, .search-clear):not(:disabled) {
   /* `scale`, not `transform`: a control placed with a transform keeps it. */
   transition: scale var(--spring-snappy-d) var(--spring-snappy), background-color 120ms ease,
     background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 160ms ease;
 }
-:is(.quiet, .primary, .danger, .rx-icon-button, .notes-icon, .cx-icon, .cx-today, .cx-more,
-  .sidebar-toggle, .segment, .picker-button, .notes-aa, .notes-new-folder, .rx-add-list,
-  .info-done, .compact-back, .notice-close, .upload-tray-close, .with-glyph, .cx-toast-undo,
-  .cx-pop-delete):not(:disabled):active {
+:is(.quiet, .primary, .icon-button, .tool, .segment, .picker-button, .sidebar-toggle,
+  .compact-back, .toast-action, .search-clear):not(:disabled):active {
   scale: var(--press-scale);
   transition-duration: var(--press-in), 0ms, 0ms, 0ms, 0ms, 160ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root { --motion-hover: 0ms; --motion-fade: 0ms; }
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;

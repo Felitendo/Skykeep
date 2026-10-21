@@ -3,7 +3,13 @@ import { foldAway } from "../lib/fade";
 import { useActiveRef } from "../lib/screen";
 import { listen } from "@tauri-apps/api/event";
 import { usePending } from "../lib/pending";
-import { Notice } from "../components/Notice";
+import { Unsent, Waiting } from "../components/Unsent";
+import { useOutbox } from "../lib/outbox";
+import { useErrorToast } from "../components/Toast";
+import { useConfirm } from "../components/Confirm";
+import { EmptyState } from "../components/EmptyState";
+import { SearchField } from "../components/SearchField";
+import { PaneTitle } from "../components/PaneTitle";
 import { Portal } from "../components/Portal";
 import { TimeField } from "../components/TimeField";
 import { ChevronLeft } from "lucide-react";
@@ -18,7 +24,8 @@ import {
   type ReminderCounts,
   type SmartList,
 } from "../lib/ipc";
-import { useSync } from "../lib/sync";
+import { Arriving } from "../components/EmptyState";
+import { useArriving, useSync } from "../lib/sync";
 import { Picker } from "../components/Picker";
 import { RowMenu } from "../components/RowMenu";
 import { Glyph, emblemGlyph, type GlyphName } from "../components/Glyph";
@@ -174,6 +181,14 @@ const dayToUtc = (value: string) => {
   const [y, m, d] = value.split("-").map(Number);
   return Math.floor(Date.UTC(y, m - 1, d) / 1000);
 };
+/**
+ * The backend's answer when a reminder acted on is not in the library at all (REMINDER_GONE in
+ * main.rs) — gone from iCloud and synced away. Answered with a quiet re-read, never a notice.
+ */
+const REMINDER_GONE = "reminder-gone";
+/** A row shown for a reminder still being added, before Apple has given it an id. */
+const STAND_IN = "pending:";
+
 const asShown = (r: Reminder): Reminder =>
   r.allDay && r.dueAt !== null ? { ...r, dueAt: dayToLocal(r.dueAt) } : r;
 
@@ -245,7 +260,10 @@ export function RemindersView() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
+  const [confirm, confirmSheet] = useConfirm();
   const { revision } = useSync();
+  const arriving = useArriving("reminders");
   /** What each sidebar entry is holding. Apple puts a number on every one. */
   const [counts, setCounts] = useState<ReminderCounts | null>(null);
   /** The headings inside the list that is open, when a real list is open. */
@@ -283,6 +301,8 @@ export function RemindersView() {
   const [detail, setDetail] = useState(false);
 
   const { hold, over } = usePending<Reminder>();
+  /** Changes kept here and not yet at Apple, and any Apple turned down. */
+  const outbox = useOutbox("reminders");
   /** Each read is numbered: one overtaken by a later pick is dropped, never drawn late. */
   const reads = useRef(0);
   const readItems = useCallback(async (): Promise<Reminder[]> => {
@@ -313,9 +333,9 @@ export function RemindersView() {
   useEffect(() => {
     const offs = [
       listen("quince://reminders-synced", () => void readItems().catch(() => {})),
+      // Said by the refused change's own notice (Unsent), which keeps what it held.
       listen<{ service: string; message: string }>("quince://outbox-refused", (e) => {
         if (e.payload.service !== "reminders") return;
-        setError(e.payload.message);
         void readItems().catch(() => {});
       }),
     ];
@@ -340,7 +360,8 @@ export function RemindersView() {
 
   useEffect(() => {
     readItems().catch((e) => setError(messageOf(e)));
-  }, [readItems, revision]);
+    // `outbox.tick`: a change sent, or turned down, changes what the library holds.
+  }, [readItems, revision, outbox.tick]);
 
   useEffect(() => {
     if (!moved) return undefined;
@@ -365,6 +386,10 @@ export function RemindersView() {
       run: () => Promise<void>,
       predict?: (rows: Reminder[]) => Reminder[],
     ): Promise<Reminder[] | null> => {
+      // A stand-in has no id at Apple yet, so there is nothing to send: a tick or an edit on it
+      // was refused as "no longer in the local library". It is replaced by the real row the
+      // moment the add lands, and that one takes changes.
+      if (reminder.guid.startsWith(STAND_IN)) return null;
       setError(null);
       if (predict) setItems((rows) => predict(rows));
       // Kept over any refresh until Apple has it; let go before the read that confirms it.
@@ -383,7 +408,9 @@ export function RemindersView() {
         return await readItems();
       } catch (e) {
         release();
-        setError(messageOf(e));
+        // Not in the library at all — deleted on another device and synced away. Nothing to
+        // say about it: the list is read again and the row goes, as on the phone.
+        if (messageOf(e) !== REMINDER_GONE) setError(messageOf(e));
         readItems().catch(() => {});
         return null;
       } finally {
@@ -456,6 +483,7 @@ export function RemindersView() {
   const held = useRef(new Set<string>());
   const SETTLE_MS = 1500;
   const toggle = (r: Reminder) => {
+    if (r.guid.startsWith(STAND_IN)) return;
     const wasOpen = !r.completedAt;
     const repeating = repeatLabel(r) !== null;
     if (repeating) {
@@ -698,7 +726,7 @@ export function RemindersView() {
           ? { flagged: true }
           : {};
     // The row is there the moment Return is pressed, and the field is ready for the next.
-    const standIn = `pending:${Date.now()}`;
+    const standIn = `${STAND_IN}${Date.now()}`;
     setDraft("");
     const shownHere = inList || kind === "today" || kind === "scheduled" || kind === "flagged" || kind === "all";
     if (shownHere) setItems((rows) => [
@@ -973,7 +1001,7 @@ export function RemindersView() {
     <div className={`rx-list-row${nested ? " nested" : ""}${listMenu?.list.guid === list.guid ? " is-menu" : ""}`} key={list.guid}>
       {renaming === list.guid ? (
         <input
-          className="rx-rename"
+          className="field rx-rename"
           defaultValue={list.title}
           autoFocus
           aria-label={`Rename ${list.title}`}
@@ -995,7 +1023,7 @@ export function RemindersView() {
       ) : (
         <>
           <button
-            className="rx-list"
+            className="source-row rx-list"
             aria-current={picked.type === "list" && picked.guid === list.guid}
             onClick={() => {
               setQuery("");
@@ -1011,13 +1039,13 @@ export function RemindersView() {
             <span className="rx-badge" style={{ background: colourOf(list) }}>
               <Glyph name={emblemGlyph(list.emblem)} />
             </span>
-            <span className="rx-list-name">{list.title}</span>
-            <span className="rx-list-count">{countOf(list.guid)}</span>
+            <span className="source-name rx-list-name">{list.title}</span>
+            <span className="count">{countOf(list.guid)}</span>
           </button>
           {/* One ⋯ over where the count sits, as Notes' and Contacts' rows have: three
               buttons there covered the list's own name. Right-click opens the same menu. */}
           <button
-            className="notes-folder-more rx-list-more"
+            className="icon-button small round row-more rx-list-more"
             aria-label={`Actions for ${list.title}`}
             aria-haspopup="menu"
             onClick={(e) => {
@@ -1095,19 +1123,16 @@ export function RemindersView() {
       style={{ "--accent": accent } as React.CSSProperties}
     >
       <aside className="rx-side" aria-label="Reminder lists">
-        <label className="rx-search">
-          <Glyph name="search" />
-          <input
-            type="search"
-            placeholder="Search"
-            aria-label="Search reminders"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setQuery("");
-            }}
-          />
-        </label>
+        <SearchField
+          className="rx-search"
+          placeholder="Search"
+          aria-label="Search reminders"
+          value={query}
+          onChange={setQuery}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setQuery("");
+          }}
+        />
 
         <div className="rx-tiles">
           {SMART.map((smart) =>
@@ -1134,7 +1159,7 @@ export function RemindersView() {
           )}
         </div>
 
-        <p className="rx-side-heading">My Lists</p>
+        <p className="side-heading rx-side-heading">My Lists</p>
         <div className="rx-lists">
           {topLevel.map((entry) =>
             entry.kind === "list" ? (
@@ -1142,14 +1167,14 @@ export function RemindersView() {
             ) : (
               <div className="rx-group" key={entry.group.guid}>
                 <button
-                  className="rx-group-row"
+                  className="source-row rx-group-row"
                   aria-expanded={!folded.has(entry.group.guid)}
                   onClick={() => toggleFolded(entry.group.guid)}
                 >
                   <span className="rx-group-glyph">
                     <Glyph name="folder" />
                   </span>
-                  <span className="rx-list-name">{entry.group.title}</span>
+                  <span className="source-name rx-list-name">{entry.group.title}</span>
                   <span className="rx-chevron">
                     <Glyph name="chevron" />
                   </span>
@@ -1160,12 +1185,12 @@ export function RemindersView() {
             ),
           )}
         </div>
-        {loaded && lists.length === 0 && <p className="rx-side-empty">No lists yet</p>}
+        {loaded && lists.length === 0 && !arriving && <p className="side-heading">No lists yet</p>}
 
         {addingList ? (
           <form className="rx-new-list" onSubmit={createList}>
             <input
-              className="rx-rename"
+              className="field rx-rename"
               value={newList}
               onChange={(e) => setNewList(e.target.value)}
               placeholder="List name"
@@ -1175,7 +1200,7 @@ export function RemindersView() {
             />
           </form>
         ) : (
-          <button className="rx-add-list" onClick={() => setAddingList(true)}>
+          <button className="side-add" onClick={() => setAddingList(true)}>
             <Glyph name="plus" />
             Add List
           </button>
@@ -1187,33 +1212,28 @@ export function RemindersView() {
           <ChevronLeft size={18} strokeWidth={2.25} aria-hidden="true" />
           <span>Lists</span>
         </button>
-        <header className="rx-head">
-          <h1>{searching ? `Results for “${query.trim()}”` : heading}</h1>
-          <span className="rx-head-count" aria-label={`${outstanding} to do`}>
-            {outstanding}
-          </span>
-        </header>
-        {inList && (
-          <div className="rx-subhead">
-            <button className="rx-link" onClick={() => setShowDone((v) => !v)}>
+        <header className="pane-head rx-head">
+          <PaneTitle count={`${outstanding} ${outstanding === 1 ? "reminder" : "reminders"}`}>
+            {searching ? `Results for “${query.trim()}”` : heading}
+          </PaneTitle>
+          {inList && (
+            <button className="link" onClick={() => setShowDone((v) => !v)}>
               {showDone ? "Hide Completed" : "Show Completed"}
             </button>
-          </div>
-        )}
-
-        {error && (
-          <Notice message={error} onDismiss={() => setError(null)} />
-        )}
+          )}
+        </header>
+        <Unsent refused={outbox.refused} what="a change to a reminder" onResend={(r) => void outbox.resend(r)} onDiscard={(r) => void outbox.discard(r)} />
 
         {/* An account with no lists: a reminder cannot exist outside one, so the one thing
             that helps is offered instead of an add field with nowhere to go. */}
-        {lists.length === 0 && loaded && (
-          <div className="rem-nolists">
-            <p className="rem-nolists-line">Reminders live in lists, and there aren’t any yet.</p>
-            <button className="primary" onClick={() => void makeFirstList()} disabled={syncing}>
-              Create a list
-            </button>
-          </div>
+        <Arriving service="reminders" what="reminders" />
+        {lists.length === 0 && loaded && !arriving && (
+          <EmptyState
+            className="rem-nolists"
+            action={{ label: "Create a List", run: () => void makeFirstList(), disabled: syncing }}
+          >
+            Reminders live in lists. Make your first one to begin.
+          </EmptyState>
         )}
 
         {heldBack > 0 && (
@@ -1383,6 +1403,7 @@ export function RemindersView() {
                       {reminder.notes && !isOpen && (
                         <span className="rx-notes">{reminder.notes}</span>
                       )}
+                      <Waiting shown={outbox.waiting.has(reminder.guid)} />
                       {(due || repeat || justMoved || (showListName && home)) && (
                         <span className="rx-meta">
                           {justMoved ? (
@@ -1461,6 +1482,7 @@ export function RemindersView() {
                           <label className="rx-field">
                             <span>Notes</span>
                             <textarea
+                              className="field"
                               defaultValue={reminder.notes ?? ""}
                               rows={2}
                               onBlur={(e) => void setNotes(reminder, e.target.value)}
@@ -1469,22 +1491,21 @@ export function RemindersView() {
                           <div className="rx-detail-actions">
                             {depth > 0 ? (
                               <button
-                                className="rx-link"
-                                
+                                className="link"
                                 onClick={() => void outdent(reminder)}
                               >
                                 Move Out of Subtasks
                               </button>
                             ) : items.some((x) => x.parentGuid === reminder.guid) ? null : (
                               <button
-                                className="rx-link"
+                                className="link"
                                 onClick={() => void indent(reminder)}
                               >
                                 Make Subtask
                               </button>
                             )}
                             <button
-                              className="rx-link danger"
+                              className="link danger"
                               aria-label={`Delete ${reminder.title}`}
                               
                               onClick={() => remove(reminder)}
@@ -1498,7 +1519,7 @@ export function RemindersView() {
 
                     <span className="rx-trailing">
                       <button
-                        className="rx-icon-button"
+                        className="icon-button small rx-icon-button"
                         aria-label={
                           isOpen ? `Close details for ${reminder.title}` : `Details for ${reminder.title}`
                         }
@@ -1508,7 +1529,7 @@ export function RemindersView() {
                         <Glyph name="info" />
                       </button>
                       <button
-                        className={`rx-icon-button rx-flag${reminder.flagged ? " on" : ""}`}
+                        className={`icon-button small is-glyph-state rx-icon-button rx-flag${reminder.flagged ? " on" : ""}`}
                         aria-label={
                           reminder.flagged ? `Unflag ${reminder.title}` : `Flag ${reminder.title}`
                         }
@@ -1529,7 +1550,7 @@ export function RemindersView() {
         {addRow}
 
         {loaded && items.length === 0 && !error && lists.length > 0 && (
-          <p className="rx-empty">
+          <EmptyState className="rx-empty">
             {searching
               ? "No reminders match."
               : inList
@@ -1537,7 +1558,7 @@ export function RemindersView() {
                   ? "Nothing in this list."
                   : "All done here."
                 : "No Reminders"}
-          </p>
+          </EmptyState>
         )}
       </section>
       {rowMenu && (
@@ -1580,19 +1601,26 @@ export function RemindersView() {
             { label: "Rename List", run: () => setRenaming(listMenu.list.guid) },
             null,
             {
-              label: "Delete List…",
+              label: "Delete List",
               danger: true,
               run: () => {
                 const list = listMenu.list;
                 // Deleting a list takes its reminders, so ask before doing it.
-                if (window.confirm(`Delete "${list.title}" and everything in it?`)) {
-                  void listWrite(() => api.reminderListDelete(list.guid));
-                }
+                void confirm({
+                  title: `Delete \u201c${list.title}\u201d?`,
+                  body: "Every reminder in it is deleted too, on all your devices.",
+                  action: "Delete",
+                  danger: true,
+                  symbol: "trash",
+                }).then((sure) => {
+                  if (sure) void listWrite(() => api.reminderListDelete(list.guid));
+                });
               },
             },
           ]}
         />
       )}
+      {confirmSheet}
       {infoFor && (
         <ListInfo
           list={infoFor}
@@ -1649,7 +1677,7 @@ function ListInfo({ list, onClose, onDone }: {
           <Glyph name="list" />
         </span>
         <input
-          className="rx-info-name"
+          className="field rx-info-name"
           value={title}
           aria-label="List name"
           style={{ color: shown }}
@@ -1670,7 +1698,7 @@ function ListInfo({ list, onClose, onDone }: {
             />
           ))}
         </div>
-        <div className="rx-info-actions">
+        <div className="sheet-actions rx-info-actions">
           <button className="quiet" onClick={onClose}>Cancel</button>
           <button className="primary" onClick={done} disabled={!title.trim()}>Done</button>
         </div>
@@ -1695,7 +1723,7 @@ function DueField({ reminder, onChange }: { reminder: Reminder; onChange: (day: 
       <div className="rx-due">
         <input
           type="date"
-          className="rx-due-day"
+          className="field rx-due-day"
           aria-label={`Date for ${reminder.title}`}
           defaultValue={day}
           key={`d${reminder.dueAt}`}
@@ -1711,11 +1739,12 @@ function DueField({ reminder, onChange }: { reminder: Reminder; onChange: (day: 
             disabled={!day}
             onChange={(e) => onChange(day, e.target.checked ? "09:00" : null)}
           />
-          <span className="rx-switch-track" aria-hidden="true" />
+          <span className="switch" aria-hidden="true" />
           <span>Time</span>
         </label>
         {time !== null && at && (
           <TimeField
+            className="field"
             label={`Time of day for ${reminder.title}`}
             hours={at.getHours()}
             minutes={at.getMinutes()}

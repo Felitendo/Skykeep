@@ -4,12 +4,14 @@
 //   ENGINE=webkit node .uiverify/calendar.mjs   WebKit's WPE port, off-screen
 //   ENGINE=gtk    node .uiverify/calendar.mjs   WebKit's GTK port — Quince's own — in a real
 //                                              window on this display
+//   ENGINE=msedge node .uiverify/calendar.mjs   Microsoft Edge — the engine WebView2 is, with
+//                                              Windows' own fonts — on a Windows machine
 //
 // Playwright's WebKit build wants a few libraries this machine's distribution names
 // differently; .uiverify/webkit-libs.sh fetches them into a private folder, no root needed.
 import { chromium, webkit } from "playwright";
 
-export const engineName = ["webkit", "gtk"].includes(process.env.ENGINE) ? process.env.ENGINE : "chromium";
+export const engineName = ["webkit", "gtk", "msedge"].includes(process.env.ENGINE) ? process.env.ENGINE : "chromium";
 const base = engineName === "chromium" ? chromium : webkit;
 /**
  * In the GTK port the window is a real one on this desktop, and a tiling window manager sizes
@@ -19,7 +21,11 @@ const base = engineName === "chromium" ? chromium : webkit;
  */
 export const engine = {
   launch: async (options = {}) => {
-    const browser = await base.launch({ ...options, ...(engineName === "gtk" ? { headless: false } : {}) });
+    const browser = await base.launch({
+      ...options,
+      ...(engineName === "gtk" ? { headless: false } : {}),
+      ...(engineName === "msedge" ? { channel: "msedge" } : {}),
+    });
     if (engineName !== "gtk") return browser;
     const newContext = browser.newContext.bind(browser);
     browser.newContext = async (opts = {}) => {

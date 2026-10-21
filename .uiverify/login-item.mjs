@@ -12,7 +12,7 @@ for (const scheme of ["light", "dark"]) {
   const page = await ctx.newPage();
   page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await page.locator(".account-card, [aria-label*='Settings'], .sidebar-foot button").first().click();
+  await page.locator(".sidebar-account").click();
   await page.waitForTimeout(400);
   const sw = page.getByRole("switch", { name: "Open at Login" });
   const row = page.locator(".settings-row", { has: sw });
@@ -37,7 +37,7 @@ for (const scheme of ["light", "dark"]) {
   await page.evaluate(() => { window.__loginRefuse = "There is no configuration folder to keep it in."; });
   await sw.click();
   await page.waitForTimeout(200);
-  ok((await sw.getAttribute("aria-checked")) === "true" && /no configuration folder/.test(await page.locator(".settings-error").innerText()), `${scheme}: refused, back as it was with the reason`);
+  ok((await sw.getAttribute("aria-checked")) === "true" && /no configuration folder/.test(await page.locator(".toast.is-error").innerText()), `${scheme}: refused, back as it was with the reason`);
   await ctx.close();
 }
 await b.close();

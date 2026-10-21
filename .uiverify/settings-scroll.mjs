@@ -11,7 +11,7 @@ page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); proc
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
-const settings = () => page.locator(".account-card, [aria-label*='Settings'], .sidebar-foot button").first().click();
+const settings = () => page.locator(".sidebar-account").click();
 // Scrolled by the wheel, as a person scrolls: the page moves.
 const scrolls = async () => {
   const box = await page.locator(".settings").boundingBox();

@@ -4,6 +4,8 @@ import { engine as chromium } from "./engine.mjs";
 const b = await chromium.launch();
 const ctx = await b.newContext({ viewport: { width: 1100, height: 800 } });
 await ctx.addInitScript(() => {
+  // What the real event plugin provides beside the bridge: unlistening needs it.
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
   window.__TAURI_INTERNALS__ = {
     transformCallback: (c) => c,
     invoke: async (cmd) => {

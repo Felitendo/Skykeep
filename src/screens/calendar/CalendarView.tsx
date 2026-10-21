@@ -1,10 +1,13 @@
-import { Notice } from "../../components/Notice";
+import { toast, dismissToast, useErrorToast } from "../../components/Toast";
+import { ConfirmSheet, useConfirm } from "../../components/Confirm";
+import { EmptyState } from "../../components/EmptyState";
+import { SearchField } from "../../components/SearchField";
 import { useActiveRef } from "../../lib/screen";
 import { usePending } from "../../lib/pending";
 import { inMenu, Portal } from "../../components/Portal";
 import { TimeField } from "../../components/TimeField";
-import { Search } from "lucide-react";
-import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   type EventRepeat,
   api,
@@ -23,9 +26,11 @@ import {
   clock,
   dateOf,
   dayKey,
+  daysOf,
   hourLabel,
   instantIn,
   midnight,
+  isWeekend,
   monthDays,
   placeDayWith,
   sameClockIn,
@@ -96,6 +101,9 @@ const VIEWS = [
   { key: "year", label: "Year" },
 ] as const;
 type View = (typeof VIEWS)[number]["key"];
+
+/** A day with nothing in it, the same empty list every time. */
+const NOTHING: never[] = [];
 
 /** One hour of the Day and Week grids. */
 const HOUR = 48;
@@ -222,14 +230,14 @@ export function CalendarView() {
       return "month";
     }
   });
-  const setView = (v: View) => {
+  const setView = useCallback((v: View) => {
     setViewState(v);
     try {
       window.localStorage.setItem(VIEW_KEY, v);
     } catch {
       // Remembering the view is a convenience.
     }
-  };
+  }, []);
   /** A found event: its day, in Day view, and the search put away. */
   const openFound = (e: CalendarEvent) => {
     setSelected(midnight(dateOf(e.startsAt)));
@@ -290,6 +298,8 @@ export function CalendarView() {
   });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
+  const [confirm, confirmSheet] = useConfirm();
   const [draft, setDraft] = useState<Draft | null>(null);
   const draftRef = useRef<Draft | null>(null);
   draftRef.current = draft;
@@ -307,7 +317,21 @@ export function CalendarView() {
       timer = window.setTimeout(tick, 60_000 - (Date.now() % 60_000));
     };
     timer = window.setTimeout(tick, 60_000 - (Date.now() % 60_000));
-    return () => window.clearTimeout(timer);
+    // A timer sleeps with the machine: woken after midnight, today stayed yesterday — the red
+    // circle and the line for now in the wrong place — until the minute came round. Coming
+    // back to the window reads the clock again.
+    const wake = () => {
+      if (document.visibilityState === "hidden") return;
+      window.clearTimeout(timer);
+      tick();
+    };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("focus", wake);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("focus", wake);
+    };
   }, []);
 
   const week = useMemo(() => {
@@ -462,9 +486,17 @@ export function CalendarView() {
   };
   const deleteCalendar = (c: Calendar) => {
     // icloud.com's own warning: the events go with it, on every device.
-    if (!window.confirm(`Delete \u201c${c.title}\u201d?\n\nAll events in this calendar will be deleted from every device.`)) return;
-    setCalendars((cs) => cs.filter((x) => x.guid !== c.guid));
-    void write(async () => { await api.calendarDelete(c.guid); });
+    void confirm({
+      title: `Delete \u201c${c.title}\u201d?`,
+      body: "All events in this calendar will be deleted from every device.",
+      action: "Delete",
+      danger: true,
+      symbol: "trash",
+    }).then((sure) => {
+      if (!sure) return;
+      setCalendars((cs) => cs.filter((x) => x.guid !== c.guid));
+      void write(async () => { await api.calendarDelete(c.guid); });
+    });
   };
 
   /**
@@ -584,17 +616,50 @@ export function CalendarView() {
     // Made again as it was, its alerts with it (its guests are not this app's to invite).
     if (gone) await save({ ...draftOf(gone), guid: null, alerts: gone.alerts, alertsChanged: gone.alerts.length > 0 });
   }, [undo, save]);
+  const moveEvent = useCallback(
+    (e: CalendarEvent, startsAt: number, endsAt: number) => void save({ ...draftOf(e), startsAt, endsAt }),
+    [save]
+  );
+  /**
+   * The popover put away by a click elsewhere keeps what was written in it, as Calendar's
+   * does — a title typed and then a click on the next day had thrown the title away. Escape
+   * and Cancel still leave the event as it was, and a new event nothing was written into is
+   * not made.
+   */
+  const dismiss = useCallback(() => {
+    const d = draftRef.current;
+    const was = openedAs.current;
+    const changed = Boolean(d && was && (
+      d.title !== was.title || d.location !== was.location || d.notes !== was.notes ||
+      (d.url ?? "") !== (was.url ?? "") || d.calendarGuid !== was.calendarGuid ||
+      d.timezone !== was.timezone || d.allDay !== was.allDay ||
+      d.alertsChanged || d.repeatChanged ||
+      // A new event's times are where it was made; only an existing one's are a change.
+      (d.guid !== null && (d.startsAt !== was.startsAt || d.endsAt !== was.endsAt))
+    ));
+    if (d && changed) void save(d, true);
+    else setDraft(null);
+  }, [save]);
+  // Deleted, said in a toast with Undo for as long as Undo can put it back.
   useEffect(() => {
     if (!undo) return undefined;
+    const id = toast({ message: `Deleted \u201c${undo.title}\u201d`, action: { label: "Undo", run: () => void takeBack() }, duration: 8000 });
     const timer = window.setTimeout(() => setUndo(null), 8000);
-    return () => window.clearTimeout(timer);
-  }, [undo]);
+    return () => {
+      window.clearTimeout(timer);
+      dismissToast(id);
+    };
+  }, [undo, takeBack]);
 
-  const openDraft = (d: Draft, at: Anchor) => {
+  /** The draft as it was opened, to tell whether anything in it has been changed since. */
+  const openedAs = useRef<Draft | null>(null);
+  const openDraft = useCallback((d: Draft, at: Anchor) => {
     // The event already open stays as it is: a second click — a double-click — closed it and
     // opened it again, and the popover flickered.
     if (d.guid && draftRef.current?.guid === d.guid) return;
-    setDraft(d.guid ? d : { ...d, alerts: [], repeat: null });
+    const opened = d.guid ? d : { ...d, alerts: [], repeat: null };
+    openedAs.current = opened;
+    setDraft(opened);
     setAnchor(at);
     const guid = d.guid;
     if (guid && !guid.startsWith("quince:")) {
@@ -607,7 +672,7 @@ export function CalendarView() {
         () => {},
       );
     }
-  };
+  }, []);
   // Opened once it is drawn: its day and calendar may take a render or two to come up. One
   // that never shows (gone since it was found) is let go of rather than opened later.
   useLayoutEffect(() => {
@@ -625,13 +690,39 @@ export function CalendarView() {
     const t = window.setTimeout(() => setFinding(null), 3000);
     return () => window.clearTimeout(t);
   }, [finding]);
-  const newAt = (startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => {
-    if (!target) return;
+  const targetGuid = target?.guid ?? null;
+  const newAt = useCallback((startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => {
+    if (!targetGuid) return;
     openDraft(
-      { guid: null, calendarGuid: target.guid, title: "", location: "", startsAt, endsAt, allDay, notes: "", url: null, timezone: null },
+      { guid: null, calendarGuid: targetGuid, title: "", location: "", startsAt, endsAt, allDay, notes: "", url: null, timezone: null },
       at
     );
-  };
+  }, [targetGuid, openDraft]);
+
+  /*
+   * What the views are handed, kept the same from one draw to the next so a view whose own
+   * inputs have not changed is not drawn again — not the week for every key typed in the
+   * popover, not the year for every minute the clock moves on.
+   */
+  const openEvent = useCallback((e: CalendarEvent, at: Anchor) => openDraft(draftOf(e), at), [openDraft]);
+  const createInMonth = useCallback((day: Date, at: Anchor) => {
+    const start = new Date(day);
+    start.setHours(9, 0, 0, 0);
+    newAt(seconds(start), seconds(start) + 3600, false, at);
+  }, [newAt]);
+  const showDay = useCallback((day: Date) => {
+    setSelected(day);
+    setView("day");
+  }, [setView]);
+  const canWrite = useCallback((guid: string) => byGuid.get(guid)?.writable ?? false, [byGuid]);
+  const gridDays = useMemo(() => (view === "week" ? week : [selected]), [view, week, selected]);
+  const pendingFrom = draft && !draft.guid && !draft.allDay ? draft.startsAt : null;
+  const pendingTo = draft && !draft.guid && !draft.allDay ? draft.endsAt : null;
+  const pendingTitle = draft && !draft.guid && !draft.allDay ? draft.title : "";
+  const pending = useMemo(
+    () => (pendingFrom === null || pendingTo === null ? null : { startsAt: pendingFrom, endsAt: pendingTo, title: pendingTitle }),
+    [pendingFrom, pendingTo, pendingTitle]
+  );
 
   /** "New event": the next whole hour on the selected day, for an hour — Apple's default. */
   const newEvent = (e?: React.MouseEvent) => {
@@ -694,8 +785,13 @@ export function CalendarView() {
         setGoingTo(true);
         return;
       }
-      if (command && e.key === "ArrowLeft") shift(-1);
-      else if (command && e.key === "ArrowRight") shift(1);
+      // ⌘← and ⌘→ page, and so do the bare arrows wherever they have nothing else to do — a
+      // focused day in Month moves its selection with them instead, and has said so already.
+      const bare = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.defaultPrevented &&
+        !(e.target as HTMLElement | null)?.closest?.('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]') &&
+        !document.querySelector('[role="menu"]');
+      if ((command || bare) && e.key === "ArrowLeft") shift(-1);
+      else if ((command || bare) && e.key === "ArrowRight") shift(1);
       // ⌘T, and the bare T this screen always had.
       else if (k === "t" && !e.altKey && !e.shiftKey) setSelected(midnight(new Date()));
       // ⌘1–⌘4: Day, Week, Month, Year, in the order the switch shows them.
@@ -743,32 +839,40 @@ export function CalendarView() {
     };
   }, [view, selected, week]);
 
-  /** A day's reminders and timed events for a month cell, in time order. */
-  const dayItems = useCallback(
-    (day: Date) => {
-      const start = seconds(day);
-      const end = seconds(addDays(day, 1));
-      const timed = shown
-        .filter((e) => !spansDays(e) && e.startsAt < end && e.endsAt > start)
-        .map((event) => ({ kind: "event" as const, at: Math.max(event.startsAt, start), event }));
-      const reminders = due
-        .filter((r) => r.dueAt !== null && r.dueAt >= start && r.dueAt < end)
-        .map((reminder) => ({ kind: "reminder" as const, at: reminder.dueAt ?? 0, reminder }));
-      return [...timed, ...reminders].sort((a, b) => a.at - b.at);
-    },
-    [shown, due]
-  );
-  /** Whether a day has anything at all — all-day events too, which Month draws as bars and
-   *  `dayItems` therefore leaves out. The dots in the mini month and Year use this; with
-   *  `dayItems` a birthday, a holiday or a trip left its days looking empty. */
-  const busyOn = useCallback(
-    (day: Date) => {
-      const start = seconds(day);
-      const end = seconds(addDays(day, 1));
-      return shown.some((e) => e.startsAt < end && e.endsAt > start) || dayItems(day).length > 0;
-    },
-    [shown, dayItems]
-  );
+  /**
+   * Every day's items, worked out once for what is shown: a month cell's reminders and timed
+   * events in time order, and which days have anything at all — all-day events too, which
+   * Month draws as bars and so leaves out of a cell's list. The dots in the mini month and Year
+   * read this; with the cell's list a birthday, a holiday or a trip left its days looking empty.
+   * Asked of the whole list once per day, Year did it 365 times on every draw.
+   */
+  const byDay = useMemo(() => {
+    const items = new Map<string, Item[]>();
+    const busy = new Set<string>();
+    const put = (d: Date, item: Item | null) => {
+      const key = dayKey(d);
+      busy.add(key);
+      if (!item) return;
+      const list = items.get(key);
+      if (list) list.push(item);
+      else items.set(key, [item]);
+    };
+    for (const event of shown) {
+      const [first, last] = daysOf(event);
+      const timed = !spansDays(event);
+      // A year at most: a feed's "forever" event is not walked day by day.
+      for (let d = first, n = 0; d <= last && n < 366; d = addDays(d, 1), n++) {
+        put(d, timed ? { kind: "event", at: Math.max(event.startsAt, seconds(d)), event } : null);
+      }
+    }
+    for (const reminder of due) {
+      if (reminder.dueAt !== null) put(midnight(dateOf(reminder.dueAt)), { kind: "reminder", at: reminder.dueAt, reminder });
+    }
+    for (const list of items.values()) list.sort((a, b) => a.at - b.at);
+    return { items, busy };
+  }, [shown, due]);
+  const dayItems = useCallback((day: Date) => byDay.items.get(dayKey(day)) ?? NOTHING, [byDay]);
+  const busyOn = useCallback((day: Date) => byDay.busy.has(dayKey(day)), [byDay]);
 
   return (
     <TickContext.Provider value={tickValue}>
@@ -782,11 +886,11 @@ export function CalendarView() {
             .filter((g) => g.list.length > 0)
             .map((group) => (
               <Fragment key={group.heading}>
-                <p className="cx-side-heading">
+                <p className="side-heading cx-side-heading">
                   {group.heading}
                   {group.heading === "iCloud" && (
-                    <button className="cx-side-add" aria-label="New Calendar" title="New Calendar" onClick={() => setNaming("new")}>
-                      +
+                    <button className="icon-button small cx-side-add" aria-label="New Calendar" title="New Calendar" onClick={() => setNaming("new")}>
+                      <Plus size={14} strokeWidth={2.2} aria-hidden="true" />
                     </button>
                   )}
                 </p>
@@ -795,7 +899,7 @@ export function CalendarView() {
                     <CalendarName key={c.guid} initial={c.title} label={`Rename ${c.title}`} onDone={(t) => updateCalendar(c, { title: t })} onCancel={() => setNaming(null)} />
                   ) : (
                     <label
-                      className="cx-cal"
+                      className="source-row cx-cal"
                       key={c.guid}
                       onContextMenu={(e) => {
                         // A calendar of this account can be renamed, recoloured or removed, as on icloud.com.
@@ -815,7 +919,7 @@ export function CalendarView() {
                         onChange={() => toggleCalendar(c.guid)}
                         style={{ "--cal": tint(c) } as React.CSSProperties}
                       />
-                      <span className="cx-cal-name">{c.title}</span>
+                      <span className="source-name cx-cal-name">{c.title}</span>
                     </label>
                   ),
                 )}
@@ -825,14 +929,14 @@ export function CalendarView() {
               </Fragment>
             ))}
           {loaded && calendars.length === 0 && (
-            <p className="cal-empty">There are no calendars on this account yet.</p>
+            <EmptyState className="cal-empty">There are no calendars on this account yet.</EmptyState>
           )}
         </div>
         <MiniMonth
           selected={selected}
           today={now}
           busy={busyOn}
-          onPick={(d) => setSelected(d)}
+          onPick={setSelected}
         />
       </aside>
 
@@ -846,7 +950,7 @@ export function CalendarView() {
               {title.brief}
             </strong>
           </h1>
-          <div className="segmented" role="group" aria-label="View">
+          <div className="segmented toolbar-group" role="group" aria-label="View">
             {VIEWS.map((v) => (
               <button
                 key={v.key}
@@ -860,20 +964,22 @@ export function CalendarView() {
           </div>
           <div className="cx-tools">
             {writable.length > 0 && (
-              <button className="cx-icon" aria-label="New event" title="New Event" onClick={newEvent}>
-                +
-              </button>
+              <span className="toolbar-group">
+                <button className="tool cx-icon" aria-label="New event" title="New Event" onClick={newEvent}>
+                  <Plus size={17} strokeWidth={2} aria-hidden="true" />
+                </button>
+              </span>
             )}
-            <span className="cx-step">
-              <button className="cx-icon" aria-label="Previous" onClick={() => shift(-1)}>
-                ‹
+            <span className="toolbar-group cx-step">
+              <button className="tool cx-icon" aria-label="Previous" onClick={() => shift(-1)}>
+                <ChevronLeft size={17} strokeWidth={2} aria-hidden="true" />
               </button>
-              <button className="cx-today" title="Today · Shift-Ctrl-T to go to a date" onClick={() => setSelected(midnight(new Date()))}>
+              <button className="tool has-label cx-today" title="Today · Shift-Ctrl-T to go to a date" onClick={() => setSelected(midnight(new Date()))}>
                 Today
               </button>
               {goingTo && (
                 <form
-                  className="cx-goto"
+                  className="popover cx-goto"
                   role="dialog"
                   aria-label="Go to Date"
                   onSubmit={(e) => {
@@ -891,39 +997,38 @@ export function CalendarView() {
                   }}
                 >
                   <input
+                    className="field"
                     name="day"
                     type="date"
                     aria-label="Date"
                     autoFocus
                     defaultValue={`${selected.getFullYear()}-${String(selected.getMonth() + 1).padStart(2, "0")}-${String(selected.getDate()).padStart(2, "0")}`}
                   />
-                  <button type="submit">Go</button>
+                  <button type="submit" className="primary">Go</button>
                 </form>
               )}
-              <button className="cx-icon" aria-label="Next" onClick={() => shift(1)}>
-                ›
+              <button className="tool cx-icon" aria-label="Next" onClick={() => shift(1)}>
+                <ChevronRight size={17} strokeWidth={2} aria-hidden="true" />
               </button>
             </span>
-            <label className="cx-search">
-              <Search size={13} strokeWidth={2.25} aria-hidden="true" />
-              <input
-                ref={searchField}
-                type="search"
-                placeholder="Search"
-                aria-label="Search events"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") setQuery("");
-                  if (e.key === "Enter" && found[0]) openFound(found[0]);
-                }}
-              />
-            </label>
+            <SearchField
+              ref={searchField}
+              inToolbar
+              className="cx-search"
+              placeholder="Search"
+              aria-label="Search events"
+              value={query}
+              onChange={setQuery}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setQuery("");
+                if (e.key === "Enter" && found[0]) openFound(found[0]);
+              }}
+            />
           </div>
         </header>
 
         {query.trim() && (
-          <div className="cx-found" role="listbox" aria-label="Events found">
+          <div className="popover cx-found" role="listbox" aria-label="Events found">
             {found.length === 0 ? (
               <p className="cx-found-none">No events match “{query.trim()}”.</p>
             ) : (
@@ -948,9 +1053,6 @@ export function CalendarView() {
           </div>
         )}
 
-        {error && (
-          <Notice message={error} onDismiss={() => setError(null)} />
-        )}
         {calMenu && (
           <RowMenu
             at={calMenu.at}
@@ -962,7 +1064,7 @@ export function CalendarView() {
                 submenu: CALENDAR_COLOURS.map(([hex, name]) => ({ label: name, run: () => updateCalendar(calMenu.cal, { colour: hex }) })),
               },
               null,
-              ...(calMenu.cal.isDefault ? [] : [{ label: "Delete Calendar\u2026", danger: true, run: () => deleteCalendar(calMenu.cal) }]),
+              ...(calMenu.cal.isDefault ? [] : [{ label: "Delete Calendar", danger: true, run: () => deleteCalendar(calMenu.cal) }]),
             ]}
           />
         )}
@@ -976,40 +1078,26 @@ export function CalendarView() {
             calendars={byGuid}
             items={dayItems}
             onSelect={setSelected}
-            onOpen={(e, at) => openDraft(draftOf(e), at)}
-            onCreate={(day, at) => {
-              const start = new Date(day);
-              start.setHours(9, 0, 0, 0);
-              newAt(seconds(start), seconds(start) + 3600, false, at);
-            }}
-            onMore={(day) => {
-              setSelected(day);
-              setView("day");
-            }}
+            onOpen={openEvent}
+            onCreate={createInMonth}
+            onMore={showDay}
           />
         )}
 
         {(view === "week" || view === "day") && (
           <div className={view === "day" ? "cx-dayview" : "cx-weekview"}>
           <TimeGrid
-            days={view === "week" ? week : [selected]}
+            days={gridDays}
             today={now}
             events={shown}
             reminders={due}
             calendars={byGuid}
-            canWrite={(guid) => byGuid.get(guid)?.writable ?? false}
-            onOpen={(e, at) => openDraft(draftOf(e), at)}
-            onCreate={(startsAt, endsAt, allDay, at) => newAt(startsAt, endsAt, allDay, at)}
-            onMove={(e, startsAt, endsAt) => void save({ ...draftOf(e), startsAt, endsAt })}
-            onPickDay={(d) => {
-              setSelected(d);
-              setView("day");
-            }}
-            pending={
-              draft && !draft.guid && !draft.allDay
-                ? { startsAt: draft.startsAt, endsAt: draft.endsAt, title: draft.title }
-                : null
-            }
+            canWrite={canWrite}
+            onOpen={openEvent}
+            onCreate={newAt}
+            onMove={moveEvent}
+            onPickDay={showDay}
+            pending={pending}
           />
           {view === "day" && (
             <DayPane
@@ -1017,14 +1105,14 @@ export function CalendarView() {
               events={shown}
               reminders={due}
               calendars={byGuid}
-              onOpen={(e, at) => openDraft(draftOf(e), at)}
+              onOpen={openEvent}
             >
               {/* As macOS 27's Day view sets it: the month above the day, to step across it. */}
               <MiniMonth
                 selected={selected}
                 today={now}
                 busy={busyOn}
-                onPick={(d) => setSelected(d)}
+                onPick={setSelected}
               />
             </DayPane>
           )}
@@ -1036,10 +1124,7 @@ export function CalendarView() {
             year={selected.getFullYear()}
             today={now}
             busy={busyOn}
-            onPick={(d) => {
-              setSelected(d);
-              setView("day");
-            }}
+            onPick={showDay}
           />
         )}
       </section>
@@ -1051,6 +1136,7 @@ export function CalendarView() {
           calendars={calendars}
           onChange={setDraft}
           onClose={() => setDraft(null)}
+          onDismiss={dismiss}
           onSave={() => void save(draft, true)}
           onDelete={draft.guid ? () => void remove(draft.guid as string) : undefined}
           onNudge={draft.guid ? (by) => {
@@ -1066,41 +1152,28 @@ export function CalendarView() {
       )}
 
       {asking && (
-        <Portal>
-          <div className="modal-veil" onClick={() => asking.answer(null)}>
-            <div className="modal-sheet cx-ask" role="alertdialog" aria-label="Repeating event" onClick={(e) => e.stopPropagation()}>
-              <h2>This is a repeating event.</h2>
-              <p>
-                {asking.verb === "delete"
-                  ? "Do you want to delete only this event, this and all future events, or all events in the series?"
-                  : "Do you want to change only this event, this and all future events, or all events in the series?"}
-              </p>
-              {/* Stacked, the chosen-by-default first, as macOS stacks an alert's choices. */}
-              <div className="cx-ask-actions">
-                <button className={asking.verb === "delete" ? "primary danger" : "primary"} autoFocus onClick={() => asking.answer("this")}>
-                  {asking.verb === "delete" ? "Delete Only This Event" : "Only This Event"}
-                </button>
-                <button className={asking.verb === "delete" ? "quiet danger" : "quiet"} onClick={() => asking.answer("future")}>
-                  {asking.verb === "delete" ? "Delete All Future Events" : "All Future Events"}
-                </button>
-                <button className={asking.verb === "delete" ? "quiet danger" : "quiet"} onClick={() => asking.answer("all")}>
-                  {asking.verb === "delete" ? "Delete All Events" : "All Events"}
-                </button>
-                <button className="quiet" onClick={() => asking.answer(null)}>Cancel</button>
-              </div>
-            </div>
-          </div>
-        </Portal>
+        <ConfirmSheet<EventScope>
+          title="This is a repeating event."
+          body={asking.verb === "delete"
+            ? "Do you want to delete only this event, this and all future events, or all events in the series?"
+            : "Do you want to change only this event, this and all future events, or all events in the series?"}
+          choices={asking.verb === "delete"
+            ? [
+                { label: "Delete Only This Event", value: "this", primary: true, danger: true, focus: true },
+                { label: "Delete All Future Events", value: "future", danger: true },
+                { label: "Delete All Events", value: "all", danger: true },
+              ]
+            : [
+                { label: "Only This Event", value: "this", primary: true, focus: true },
+                { label: "All Future Events", value: "future" },
+                { label: "All Events", value: "all" },
+              ]}
+          onAnswer={(scope) => asking.answer(scope)}
+          onCancel={() => asking.answer(null)}
+        />
       )}
+      {confirmSheet}
 
-      {undo && (
-        <div className="cx-toast" role="status">
-          Deleted “{undo.title}”
-          <button className="cx-toast-undo" onClick={() => void takeBack()}>
-            Undo
-          </button>
-        </div>
-      )}
     </div>
     </TickContext.Provider>
   );
@@ -1108,7 +1181,7 @@ export function CalendarView() {
 
 /* ---- the mini month in the sidebar ------------------------------------------------ */
 
-function MiniMonth({
+const MiniMonth = memo(function MiniMonth({
   selected,
   today,
   busy,
@@ -1130,18 +1203,18 @@ function MiniMonth({
         <span>{dateText(shown, { month: "long", year: "numeric" })}</span>
         <span>
           <button
-            className="cx-icon small"
+            className="icon-button small"
             aria-label="Previous month"
             onClick={() => setShown((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
           >
-            ‹
+            <ChevronLeft size={14} strokeWidth={2.2} aria-hidden="true" />
           </button>
           <button
-            className="cx-icon small"
+            className="icon-button small"
             aria-label="Next month"
             onClick={() => setShown((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
           >
-            ›
+            <ChevronRight size={14} strokeWidth={2.2} aria-hidden="true" />
           </button>
         </span>
       </div>
@@ -1151,9 +1224,9 @@ function MiniMonth({
             {weekdayShort(d).slice(0, 1)}
           </span>
         ))}
-        {days.map((d) => (
+        {days.map((d, i) => (
           <button
-            key={dayKey(d)}
+            key={i}
             className={`cx-minimonth-day${d.getMonth() !== shown.getMonth() ? " is-out" : ""}${
               sameDay(d, today) ? " is-today" : ""
             }${sameDay(d, selected) ? " is-selected" : ""}${busy(d) ? " is-busy" : ""}`}
@@ -1166,7 +1239,7 @@ function MiniMonth({
       </div>
     </div>
   );
-}
+});
 
 /* ---- month ------------------------------------------------------------------------ */
 
@@ -1174,7 +1247,7 @@ type Item =
   | { kind: "event"; at: number; event: CalendarEvent }
   | { kind: "reminder"; at: number; reminder: Reminder };
 
-function MonthView({
+const MonthView = memo(function MonthView({
   days,
   selected,
   today,
@@ -1213,10 +1286,10 @@ function MonthView({
       onSelect(addDays(day, by));
     } else if (e.key === "Home") {
       e.preventDefault();
-      onSelect(addDays(day, -day.getDay()));
+      onSelect(startOfWeek(day));
     } else if (e.key === "End") {
       e.preventDefault();
-      onSelect(addDays(day, 6 - day.getDay()));
+      onSelect(addDays(startOfWeek(day), 6));
     }
   };
 
@@ -1255,10 +1328,10 @@ function MonthView({
         ))}
       </div>
       <div className="cal-grid" role="grid" aria-label="Month" ref={grid}>
-        {weeks.map((row) => {
+        {weeks.map((row, w) => {
           const spans = weekSpans(events, row[0]);
           return (
-            <div className="cx-week" role="row" key={dayKey(row[0])}>
+            <div className="cx-week" role="row" key={w}>
               {row.map((day, i) => {
                 const list = items(day);
                 // Only the lanes of the bars that cross this day are kept clear in it: a bar
@@ -1277,11 +1350,11 @@ function MonthView({
                 return (
                   <div
                     className={`cx-day${day.getMonth() !== inMonth ? " is-out" : ""}${
-                      day.getDay() === 0 || day.getDay() === 6 ? " is-weekend" : ""
+                      isWeekend(day) ? " is-weekend" : ""
                     }${isSelected ? " is-selected" : ""}`}
                     role="gridcell"
                     aria-selected={isSelected}
-                    key={dayKey(day)}
+                    key={i}
                   >
                     <button
                       ref={isSelected ? cell : undefined}
@@ -1368,17 +1441,19 @@ function MonthView({
       </div>
     </div>
   );
-}
+});
 
 /* ---- week and day ------------------------------------------------------------------- */
 
 type Drag =
-  | { kind: "create"; day: Date; column: number; from: number; to: number }
-  | { kind: "move"; event: CalendarEvent; startX: number; startY: number; dx: number; dMinutes: number }
+  /** `anchor` is the quarter hour pressed: the drag runs from it up or down, as in Calendar. */
+  | { kind: "create"; day: Date; column: number; anchor: number; from: number; to: number }
+  /** `column` is the day the event was taken from, so it can be carried only to days shown. */
+  | { kind: "move"; event: CalendarEvent; column: number; startX: number; startY: number; dx: number; dMinutes: number }
   /** Dragging an event's bottom edge: its end moves, its start stays. */
   | { kind: "resize"; event: CalendarEvent; startY: number; dMinutes: number };
 
-function TimeGrid({
+const TimeGrid = memo(function TimeGrid({
   days,
   today,
   events,
@@ -1408,7 +1483,16 @@ function TimeGrid({
   const scroller = useRef<HTMLDivElement | null>(null);
   const columnsEl = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
-  const spans = weekSpans(events, days[0]).filter((s) => s.from < days.length);
+  const daysKey = days.map((d) => dayKey(d)).join();
+  // A bar that runs past the last day shown carries on to the right — in Day, past the one
+  // day, not only past the week the layout counts from.
+  const spans = useMemo(
+    () => weekSpans(events, days[0])
+      .filter((s) => s.from < days.length)
+      .map((s) => (s.to >= days.length ? { ...s, to: days.length - 1, continuesRight: true } : s)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [events, daysKey]
+  );
   const lanes = Math.max(1, ...spans.map((s) => s.lane + 1));
 
   // Opened, it shows the working day rather than midnight — as Calendar does.
@@ -1421,7 +1505,7 @@ function TimeGrid({
     el.scrollTop = Math.max(0, hour * HOUR - 12);
     // Only when the days change, never under someone's scrolling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days.map((d) => dayKey(d)).join()]);
+  }, [daysKey]);
 
   /** Minutes since midnight under the pointer, in the column it is over. */
   const where = (clientX: number, clientY: number) => {
@@ -1454,25 +1538,35 @@ function TimeGrid({
     setDrag(d);
   };
 
+  /*
+   * The pointer reports every pixel, the grid moves by quarter hours: only a move that lands
+   * on a new quarter hour (or day) is drawn. Re-rendering the whole week on every pixel was
+   * the stutter of a drag in WebKitGTK.
+   */
   const follow = (clientX: number, clientY: number) => {
     const current = dragRef.current;
     const at = where(clientX, clientY);
     if (!current || !at) return;
+    let next: Drag;
     if (current.kind === "create") {
-      setDragNow({ ...current, to: Math.max(current.from + 15, snap(at.minutes)) });
+      const to = snap(at.minutes);
+      next = { ...current, from: Math.min(current.anchor, to), to: Math.max(current.anchor + 15, to) };
+      if (next.from === current.from && next.to === current.to) return;
     } else if (current.kind === "resize") {
       // Never shorter than a quarter hour, as Calendar holds it.
       const length = (current.event.endsAt - current.event.startsAt) / 60;
-      setDragNow({ ...current, dMinutes: Math.max(15 - length, snap(((clientY - current.startY) / HOUR) * 60)) });
+      next = { ...current, dMinutes: Math.max(15 - length, snap(((clientY - current.startY) / HOUR) * 60)) };
+      if (next.dMinutes === current.dMinutes) return;
     } else {
       const el = columnsEl.current;
       const width = el ? el.getBoundingClientRect().width / days.length : 1;
-      setDragNow({
-        ...current,
-        dx: Math.round((clientX - current.startX) / width),
-        dMinutes: snap(((clientY - current.startY) / HOUR) * 60),
-      });
+      // Carried only as far as the days on screen: past them it went nowhere visible and
+      // landed on a day no one could see.
+      const dx = Math.min(days.length - 1 - current.column, Math.max(-current.column, Math.round((clientX - current.startX) / width)));
+      next = { ...current, dx, dMinutes: snap(((clientY - current.startY) / HOUR) * 60) };
+      if (next.dx === current.dx && next.dMinutes === current.dMinutes) return;
     }
+    setDragNow(next);
   };
 
   const finish = (clientX: number, clientY: number) => {
@@ -1543,11 +1637,16 @@ function TimeGrid({
     // No text selection or native drag while making an event.
     e.preventDefault();
     const from = snap(at.minutes) - (snap(at.minutes) === 24 * 60 ? 15 : 0);
-    setDragNow({ kind: "create", day: days[at.column], column: at.column, from, to: from + 15 });
+    setDragNow({ kind: "create", day: days[at.column], column: at.column, anchor: from, from, to: from + 15 });
   };
 
   // Each day's events and timed reminders, laid out together so neither is drawn over the other.
-  const layouts = days.map((d) => {
+  // Worked out once for what is shown, not again for every move of a drag or key typed in the
+  // popover; the title of the event being named changes nothing here.
+  const pendingFrom = pending?.startsAt ?? null;
+  const pendingTo = pending?.endsAt ?? null;
+  const layouts = useMemo(() => days.map((d) => {
+    const pending = pendingFrom === null || pendingTo === null ? null : { startsAt: pendingFrom, endsAt: pendingTo };
     const due = stackReminders(reminders.filter((r) => r.dueAt !== null && sameDay(dateOf(r.dueAt), d)));
     const marks = due.map(({ reminder, top }) => ({
       id: reminder.guid,
@@ -1560,17 +1659,18 @@ function TimeGrid({
       marks.push({
         id: PENDING,
         top: from.getHours() * 60 + from.getMinutes(),
-        length: Math.max((pending.endsAt - pending.startsAt) / 60, 15),
+        length: Math.max((pending.endsAt - pending.startsAt) / 60, MIN_BLOCK),
       });
     }
-    const laid = placeDayWith(events, d, marks);
+    const laid = placeDayWith(events, d, marks, MIN_BLOCK);
     return {
       events: laid.events,
       marks: laid.marks.filter((m) => m.id !== PENDING),
       pending: laid.marks.find((m) => m.id === PENDING) ?? null,
       reminders: new Map(due.map((x) => [x.reminder.guid, x.reminder])),
     };
-  });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [daysKey, events, reminders, pendingFrom, pendingTo]);
 
   const nowMinutes = today.getHours() * 60 + today.getMinutes();
   const todayColumn = days.findIndex((d) => sameDay(d, today));
@@ -1579,10 +1679,10 @@ function TimeGrid({
     <div className={`cal-hours${days.length === 1 ? " is-day" : ""}`}>
       <div className="cx-grid-head" style={{ "--cols": days.length } as React.CSSProperties}>
         <span className="cx-gutter" aria-hidden="true" />
-        {days.map((d) => (
+        {days.map((d, i) => (
           <button
             className={`cal-col-head${sameDay(d, today) ? " is-today" : ""}`}
-            key={dayKey(d)}
+            key={i}
             onClick={() => onPickDay(d)}
             aria-label={dateText(d, { dateStyle: "full" })}
           >
@@ -1656,7 +1756,7 @@ function TimeGrid({
             }}
           >
             {days.map((d, column) => (
-              <div className={`cx-column${d.getDay() === 0 || d.getDay() === 6 ? " is-weekend" : ""}`} key={dayKey(d)}>
+              <div className={`cx-column${isWeekend(d) ? " is-weekend" : ""}`} key={column}>
                 {layouts[column].events.map((p) => {
                   const moving = drag?.kind === "move" && drag.event.guid === p.event.guid ? drag : null;
                   const sizing = drag?.kind === "resize" && drag.event.guid === p.event.guid ? drag : null;
@@ -1680,7 +1780,7 @@ function TimeGrid({
                         e.stopPropagation();
                         e.preventDefault();
                         if (canWrite(p.event.calendarGuid)) {
-                          setDragNow({ kind: "move", event: p.event, startX: e.clientX, startY: e.clientY, dx: 0, dMinutes: 0 });
+                          setDragNow({ kind: "move", event: p.event, column, startX: e.clientX, startY: e.clientY, dx: 0, dMinutes: 0 });
                         } else {
                           onOpen(p.event, { x: e.clientX, y: e.clientY });
                         }
@@ -1770,13 +1870,15 @@ function TimeGrid({
       </div>
     </div>
   );
-}
+});
 
 /**
  * Where each reminder sits on a day's hour grid. Two due at the same time — a morning routine
  * set for eight — stack one under the other instead of being drawn over each other.
  */
 const REMINDER_LINE = 18;
+/** The shortest a block is drawn — 20px, room for one line — in minutes, and so laid out. */
+const MIN_BLOCK = ((20 + 2) / HOUR) * 60;
 /** The layout's name for the event being named, which has no guid yet. */
 const PENDING = "\u0000pending";
 export function stackReminders(list: Reminder[]): { reminder: Reminder; top: number }[] {
@@ -1799,7 +1901,7 @@ const pointOf = (el: Element): Anchor => {
 
 /* ---- year --------------------------------------------------------------------------- */
 
-function YearView({
+const YearView = memo(function YearView({
   year,
   today,
   busy,
@@ -1827,12 +1929,12 @@ function YearView({
                   {weekdayShort(d).slice(0, 1)}
                 </span>
               ))}
-              {days.map((d) =>
+              {days.map((d, i) =>
                 d.getMonth() !== m ? (
-                  <span key={dayKey(d)} className="cx-minimonth-day is-blank" aria-hidden="true" />
+                  <span key={i} className="cx-minimonth-day is-blank" aria-hidden="true" />
                 ) : (
                   <button
-                    key={dayKey(d)}
+                    key={i}
                     className={`cx-minimonth-day${sameDay(d, today) ? " is-today" : ""}${busy(d) ? " is-busy" : ""}`}
                     aria-label={dateText(d, { dateStyle: "full" })}
                     onClick={() => onPick(d)}
@@ -1847,7 +1949,7 @@ function YearView({
       })}
     </div>
   );
-}
+});
 
 /* ---- the event popover ---------------------------------------------------------------- */
 
@@ -1994,6 +2096,7 @@ function EventPopover({
   calendars,
   onChange,
   onClose,
+  onDismiss,
   onSave,
   onDelete,
   onNudge,
@@ -2004,6 +2107,8 @@ function EventPopover({
   calendars: Calendar[];
   onChange: (d: Draft) => void;
   onClose: () => void;
+  /** Put away by a click outside it. */
+  onDismiss: () => void;
   onSave: () => void;
   onDelete?: () => void;
   onNudge?: (by: { days: number } | { minutes: number }) => void;
@@ -2059,19 +2164,25 @@ function EventPopover({
         onDelete();
       }
     };
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent) => {
       if (!box.current || box.current.contains(e.target as Node) || inMenu(e.target)) return;
+      // Calendar's question about a repeating event is this popover's own, asked on its Save.
+      if ((e.target as HTMLElement).closest?.(".modal-veil")) return;
       // A press on the event this is open for is not a press elsewhere: it keeps it open.
       if (draft.guid && (e.target as HTMLElement).closest?.(`[data-event="${CSS.escape(draft.guid)}"]`)) return;
-      onClose();
+      onDismiss();
     };
     window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", onDown);
+    // A press, not a mouse-down: the timeline cancels its presses' default to keep text from
+    // being selected, and a cancelled pointer press sends no mouse-down — a click on empty time
+    // left the popover open. Caught on the way down, before an event block stops it: a press
+    // on another event puts this one away — keeping what was typed — before that one opens.
+    window.addEventListener("pointerdown", onDown, true);
     return () => {
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("pointerdown", onDown, true);
     };
-  }, [onClose, onDelete, onNudge, editable, view, draft.allDay, draft.guid]);
+  }, [onClose, onDismiss, onDelete, onNudge, editable, view, draft.allDay, draft.guid]);
 
   const set = (patch: Partial<Draft>) => onChange({ ...draft, ...patch });
 
@@ -2277,7 +2388,7 @@ function EventPopover({
       />
       <div className="cx-pop-actions">
         {onDelete && editable ? (
-          <button type="button" className="cx-pop-delete" onClick={onDelete}>
+          <button type="button" className="link danger cx-pop-delete" onClick={onDelete}>
             Delete
           </button>
         ) : (
@@ -2304,7 +2415,7 @@ function EventPopover({
  * it, all-day first and the rest in time order. A wide window gave the timeline the whole
  * width and left most of it empty; this is what Calendar puts there.
  */
-function DayPane({
+const DayPane = memo(function DayPane({
   day,
   events,
   reminders,
@@ -2365,7 +2476,7 @@ function DayPane({
       )}
     </aside>
   );
-}
+});
 
 /** Apple's calendar colours, in icloud.com's order (calendar bundle `r2`). */
 const CALENDAR_COLOURS: [string, string][] = [
@@ -2388,7 +2499,7 @@ function CalendarName({ initial, label, onDone, onCancel }: {
   const settled = useRef(false);
   return (
     <input
-      className="cx-cal-rename"
+      className="field cx-cal-rename"
       defaultValue={initial}
       aria-label={label}
       autoFocus

@@ -30,15 +30,15 @@ export function DownloadOptions({ photos, onPick, onClose }: { photos: Photo[]; 
         <strong>{title}</strong>
         <small>{words}</small>
       </span>
-      <button className="px-dl-go" aria-label={`Download ${title}`} title="Download" onClick={() => onPick(want)}>
+      <button className="icon-button px-dl-go" aria-label={`Download ${title}`} title="Download" onClick={() => onPick(want)}>
         <Download size={16} strokeWidth={2} aria-hidden="true" />
       </button>
     </div>
   );
   return (
-    <div className="px-sheet-scrim" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="px-sheet" role="dialog" aria-modal="true" aria-label="Download Options">
-        <button className="px-sheet-x" aria-label="Close" onClick={onClose}>
+    <div className="modal-veil" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal-sheet px-sheet" role="dialog" aria-modal="true" aria-label="Download Options">
+        <button className="icon-button small round sheet-close" aria-label="Close" onClick={onClose}>
           <X size={16} strokeWidth={2.2} aria-hidden="true" />
         </button>
         <h2>Download Options</h2>

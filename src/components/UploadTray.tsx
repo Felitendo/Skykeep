@@ -1,3 +1,4 @@
+import { Progress } from "./Spinner";
 import { useEffect, useRef, useState } from "react";
 import { api, type UploadEvent } from "../lib/ipc";
 import { FileGlyph } from "./FileGlyph";
@@ -157,20 +158,18 @@ export function UploadTray({
         {active ? (
           <span className="upload-tray-actions">
             {allPlanned && <span className="upload-tray-percent">{percent}%</span>}
-            <button className="upload-tray-close" onClick={() => batches.forEach((b) => void cancel([], b))}>
+            <button className="quiet upload-tray-close" onClick={() => batches.forEach((b) => void cancel([], b))}>
               Cancel
             </button>
           </span>
         ) : (
-          <button className="upload-tray-close" onClick={onDismiss} aria-label="Close uploads">
+          <button className="quiet upload-tray-close" onClick={onDismiss} aria-label="Close uploads">
             Done
           </button>
         )}
       </header>
       {active && (
-        <div className={`upload-bar${allPlanned ? "" : " is-waiting"}`} aria-hidden="true">
-          <span style={allPlanned ? { transform: `scaleX(${percent / 100})` } : undefined} />
-        </div>
+        <Progress value={allPlanned ? percent / 100 : null} instant={instant} className="upload-bar" />
       )}
       <ul className="upload-rows">
         {measured.map(({ item, percent: raw, running, failed, status }) => {
@@ -186,9 +185,7 @@ export function UploadTray({
                 <span className="upload-text">
                   <span className="upload-name">{item.name}</span>
                   {running && (item.folder ? planned.has(item.files[0]?.batch ?? "") : true) && (
-                    <span className="upload-bar small" aria-hidden="true">
-                      <span style={{ transform: `scaleX(${p / 100})` }} />
-                    </span>
+                    <Progress value={p / 100} instant={instant} className="upload-bar small" />
                   )}
                   {!running && !item.folder && failed[0]?.error && <span className="upload-where">{failed[0].error}</span>}
                 </span>
@@ -197,7 +194,7 @@ export function UploadTray({
                 </span>
                 {item.folder && failed.length > 0 && (
                   <button
-                    className="upload-stop"
+                    className="icon-button small round upload-stop"
                     aria-expanded={open === item.key}
                     aria-label={open === item.key ? "Hide what didn’t upload" : "Show what didn’t upload"}
                     onClick={() => setOpen(open === item.key ? null : item.key)}
@@ -208,7 +205,7 @@ export function UploadTray({
                 {/* One upload has one Cancel — the head's. */}
                 {stoppable.length > 0 && measured.length > 1 && (
                   <button
-                    className="upload-stop"
+                    className="icon-button small round upload-stop"
                     aria-label={`Cancel ${item.name}`}
                     title="Cancel"
                     onClick={() => void cancel(stoppable.map((u) => u.id))}

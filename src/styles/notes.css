@@ -27,38 +27,8 @@
   padding: 2px 12px 12px;
   border-right: 1px solid var(--separator);
 }
-.notes-side-heading {
-  margin: 0 0 4px;
-  padding: 0 8px;
-  color: var(--text-3);
-  font-size: var(--t-11);
-  font-weight: 600;
-}
-.notes-folder {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 7px;
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  text-align: left;
-  cursor: default;
-}
-/* On the row, not the button alone — the ⋯ over the row took the hover off the button and
-   the highlight blinked (see .rx-list-row). */
-.notes-folder-row:hover .notes-folder, .notes-folder-row.is-menu .notes-folder,
-.notes-folder:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.notes-folder[aria-current="true"] { background: color-mix(in srgb, var(--text) 12%, transparent); }
-.notes-folder:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
 /* Apple's folders are drawn in the accent, which in Notes is its yellow — here, quince gold. */
 .notes-folder-glyph { flex: none; color: var(--accent); }
-.notes-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.notes-folder-count { min-width: 26px; text-align: right; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 /* ---- the list ------------------------------------------------------------------- */
 
@@ -70,57 +40,6 @@
   padding: 0 10px;
   border-right: 1px solid var(--separator);
 }
-.notes-list-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 4px 10px;
-}
-.notes-list-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.notes-list-title h1 {
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--t-17);
-  font-weight: 700;
-}
-.notes-list-count { flex: none; color: var(--text-3); font-size: var(--t-13); }
-
-.notes-icon {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 30px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 7px;
-  background: none;
-  color: var(--text-2);
-  cursor: default;
-}
-.notes-icon:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
-.notes-icon.danger:hover { color: var(--danger); }
-.notes-icon:focus-visible { outline: 3px solid var(--accent-ring); }
-.notes-icon:disabled { opacity: 0.45; }
-
-.notes-search {
-  width: 100%;
-  height: 28px;
-  margin-bottom: 8px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--r-field);
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--t-13);
-  outline: none;
-}
-.notes-search::placeholder { color: var(--text-3); }
-.notes-search:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); }
 
 .notes-folder-picker { display: none; margin-bottom: 8px; }
 .notes-folder-picker .picker { width: 100%; }
@@ -196,7 +115,8 @@
   font-size: var(--t-11);
   text-align: center;
 }
-.note-bar-actions { display: flex; align-items: center; gap: 6px; }
+.notes-list-head { padding: 0 4px 10px; }
+.notes-search { margin-bottom: 8px; }
 .note-bar-actions .picker { max-width: 170px; }
 
 .note-editor {
@@ -241,7 +161,6 @@ textarea.note-title::placeholder { color: var(--text-3); }
 }
 .note-editor.is-readonly .note-text { flex: none; min-height: 0; }
 .note-readonly { max-width: 62ch; margin: 18px 0 0; color: var(--text-3); font-size: var(--t-11); }
-.note-loading { margin: 0; padding: 10px 2px; color: var(--text-3); font-size: var(--t-13); }
 
 /* ---- narrow windows --------------------------------------------------------------- */
 
@@ -264,24 +183,6 @@ textarea.note-title::placeholder { color: var(--text-3); }
 }
 /* A folder row: the folder, and its ⋯ on hover, as Notes on icloud.com draws it. */
 .notes-folder-row { position: relative; display: flex; align-items: center; }
-.notes-folder-row > .notes-folder { flex: 1; min-width: 0; }
-.notes-folder-more {
-  position: absolute; right: 6px; display: grid; place-items: center; width: 22px; height: 22px;
-  padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 12%, transparent);
-  box-shadow: none; color: var(--text); font-size: 8px; letter-spacing: 1px; opacity: 0; cursor: pointer;
-  /* Shown and hidden at once, never faded: a fade here is the compositor's, and flickered on
-     his screen as the pointer crossed the rows. (Opacity, not visibility: hidden, it could
-     not be reached with Tab.) */
-}
-.notes-folder-row:hover .notes-folder-more, .notes-folder-row.is-menu .notes-folder-more,
-.notes-folder-more:focus-visible { opacity: 1; }
-.notes-folder-row:hover .notes-folder-count, .notes-folder-row.is-menu .notes-folder-count { visibility: hidden; }
-.notes-folder-rename { width: 100%; box-sizing: border-box; border: 1px solid var(--accent); background: var(--bg); color: var(--text); font: inherit; outline: none; }
-.notes-new-folder {
-  display: flex; align-items: center; gap: 6px; margin-top: auto; padding: 8px; border: 0;
-  background: none; box-shadow: none; color: var(--accent-strong); font: inherit; font-size: var(--t-13); cursor: pointer;
-}
-.notes-new-folder:hover { text-decoration: underline; }
 /* A note as Notes sets it, from Apple's own runs. Sizes after Notes on macOS: title 24,
    heading 19, subheading 16, body 15. */
 .note-read { cursor: text; outline: none; }
@@ -306,7 +207,7 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-check.is-done > span:last-child { color: var(--text-3); }
 .note-formatted a { color: var(--accent-strong); text-decoration: underline; }
 /* Aa, as Notes writes it on its toolbar. */
-.notes-aa { font-weight: 600; font-size: 14px; letter-spacing: -0.02em; width: auto; padding-inline: 8px; }
+.notes-aa { font-weight: 600; font-size: 14px; letter-spacing: -0.02em; padding-inline: 8px; }
 
 /* ---- the editor ------------------------------------------------------------------
    One document, edited formatted, as Notes edits it. Sizes after Notes on the Mac: title
@@ -370,13 +271,20 @@ textarea.note-title::placeholder { color: var(--text-3); }
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/12px no-repeat;
 }
 .note-rich .nf-p[data-style="103"][data-checked="true"] { color: var(--text-3); }
+/* A table, drawing, picture or scan on a checklist line stands on its own, full width, as Notes
+   shows it: no circle floating over an empty first line above it, and no gutter beside it. */
+.note-rich .nf-p[data-style="103"]:has(> .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread)) {
+  padding-inline-start: calc(var(--indent, 0) * 1.5em);
+}
+.note-rich .nf-p[data-style="103"]:has(> .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread))::before {
+  content: none;
+}
 .note-rich a { color: var(--accent-strong); text-decoration: underline; }
 .note-rich .nf-attachment {
   display: inline-block; padding: 0 6px; margin: 0 1px; border-radius: 5px;
   background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text-2); font-size: var(--t-13);
 }
 .note-rich ::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); }
-.notes-icon.is-on { background: color-mix(in srgb, var(--text) 10%, transparent); }
 
 /* ---- Aa ----------------------------------------------------------------------------
    As icloud.com and the Mac draw it: the four marks in a row, the styles beneath, each set
@@ -433,9 +341,25 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .fp-list-mark { width: 16px; color: var(--text-2); }
 
 /* A table in a note, as Notes draws one: hairline cells, the text set as the note's. */
-.note-rich .nf-attachment.is-table { display: block; padding: 0; margin: 6px 0; background: none; color: inherit; font-size: inherit; overflow-x: auto; }
-.nf-table { border-collapse: collapse; min-width: 50%; }
-.nf-table td { min-width: 120px; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--text) 22%, transparent); vertical-align: top; white-space: pre-wrap; }
+/* As Notes on the phone sets one: the note's full width, its columns shared evenly, roomy cells
+   on hairlines. The frame scrolls sideways only for a table too wide to fit, and leaves room
+   round the grid so its outer lines and a selection ring are never clipped by that scroll. */
+.note-rich .nf-attachment.is-table {
+  display: block; padding: 3px; margin: 8px -3px; border-radius: 0; background: none;
+  color: inherit; font-size: inherit; overflow-x: auto; overflow-y: hidden;
+}
+.nf-table {
+  width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0;
+  border: 1px solid var(--table-line); border-radius: 8px; overflow: hidden;
+}
+.nf-table td {
+  min-width: 96px; padding: 8px 10px; height: 2.6em; line-height: 1.4;
+  border-right: 1px solid var(--table-line); border-bottom: 1px solid var(--table-line);
+  vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.nf-table tr > td:last-child { border-right: none; }
+.nf-table tr:last-child > td { border-bottom: none; }
+.note-rich, .note-read { --table-line: color-mix(in srgb, var(--text) 16%, transparent); }
 /* A table's cells, edited in place: a typed cell is a quiet field that lights when it is the
    one being typed in; one Apple refused flashes red while it goes back. */
 .nf-cell-edit { outline: none; min-height: 1.4em; border-radius: 3px; cursor: text; }
@@ -481,9 +405,6 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-picture figcaption { display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; border-radius: 12px;
   background: var(--glass-thick); box-shadow: var(--glass-float); color: var(--text); font-size: var(--t-13); align-self: center; max-width: 100%; }
 .nf-picture-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.nf-picture-close { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; border: 0;
-  background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); cursor: pointer; flex: none; }
-.nf-picture-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* A block quote, as Notes draws one: a grey bar down the left of every quoted line, one
    unbroken bar down a run of them; a quoted list keeps its marks, inside the bar. */
@@ -511,9 +432,14 @@ textarea.note-title::placeholder { color: var(--text-3); }
    ring around the thing itself — a picture's own edges, a chip's own — never the box the
    line gives it, which ran the width of the note. */
 .note-rich .ProseMirror-selectednode { outline: none; }
-.note-rich .nf-attachment.ProseMirror-selectednode:not(.is-image) > *,
+.note-rich .nf-attachment.ProseMirror-selectednode:not(.is-image):not(.is-table) > *,
 .note-rich .nf-attachment.ProseMirror-selectednode.is-image img {
   outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px;
+}
+/* A table chosen whole: its own frame takes the accent, as the phone rings a chosen table —
+   drawn on the frame itself, so the scroll box round it can never cut it to one edge. */
+.note-rich .nf-attachment.is-table.ProseMirror-selectednode > .nf-table {
+  border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
 }
 .nf-file-meta.is-trouble { color: var(--danger); white-space: normal; }
 
@@ -522,3 +448,7 @@ textarea.note-title::placeholder { color: var(--text-3); }
   display: block; padding: 10px 12px; border: 1px dashed var(--separator); border-radius: 8px;
   color: var(--text-3); font-size: var(--t-13, 13px);
 }
+.notes-folder-rename { width: 100%; }
+
+/* An attachment not yet known takes no room and says nothing until it is drawn. */
+.note-rich .nf-attachment.is-pending { padding: 0; margin: 0; background: none; }

@@ -17,14 +17,61 @@ export const sameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 export const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
-/** The Sunday on or before `d`, where Apple starts a week. */
-export const startOfWeek = (d: Date) => addDays(midnight(d), -d.getDay());
+/* ---- the week, as this computer's region keeps it ---------------------------------------- */
+
+/** Which day a week starts on and which days are the weekend, 0 for Sunday as `getDay` counts. */
+export type WeekInfo = { firstDay: number; weekend: number[] };
+
+// For an engine without `Intl.Locale#getWeekInfo` (WebKitGTK's, for one), CLDR's own answer
+// for the regions that differ from a Monday start and a Saturday–Sunday weekend.
+const SUNDAY_FIRST = new Set(
+  ("AG AS BD BR BS BT BW BZ CA CO DM DO ET GT GU HK HN ID IL IN JM JP KE KH KR LA MH MM MO MT MX " +
+    "MZ NI NP PA PE PH PK PR PT PY SA SG SV TH TT TW UM US VE VI WS YE ZA ZW").split(" ")
+);
+const SATURDAY_FIRST = new Set("AE AF BH DJ DZ EG IQ IR JO KW LY OM QA SD SY".split(" "));
+const FRIDAY_SATURDAY = new Set("BH DZ EG IQ IL JO KW LY OM QA SA SD SY YE".split(" "));
+
+/** The week of `locale`'s region: Monday first in Britain, Sunday in the US, Saturday in Egypt. */
+export function weekInfoOf(locale: string): WeekInfo {
+  try {
+    const l = new Intl.Locale(locale) as Intl.Locale & {
+      getWeekInfo?: () => { firstDay: number; weekend: number[] };
+      weekInfo?: { firstDay: number; weekend: number[] };
+    };
+    const info = l.getWeekInfo?.() ?? l.weekInfo;
+    // Intl counts Monday 1 to Sunday 7; `getDay`, Sunday 0 to Saturday 6.
+    if (info) return { firstDay: info.firstDay % 7, weekend: info.weekend.map((d) => d % 7) };
+    const region = l.maximize().region ?? "US";
+    return {
+      firstDay: SUNDAY_FIRST.has(region) ? 0 : SATURDAY_FIRST.has(region) ? 6 : 1,
+      weekend: region === "IN" ? [0] : region === "IR" ? [5] : region === "AF" ? [4, 5] : FRIDAY_SATURDAY.has(region) ? [5, 6] : [6, 0],
+    };
+  } catch {
+    return { firstDay: 0, weekend: [6, 0] };
+  }
+}
+
+/** This computer's week, read once. */
+export const WEEK: WeekInfo = weekInfoOf(
+  (typeof navigator !== "undefined" && navigator.language) || Intl.DateTimeFormat().resolvedOptions().locale
+);
+export const isWeekend = (d: Date) => WEEK.weekend.includes(d.getDay());
+
+/** The day on or before `d` that a week starts on here — Sunday in the US, Monday in Europe. */
+export const startOfWeek = (d: Date, firstDay = WEEK.firstDay) =>
+  addDays(midnight(d), -((d.getDay() - firstDay + 7) % 7));
 
 /** The six weeks a month shows: from the week holding the 1st, forty-two days. */
-export function monthDays(anchor: Date): Date[] {
-  const start = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+export function monthDays(anchor: Date, firstDay = WEEK.firstDay): Date[] {
+  const start = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1), firstDay);
   return Array.from({ length: 42 }, (_, i) => addDays(start, i));
 }
+
+/** Whether this computer's clock is a twelve-hour one, read from its locale's hour cycle. */
+export const TWELVE_HOUR = (() => {
+  const o = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).resolvedOptions() as { hourCycle?: string; hour12?: boolean };
+  return o.hourCycle ? o.hourCycle === "h12" || o.hourCycle === "h11" : o.hour12 ?? true;
+})();
 
 /** An event's first and last local day, the last being the day holding its final moment. */
 export function daysOf(event: CalendarEvent): [Date, Date] {
@@ -132,6 +179,9 @@ export function placeDayWith(
   events: CalendarEvent[],
   day: Date,
   marks: Mark[],
+  /** The shortest a block is drawn, in minutes. Laid out shorter than it is drawn, a
+   *  quarter-hour call and the one after it were set one above the other and drawn overlapping. */
+  minLength = 15,
 ): { events: Placed[]; marks: PlacedMark[] } {
   const start = seconds(midnight(day));
   const end = seconds(addDays(day, 1));
@@ -145,7 +195,7 @@ export function placeDayWith(
       .map((event): Item => {
         const from = Math.max(event.startsAt, start);
         const to = Math.min(Math.max(event.endsAt, event.startsAt), end);
-        return { kind: "event", event, top: (from - start) / 60, length: Math.max((to - from) / 60, 15), column: 0, columns: 1 };
+        return { kind: "event", event, top: (from - start) / 60, length: Math.max((to - from) / 60, minLength), column: 0, columns: 1 };
       }),
     ...marks.map((mark): Item => ({ kind: "mark", mark, top: mark.top, length: mark.length, column: 0, columns: 1 })),
   ].sort((a, b) => a.top - b.top || b.length - a.length);
@@ -182,16 +232,19 @@ export function placeDayWith(
 export const snap = (minutes: number, step = 15) => Math.round(minutes / step) * step;
 
 /** "9 AM", "Noon", "3 PM" — the hour labels in the viewer's own clock. */
-export function hourLabel(hour: number): string {
-  if (hour === 12) return "Noon";
+export function hourLabel(hour: number, twelve = TWELVE_HOUR): string {
+  // "Noon" is a twelve-hour clock's word; a 24-hour one writes 12:00 like every other hour.
+  if (twelve && hour === 12) return "Noon";
   const d = new Date(2024, 0, 1, hour);
-  return timeText(d, { hour: "numeric" });
+  return twelve ? timeText(d, { hour: "numeric" }) : timeText(d, { hour: "2-digit", minute: "2-digit" });
 }
 
-/** "9:30 AM", with ":00" left off, as Calendar writes a time. */
-export const clock = (s: number) =>
-  timeText(dateOf(s), { hour: "numeric", minute: "2-digit" })
-    .replace(/:00(?=\D|$)/, "");
+/** "9:30 AM", with ":00" left off, as Calendar writes a time — on a twelve-hour clock. A
+ *  24-hour one keeps it: "14:00", never a bare "14". */
+export const clock = (s: number, twelve = TWELVE_HOUR) => {
+  const text = timeText(dateOf(s), { hour: "numeric", minute: "2-digit" });
+  return twelve ? text.replace(/:00(?=\D|$)/, "") : text;
+};
 
 /* ---- time zones ------------------------------------------------------------------------ */
 

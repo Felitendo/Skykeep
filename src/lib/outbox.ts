@@ -1,0 +1,55 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { api, type OutboxStatus, type RefusedChange } from "./ipc";
+
+const CHANGED = "quince://outbox-changed";
+const REFUSED = "quince://outbox-refused";
+
+/**
+ * Changes made here that Apple does not have yet, for one service: which records are waiting
+ * (shown as "Waiting to sync"), and the changes Apple turned down — kept, with what was typed,
+ * until the person sends them again or lets them go.
+ *
+ * The backend says when this moves (`quince://outbox-changed`): as it starts sending, as a
+ * change lands, as one is refused. `tick` counts those, for a view to read its rows again.
+ */
+export function useOutbox(service: "notes" | "reminders" | "contacts") {
+  const [status, setStatus] = useState<OutboxStatus>({ waiting: [], refused: [] });
+  const [tick, setTick] = useState(0);
+
+  const read = useCallback(() => {
+    api.outboxStatus().then(
+      (s) => setStatus(s && Array.isArray(s.waiting) ? s : { waiting: [], refused: [] }),
+      () => {},
+    );
+  }, []);
+
+  useEffect(() => {
+    read();
+    const offs = [
+      listen(CHANGED, () => {
+        read();
+        setTick((n) => n + 1);
+      }),
+      listen(REFUSED, () => read()),
+    ];
+    return () => offs.forEach((off) => void off.then((f) => f()).catch(() => {}));
+  }, [read]);
+
+  const waiting = useMemo(
+    () => new Set(status.waiting.filter((w) => w.service === service).map((w) => w.record)),
+    [status, service],
+  );
+  const refused = useMemo(() => status.refused.filter((r) => r.service === service), [status, service]);
+
+  const resend = useCallback(async (r: RefusedChange) => {
+    await api.outboxResend(r.id).catch(() => {});
+    read();
+  }, [read]);
+  const discard = useCallback(async (r: RefusedChange) => {
+    await api.outboxDiscard(r.id).catch(() => {});
+    read();
+  }, [read]);
+
+  return { waiting, refused, resend, discard, refresh: read, tick };
+}

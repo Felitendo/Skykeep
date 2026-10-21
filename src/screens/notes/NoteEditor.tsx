@@ -55,7 +55,7 @@ let openCellMenu: ((menu: CellMenu) => void) | null = null;
  */
 /** What each attachment is, asked once a session: a note re-drawn does not ask again. */
 const described = new Map<string, Promise<NoteAttachment | null>>();
-function describe(id: string): Promise<NoteAttachment | null> {
+export function describe(id: string): Promise<NoteAttachment | null> {
   let known = described.get(id);
   if (!known) {
     // A lookup that failed (offline, the session being renewed) is not kept: the next time
@@ -85,7 +85,7 @@ function size(bytes: number | null): string {
 export const PICTURE_EVENT = "quince:note-picture";
 export type PictureShown = { id: string; name: string; src: string; srcDark?: string; drawing?: boolean };
 
-function drawMedia(dom: HTMLElement, info: NoteAttachment) {
+export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   const name = info.filename ?? info.title ?? (info.kind === "audio" ? "Recording" : "Attachment");
   // Opened in the app this computer uses for it; one that cannot be says why, on the chip
   // itself, rather than a click that seems to do nothing.
@@ -125,7 +125,12 @@ function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     img.draggable = false;
     if (info.width && info.height) img.style.aspectRatio = `${info.width} / ${info.height}`;
     img.src = noteMediaSrc(info.id, part);
-    img.addEventListener("error", () => dom.replaceChildren(chip()));
+    // The backend says whether the picture can be shown: a 404 (a HEIC with no decoder on
+    // this computer, a fetch that failed) and it is the file's chip, drawn as one.
+    img.addEventListener("error", () => {
+      dom.className = "nf-attachment is-file";
+      dom.replaceChildren(chip());
+    });
     return img;
   };
   dom.title = `Open ${name}`;
@@ -182,7 +187,10 @@ function attachmentView(node: PMNode) {
   const dom = document.createElement("span");
   dom.className = "nf-attachment";
   dom.contentEditable = "false";
-  dom.textContent = "Attachment";
+  // Nothing until it is known what it is — then the picture, the table, the file. A word
+  // standing in for it ("Attachment") read as clutter, and stayed where a lookup failed.
+  dom.textContent = "";
+  dom.classList.add("is-pending");
   dom.title = "Open it on an Apple device to change it";
   const id = node.attrs.id as string | null;
 
@@ -628,8 +636,15 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           .replace(/<\/tr>/gi, "</p>")
           .replace(/<\/?(table|tbody|thead|tfoot|td|th)[^>]*>/gi, "");
       },
-      transformPasted(slice) {
-        return new Slice(withoutAttachments(slice.content), slice.openStart, slice.openEnd);
+      // Lines copied whole keep their style, tick, indent and numbering (rich.ts reads them
+      // back). Into an empty line, the first copied line comes whole too, its setting with it,
+      // rather than taking the empty line's; into a line with text in it, it joins that line.
+      // Plain text has no setting of its own, so it takes the line's.
+      transformPasted(slice, view, plain) {
+        const { $from, empty } = view.state.selection;
+        const blank = empty && $from.parent.type === schema.nodes.paragraph && $from.parent.content.size === 0;
+        const openStart = blank && !plain ? 0 : slice.openStart;
+        return new Slice(withoutAttachments(slice.content), openStart, slice.openEnd);
       },
       // Lists typed as on the phone: "- " a dashed list, "* " a bulleted one, "1. " a numbered
       // one; in a dashed line "[ ] " or "[x] " makes it a checklist item, so "- [ ] " works
@@ -669,6 +684,8 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         mousedown: (vw, event) => {
           const line = (event.target as HTMLElement).closest?.('p[data-style="103"]') as HTMLElement | null;
           if (!line || !editable) return false;
+          // A line holding a table or picture has no circle to press.
+          if (line.querySelector(":scope > .nf-attachment:is(.is-table, .is-image, .is-doc, .is-drawing, .is-table-unread)")) return false;
           const box = line.getBoundingClientRect();
           const pad = parseFloat(getComputedStyle(line).paddingInlineStart) || 0;
           if (event.clientX - box.left > pad) return false;

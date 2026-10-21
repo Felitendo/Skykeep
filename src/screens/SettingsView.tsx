@@ -1,11 +1,20 @@
+import { ConfirmSheet } from "../components/Confirm";
+import { toastSaved, useErrorToast } from "../components/Toast";
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, type DriveFolder, type LoginItem, messageOf, type AccountInfo } from "../lib/ipc";
+import {
+  api,
+  type AccountInfo,
+  type DriveFolder,
+  type LocalStorage,
+  type LoginItem,
+  messageOf,
+  settingsApi,
+} from "../lib/ipc";
 import { freshness, useSync } from "../lib/sync";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
 import { AccountAvatar } from "../components/Account";
-import { Portal } from "../components/Portal";
 
 /** The app each service's freshness belongs to, for its icon. */
 const ICON: Record<string, string> = {
@@ -29,7 +38,30 @@ function folderState(f: DriveFolder): string {
 function size(bytes: number): string {
   const gb = bytes / 1024 ** 3;
   if (gb >= 1) return `${gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)} GB`;
-  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+  if (bytes < 1024 ** 2) return bytes < 1024 ? "Zero KB" : `${Math.round(bytes / 1024)} KB`;
+  return `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+/** A row's mark where no app's icon fits: a plain tile, the same size as the apps' icons. */
+function Glyph({ kind }: { kind: "library" | "other" }) {
+  return (
+    <span className="settings-glyph" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4">
+        {kind === "library" ? (
+          <>
+            <ellipse cx="8" cy="4" rx="5" ry="2" />
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" />
+          </>
+        ) : (
+          <g fill="currentColor" stroke="none">
+            <circle cx="3.5" cy="8" r="1.4" />
+            <circle cx="8" cy="8" r="1.4" />
+            <circle cx="12.5" cy="8" r="1.4" />
+          </g>
+        )}
+      </svg>
+    </span>
+  );
 }
 
 /**
@@ -69,57 +101,102 @@ function SignOutSheet({
   const waiting = unsentPhrase(unsent);
   const total = unsent.changes + unsent.files + unsent.photos;
   return (
-    <Portal>
-      <div className="modal-veil" onClick={onCancel}>
-        <div
-          className="modal-sheet px-ask"
-          role="alertdialog"
-          aria-modal="true"
-          aria-label="Keep a copy of your iCloud data on this computer?"
-          onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              e.stopPropagation();
-              onCancel();
-            }
+    <ConfirmSheet<boolean>
+      title="Keep a copy of your iCloud data on this computer?"
+      body="A copy keeps your notes, photos, files and everything else here, ready when you sign back in. Nothing is deleted from iCloud either way."
+      choices={[
+        { label: "Keep a Copy", value: true, primary: true, focus: true },
+        { label: "Remove from This Computer", value: false, danger: true },
+      ]}
+      onAnswer={onChoose}
+      onCancel={onCancel}
+    >
+      {waiting && (
+        <p className="signout-unsent">
+          {waiting} {total === 1 ? "hasn't" : "haven't"} reached iCloud yet. Keep a copy and{" "}
+          {total === 1 ? "it goes" : "they go"} up when you sign back in; remove it and{" "}
+          {total === 1 ? "it's" : "they're"} lost.
+        </p>
+      )}
+    </ConfirmSheet>
+  );
+}
+
+
+/** A folder of iCloud on this computer, as a row: where it is or why it is not, Open, and its switch. */
+function FolderRow({
+  app,
+  label,
+  off,
+  folder,
+  busy,
+  line,
+  onOpen,
+  onSet,
+}: {
+  app: string;
+  label: string;
+  off: string;
+  folder: DriveFolder | null;
+  busy: boolean;
+  line: (f: DriveFolder) => string;
+  onOpen: () => Promise<unknown>;
+  onSet: (on: boolean) => void;
+}) {
+  // Why the folder could not be opened, said on its own row until it is tried again.
+  const [openFailed, setOpenFailed] = useState<string | null>(null);
+  const problem = openFailed ?? folder?.problem;
+  const trouble = Boolean(problem || folder?.waiting?.failure);
+  return (
+    <div className="settings-row">
+      <AppIcon app={app} />
+      <span className="settings-label settings-stack">
+        {label}
+        <span className={`settings-hint${trouble ? " is-trouble" : ""}`} title={folder?.on ? folder.path : undefined}>
+          {problem ?? (folder?.on ? line(folder) : off)}
+        </span>
+      </span>
+      {folder?.on && (
+        <button
+          className="quiet"
+          onClick={() => {
+            setOpenFailed(null);
+            onOpen().catch((e) => setOpenFailed(messageOf(e)));
           }}
         >
-          <h2>Keep a copy of your iCloud data on this computer?</h2>
-          <p>
-            A copy keeps your notes, photos, files and everything else here, ready when you sign back in. Nothing is
-            deleted from iCloud either way.
-          </p>
-          {waiting && (
-            <p className="signout-unsent">
-              {waiting} {total === 1 ? "hasn't" : "haven't"} reached iCloud yet. Keep a copy and{" "}
-              {total === 1 ? "it goes" : "they go"} up when you sign back in; remove it and{" "}
-              {total === 1 ? "it's" : "they're"} lost.
-            </p>
-          )}
-          <div className="px-ask-actions is-stacked">
-            <button className="is-act" autoFocus onClick={() => onChoose(true)}>
-              Keep a Copy
-            </button>
-            <button className="is-act danger" onClick={() => onChoose(false)}>
-              Remove from This Computer
-            </button>
-            <button onClick={onCancel}>Cancel</button>
-          </div>
-        </div>
-      </div>
-    </Portal>
+          Open
+        </button>
+      )}
+      <button
+        className="switch"
+        role="switch"
+        aria-checked={folder?.on ?? false}
+        aria-label={label}
+        disabled={!folder || busy}
+        onClick={() => {
+          setOpenFailed(null);
+          if (folder) onSet(!folder.on);
+        }}
+      >
+        <span className="switch-knob" />
+      </button>
+    </div>
   );
 }
 
 export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Promise<void> }) {
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [storage, setStorage] = useState<{ usedBytes: number; totalBytes: number } | null>(null);
+  const [local, setLocal] = useState<LocalStorage | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [freed, setFreed] = useState<number | null>(null);
   const [alerts, setAlerts] = useState<{ reminderAlerts: boolean; eventAlerts: boolean } | null>(null);
+  const [alertsShown, setAlertsShown] = useState<boolean | null>(null);
   const [theme, chooseTheme] = useState<Theme>(storedTheme);
   const [version, setVersion] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
   const [signingOut, setSigningOut] = useState<Unsent | null>(null);
-  const [savedReport, setSavedReport] = useState<string | null>(null);
   const [folder, setFolder] = useState<DriveFolder | null>(null);
   const [folderBusy, setFolderBusy] = useState(false);
   const [photosFolder, setPhotosFolder] = useState<DriveFolder | null>(null);
@@ -132,6 +209,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
     api.accountInfo().then(setAccount, () => setAccount({ name: null, email: null }));
     api.storageInfo().then(setStorage, () => {});
     api.settingsGet().then(setAlerts, (e) => setError(messageOf(e)));
+    settingsApi.alertsShown().then(setAlertsShown, () => {});
+    settingsApi.localStorage().then(setLocal, () => {});
     getVersion().then(setVersion, () => {});
     api.driveFolderStatus().then(setFolder, () => {});
     api.photosFolderStatus().then(setPhotosFolder, () => {});
@@ -160,12 +239,49 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
     });
   };
 
+  // A folder's switch moves at once; Apple's answer only matters when it could not come up,
+  // and then the reason is said on the folder's own row, where the eye already is.
+  const setFolderOn = (
+    current: DriveFolder,
+    on: boolean,
+    put: (f: DriveFolder) => void,
+    busy: (b: boolean) => void,
+    ask: (on: boolean) => Promise<DriveFolder>,
+  ) => {
+    put({ ...current, on, problem: null });
+    busy(true);
+    ask(on)
+      .then(put, (e) => put({ ...current, problem: messageOf(e) }))
+      .finally(() => busy(false));
+  };
+
+  const clearPictures = () => {
+    if (!local) return;
+    const before = local.total;
+    setClearing(true);
+    setFreed(null);
+    settingsApi
+      .localStorageClear()
+      .then(
+        (after) => {
+          setLocal(after);
+          setFreed(Math.max(0, before - after.total));
+        },
+        (e) => setError(messageOf(e)),
+      )
+      .finally(() => setClearing(false));
+  };
+
   const used = storage && storage.totalBytes > 0 ? Math.min(1, storage.usedBytes / storage.totalBytes) : 0;
+  const services = (report?.services ?? []).filter((s) => s.outcome !== "unavailable");
+  const showDrive = folder?.available !== false;
+  const showPhotos = photosFolder?.available !== false;
+  const MB = 1024 ** 2;
 
   return (
     <div className="settings">
       <h1 className="settings-title">Settings</h1>
-      {error && <p className="settings-error" role="alert">{error}</p>}
+      {/* Held at the top of the window as it scrolls: a reason is never left out of sight. */}
 
       <section className="settings-group settings-account" aria-label="Account">
         <AccountAvatar account={account} large />
@@ -193,23 +309,23 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         />
       )}
 
-      {account?.dataProtection != null && (
-        <section className="settings-group settings-gap">
-          <div className="settings-row">
-            <span className="settings-label">Advanced Data Protection</span>
-            <span className="settings-value">{account.dataProtection ? "On" : "Off"}</span>
-          </div>
-        </section>
-      )}
-
-      <h2 className="settings-heading">iCloud Storage</h2>
+      <h2 className="settings-heading">iCloud</h2>
       <section className="settings-group">
         <div className="settings-row is-stacked">
           <div className="settings-row-line">
             <span>{storage ? `${size(storage.usedBytes)} of ${size(storage.totalBytes)} used` : "Reading storage…"}</span>
-            {storage && <span className="settings-value">{size(Math.max(0, storage.totalBytes - storage.usedBytes))} available</span>}
+            {storage && (
+              <span className="settings-value">{size(Math.max(0, storage.totalBytes - storage.usedBytes))} available</span>
+            )}
           </div>
-          <div className="storage-bar" role="meter" aria-label="iCloud storage used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(used * 100)}>
+          <div
+            className="storage-bar"
+            role="meter"
+            aria-label="iCloud storage used"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(used * 100)}
+          >
             <span style={{ width: `${used * 100}%` }} />
           </div>
         </div>
@@ -217,95 +333,116 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
 
       <h2 className="settings-heading">Sync</h2>
       <section className="settings-group">
-        {(report?.services ?? []).filter((s) => s.outcome !== "unavailable").map((s) => (
+        {services.map((s) => (
           <div className="settings-row" key={s.service}>
             <AppIcon app={ICON[s.service] ?? s.service} />
             <span className="settings-label">{s.label}</span>
             <span className={`settings-value${s.outcome === "failed" ? " is-trouble" : ""}`}>
-              {s.outcome === "failed" ? (s.detail ?? "Didn't update") : freshness(s.lastSyncedAt ?? null)}
+              {s.outcome === "failed"
+                ? (s.detail ?? "Didn't update")
+                : syncing && !s.lastSyncedAt
+                  ? "Downloading…"
+                  : freshness(s.lastSyncedAt ?? null)}
             </span>
           </div>
         ))}
         <div className="settings-row">
-          <span className="settings-label settings-hint">Changes made on your other devices arrive here within seconds.</span>
+          <span className="settings-label settings-hint">Changes from your other devices arrive within seconds.</span>
           <button className="quiet" onClick={() => void refresh()} disabled={syncing}>
             {syncing ? "Syncing…" : "Sync Now"}
           </button>
         </div>
       </section>
 
-      <h2 className="settings-heading">On This Computer</h2>
-      <section className="settings-group">
+      {(showDrive || showPhotos) && (
+        <>
+          <h2 className="settings-heading">Folders</h2>
+          <section className="settings-group">
+            {showDrive && (
+              <FolderRow
+                app="drivews"
+                label="iCloud Drive folder"
+                off="Your iCloud Drive in Files and every other app"
+                folder={folder}
+                busy={folderBusy}
+                line={folderState}
+                onOpen={api.driveFolderOpen}
+                onSet={(on) => folder && setFolderOn(folder, on, setFolder, setFolderBusy, api.driveFolderSet)}
+              />
+            )}
+            {showPhotos && (
+              <FolderRow
+                app="photos"
+                label="iCloud Photos folder"
+                off="Your photos by date and album, for every other app"
+                folder={photosFolder}
+                busy={photosBusy}
+                line={(f) => f.path}
+                onOpen={api.photosFolderOpen}
+                onSet={(on) =>
+                  photosFolder && setFolderOn(photosFolder, on, setPhotosFolder, setPhotosBusy, api.photosFolderSet)
+                }
+              />
+            )}
+          </section>
+        </>
+      )}
+
+      <h2 className="settings-heading settings-heading-line">
+        <span>Storage on This Computer</span>
+        {local && <span className="settings-heading-value">{size(local.total)}</span>}
+      </h2>
+      <section className="settings-group" aria-busy={!local}>
+        {(
+          [
+            ["photos", "Photos", local?.photos],
+            ["notes", "Notes", local?.notes],
+            ["drivews", "iCloud Drive", local?.drive],
+            ["library", "Library", local?.library],
+            ["other", "Other", local?.other],
+          ] as const
+        )
+          .filter(([key, , bytes]) => key !== "other" || (bytes ?? 0) >= MB)
+          .map(([key, label, bytes]) => (
+            <div className="settings-row" key={key}>
+              {key === "library" || key === "other" ? <Glyph kind={key} /> : <AppIcon app={key} />}
+              <span className="settings-label">{label}</span>
+              <span className="settings-value">{bytes == null ? "…" : size(bytes)}</span>
+            </div>
+          ))}
         <div className="settings-row">
-          <AppIcon app="drivews" />
           <span className="settings-label settings-stack">
-            iCloud Drive folder
-            {/* Where it is, and — when it could not come up — why, in a sentence. */}
-            <span className={`settings-hint${folder?.problem || folder?.waiting?.failure ? " is-trouble" : ""}`}>
-              {folder?.problem ?? (folder?.on ? folderState(folder) : "Your iCloud Drive in Files and every other app")}
+            Cached pictures
+            <span className="settings-hint" aria-live="polite">
+              {freed != null ? `${size(freed)} cleared. They download again when needed.` : "They download again when needed."}
             </span>
           </span>
-          {folder?.on && (
-            <button className="quiet" onClick={() => api.driveFolderOpen().catch((e) => setError(messageOf(e)))}>
-              Open
-            </button>
-          )}
-          <button
-            className="switch"
-            role="switch"
-            aria-checked={folder?.on ?? false}
-            aria-label="iCloud Drive folder"
-            disabled={!folder || folderBusy}
-            onClick={() => {
-              if (!folder) return;
-              const on = !folder.on;
-              // Moves at once; Apple's answer only matters when the folder could not come up.
-              setFolder({ ...folder, on, problem: null });
-              setFolderBusy(true);
-              api
-                .driveFolderSet(on)
-                .then(setFolder, (e) => {
-                  setFolder({ ...folder, problem: messageOf(e) });
-                })
-                .finally(() => setFolderBusy(false));
-            }}
-          >
-            <span className="switch-knob" />
+          {local && local.clearable >= MB && <span className="settings-value">{size(local.clearable)}</span>}
+          <button className="quiet" onClick={clearPictures} disabled={!local || clearing || local.clearable < MB}>
+            {clearing ? "Clearing…" : "Clear"}
           </button>
         </div>
+      </section>
+
+      <h2 className="settings-heading">General</h2>
+      <section className="settings-group">
         <div className="settings-row">
-          <AppIcon app="photos" />
-          <span className="settings-label settings-stack">
-            iCloud Photos folder
-            <span className={`settings-hint${photosFolder?.problem ? " is-trouble" : ""}`}>
-              {photosFolder?.problem ??
-                (photosFolder?.on ? photosFolder.path : "Your photos by date and album, for every other app")}
-            </span>
-          </span>
-          {photosFolder?.on && (
-            <button className="quiet" onClick={() => api.photosFolderOpen().catch((e) => setError(messageOf(e)))}>
-              Open
-            </button>
-          )}
-          <button
-            className="switch"
-            role="switch"
-            aria-checked={photosFolder?.on ?? false}
-            aria-label="iCloud Photos folder"
-            disabled={!photosFolder || photosBusy}
-            onClick={() => {
-              if (!photosFolder) return;
-              const on = !photosFolder.on;
-              setPhotosFolder({ ...photosFolder, on, problem: null });
-              setPhotosBusy(true);
-              api
-                .photosFolderSet(on)
-                .then(setPhotosFolder, (e) => setPhotosFolder({ ...photosFolder, problem: messageOf(e) }))
-                .finally(() => setPhotosBusy(false));
-            }}
-          >
-            <span className="switch-knob" />
-          </button>
+          <span className="settings-label">Appearance</span>
+          <div className="segmented" role="group" aria-label="Appearance">
+            {(["auto", "light", "dark"] as const).map((t) => (
+              <button
+                key={t}
+                className="segment"
+                aria-pressed={theme === t}
+                onClick={() => {
+                  chooseTheme(t);
+                  setTheme(t);
+                }}
+              >
+                {t === "auto" ? "Automatic" : t === "light" ? "Light" : "Dark"}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="settings-row">
           <span className="settings-label settings-stack">
@@ -313,7 +450,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             <span className="settings-hint">
               {login?.on && !login.honoured
                 ? "This desktop doesn't open apps at login by itself. Add this to its startup:"
-                : "Starts in the background, so reminders ring and changes sync without the window"}
+                : "Starts in the background, so alerts ring and changes sync"}
             </span>
             {login?.on && !login.honoured && <code className="settings-command">{login.command}</code>}
           </span>
@@ -342,34 +479,14 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         </div>
       </section>
 
-      <h2 className="settings-heading">Appearance</h2>
-      <section className="settings-group">
-        <div className="settings-row">
-          <span className="settings-label">Appearance</span>
-          <div className="segmented" role="group" aria-label="Appearance">
-            {(["auto", "light", "dark"] as const).map((t) => (
-              <button
-                key={t}
-                className="segment"
-                aria-pressed={theme === t}
-                onClick={() => {
-                  chooseTheme(t);
-                  setTheme(t);
-                }}
-              >
-                {t === "auto" ? "Automatic" : t === "light" ? "Light" : "Dark"}
-              </button>
-            ))}
-          </div>
-        </div>
-      </section>
-
       <h2 className="settings-heading">Notifications</h2>
       <section className="settings-group">
-        {([
-          ["reminderAlerts", "Reminder alerts", "reminders"],
-          ["eventAlerts", "Calendar alerts", "calendar"],
-        ] as const).map(([key, label, icon]) => (
+        {(
+          [
+            ["reminderAlerts", "Reminder alerts", "reminders"],
+            ["eventAlerts", "Calendar alerts", "calendar"],
+          ] as const
+        ).map(([key, label, icon]) => (
           <div className="settings-row" key={key}>
             <AppIcon app={icon} />
             <span className="settings-label">{label}</span>
@@ -385,6 +502,14 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             </button>
           </div>
         ))}
+        {/* Asked of the desktop itself: without a notification service every alert is dropped. */}
+        {alertsShown === false && (
+          <div className="settings-row">
+            <span className="settings-label settings-hint is-trouble">
+              Alerts can't appear: this desktop has no notification service running.
+            </span>
+          </div>
+        )}
       </section>
 
       <h2 className="settings-heading">About</h2>
@@ -394,24 +519,25 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           <span className="settings-value">{version ?? "—"}</span>
         </div>
         <div className="settings-row">
-          <span className="settings-label settings-hint">
-            Your iCloud is kept on this computer and talks only to Apple. Pomander has no servers.
-          </span>
-        </div>
-        <div className="settings-row">
-          <span className="settings-label settings-hint">
-            {savedReport
-              ? `Saved to ${savedReport.split("/").slice(-2).join("/")} — versions and sync states only, no names or contents. Attach it to a bug report.`
-              : "A plain report of how Pomander is doing, for a bug report. Nothing is sent anywhere."}
+          <span className="settings-label settings-stack">
+            Diagnostic Report
+            <span className="settings-hint settings-hint-wrap">Versions and sync states only. Nothing is sent.</span>
           </span>
           <button
             className="quiet"
-            onClick={() => api.diagnosticsSave().then(setSavedReport, (e) => setError(messageOf(e)))}
+            aria-label="Save Diagnostic Report"
+            onClick={() =>
+              api.diagnosticsSave().then(
+                (path) => void toastSaved(path),
+                (e) => setError(messageOf(e)),
+              )
+            }
           >
-            Save Diagnostic Report
+            Save
           </button>
         </div>
       </section>
+      <p className="settings-note">Pomander talks only to Apple. It has no servers of its own.</p>
     </div>
   );
 }

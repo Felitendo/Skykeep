@@ -26,9 +26,9 @@ await page.locator(".notes-folder-row", { hasText: "Recipes" }).click({ button: 
 await page.waitForTimeout(150);
 const offered = await page.getByRole("menuitem").allInnerTexts();
 ok(JSON.stringify(offered) === JSON.stringify(["Rename Folder", "New Folder", "Delete Folder"]), `a folder's menu  ${JSON.stringify(offered)}`);
-let question = "";
-page.once("dialog", (d) => { question = d.message(); d.accept(); });
 await page.getByRole("menuitem", { name: "Delete Folder" }).click();
+const question = await page.locator(".confirm").innerText();
+await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(250);
 ok(question.includes("All notes and any subfolders will be deleted."), "Delete Folder asks Apple's question");
 ok(!(await names()).includes("Recipes"), "and the folder is gone");

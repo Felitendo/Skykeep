@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useActiveRef, useScreenActive } from "../lib/screen";
 import { useSync } from "../lib/sync";
-import { Notice } from "../components/Notice";
+import { toastSaved, useErrorToast } from "../components/Toast";
+import { useConfirm } from "../components/Confirm";
+import { EmptyState } from "../components/EmptyState";
+import { Spinner } from "../components/Spinner";
+import { PaneTitle } from "../components/PaneTitle";
 import { Portal } from "../components/Portal";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -36,6 +40,7 @@ const SORTS = [
 ] as const;
 type SortKey = (typeof SORTS)[number]["key"];
 const SORT_KEY = "quince.drive.sort";
+const SORT_REVERSED = "quince.drive.sortReversed";
 
 /**
  * Names compare as Finder compares them — "File 2" before "File 10", case ignored; dates and
@@ -43,7 +48,7 @@ const SORT_KEY = "quince.drive.sort";
  * Kind, which is itself the grouping.
  */
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-function sortItems(rows: DriveItem[], by: SortKey): DriveItem[] {
+function sortItems(rows: DriveItem[], by: SortKey, reversed = false): DriveItem[] {
   const name = (a: DriveItem, b: DriveItem) => collator.compare(a.name, b.name);
   const folderFirst = (a: DriveItem, b: DriveItem) => Number(isContainer(b)) - Number(isContainer(a));
   const kindOf = (i: DriveItem) => (isContainer(i) ? " " : (i.extension ?? "").toLowerCase());
@@ -53,7 +58,12 @@ function sortItems(rows: DriveItem[], by: SortKey): DriveItem[] {
     kind: (a, b) => collator.compare(kindOf(a), kindOf(b)) || name(a, b),
     size: (a, b) => folderFirst(a, b) || (b.size ?? 0) - (a.size ?? 0) || name(a, b),
   };
-  return [...rows].sort(order[by]);
+  // A second click on a heading turns the order round, as in Finder; folders stay on top.
+  const turn = reversed ? -1 : 1;
+  const sorter = by === "kind"
+    ? (a: DriveItem, b: DriveItem) => turn * order.kind(a, b)
+    : (a: DriveItem, b: DriveItem) => folderFirst(a, b) || turn * order[by](a, b);
+  return [...rows].sort(sorter);
 }
 
 const KB = 1024;
@@ -71,14 +81,19 @@ function fileSize(bytes: number | null): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
-const modified = (seconds: number | null) =>
-  seconds === null
-    ? ""
-    : dateText(new Date(seconds * 1000), {
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-      });
+/** As Finder writes Date Modified: "Today, 10:12", "Yesterday, 18:40", then the date. */
+const modified = (seconds: number | null, now = new Date()) => {
+  if (seconds === null) return "";
+  const d = new Date(seconds * 1000);
+  const days = Math.round(
+    (new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() -
+      new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 864e5,
+  );
+  if (days === 0 || days === 1) {
+    return `${days === 0 ? "Today" : "Yesterday"}, ${timeText(d, { hour: "numeric", minute: "2-digit" })}`;
+  }
+  return dateText(d, { day: "numeric", month: "short", year: "numeric" });
+};
 
 /**
  * Recently Deleted, as icloud.com shows it: what was deleted, when, and two ways out —
@@ -89,6 +104,7 @@ const modified = (seconds: number | null) =>
 function DriveTrash({ onClose }: { onClose: () => void }) {
   const [rows, setRows] = useState<TrashItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
   const read = useCallback(async () => {
     try {
       setRows(await api.driveTrash());
@@ -124,32 +140,30 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
     }
   };
   const recover = (items: TrashItem[]) => out(items, true);
+  const [confirm, confirmSheet] = useConfirm();
   const destroy = (items: TrashItem[]) => {
     const what = items.length === 1 ? `\u201c${driveName(items[0])}\u201d` : `these ${items.length} items`;
-    if (!window.confirm(`Delete ${what} now? You can\u2019t undo this.`)) return;
-    void out(items, false);
+    void confirm({ title: `Delete ${what} now?`, body: "You can\u2019t undo this.", action: "Delete", danger: true, symbol: "trash" }).then(
+      (sure) => sure && void out(items, false),
+    );
   };
 
   return (
     <div className="drive drive-trash">
-      <header className="cal-bar">
-        <nav className="crumbs" aria-label="Folder path">
-          <button className="crumb" onClick={onClose}>iCloud Drive</button>
-          <span className="crumb-sep" aria-hidden="true">›</span>
+      <header className="pane-head drive-bar">
+        <PaneTitle before={<nav className="crumbs" aria-label="Folder path"><button className="crumb" onClick={onClose}>iCloud Drive</button></nav>}>
           <button className="crumb" aria-current>Recently Deleted</button>
-        </nav>
+        </PaneTitle>
         {rows && rows.length > 0 && (
-          <div className="cal-actions">
-            <button className="quiet" onClick={() => void recover(rows)}>Recover All</button>
-            <button className="quiet danger" onClick={() => destroy(rows)}>Delete All</button>
+          <div className="toolbar-group">
+            <button className="tool has-label is-accent" onClick={() => void recover(rows)}>Recover All</button>
+            <button className="tool has-label danger" onClick={() => destroy(rows)}>Delete All</button>
           </div>
         )}
       </header>
-      {error && <Notice message={error} onDismiss={() => setError(null)} />}
-      {rows === null && <p className="cal-empty">Loading…</p>}
-      {rows && rows.length === 0 && !error && (
-        <p className="cal-empty">Nothing in Recently Deleted.</p>
-      )}
+      {rows === null && <EmptyState busy>Loading…</EmptyState>}
+      {rows && rows.length === 0 && !error && <EmptyState>Nothing in Recently Deleted.</EmptyState>}
+      {confirmSheet}
       {rows && rows.length > 0 && (
         <ul className="drive-rows">
           {rows.map((item) => (
@@ -171,8 +185,8 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
                   </span>
                 </span>
                 <span className="drive-row-actions is-shown">
-                  <button className="quiet" onClick={() => void recover([item])}>Recover</button>
-                  <button className="quiet danger" onClick={() => destroy([item])}>Delete Now</button>
+                  <button className="link" onClick={() => void recover([item])}>Recover</button>
+                  <button className="link danger" onClick={() => destroy([item])}>Delete Now</button>
                 </span>
               </div>
             </li>
@@ -191,7 +205,7 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
 function DriveRecents({ onClose }: { onClose: () => void }) {
   const [rows, setRows] = useState<RecentItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [savedTo, setSavedTo] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
   const [busy, setBusy] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ item: RecentItem; x: number; y: number; alignRight: boolean } | null>(null);
@@ -204,16 +218,11 @@ function DriveRecents({ onClose }: { onClose: () => void }) {
       },
     );
   }, []);
-  useEffect(() => {
-    if (!savedTo) return undefined;
-    const timer = window.setTimeout(() => setSavedTo(null), 4000);
-    return () => window.clearTimeout(timer);
-  }, [savedTo]);
   const download = async (item: RecentItem) => {
     setBusy(item.drivewsid);
     setError(null);
     try {
-      setSavedTo(await api.driveDownload(item.drivewsid, item));
+      toastSaved(await api.driveDownload(item.drivewsid, item));
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -223,19 +232,13 @@ function DriveRecents({ onClose }: { onClose: () => void }) {
   const groups = groupRecents(rows ?? []);
   return (
     <div className="drive drive-recents">
-      <header className="cal-bar">
-        <nav className="crumbs" aria-label="Folder path">
-          <button className="crumb" onClick={onClose}>iCloud Drive</button>
-          <span className="crumb-sep" aria-hidden="true">›</span>
+      <header className="pane-head drive-bar">
+        <PaneTitle before={<nav className="crumbs" aria-label="Folder path"><button className="crumb" onClick={onClose}>iCloud Drive</button></nav>}>
           <button className="crumb" aria-current>Recents</button>
-        </nav>
+        </PaneTitle>
       </header>
-      {error && <Notice message={error} onDismiss={() => setError(null)} />}
-      {savedTo && <p className="drive-saved" role="status">Saved to {savedTo}</p>}
-      {rows === null && <p className="cal-empty">Loading…</p>}
-      {rows && rows.length === 0 && !error && (
-        <p className="cal-empty">Files which you’ve opened recently will appear here.</p>
-      )}
+      {rows === null && <EmptyState busy>Loading…</EmptyState>}
+      {rows && rows.length === 0 && !error && <EmptyState>Files you open show here, newest first.</EmptyState>}
       {groups.map((g) => (
         <section key={g.heading} aria-label={g.heading}>
           <h2 className="drive-group">{g.heading}</h2>
@@ -263,7 +266,7 @@ function DriveRecents({ onClose }: { onClose: () => void }) {
                     }}
                   >
                     <span className="drive-badge" aria-hidden="true">
-                      {busy === item.drivewsid ? <span className="drive-spinner" /> : <FileGlyph kind={item.kind} extension={item.extension} />}
+                      {busy === item.drivewsid ? <Spinner small /> : <FileGlyph kind={item.kind} extension={item.extension} />}
                     </span>
                     <span className="drive-name">{driveName(item)}</span>
                     <span className="drive-meta drive-kind">{kindName(item)}</span>
@@ -360,7 +363,7 @@ function InfoSheet({ item, where, thumb, onClose }: { item: DriveItem; where: st
       <div className="modal-sheet info-sheet" role="dialog" aria-label="File Info" onClick={(e) => e.stopPropagation()}>
         <header className="info-head">
           <h2>{isContainer(item) ? "Folder Info" : "File Info"}</h2>
-          <button ref={done} className="quiet info-done" onClick={onClose}>Done</button>
+          <button ref={done} className="link info-done" onClick={onClose}>Done</button>
         </header>
         <div className={`info-mark${thumb ? " has-thumb" : ""}`} aria-hidden="true">
           {thumb ? <img src={thumb} alt="" draggable={false} /> : <FileGlyph kind={item.kind} extension={item.extension} />}
@@ -477,10 +480,21 @@ export function DriveView() {
       return "name";
     }
   });
-  const chooseSort = (key: SortKey) => {
+  const [reversed, setReversed] = useState(() => {
+    try {
+      return window.localStorage.getItem(SORT_REVERSED) === "1";
+    } catch {
+      return false;
+    }
+  });
+  /** An order, and which way round: a heading clicked again turns it, as in Finder. */
+  const chooseSort = (key: SortKey, turn = false) => {
+    const nextReversed = turn && key === sortBy ? !reversed : false;
     setSortBy(key);
+    setReversed(nextReversed);
     try {
       window.localStorage.setItem(SORT_KEY, key);
+      window.localStorage.setItem(SORT_REVERSED, nextReversed ? "1" : "0");
     } catch {
       // Sorted for now; forgotten on restart.
     }
@@ -488,17 +502,26 @@ export function DriveView() {
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useErrorToast(error, () => setError(null));
   const [busyGuid, setBusyGuid] = useState<string | null>(null);
   /** A file just saved to Downloads, and where — shown for a moment, then cleared. */
-  const [savedTo, setSavedTo] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   /** The item a Move dialog is open for, if any. */
-  const [moving, setMoving] = useState<DriveItem | null>(null);
+  const [moving, setMoving] = useState<DriveItem[] | null>(null);
   const [info, setInfo] = useState<DriveItem | null>(null);
-  /** The one item selected, as a click in Finder selects it. */
-  const [selected, setSelected] = useState<string | null>(null);
+  /**
+   * What is selected, as Finder selects: a click one, Command/Ctrl-click one more or one
+   * fewer, Shift-click the run. The last one picked is the one Return, F2 and Space act on.
+   */
+  const [picked, setPicked] = useState<string[]>([]);
+  const selected = picked.length ? picked[picked.length - 1] : null;
+  const setSelected = (id: string | null) => setPicked(id ? [id] : []);
+  /** Where a Shift-click or Shift-arrow run starts. */
+  const anchor = useRef<string | null>(null);
+  /** Quick Look: the selected file, large, while Space is held to it. */
+  const [peeking, setPeeking] = useState(false);
   // A file or folder found by the search across everything: its folder opened, with the whole
   // path above it in the trail, and it selected and brought into view — as Finder's "Show in
   // Enclosing Folder". The path is walked up from the library, which knows every folder seen.
@@ -530,8 +553,8 @@ export function DriveView() {
   }, [items]);
   /** The ⋯ menu, or the same menu opened by a right-click, for one item. */
   const [menu, setMenu] = useState<{ item: DriveItem; x: number; y: number; alignRight: boolean } | null>(null);
-  /** An item of Drive's own being dragged onto a folder, and the folder it is over. */
-  const dragItem = useRef<DriveItem | null>(null);
+  /** Items of Drive's own being dragged onto a folder — one, or all selected — and the folder it is over. */
+  const dragItem = useRef<DriveItem[] | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
   /** True while files are held over the window, so the drop target can say so. */
   const [dropping, setDropping] = useState(false);
@@ -663,18 +686,22 @@ export function DriveView() {
     };
   }, [shown, refresh]);
   const { revision } = useSync();
-  const firstRevision = useRef(revision);
+  // A pass that lands while another screen is in front is read when this one comes back, once
+  // (a screen out of sight stays mounted): each landing asked Apple for the folder again.
+  const seen = useRef(revision);
+  if (shown) seen.current = revision;
+  const due = seen.current;
+  const firstRevision = useRef(due);
   useEffect(() => {
-    if (revision === firstRevision.current) return;
+    if (due === firstRevision.current) return;
     void refresh();
-  }, [revision, refresh]);
+  }, [due, refresh]);
 
   const download = useCallback(async (item: DriveItem) => {
     setBusyGuid(item.drivewsid);
     setError(null);
     try {
-      const path = await api.driveDownload(item.drivewsid);
-      setSavedTo(path);
+      toastSaved(await api.driveDownload(item.drivewsid));
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -682,12 +709,6 @@ export function DriveView() {
     }
   }, []);
 
-  // The confirmation is a moment, not a state that lingers over the next thing you do.
-  useEffect(() => {
-    if (!savedTo) return undefined;
-    const timer = window.setTimeout(() => setSavedTo(null), 4000);
-    return () => window.clearTimeout(timer);
-  }, [savedTo]);
 
   const rename = useCallback(
     async (item: DriveItem, name: string) => {
@@ -725,33 +746,45 @@ export function DriveView() {
    * from there. The row leaves at once and stays gone — Apple's listing can carry it for a
    * moment, and it used to flicker back — unless Apple refuses, when it returns and says why.
    */
-  const remove = useCallback(
-    async (item: DriveItem) => {
+  const removeAll = useCallback(
+    async (list: DriveItem[]) => {
+      if (list.length === 0) return;
       setError(null);
-      setGone((g) => new Set(g).add(item.drivewsid));
-      // A folder still being uploaded into stops taking files first: deleting it while files
-      // went on landing was what Apple would not do.
-      if (isContainer(item)) {
-        const into = [...uploadsRef.current.values()].filter(
-          (u) => !["done", "failed", "cancelled"].includes(u.state) &&
-            ((u.folder && !u.within && u.name === item.name) || u.within.split("/")[0] === item.name),
-        );
-        for (const batch of new Set(into.map((u) => u.batch))) await api.driveUploadCancel([], batch).catch(() => {});
+      const ids = list.map((i) => i.drivewsid);
+      setGone((g) => new Set([...g, ...ids]));
+      const refused: string[] = [];
+      let reason = "";
+      // One after another: Apple turns a burst of deletes away as busy.
+      for (const item of list) {
+        // A folder still being uploaded into stops taking files first: deleting it while files
+        // went on landing was what Apple would not do.
+        if (isContainer(item)) {
+          const into = [...uploadsRef.current.values()].filter(
+            (u) => !["done", "failed", "cancelled"].includes(u.state) &&
+              ((u.folder && !u.within && u.name === item.name) || u.within.split("/")[0] === item.name),
+          );
+          for (const batch of new Set(into.map((u) => u.batch))) await api.driveUploadCancel([], batch).catch(() => {});
+        }
+        try {
+          await api.driveDelete(item.drivewsid);
+        } catch (e) {
+          refused.push(item.drivewsid);
+          reason = messageOf(e);
+        }
       }
-      try {
-        await api.driveDelete(item.drivewsid);
-        await refresh();
-      } catch (e) {
+      if (refused.length) {
         setGone((g) => {
           const next = new Set(g);
-          next.delete(item.drivewsid);
+          for (const id of refused) next.delete(id);
           return next;
         });
-        setError(messageOf(e));
+        setError(list.length === 1 ? reason : `${refused.length} of ${list.length} items could not be deleted: ${reason}`);
       }
+      if (refused.length < list.length) await refresh();
     },
     [refresh]
   );
+  const remove = useCallback((item: DriveItem) => removeAll([item]), [removeAll]);
 
   /**
    * Duplicate, as Finder: the copy lands beside the original as "Name 2", and shows as being
@@ -775,23 +808,33 @@ export function DriveView() {
     [refresh, here.id]
   );
 
-  const move = useCallback(
-    async (item: DriveItem, destinationId: string) => {
+  const moveAll = useCallback(
+    async (list: DriveItem[], destinationId: string) => {
       setMoving(null);
       setError(null);
+      const going = list.filter((i) => i.drivewsid !== destinationId);
+      if (going.length === 0) return;
       // Out of this folder at once; back, with the reason, if Apple refuses.
-      setGone((g) => new Set(g).add(item.drivewsid));
-      try {
-        await api.driveMove(item.drivewsid, destinationId);
-        await refresh();
-      } catch (e) {
+      setGone((g) => new Set([...g, ...going.map((i) => i.drivewsid)]));
+      const refused: string[] = [];
+      let reason = "";
+      for (const item of going) {
+        try {
+          await api.driveMove(item.drivewsid, destinationId);
+        } catch (e) {
+          refused.push(item.drivewsid);
+          reason = messageOf(e);
+        }
+      }
+      if (refused.length) {
         setGone((g) => {
           const next = new Set(g);
-          next.delete(item.drivewsid);
+          for (const id of refused) next.delete(id);
           return next;
         });
-        setError(messageOf(e));
+        setError(going.length === 1 ? reason : `${refused.length} of ${going.length} items could not be moved: ${reason}`);
       }
+      if (refused.length < going.length) await refresh();
     },
     [refresh]
   );
@@ -835,6 +878,19 @@ export function DriveView() {
       setError(messageOf(e));
     }
   };
+  /**
+   * The folder whose row is under a point the window system gave (physical pixels), if it is
+   * one that takes files.
+   */
+  const folderAt = (x: number, y: number): string | null => {
+    const ratio = window.devicePixelRatio || 1;
+    const under = document.elementFromPoint(x / ratio, y / ratio) as HTMLElement | null;
+    const id = under?.closest?.<HTMLElement>(".drive-rows [data-id]")?.dataset.id;
+    const item = id ? itemsRef.current.find((i) => i.drivewsid === id) : undefined;
+    return item && item.kind === "FOLDER" && acceptsUploads(item.drivewsid) ? item.drivewsid : null;
+  };
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const settle = (key: string) => setPending((p) => p.filter((x) => !x.key.startsWith(key)));
   const writingRef = useRef(false);
   writingRef.current = busyGuid !== null || renaming !== null || pending.length > 0;
@@ -896,12 +952,13 @@ export function DriveView() {
   const dismissUploads = useCallback(() => setUploads(new Map()), []);
 
   const upload = useCallback(
-    async (paths: string[]) => {
+    async (paths: string[], target?: string) => {
       if (paths.length === 0) return;
       setError(null);
       // Never blocks the window: browse, open another folder, start another upload.
       const batch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-      const into = here.id;
+      // The open folder, or a folder in it the files were dropped on.
+      const into = target ?? here.id;
       setPending((p) => [
         ...p,
         ...paths.map((path, i) => ({
@@ -913,8 +970,9 @@ export function DriveView() {
       ]);
       try {
         await api.driveUpload(batch, into, paths);
-        // What failed is named in the tray, file by file; the folder is re-read either way.
-        if (into === hereRef.current) await refresh();
+        // What failed is named in the tray, file by file; the folder is re-read either way —
+        // a folder in it that took the files shows its new count.
+        if (into === hereRef.current || target) await refresh();
       } catch (e) {
         setError(messageOf(e));
       } finally {
@@ -968,11 +1026,20 @@ export function DriveView() {
         .onDragDropEvent((event) => {
           // A row of Drive's own being moved is not a file arriving from this machine.
           if (dragItem.current) return;
-          if (event.payload.type === "over") setDropping(true);
-          else if (event.payload.type === "leave") setDropping(false);
-          else if (event.payload.type === "drop") {
+          const p = event.payload;
+          // Over a folder's row, the files go into that folder, as Finder drops them; anywhere
+          // else, into the folder that is open.
+          const folder = p.type === "over" || p.type === "drop" ? folderAt(p.position.x, p.position.y) : null;
+          if (p.type === "over" || p.type === "enter") {
+            setDropping(!folder);
+            setDropOn((d) => (d === folder ? d : folder));
+          } else if (p.type === "leave") {
             setDropping(false);
-            void upload(event.payload.paths);
+            setDropOn(null);
+          } else if (p.type === "drop") {
+            setDropping(false);
+            setDropOn(null);
+            void upload(p.paths, folder ?? undefined);
           }
         })
         .then((unlisten) => {
@@ -1022,67 +1089,271 @@ export function DriveView() {
     }
   }, [newFolderName, here.id, refresh, items]);
 
+  /** The rows as shown, sorted once per change to what is here or to the order. */
+  const rows = useMemo(
+    () => sortItems(items.filter((item) => !gone.has(item.drivewsid)), sortBy, reversed),
+    [items, gone, sortBy, reversed],
+  );
+  const pickedItems = useMemo(() => rows.filter((r) => picked.includes(r.drivewsid)), [rows, picked]);
+  const primary = useMemo(() => (selected ? rows.find((r) => r.drivewsid === selected) ?? null : null), [rows, selected]);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const [listFocused, setListFocused] = useState(false);
+  /** A row brought into view and given the focus, as the arrows leave it. */
+  const showRow = (id: string) =>
+    requestAnimationFrame(() => {
+      const hit = listRef.current?.querySelector<HTMLButtonElement>(`[data-id="${CSS.escape(id)}"] .drive-row-hit`);
+      hit?.scrollIntoView({ block: "nearest" });
+      hit?.focus({ preventScroll: true });
+    });
+  /** Everything from the anchor to `to`, in the order shown, with `to` last — the one acted on. */
+  const run = (to: string) => {
+    const order = rows.map((r) => r.drivewsid);
+    const from = anchor.current && order.includes(anchor.current) ? anchor.current : to;
+    const [a, z] = [order.indexOf(from), order.indexOf(to)].sort((x, y) => x - y);
+    return [...order.slice(a, z + 1).filter((id) => id !== to), to];
+  };
+  const openItem = (item: DriveItem) => (isContainer(item) ? enter(item) : void download(item));
+
+  /**
+   * What a row does, as one object that never changes, so a row is drawn again only when what
+   * it shows changes: in a folder of thousands, a click redrew every row in it. The handlers
+   * read the folder's state as it is when they run.
+   */
+  const latest = useRef({ rows, picked, run, openItem, rename, moveAll });
+  latest.current = { rows, picked, run, openItem, rename, moveAll };
+  const rowActions = useMemo<DriveRowActions>(
+    () => ({
+      click: (item, e) => {
+        const { picked, run } = latest.current;
+        const id = item.drivewsid;
+        if (e.metaKey || e.ctrlKey) {
+          // Command/Ctrl-click: one more, or one fewer, keeping the rest.
+          anchor.current = id;
+          setPicked(picked.includes(id) ? picked.filter((p) => p !== id) : [...picked, id]);
+        } else if (e.shiftKey && anchor.current) {
+          setPicked(run(id));
+        } else {
+          anchor.current = id;
+          setPicked([id]);
+        }
+      },
+      open: (item) => latest.current.openItem(item),
+      menu: (item, at) => {
+        const { picked } = latest.current;
+        // A right-click on something not selected selects it, as in Finder; on the selection,
+        // it is for all of it.
+        if (!picked.includes(item.drivewsid)) {
+          anchor.current = item.drivewsid;
+          setPicked([item.drivewsid]);
+        }
+        setMenu({ item, ...at });
+      },
+      dragStart: (item, e) => {
+        const { rows, picked } = latest.current;
+        // Dragging a selected row takes the whole selection with it.
+        dragItem.current = picked.includes(item.drivewsid) ? rows.filter((r) => picked.includes(r.drivewsid)) : [item];
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("application/x-quince-drive", item.drivewsid);
+      },
+      dragEnd: () => {
+        dragItem.current = null;
+        setDropOn(null);
+      },
+      dragOver: (item, e) => {
+        const moving = dragItem.current;
+        if (!moving || item.kind !== "FOLDER" || moving.some((m) => m.drivewsid === item.drivewsid)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setDropOn((d) => (d === item.drivewsid ? d : item.drivewsid));
+      },
+      dragLeave: (item) => setDropOn((d) => (d === item.drivewsid ? null : d)),
+      drop: (item, e) => {
+        e.preventDefault();
+        const moving = dragItem.current;
+        dragItem.current = null;
+        setDropOn(null);
+        if (moving && item.kind === "FOLDER" && !moving.some((m) => m.drivewsid === item.drivewsid)) {
+          void latest.current.moveAll(moving, item.drivewsid);
+        }
+      },
+      rename: (item, name) => void latest.current.rename(item, name),
+      cancelRename: () => setRenaming(null),
+    }),
+    [],
+  );
+
+  // Finder's keys (Ctrl in place of Command): the arrows walk the selection — across and down
+  // in Grid — and Shift with them widens it; Return or Ctrl-Down opens, Ctrl-Up goes up a
+  // folder, F2 renames, Delete moves to Recently Deleted, Ctrl-A selects all, and Space shows
+  // the selected file large, as Quick Look does.
+  const live = useActiveRef();
+  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  keys.current = (e: KeyboardEvent) => {
+    if (!live.current || e.defaultPrevented || inTrash || inRecents) return;
+    if (renaming || creatingFolder || moving || info) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest?.("input, textarea, select, [contenteditable], .drive-bar, .upload-menu")) return;
+    if (!peeking && document.querySelector('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]')) return;
+    // Return and Space press a focused button of their own; on a row or nowhere, they are Drive's.
+    const onRows = !target || target === document.body || !!target.closest?.(".drive-rows, .drive-peek");
+    const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
+    const k = e.key;
+    if (peeking && (k === "Escape" || k === " ")) {
+      e.preventDefault();
+      setPeeking(false);
+      return;
+    }
+    const step = (by: number) => {
+      if (rows.length === 0) return;
+      const at = selected ? rows.findIndex((r) => r.drivewsid === selected) : -1;
+      const next = rows[at < 0 ? (by > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, at + by))].drivewsid;
+      if (e.shiftKey && selected) setPicked(run(next));
+      else {
+        anchor.current = next;
+        setPicked([next]);
+      }
+      showRow(next);
+    };
+    /** How many tiles a line of the grid holds, from where they are laid out. */
+    const across = () => {
+      const tiles = [...(listRef.current?.querySelectorAll<HTMLElement>(":scope > li[data-id]") ?? [])];
+      const top = tiles[0]?.offsetTop;
+      return Math.max(1, tiles.filter((t) => t.offsetTop === top).length);
+    };
+    if (mod && (k === "ArrowDown" || k === "o")) {
+      if (!primary) return;
+      e.preventDefault();
+      openItem(primary);
+    } else if (mod && k === "ArrowUp") {
+      e.preventDefault();
+      if (trail.length > 1) setTrail((t) => t.slice(0, -1));
+    } else if (mod && k.toLowerCase() === "a") {
+      e.preventDefault();
+      setPicked(rows.map((r) => r.drivewsid));
+    } else if (!mod && (k === "ArrowDown" || k === "ArrowUp")) {
+      e.preventDefault();
+      step((k === "ArrowDown" ? 1 : -1) * (grid ? across() : 1));
+    } else if (!mod && grid && (k === "ArrowRight" || k === "ArrowLeft")) {
+      e.preventDefault();
+      step(k === "ArrowRight" ? 1 : -1);
+    } else if (!mod && (k === "Home" || k === "End") && rows.length) {
+      e.preventDefault();
+      step(k === "Home" ? -rows.length : rows.length);
+    } else if (k === "Enter" && !mod && onRows && primary) {
+      e.preventDefault();
+      setPeeking(false);
+      openItem(primary);
+    } else if (k === "F2" && primary && pickedItems.length === 1 && busyGuid !== primary.drivewsid) {
+      e.preventDefault();
+      setPeeking(false);
+      setRenaming(primary.drivewsid);
+    } else if ((k === "Delete" || (mod && k === "Backspace")) && pickedItems.length) {
+      e.preventDefault();
+      setPeeking(false);
+      void removeAll(pickedItems);
+    } else if (k === " " && !mod && onRows && primary) {
+      e.preventDefault();
+      setPeeking(true);
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keys.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // Nothing selected, nothing to look at.
+  useEffect(() => {
+    if (!primary) setPeeking(false);
+  }, [primary]);
+  // A folder opened starts with nothing selected — except what a search came to show.
+  useEffect(() => {
+    if (!revealing.current) setPicked([]);
+    anchor.current = null;
+    setPeeking(false);
+  }, [here.id]);
+
   if (inTrash) return <DriveTrash onClose={() => setInTrash(false)} />;
   if (inRecents) return <DriveRecents onClose={() => setInRecents(false)} />;
 
+  /** A step of the path: the folder open is the title; one further up goes back to it, and takes
+      a dragged item, as Finder's path bar does. */
+  const crumbButton = (crumb: (typeof trail)[number], i: number) => (
+    <button
+      className={`crumb${dropOn === crumb.id ? " is-drop" : ""}`}
+      aria-current={i === trail.length - 1}
+      onClick={() => setTrail((t) => t.slice(0, i + 1))}
+      // A folder further up the path takes a dragged item too, as Finder's path bar does.
+      onDragOver={(e) => {
+        if (!dragItem.current || i === trail.length - 1) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        if (dropOn !== crumb.id) setDropOn(crumb.id);
+      }}
+      onDragLeave={() => setDropOn((d) => (d === crumb.id ? null : d))}
+      onDrop={(e) => {
+        e.preventDefault();
+        const moving = dragItem.current;
+        dragItem.current = null;
+        setDropOn(null);
+        if (moving && i < trail.length - 1) void moveAll(moving, crumb.id);
+      }}
+    >
+      {crumb.name}
+    </button>
+  );
+
   return (
-    <div className={`drive${dropping ? " is-dropping" : ""}`}>
-      <header className="cal-bar">
+    <div
+      className={`drive${dropping ? " is-dropping" : ""}`}
+      // A click on nothing — between or below the rows — selects nothing, as in Finder.
+      onClick={(e) => {
+        const t = e.target as HTMLElement;
+        if (!t.closest("[data-id], button, input, form, a, [role='menu'], .modal-veil, .drive-peek-veil")) setPicked([]);
+      }}
+    >
+      <header className="pane-head drive-bar">
         {/* The folder's name with what is in it under it, as icloud.com writes them: one block
             whose size never depends on when the count arrives, so the bar is laid out once. */}
-        <div className="drive-title">
-        <nav className="crumbs" aria-label="Folder path">
-          {trail.map((crumb, i) => (
-            <span key={crumb.id}>
-              {i > 0 && (
-                <span className="crumb-sep" aria-hidden="true">
-                  ›
-                </span>
-              )}
-              <button
-                className={`crumb${dropOn === crumb.id ? " is-drop" : ""}`}
-                aria-current={i === trail.length - 1}
-                onClick={() => setTrail((t) => t.slice(0, i + 1))}
-                // A folder further up the path takes a dragged item too, as Finder's path bar does.
-                onDragOver={(e) => {
-                  if (!dragItem.current || i === trail.length - 1) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                  if (dropOn !== crumb.id) setDropOn(crumb.id);
-                }}
-                onDragLeave={() => setDropOn((d) => (d === crumb.id ? null : d))}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const moving = dragItem.current;
-                  dragItem.current = null;
-                  setDropOn(null);
-                  if (moving && i < trail.length - 1) void move(moving, crumb.id);
-                }}
-              >
-                {crumb.name}
-              </button>
+        <PaneTitle
+          className="drive-title"
+          before={
+            trail.length > 1 && (
+              <nav className="crumbs" aria-label="Folder path">
+                {trail.slice(0, -1).map((crumb, i) => (
+                  <span key={crumb.id}>
+                    {i > 0 && <span className="crumb-sep" aria-hidden="true">›</span>}
+                    {crumbButton(crumb, i)}
+                  </span>
+                ))}
+              </nav>
+            )
+          }
+          count={
+            // How much is in it; its line is kept while it loads, so nothing moves when it comes.
+            <span className="drive-count" aria-live="polite">
+              {loaded
+                ? (() => {
+                    const n = items.filter((x) => !gone.has(x.drivewsid)).length;
+                    return `${n} item${n === 1 ? "" : "s"}${available ? `, ${available} available` : ""}`;
+                  })()
+                : "\u00a0"}
             </span>
-          ))}
-        </nav>
-        {/* How much is in it; its line is kept while it loads, so nothing moves when it comes. */}
-        <p className="drive-count" aria-live="polite">
-          {loaded
-            ? (() => {
-                const n = items.filter((x) => !gone.has(x.drivewsid)).length;
-                return `${n} item${n === 1 ? "" : "s"}${available ? `, ${available} available` : ""}`;
-              })()
-            : "\u00a0"}
-        </p>
-        </div>
-        <div className="cal-actions">
-          <button className="quiet with-glyph" title="Recents" onClick={() => setInRecents(true)}>
+          }
+        >
+          {crumbButton(trail[trail.length - 1], trail.length - 1)}
+        </PaneTitle>
+        <div className="drive-tools">
+          <span className="toolbar-group">
+          <button className="tool has-label with-glyph" title="Recents" onClick={() => setInRecents(true)}>
             <Clock size={15} strokeWidth={1.6} aria-hidden="true" />
             Recents
           </button>
-          <button className="quiet with-glyph" title="Recently Deleted" onClick={() => setInTrash(true)}>
+          <button className="tool has-label with-glyph" title="Recently Deleted" onClick={() => setInTrash(true)}>
             <ActionGlyph name="delete" />
             Recently Deleted
           </button>
+          </span>
+          <span className="toolbar-group">
           <Picker
             pullDown
             className="drive-view"
@@ -1099,8 +1370,10 @@ export function DriveView() {
             onChange={(v) => chooseSort(v as SortKey)}
             options={SORTS.map((o) => ({ value: o.key, label: `by ${o.label}` }))}
           />
+          </span>
+          <span className="toolbar-group">
           <button
-            className="quiet with-glyph"
+            className="tool has-label with-glyph"
             title="New Folder"
             onClick={() => setCreatingFolder(true)}
             disabled={creatingFolder}
@@ -1108,6 +1381,7 @@ export function DriveView() {
             <ActionGlyph name="newFolder" />
             New Folder
           </button>
+          </span>
           {/* An app's own library takes files from the app, not from here. */}
           <span className="upload-menu-wrap">
             <button
@@ -1127,15 +1401,15 @@ export function DriveView() {
             </button>
             {uploadMenu && (
               <span
-                className="upload-menu"
+                className="popover upload-menu"
                 role="menu"
                 onKeyDown={(e) => e.key === "Escape" && setUploadMenu(false)}
               >
                 <button role="menuitem" autoFocus onClick={() => void chooseAndUpload(false)}>
-                  Files…
+                  Files
                 </button>
                 <button role="menuitem" onClick={() => void chooseAndUpload(true)}>
-                  Folder…
+                  Folder
                 </button>
               </span>
             )}
@@ -1143,14 +1417,6 @@ export function DriveView() {
         </div>
       </header>
 
-      {error && (
-        <Notice message={error} onDismiss={() => setError(null)} />
-      )}
-      {savedTo && (
-        <p className="drive-saved" role="status">
-          Saved to {savedTo}
-        </p>
-      )}
 
       {!grid && (
         // Finder's and icloud.com's column headings: what each column is, and a click to
@@ -1163,24 +1429,35 @@ export function DriveView() {
                 key={key}
                 className={`drive-col${sortBy === key ? " is-on" : ""}${key === "name" ? " is-name" : ""}`}
                 aria-pressed={sortBy === key}
-                onClick={() => chooseSort(key)}
+                title={sortBy === key ? "Click to reverse the order" : `Sort by ${SORTS.find((o) => o.key === key)?.label}`}
+                onClick={() => chooseSort(key, true)}
               >
                 {SORTS.find((o) => o.key === key)?.label}
-                {sortBy === key && <span aria-hidden="true"> ⌄</span>}
+                {sortBy === key && <span className="drive-col-turn" aria-hidden="true">{reversed ? " ⌃" : " ⌄"}</span>}
               </button>
             ))}
           </span>
           <span className="drive-row-actions" aria-hidden="true" />
         </div>
       )}
-      <ul className={`drive-rows${grid ? " is-grid" : ""}`}>
+      <ul
+        ref={listRef}
+        className={`drive-rows${grid ? " is-grid" : ""}${listFocused ? " is-focused" : ""}`}
+        // Whether the focus is in the list, for the selection's colour (see the CSS on why
+        // this is a class and not :focus-within).
+        onFocus={() => setListFocused(true)}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setListFocused(false);
+        }}
+        aria-label={here.name}
+      >
         {pending
           .filter((p) => p.folder === here.id && !items.some((i) => driveName(i) === p.name))
           .map((p) => (
             <li key={p.key} className="drive-row is-busy" aria-busy="true">
               <span className="drive-row-hit">
                 <span className="drive-badge" aria-hidden="true">
-                  <span className="drive-spinner" />
+                  <Spinner small />
                 </span>
                 <span className="drive-name">{p.name}</span>
                 <span className="drive-meta drive-kind" />
@@ -1220,177 +1497,88 @@ export function DriveView() {
           </li>
         )}
 
-        {sortItems(items.filter((item) => !gone.has(item.drivewsid)), sortBy).map((item) => {
-          const container = isContainer(item);
-          const busy = busyGuid === item.drivewsid;
-          return (
-            <li key={item.drivewsid} data-id={item.drivewsid}>
-              {renaming === item.drivewsid ? (
-                <div className="drive-row">
-                  <span className="drive-badge" aria-hidden="true">
-                    <FileGlyph kind={item.kind} extension={item.extension} />
-                  </span>
-                  <input
-                    className="drive-rename-input"
-                    autoFocus
-                    defaultValue={driveName(item)}
-                    aria-label={`Rename ${driveName(item)}`}
-                    onBlur={(e) => void rename(item, e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") e.currentTarget.blur();
-                      if (e.key === "Escape") {
-                        e.currentTarget.value = driveName(item);
-                        setRenaming(null);
-                      }
-                    }}
-                  />
-                </div>
-              ) : (
-                <div
-                  className={`drive-row${container ? " is-folder" : ""}${busy ? " is-busy" : ""}${menu?.item.drivewsid === item.drivewsid ? " is-menu" : ""}${selected === item.drivewsid ? " is-selected" : ""}${dropOn === item.drivewsid ? " is-drop" : ""}`}
-                  // Dragged onto a folder, an item moves into it — as in Finder and icloud.com.
-                  draggable={!busy && item.kind !== "APP_LIBRARY"}
-                  onDragStart={(e) => {
-                    dragItem.current = item;
-                    e.dataTransfer.effectAllowed = "move";
-                    e.dataTransfer.setData("application/x-quince-drive", item.drivewsid);
-                  }}
-                  onDragEnd={() => { dragItem.current = null; setDropOn(null); }}
-                  onDragOver={(e) => {
-                    const moving = dragItem.current;
-                    if (!moving || item.kind !== "FOLDER" || moving.drivewsid === item.drivewsid) return;
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = "move";
-                    if (dropOn !== item.drivewsid) setDropOn(item.drivewsid);
-                  }}
-                  onDragLeave={() => setDropOn((d) => (d === item.drivewsid ? null : d))}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const moving = dragItem.current;
-                    dragItem.current = null;
-                    setDropOn(null);
-                    if (moving && item.kind === "FOLDER" && moving.drivewsid !== item.drivewsid) void move(moving, item.drivewsid);
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    if (!busy) setMenu({ item, x: e.clientX, y: e.clientY, alignRight: false });
-                  }}
-                >
-                  <button
-                    className="drive-row-hit"
-                    // As Finder and icloud.com: a click selects, a double-click opens — a folder
-                    // goes in, a file is saved to Downloads and shown there. Return opens the
-                    // selected item too; a single click that opened made every misclick a
-                    // download.
-                    aria-pressed={selected === item.drivewsid}
-                    onClick={() => setSelected(item.drivewsid)}
-                    onDoubleClick={() => (container ? enter(item) : void download(item))}
-                    onKeyDown={(e) => {
-                      const mod = e.ctrlKey || e.metaKey;
-                      if (e.key === "Enter" || (mod && e.key === "ArrowDown")) {
-                        e.preventDefault();
-                        if (container) enter(item);
-                        else void download(item);
-                      } else if (mod && e.key === "ArrowUp") {
-                        // Finder's Command-Up: the folder this one is in.
-                        e.preventDefault();
-                        if (trail.length > 1) setTrail((t) => t.slice(0, -1));
-                      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                        // The arrows walk the selection, as in Finder and icloud.com.
-                        e.preventDefault();
-                        const rows = [...(e.currentTarget.closest("ul")?.querySelectorAll<HTMLButtonElement>(".drive-row-hit") ?? [])];
-                        const next = rows[rows.indexOf(e.currentTarget) + (e.key === "ArrowDown" ? 1 : -1)];
-                        next?.focus();
-                        next?.click();
-                      } else if (e.key === "Delete" || (e.key === "Backspace" && (e.metaKey || e.ctrlKey))) {
-                        e.preventDefault();
-                        void remove(item);
-                      }
-                    }}
-                    disabled={busy}
-                  >
-                    <span className="drive-badge" aria-hidden="true">
-                      {busy ? (
-                        <span className="drive-spinner" />
-                      ) : (
-                        thumbs[item.drivewsid] ? <img className="drive-thumb" src={thumbs[item.drivewsid]} alt="" draggable={false} /> : <FileGlyph kind={item.kind} extension={item.extension} />
-                      )}
-                    </span>
-                    <span className="drive-name">{driveName(item)}</span>
-                    <span className="drive-meta drive-kind">{kindName(item)}</span>
-                    <span className="drive-meta">
-                      {container
-                        ? item.childCount === null
-                          ? ""
-                          : `${item.childCount} item${item.childCount === 1 ? "" : "s"}`
-                        : fileSize(item.size)}
-                    </span>
-                    <span className="drive-meta">{modified(item.modifiedAt ?? item.createdAt)}</span>
-                  </button>
-                  <span className="drive-row-actions">
-                    <button
-                      className="drive-action"
-                      aria-label={`Actions for ${driveName(item)}`}
-                      aria-haspopup="menu"
-                      title="More"
-                      disabled={busy}
-                      onClick={(e) => {
-                        const r = e.currentTarget.getBoundingClientRect();
-                        setMenu({ item, x: r.right, y: r.bottom + 4, alignRight: true });
-                      }}
-                    >
-                      <span aria-hidden="true" className="drive-more">•••</span>
-                    </button>
-                  </span>
-                </div>
-              )}
-            </li>
-          );
-        })}
+        {rows.map((item) => (
+          <DriveRow
+            key={item.drivewsid}
+            item={item}
+            busy={busyGuid === item.drivewsid}
+            selected={picked.includes(item.drivewsid)}
+            menuOpen={menu?.item.drivewsid === item.drivewsid}
+            dropTarget={dropOn === item.drivewsid}
+            thumb={thumbs[item.drivewsid]}
+            renaming={renaming === item.drivewsid}
+            actions={rowActions}
+          />
+        ))}
       </ul>
 
       {items.length === 0 && !creatingFolder && !error && (loading || !loaded) && (
-        <p className="cal-empty" aria-live="polite">Opening {here.name}…</p>
+        <EmptyState busy>Opening {here.name}…</EmptyState>
       )}
       {loaded && !loading && items.length === 0 && !creatingFolder && !error && (
-        <p className="cal-empty">This folder is empty.</p>
+        <EmptyState>This folder is empty.</EmptyState>
       )}
 
       {moving && (
         <MoveDialog
-          item={moving}
+          items={moving}
           startingIn={here.id}
           onCancel={() => setMoving(null)}
-          onMove={(destinationId) => void move(moving, destinationId)}
+          onMove={(destinationId) => void moveAll(moving, destinationId)}
         />
       )}
 
-      {menu && (
-        <RowMenu
-          at={menu}
-          onClose={() => setMenu(null)}
-          entries={[
-            // Keep on This Computer, as Finder's Keep Downloaded: only where the iCloud Drive
-            // folder is up, which is where a kept file lives.
-            ...(kept
-              ? [
-                  {
-                    label: "Keep on This Computer",
-                    checked: kept.has(menu.item.drivewsid),
-                    run: () => void keep(menu.item, !kept.has(menu.item.drivewsid)),
-                  },
-                  null,
-                ]
-              : []),
-            { label: isContainer(menu.item) ? "Open" : "Download a Copy", run: () => (isContainer(menu.item) ? enter(menu.item) : void download(menu.item)) },
-            { label: "Get Info", run: () => setInfo(menu.item) },
-            null,
-            ...(isContainer(menu.item) ? [] : [{ label: "Duplicate", run: () => void duplicate(menu.item) }]),
-            { label: "Rename", run: () => setRenaming(menu.item.drivewsid) },
-            { label: "Move to Folder…", run: () => setMoving(menu.item) },
-            null,
-            { label: "Delete", danger: true, run: () => void remove(menu.item) },
-          ]}
+      {menu && (() => {
+        // A right-click on the selection is for all of it, as Finder's menu is.
+        const many = pickedItems.length > 1 && picked.includes(menu.item.drivewsid) ? pickedItems : null;
+        const files = many?.filter((i) => !isContainer(i)) ?? [];
+        return (
+          <RowMenu
+            at={menu}
+            onClose={() => setMenu(null)}
+            entries={many ? [
+              ...(files.length
+                ? [{
+                    label: files.length === 1 ? "Download a Copy" : `Download ${files.length} Copies`,
+                    run: () => void (async () => { for (const f of files) await download(f); })(),
+                  }]
+                : []),
+              { label: "Move to Folder", run: () => setMoving(many) },
+              null,
+              { label: `Delete ${many.length} Items`, danger: true, run: () => void removeAll(many) },
+            ] : [
+              // Keep on This Computer, as Finder's Keep Downloaded: only where the iCloud Drive
+              // folder is up, which is where a kept file lives.
+              ...(kept
+                ? [
+                    {
+                      label: "Keep on This Computer",
+                      checked: kept.has(menu.item.drivewsid),
+                      run: () => void keep(menu.item, !kept.has(menu.item.drivewsid)),
+                    },
+                    null,
+                  ]
+                : []),
+              { label: isContainer(menu.item) ? "Open" : "Download a Copy", run: () => openItem(menu.item) },
+              { label: "Get Info", run: () => setInfo(menu.item) },
+              null,
+              ...(isContainer(menu.item) ? [] : [{ label: "Duplicate", run: () => void duplicate(menu.item) }]),
+              { label: "Rename", run: () => setRenaming(menu.item.drivewsid) },
+              { label: "Move to Folder", run: () => setMoving([menu.item]) },
+              null,
+              { label: "Delete", danger: true, run: () => void remove(menu.item) },
+            ]}
+          />
+        );
+      })()}
+
+      {peeking && primary && (
+        <QuickLook
+          item={primary}
+          thumb={thumbs[primary.drivewsid]}
+          busy={busyGuid === primary.drivewsid}
+          onOpen={() => { setPeeking(false); openItem(primary); }}
+          onClose={() => setPeeking(false)}
         />
       )}
 
@@ -1403,6 +1591,174 @@ export function DriveView() {
   );
 }
 
+type MenuAt = { x: number; y: number; alignRight: boolean };
+type DriveRowActions = {
+  click: (item: DriveItem, e: React.MouseEvent) => void;
+  open: (item: DriveItem) => void;
+  menu: (item: DriveItem, at: MenuAt) => void;
+  dragStart: (item: DriveItem, e: React.DragEvent) => void;
+  dragEnd: () => void;
+  dragOver: (item: DriveItem, e: React.DragEvent) => void;
+  dragLeave: (item: DriveItem) => void;
+  drop: (item: DriveItem, e: React.DragEvent) => void;
+  rename: (item: DriveItem, name: string) => void;
+  cancelRename: () => void;
+};
+
+/** What a folder holds, or a file weighs, in the Size column. */
+const sizeText = (item: DriveItem) =>
+  isContainer(item)
+    ? item.childCount === null ? "" : `${item.childCount} item${item.childCount === 1 ? "" : "s"}`
+    : fileSize(item.size);
+
+/**
+ * One file or folder. Memoised on what it shows, so in a folder of thousands a click, a key or
+ * a menu opening redraws the rows it changes and no others.
+ */
+const DriveRow = memo(function DriveRow({
+  item, busy, selected, menuOpen, dropTarget, thumb, renaming, actions,
+}: {
+  item: DriveItem;
+  busy: boolean;
+  selected: boolean;
+  menuOpen: boolean;
+  dropTarget: boolean;
+  thumb?: string;
+  renaming: boolean;
+  actions: DriveRowActions;
+}) {
+  const container = isContainer(item);
+  if (renaming) {
+    return (
+      <li data-id={item.drivewsid}>
+        <div className="drive-row">
+          <span className="drive-badge" aria-hidden="true">
+            <FileGlyph kind={item.kind} extension={item.extension} />
+          </span>
+          <input
+            className="drive-rename-input"
+            autoFocus
+            defaultValue={driveName(item)}
+            aria-label={`Rename ${driveName(item)}`}
+            // The name without its extension is what is selected, as Finder selects it, so
+            // typing keeps ".pdf".
+            onFocus={(e) => {
+              const field = e.currentTarget;
+              const end = item.extension && field.value.endsWith(`.${item.extension}`)
+                ? field.value.length - item.extension.length - 1
+                : field.value.length;
+              field.setSelectionRange(0, end);
+            }}
+            onBlur={(e) => actions.rename(item, e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                e.currentTarget.value = driveName(item);
+                actions.cancelRename();
+              }
+            }}
+          />
+        </div>
+      </li>
+    );
+  }
+  return (
+    <li data-id={item.drivewsid}>
+      <div
+        className={`drive-row${container ? " is-folder" : ""}${busy ? " is-busy" : ""}${menuOpen ? " is-menu" : ""}${selected ? " is-selected" : ""}${dropTarget ? " is-drop" : ""}`}
+        // Dragged onto a folder, an item moves into it — as in Finder and icloud.com.
+        draggable={!busy && item.kind !== "APP_LIBRARY"}
+        onDragStart={(e) => actions.dragStart(item, e)}
+        onDragEnd={actions.dragEnd}
+        onDragOver={(e) => actions.dragOver(item, e)}
+        onDragLeave={() => actions.dragLeave(item)}
+        onDrop={(e) => actions.drop(item, e)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          if (!busy) actions.menu(item, { x: e.clientX, y: e.clientY, alignRight: false });
+        }}
+      >
+        <button
+          className="drive-row-hit"
+          // As Finder and icloud.com: a click selects, a double-click opens — a folder goes
+          // in, a file is saved to Downloads and shown there. Return opens the selected item
+          // too; a single click that opened made every misclick a download.
+          aria-pressed={selected}
+          onClick={(e) => actions.click(item, e)}
+          onDoubleClick={() => actions.open(item)}
+          disabled={busy}
+        >
+          <span className="drive-badge" aria-hidden="true">
+            {busy ? (
+              <Spinner small />
+            ) : thumb ? (
+              <img className="drive-thumb" src={thumb} alt="" draggable={false} />
+            ) : (
+              <FileGlyph kind={item.kind} extension={item.extension} />
+            )}
+          </span>
+          <span className="drive-name">{driveName(item)}</span>
+          <span className="drive-meta drive-kind">{kindName(item)}</span>
+          <span className="drive-meta">{sizeText(item)}</span>
+          <span className="drive-meta">{modified(item.modifiedAt ?? item.createdAt)}</span>
+        </button>
+        <span className="drive-row-actions">
+          <button
+            className="icon-button small drive-action"
+            aria-label={`Actions for ${driveName(item)}`}
+            aria-haspopup="menu"
+            title="More"
+            disabled={busy}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              actions.menu(item, { x: r.right, y: r.bottom + 4, alignRight: true });
+            }}
+          >
+            <span aria-hidden="true" className="drive-more">•••</span>
+          </button>
+        </span>
+      </div>
+    </li>
+  );
+});
+
+/**
+ * Quick Look, as near as iCloud lets it be without fetching the file: Apple's own picture of
+ * it, large, with its name, kind, size and date. Space or Escape closes it; the arrows go on
+ * walking the folder behind it and the look follows. Opening it fully is one press away.
+ */
+function QuickLook({ item, thumb, busy, onOpen, onClose }: {
+  item: DriveItem;
+  thumb?: string;
+  busy: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
+  const container = isContainer(item);
+  const facts = [kindName(item), sizeText(item)].filter(Boolean).join(", ");
+  const when = modified(item.modifiedAt ?? item.createdAt);
+  return (
+    <Portal>
+      <div className="modal-veil drive-peek-veil" onClick={onClose}>
+        <div className="modal-sheet drive-peek" role="dialog" aria-label={`Quick Look: ${driveName(item)}`} onClick={(e) => e.stopPropagation()}>
+          <div className={`drive-peek-face${thumb ? " has-thumb" : ""}`} aria-hidden="true">
+            {thumb ? <img src={thumb} alt="" draggable={false} /> : <FileGlyph kind={item.kind} extension={item.extension} />}
+          </div>
+          <p className="drive-peek-name">{driveName(item)}</p>
+          <p className="drive-peek-facts">{facts}</p>
+          {when && <p className="drive-peek-facts">Modified {when}</p>}
+          <div className="drive-peek-actions">
+            <button className="primary" disabled={busy} onClick={onOpen}>
+              {container ? "Open" : busy ? "Downloading…" : "Download a Copy"}
+            </button>
+            <button className="quiet" onClick={onClose}>Close</button>
+          </div>
+        </div>
+      </div>
+    </Portal>
+  );
+}
+
 /**
  * Where to move something — a small folder browser of its own, in the same shape Files'
  * own Move sheet takes: breadcrumbs, folders only, a Move button that names where it will
@@ -1410,12 +1766,12 @@ export function DriveView() {
  * way to move something inside itself.
  */
 function MoveDialog({
-  item,
+  items,
   startingIn,
   onCancel,
   onMove,
 }: {
-  item: DriveItem;
+  items: DriveItem[];
   startingIn: string;
   onCancel: () => void;
   onMove: (destinationId: string) => void;
@@ -1425,6 +1781,9 @@ function MoveDialog({
   const [loading, setLoading] = useState(false);
 
   const here = trail[trail.length - 1];
+  /** What is being moved: none of it can be gone into, which is what stops a folder going inside itself. */
+  const moving = useMemo(() => new Set(items.map((i) => i.drivewsid)), [items]);
+  const what = items.length === 1 ? `\u201c${driveName(items[0])}\u201d` : `${items.length} Items`;
 
   useEffect(() => {
     let cancelled = false;
@@ -1436,7 +1795,7 @@ function MoveDialog({
         if (!cancelled) {
           setFolders(
             (Array.isArray(fresh) ? fresh : []).filter(
-              (i) => isContainer(i) && i.drivewsid !== item.drivewsid
+              (i) => isContainer(i) && !moving.has(i.drivewsid)
             )
           );
         }
@@ -1449,7 +1808,7 @@ function MoveDialog({
     return () => {
       cancelled = true;
     };
-  }, [here.id, item.drivewsid]);
+  }, [here.id, moving]);
 
   const alreadyHere = here.id === startingIn;
 
@@ -1482,10 +1841,10 @@ function MoveDialog({
       <div
         className="modal-sheet move-sheet"
         role="dialog"
-        aria-label={`Move ${driveName(item)}`}
+        aria-label={items.length === 1 ? `Move ${driveName(items[0])}` : `Move ${items.length} Items`}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2>Move “{driveName(item)}”</h2>
+        <h2>Move {what}</h2>
 
         <nav className="crumbs" aria-label="Destination folder">
           {trail.map((crumb, i) => (
@@ -1507,9 +1866,9 @@ function MoveDialog({
         </nav>
 
         <ul className="move-sheet-list">
-          {loading && <li className="cal-empty">Loading…</li>}
+          {loading && <li className="move-sheet-none">Loading…</li>}
           {!loading && folders.length === 0 && (
-            <li className="cal-empty">No folders here.</li>
+            <li className="move-sheet-none">No folders here.</li>
           )}
           {!loading &&
             folders.map((folder) => (

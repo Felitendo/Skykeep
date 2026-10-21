@@ -8,8 +8,8 @@
  * opens it, Escape puts the results away (and a second Escape clears the field). A section with
  * more than it shows has Show All, which shows that one whole, in place.
  */
+import { SearchField } from "./SearchField";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Search, X } from "lucide-react";
 import {
   api,
   contactPhotoSrc,
@@ -219,31 +219,26 @@ export function GlobalSearch({ onOpen, available }: { onOpen: (screen: string) =
   }, [showing]);
   return (
     <div className="gsearch" ref={box}>
-      <label className="gsearch-field">
-        <Search size={14} strokeWidth={2.2} aria-hidden="true" />
-        <input
-          ref={field}
-          type="search"
-          placeholder="Search"
-          aria-label="Search everything"
-          aria-expanded={showing}
-          aria-controls="gsearch-results"
-          aria-activedescendant={showing && rows[at] ? `gs-${rows[at].key}` : undefined}
-          role="combobox"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => query && setOpen(true)}
-          onKeyDown={onKey}
-        />
-        {query && (
-          <button className="gsearch-clear" aria-label="Clear search" onClick={() => { setQuery(""); field.current?.focus(); }}>
-            <X size={12} strokeWidth={2.4} aria-hidden="true" />
-          </button>
-        )}
-      </label>
+      <SearchField
+        ref={field}
+        placeholder="Search"
+        aria-label="Search everything"
+        aria-expanded={showing}
+        aria-controls="gsearch-results"
+        aria-activedescendant={showing && rows[at] ? `gs-${rows[at].key}` : undefined}
+        role="combobox"
+        value={query}
+        onChange={(v) => {
+          setQuery(v);
+          setOpen(true);
+        }}
+        onClear={() => {
+          setQuery("");
+          field.current?.focus();
+        }}
+        onFocus={() => query && setOpen(true)}
+        onKeyDown={onKey}
+      />
       {showing && place && (
         <Portal>
         <div

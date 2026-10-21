@@ -21,14 +21,14 @@ await page.waitForTimeout(150);
 ok(JSON.stringify(await meRow()) === JSON.stringify(["Amma"]), "Make This My Card moves it at once");
 
 await page.locator(".contact-row", { hasText: "Amma" }).click({ button: "right" });
-await page.getByRole("menuitem", { name: "Export vCard…" }).click();
+await page.getByRole("menuitem", { name: "Export vCard" }).click();
 await page.waitForTimeout(200);
 let sent = await page.evaluate(() => window.__exports?.at(-1));
 ok(sent?.fileName === "Amma.vcf" && sent.guids.join() === "c2", `one card goes out under its name  ${JSON.stringify(sent)}`);
-ok(/Saved to .*Amma\.vcf/.test(await page.locator(".drive-saved").innerText()), "and says where it went");
+ok(/Saved to Downloads/.test(await page.locator(".toast").last().innerText()) && (await page.locator(".toast").last().getByRole("button", { name: "Show in Folder" }).count()) === 1, "and says where it went, with a way to see it");
 
 await page.getByRole("button", { name: "More" }).click();
-await page.getByRole("menuitem", { name: "Export All Contacts…" }).click();
+await page.getByRole("menuitem", { name: "Export All Contacts" }).click();
 await page.waitForTimeout(200);
 sent = await page.evaluate(() => window.__exports?.at(-1));
 ok(sent?.fileName === "iCloud vCards.vcf" && sent.guids.length === 4, `everyone goes out as iCloud vCards  ${JSON.stringify(sent?.fileName)}`);
@@ -36,17 +36,17 @@ ok(sent?.fileName === "iCloud vCards.vcf" && sent.guids.length === 4, `everyone 
 // Mass import: several files at once, a Google Contacts CSV among them.
 await page.evaluate(() => { window.__pick = ["/home/test/people.vcf", "/home/test/google.csv"]; });
 await page.getByRole("button", { name: "More" }).click();
-await page.getByRole("menuitem", { name: "Import Contacts…" }).click();
+await page.getByRole("menuitem", { name: "Import Contacts" }).click();
 await page.waitForTimeout(300);
 const paths = await page.evaluate(() => window.__imports?.at(-1)?.paths);
 ok(JSON.stringify(paths) === JSON.stringify(["/home/test/people.vcf", "/home/test/google.csv"]), `every chosen file, vCard and CSV, is imported at once  ${JSON.stringify(paths)}`);
-ok(/2 contacts imported/.test(await page.locator(".drive-saved").innerText()), "and the count is said");
+ok(/2 contacts imported/.test(await page.locator(".toast").last().innerText()), "and the count is said");
 // Importing an export of the same book: everyone already there is left out, and said so.
 await page.evaluate(() => { window.__importAnswer = [0, 0, 123]; });
 await page.getByRole("button", { name: "More" }).click();
-await page.getByRole("menuitem", { name: "Import Contacts…" }).click();
+await page.getByRole("menuitem", { name: "Import Contacts" }).click();
 await page.waitForTimeout(300);
-const said = await page.locator(".drive-saved").innerText();
+const said = await page.locator(".toast").last().innerText();
 ok(/0 contacts imported, 123 contacts already in Contacts were left out/.test(said), `people already in Contacts are left out, and that is said  "${said}"`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

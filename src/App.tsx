@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import { SignIn } from "./screens/SignIn";
 import { CodeEntry } from "./screens/CodeEntry";
 import { Library } from "./screens/Library";
+import { ImportSheet } from "./components/ImportSheet";
+import { StatusLine } from "./components/StatusLine";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { api, NEEDS_CODE } from "./lib/ipc";
+import { api, NEEDS_CODE, NEEDS_SIGNIN } from "./lib/ipc";
 
 type Phase = "checking" | "signin" | "code" | "library";
 
@@ -17,9 +20,8 @@ export default function App() {
     setShown(true);
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        import("@tauri-apps/api/core")
-          // Started at login, the window stays in the tray unless the person is needed here.
-          .then(({ invoke }) => invoke("window_ready", { needsYou: phase !== "library" }))
+        // Started at login, the window stays in the tray unless the person is needed here.
+        invoke("window_ready", { needsYou: phase !== "library" })
           .catch(() => {});
       }),
     );
@@ -58,6 +60,16 @@ export default function App() {
     };
   }, []);
 
+  // Apple signed the session out: the library stays — still readable — with one line over it
+  // saying so, and the sign-in a click away rather than forced in its place.
+  const [lapsed, setLapsed] = useState(false);
+  useEffect(() => {
+    const stop = listen(NEEDS_SIGNIN, () => setLapsed(true));
+    return () => {
+      void stop.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, []);
+
   // Signed out, the window starts over: nothing of the account is left in its memory either —
   // no picture, no list, no cached answer — for whoever signs in next.
   async function signOut(keep: boolean) {
@@ -72,17 +84,33 @@ export default function App() {
     return (
       <>
         <div className="app-ground" aria-hidden="true" />
+        {lapsed && (
+          <div className="toast lapsed" role="alert">
+            <p>Apple signed you out. Your copy on this computer is still here.</p>
+            <button className="primary" onClick={() => setPhase("signin")}>
+              Sign In
+            </button>
+            <button className="quiet" onClick={() => setLapsed(false)}>
+              Not Now
+            </button>
+          </div>
+        )}
         <Library onSignOut={signOut} />
+        <ImportSheet />
       </>
     );
 
   return (
     <div className="shell">
       <div className="app-ground" aria-hidden="true" />
-      {phase === "checking" && <span className="badge">Checking your session…</span>}
+      {phase === "checking" && <StatusLine tone="pending">Checking your session…</StatusLine>}
       {phase === "signin" && (
         <SignIn
-          onResult={(r) => setPhase(r === "complete" ? "library" : "code")}
+          onCancel={lapsed ? () => setPhase("library") : undefined}
+          onResult={(r) => {
+            setLapsed(false);
+            setPhase(r === "complete" ? "library" : "code");
+          }}
         />
       )}
       {phase === "code" && (

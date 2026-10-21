@@ -1,14 +1,14 @@
 // The arithmetic Calendar's views are drawn from, checked directly.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { placeDay, placeDayWith, weekSpans, monthDays, daysOf, snap, clock } from "../src/screens/calendar/model.ts";
+import { placeDay, placeDayWith, weekSpans, monthDays, daysOf, snap, clock, startOfWeek, weekInfoOf, hourLabel } from "../src/screens/calendar/model.ts";
 
 const at = (y, m, d, h = 0, min = 0) => Math.floor(new Date(y, m, d, h, min).getTime() / 1000);
 const ev = (guid, startsAt, endsAt, allDay = false) =>
   ({ guid, calendarGuid: "c", title: guid, location: null, startsAt, endsAt, allDay, timezone: null, url: null, notes: null, etag: null });
 
 test("a month is six weeks from the Sunday on or before the 1st", () => {
-  const days = monthDays(new Date(2026, 8, 15));
+  const days = monthDays(new Date(2026, 8, 15), 0);
   assert.equal(days.length, 42);
   assert.equal(days[0].getDay(), 0);
   assert.deepEqual([days[0].getMonth(), days[0].getDate()], [7, 30]);
@@ -92,8 +92,8 @@ test("dragging snaps to the quarter hour", () => {
 });
 
 test("a time on the hour leaves off the minutes", () => {
-  assert.doesNotMatch(clock(at(2026, 8, 29, 15)), /:00/);
-  assert.match(clock(at(2026, 8, 29, 15, 30)), /30/);
+  assert.doesNotMatch(clock(at(2026, 8, 29, 15), true), /:00/);
+  assert.match(clock(at(2026, 8, 29, 15, 30), true), /30/);
 });
 
 import { wallIn, instantIn, sameClockIn, zoneName } from "../src/screens/calendar/model.ts";
@@ -124,4 +124,20 @@ test("a day on is a calendar day, across a clock change too", () => {
   assert.equal(addDaysIn("America/New_York", fri, 7), Z(2026, 11, 6, 5, 0));
   assert.equal(addDaysIn("Asia/Kolkata", Z(2026, 10, 21, 3, 30), 1), Z(2026, 10, 22, 3, 30));
   assert.equal(addDaysIn("America/New_York", Z(2026, 10, 31, 4, 0), 1), Z(2026, 11, 1, 4, 0));
+});
+
+test("a week starts where the region starts it, and a 24-hour clock keeps its :00", () => {
+  // Monday first: September 2026 opens on Monday 31 August.
+  const mon = monthDays(new Date(2026, 8, 15), 1);
+  assert.equal(mon[0].getDay(), 1);
+  assert.deepEqual([mon[0].getMonth(), mon[0].getDate()], [7, 31]);
+  // A Sunday belongs to the week before it when weeks start on Monday.
+  assert.equal(startOfWeek(new Date(2026, 9, 25), 1).getDate(), 19);
+  assert.equal(startOfWeek(new Date(2026, 9, 25), 0).getDate(), 25);
+  assert.equal(weekInfoOf("en-GB").firstDay, 1);
+  assert.equal(weekInfoOf("en-US").firstDay, 0);
+  assert.deepEqual(weekInfoOf("de-DE").weekend.sort(), [0, 6]);
+  assert.match(clock(at(2026, 8, 29, 15), false), /:00/);
+  assert.notEqual(hourLabel(12, false), "Noon");
+  assert.equal(hourLabel(12, true), "Noon");
 });

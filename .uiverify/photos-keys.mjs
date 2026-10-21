@@ -9,7 +9,7 @@ const page = await ctx.newPage();
 page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
 // Every question agreed to, as soon as it is asked.
 await page.addInitScript(() => addEventListener("DOMContentLoaded", () =>
-  new MutationObserver(() => document.querySelector(".px-ask .is-act")?.click()).observe(document.body, { childList: true, subtree: true })));
+  new MutationObserver(() => document.querySelector(".confirm .confirm-answer")?.click()).observe(document.body, { childList: true, subtree: true })));
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Photos");
 await page.waitForTimeout(400);

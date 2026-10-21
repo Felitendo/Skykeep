@@ -61,7 +61,7 @@ export function NotePicture() {
                 Open in Default App
               </button>
             )}
-            <button className="nf-picture-close" aria-label="Close" autoFocus onClick={() => setShown(null)}>
+            <button className="icon-button round nf-picture-close" aria-label="Close" autoFocus onClick={() => setShown(null)}>
               <X size={16} strokeWidth={2} />
             </button>
           </figcaption>

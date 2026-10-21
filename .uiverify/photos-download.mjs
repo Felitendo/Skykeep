@@ -17,7 +17,7 @@ const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failu
 const last = () => page.evaluate(() => window.__downloads?.at(-1));
 
 await page.locator(".px-tile").nth(1).click({ button: "right" });
-await page.locator(".row-menu").getByText("More Download Options…").click();
+await page.locator(".row-menu").getByText("More Download Options").click();
 const sheet = page.getByRole("dialog", { name: "Download Options" });
 ok((await sheet.count()) === 1 && /1 Item/.test(await sheet.innerText()) && /Unmodified Originals[\s\S]*Including Edits[\s\S]*Highest Resolution[\s\S]*Most Compatible/.test(await sheet.innerText()),
   "the sheet offers what icloud.com's does");
@@ -37,8 +37,8 @@ await page.keyboard.press("Escape");
 await page.locator(".px-tile").nth(2).dblclick();
 await page.waitForTimeout(600);
 await page.locator(".px-stage").click({ button: "right", position: { x: 300, y: 300 } });
-ok((await page.locator(".row-menu").getByText("More Download Options…").count()) === 1, "right-clicking the open photo gives its menu");
-await page.locator(".row-menu").getByText("More Download Options…").click();
+ok((await page.locator(".row-menu").getByText("More Download Options").count()) === 1, "right-clicking the open photo gives its menu");
+await page.locator(".row-menu").getByText("More Download Options").click();
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
 ok((await sheet.count()) === 0 && (await page.locator(".px-viewer").count()) === 1, "Escape closes the sheet, and the photo stays open");

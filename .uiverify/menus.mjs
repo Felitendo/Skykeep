@@ -134,7 +134,7 @@ for (const size of [{ width: 1280, height: 800 }, { width: 760, height: 520 }]) 
   const gone = await page.evaluate(() => { window.__stopAim = true; return window.__subGone; });
   ok(!gone && (await page.locator(".row-menu").count()) === 2, `${label} a submenu stays open while the pointer crosses a line on its way in`);
   // Resting on another line does still switch to it, a moment later.
-  await page.getByRole("menuitem", { name: "Export vCard…" }).hover();
+  await page.getByRole("menuitem", { name: "Export vCard" }).hover();
   await page.waitForTimeout(450);
   ok((await page.locator(".row-menu").count()) === 1, `${label} resting on another line closes the submenu`);
   await page.keyboard.press("Escape");
