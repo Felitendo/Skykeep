@@ -120,6 +120,11 @@ fn note_from_record(record: &Value) -> Option<Note> {
 ///
 /// Pass `since` to fetch only what changed; as with reminders, absence in a delta means
 /// unchanged rather than deleted.
+/// Said when a write would leave a note's attachments unsound (see
+/// [`crate::ckdocument::attachments_sound_in_base64`]): nothing is sent.
+const ATTACHMENTS_UNSOUND: &str =
+    "Quince didn’t save this: it would have left a table or attachment in this note referenced twice, which Notes on iPhone can’t open. Nothing was changed.";
+
 pub async fn sync_cloudkit(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -603,6 +608,9 @@ pub async fn edit_rich_cloudkit_from(
             )
         })?;
         fits_inline(&rewritten)?;
+        if !crate::ckdocument::attachments_sound_in_base64(encoded, &rewritten) {
+            return Err(Error::Refused(ATTACHMENTS_UNSOUND.into()));
+        }
         let (title, snippet) = title_and_snippet(&target);
         let Some(tag) = current.get("recordChangeTag").and_then(Value::as_str) else {
             return Err(Error::Refused(
@@ -766,6 +774,10 @@ pub async fn set_paragraph_cloudkit(
                 *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
                 return None;
             }
+            if !crate::ckdocument::attachments_sound_in_base64(encoded, &rewritten) {
+                *refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Error::Refused(ATTACHMENTS_UNSOUND.into()));
+                return None;
+            }
             Some(serde_json::json!({
                 "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": rewritten },
                 "ModificationDate": { "type": "TIMESTAMP", "value": now_millis() },
@@ -896,6 +908,9 @@ fn document_like_apples(template: Option<&str>, body: &str) -> String {
         // word repeated, with gaps where the arithmetic ran off the end of it.
         .and_then(crate::ckdocument::without_history)
         .and_then(|document| crate::ckdocument::replace_text_in_base64(&document, body))
+        // Another note's tables are never a new note's: a reference carried over would be one
+        // attachment in two notes, which Notes on a phone cannot open.
+        .filter(|document| !crate::ckdocument::has_attachments_in_base64(document))
         .unwrap_or_else(|| crate::ckdocument::text_to_base64(body))
 }
 

@@ -1152,6 +1152,39 @@ fn attachments_sound(old: &[Vec<u8>], new: &[Vec<u8>], units: &[u16]) -> Option<
     Some(())
 }
 
+/// Whether a note document (as the CloudKit field carries it) refers to any attachment.
+#[must_use]
+pub fn has_attachments_in_base64(document: &str) -> bool {
+    B64.decode(document.trim()).is_ok_and(|raw| {
+        debug_attribute_runs(&raw)
+            .iter()
+            .any(|r| bytes_field(r, ATTACHMENT_INFO).is_some())
+    })
+}
+
+/// Whether `edited` (a note document, as the CloudKit field carries it) is sound against
+/// `original`, what Apple held: every attachment reference one `original` had, none used
+/// twice, each on its own object-replacement character. Checked on every write of a note's
+/// text, whichever path built it — a note this app once saved with a table referenced twice
+/// made Notes on his iPhone lag and crash, and Notes kept copies of the notes it could not
+/// merge.
+#[must_use]
+pub fn attachments_sound_in_base64(original: &str, edited: &str) -> bool {
+    let (Ok(old), Ok(new)) = (B64.decode(original.trim()), B64.decode(edited.trim())) else {
+        return false;
+    };
+    let Some(text) = text_from_bytes(&new) else {
+        return false;
+    };
+    let units: Vec<u16> = text.encode_utf16().collect();
+    attachments_sound(
+        &debug_attribute_runs(&old),
+        &debug_attribute_runs(&new),
+        &units,
+    )
+    .is_some()
+}
+
 /// The text and its formatting together: the text replaced as [`replace_text`] replaces it,
 /// then the runs set as [`set_runs`] sets them. Over the base64 a CloudKit field carries.
 #[must_use]
@@ -2990,6 +3023,41 @@ mod run_tests {
             [1],
             "the attachment run took typed text: {lens:?}"
         );
+    }
+
+    /// Every write of a note's text is checked against what Apple held: an attachment kept
+    /// once passes; one referenced twice, or one the note never had, is refused.
+    #[test]
+    fn a_write_that_doubles_or_borrows_an_attachment_is_refused() {
+        let info = |id: &[u8]| {
+            let mut inner = Vec::new();
+            len_field(1, id, &mut inner);
+            let mut out = Vec::new();
+            len_field(12, &inner, &mut out);
+            out
+        };
+        let had = B64.encode(doc_with("\u{FFFC}\n", &[(1, info(b"T1")), (1, Vec::new())]));
+        let kept = B64.encode(replace_text(&B64.decode(&had).unwrap(), "\u{FFFC}hi\n").unwrap());
+        assert!(attachments_sound_in_base64(&had, &kept));
+        let twice = B64.encode(doc_with(
+            "\u{FFFC}\u{FFFC}\n",
+            &[(1, info(b"T1")), (1, info(b"T1")), (1, Vec::new())],
+        ));
+        assert!(
+            !attachments_sound_in_base64(&had, &twice),
+            "a table referenced twice"
+        );
+        let borrowed = B64.encode(doc_with("\u{FFFC}\n", &[(1, info(b"T2")), (1, Vec::new())]));
+        assert!(
+            !attachments_sound_in_base64(&had, &borrowed),
+            "another note's table"
+        );
+        let gone = B64.encode(doc_with("hi\n", &[(3, Vec::new())]));
+        assert!(
+            attachments_sound_in_base64(&had, &gone),
+            "a table deleted is fine"
+        );
+        assert!(has_attachments_in_base64(&had) && !has_attachments_in_base64(&gone));
     }
 
     /// An edit that removes a whole run leaves every later run with its own styling.
