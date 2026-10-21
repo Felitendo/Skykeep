@@ -312,6 +312,9 @@ textarea.note-title::placeholder { color: var(--text-3); }
    One document, edited formatted, as Notes edits it. Sizes after Notes on the Mac: title
    24, heading 19, subheading 16, body 15; lists hang their marks in the margin. */
 .note-rich-host { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+/* A comfortable line on a wide window, as a page reads: about 75 characters, then a new line —
+   never a sentence strung across 1,100 pixels. */
+.note-rich { max-width: 50em; }
 .note-rich {
   flex: 1;
   min-height: 240px;

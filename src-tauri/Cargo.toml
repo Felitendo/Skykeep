@@ -30,6 +30,7 @@ tauri-plugin-opener = "2"
 notify-rust = "4"
 tauri-plugin-single-instance = "2"
 libc = "0.2"
+tauri-plugin-window-state = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.18", default-features = false }

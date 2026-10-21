@@ -27,7 +27,10 @@ fn a_full_session_survives_windows_credential_manager() {
         ..Session::default()
     };
     let size = serde_json::to_string(&session).unwrap().len();
-    assert!(size > 1280, "the test session must be past one credential's limit ({size})");
+    assert!(
+        size > 1280,
+        "the test session must be past one credential's limit ({size})"
+    );
     store.save(&session).expect("kept, in parts");
     let back = store.try_load().expect("read back");
     assert_eq!(back.session_token, session.session_token);

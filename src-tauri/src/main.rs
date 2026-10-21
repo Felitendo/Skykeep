@@ -4053,6 +4053,11 @@ static LAUNCHED_AS_APP: AtomicBool = AtomicBool::new(false);
 fn shutdown(app: &tauri::AppHandle, code: i32) -> ! {
     static ENDING: AtomicBool = AtomicBool::new(false);
     if !ENDING.swap(true, Ordering::SeqCst) {
+        // Where each window was, kept before the quick exit below skips the usual teardown.
+        {
+            use tauri_plugin_window_state::AppHandleExt;
+            app.save_window_state(window_state_kept()).ok();
+        }
         for w in app.webview_windows().values() {
             w.hide().ok();
         }
@@ -4061,6 +4066,13 @@ fn shutdown(app: &tauri::AppHandle, code: i32) -> ! {
     }
     // SAFETY: ends the process at once; nothing after it runs.
     unsafe { libc::_exit(code) }
+}
+
+/// What is kept of a window between runs: its size, place and maximised state — never whether
+/// it shows.
+fn window_state_kept() -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+    StateFlags::all() - StateFlags::VISIBLE
 }
 
 fn show_when_ready(app: &tauri::AppHandle) {
@@ -4156,6 +4168,14 @@ fn main() {
                 None => show_window(app),
             }
         }))
+        // Each window — the library, and every app's own — reopens at the size and place it was
+        // left, as Apple's apps do. Not whether it shows: that stays Pomander's (hidden at
+        // login, shown once drawn).
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(window_state_kept())
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // The window shows Quince and nothing else. A link to anywhere outside it — a phone
