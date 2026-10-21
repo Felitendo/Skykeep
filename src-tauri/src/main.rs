@@ -1356,7 +1356,9 @@ fn spawn_holidays(app: tauri::AppHandle) {
             *app.state::<Occasions>().feed.lock().await =
                 quince_icloud::occasions::parse_feed(&text);
         }
-        let http = reqwest::Client::new();
+        let Ok(http) = quince_auth::apple_only().build() else {
+            return;
+        };
         loop {
             let stale = std::fs::metadata(&path)
                 .and_then(|m| m.modified())

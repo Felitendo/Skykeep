@@ -16,6 +16,12 @@ Apple, and nothing else:
 - `calendars.icloud.com` — Apple's public holiday calendars.
 - The `.com.cn` equivalents of the above, for accounts in mainland China.
 
+This is enforced, not only promised: every network client Pomander makes is built by
+`quince_auth::apple_only()`, whose resolver refuses to look up any host outside `apple.com`,
+`icloud.com` and `icloud-content.com` (and their `.com.cn` twins) — a request anywhere else
+fails before a connection exists. The test `crates/quince-auth/tests/apple_only.rs` holds it
+to that.
+
 There are no Pomander servers. There is no telemetry, analytics, crash reporting or update
 check. Nothing is sent anywhere but Apple, and only what is needed to show and change your
 own data. The window itself cannot reach the network at all: its content security policy

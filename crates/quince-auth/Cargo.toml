@@ -20,6 +20,8 @@ rand = "0.9"
 reqwest_cookie_store = "0.8"
 cookie_store = { version = "0.21", features = ["serde_json"] }
 thiserror = "2"
+# Looking up Apple's hosts for the client's own resolver (AppleOnly).
+tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

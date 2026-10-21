@@ -299,7 +299,7 @@ impl Client {
             HeaderValue::from_static("en-US,en;q=0.9"),
         );
 
-        let http = HttpClient::builder()
+        let http = apple_only()
             .cookie_provider(Arc::clone(&jar))
             .user_agent(UA)
             .default_headers(defaults)
@@ -1034,6 +1034,53 @@ impl Client {
     /// Shared HTTP client, for the service crates that ride this session.
     pub fn http(&self) -> &HttpClient {
         &self.http
+    }
+}
+
+/// Whether `host` is Apple's: its sign-in, iCloud's services and their files, push, and their
+/// China-mainland twins — every host Pomander has any reason to reach. Loopback too, which is
+/// this computer.
+#[must_use]
+pub fn is_apple_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    const APPLE: [&str; 6] = [
+        "apple.com",
+        "icloud.com",
+        "icloud-content.com",
+        "apple.com.cn",
+        "icloud.com.cn",
+        "icloud-content.com.cn",
+    ];
+    host == "localhost"
+        || APPLE
+            .iter()
+            .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
+
+/// Every HTTP client Pomander makes starts here: Apple's servers, and nothing else, can be
+/// reached at all (see [`AppleOnly`]).
+pub fn apple_only() -> reqwest::ClientBuilder {
+    HttpClient::builder().dns_resolver(Arc::new(AppleOnly))
+}
+
+/// The one way Pomander's client finds a server: a host that is not Apple's is never looked
+/// up, so no request can reach one — "talks only to Apple" is how the code works, not a promise
+/// about it. Apple's are looked up as the system looks up any name.
+struct AppleOnly;
+
+impl reqwest::dns::Resolve for AppleOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            if !is_apple_host(&host) {
+                let refused: Box<dyn std::error::Error + Send + Sync> =
+                    format!("{host} is not Apple's, and Pomander talks only to Apple").into();
+                return Err(refused);
+            }
+            let found = tokio::net::lookup_host((host.as_str(), 0)).await?;
+            let addrs: reqwest::dns::Addrs = Box::new(found.collect::<Vec<_>>().into_iter());
+            Ok(addrs)
+        })
     }
 }
 
