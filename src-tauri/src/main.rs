@@ -1985,9 +1985,9 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 /// modification dates stamped with it — showed on his iPhone (2026-10-21). Before those stamps
 /// (2026-10-19) Apple stored the write but the phone did not show it.
 const TABLE_CELL_WRITES: bool = true;
-/// Whether Quince adds and removes rows and columns: off until one made here is seen on the
-/// phone.
-const TABLE_LINE_WRITES: bool = false;
+/// Whether Quince adds and removes rows and columns. On: a row and a column added here showed
+/// on his iPhone, and he typed in them there (2026-10-21).
+const TABLE_LINE_WRITES: bool = true;
 const TABLE_WRITES_OFF: &str =
     "Adding and removing rows and columns isn’t on in Quince yet: it waits to be seen working on an iPhone.";
 

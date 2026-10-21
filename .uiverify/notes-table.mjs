@@ -1,7 +1,7 @@
 // A table in a note, drawn as its grid, its text colour shown, and copied as its cells. Its
-// cells are edited where they stand (a cell set here showed on an iPhone); adding and removing
-// rows and columns stays off until one made here is seen there. A table this app cannot read
-// says so where it stands — never a file to open.
+// cells are edited where they stand, and right-click adds and deletes rows and columns, as
+// Notes does (each made here showed on an iPhone). A table this app cannot read says so where
+// it stands — never a file to open.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
@@ -30,9 +30,22 @@ const wrote = await page.evaluate(() => window.__cellWrites ?? []);
 ok(wrote.length === 1 && wrote[0].id === "T1" && wrote[0].row === 2 && wrote[0].column === 0 && wrote[0].text === "Eggs",
   `typed into a cell, that cell is saved  ${JSON.stringify(wrote)}`);
 await page.evaluate(() => { window.__table[2] = ["", ""]; });
-await page.locator(".nf-table tr").nth(1).locator("td").first().click({ button: "right" });
-ok((await page.getByRole("menuitem", { name: /Add Row|Delete Row/ }).count()) === 0, "right-click offers no row or column changes yet");
-await page.keyboard.press("Escape");
+const shape = () => page.locator(".nf-table tr").evaluateAll((rows) => [rows.length, rows[0]?.cells.length ?? 0]);
+const menu = async (r, c, name) => {
+  await page.locator(".nf-table tr").nth(r).locator("td").nth(c).click({ button: "right" });
+  await page.waitForTimeout(100);
+  await page.getByRole("menuitem", { name, exact: true }).click();
+  await page.waitForTimeout(300);
+};
+await menu(1, 0, "Add Row Below");
+ok(JSON.stringify(await shape()) === "[4,2]" && JSON.stringify(await page.evaluate(() => window.__rowAdds)) === JSON.stringify([{ id: "T1", at: 2, column: false }]),
+  `Add Row Below adds a row under that one, at Apple  ${JSON.stringify(await page.evaluate(() => window.__rowAdds))}`);
+await menu(0, 1, "Add Column After");
+ok(JSON.stringify(await shape()) === "[4,3]", "Add Column After adds a column beside it");
+await menu(0, 2, "Delete Column");
+await menu(2, 0, "Delete Row");
+ok(JSON.stringify(await shape()) === "[3,2]" && (await page.evaluate(() => window.__removes?.length)) === 2, "Delete Row and Delete Column take them away again");
+await page.evaluate(() => { window.__table = [["Item", "Qty"], ["Milk", "2"], ["", ""]]; });
 const coloured = await page.locator(".note-rich .nf-em-4").evaluateAll((e) => e.map((x) => [x.textContent, getComputedStyle(x).color]));
 ok(coloured.length === 1 && coloured[0][0] === "end" && !/rgb\(29, 29, 31\)|rgb\(0, 0, 0\)/.test(coloured[0][1]), `text coloured on a phone shows in its colour  ${JSON.stringify(coloured)}`);
 // Copying the note puts the table's cells out, never a placeholder word.

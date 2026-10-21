@@ -36,8 +36,8 @@ export function refreshTables() {
 
 /** Whether a table's cells can be edited here: on since a cell set here showed on an iPhone. */
 const TABLE_CELL_WRITES = true;
-/** Whether rows and columns can be added and removed: off until one made here is seen there. */
-const TABLE_LINE_WRITES = false;
+/** Whether rows and columns can be added and removed: on since ones added here showed there. */
+const TABLE_LINE_WRITES = true;
 
 /** A table's right-click menu: drawn by the editor that holds the table, opened by a cell. */
 type CellMenu = { at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] };
