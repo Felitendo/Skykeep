@@ -89,7 +89,7 @@ jobs:
           Get-ChildItem $shots -Filter "all-*.png" | ForEach-Object { Rename-Item $_.FullName ($_.Name -replace "^all-", "screen-") -ErrorAction SilentlyContinue }
           $failed = @()
           $suites = Get-ChildItem .uiverify -Filter *.mjs | Where-Object {
-            $_.Name -notmatch '^(look|dbg|engine|stub|assert)' -and $_.Name -notmatch '\.test\.mjs$' -and (Select-String -Path $_.FullName -Pattern 'engine.mjs' -Quiet)
+            $_.Name -notmatch '^(look|dbg|engine|stub|assert|crash|shots)' -and $_.Name -notmatch '\.test\.mjs$' -and (Select-String -Path $_.FullName -Pattern 'engine.mjs' -Quiet)
           }
           foreach ($t in $suites) {
             node $t.FullName *> "$shots\$($t.BaseName).log"
