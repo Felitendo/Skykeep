@@ -443,6 +443,11 @@ pub async fn set_flag(
     on: bool,
 ) -> Result<Value> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    if flag == Flag::Expunged && on {
+        return expunge_checked(&client, asset)
+            .await
+            .map_err(crate::Error::Refused);
+    }
     let name = match flag {
         Flag::Favorite => "isFavorite",
         Flag::Deleted => "isDeleted",
@@ -460,6 +465,43 @@ pub async fn set_flag(
         .await
 }
 
+/// A photo deleted for good — which nothing takes back — only if Apple still holds it in
+/// Recently Deleted, checked against Apple's record now, not this computer's copy, and written
+/// over exactly that version. Recovered on another device since this window last looked, it
+/// is kept: the plain update resent the delete over that recovery when its change tag moved.
+async fn expunge_checked(
+    client: &ZoneClient<'_>,
+    asset: &str,
+) -> std::result::Result<Value, String> {
+    let current = client
+        .lookup_record(ZONE, asset)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo is no longer in iCloud.")?;
+    if field::int(&current, "isDeleted") != Some(1) {
+        return Err("This photo was recovered on another device, so it was kept.".into());
+    }
+    let tag = current
+        .get("recordChangeTag")
+        .and_then(Value::as_str)
+        .ok_or("Apple did not say which version of the photo it holds.")?;
+    client
+        .update_record_exact(
+            ZONE,
+            asset,
+            "CPLAsset",
+            tag,
+            serde_json::json!({ "isExpunged": { "value": 1 } }),
+        )
+        .await
+        .map_err(|e| match e {
+            crate::Error::Conflict => {
+                "This photo changed on another device just now, so it was kept.".to_string()
+            }
+            other => other.to_string(),
+        })
+}
+
 /// One flag on many photos at once, as icloud.com sends a selection: batched, each photo
 /// standing alone. `assets` are `(record name, change tag)`. Answers each photo's outcome in
 /// the order given — the asset as it now is, or why not.
@@ -472,6 +514,18 @@ pub async fn set_flags(
     on: bool,
 ) -> Result<Vec<std::result::Result<Value, String>>> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    if flag == Flag::Expunged && on {
+        // Eight at a time: a full Recently Deleted empties quickly, each photo still checked.
+        let mut out = Vec::with_capacity(assets.len());
+        for batch in assets.chunks(8) {
+            let mut pending = Vec::with_capacity(batch.len());
+            for (id, _) in batch {
+                pending.push(expunge_checked(&client, id));
+            }
+            out.extend(futures_util::future::join_all(pending).await);
+        }
+        return Ok(out);
+    }
     let name = match flag {
         Flag::Favorite => "isFavorite",
         Flag::Deleted => "isDeleted",
@@ -1319,5 +1373,67 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "no part file left behind");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Deleting for good is checked against Apple, not this computer's copy: a photo recovered
+    /// on the phone since is kept (no write is sent at all); one still in Recently Deleted is
+    /// deleted on exactly the version read.
+    #[tokio::test]
+    async fn a_photo_recovered_elsewhere_is_never_deleted_for_good() {
+        use wiremock::matchers::{body_string_contains, method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let record = |name: &str, deleted: i64, tag: &str| {
+            serde_json::json!({ "records": [{ "recordName": name, "recordType": "CPLAsset",
+                "recordChangeTag": tag, "fields": { "isDeleted": { "value": deleted } } }] })
+        };
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .and(body_string_contains("\"KEPT\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(record("KEPT", 0, "k2")))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .and(body_string_contains("\"GONE\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(record("GONE", 1, "g7")))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .and(body_string_contains("\"g7\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(record("GONE", 1, "g8")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let answers = set_flags(
+            &http,
+            &server.uri(),
+            vec![],
+            &[
+                ("KEPT".into(), Some("k1".into())),
+                ("GONE".into(), Some("g1".into())),
+            ],
+            Flag::Expunged,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(&answers[0], Err(e) if e.contains("recovered on another device")),
+            "{answers:?}"
+        );
+        assert!(answers[1].is_ok(), "{answers:?}");
+        // The one modify is GONE's, on the tag just read; KEPT was never written.
+        let modifies = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .collect::<Vec<_>>();
+        assert_eq!(modifies.len(), 1);
+        assert!(!String::from_utf8_lossy(&modifies[0].body).contains("KEPT"));
     }
 }
