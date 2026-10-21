@@ -96,7 +96,7 @@ fn quoted(path: &str) -> String {
 #[cfg(not(windows))]
 fn desktop_file(command: &str, icon: &str) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName=Pomander\nComment=Keeps iCloud in sync in the background\nExec={command}\nIcon={icon}\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
+        "[Desktop Entry]\nType=Application\nName=Skykeep\nComment=Keeps iCloud in sync in the background\nExec={command}\nIcon={icon}\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
     )
 }
 
@@ -141,7 +141,7 @@ fn honoured() -> bool {
 #[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
-const RUN_VALUE: &str = "Pomander";
+const RUN_VALUE: &str = "Skykeep";
 
 /// Windows' own `reg` tool, with no window flashing up.
 #[cfg(windows)]
@@ -224,12 +224,12 @@ pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, Strin
     login_item_status(app).await
 }
 
-#[cfg(test)]
+// Its one check is of the Linux autostart entry, which Windows does not have.
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
 
     /// The Exec line survives any path: spaces quoted, the spec's special characters escaped.
-    #[cfg(not(windows))]
     #[test]
     fn the_exec_line_is_quoted_as_the_spec_says() {
         assert_eq!(

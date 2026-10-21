@@ -18,7 +18,7 @@ const SIZES = [
   { width: 1920, height: 1040 },
   { width: 2560, height: 1440 },
 ];
-const SCREENS = ["Reminders", "Notes", "iCloud Drive", "Calendar", "Contacts"];
+const SCREENS = ["Reminders", "Notes", "Drive", "Calendar", "Contacts"];
 const CALENDAR_VIEWS = ["Day", "Week", "Month", "Year"];
 
 /** What is broken on the page as it stands, described so a failure says where to look. */

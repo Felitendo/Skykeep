@@ -61,7 +61,8 @@ const linked = await page.evaluate(() => window.__saves.at(-1)?.draft?.url);
 ok(linked === "https://example.com/new", `a URL typed into the event is saved  [${linked}]`);
 
 // A new event is on the calendar the moment it is saved, before Apple has named it.
-await page.getByRole("button", { name: "New event" }).click();
+await page.evaluate(() => document.activeElement?.blur());
+await page.keyboard.press("Control+n");
 await page.waitForTimeout(250);
 await page.locator('input[placeholder="New Event"]').first().fill("Coffee with Ana");
 await page.locator('input[placeholder="New Event"]').first().press("Enter");
@@ -75,6 +76,7 @@ await page.locator(".cx-block", { hasText: "Design review" }).first().click();
 await page.waitForTimeout(250);
 await page.evaluate(() => document.activeElement?.blur());
 await page.keyboard.press("Delete");
+await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
 await page.waitForTimeout(150);
 ok(await page.locator(".cx-block", { hasText: "Design review" }).count() === 0, "a deleted event leaves at once");
 // A reminder on the calendar ticks there, at once, as in Calendar.

@@ -71,7 +71,7 @@ const COVERED: [(&str, &str); 6] = [
     ("reminders", "Reminders"),
     ("notes", "Notes"),
     ("contacts", "Contacts"),
-    ("drive", "iCloud Drive"),
+    ("drive", "Drive"),
     ("photos", "Photos"),
 ];
 
@@ -360,7 +360,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
             return None;
         }
         let report = match ctx.drive.as_deref() {
-            None => unavailable("drive", "iCloud Drive"),
+            None => unavailable("drive", "Drive"),
             Some(root) => {
                 let _one = crate::DRIVE_PASS.lock().await;
                 let fetched = quince_icloud::drive::fetch_folder(
@@ -372,7 +372,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                 .await;
                 store(
                     "drive",
-                    "iCloud Drive",
+                    "Drive",
                     data,
                     ctx.account.as_deref(),
                     fetched,

@@ -8,7 +8,7 @@ const ctx = await b.newContext({ viewport: { width: 1200, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, driveFixture: true });
 const page = await ctx.newPage();
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-await openScreen(page, "iCloud Drive");
+await openScreen(page, "Drive");
 await page.waitForTimeout(300);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };

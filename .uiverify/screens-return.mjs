@@ -50,19 +50,33 @@ await page.waitForTimeout(300);
 await openScreen(page, "Contacts");
 ok((await playing(".face-photo")) === 0, "back to Contacts: no face fades in again");
 
-// Reminders: a tick springs in on the press, and only then.
+// Reminders: a tick's fill fades in on the press, and only then (drawn by the page, frame by
+// frame — lib/fade — so it is measured as the fill's opacity rising, not as an animation).
 await openScreen(page, "Reminders");
 await page.locator(".rx-list", { hasText: "Daily" }).click();
 await page.waitForTimeout(400);
 await page.evaluate(() => { window.__doneDelay = 4000; });
 const tick = page.locator(".rx-row", { has: page.getByLabel("Rename Pick up the parcel") }).locator(".rx-tick");
+const rising = page.evaluate(() => new Promise((done) => {
+  const seen = [];
+  const sample = () => {
+    const fill = document.querySelector(".rx-row.is-settling .rx-tick-fill, .rx-tick[aria-checked='true'] .rx-tick-fill");
+    if (fill) seen.push(Number(getComputedStyle(fill).opacity));
+    if (seen.length < 12) requestAnimationFrame(sample); else done(seen);
+  };
+  requestAnimationFrame(sample);
+}));
 await tick.click();
-ok((await playing(".rx-tick.is-pressed")) > 0, "a tick pressed springs in");
+const seen = await rising;
+// Faded in: from faint to (nearly) whole over a few frames, never whole at once.
+const low = seen.findIndex((o) => o < 0.5);
+ok(low >= 0 && seen.slice(low).some((o) => o >= 0.9), `a tick pressed fades in  [${seen.map((o) => o.toFixed(2)).join(" ")}]`);
 await page.waitForTimeout(400);
 await openScreen(page, "Notes");
 await page.waitForTimeout(200);
 await openScreen(page, "Reminders");
-ok((await playing(".rx-tick")) === 0, "back to Reminders: no tick springs again");
+const after = await page.evaluate(() => [...document.querySelectorAll(".rx-tick-fill")].map((f) => Number(getComputedStyle(f).opacity)));
+ok((await playing(".rx-tick")) === 0 && after.every((o) => o === 0 || o === 1), "back to Reminders: no tick fades in again");
 
 // Photos: the square/whole toggle wears no fill until it is hovered.
 await openScreen(page, "Photos");

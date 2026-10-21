@@ -22,7 +22,7 @@ const stored = (key: string) => {
 };
 
 /**
- * The quick-capture window (`pomander --new reminder`, `--new note`): one field, Enter, and it
+ * The quick-capture window (`skykeep --new reminder`, `--new note`): one field, Enter, and it
  * is in iCloud — a reminder in the list last added to, a note in Notes — and the window goes.
  * Escape leaves without making anything.
  */
@@ -100,7 +100,7 @@ export function QuickCapture({ initial }: { initial: Kind }) {
     setState("saving");
     setError(null);
     try {
-      // Started from the launcher, Pomander may still be signing back in: done here first, so
+      // Started from the launcher, Skykeep may still be signing back in: done here first, so
       // the write does not race it.
       const status = await api.status();
       if (!status.signedIn) {
@@ -179,9 +179,9 @@ export function QuickCapture({ initial }: { initial: Kind }) {
             "Saving…"
           ) : state === "signin" ? (
             <>
-              Sign in to Pomander first.{" "}
+              Sign in to Skykeep first.{" "}
               <button type="button" className="link qc-link" onClick={() => void intakeApi.openMain()}>
-                Open Pomander
+                Open Skykeep
               </button>
             </>
           ) : error ? (

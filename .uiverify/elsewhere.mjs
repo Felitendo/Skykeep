@@ -78,7 +78,7 @@ for (const place of PLACES) {
   page.on("pageerror", (e) => blew.push(String(e)));
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
 
-  for (const screen of ["Reminders", "Calendar", "Notes", "Contacts", "iCloud Drive"]) {
+  for (const screen of ["Reminders", "Calendar", "Notes", "Contacts", "Drive"]) {
     await page.getByRole("button", { name: screen, exact: true }).click();
     await page.waitForTimeout(300);
   }

@@ -16,6 +16,7 @@ mod alerts;
 mod apps;
 mod contacts_cmds;
 mod cpu;
+mod export;
 mod intake;
 mod login;
 mod migrate;
@@ -36,6 +37,9 @@ mod poster {
 mod push;
 mod refresh;
 mod reminders_cmds;
+// Skykeep's results in GNOME's and KDE's own search, on the session bus.
+#[cfg(target_os = "linux")]
+mod search_provider;
 mod settings;
 mod video;
 
@@ -381,10 +385,10 @@ async fn diagnostics_save(app: tauri::AppHandle, data: State<'_, Data>) -> UiRes
     };
     let mut out = String::new();
     use std::fmt::Write as _;
-    let _ = writeln!(out, "Pomander diagnostic report");
+    let _ = writeln!(out, "Skykeep diagnostic report");
     let _ = writeln!(
         out,
-        "Pomander {} · {} · {} {}",
+        "Skykeep {} · {} · {} {}",
         app.package_info().version,
         os,
         std::env::consts::ARCH,
@@ -423,7 +427,7 @@ async fn diagnostics_save(app: tauri::AppHandle, data: State<'_, Data>) -> UiRes
     }
     let dir = app.path().download_dir().map_err(|e| e.to_string())?;
     let path = dir.join(format!(
-        "Pomander diagnostics {}.txt",
+        "Skykeep diagnostics {}.txt",
         jiff::Zoned::now().strftime("%Y-%m-%d %H.%M")
     ));
     tokio::fs::write(&path, out)
@@ -459,7 +463,7 @@ async fn note_attachment_open(
     let bytes = note_media_cached(&app, &id, quince_icloud::note_media::Part::File).await?;
     let folder: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
     if folder.is_empty() {
-        return Err("That attachment is not one Pomander knows.".into());
+        return Err("That attachment is not one Skykeep knows.".into());
     }
     // The name is whoever shared the note's to choose: made a plain file name here, never a
     // path, and never one that pretends to be something else.
@@ -789,7 +793,7 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
                 alerts::tell(
                     app,
                     "Sign in to keep iCloud up to date",
-                    "Apple signed Pomander out. Your copy on this computer is still here.",
+                    "Apple signed Skykeep out. Your copy on this computer is still here.",
                 );
             }
         }
@@ -1614,6 +1618,7 @@ async fn calendar_events(
     to: i64,
     data: State<'_, Data>,
     occasions: State<'_, Occasions>,
+    feeds_state: State<'_, Feeds>,
 ) -> UiResult<Vec<Event>> {
     let (mut events, people) = {
         let library = data.0.lock().await;
@@ -1631,6 +1636,7 @@ async fn calendar_events(
         from,
         to,
     ));
+    events.extend(subscribed_events(&feeds_state, from, to).await);
     events.sort_by(|a, b| {
         a.starts_at
             .cmp(&b.starts_at)
@@ -1646,6 +1652,7 @@ async fn calendar_search(
     query: String,
     data: State<'_, Data>,
     occasions: State<'_, Occasions>,
+    feeds_state: State<'_, Feeds>,
 ) -> UiResult<Vec<Event>> {
     let words = quince_core::fold::words(&query);
     let (mut found, people) = {
@@ -1661,9 +1668,11 @@ async fn calendar_search(
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
         let (from, to) = (now - 366 * 86_400, now + 366 * 86_400);
         let feed = occasions.feed.lock().await;
+        let subscribed = subscribed_events(&feeds_state, from, to).await;
         let extra = quince_icloud::occasions::birthdays(&people, from, to)
             .into_iter()
             .chain(quince_icloud::occasions::holidays(&feed.1, from, to))
+            .chain(subscribed)
             .filter(|e| quince_core::fold::holds_all(&quince_core::fold::fold(&e.title), &words));
         found.extend(extra);
         found.sort_by_key(|e| e.starts_at);
@@ -1713,6 +1722,270 @@ fn spawn_holidays(app: tauri::AppHandle) {
             tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
         }
     });
+}
+
+/* ---- calendars subscribed to by address ----------------------------------------------- */
+
+use quince_icloud::calendar_feeds::{self as feeds, Subscription};
+
+/// Calendars subscribed to by address, each with its file as last read. Kept in
+/// `subscriptions.json` beside the library, each file in `subscriptions/<id>.ics`.
+struct Feeds {
+    subs: Mutex<Vec<(Subscription, Option<feeds::Feed>)>>,
+}
+
+/// Apple's calendar colours, for a subscription whose file names none (icloud.com's order).
+const FEED_COLOURS: [&str; 7] = [
+    "#ff9500", "#34aadc", "#65db39", "#cc73e1", "#ffcc00", "#a2845e", "#ff2d55",
+];
+
+fn feeds_dir(app: &tauri::AppHandle) -> PathBuf {
+    state_dir(app).join("subscriptions")
+}
+
+fn save_subscriptions(
+    app: &tauri::AppHandle,
+    subs: &[(Subscription, Option<feeds::Feed>)],
+) -> UiResult<()> {
+    let list: Vec<&Subscription> = subs.iter().map(|(s, _)| s).collect();
+    let text = serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?;
+    let path = state_dir(app).join("subscriptions.json");
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// Fetch one subscription's file with the client that reaches its host and nothing else.
+async fn fetch_subscription(url: &str) -> UiResult<(String, feeds::Feed)> {
+    let host = feeds::host_of(url).ok_or("That address has no server in it.")?;
+    let http = quince_auth::listed_only(&[host])
+        .user_agent(concat!("Skykeep/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let text = feeds::fetch(&http, url).await.map_err(|e| e.to_string())?;
+    let here = jiff::tz::TimeZone::system();
+    let feed = feeds::parse(&text, &here).map_err(|e| e.to_string())?;
+    Ok((text, feed))
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// Read the subscriptions kept on disk, then fetch each when it is due — never before the
+/// person has subscribed to something, so a new install reaches no host but Apple's.
+fn spawn_subscriptions(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let here = jiff::tz::TimeZone::system();
+        let kept: Vec<Subscription> =
+            std::fs::read_to_string(state_dir(&app).join("subscriptions.json"))
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default();
+        {
+            let state = app.state::<Feeds>();
+            let mut subs = state.subs.lock().await;
+            *subs = kept
+                .into_iter()
+                .map(|s| {
+                    let feed =
+                        std::fs::read_to_string(feeds_dir(&app).join(format!("{}.ics", s.id)))
+                            .ok()
+                            .and_then(|t| feeds::parse(&t, &here).ok());
+                    (s, feed)
+                })
+                .collect();
+        }
+        app.emit(SYNCED, refresh::status(&app.state::<Data>().0).await)
+            .ok();
+        loop {
+            let due: Vec<Subscription> = app
+                .state::<Feeds>()
+                .subs
+                .lock()
+                .await
+                .iter()
+                .filter(|(s, _)| s.due(now_unix()))
+                .map(|(s, _)| s.clone())
+                .collect();
+            for s in due {
+                refresh_subscription(&app, &s.id).await.ok();
+            }
+            tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+        }
+    });
+}
+
+/// Fetch one subscription again, keeping the copy it had when the fetch does not land.
+async fn refresh_subscription(app: &tauri::AppHandle, id: &str) -> UiResult<Subscription> {
+    let state = app.state::<Feeds>();
+    let url = {
+        let subs = state.subs.lock().await;
+        subs.iter()
+            .find(|(s, _)| s.id == id)
+            .map(|(s, _)| s.url.clone())
+            .ok_or("That subscription is no longer here.")?
+    };
+    let fetched = fetch_subscription(&url).await;
+    let mut subs = state.subs.lock().await;
+    let Some(entry) = subs.iter_mut().find(|(s, _)| s.id == id) else {
+        return Err("That subscription is no longer here.".into());
+    };
+    let outcome = match fetched {
+        Ok((text, feed)) => {
+            std::fs::create_dir_all(feeds_dir(app)).ok();
+            std::fs::write(feeds_dir(app).join(format!("{id}.ics")), text).ok();
+            entry.0.fetched_at = Some(now_unix());
+            entry.0.problem = None;
+            entry.1 = Some(feed);
+            Ok(entry.0.clone())
+        }
+        Err(e) => {
+            // Tried, so not tried again until the interval comes round; the old copy stays.
+            entry.0.fetched_at = Some(now_unix());
+            entry.0.problem = Some(e.clone());
+            Err(e)
+        }
+    };
+    save_subscriptions(app, &subs)?;
+    drop(subs);
+    app.emit(SYNCED, refresh::status(&app.state::<Data>().0).await)
+        .ok();
+    outcome
+}
+
+/// The subscriptions, as the Calendar sidebar lists them.
+#[tauri::command]
+async fn calendar_subscriptions(feeds: State<'_, Feeds>) -> UiResult<Vec<Subscription>> {
+    Ok(feeds
+        .subs
+        .lock()
+        .await
+        .iter()
+        .map(|(s, _)| s.clone())
+        .collect())
+}
+
+/// New Calendar Subscription: the address fetched once, here and now, so a wrong one is said
+/// at once; its name and colour from the file when it gives them.
+#[tauri::command]
+async fn calendar_subscribe(
+    url: String,
+    app: tauri::AppHandle,
+    feeds_state: State<'_, Feeds>,
+) -> UiResult<Subscription> {
+    let url = feeds::normalise_url(&url)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    if feeds_state
+        .subs
+        .lock()
+        .await
+        .iter()
+        .any(|(s, _)| s.url == url)
+    {
+        return Err("You’re already subscribed to that calendar.".into());
+    }
+    let (text, feed) = fetch_subscription(&url).await?;
+    let mut subs = feeds_state.subs.lock().await;
+    let taken: Vec<String> = subs.iter().map(|(s, _)| s.colour.clone()).collect();
+    let colour = feed.colour.clone().unwrap_or_else(|| {
+        FEED_COLOURS
+            .iter()
+            .find(|c| !taken.iter().any(|t| t == *c))
+            .unwrap_or(&FEED_COLOURS[subs.len() % FEED_COLOURS.len()])
+            .to_string()
+    });
+    let sub = Subscription {
+        id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
+        title: feed
+            .name
+            .clone()
+            .or_else(|| feeds::host_of(&url))
+            .unwrap_or_else(|| "Subscription".into()),
+        url,
+        colour,
+        // As often as the publisher asks, at least hourly; daily when it does not say.
+        refresh_minutes: feed.refresh_minutes.map_or(24 * 60, |m| m.max(60)),
+        fetched_at: Some(now_unix()),
+        problem: None,
+    };
+    std::fs::create_dir_all(feeds_dir(&app)).map_err(|e| e.to_string())?;
+    std::fs::write(feeds_dir(&app).join(format!("{}.ics", sub.id)), text)
+        .map_err(|e| e.to_string())?;
+    subs.push((sub.clone(), Some(feed)));
+    save_subscriptions(&app, &subs)?;
+    Ok(sub)
+}
+
+/// Rename, recolour or change how often a subscription is fetched.
+#[tauri::command]
+async fn calendar_subscription_update(
+    id: String,
+    title: Option<String>,
+    colour: Option<String>,
+    refresh_minutes: Option<u32>,
+    app: tauri::AppHandle,
+    feeds_state: State<'_, Feeds>,
+) -> UiResult<()> {
+    let mut subs = feeds_state.subs.lock().await;
+    let (s, _) = subs
+        .iter_mut()
+        .find(|(s, _)| s.id == id)
+        .ok_or("That subscription is no longer here.")?;
+    if let Some(t) = title
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
+        s.title = t;
+    }
+    if let Some(c) = colour.filter(|c| c.len() == 7 && c.starts_with('#')) {
+        s.colour = c.to_ascii_lowercase();
+    }
+    if let Some(m) = refresh_minutes {
+        s.refresh_minutes = m;
+    }
+    save_subscriptions(&app, &subs)
+}
+
+/// Unsubscribe: the calendar and its copy leave this computer; nothing was ever the account's.
+#[tauri::command]
+async fn calendar_unsubscribe(
+    id: String,
+    app: tauri::AppHandle,
+    feeds_state: State<'_, Feeds>,
+) -> UiResult<()> {
+    let mut subs = feeds_state.subs.lock().await;
+    subs.retain(|(s, _)| s.id != id);
+    std::fs::remove_file(feeds_dir(&app).join(format!("{id}.ics"))).ok();
+    save_subscriptions(&app, &subs)
+}
+
+/// Fetch a subscription now, as Refresh Calendars does.
+#[tauri::command]
+async fn calendar_subscription_refresh(
+    id: String,
+    app: tauri::AppHandle,
+) -> UiResult<Subscription> {
+    refresh_subscription(&app, &id).await
+}
+
+/// Every subscription's events in `[from, to)`.
+async fn subscribed_events(feeds_state: &Feeds, from: i64, to: i64) -> Vec<Event> {
+    feeds_state
+        .subs
+        .lock()
+        .await
+        .iter()
+        .filter_map(|(s, f)| {
+            f.as_ref()
+                .map(|f| feeds::events(f, &s.calendar_guid(), from, to))
+        })
+        .flatten()
+        .collect()
 }
 
 /// After a calendar was made, changed or removed: Apple's own list of calendars, kept here,
@@ -1806,6 +2079,7 @@ async fn calendar_delete(
 async fn calendar_list(
     data: State<'_, Data>,
     occasions: State<'_, Occasions>,
+    feeds_state: State<'_, Feeds>,
 ) -> UiResult<Vec<Calendar>> {
     let library = data.0.lock().await;
     let mut calendars = library.calendars().map_err(|e| e.to_string())?;
@@ -1821,6 +2095,15 @@ async fn calendar_list(
         holidays.as_deref(),
         any_birthdays,
     ));
+    calendars.extend(
+        feeds_state
+            .subs
+            .lock()
+            .await
+            .iter()
+            .zip(0..)
+            .map(|((s, _), i)| s.calendar(i)),
+    );
     Ok(calendars)
 }
 
@@ -2369,7 +2652,7 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 const TABLE_CELL_WRITES: bool = false;
 const TABLE_LINE_WRITES: bool = false;
 const TABLE_WRITES_OFF: &str =
-    "Tables are read-only in Pomander for now: edits made here didn’t merge cleanly on iPhone yet.";
+    "Tables are read-only in Skykeep for now: edits made here didn’t merge cleanly on iPhone yet.";
 
 /// Add an empty row to a Notes table at `at` (0 is the top), as Notes does, and keep the
 /// table as Apple now holds it.
@@ -2511,7 +2794,7 @@ async fn note_save(
     let note = note_by_guid(&data, &guid).await?;
     if !note.editable {
         return Err(
-            "This note holds formatting Pomander can't rewrite safely, so it stays read-only."
+            "This note holds formatting Skykeep can't rewrite safely, so it stays read-only."
                 .into(),
         );
     }
@@ -4410,18 +4693,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     // Four plain lines, nothing nested: the window, the two quick notes a person reaches for
     // from anywhere, and Quit. A submenu was slow to draw in the panel and one more step;
     // each app has its own launcher and is a click away in the window.
-    let open = MenuItem::with_id(app, "open", "Open Pomander", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open Skykeep", true, None::<&str>)?;
     let new_reminder = MenuItem::with_id(app, "new:reminder", "New Reminder", true, None::<&str>)?;
     let new_note = MenuItem::with_id(app, "new:note", "New Note", true, None::<&str>)?;
     let line = PredefinedMenuItem::separator(app)?;
     let line2 = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Pomander", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Skykeep", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[&open, &line, &new_reminder, &new_note, &line2, &quit],
     )?;
     let mut tray = TrayIconBuilder::with_id("quince")
-        .tooltip("Pomander")
+        .tooltip("Skykeep")
         .menu(&menu)
         // A click opens the window, as a tray icon does on Windows (and in most Linux panels);
         // the menu is the right click's. A Mac menu-bar extra opens its menu on any click.
@@ -4474,11 +4757,20 @@ fn main() {
     if identifier != current {
         context.config_mut().identifier = identifier;
     }
+    // The name the desktop knows the main window by: on Wayland GTK sends the program name as
+    // the window's app ID, which was the binary's ("quince-app") — so a taskbar or dock could
+    // not match it to Skykeep's launcher entry, its name or its icon. Named for the identifier,
+    // it is the launcher's own ID (each app's window says its own; apps.rs).
+    #[cfg(target_os = "linux")]
+    {
+        glib::set_prgname(Some(context.config().identifier.as_str()));
+        glib::set_application_name("Skykeep");
+    }
     tauri::Builder::default()
         // One Quince at a time: opening it again brings back the one already running, which
         // may be sitting in the tray with its window closed.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            // A file opened with Pomander, or a quick capture (`--new reminder`): handled
+            // A file opened with Skykeep, or a quick capture (`--new reminder`): handled
             // here, in the one already running.
             if intake::arrived(app, &args, std::path::Path::new(&cwd)) {
                 return;
@@ -4490,7 +4782,7 @@ fn main() {
             }
         }))
         // Each window — the library, and every app's own — reopens at the size and place it was
-        // left, as Apple's apps do. Not whether it shows: that stays Pomander's (hidden at
+        // left, as Apple's apps do. Not whether it shows: that stays Skykeep's (hidden at
         // login, shown once drawn).
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -4730,6 +5022,10 @@ fn main() {
                 feed: Mutex::new((None, Vec::new())),
             });
             spawn_holidays(app.handle().clone());
+            app.manage(Feeds {
+                subs: Mutex::new(Vec::new()),
+            });
+            spawn_subscriptions(app.handle().clone());
             spawn_heartbeat(Arc::clone(&client));
             push::spawn(app.handle().clone(), Arc::clone(&client));
             spawn_auto_sync(app.handle().clone(), client);
@@ -4742,6 +5038,9 @@ fn main() {
                     app.emit(SYNCED, status).ok();
                 });
             });
+            // In the desktop's own search (GNOME Shell, KRunner) for as long as it runs.
+            #[cfg(target_os = "linux")]
+            search_provider::serve(app.handle().clone());
             alerts::spawn(app.handle().clone());
             alerts::spawn_events(app.handle().clone());
             // A tiling compositor places, sizes and closes windows itself; a title bar with
@@ -4770,6 +5069,9 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            export::library_export_start,
+            export::library_export_cancel,
+            export::library_export_reveal,
             outbox::outbox_status,
             outbox::outbox_resend,
             outbox::outbox_discard,
@@ -4813,6 +5115,11 @@ fn main() {
             calendar_delete,
             calendar_list,
             calendar_search,
+            calendar_subscriptions,
+            calendar_subscribe,
+            calendar_subscription_update,
+            calendar_unsubscribe,
+            calendar_subscription_refresh,
             reminder_lists,
             reminder_groups,
             reminder_sections,
@@ -4905,6 +5212,7 @@ fn main() {
             notes_cmds::note_lock_hint,
             notes_cmds::note_lock_forget,
             notes_cmds::note_attach_file,
+            notes_cmds::note_attach_enabled,
             reminders_cmds::reminder_detail,
             reminders_cmds::reminder_tags,
             reminders_cmds::reminders_tagged,
@@ -4939,7 +5247,7 @@ fn main() {
             reminder_set_repeat,
         ])
         .build(context)
-        .expect("Pomander failed to start")
+        .expect("Skykeep failed to start")
         .run(|_app, event| {
             // The iCloud Drive folder goes with the app: left mounted, it would answer
             // nothing ("Transport endpoint is not connected").

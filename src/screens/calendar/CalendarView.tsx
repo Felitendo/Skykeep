@@ -6,7 +6,7 @@ import { useActiveRef } from "../../lib/screen";
 import { usePending } from "../../lib/pending";
 import { inMenu, Portal } from "../../components/Portal";
 import { TimeField } from "../../components/TimeField";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Ellipsis, MapPin, Plus, Repeat } from "lucide-react";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   type EventRepeat,
@@ -15,7 +15,11 @@ import {
   messageOf,
   type Calendar,
   type CalendarEvent,
-  type Reminder, type EventScope } from "../../lib/ipc";
+  type Reminder, type EventScope,
+  type CalendarSubscription,
+  calendarFeedsApi,
+  SUBSCRIPTION_PREFIX } from "../../lib/ipc";
+import { parseQuick } from "./quick";
 import { useSync } from "../../lib/sync";
 import { Picker } from "../../components/Picker";
 import { RowMenu } from "../../components/RowMenu";
@@ -40,6 +44,7 @@ import {
   spansDays,
   startOfWeek,
   wallIn,
+  weekNumber,
   weekSpans,
   zoneName,
 } from "./model";
@@ -120,6 +125,39 @@ const MONTH_ROWS = 4;
 /** Calendars the viewer has switched off here, remembered on this computer. */
 const HIDDEN_KEY = "quince.calendar.hidden";
 const VIEW_KEY = "quince.calendar.view";
+/** Sidebar groups folded away, week numbers shown, and each calendar's default alerts —
+ *  Apple keeps these as preferences of each Mac, and so does this. */
+const FOLDED_KEY = "quince.calendar.folded";
+const WEEK_NUMBERS_KEY = "quince.calendar.weekNumbers";
+const DEFAULT_ALERTS_KEY = "quince.calendar.defaultAlerts";
+
+type DefaultAlerts = { timed: Record<string, number>; allDay: Record<string, number> };
+const readJson = <T,>(key: string, fallback: T): T => {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const writeJson = (key: string, value: unknown) => {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // A preference of this computer; kept for now if it cannot be written.
+  }
+};
+
+/** How often a subscription can be fetched again, as Calendar offers it. */
+const REFRESHES = [
+  { minutes: 60, label: "Every Hour" },
+  { minutes: 1440, label: "Every Day" },
+  { minutes: 10080, label: "Every Week" },
+  { minutes: 0, label: "Only When Asked" },
+];
+
+/** A place, for the map app this computer opens `geo:` links with. */
+const mapsHref = (place: string) => `geo:0,0?q=${encodeURIComponent(place.split("\n").join(", "))}`;
 
 const readSet = (key: string) => {
   try {
@@ -153,6 +191,9 @@ type Draft = {
   /** How it repeats; `undefined` until read from Apple, `null` for never. */
   repeat?: EventRepeat | null;
   repeatChanged?: boolean;
+  /** A new event's alerts are its calendar's defaults until one is chosen, and follow a
+   *  change of calendar or of all-day. */
+  alertsDefault?: boolean;
 };
 
 /**
@@ -243,13 +284,28 @@ export function CalendarView() {
     setSelected(midnight(dateOf(e.startsAt)));
     setView("day");
     setQuery("");
+    // Its calendar shown if it was hidden, and the event itself opened, once it is drawn.
+    if (hidden.has(e.calendarGuid)) toggleCalendar(e.calendarGuid);
+    setPicked(e.guid);
+    setFinding(e.guid);
   };
 
   /** The day everything is anchored on: the one selected, and what the views are built around. */
   const [selected, setSelected] = useState<Date>(() => midnight(today));
   // Search, as Calendar's toolbar field: every word, any calendar, soonest first.
   const [query, setQuery] = useState("");
-  const [found, setFound] = useState<CalendarEvent[]>([]);
+  const [found, setFoundRaw] = useState<CalendarEvent[]>([]);
+  /** The row lit in the results, which Return opens and the arrows move. */
+  const [lit, setLit] = useState(0);
+  // Coming up first, soonest first; then what has been, latest first — what is looked for is
+  // most often next, and a long past pushed it out of sight.
+  const setFound = (rows: CalendarEvent[]) => {
+    const now = Date.now() / 1000;
+    const ahead = rows.filter((e) => e.endsAt >= now).sort((a, b) => a.startsAt - b.startsAt);
+    const past = rows.filter((e) => e.endsAt < now).sort((a, b) => b.startsAt - a.startsAt);
+    setFoundRaw([...ahead, ...past]);
+    setLit(0);
+  };
   const searchField = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     const q = query.trim();
@@ -285,6 +341,44 @@ export function CalendarView() {
   const [naming, setNaming] = useState<string | null>(null);
   const [calMenu, setCalMenu] = useState<{ cal: Calendar; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(() => readSet(HIDDEN_KEY));
+  /** Calendars subscribed to by address, as kept on this computer. */
+  const [subs, setSubs] = useState<CalendarSubscription[]>([]);
+  /** Sidebar groups folded away. */
+  const [folded, setFolded] = useState<Set<string>>(() => readSet(FOLDED_KEY));
+  const fold = (key: string) =>
+    setFolded((was) => {
+      const next = new Set(was);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      writeJson(FOLDED_KEY, [...next]);
+      return next;
+    });
+  const [weekNumbers, setWeekNumbersState] = useState<boolean>(() => readJson(WEEK_NUMBERS_KEY, false));
+  const setWeekNumbers = (on: boolean) => {
+    setWeekNumbersState(on);
+    writeJson(WEEK_NUMBERS_KEY, on);
+  };
+  const [defaultAlerts, setDefaultAlertsState] = useState<DefaultAlerts>(() => readJson(DEFAULT_ALERTS_KEY, { timed: {}, allDay: {} }));
+  const setDefaultAlert = (kind: "timed" | "allDay", guid: string, minutes: number | null) =>
+    setDefaultAlertsState((was) => {
+      const next = { ...was, [kind]: { ...was[kind] } };
+      if (minutes === null) delete next[kind][guid];
+      else next[kind][guid] = minutes;
+      writeJson(DEFAULT_ALERTS_KEY, next);
+      return next;
+    });
+  /** The event picked — the last one clicked — that Return opens, Delete deletes, ⌘D
+   *  duplicates and ⌘C copies; and the event copied, for ⌘V to put on the selected day. */
+  const [picked, setPicked] = useState<string | null>(null);
+  const [clip, setClip] = useState<CalendarEvent | null>(null);
+  /** Quick Event, opened under the + button. */
+  const [quick, setQuick] = useState(false);
+  /** New Calendar Subscription, opened from the sidebar's +. */
+  const [subscribing, setSubscribing] = useState(false);
+  const [addMenu, setAddMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{ list: Calendar[]; at: { x: number; y: number; alignRight: boolean } } | null>(null);
+  const [moreMenu, setMoreMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
+  const [eventMenu, setEventMenu] = useState<{ event: CalendarEvent; at: { x: number; y: number; alignRight: boolean } } | null>(null);
   // An event found by the search across everything: its day shown, its calendar too if it
   // was hidden (and kept shown, as its tick in the list says) — never a found event that
   // cannot be seen — and the event itself opened, as Calendar opens one found.
@@ -365,12 +459,14 @@ export function CalendarView() {
 
   const { hold, over } = usePending<CalendarEvent>();
   const read = useCallback(async () => {
-    const [found, cals, reminders, lists] = await Promise.all([
+    const [found, cals, reminders, lists, feeds] = await Promise.all([
       api.calendarEvents(range.from, range.to),
       api.calendarList(),
       api.remindersDueBetween(range.from, range.to),
       api.reminderLists().catch(() => []),
+      calendarFeedsApi.list().catch(() => [] as CalendarSubscription[]),
     ]);
+    setSubs(Array.isArray(feeds) ? feeds : []);
     setListColours(new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.colour && /^#[0-9a-f]{6}$/i.test(l.colour) ? l.colour : ""])));
     setEvents(over(Array.isArray(found) ? found : []));
     setCalendars(Array.isArray(cals) ? cals : []);
@@ -432,6 +528,17 @@ export function CalendarView() {
   const writable = calendars.filter((c) => c.writable);
   const target = defaultCalendar(calendars);
 
+  /** A group's Show All and Hide All. */
+  const showOnly = (list: Calendar[], show: boolean) =>
+    setHidden((was) => {
+      const next = new Set(was);
+      for (const c of list) {
+        if (show) next.delete(c.guid);
+        else next.add(c.guid);
+      }
+      writeJson(HIDDEN_KEY, [...next]);
+      return next;
+    });
   const toggleCalendar = (guid: string) =>
     setHidden((was) => {
       const next = new Set(was);
@@ -620,6 +727,118 @@ export function CalendarView() {
     (e: CalendarEvent, startsAt: number, endsAt: number) => void save({ ...draftOf(e), startsAt, endsAt }),
     [save]
   );
+  /** Dragged to another day in Month: the same clock time, that many days on. */
+  const moveDays = useCallback((e: CalendarEvent, days: number) => {
+    if (!days) return;
+    const zone = zoneOf(e);
+    void save({ ...draftOf(e), startsAt: addDaysIn(zone, e.startsAt, days), endsAt: addDaysIn(zone, e.endsAt, days) });
+  }, [save]);
+
+  /** Where a copy of `e` can go: its own calendar, or the default when that one is read-only. */
+  const homeFor = (e: CalendarEvent) => (byGuid.get(e.calendarGuid)?.writable ? e.calendarGuid : targetGuid);
+  /** Real events at Apple carry alerts and a repeat to read; birthdays and feeds do not. */
+  const atApple = (guid: string) => !guid.startsWith("quince:") && !guid.startsWith("pending:");
+
+  /** ⌘D: a copy at the same time, its alerts and repeat with it, as Calendar duplicates. */
+  const duplicate = async (e: CalendarEvent) => {
+    const into = homeFor(e);
+    if (!into) return;
+    const occurrence = e.guid.includes("__");
+    const [alerts, repeat] = atApple(e.guid)
+      ? await Promise.all([
+          api.eventAlerts(e.guid).catch(() => [] as number[]),
+          occurrence ? Promise.resolve(null) : api.eventRepeat(e.guid).catch(() => null),
+        ])
+      : [alertsFor(into, e.allDay), null];
+    await save({ ...draftOf(e), guid: null, calendarGuid: into, alerts, alertsChanged: true, repeat, repeatChanged: repeat !== null });
+  };
+  /** ⌘V: the copied event on the selected day, at its own time of day. */
+  const paste = (e: CalendarEvent) => {
+    const into = homeFor(e);
+    if (!into) return;
+    const day = selected;
+    let startsAt: number;
+    let endsAt: number;
+    if (e.allDay) {
+      const days = Math.max(1, Math.round((e.endsAt - e.startsAt) / 86_400));
+      startsAt = seconds(day);
+      endsAt = seconds(addDays(day, days));
+    } else {
+      const was = dateOf(e.startsAt);
+      startsAt = seconds(new Date(day.getFullYear(), day.getMonth(), day.getDate(), was.getHours(), was.getMinutes()));
+      endsAt = startsAt + (e.endsAt - e.startsAt);
+    }
+    void save({ ...draftOf(e), guid: null, calendarGuid: into, startsAt, endsAt, alerts: alertsFor(into, e.allDay), alertsChanged: true });
+  };
+  /** Delete from the keyboard: asked first, as a key is easily pressed. A repeating event's
+   *  own question (this one, future or all) is the asking. */
+  const deleteAsking = async (e: CalendarEvent) => {
+    if (!byGuid.get(e.calendarGuid)?.writable) return;
+    if (!e.guid.includes("__")) {
+      const sure = await confirm({
+        title: `Delete \u201c${e.title || "New Event"}\u201d?`,
+        body: "It will be deleted from all your devices.",
+        action: "Delete",
+        danger: true,
+        symbol: "trash",
+      });
+      if (!sure) return;
+    }
+    void remove(e.guid);
+  };
+  /** Return on a picked event: opened beside where it is drawn. */
+  const openPicked = (e: CalendarEvent) => {
+    const block = document.querySelector(`[data-event="${CSS.escape(e.guid)}"]`);
+    const r = block?.getBoundingClientRect();
+    openDraft(draftOf(e), r ? { x: r.right, y: r.top, left: r.left } : { x: window.innerWidth / 2, y: 120 });
+  };
+
+  /** Quick Event: the line read here, shown, and on Return made as read. */
+  const addQuick = async (text: string, details: boolean, at: Anchor) => {
+    if (!targetGuid) return;
+    const q = parseQuick(text);
+    setQuick(false);
+    const d: Draft = {
+      guid: null, calendarGuid: targetGuid, title: q.title, location: q.location ?? "",
+      startsAt: q.startsAt, endsAt: q.endsAt, allDay: q.allDay, notes: "", url: null, timezone: null,
+      repeat: q.repeat, repeatChanged: q.repeat !== null,
+    };
+    setSelected(midnight(dateOf(q.startsAt)));
+    if (details || !q.title) {
+      openDraft(d, at);
+      setFollowDraft(true);
+      return;
+    }
+    await save({ ...d, alerts: alertsFor(targetGuid, q.allDay), alertsChanged: true });
+  };
+
+  /** Subscriptions: renamed, recoloured, refreshed or let go, kept on this computer. */
+  const updateSub = (id: string, change: { title?: string; colour?: string; refreshMinutes?: number }) => {
+    setNaming(null);
+    if (change.title !== undefined && !change.title.trim()) return;
+    setSubs((list) => list.map((x) => (x.id === id ? { ...x, ...change } : x)));
+    setCalendars((cs) => cs.map((c) => (c.guid === SUBSCRIPTION_PREFIX + id ? { ...c, ...(change.title ? { title: change.title } : {}), ...(change.colour ? { colour: change.colour } : {}) } : c)));
+    void write(async () => { await calendarFeedsApi.update(id, change); });
+  };
+  const refreshSub = (id: string) => {
+    calendarFeedsApi.refresh(id).then(
+      (s) => { toast(`\u201c${s.title}\u201d is up to date`); void read(); },
+      (e) => setError(messageOf(e)),
+    );
+  };
+  const unsubscribe = (sub: CalendarSubscription) => {
+    void confirm({
+      title: `Unsubscribe from \u201c${sub.title}\u201d?`,
+      body: "Its events leave this computer. You can subscribe again at any time.",
+      action: "Unsubscribe",
+      danger: true,
+    }).then((sure) => {
+      if (!sure) return;
+      setCalendars((cs) => cs.filter((c) => c.guid !== SUBSCRIPTION_PREFIX + sub.id));
+      setEvents((rows) => rows.filter((e) => e.calendarGuid !== SUBSCRIPTION_PREFIX + sub.id));
+      void write(async () => { await calendarFeedsApi.unsubscribe(sub.id); });
+    });
+  };
   /**
    * The popover put away by a click elsewhere keeps what was written in it, as Calendar's
    * does — a title typed and then a click on the next day had thrown the title away. Escape
@@ -633,7 +852,7 @@ export function CalendarView() {
       d.title !== was.title || d.location !== was.location || d.notes !== was.notes ||
       (d.url ?? "") !== (was.url ?? "") || d.calendarGuid !== was.calendarGuid ||
       d.timezone !== was.timezone || d.allDay !== was.allDay ||
-      d.alertsChanged || d.repeatChanged ||
+      (d.alertsChanged && d.alerts !== was.alerts) || (d.repeatChanged && d.repeat !== was.repeat) ||
       // A new event's times are where it was made; only an existing one's are a change.
       (d.guid !== null && (d.startsAt !== was.startsAt || d.endsAt !== was.endsAt))
     ));
@@ -651,13 +870,33 @@ export function CalendarView() {
     };
   }, [undo, takeBack]);
 
+  /** A calendar's default alert for a new event, kept on this computer (Apple's web service
+   *  has no field for one): minutes before, as the alert pickers count. */
+  const defaultsRef = useRef(defaultAlerts);
+  defaultsRef.current = defaultAlerts;
+  const alertsFor = useCallback((calendarGuid: string, allDay: boolean): number[] => {
+    const m = defaultsRef.current[allDay ? "allDay" : "timed"][calendarGuid];
+    return m === undefined ? [] : [m];
+  }, []);
+  /** The popover's changes, a new event's default alerts kept in step with its calendar. */
+  const changeDraft = useCallback((next: Draft) => {
+    setDraft(next.alertsDefault && !next.guid ? { ...next, alerts: alertsFor(next.calendarGuid, next.allDay) } : next);
+  }, [alertsFor]);
+
   /** The draft as it was opened, to tell whether anything in it has been changed since. */
   const openedAs = useRef<Draft | null>(null);
   const openDraft = useCallback((d: Draft, at: Anchor) => {
     // The event already open stays as it is: a second click — a double-click — closed it and
     // opened it again, and the popover flickered.
     if (d.guid && draftRef.current?.guid === d.guid) return;
-    const opened = d.guid ? d : { ...d, alerts: [], repeat: null };
+    const opened = d.guid ? d : {
+      ...d,
+      alerts: d.alerts ?? alertsFor(d.calendarGuid, d.allDay),
+      alertsChanged: true,
+      alertsDefault: d.alerts === undefined,
+      repeat: d.repeat ?? null,
+      repeatChanged: Boolean(d.repeat),
+    };
     openedAs.current = opened;
     setDraft(opened);
     setAnchor(at);
@@ -704,7 +943,15 @@ export function CalendarView() {
    * inputs have not changed is not drawn again — not the week for every key typed in the
    * popover, not the year for every minute the clock moves on.
    */
-  const openEvent = useCallback((e: CalendarEvent, at: Anchor) => openDraft(draftOf(e), at), [openDraft]);
+  const openEvent = useCallback((e: CalendarEvent, at: Anchor) => {
+    setPicked(e.guid);
+    openDraft(draftOf(e), at);
+  }, [openDraft]);
+  /** Right-click on an event: what can be done with it, as Calendar's shortcut menu offers. */
+  const menuFor = useCallback((e: CalendarEvent, at: { x: number; y: number }) => {
+    setPicked(e.guid);
+    setEventMenu({ event: e, at: { ...at, alignRight: false } });
+  }, []);
   const createInMonth = useCallback((day: Date, at: Anchor) => {
     const start = new Date(day);
     start.setHours(9, 0, 0, 0);
@@ -779,6 +1026,20 @@ export function CalendarView() {
       if (typing || draft) return;
       const command = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
       const k = e.key.toLowerCase();
+      // The picked event: Return opens it, Delete asks and deletes it, ⌘D duplicates it, ⌘C
+      // copies it; ⌘V puts the copy on the selected day; Escape lets it go.
+      const event = picked ? events.find((x) => x.guid === picked) ?? null : null;
+      const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+      const inMenuNow = document.querySelector('[role="menu"], [role="alertdialog"], .modal-veil');
+      if (event && !inMenuNow) {
+        const textSelected = (window.getSelection()?.toString() ?? "") !== "";
+        if (plain && e.key === "Enter") { e.preventDefault(); openPicked(event); return; }
+        if (plain && (e.key === "Delete" || e.key === "Backspace")) { e.preventDefault(); void deleteAsking(event); return; }
+        if (command && k === "d") { e.preventDefault(); void duplicate(event); return; }
+        if (command && k === "c" && !textSelected) { e.preventDefault(); setClip(event); toast(`Copied \u201c${event.title}\u201d`); return; }
+        if (plain && e.key === "Escape") { setPicked(null); return; }
+      }
+      if (command && k === "v" && clip && !inMenuNow) { e.preventDefault(); paste(clip); return; }
       // ⇧⌘T, Go to Date…, as in Calendar's View menu.
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && k === "t") {
         e.preventDefault();
@@ -880,35 +1141,67 @@ export function CalendarView() {
       <aside className="cx-side" aria-label="Calendars">
         <div className="cx-cals">
           {[
-            { heading: "iCloud", list: calendars.filter((c) => c.writable) },
-            { heading: "Other", list: calendars.filter((c) => !c.writable) },
+            { key: "icloud", heading: "iCloud", list: calendars.filter((c) => c.writable) },
+            { key: "subs", heading: "Subscriptions", list: calendars.filter((c) => c.guid.startsWith(SUBSCRIPTION_PREFIX)) },
+            { key: "other", heading: "Other", list: calendars.filter((c) => !c.writable && !c.guid.startsWith(SUBSCRIPTION_PREFIX)) },
           ]
-            .filter((g) => g.list.length > 0)
-            .map((group) => (
-              <Fragment key={group.heading}>
-                <p className="side-heading cx-side-heading">
-                  {group.heading}
-                  {group.heading === "iCloud" && (
-                    <button className="icon-button small cx-side-add" aria-label="New Calendar" title="New Calendar" onClick={() => setNaming("new")}>
+            .filter((g) => g.list.length > 0 || (g.key === "icloud" && loaded && calendars.length > 0))
+            .map((group) => {
+              const open = !folded.has(group.key);
+              return (
+              <Fragment key={group.key}>
+                <div className="cx-group" role="group" aria-label={group.heading}>
+                  <button
+                    className="side-heading cx-side-heading"
+                    aria-expanded={open}
+                    onClick={() => fold(group.key)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setGroupMenu({ list: group.list, at: { x: e.clientX, y: e.clientY, alignRight: false } });
+                    }}
+                  >
+                    <ChevronDown size={11} strokeWidth={2.6} aria-hidden="true" className="cx-fold" />
+                    {group.heading}
+                  </button>
+                  {group.key === "icloud" && (
+                    <button
+                      className="icon-button small cx-side-add"
+                      aria-label="Add Calendar"
+                      title="Add Calendar"
+                      aria-haspopup="menu"
+                      onClick={(e) => {
+                        const r = e.currentTarget.getBoundingClientRect();
+                        setAddMenu({ x: r.left, y: r.bottom + 4, alignRight: false });
+                      }}
+                    >
                       <Plus size={14} strokeWidth={2.2} aria-hidden="true" />
                     </button>
                   )}
-                </p>
-                {group.list.map((c) =>
-                  naming === c.guid ? (
-                    <CalendarName key={c.guid} initial={c.title} label={`Rename ${c.title}`} onDone={(t) => updateCalendar(c, { title: t })} onCancel={() => setNaming(null)} />
+                </div>
+                {open && group.list.map((c) => {
+                  const sub = c.guid.startsWith(SUBSCRIPTION_PREFIX) ? subs.find((x) => SUBSCRIPTION_PREFIX + x.id === c.guid) ?? null : null;
+                  return naming === c.guid ? (
+                    <CalendarName
+                      key={c.guid}
+                      initial={c.title}
+                      label={`Rename ${c.title}`}
+                      onDone={(t) => (sub ? updateSub(sub.id, { title: t.trim() }) : updateCalendar(c, { title: t }))}
+                      onCancel={() => setNaming(null)}
+                    />
                   ) : (
                     <label
                       className="source-row cx-cal"
                       key={c.guid}
+                      title={sub?.problem ? `Not refreshed: ${sub.problem}` : undefined}
                       onContextMenu={(e) => {
-                        // A calendar of this account can be renamed, recoloured or removed, as on icloud.com.
-                        if (!c.writable) return;
+                        // A calendar of this account, or a subscription, can be renamed and
+                        // recoloured; Birthdays and holidays are as they are.
+                        if (!c.writable && !sub) return;
                         e.preventDefault();
                         setCalMenu({ cal: c, at: { x: e.clientX, y: e.clientY, alignRight: false } });
                       }}
                       onDoubleClick={(e) => {
-                        if (!c.writable) return;
+                        if (!c.writable && !sub) return;
                         e.preventDefault();
                         setNaming(c.guid);
                       }}
@@ -920,16 +1213,28 @@ export function CalendarView() {
                         style={{ "--cal": tint(c) } as React.CSSProperties}
                       />
                       <span className="source-name cx-cal-name">{c.title}</span>
+                      {sub?.problem && <span className="cx-cal-problem" aria-label="Not refreshed">!</span>}
                     </label>
-                  ),
-                )}
-                {group.heading === "iCloud" && naming === "new" && (
+                  );
+                })}
+                {open && group.key === "icloud" && naming === "new" && (
                   <CalendarName initial="Untitled" label="New calendar name" onDone={createCalendar} onCancel={() => setNaming(null)} />
                 )}
               </Fragment>
-            ))}
+              );
+            })}
           {loaded && calendars.length === 0 && (
             <EmptyState className="cal-empty">There are no calendars on this account yet.</EmptyState>
+          )}
+          {subscribing && (
+            <SubscribeForm
+              onDone={(sub) => {
+                setSubscribing(false);
+                toast(`Subscribed to \u201c${sub.title}\u201d`);
+                void read();
+              }}
+              onCancel={() => setSubscribing(false)}
+            />
           )}
         </div>
         <MiniMonth
@@ -937,6 +1242,7 @@ export function CalendarView() {
           today={now}
           busy={busyOn}
           onPick={setSelected}
+          weekNumbers={weekNumbers}
         />
       </aside>
 
@@ -964,12 +1270,39 @@ export function CalendarView() {
           </div>
           <div className="cx-tools">
             {writable.length > 0 && (
-              <span className="toolbar-group">
-                <button className="tool cx-icon" aria-label="New event" title="New Event" onClick={newEvent}>
+              <span className="toolbar-group cx-quick-anchor">
+                <button
+                  className="tool cx-icon"
+                  aria-label="New event"
+                  title="New Event"
+                  aria-expanded={quick}
+                  onClick={() => setQuick((q) => !q)}
+                >
                   <Plus size={17} strokeWidth={2} aria-hidden="true" />
                 </button>
+                {quick && (
+                  <QuickEvent
+                    calendar={target}
+                    onAdd={(text, details, at) => void addQuick(text, details, at)}
+                    onClose={() => setQuick(false)}
+                  />
+                )}
               </span>
             )}
+            <span className="toolbar-group">
+              <button
+                className="tool cx-icon"
+                aria-label="More"
+                title="More"
+                aria-haspopup="menu"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setMoreMenu({ x: r.right, y: r.bottom + 4, alignRight: true });
+                }}
+              >
+                <Ellipsis size={17} strokeWidth={2} aria-hidden="true" />
+              </button>
+            </span>
             <span className="toolbar-group cx-step">
               <button className="tool cx-icon" aria-label="Previous" onClick={() => shift(-1)}>
                 <ChevronLeft size={17} strokeWidth={2} aria-hidden="true" />
@@ -1021,53 +1354,155 @@ export function CalendarView() {
               onChange={setQuery}
               onKeyDown={(e) => {
                 if (e.key === "Escape") setQuery("");
-                if (e.key === "Enter" && found[0]) openFound(found[0]);
+                // Its default kept from the event's own field, which takes the focus as it
+                // opens: Return there is Save, and it saved and closed the event at once.
+                else if (e.key === "Enter" && found[lit]) { e.preventDefault(); openFound(found[lit]); }
+                else if (e.key === "ArrowDown" && found.length) { e.preventDefault(); setLit((i) => Math.min(found.length - 1, i + 1)); }
+                else if (e.key === "ArrowUp" && found.length) { e.preventDefault(); setLit((i) => Math.max(0, i - 1)); }
               }}
             />
           </div>
         </header>
 
         {query.trim() && (
-          <div className="popover cx-found" role="listbox" aria-label="Events found">
+          <div className="popover cx-found" role="listbox" aria-label="Events found" id="cx-found">
             {found.length === 0 ? (
               <p className="cx-found-none">No events match “{query.trim()}”.</p>
             ) : (
-              found.map((e) => (
-                <button
-                  key={e.guid}
-                  className="cx-found-row"
-                  role="option"
-                  aria-selected={false}
-                  style={{ "--cal": tint(byGuid.get(e.calendarGuid)) } as React.CSSProperties}
-                  onClick={() => openFound(e)}
-                >
-                  <span className="cx-dot" aria-hidden="true" />
-                  <span className="cx-found-title">{e.title}</span>
-                  <span className="cx-found-when">
-                    {dateText(dateOf(e.startsAt), { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
-                    {e.allDay ? "" : ` · ${clock(e.startsAt)}`}
-                  </span>
-                </button>
-              ))
+              found.map((e, i) => {
+                const pastStarts = i > 0 && found[i - 1].endsAt >= Date.now() / 1000 && e.endsAt < Date.now() / 1000;
+                return (
+                  <Fragment key={e.guid}>
+                    {pastStarts && <p className="cx-found-section">Earlier</p>}
+                    <button
+                      className={`cx-found-row${i === lit ? " is-lit" : ""}`}
+                      role="option"
+                      aria-selected={i === lit}
+                      ref={i === lit ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+                      style={{ "--cal": tint(byGuid.get(e.calendarGuid)) } as React.CSSProperties}
+                      onMouseMove={() => i !== lit && setLit(i)}
+                      onClick={() => openFound(e)}
+                    >
+                      <span className="cx-dot" aria-hidden="true" />
+                      <span className="cx-found-text">
+                        <span className="cx-found-title"><Marked text={e.title} query={query} /></span>
+                        {e.location && <span className="cx-found-where"><Marked text={e.location} query={query} /></span>}
+                      </span>
+                      <span className="cx-found-when">
+                        {dateText(dateOf(e.startsAt), { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
+                        {e.allDay ? "" : `, ${clock(e.startsAt)}`}
+                      </span>
+                    </button>
+                  </Fragment>
+                );
+              })
             )}
           </div>
         )}
 
-        {calMenu && (
+        {calMenu && (() => {
+          const cal = calMenu.cal;
+          const sub = subs.find((x) => SUBSCRIPTION_PREFIX + x.id === cal.guid) ?? null;
+          const colours = CALENDAR_COLOURS.map(([hex, name]) => ({
+            label: name,
+            checked: (cal.colour ?? "").toLowerCase() === hex,
+            run: () => (sub ? updateSub(sub.id, { colour: hex }) : updateCalendar(cal, { colour: hex })),
+          }));
+          const alertMenu = (kind: "timed" | "allDay") => {
+            const current = defaultAlerts[kind][cal.guid];
+            return [
+              { label: "None", checked: current === undefined, run: () => setDefaultAlert(kind, cal.guid, null) },
+              ...(kind === "allDay" ? ALL_DAY_ALERTS : ALERTS).map((a) => ({
+                label: a.label,
+                checked: current === a.minutes,
+                run: () => setDefaultAlert(kind, cal.guid, a.minutes),
+              })),
+            ];
+          };
+          return (
+            <RowMenu
+              at={calMenu.at}
+              onClose={() => setCalMenu(null)}
+              entries={sub ? [
+                { label: "Rename", run: () => setNaming(cal.guid) },
+                { label: "Colour", submenu: colours },
+                {
+                  label: "Refresh",
+                  submenu: REFRESHES.map((r) => ({ label: r.label, checked: sub.refreshMinutes === r.minutes, run: () => updateSub(sub.id, { refreshMinutes: r.minutes }) })),
+                },
+                { label: "Refresh Now", run: () => refreshSub(sub.id) },
+                null,
+                { label: "Unsubscribe", danger: true, run: () => unsubscribe(sub) },
+              ] : [
+                { label: "Rename", run: () => setNaming(cal.guid) },
+                { label: "Colour", submenu: colours },
+                { label: "Default Alert", submenu: alertMenu("timed") },
+                { label: "Default All-Day Alert", submenu: alertMenu("allDay") },
+                null,
+                ...(cal.isDefault ? [] : [{ label: "Delete Calendar", danger: true, run: () => deleteCalendar(cal) }]),
+              ]}
+            />
+          );
+        })()}
+        {addMenu && (
           <RowMenu
-            at={calMenu.at}
-            onClose={() => setCalMenu(null)}
+            at={addMenu}
+            onClose={() => setAddMenu(null)}
             entries={[
-              { label: "Rename", run: () => setNaming(calMenu.cal.guid) },
-              {
-                label: "Colour",
-                submenu: CALENDAR_COLOURS.map(([hex, name]) => ({ label: name, run: () => updateCalendar(calMenu.cal, { colour: hex }) })),
-              },
-              null,
-              ...(calMenu.cal.isDefault ? [] : [{ label: "Delete Calendar", danger: true, run: () => deleteCalendar(calMenu.cal) }]),
+              { label: "New Calendar", run: () => { if (folded.has("icloud")) fold("icloud"); setNaming("new"); } },
+              { label: "New Subscription", run: () => setSubscribing(true) },
             ]}
           />
         )}
+        {groupMenu && (
+          <RowMenu
+            at={groupMenu.at}
+            onClose={() => setGroupMenu(null)}
+            entries={[
+              { label: "Show All", run: () => showOnly(groupMenu.list, true) },
+              { label: "Hide All", run: () => showOnly(groupMenu.list, false) },
+            ]}
+          />
+        )}
+        {moreMenu && (
+          <RowMenu
+            at={moreMenu}
+            onClose={() => setMoreMenu(null)}
+            entries={[
+              { label: "Go to Date", run: () => setGoingTo(true) },
+              { label: "Show Week Numbers", checked: weekNumbers, run: () => setWeekNumbers(!weekNumbers) },
+              null,
+              { label: "New Subscription", run: () => setSubscribing(true) },
+            ]}
+          />
+        )}
+        {eventMenu && (() => {
+          const e = eventMenu.event;
+          const mine = Boolean(byGuid.get(e.calendarGuid)?.writable);
+          return (
+            <RowMenu
+              at={eventMenu.at}
+              onClose={() => setEventMenu(null)}
+              entries={[
+                { label: mine ? "Edit" : "Show", run: () => openPicked(e) },
+                ...(writable.length > 0 ? [
+                  { label: "Duplicate", run: () => void duplicate(e) },
+                  { label: "Copy", run: () => setClip(e) },
+                ] : []),
+                ...(mine && writable.length > 1 ? [{
+                  label: "Calendar",
+                  submenu: writable.map((c) => ({
+                    label: c.title,
+                    checked: c.guid === e.calendarGuid,
+                    run: () => { if (c.guid !== e.calendarGuid) void save({ ...draftOf(e), calendarGuid: c.guid }); },
+                  })),
+                }] : []),
+                ...(e.location ? [{ label: "Open in Maps", run: () => { window.location.href = mapsHref(e.location ?? ""); } }] : []),
+                ...(mine ? [null, { label: "Delete", danger: true, run: () => void deleteAsking(e) }] : []),
+              ]}
+            />
+          );
+        })()}
 
         {view === "month" && (
           <MonthView
@@ -1081,6 +1516,11 @@ export function CalendarView() {
             onOpen={openEvent}
             onCreate={createInMonth}
             onMore={showDay}
+            canWrite={canWrite}
+            onMoveDays={moveDays}
+            onMenu={menuFor}
+            picked={picked}
+            weekNumbers={weekNumbers}
           />
         )}
 
@@ -1098,6 +1538,9 @@ export function CalendarView() {
             onMove={moveEvent}
             onPickDay={showDay}
             pending={pending}
+            onMenu={menuFor}
+            picked={picked}
+            weekNumbers={weekNumbers}
           />
           {view === "day" && (
             <DayPane
@@ -1106,6 +1549,8 @@ export function CalendarView() {
               reminders={due}
               calendars={byGuid}
               onOpen={openEvent}
+              onMenu={menuFor}
+              week={weekNumbers ? weekNumber(startOfWeek(selected)) : null}
             >
               {/* As macOS 27's Day view sets it: the month above the day, to step across it. */}
               <MiniMonth
@@ -1113,6 +1558,7 @@ export function CalendarView() {
                 today={now}
                 busy={busyOn}
                 onPick={setSelected}
+                weekNumbers={weekNumbers}
               />
             </DayPane>
           )}
@@ -1134,8 +1580,12 @@ export function CalendarView() {
           draft={draft}
           at={anchor}
           calendars={calendars}
-          onChange={setDraft}
+          onChange={changeDraft}
           onClose={() => setDraft(null)}
+          onDeleteKey={draft.guid ? () => {
+            const e = events.find((x) => x.guid === draft.guid);
+            if (e) void deleteAsking(e);
+          } : undefined}
           onDismiss={dismiss}
           onSave={() => void save(draft, true)}
           onDelete={draft.guid ? () => void remove(draft.guid as string) : undefined}
@@ -1186,11 +1636,13 @@ const MiniMonth = memo(function MiniMonth({
   today,
   busy,
   onPick,
+  weekNumbers = false,
 }: {
   selected: Date;
   today: Date;
   busy: (d: Date) => boolean;
   onPick: (d: Date) => void;
+  weekNumbers?: boolean;
 }) {
   const [shown, setShown] = useState(() => new Date(selected.getFullYear(), selected.getMonth(), 1));
   useEffect(() => {
@@ -1218,13 +1670,18 @@ const MiniMonth = memo(function MiniMonth({
           </button>
         </span>
       </div>
-      <div className="cx-minimonth-grid">
+      <div className={`cx-minimonth-grid${weekNumbers ? " has-weeks" : ""}`}>
+        {weekNumbers && <span className="cx-minimonth-wd" aria-hidden="true" />}
         {days.slice(0, 7).map((d) => (
           <span className="cx-minimonth-wd" key={`wd${d.getDay()}`} aria-hidden="true">
             {weekdayShort(d).slice(0, 1)}
           </span>
         ))}
         {days.map((d, i) => (
+          <Fragment key={i}>
+          {weekNumbers && i % 7 === 0 && (
+            <span className="cx-minimonth-wk" aria-label={`Week ${weekNumber(d)}`}>{weekNumber(d)}</span>
+          )}
           <button
             key={i}
             className={`cx-minimonth-day${d.getMonth() !== shown.getMonth() ? " is-out" : ""}${
@@ -1235,6 +1692,7 @@ const MiniMonth = memo(function MiniMonth({
           >
             {d.getDate()}
           </button>
+          </Fragment>
         ))}
       </div>
     </div>
@@ -1258,6 +1716,11 @@ const MonthView = memo(function MonthView({
   onOpen,
   onCreate,
   onMore,
+  canWrite,
+  onMoveDays,
+  onMenu,
+  picked,
+  weekNumbers,
 }: {
   days: Date[];
   selected: Date;
@@ -1269,8 +1732,84 @@ const MonthView = memo(function MonthView({
   onOpen: (e: CalendarEvent, at: Anchor) => void;
   onCreate: (d: Date, at: Anchor) => void;
   onMore: (d: Date) => void;
+  canWrite: (calendarGuid: string) => boolean;
+  /** An event dragged to another day: moved that many days, its clock time kept. */
+  onMoveDays: (e: CalendarEvent, days: number) => void;
+  onMenu: (e: CalendarEvent, at: { x: number; y: number }) => void;
+  picked: string | null;
+  weekNumbers: boolean;
 }) {
   const listColour = useListColour();
+
+  /*
+   * Dragging an event to another day, as in Calendar's Month: pressed and moved a few pixels
+   * it is carried, the day under the pointer is marked, and let go there it moves by that
+   * many days. Followed from the window, and ended by a move with no button held — WebKitGTK
+   * did not always deliver the release (see TimeGrid).
+   */
+  const [carry, setCarry] = useState<{ guid: string; over: number } | null>(null);
+  const carried = useRef<{ event: CalendarEvent; from: number; x: number; y: number; over: number; moved: boolean } | null>(null);
+  const swallowClick = useRef(false);
+  const cellAt = (x: number, y: number) => {
+    // Under whatever is drawn over the day — a bar, the event being carried.
+    const el = document.elementsFromPoint(x, y).find((n) => n.hasAttribute("data-cell"));
+    return el ? Number(el.getAttribute("data-cell")) : null;
+  };
+  const startCarry = (e: React.PointerEvent, event: CalendarEvent) => {
+    if (e.button !== 0 || !canWrite(event.calendarGuid)) return;
+    const from = cellAt(e.clientX, e.clientY);
+    if (from === null) return;
+    carried.current = { event, from, x: e.clientX, y: e.clientY, over: from, moved: false };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", key, true);
+    };
+    const finish = (commit: boolean) => {
+      const c = carried.current;
+      carried.current = null;
+      stop();
+      setCarry(null);
+      if (!c?.moved) return;
+      // The click that ends a drag is not a click on the event.
+      swallowClick.current = true;
+      window.setTimeout(() => (swallowClick.current = false), 0);
+      if (commit && c.over !== c.from) onMoveDays(c.event, c.over - c.from);
+    };
+    const move = (ev: PointerEvent) => {
+      const c = carried.current;
+      if (!c) return;
+      if (ev.buttons === 0) return finish(true);
+      if (!c.moved && Math.hypot(ev.clientX - c.x, ev.clientY - c.y) < 5) return;
+      const first = !c.moved;
+      c.moved = true;
+      const over = cellAt(ev.clientX, ev.clientY) ?? c.over;
+      if (over !== c.over || first) {
+        c.over = over;
+        setCarry({ guid: c.event.guid, over });
+      }
+    };
+    const up = () => finish(true);
+    const cancel = () => finish(false);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && carried.current?.moved) {
+        ev.stopPropagation();
+        finish(false);
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", key, true);
+  };
+  const eventHandlers = (event: CalendarEvent) => ({
+    onPointerDown: (e: React.PointerEvent) => startCarry(e, event),
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault();
+      onMenu(event, { x: e.clientX, y: e.clientY });
+    },
+  });
   const cell = useRef<HTMLButtonElement | null>(null);
   const focused = useRef(false);
   const inMonth = selected.getMonth();
@@ -1327,7 +1866,7 @@ const MonthView = memo(function MonthView({
           <span key={d.getDay()}>{weekdayShort(d)}</span>
         ))}
       </div>
-      <div className="cal-grid" role="grid" aria-label="Month" ref={grid}>
+      <div className={`cal-grid${carry ? " is-carrying" : ""}`} role="grid" aria-label="Month" ref={grid}>
         {weeks.map((row, w) => {
           const spans = weekSpans(events, row[0]);
           return (
@@ -1347,15 +1886,20 @@ const MonthView = memo(function MonthView({
                     : list;
                 const more = list.length - visible.length;
                 const isSelected = sameDay(day, selected);
+                const cellIndex = w * 7 + i;
                 return (
                   <div
                     className={`cx-day${day.getMonth() !== inMonth ? " is-out" : ""}${
                       isWeekend(day) ? " is-weekend" : ""
-                    }${isSelected ? " is-selected" : ""}`}
+                    }${isSelected ? " is-selected" : ""}${carry?.over === cellIndex ? " is-drop" : ""}`}
                     role="gridcell"
                     aria-selected={isSelected}
+                    data-cell={cellIndex}
                     key={i}
                   >
+                    {weekNumbers && i === 0 && (
+                      <span className="cx-weeknum" aria-label={`Week ${weekNumber(day)}`}>{weekNumber(day)}</span>
+                    )}
                     <button
                       ref={isSelected ? cell : undefined}
                       className="cx-day-hit"
@@ -1378,13 +1922,14 @@ const MonthView = memo(function MonthView({
                         item.kind === "event" ? (
                           <li key={item.event.guid}>
                             <button
-                              className="cx-item"
+                              className={`cx-item${picked === item.event.guid ? " is-picked" : ""}${carry?.guid === item.event.guid ? " is-carried" : ""}`}
                               data-event={item.event.guid}
+                              {...eventHandlers(item.event)}
                               style={{ "--cal": tint(calendars.get(item.event.calendarGuid)) } as React.CSSProperties}
                               // Named in full, for the dot that is all a narrow cell shows.
                               aria-label={`${item.event.title}, ${clock(item.event.startsAt)}`}
                               title={dots ? `${item.event.title} · ${clock(item.event.startsAt)}` : undefined}
-                              onClick={(e) => onOpen(item.event, { x: e.clientX, y: e.clientY })}
+                              onClick={(e) => !swallowClick.current && onOpen(item.event, { x: e.clientX, y: e.clientY })}
                             >
                               <span className="cx-dot" aria-hidden="true" />
                               <span className="cx-item-title">{item.event.title}</span>
@@ -1419,9 +1964,11 @@ const MonthView = memo(function MonthView({
               {spans.map((s) => (
                 <button
                   key={`${s.event.guid}-${dayKey(row[0])}`}
+                  data-event={s.event.guid}
+                  {...eventHandlers(s.event)}
                   className={`cx-bar-event${s.continuesLeft ? " from-before" : ""}${
                     s.continuesRight ? " to-after" : ""
-                  }`}
+                  }${picked === s.event.guid ? " is-picked" : ""}${carry?.guid === s.event.guid ? " is-carried" : ""}`}
                   style={
                     {
                       "--cal": tint(calendars.get(s.event.calendarGuid)),
@@ -1430,7 +1977,7 @@ const MonthView = memo(function MonthView({
                       top: `${26 + s.lane * LANE}px`,
                     } as React.CSSProperties
                   }
-                  onClick={(e) => onOpen(s.event, { x: e.clientX, y: e.clientY })}
+                  onClick={(e) => !swallowClick.current && onOpen(s.event, { x: e.clientX, y: e.clientY })}
                 >
                   {s.event.title}
                 </button>
@@ -1450,8 +1997,9 @@ type Drag =
   | { kind: "create"; day: Date; column: number; anchor: number; from: number; to: number }
   /** `column` is the day the event was taken from, so it can be carried only to days shown. */
   | { kind: "move"; event: CalendarEvent; column: number; startX: number; startY: number; dx: number; dMinutes: number }
-  /** Dragging an event's bottom edge: its end moves, its start stays. */
-  | { kind: "resize"; event: CalendarEvent; startY: number; dMinutes: number };
+  /** Dragging an event's bottom edge: its end moves, its start stays — or, by its top edge
+   *  (`top`), its start moves and its end stays. */
+  | { kind: "resize"; event: CalendarEvent; startY: number; dMinutes: number; top?: boolean };
 
 const TimeGrid = memo(function TimeGrid({
   days,
@@ -1465,6 +2013,9 @@ const TimeGrid = memo(function TimeGrid({
   onMove,
   onPickDay,
   pending,
+  onMenu,
+  picked,
+  weekNumbers,
 }: {
   days: Date[];
   today: Date;
@@ -1478,6 +2029,9 @@ const TimeGrid = memo(function TimeGrid({
   onPickDay: (d: Date) => void;
   /** A new event being named in the popover, held on the grid where it was made. */
   pending?: { startsAt: number; endsAt: number; title: string } | null;
+  onMenu: (e: CalendarEvent, at: { x: number; y: number }) => void;
+  picked: string | null;
+  weekNumbers: boolean;
 }) {
   const listColour = useListColour();
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -1555,7 +2109,8 @@ const TimeGrid = memo(function TimeGrid({
     } else if (current.kind === "resize") {
       // Never shorter than a quarter hour, as Calendar holds it.
       const length = (current.event.endsAt - current.event.startsAt) / 60;
-      next = { ...current, dMinutes: Math.max(15 - length, snap(((clientY - current.startY) / HOUR) * 60)) };
+      const by = snap(((clientY - current.startY) / HOUR) * 60);
+      next = { ...current, dMinutes: current.top ? Math.min(length - 15, by) : Math.max(15 - length, by) };
       if (next.dMinutes === current.dMinutes) return;
     } else {
       const el = columnsEl.current;
@@ -1581,7 +2136,10 @@ const TimeGrid = memo(function TimeGrid({
         onCreate(base + done.from * 60, base + done.to * 60, false, besideColumn(done.column, clientY));
       }
     } else if (done.kind === "resize") {
-      if (done.dMinutes !== 0) onMove(done.event, done.event.startsAt, done.event.endsAt + done.dMinutes * 60);
+      if (done.dMinutes !== 0) {
+        if (done.top) onMove(done.event, done.event.startsAt + done.dMinutes * 60, done.event.endsAt);
+        else onMove(done.event, done.event.startsAt, done.event.endsAt + done.dMinutes * 60);
+      }
     } else if (done.dx !== 0 || done.dMinutes !== 0) {
       const shift = done.dMinutes * 60;
       const moved = (t: number) => {
@@ -1678,7 +2236,9 @@ const TimeGrid = memo(function TimeGrid({
   return (
     <div className={`cal-hours${days.length === 1 ? " is-day" : ""}`}>
       <div className="cx-grid-head" style={{ "--cols": days.length } as React.CSSProperties}>
-        <span className="cx-gutter" aria-hidden="true" />
+        <span className="cx-gutter cx-head-week" aria-hidden={!weekNumbers}>
+          {weekNumbers ? `W${weekNumber(startOfWeek(days[0]))}` : ""}
+        </span>
         {days.map((d, i) => (
           <button
             className={`cal-col-head${sameDay(d, today) ? " is-today" : ""}`}
@@ -1699,7 +2259,11 @@ const TimeGrid = memo(function TimeGrid({
             <button
               key={s.event.guid}
               data-event={s.event.guid}
-              className={`cx-bar-event${s.continuesLeft ? " from-before" : ""}${s.continuesRight ? " to-after" : ""}`}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onMenu(s.event, { x: e.clientX, y: e.clientY });
+              }}
+              className={`cx-bar-event${s.continuesLeft ? " from-before" : ""}${s.continuesRight ? " to-after" : ""}${picked === s.event.guid ? " is-picked" : ""}`}
               style={
                 {
                   "--cal": tint(calendars.get(s.event.calendarGuid)),
@@ -1765,12 +2329,16 @@ const TimeGrid = memo(function TimeGrid({
                     <button
                       key={p.event.guid}
                       data-event={p.event.guid}
-                      className={`cx-block${moving || sizing ? " is-moving" : ""}${p.length < 45 ? " is-short" : ""}`}
+                      className={`cx-block${moving || sizing ? " is-moving" : ""}${p.length < 45 ? " is-short" : ""}${picked === p.event.guid ? " is-picked" : ""}`}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        onMenu(p.event, { x: e.clientX, y: e.clientY });
+                      }}
                       style={
                         {
                           "--cal": tint(c),
-                          top: `${((p.top + (moving?.dMinutes ?? 0)) / 60) * HOUR}px`,
-                          height: `${Math.max(((p.length + (sizing?.dMinutes ?? 0)) / 60) * HOUR - 2, 20)}px`,
+                          top: `${((p.top + (moving?.dMinutes ?? 0) + (sizing?.top ? sizing.dMinutes : 0)) / 60) * HOUR}px`,
+                          height: `${Math.max(((p.length + (sizing ? (sizing.top ? -sizing.dMinutes : sizing.dMinutes) : 0)) / 60) * HOUR - 2, 20)}px`,
                           left: `calc(${(p.column / p.columns) * 100}% + ${(moving?.dx ?? 0) * 100}%)`,
                           width: `calc(${100 / p.columns}% - 3px)`,
                         } as React.CSSProperties
@@ -1795,6 +2363,18 @@ const TimeGrid = memo(function TimeGrid({
                       <span className="cx-block-title">{p.event.title}</span>
                       <span className="cx-block-time">{clock(p.event.startsAt)}</span>
                       {p.event.location && <span className="cx-block-where">{p.event.location}</span>}
+                      {canWrite(p.event.calendarGuid) && p.length >= 30 && (
+                        <span
+                          className="cx-block-grip is-top"
+                          aria-hidden="true"
+                          onPointerDown={(e) => {
+                            if (e.button !== 0) return;
+                            e.stopPropagation();
+                            e.preventDefault();
+                            setDragNow({ kind: "resize", event: p.event, startY: e.clientY, dMinutes: 0, top: true });
+                          }}
+                        />
+                      )}
                       {canWrite(p.event.calendarGuid) && (
                         <span
                           className="cx-block-grip"
@@ -2099,6 +2679,7 @@ function EventPopover({
   onDismiss,
   onSave,
   onDelete,
+  onDeleteKey,
   onNudge,
   view,
 }: {
@@ -2111,6 +2692,8 @@ function EventPopover({
   onDismiss: () => void;
   onSave: () => void;
   onDelete?: () => void;
+  /** Delete pressed outside the fields: asked first. */
+  onDeleteKey?: () => void;
   onNudge?: (by: { days: number } | { minutes: number }) => void;
   view?: string;
 }) {
@@ -2159,9 +2742,9 @@ function EventPopover({
       // Delete, as in Calendar: an open event goes when Delete is pressed outside its fields —
       // and Undo brings it back, since iCloud keeps no bin.
       const typing = (e.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable]");
-      if ((e.key === "Delete" || e.key === "Backspace") && !typing && onDelete && editable) {
+      if ((e.key === "Delete" || e.key === "Backspace") && !typing && (onDeleteKey ?? onDelete) && editable) {
         e.preventDefault();
-        onDelete();
+        (onDeleteKey ?? onDelete)?.();
       }
     };
     const onDown = (e: PointerEvent) => {
@@ -2182,7 +2765,7 @@ function EventPopover({
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("pointerdown", onDown, true);
     };
-  }, [onClose, onDismiss, onDelete, onNudge, editable, view, draft.allDay, draft.guid]);
+  }, [onClose, onDismiss, onDelete, onDeleteKey, onNudge, editable, view, draft.allDay, draft.guid]);
 
   const set = (patch: Partial<Draft>) => onChange({ ...draft, ...patch });
 
@@ -2208,7 +2791,12 @@ function EventPopover({
         onSubmit={(e) => { e.preventDefault(); onClose(); }}
       >
         <h3 className="cx-info-title">{draft.title}</h3>
-        {draft.location && <p className="cx-info-line">{draft.location}</p>}
+        {draft.location && (
+          <p className="cx-info-line cx-info-place">
+            {draft.location}
+            <a className="cx-maps" href={mapsHref(draft.location)} title="Open in Maps">Open in Maps</a>
+          </p>
+        )}
         <p className="cx-info-line">{when}</p>
         <p className="cx-info-cal"><span className="cx-info-dot" aria-hidden="true" />{calendar?.title}</p>
         {draft.url && (
@@ -2242,14 +2830,21 @@ function EventPopover({
         readOnly={!editable}
         onChange={(e) => set({ title: e.target.value })}
       />
-      <input
-        className="cx-pop-line"
-        value={draft.location}
-        placeholder="Add Location"
-        aria-label="Location"
-        readOnly={!editable}
-        onChange={(e) => set({ location: e.target.value })}
-      />
+      <span className="cx-pop-place">
+        <input
+          className="cx-pop-line"
+          value={draft.location}
+          placeholder="Add Location"
+          aria-label="Location"
+          readOnly={!editable}
+          onChange={(e) => set({ location: e.target.value })}
+        />
+        {draft.location.trim() && (
+          <a className="cx-pop-link" href={mapsHref(draft.location.trim())} aria-label="Open in Maps" title="Open in Maps">
+            <MapPin size={14} strokeWidth={2} aria-hidden="true" />
+          </a>
+        )}
+      </span>
       <div className="cx-pop-rows">
         <label className="cx-pop-row">
           <span>all-day</span>
@@ -2342,7 +2937,7 @@ function EventPopover({
                   if (v === "none") next.splice(n, 1);
                   else next[n] = Number(v);
                   // Any beyond the two shown (made on a Mac) are kept, never dropped by an edit here.
-                  set({ alerts: next, alertsChanged: true });
+                  set({ alerts: next, alertsChanged: true, alertsDefault: false });
                 }}
                 options={alerts === undefined ? [{ value: "loading", label: "…" }] : options}
               />
@@ -2368,15 +2963,20 @@ function EventPopover({
           />
         </div>
       </div>
-      <input
-        className="cx-pop-line"
-        type="url"
-        value={draft.url ?? ""}
-        placeholder="Add URL"
-        aria-label="URL"
-        readOnly={!editable}
-        onChange={(e) => set({ url: e.target.value || null })}
-      />
+      <span className="cx-pop-place">
+        <input
+          className="cx-pop-line"
+          type="url"
+          value={draft.url ?? ""}
+          placeholder="Add URL"
+          aria-label="URL"
+          readOnly={!editable}
+          onChange={(e) => set({ url: e.target.value || null })}
+        />
+        {draft.url && /^(https?:\/\/|mailto:)/i.test(draft.url.trim()) && (
+          <a className="cx-pop-link is-text" href={draft.url.trim()} target="_blank" rel="noreferrer">Open</a>
+        )}
+      </span>
       <textarea
         className="cx-pop-notes"
         value={draft.notes}
@@ -2421,6 +3021,8 @@ const DayPane = memo(function DayPane({
   reminders,
   calendars,
   onOpen,
+  onMenu,
+  week,
   children,
 }: {
   day: Date;
@@ -2428,6 +3030,9 @@ const DayPane = memo(function DayPane({
   reminders: Reminder[];
   calendars: Map<string, Calendar>;
   onOpen: (e: CalendarEvent, at: Anchor) => void;
+  onMenu: (e: CalendarEvent, at: { x: number; y: number }) => void;
+  /** The week's number, when week numbers are shown. */
+  week: number | null;
   children?: React.ReactNode;
 }) {
   const listColour = useListColour();
@@ -2446,6 +3051,10 @@ const DayPane = memo(function DayPane({
         data-event={e.guid}
         style={{ "--cal": tint(calendars.get(e.calendarGuid)) } as React.CSSProperties}
         onClick={(ev) => onOpen(e, pointOf(ev.currentTarget))}
+        onContextMenu={(ev) => {
+          ev.preventDefault();
+          onMenu(e, { x: ev.clientX, y: ev.clientY });
+        }}
       >
         <span className="cx-pane-title">{e.title}</span>
         <span className="cx-pane-when">{when}</span>
@@ -2458,7 +3067,10 @@ const DayPane = memo(function DayPane({
     <aside className="cx-pane" aria-label={dateText(day, { dateStyle: "full" })}>
       {children && <div className="cx-pane-month">{children}</div>}
       <h2 className="cx-pane-day">{dateText(day, { weekday: "long" })}</h2>
-      <p className="cx-pane-date">{dateText(day, { day: "numeric", month: "long", year: "numeric" })}</p>
+      <p className="cx-pane-date">
+        {dateText(day, { day: "numeric", month: "long", year: "numeric" })}
+        {week !== null && <span className="cx-pane-week">Week {week}</span>}
+      </p>
       {nothing ? (
         <p className="cx-pane-empty">Nothing on this day.</p>
       ) : (
@@ -2517,5 +3129,160 @@ function CalendarName({ initial, label, onDone, onCancel }: {
         }
       }}
     />
+  );
+}
+
+/** `text` with the words of `query` marked, as Calendar marks what a search matched. */
+function Marked({ text, query }: { text: string; query: string }) {
+  const words = query.trim().split(/\s+/).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!words.length) return <>{text}</>;
+  const parts = text.split(new RegExp(`(${words.join("|")})`, "gi"));
+  return <>{parts.map((p, i) => (i % 2 ? <mark key={i} className="cx-mark">{p}</mark> : <Fragment key={i}>{p}</Fragment>))}</>;
+}
+
+/**
+ * Quick Event, under the + as Calendar's is: a line typed as it would be said, read here as it
+ * is typed, and shown as the event it will make before Return makes it.
+ */
+function QuickEvent({ calendar, onAdd, onClose }: {
+  calendar: Calendar | null;
+  onAdd: (text: string, details: boolean, at: Anchor) => void;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState("");
+  const box = useRef<HTMLFormElement | null>(null);
+  const q = useMemo(() => (text.trim() ? parseQuick(text) : null), [text]);
+  const at = (): Anchor => {
+    const r = box.current?.getBoundingClientRect();
+    return r ? { x: r.right - 300, y: r.top + 8, left: r.left } : { x: 40, y: 80 };
+  };
+  const start = q ? dateOf(q.startsAt) : null;
+  const lastDay = q ? dateOf(q.allDay ? q.endsAt - 1 : q.endsAt) : null;
+  const sameDayEnd = start && lastDay ? sameDay(start, lastDay) : true;
+  const day = (d: Date) => dateText(d, { weekday: "long", day: "numeric", month: "long" });
+  return (
+    <form
+      ref={box}
+      className="popover cx-quick"
+      role="dialog"
+      aria-label="Quick Event"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onAdd(text, false, at());
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onClose();
+      }}
+    >
+      <input
+        className="field cx-quick-field"
+        aria-label="Event, as you would say it"
+        placeholder="Lunch with Asha tomorrow at 1pm"
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            onAdd(text, true, at());
+          }
+        }}
+      />
+      {q && start && lastDay && (
+        <div className="cx-quick-preview" aria-live="polite" style={{ "--cal": tint(calendar ?? undefined) } as React.CSSProperties}>
+          <p className="cx-quick-title">{q.title || "New Event"}</p>
+          <p className="cx-quick-when">
+            <span>{day(start)}</span>
+            <span className="cx-quick-time">
+              {q.allDay
+                ? sameDayEnd ? "All day" : `All day, until ${day(lastDay)}`
+                : `${clock(q.startsAt)} – ${clock(q.endsAt)}${sameDayEnd ? "" : `, ${day(lastDay)}`}`}
+            </span>
+          </p>
+          {(q.repeat || q.location) && (
+            <p className="cx-quick-more">
+              {q.repeat && (
+                <span className="cx-quick-chip"><Repeat size={12} strokeWidth={2.2} aria-hidden="true" />{repeatText(q.repeat)}</span>
+              )}
+              {q.location && (
+                <span className="cx-quick-chip"><MapPin size={12} strokeWidth={2.2} aria-hidden="true" />{q.location}</span>
+              )}
+            </p>
+          )}
+          <p className="cx-quick-cal"><span className="cx-dot" aria-hidden="true" />{calendar?.title}</p>
+        </div>
+      )}
+      <div className="cx-quick-actions">
+        <button type="button" className="quiet" onClick={() => onAdd(text, true, at())}>Details</button>
+        <button type="submit" className="primary" disabled={!q?.title}>Add</button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * New Calendar Subscription: an address, fetched once now so a wrong one is said here, then
+ * kept and refreshed on this computer. Read-only, as a subscription is.
+ */
+function SubscribeForm({ onDone, onCancel }: {
+  onDone: (sub: CalendarSubscription) => void;
+  onCancel: () => void;
+}) {
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <form
+      className="cx-subscribe"
+      aria-label="New Calendar Subscription"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!url.trim() || busy) return;
+        setBusy(true);
+        setProblem(null);
+        calendarFeedsApi.subscribe(url.trim()).then(
+          (sub) => onDone(sub),
+          (err) => {
+            setBusy(false);
+            setProblem(messageOf(err));
+          },
+        );
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onCancel();
+        }
+      }}
+    >
+      <label className="cx-subscribe-label" htmlFor="cx-subscribe-url">Subscribe to a calendar</label>
+      <input
+        id="cx-subscribe-url"
+        className="field"
+        type="url"
+        inputMode="url"
+        placeholder="webcal:// or https:// address"
+        autoFocus
+        spellCheck={false}
+        value={url}
+        disabled={busy}
+        onChange={(e) => { setUrl(e.target.value); setProblem(null); }}
+      />
+      {problem ? (
+        <p className="cx-subscribe-note is-problem" role="alert">{problem}</p>
+      ) : (
+        <p className="cx-subscribe-note">Skykeep reads it from that address and keeps it up to date.</p>
+      )}
+      <div className="cx-subscribe-actions">
+        <button type="button" className="quiet" onClick={onCancel}>Cancel</button>
+        <button type="submit" className="primary" disabled={!url.trim() || busy}>{busy ? "Subscribing…" : "Subscribe"}</button>
+      </div>
+    </form>
   );
 }

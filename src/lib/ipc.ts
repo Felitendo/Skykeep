@@ -836,7 +836,7 @@ export const settingsApi = {
   alertsShown: () => invoke<boolean | null>("alerts_shown"),
 };
 
-/* ── Intake: files opened with Pomander, and quick capture (src-tauri/src/intake.rs) ── */
+/* ── Intake: files opened with Skykeep, and quick capture (src-tauri/src/intake.rs) ── */
 
 /** Told to a window when a file has arrived for it; it collects with `intakeApi.pending`. */
 export const INTAKE = "quince://intake";
@@ -861,7 +861,7 @@ export type ImportEvent = {
 
 export type ImportContact = { name: string; detail: string | null; known: boolean };
 
-/** What a file opened with Pomander holds, read on this computer before anything is sent. */
+/** What a file opened with Skykeep holds, read on this computer before anything is sent. */
 export type Arrival =
   | { kind: "events"; file: string; events: ImportEvent[]; refused: { title: string; reason: string }[] }
   | { kind: "contacts"; file: string; path: string; contacts: ImportContact[] }
@@ -874,4 +874,186 @@ export const intakeApi = {
   captureClose: () => invoke<void>("intake_capture_close"),
   /** The main window, for signing in. */
   openMain: () => invoke<void>("intake_open_main"),
+};
+
+/**
+ * A postal address part by part, as Apple keeps it (`contact_addresses`). The names are
+ * Apple's own, which is also what an edit names a part by.
+ */
+export type PostalAddress = {
+  label: string | null;
+  /** Every line before the town, line breaks and all. */
+  street: string | null;
+  subLocality: string | null;
+  city: string | null;
+  subAdministrativeArea: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+  /** Apple's two-letter code, lower case on the cards it writes. */
+  countryCode: string | null;
+};
+
+/** One part of an address, by Apple's name for it. */
+export type AddressPart = Exclude<keyof PostalAddress, "label">;
+
+/**
+ * One change to a card's addresses. `index` is a place in the list as it stands after the
+ * edits before it in the same batch, starting from the list the form opened.
+ */
+export type AddressEdit =
+  | { op: "setField"; index: number; field: AddressPart; value: string | null }
+  | { op: "setLabel"; index: number; label: string | null }
+  | { op: "add"; address: PostalAddress }
+  | { op: "remove"; index: number };
+
+export const contactsApi = {
+  /** One card's addresses, part by part. */
+  addresses: (guid: string) => invoke<PostalAddress[]>("contact_addresses", { guid }),
+  /** Edits laid over the card's addresses at Apple; answers the list as written. */
+  addressEdit: (guid: string, base: PostalAddress[] | null, edits: AddressEdit[]) =>
+    invoke<PostalAddress[]>("contact_address_edit", { guid, base, edits }),
+};
+
+/** An early alert: `count` units before a reminder is due. Unit 0 minutes, 1 hours, 2 days,
+ * 3 weeks, 4 months — Apple's numbering. */
+export type EarlyAlert = { id: string; count: number; unit: number };
+
+/** What sits beside one reminder: its tags (no `#`), link and early alerts. */
+export type ReminderDetail = {
+  guid: string;
+  tags: string[];
+  url: string | null;
+  earlyAlerts: EarlyAlert[];
+  /** File or image attachments, which are not shown here yet. */
+  otherAttachments: number;
+};
+
+/** A tag across the account, and how many reminders still to do carry it. */
+export type TagCount = { name: string; open: number };
+
+/** A smart list on the account: built in (`today`, `flagged`…) or one made by hand (`custom`). */
+export type ReminderSmartList = {
+  guid: string;
+  kind: string;
+  title: string | null;
+  colour: string | null;
+  emblem: string | null;
+  pinned: boolean;
+  sorting: string | null;
+  filter: string | null;
+};
+
+/** What a custom smart list holds now, and any part of its rules not read here. */
+export type SmartListContents = { reminders: Reminder[]; unknown: string[] };
+
+export const remindersApi = {
+  detail: (guid: string) => invoke<ReminderDetail>("reminder_detail", { guid }),
+  tags: () => invoke<TagCount[]>("reminder_tags"),
+  tagged: (name: string) => invoke<Reminder[]>("reminders_tagged", { name }),
+  smartLists: () => invoke<ReminderSmartList[]>("reminder_smart_lists"),
+  inSmartList: (guid: string) => invoke<SmartListContents>("reminders_in_smart_list", { guid }),
+  tagAdd: (guid: string, name: string) => invoke<void>("reminder_tag_add", { guid, name }),
+  tagRemove: (guid: string, name: string) => invoke<void>("reminder_tag_remove", { guid, name }),
+  /** A link, or null to clear it. */
+  urlSet: (guid: string, url: string | null) => invoke<void>("reminder_url_set", { guid, url }),
+  /** Remind `count` units early, or null to clear. */
+  earlyAlertSet: (guid: string, count: number | null, unit: number | null) =>
+    invoke<void>("reminder_early_alert_set", { guid, count, unit }),
+  sectionCreate: (listGuid: string, title: string) =>
+    invoke<ReminderSection>("reminder_section_create", { listGuid, title }),
+  sectionRename: (guid: string, title: string) =>
+    invoke<void>("reminder_section_rename", { guid, title }),
+  /** Into a section of its list, or out of every one with null. */
+  sectionMove: (listGuid: string, guid: string, section: string | null) =>
+    invoke<void>("reminder_section_move", { listGuid, guid, section }),
+};
+
+/** A locked note, opened: its text and how it is set. Held in the window's memory only. */
+export type UnlockedNote = { body: string; runs: import("../screens/notes/Formatted").Run[] };
+
+/** A file added to a note: where it landed and the note's text with it in place. */
+export type NoteAttached = { attachment: string; media: string; uti: string; offset: number; body: string };
+
+/** Locked notes and attachments (src-tauri/src/notes_cmds.rs). */
+export const notesLockApi = {
+  /**
+   * Open a locked note. The password crosses once and is never kept by the window; with none,
+   * the one that opened it earlier this session is used.
+   */
+  noteUnlock: (guid: string, password: string | null) =>
+    invoke<UnlockedNote>("note_unlock", { guid, password }),
+  /** The hint left with the note's password, if any. */
+  noteLockHint: (guid: string) => invoke<string | null>("note_lock_hint", { guid }),
+  /** Lock every opened note again. */
+  noteLockForget: () => invoke<void>("note_lock_forget"),
+  /** Add the file at `path` at `atOffset` (UTF-16 units of `base`, the text on screen). */
+  noteAttachFile: (guid: string, path: string, atOffset: number, base: string | null) =>
+    invoke<NoteAttached>("note_attach_file", { guid, path, atOffset, base }),
+  /**
+   * Whether adding files to notes is switched on in the backend
+   * (`quince_icloud::notes::attach::NOTE_ATTACH_WRITES`). A backend without the command
+   * answers no.
+   */
+  noteAttachEnabled: () => invoke<boolean>("note_attach_enabled").then((on) => on === true, () => false),
+};
+
+/* ── Export Everything: the whole local copy, in open formats (src-tauri/src/export.rs) ── */
+
+/** Told to the window as an export moves along. */
+export const EXPORT_PROGRESS = "quince://export";
+/** What a cancelled export answers, to tell it from a failure. */
+export const EXPORT_CANCELLED = "Export cancelled.";
+
+export type ExportService = "notes" | "reminders" | "contacts" | "calendar" | "drive" | "photos";
+/** Which service (`step` of `steps`, from 1) and how far through it. */
+export type ExportProgress = { service: ExportService; step: number; steps: number; done: number; total: number };
+export type ExportSummary = {
+  path: string;
+  notes: number;
+  reminders: number;
+  contacts: number;
+  events: number;
+  driveFiles: number;
+  photos: number;
+  photosMissing: number;
+};
+
+export const exportApi = {
+  /** Writes a new "Skykeep Export …" folder inside `dest`; photos only when asked (they can be huge). */
+  start: (dest: string, photos: boolean) => invoke<ExportSummary>("library_export_start", { dest, photos }),
+  /** Stops the export under way; nothing it wrote is left. */
+  cancel: () => invoke<void>("library_export_cancel"),
+  /** Shows the last finished export in the file manager. */
+  reveal: () => invoke<void>("library_export_reveal"),
+};
+
+/* ---- Calendar: subscriptions by address ------------------------------------------------ */
+
+/** A calendar subscribed to by address (webcal:// or https://), read-only, kept on this computer. */
+export type CalendarSubscription = {
+  id: string;
+  url: string;
+  title: string;
+  colour: string;
+  /** How often it is fetched again, in minutes; 0 for only when asked. */
+  refreshMinutes: number;
+  fetchedAt: number | null;
+  /** Why the last fetch did not land, when it did not. */
+  problem: string | null;
+};
+
+/** Where a subscription's calendar guid begins. */
+export const SUBSCRIPTION_PREFIX = "quince:sub:";
+
+export const calendarFeedsApi = {
+  list: () => invoke<CalendarSubscription[]>("calendar_subscriptions"),
+  /** Fetched once before it is kept, so a wrong address is said at once. */
+  subscribe: (url: string) => invoke<CalendarSubscription>("calendar_subscribe", { url }),
+  update: (id: string, change: { title?: string; colour?: string; refreshMinutes?: number }) =>
+    invoke<void>("calendar_subscription_update", {
+      id, title: change.title ?? null, colour: change.colour ?? null, refreshMinutes: change.refreshMinutes ?? null,
+    }),
+  unsubscribe: (id: string) => invoke<void>("calendar_unsubscribe", { id }),
+  refresh: (id: string) => invoke<CalendarSubscription>("calendar_subscription_refresh", { id }),
 };

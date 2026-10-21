@@ -8,6 +8,7 @@ import { PanelLeft } from "lucide-react";
 import { api, messageOf, OPEN_REMINDER } from "../lib/ipc";
 import { SyncProvider, useSync } from "../lib/sync";
 import { AccountCard } from "../components/Account";
+import { reveal, type Reveal } from "../lib/reveal";
 
 /*
  * Each app is its own chunk, so the window opens on the code for the app it shows, not all
@@ -63,7 +64,7 @@ import { GlobalSearch } from "../components/GlobalSearch";
 const SCREENS: { key: string; name: string }[] = [
   { key: "reminders", name: "Reminders" },
   { key: "notes", name: "Notes" },
-  { key: "drivews", name: "iCloud Drive" },
+  { key: "drivews", name: "Drive" },
   { key: "photos", name: "Photos" },
   { key: "calendar", name: "Calendar" },
   { key: "contacts", name: "Contacts" },
@@ -94,6 +95,20 @@ function UpdateKeys({ screen }: { screen: string | null }) {
   }, [screen, refresh, refreshService]);
   return null;
 }
+
+/*
+ * A result picked in the desktop's own search (GNOME Shell, KRunner) arrives as an event for
+ * this window: the item is handed to its screen (which takes it when it is up), and the
+ * screen is brought to the front. Listened for from the moment the code loads, so a window
+ * opened for the result does not miss it.
+ */
+const REVEAL = "quince://reveal";
+let revealedScreen: string | null = null;
+void listen<Reveal>(REVEAL, (e) => {
+  revealedScreen = e.payload.screen;
+  reveal(e.payload);
+  window.dispatchEvent(new CustomEvent("quince:revealed"));
+}).catch(() => {});
 
 /** The screen open last time, so the app reopens where it was left. */
 const LAST_KEY = "quince.library.screen";
@@ -259,10 +274,18 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
 
   // Clicking a reminder's alert brings the window back on Reminders.
   useEffect(() => {
+    const front = () => {
+      const screen = revealedScreen;
+      revealedScreen = null;
+      if (screen && services.includes(screen)) choose(screen);
+    };
+    front();
+    window.addEventListener("quince:revealed", front);
     const stop = listen<string>(OPEN_REMINDER, () => {
       if (services.includes("reminders")) choose("reminders");
     });
     return () => {
+      window.removeEventListener("quince:revealed", front);
       void stop.then((unlisten) => unlisten()).catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -363,12 +386,12 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
               <h1>Your iCloud data is kept off the web</h1>
               <p>
                 Your Apple Account uses Advanced Data Protection with “Access iCloud Data on the Web”
-                turned off, so Apple doesn’t let any app outside your devices — Pomander included —
+                turned off, so Apple doesn’t let any app outside your devices — Skykeep included —
                 read your iCloud.
               </p>
               <p>
-                To use Pomander, turn it on: on your iPhone, open <b>Settings</b>, tap your name, then
-                <b> iCloud</b>, and turn on <b>Access iCloud Data on the Web</b>. Then sign in to Pomander
+                To use Skykeep, turn it on: on your iPhone, open <b>Settings</b>, tap your name, then
+                <b> iCloud</b>, and turn on <b>Access iCloud Data on the Web</b>. Then sign in to Skykeep
                 again.
               </p>
             </div>

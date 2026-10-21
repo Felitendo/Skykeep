@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Pomander",
+  "productName": "Skykeep",
   "version": "0.1.0",
-  "identifier": "io.github.yashwanthkamireddi.Pomander",
+  "identifier": "io.github.yashwanthkamireddi.Skykeep",
   "build": {
     "frontendDist": "../dist",
     "beforeBuildCommand": "npm run build"
@@ -10,7 +10,7 @@
   "app": {
     "windows": [
       {
-        "title": "Pomander",
+        "title": "Skykeep",
         "width": 1040,
         "height": 720,
         "minWidth": 480,
@@ -55,9 +55,9 @@
       }
     ],
     "shortDescription": "Your iCloud, on this computer",
-    "longDescription": "Pomander keeps your iCloud notes, reminders, calendar, contacts, Drive and photos on your own computer, so they open instantly and work offline. An independent project, not affiliated with or endorsed by Apple Inc. iCloud is a trademark of Apple Inc.",
+    "longDescription": "Skykeep keeps your iCloud notes, reminders, calendar, contacts, Drive and photos on your own computer, so they open instantly and work offline. An independent project, not affiliated with or endorsed by Apple Inc. iCloud is a trademark of Apple Inc.",
     "licenseFile": "../LICENSE",
-    "homepage": "https://github.com/YashwanthKamireddi/quince",
+    "homepage": "https://github.com/YashwanthKamireddi/Skykeep",
     "publisher": "Yashwanth Kamireddi",
     "windows": {
       "nsis": {
@@ -75,15 +75,18 @@
           "libsecret-1-0",
           "libheif1"
         ],
-        "desktopTemplate": "../packaging/io.github.yashwanthkamireddi.Pomander.desktop.in",
+        "desktopTemplate": "../packaging/io.github.yashwanthkamireddi.Skykeep.desktop.in",
         "files": {
-          "/usr/share/metainfo/io.github.yashwanthkamireddi.Pomander.metainfo.xml": "../packaging/io.github.yashwanthkamireddi.Pomander.metainfo.xml",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Notes.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Notes.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Reminders.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Reminders.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Calendar.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Calendar.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Contacts.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Contacts.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Drive.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Drive.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Photos.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Photos.desktop"
+          "/usr/share/metainfo/io.github.yashwanthkamireddi.Skykeep.metainfo.xml": "../packaging/io.github.yashwanthkamireddi.Skykeep.metainfo.xml",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Notes.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Notes.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Reminders.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Reminders.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Calendar.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Calendar.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Contacts.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Contacts.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Drive.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Drive.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Photos.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Photos.desktop",
+          "/usr/share/gnome-shell/search-providers/io.github.yashwanthkamireddi.Skykeep.search-provider.ini": "../packaging/io.github.yashwanthkamireddi.Skykeep.search-provider.ini",
+          "/usr/share/dbus-1/services/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service": "../packaging/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service",
+          "/usr/share/krunner/dbusplugins/io.github.yashwanthkamireddi.Skykeep.krunner.desktop": "../packaging/io.github.yashwanthkamireddi.Skykeep.krunner.desktop"
         }
       },
       "rpm": {
@@ -91,15 +94,18 @@
           "libsecret",
           "libheif"
         ],
-        "desktopTemplate": "../packaging/io.github.yashwanthkamireddi.Pomander.desktop.in",
+        "desktopTemplate": "../packaging/io.github.yashwanthkamireddi.Skykeep.desktop.in",
         "files": {
-          "/usr/share/metainfo/io.github.yashwanthkamireddi.Pomander.metainfo.xml": "../packaging/io.github.yashwanthkamireddi.Pomander.metainfo.xml",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Notes.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Notes.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Reminders.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Reminders.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Calendar.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Calendar.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Contacts.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Contacts.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Drive.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Drive.desktop",
-          "/usr/share/applications/io.github.yashwanthkamireddi.Pomander.Photos.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Pomander.Photos.desktop"
+          "/usr/share/metainfo/io.github.yashwanthkamireddi.Skykeep.metainfo.xml": "../packaging/io.github.yashwanthkamireddi.Skykeep.metainfo.xml",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Notes.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Notes.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Reminders.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Reminders.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Calendar.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Calendar.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Contacts.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Contacts.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Drive.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Drive.desktop",
+          "/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.Photos.desktop": "../packaging/apps/io.github.yashwanthkamireddi.Skykeep.Photos.desktop",
+          "/usr/share/gnome-shell/search-providers/io.github.yashwanthkamireddi.Skykeep.search-provider.ini": "../packaging/io.github.yashwanthkamireddi.Skykeep.search-provider.ini",
+          "/usr/share/dbus-1/services/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service": "../packaging/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service",
+          "/usr/share/krunner/dbusplugins/io.github.yashwanthkamireddi.Skykeep.krunner.desktop": "../packaging/io.github.yashwanthkamireddi.Skykeep.krunner.desktop"
         }
       },
       "appimage": {
@@ -107,5 +113,5 @@
       }
     }
   },
-  "mainBinaryName": "pomander"
+  "mainBinaryName": "skykeep"
 }

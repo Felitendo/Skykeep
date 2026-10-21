@@ -6,7 +6,7 @@ import { Picker } from "./Picker";
 import "../styles/intake.css";
 
 /**
- * A calendar or contacts file opened with Pomander (src-tauri/src/intake.rs): what it holds,
+ * A calendar or contacts file opened with Skykeep (src-tauri/src/intake.rs): what it holds,
  * read on this computer, and one button that adds it. Nothing reaches iCloud until then, and
  * what can't be added is listed with why, rather than left out unsaid.
  *
@@ -120,7 +120,7 @@ function EventsSheet({ arrival, onDone }: { arrival: Extract<Arrival, { kind: "e
       .calendarList()
       .then((all) => {
         // Only the account's own calendars take a new event: not a subscribed feed, not the
-        // Birthdays and Holidays calendars Pomander draws itself.
+        // Birthdays and Holidays calendars Skykeep draws itself.
         const writable = all.filter((c) => c.writable && !c.guid.startsWith("quince:"));
         setCalendars(writable);
         setTarget((t) => t || (writable.find((c) => c.isDefault) ?? writable[0])?.guid || "");

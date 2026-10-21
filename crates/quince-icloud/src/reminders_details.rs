@@ -53,7 +53,7 @@ fn gate(enabled: bool) -> Result<()> {
         Ok(())
     } else {
         Err(Error::Refused(
-            "Pomander can't change this yet: writing it is still being checked against Apple's apps."
+            "Skykeep can't change this yet: writing it is still being checked against Apple's apps."
                 .into(),
         ))
     }
@@ -317,15 +317,14 @@ pub fn place_in_section(
         None => json!({ "minimumSupportedVersion": MINIMUM_SUPPORTED_VERSION, "memberships": [] }),
         Some(bytes) => serde_json::from_slice(bytes).map_err(|_| {
             Error::Refused(
-                "This list's sections are in a form Pomander doesn't read, so nothing was moved."
+                "This list's sections are in a form Skykeep doesn't read, so nothing was moved."
                     .into(),
             )
         })?,
     };
     if !doc.is_object() {
         return Err(Error::Refused(
-            "This list's sections are in a form Pomander doesn't read, so nothing was moved."
-                .into(),
+            "This list's sections are in a form Skykeep doesn't read, so nothing was moved.".into(),
         ));
     }
     if !doc.get("memberships").is_some_and(Value::is_array) {
@@ -663,7 +662,7 @@ pub async fn set_early_alert_cloudkit(
         .or_else(|| account.map(ToString::to_string))
         .ok_or_else(|| {
             Error::Refused(
-                "Set one early reminder on an Apple device first; Pomander needs what it writes."
+                "Set one early reminder on an Apple device first; Skykeep needs what it writes."
                     .into(),
             )
         })?;

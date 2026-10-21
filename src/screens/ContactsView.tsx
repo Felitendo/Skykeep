@@ -10,12 +10,16 @@ import { PaneTitle } from "../components/PaneTitle";
 import { ChevronLeft, Plus, UserPlus, UsersRound, UserRound } from "lucide-react";
 import {
   api,
+  contactsApi,
   displayName,
   messageOf,
   photoSrc,
   type Contact,
   type ContactList,
   type ContactMethod,
+  type AddressEdit,
+  type AddressPart,
+  type PostalAddress,
 } from "../lib/ipc";
 import { Arriving } from "../components/EmptyState";
 import { useArriving, useSync } from "../lib/sync";
@@ -135,10 +139,42 @@ export function ContactsView() {
    * card as it is then — so a change made on the phone while the form was open stays.
    */
   const draftBase = useRef<Contact | null>(null);
+  /**
+   * The open card's addresses part by part: as last read, or as just edited here — drawn at
+   * once, and put back if Apple turns the change down.
+   */
+  const [addresses, setAddresses] = useState<{ guid: string; list: PostalAddress[] } | null>(null);
+  /** Address writes go to Apple one after another; while any is out, a read does not undo it. */
+  const addressQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const addressesOut = useRef(0);
+  /** The addresses being written, and the list the form opened them from. */
+  const [draftAddresses, setDraftAddresses] = useState<DraftAddress[]>([]);
+  const addressBase = useRef<PostalAddress[]>([]);
+  /** Addresses whose label is being typed, by their key. */
+  const [addressCustom, setAddressCustom] = useState<Set<number>>(() => new Set());
+  const addressKey = useRef(0);
+  /** A just-added address takes the focus, once. */
+  const [addedKey, setAddedKey] = useState<number | null>(null);
+  const startAddresses = (list: PostalAddress[]) => {
+    addressBase.current = list;
+    setDraftAddresses(list.map((address, from) => ({ key: ++addressKey.current, from, address })));
+    setAddressCustom(new Set());
+    setAddedKey(null);
+  };
   const edit = (c: Contact) => {
     draftBase.current = c;
     setDraft({ ...c });
     setCustomAt(new Set());
+    if (addresses?.guid === c.guid) startAddresses(addresses.list);
+    else {
+      startAddresses([]);
+      contactsApi
+        .addresses(c.guid)
+        .then((list) => {
+          if (draftBase.current === c) startAddresses(Array.isArray(list) ? list : []);
+        })
+        .catch(() => {});
+    }
   };
   const [busy, setBusy] = useState(false);
   /** The detail whose label was just clicked to copy it, said for a moment. */
@@ -271,6 +307,53 @@ export function ContactsView() {
   useEffect(() => {
     if (list !== ALL && !lists.some((l) => l.guid === list)) setList(ALL);
   }, [lists, list]);
+
+  // The open card's addresses, part by part — read again whenever the library may have moved,
+  // unless a change of this screen's own is still on its way to Apple.
+  useEffect(() => {
+    if (!openGuid || openGuid.startsWith("pending-")) return undefined;
+    let cancelled = false;
+    if (addressesOut.current === 0)
+      contactsApi
+        .addresses(openGuid)
+        .then((list) => {
+          if (!cancelled && addressesOut.current === 0) setAddresses({ guid: openGuid, list: Array.isArray(list) ? list : [] });
+        })
+        .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [openGuid, due, outbox.tick]);
+
+  /**
+   * Address edits: drawn at once, then sent. Turned down, the list goes back to what it was,
+   * then to what Apple holds, and a toast says so with the way to try again.
+   */
+  const sendAddresses = useCallback(
+    (guid: string, base: PostalAddress[], edits: AddressEdit[], after: PostalAddress[]) => {
+      setAddresses({ guid, list: after });
+      addressesOut.current += 1;
+      addressQueue.current = addressQueue.current.then(async () => {
+        try {
+          const written = await contactsApi.addressEdit(guid, base, edits);
+          if (Array.isArray(written)) setAddresses((cur) => (cur?.guid === guid ? { guid, list: written } : cur));
+          read(search).catch(() => {});
+        } catch (e) {
+          setAddresses((cur) => (cur?.guid === guid ? { guid, list: base } : cur));
+          toast({
+            message: `Address not saved. ${messageOf(e)}`,
+            tone: "error",
+            action: { label: "Try Again", run: () => sendAddresses(guid, base, edits, after) },
+          });
+          const held = await contactsApi.addresses(guid).catch(() => null);
+          if (Array.isArray(held)) setAddresses((cur) => (cur?.guid === guid ? { guid, list: held } : cur));
+        } finally {
+          addressesOut.current -= 1;
+        }
+      });
+    },
+    [read, search],
+  );
 
   /** Who shows: everyone, or the people in the open list. */
   const shown = useMemo(() => {
@@ -409,14 +492,26 @@ export function ContactsView() {
     if (!draft) return;
     const saving = draft;
     let guid = saving.guid;
+    // Addresses are written part by part on their own; the rest of the card only if it changed.
+    const base = addressBase.current;
+    const edits = saving.guid ? addressEdits(base, draftAddresses) : [];
+    const after = predicted(base, draftAddresses);
+    const cardChanged = !saving.guid || JSON.stringify(saving) !== JSON.stringify(draftBase.current);
+    if (!cardChanged) {
+      setDraft(null);
+      if (edits.length) sendAddresses(saving.guid, base, edits, after);
+      return;
+    }
+    if (edits.length) setAddresses({ guid: saving.guid, list: after });
     const ok = await write(async () => {
       guid = await api.contactSave(saving, saving.guid ? draftBase.current : null);
     });
     if (ok) {
       setDraft(null);
       setOpenGuid(guid);
-    }
-  }, [draft, write]);
+      if (edits.length) sendAddresses(guid, base, edits, after);
+    } else if (edits.length) setAddresses({ guid: saving.guid, list: base });
+  }, [draft, draftAddresses, sendAddresses, write]);
 
   /**
    * Deleting a person is not something to discover by accident. Inside a list, icloud.com
@@ -452,6 +547,8 @@ export function ContactsView() {
     () => contacts.find((c) => c.guid === openGuid) ?? null,
     [contacts, openGuid]
   );
+  /** The open card's addresses part by part, once read; until then the lines Apple formatted. */
+  const structured = open && addresses?.guid === open.guid ? addresses.list : null;
   // Who is still here of those picked — a search or a list change narrows them.
   const pickedPeople = useMemo(() => {
     const chosen = new Set(picked);
@@ -917,7 +1014,8 @@ export function ContactsView() {
 
             <ul className="contact-method-rows">
               {draft.methods.map((m, index) =>
-                !EDITABLE_KINDS.has(m.kind) ? (
+                // An existing card's addresses are written part by part, below.
+                m.kind === "address" && draft.guid ? null : !EDITABLE_KINDS.has(m.kind) ? (
                   // Shown so it is not a surprise that it exists, but not offered for
                   // editing — this app cannot write a structured address back safely.
                   <li key={index} className="contact-method-fixed">
@@ -998,18 +1096,59 @@ export function ContactsView() {
               )}
             </ul>
 
-            <button
-              type="button"
-              className="quiet"
-              onClick={() =>
-                setDraft({
-                  ...draft,
-                  methods: [...draft.methods, { kind: "phone", label: "MOBILE", value: "" }],
-                })
-              }
-            >
-              Add phone, email or link
-            </button>
+            {draft.guid && draftAddresses.length > 0 && (
+              <ul className="contact-method-rows contact-address-rows" aria-label="Addresses">
+                {draftAddresses.map((d, i) => (
+                  <AddressEditor
+                    key={d.key}
+                    n={i + 1}
+                    address={d.address}
+                    custom={addressCustom.has(d.key)}
+                    autoFocus={addedKey === d.key}
+                    onChange={(patch) =>
+                      setDraftAddresses((all) => all.map((x) => (x.key === d.key ? { ...x, address: { ...x.address, ...patch } } : x)))
+                    }
+                    onCustom={(on) =>
+                      setAddressCustom((was) => {
+                        const next = new Set(was);
+                        if (on) next.add(d.key);
+                        else next.delete(d.key);
+                        return next;
+                      })
+                    }
+                    onRemove={() => setDraftAddresses((all) => all.filter((x) => x.key !== d.key))}
+                  />
+                ))}
+              </ul>
+            )}
+
+            <div className="contact-form-adds">
+              <button
+                type="button"
+                className="quiet"
+                onClick={() =>
+                  setDraft({
+                    ...draft,
+                    methods: [...draft.methods, { kind: "phone", label: "MOBILE", value: "" }],
+                  })
+                }
+              >
+                Add phone, email or link
+              </button>
+              {draft.guid && (
+                <button
+                  type="button"
+                  className="quiet"
+                  onClick={() => {
+                    const key = ++addressKey.current;
+                    setDraftAddresses((all) => [...all, { key, from: null, address: blankAddress() }]);
+                    setAddedKey(key);
+                  }}
+                >
+                  Add address
+                </button>
+              )}
+            </div>
 
             <div className="contact-birthday-field">
               <label>
@@ -1123,7 +1262,7 @@ export function ContactsView() {
             </div>
 
             <dl className="contact-methods">
-              {open.methods.map((m, i) => {
+              {(structured ? open.methods.filter((m) => m.kind !== "address") : open.methods).map((m, i) => {
                 const key = `${m.kind}-${i}`;
                 const label = (m.label && labelText(m.label)) || KIND_LABEL[m.kind] || m.kind;
                 return (
@@ -1150,12 +1289,40 @@ export function ContactsView() {
                       <a href={webHref(m.value)}>{m.value}</a>
                     ) : m.kind === "address" ? (
                       // A postal address is several lines and stays that way.
-                      <span className="contact-address">{m.value}</span>
+                      <>
+                        <span className="contact-address">{m.value}</span>
+                        <a className="contact-maps" href={mapsHref(m.value)}>Show in Maps</a>
+                      </>
                     ) : (
                       m.value
                     )}
                   </dd>
                 </div>
+                );
+              })}
+              {structured?.map((a, i) => {
+                const key = `postal-${i}`;
+                const label = (a.label && labelText(a.label)) || "address";
+                const text = formatAddress(a);
+                return (
+                  <div key={key} className="contact-postal">
+                    <dt>
+                      <button
+                        type="button"
+                        className="contact-copy"
+                        title={`Copy ${label} address`}
+                        aria-label={`Copy ${label} address`}
+                        onClick={() => void copyText(text).then((ok) => ok && setCopied(key))}
+                      >
+                        <span className={copied === key ? "is-hidden" : undefined}>{label}</span>
+                        <span className={copied === key ? undefined : "is-hidden"} aria-hidden={copied !== key}>copied</span>
+                      </button>
+                    </dt>
+                    <dd>
+                      <span className="contact-address">{text}</span>
+                      <a className="contact-maps" href={mapsHref(text)}>Show in Maps</a>
+                    </dd>
+                  </div>
                 );
               })}
               {open.birthday && (
@@ -1166,7 +1333,7 @@ export function ContactsView() {
               )}
             </dl>
 
-            {open.methods.length === 0 && !open.birthday && (
+            {open.methods.length === 0 && !structured?.length && !open.birthday && (
               <p className="contact-none">No phone numbers or addresses saved.</p>
             )}
             {open.notes && <p className="contact-notes">{open.notes}</p>}
@@ -1399,4 +1566,200 @@ function sortedContacts(list: Contact[]): Contact[] {
     if (la !== lb) return la ? 1 : -1;
     return contactCollator.compare(sortKey(a), sortKey(b));
   });
+}
+
+/* ── Postal addresses ─────────────────────────────────────────────────────────────────── */
+
+/**
+ * The lines of an address in the order its country writes them — the backend's
+ * `PostalAddress::formatted`, line for line, so an address just edited here reads exactly as
+ * it will once the card is read back from Apple.
+ */
+type AddressLine = [AddressPart, string][];
+const LAYOUTS: Record<string, AddressLine[]> = {
+  us: [[["street", ""]], [["subLocality", ""]], [["city", ""], ["state", ", "], ["postalCode", " "]], [["country", ""]]],
+  gb: [[["street", ""]], [["subLocality", ""]], [["city", ""]], [["subAdministrativeArea", ""]], [["postalCode", ""]], [["country", ""]]],
+  in: [[["street", ""]], [["subLocality", ""]], [["city", ""], ["postalCode", " "]], [["state", ""]], [["country", ""]]],
+  de: [[["street", ""]], [["postalCode", ""], ["city", " "]], [["country", ""]]],
+  jp: [[["postalCode", ""]], [["state", ""], ["city", " "], ["subLocality", " "]], [["street", ""]], [["country", ""]]],
+  other: [[["street", ""]], [["subLocality", ""]], [["city", ""], ["state", " "], ["postalCode", " "]], [["country", ""]]],
+};
+LAYOUTS.fr = LAYOUTS.de;
+const CODES: Record<string, string> = { us: "us", gb: "gb", uk: "gb", in: "in", de: "de", fr: "fr", jp: "jp" };
+const NAMES: Record<string, string> = Object.fromEntries(
+  ([
+    ["us", ["united states", "united states of america", "usa", "us", "u.s.a", "u.s", "america"]],
+    ["gb", ["united kingdom", "uk", "u.k", "great britain", "britain", "england", "scotland", "wales", "northern ireland", "gb"]],
+    ["in", ["india", "bharat", "in"]],
+    ["de", ["germany", "deutschland", "de"]],
+    ["fr", ["france", "fr"]],
+    ["jp", ["japan", "nippon", "日本", "jp"]],
+  ] as const).flatMap(([code, names]) => names.map((n) => [n, code])),
+);
+/** Apple's code for a country typed by name, for the countries laid out by their own rules. */
+function countryCodeFor(name: string): string | null {
+  const folded = name.trim().normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/\.+$/, "");
+  return NAMES[folded] ?? null;
+}
+function formatAddress(a: PostalAddress): string {
+  const key = (a.countryCode && CODES[a.countryCode.trim().toLowerCase()]) || (a.country && countryCodeFor(a.country)) || "other";
+  const lines: string[] = [];
+  for (const line of LAYOUTS[key]) {
+    let text = "";
+    for (const [part, separator] of line) {
+      const value = a[part];
+      if (!value) continue;
+      if (text) text += separator;
+      text += value;
+    }
+    lines.push(...text.split("\n").map((l) => l.trim()).filter(Boolean));
+  }
+  return lines.join("\n");
+}
+/** The address on one line, for a map to search for. */
+const mapsHref = (text: string) => `geo:0,0?q=${encodeURIComponent(text.split("\n").join(", "))}`;
+
+/** The parts the editor shows, in the order Tab walks them. */
+const ADDRESS_PARTS = ["street", "city", "state", "postalCode", "country"] as const;
+const PART_NAME: Record<(typeof ADDRESS_PARTS)[number], string> = {
+  street: "Street",
+  city: "City",
+  state: "State",
+  postalCode: "Postcode",
+  country: "Country",
+};
+const ADDRESS_LABELS = ["HOME", "WORK", "OTHER"];
+const ALL_PARTS: AddressPart[] = ["street", "subLocality", "city", "subAdministrativeArea", "state", "postalCode", "country", "countryCode"];
+
+const blankAddress = (): PostalAddress => ({
+  label: "HOME", street: null, subLocality: null, city: null, subAdministrativeArea: null,
+  state: null, postalCode: null, country: null, countryCode: null,
+});
+/** A part as stored: trimmed, and nothing rather than an empty string. */
+const tidy = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null);
+const isEmptyAddress = (a: PostalAddress) => ALL_PARTS.every((p) => !tidy(a[p]));
+
+/** An address in the editor: where it sat in the list the form opened (null for a new one). */
+type DraftAddress = { key: number; from: number | null; address: PostalAddress };
+
+/**
+ * What the editor's addresses change from the list it opened with, as the backend's edits:
+ * parts and labels first (by their places in that list), then removals from the end back,
+ * then additions — so every index names the address it meant.
+ */
+function addressEdits(base: PostalAddress[], draft: DraftAddress[]): AddressEdit[] {
+  const edits: AddressEdit[] = [];
+  for (const d of draft) {
+    if (d.from === null) continue;
+    const was = base[d.from];
+    for (const part of ADDRESS_PARTS) {
+      const value = tidy(d.address[part]);
+      if (value !== tidy(was[part])) edits.push({ op: "setField", index: d.from, field: part, value });
+    }
+    const label = tidy(d.address.label);
+    if (label !== tidy(was.label)) edits.push({ op: "setLabel", index: d.from, label });
+  }
+  const kept = new Set(draft.map((d) => d.from));
+  for (let i = base.length - 1; i >= 0; i--) if (!kept.has(i)) edits.push({ op: "remove", index: i });
+  for (const d of draft) {
+    if (d.from === null && !isEmptyAddress(d.address)) edits.push({ op: "add", address: settled(d.address, null) });
+  }
+  return edits;
+}
+
+/** An address as the backend will store it: trimmed, and its country's code kept in step. */
+function settled(a: PostalAddress, was: PostalAddress | null): PostalAddress {
+  const out = { ...a, label: tidy(a.label) };
+  for (const p of ALL_PARTS) out[p] = tidy(a[p]);
+  if (!was ? !out.countryCode : tidy(was.country) !== out.country) out.countryCode = out.country ? countryCodeFor(out.country) : null;
+  return out;
+}
+/** The list the edits will leave, drawn before Apple has it. */
+const predicted = (base: PostalAddress[], draft: DraftAddress[]) =>
+  draft.map((d) => settled(d.address, d.from === null ? null : base[d.from])).filter((a) => !isEmptyAddress(a));
+
+/**
+ * One address being written, laid out as Contacts on the Mac lays one out: the street over
+ * as many lines as it takes, then town, region and postcode on one line, then the country.
+ */
+function AddressEditor({ n, address, custom, autoFocus, onChange, onCustom, onRemove }: {
+  n: number;
+  address: PostalAddress;
+  custom: boolean;
+  autoFocus: boolean;
+  onChange: (patch: Partial<PostalAddress>) => void;
+  onCustom: (custom: boolean) => void;
+  onRemove: () => void;
+}) {
+  const match = ADDRESS_LABELS.find((v) => v === address.label?.toUpperCase());
+  const typing = custom || (address.label !== null && !match);
+  const field = (part: (typeof ADDRESS_PARTS)[number], extra?: { autoFocus?: boolean }) => (
+    <input
+      className={`contact-address-${part}`}
+      value={address[part] ?? ""}
+      placeholder={PART_NAME[part]}
+      aria-label={`${PART_NAME[part]}, address ${n}`}
+      autoComplete="off"
+      autoFocus={extra?.autoFocus}
+      onChange={(e) => onChange({ [part]: e.target.value || null })}
+    />
+  );
+  const street = address.street ?? "";
+  return (
+    <li className="contact-address-edit">
+      <span className="contact-address-kind">address</span>
+      <Picker
+        label={`Label for address ${n}`}
+        className="contact-label-pick"
+        value={typing ? CUSTOM : (match ?? "")}
+        onChange={(v) => {
+          onCustom(v === CUSTOM);
+          if (v !== CUSTOM) onChange({ label: v || null });
+        }}
+        options={[
+          ...(address.label === null && !typing ? [{ value: "", label: "no label" }] : []),
+          ...ADDRESS_LABELS.map((v) => ({ value: v, label: labelText(v) })),
+          { value: CUSTOM, label: "Custom" },
+        ]}
+      />
+      {typing ? (
+        <input
+          className="contact-method-label contact-address-custom"
+          value={address.label ?? ""}
+          placeholder="label"
+          aria-label={`Custom label for address ${n}`}
+          onChange={(e) => onChange({ label: e.target.value || null })}
+        />
+      ) : (
+        <span aria-hidden="true" />
+      )}
+      <button type="button" className="quiet danger" aria-label={`Remove address ${n}`} onClick={onRemove}>
+        ✕
+      </button>
+      <div className="contact-address-fields">
+        <textarea
+          className="contact-address-street"
+          value={street}
+          rows={Math.max(2, street.split("\n").length)}
+          placeholder="Street"
+          aria-label={`Street, address ${n}`}
+          autoFocus={autoFocus}
+          onChange={(e) => onChange({ street: e.target.value || null })}
+          onKeyDown={(e) => {
+            // Return saves, as in every other field; Shift-Return starts another line.
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              e.currentTarget.form?.requestSubmit();
+            }
+          }}
+        />
+        <div className="contact-address-line">
+          {field("city")}
+          {field("state")}
+          {field("postalCode")}
+        </div>
+        {field("country")}
+      </div>
+    </li>
+  );
 }

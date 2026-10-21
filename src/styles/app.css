@@ -445,48 +445,23 @@
   cursor: pointer;
 }
 
-.nav-item > svg { border-radius: 5.4px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 0 0.5px rgba(0, 0, 0, 0.2); }
-/* Apple's own icons come as a light and a dark picture; the theme shows one. */
-.app-icon-apple { display: inline-grid; }
-.app-icon-apple > img { grid-area: 1 / 1; width: 100%; height: 100%; display: block; }
-.app-icon-apple > .ai-dark { display: none; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .app-icon-apple > .ai-light { display: none; }
-  :root:not([data-theme="light"]) .app-icon-apple > .ai-dark { display: block; }
+/* Each app's mark: one symbol in the app's colour (AppIcon), as a Mac sidebar draws its places.
+   The tints are the system's own hues, a shade deeper in light mode so they hold on white. */
+.app-icon { display: inline-grid; place-items: center; flex: none; }
+:root {
+  --app-notes: #c98a00; --app-reminders: #e8590c; --app-calendar: #e0313f;
+  --app-contacts: #6e7480; --app-drive: #1f7ae0; --app-photos: #b34fd6;
 }
-:root[data-theme="dark"] .app-icon-apple > .ai-light { display: none; }
-:root[data-theme="dark"] .app-icon-apple > .ai-dark { display: block; }
-/* The icon tiles: white in light mode; Apple's graphite in dark, as icloud.com draws them. */
-.app-icon .ai-tile-top { stop-color: #ffffff; }
-.app-icon .ai-tile-bottom { stop-color: #ececf0; }
-.app-icon .ai-edge { stroke: rgba(0, 0, 0, 0.1); }
-.app-icon .ai-rule { fill: #c7c7cc; }
-.app-icon .ai-ink { fill: #1c1c1e; }
-.app-icon .ai-card { fill: #8e8e93; }
-.app-icon .ai-person { fill: #fff; }
-.app-icon.ai-contacts .ai-tile-top { stop-color: #d8d8dc; }
-.app-icon.ai-contacts .ai-tile-bottom { stop-color: #b8b8be; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .app-icon .ai-tile-top { stop-color: #3a3a3e; }
-  :root:not([data-theme="light"]) .app-icon .ai-tile-bottom { stop-color: #1c1c1f; }
-  :root:not([data-theme="light"]) .app-icon .ai-edge { stroke: rgba(255, 255, 255, 0.14); }
-  :root:not([data-theme="light"]) .app-icon .ai-rule { fill: #5a5a60; }
-  :root:not([data-theme="light"]) .app-icon .ai-ink { fill: #f2f2f7; }
-  :root:not([data-theme="light"]) .app-icon .ai-card { fill: #636366; }
-  :root:not([data-theme="light"]) .app-icon .ai-person { fill: #e5e5ea; }
-  :root:not([data-theme="light"]) .app-icon.ai-contacts .ai-tile-top { stop-color: #3a3a3e; }
-  :root:not([data-theme="light"]) .app-icon.ai-contacts .ai-tile-bottom { stop-color: #1c1c1f; }
+  :root:not([data-theme="light"]) {
+    --app-notes: #ffd23f; --app-reminders: #ff8a4c; --app-calendar: #ff5a5f;
+    --app-contacts: #aab1bd; --app-drive: #5ab0ff; --app-photos: #d38bff;
+  }
 }
-/* The same, when Settings chooses Dark whatever the system says. */
-:root[data-theme="dark"] .app-icon .ai-tile-top { stop-color: #3a3a3e; }
-:root[data-theme="dark"] .app-icon .ai-tile-bottom { stop-color: #1c1c1f; }
-:root[data-theme="dark"] .app-icon .ai-edge { stroke: rgba(255, 255, 255, 0.14); }
-:root[data-theme="dark"] .app-icon .ai-rule { fill: #5a5a60; }
-:root[data-theme="dark"] .app-icon .ai-ink { fill: #f2f2f7; }
-:root[data-theme="dark"] .app-icon .ai-card { fill: #636366; }
-:root[data-theme="dark"] .app-icon .ai-person { fill: #e5e5ea; }
-:root[data-theme="dark"] .app-icon.ai-contacts .ai-tile-top { stop-color: #3a3a3e; }
-:root[data-theme="dark"] .app-icon.ai-contacts .ai-tile-bottom { stop-color: #1c1c1f; }
+:root[data-theme="dark"] {
+  --app-notes: #ffd23f; --app-reminders: #ff8a4c; --app-calendar: #ff5a5f;
+  --app-contacts: #aab1bd; --app-drive: #5ab0ff; --app-photos: #d38bff;
+}
 .nav-name { overflow: hidden; text-overflow: ellipsis; }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 6px; min-height: 28px; }
 .sidebar-head h2 { margin: 0 8px; }
@@ -878,7 +853,7 @@
   border-radius: 8px; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(0, 0, 0, 0.2);
 }
 .drive-peek-name { margin: 0; font-size: var(--t-15); font-weight: 600; overflow-wrap: anywhere; }
-.drive-peek-facts { margin: 0; color: var(--text-2); font-size: var(--t-12, 12px); }
+.drive-peek-facts { margin: 0; color: var(--text-2); font-size: var(--t-13); }
 .drive-peek-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
 /* Grid, as icloud.com and Finder's icon view lay it out: a large mark, the name under it in
    two lines at most, the size and date left to List. Actions stay on hover, over the tile. */
@@ -897,7 +872,7 @@
 .drive-rows.is-grid .drive-badge { height: 52px; transform: scale(2.1); transform-origin: center; }
 .drive-rows.is-grid .drive-name {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; white-space: normal; word-break: break-word; font-size: var(--t-12, 12px); line-height: 1.3;
+  overflow: hidden; white-space: normal; word-break: break-word; font-size: var(--t-13); line-height: 1.3;
 }
 .drive-rows.is-grid .drive-meta { display: none; }
 .drive-rows.is-grid .drive-row-actions {
@@ -1246,6 +1221,40 @@
 /* Apple's label picked from a list; a custom one typed under it, in the same column. */
 .contact-label-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 
+/* A postal address being written: its kind and label on the line of every other detail, the
+   parts beneath under the label, as Contacts on the Mac sets them — street over as many lines
+   as it takes, then town, region and postcode side by side, then the country. */
+.contact-address-rows { padding-top: 6px; border-top: 1px solid var(--separator); }
+.contact-method-rows li.contact-address-edit {
+  grid-template-columns: 96px 112px minmax(0, 1fr) auto;
+  row-gap: 6px;
+  align-items: center;
+}
+.contact-address-kind { font-size: var(--t-13); color: var(--text-2); padding-left: 8px; }
+.contact-address-fields {
+  grid-column: 2 / 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.contact-form .contact-address-street { resize: none; line-height: 1.35; }
+.contact-address-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 0.9fr);
+  gap: 6px;
+}
+.contact-address-rows li + li { padding-top: 10px; border-top: 1px solid var(--separator); }
+.contact-form-adds { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+
+/* Under an address, the one way to see it on a map. */
+.contact-maps {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: var(--t-13);
+}
+.contact-postal dd { display: flex; flex-direction: column; align-items: flex-start; }
+
 .move-sheet-list {
   flex: 1;
   min-height: 120px;
@@ -1535,14 +1544,14 @@
 .contact-letter {
   position: sticky; top: 0; z-index: 1; padding: 10px 10px 4px;
   background: var(--bg); color: var(--text-3);
-  font-size: var(--t-12, 12px); font-weight: 600;
+  font-size: var(--t-13); font-weight: 600;
   border-bottom: 1px solid var(--separator);
 }
 /* The column headings, in the rows' own grid, quiet until one is the order. */
 .drive-head { border-bottom: 1px solid var(--separator); border-radius: 0; }
 .drive-head:hover { background: none; }
 .drive-head .drive-row-hit { cursor: default; padding-block: 4px; }
-.drive-col { padding: 0; border: 0; background: none; box-shadow: none; color: var(--text-3); font: inherit; font-size: var(--t-12, 12px); text-align: left; cursor: pointer; }
+.drive-col { padding: 0; border: 0; background: none; box-shadow: none; color: var(--text-3); font: inherit; font-size: var(--t-13); text-align: left; cursor: pointer; }
 .drive-col.is-on { color: var(--text-2); font-weight: 600; }
 .drive-col:hover { color: var(--text); }
 .drive-kind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

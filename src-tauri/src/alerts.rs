@@ -85,7 +85,7 @@ fn answer(app: &AppHandle, due: &DueAlarm, due_then: Option<Option<i64>>, action
     }
 }
 
-/// A plain notice from the app itself — not a reminder or an event — sent as Pomander, and
+/// A plain notice from the app itself — not a reminder or an event — sent as Skykeep, and
 /// opening the window when clicked where the desktop allows it.
 pub fn tell(app: &AppHandle, title: &str, body: &str) {
     let app = app.clone();
@@ -95,7 +95,7 @@ pub fn tell(app: &AppHandle, title: &str, body: &str) {
         #[cfg(windows)]
         notice.app_id(&app.config().identifier);
         notice
-            .appname("Pomander")
+            .appname("Skykeep")
             .summary(&title)
             .body(&body)
             .icon(icon_path(&app).unwrap_or("quince"));
@@ -137,7 +137,7 @@ fn chime(alert: &mut notify_rust::Notification) {
     }
     // Not waited on: an alert never stands behind its sound.
     std::process::Command::new("canberra-gtk-play")
-        .args(["--id", SOUND, "--description", "Pomander alert"])
+        .args(["--id", SOUND, "--description", "Skykeep alert"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -315,7 +315,7 @@ fn show(app: AppHandle, due: DueAlarm) {
                 toast = toast.icon(
                     std::path::Path::new(icon),
                     tauri_winrt_notification::IconCrop::Square,
-                    "Pomander",
+                    "Skykeep",
                 );
             }
             toast.show().ok();
@@ -325,7 +325,7 @@ fn show(app: AppHandle, due: DueAlarm) {
             let mut alert = notify_rust::Notification::new();
             chime(&mut alert);
             let shown = alert
-                .appname("Pomander")
+                .appname("Skykeep")
                 .summary(&due.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))
@@ -472,7 +472,7 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
             #[cfg(windows)]
             toast.sound_name("Reminder");
             toast
-                .appname("Pomander")
+                .appname("Skykeep")
                 .summary(&event.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))
@@ -484,7 +484,7 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
             let mut alert = notify_rust::Notification::new();
             chime(&mut alert);
             let shown = alert
-                .appname("Pomander")
+                .appname("Skykeep")
                 .summary(&event.title)
                 .body(&body)
                 .icon(icon_path(&app).unwrap_or("quince"))

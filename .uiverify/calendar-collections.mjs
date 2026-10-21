@@ -15,13 +15,15 @@ let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 const names = () => page.locator(".cx-cal-name").allInnerTexts();
 
-await page.getByRole("button", { name: "New Calendar" }).click();
+await page.getByRole("button", { name: "Add Calendar" }).click();
+await page.getByRole("menuitem", { name: "New Calendar" }).click();
 await page.getByLabel("New calendar name").fill("Trips");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(400);
 ok((await names()).includes("Trips"), "+ makes a calendar, named as typed");
 
-await page.getByRole("button", { name: "New Calendar" }).click();
+await page.getByRole("button", { name: "Add Calendar" }).click();
+await page.getByRole("menuitem", { name: "New Calendar" }).click();
 await page.getByLabel("New calendar name").fill("Work");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(400);
@@ -38,7 +40,7 @@ ok((await names()).includes("Office") && !(await names()).includes("Work"), "Ren
 
 await page.locator(".cx-cal", { hasText: "Office" }).click({ button: "right" });
 await page.getByRole("menuitem", { name: "Colour" }).hover();
-await page.getByRole("menuitem", { name: "Brown" }).click();
+await page.getByRole("menuitemcheckbox", { name: "Brown" }).click();
 await page.waitForTimeout(300);
 const writes = await page.evaluate(() => window.__calWrites);
 ok(writes.some((w) => w.update?.colour === "#a2845e"), `Colour sets Apple's brown  ${JSON.stringify(writes.at(-1))}`);

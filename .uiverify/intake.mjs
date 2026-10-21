@@ -1,4 +1,4 @@
-// A calendar or contacts file opened with Pomander shows what it holds and adds it only on
+// A calendar or contacts file opened with Skykeep shows what it holds and adds it only on
 // confirm, through the same commands the apps use (event_save, contacts_import). The quick
 // capture window is one field: Enter makes the reminder or note and the window closes.
 import { engine } from "./engine.mjs";
@@ -27,7 +27,7 @@ const ARRIVALS = {
       { title: "Dentist", location: null, startsAt: base + 2 * DAY, endsAt: base + 2 * DAY + 1800, allDay: false,
         timezone: "Asia/Kolkata", notes: null, url: null, alerts: null, repeat: null, duplicate: true },
     ],
-    refused: [{ title: "Classes", reason: "It repeats on several days of the week, which Pomander can’t set up yet." }],
+    refused: [{ title: "Classes", reason: "It repeats on several days of the week, which Skykeep can’t set up yet." }],
   },
   contacts: {
     kind: "contacts", file: "people.vcf", path: "/home/test/Downloads/people.vcf",
@@ -197,7 +197,7 @@ async function page(url, arrivals, stub = {}) {
   await ctx.close();
 }
 
-// ── Quick capture before Pomander is signed in. ──
+// ── Quick capture before Skykeep is signed in. ──
 {
   const ctx = await b.newContext({ viewport: { width: 460, height: 132 } });
   await ctx.addInitScript(installStub, { screen: "signin", services: SERVICES, twoFactor: null, remindersFixture: true });
@@ -209,10 +209,10 @@ async function page(url, arrivals, stub = {}) {
   await field.fill("Pay rent");
   await field.press("Enter");
   await p.waitForTimeout(300);
-  ok(await p.getByText("Sign in to Pomander first.").isVisible() && (await p.evaluate(() => (window.__creates ?? []).length)) === 0,
+  ok(await p.getByText("Sign in to Skykeep first.").isVisible() && (await p.evaluate(() => (window.__creates ?? []).length)) === 0,
     "signed out, it says so and writes nothing");
-  await p.getByRole("button", { name: "Open Pomander" }).click();
-  ok(await p.evaluate(() => (window.__calls ?? []).some(([c]) => c === "intake_open_main")), "and Open Pomander brings up the sign-in");
+  await p.getByRole("button", { name: "Open Skykeep" }).click();
+  ok(await p.evaluate(() => (window.__calls ?? []).some(([c]) => c === "intake_open_main")), "and Open Skykeep brings up the sign-in");
   await ctx.close();
 }
 

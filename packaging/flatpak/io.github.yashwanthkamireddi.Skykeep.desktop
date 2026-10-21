@@ -1,46 +1,46 @@
 [Desktop Entry]
 Type=Application
-Name=Pomander
+Name=Skykeep
 GenericName=iCloud Client
 Comment=Your iCloud, on this computer
-Exec=pomander %U
-Icon=io.github.yashwanthkamireddi.Pomander
+Exec=skykeep %U
+Icon=io.github.yashwanthkamireddi.Skykeep
 Terminal=false
 Categories=Office;Calendar;ContactManagement;
 Keywords=iCloud;calendar;reminders;notes;contacts;sync;
 MimeType=text/calendar;text/vcard;text/x-vcard;
 StartupNotify=true
-StartupWMClass=io.github.yashwanthkamireddi.Pomander
+StartupWMClass=io.github.yashwanthkamireddi.Skykeep
 Actions=new-reminder;new-note;notes;reminders;calendar;contacts;drive;photos;
 
 [Desktop Action new-reminder]
 Name=New Reminder
-Exec=pomander --new reminder
+Exec=skykeep --new reminder
 
 [Desktop Action new-note]
 Name=New Note
-Exec=pomander --new note
+Exec=skykeep --new note
 
 [Desktop Action notes]
 Name=Notes
-Exec=pomander --app notes
+Exec=skykeep --app notes
 
 [Desktop Action reminders]
 Name=Reminders
-Exec=pomander --app reminders
+Exec=skykeep --app reminders
 
 [Desktop Action calendar]
 Name=Calendar
-Exec=pomander --app calendar
+Exec=skykeep --app calendar
 
 [Desktop Action contacts]
 Name=Contacts
-Exec=pomander --app contacts
+Exec=skykeep --app contacts
 
 [Desktop Action drive]
 Name=Drive
-Exec=pomander --app drive
+Exec=skykeep --app drive
 
 [Desktop Action photos]
 Name=Photos
-Exec=pomander --app photos
+Exec=skykeep --app photos

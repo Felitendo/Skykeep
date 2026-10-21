@@ -755,7 +755,7 @@ fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
     }
 }
 
-/// Whether a Pomander is running under an identifier, and handing a launch to it: the same
+/// Whether a Skykeep is running under an identifier, and handing a launch to it: the same
 /// channel tauri-plugin-single-instance listens on, so the running one opens what was asked
 /// for (`--app notes`, a file) exactly as it would for a launch under its own identifier.
 mod instance {
@@ -1287,12 +1287,12 @@ mod tests {
         let h = home();
         let dir = h.roots.autostart.clone().unwrap();
         fs::create_dir_all(&dir).unwrap();
-        let entry = "[Desktop Entry]\nType=Application\nName=Pomander\nExec=\"/opt/Pomander.AppImage\" --background\nIcon=dev.quince.client\nX-GNOME-Autostart-enabled=true\n";
+        let entry = "[Desktop Entry]\nType=Application\nName=Skykeep\nExec=\"/opt/Skykeep.AppImage\" --background\nIcon=dev.quince.client\nX-GNOME-Autostart-enabled=true\n";
         fs::write(dir.join(format!("{OLD_ID}.desktop")), entry).unwrap();
         run(&h.roots, IDS, &Mover::default());
         assert!(!dir.join(format!("{OLD_ID}.desktop")).exists());
         let moved = fs::read_to_string(dir.join(format!("{NEW_ID}.desktop"))).unwrap();
-        assert!(moved.contains("Exec=\"/opt/Pomander.AppImage\" --background\n"));
+        assert!(moved.contains("Exec=\"/opt/Skykeep.AppImage\" --background\n"));
         assert!(moved.contains(&format!("Icon={NEW_ID}\n")));
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "no part file left");
     }

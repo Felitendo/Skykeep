@@ -177,7 +177,7 @@ function DriveTrash({ onClose }: { onClose: () => void }) {
                     {driveName(item)}
                   </span>
                   <span className="drive-meta drive-kind">
-                    {item.restorePath ? `From ${item.restorePath.split("/").slice(0, -1).join("/") || "iCloud Drive"}` : kindName(item)}
+                    {item.restorePath ? `From ${item.restorePath.split("/").slice(0, -1).join("/") || "Drive"}` : kindName(item)}
                   </span>
                   <span className="drive-meta">{isContainer(item) ? "" : fileSize(item.size)}</span>
                   <span className={`drive-meta${daysLeft(item.expiresAt) !== null && (daysLeft(item.expiresAt) ?? 99) <= 3 ? " is-soon" : ""}`}>
@@ -438,7 +438,7 @@ function sameItems(a: DriveItem[], b: DriveItem[]): boolean {
 }
 
 export function DriveView() {
-  const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
+  const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "Drive" }]);
   const [items, setItems] = useState<DriveItem[]>([]);
   const [inTrash, setInTrash] = useState(false);
   const [inRecents, setInRecents] = useState(false);
@@ -538,7 +538,7 @@ export function DriveView() {
       }
       setInTrash(false);
       setInRecents(false);
-      setTrail([{ id: DRIVE_ROOT, name: "iCloud Drive" }, ...crumbs]);
+      setTrail([{ id: DRIVE_ROOT, name: "Drive" }, ...crumbs]);
       revealing.current = r.id;
       setSelected(r.id);
     })();
@@ -669,6 +669,8 @@ export function DriveView() {
   // comes back — one small request; none while hidden — so a file saved on the phone appears
   // here as it would in Finder.
   const shown = useScreenActive();
+  const shownNow = useRef(shown);
+  shownNow.current = shown;
   useEffect(() => {
     if (!shown) return undefined;
     // Never over a change of this computer's own still on its way: a check read before a
@@ -1026,6 +1028,9 @@ export function DriveView() {
         .onDragDropEvent((event) => {
           // A row of Drive's own being moved is not a file arriving from this machine.
           if (dragItem.current) return;
+          // Only while Drive is the screen in front: a file dropped onto a note, with Drive
+          // kept in the background, went up to iCloud Drive as well.
+          if (!shownNow.current) return;
           const p = event.payload;
           // Over a folder's row, the files go into that folder, as Finder drops them; anywhere
           // else, into the folder that is open.
@@ -1776,7 +1781,7 @@ function MoveDialog({
   onCancel: () => void;
   onMove: (destinationId: string) => void;
 }) {
-  const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "iCloud Drive" }]);
+  const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "Drive" }]);
   const [folders, setFolders] = useState<DriveItem[]>([]);
   const [loading, setLoading] = useState(false);
 

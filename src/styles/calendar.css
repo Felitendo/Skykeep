@@ -721,3 +721,109 @@
 .cx-zone-region { color: var(--text-3); font-size: var(--t-11); }
 .cx-zone-option.is-lit { background: var(--accent); color: var(--on-accent, #fff); }
 .cx-zone-option.is-lit .cx-zone-region, .cx-zone-option.is-lit .cx-zone-offset { color: inherit; opacity: 0.8; }
+
+/* ---- sidebar groups: iCloud, Subscriptions, Other — each folds away -------------------- */
+
+.cx-group { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+.cx-group:first-child { margin-top: 0; }
+.cx-group .cx-side-heading {
+  display: inline-flex; align-items: center; gap: 4px; margin: 0; padding: 2px 8px 2px 4px; border: 0;
+  border-radius: 6px; background: none; box-shadow: none; font: inherit; font-size: var(--t-11); font-weight: 600;
+  color: var(--text-3); cursor: default;
+}
+.cx-group .cx-side-heading:hover { color: var(--text-2); }
+.cx-group .cx-side-heading:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
+.cx-fold { flex: none; transition: transform 120ms ease; }
+.cx-side-heading[aria-expanded="false"] .cx-fold { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .cx-fold { transition: none; } }
+.cx-cal-problem {
+  flex: none; display: grid; place-items: center; width: 15px; height: 15px; border-radius: 50%;
+  background: color-mix(in srgb, var(--sys-orange, #ff9500) 22%, transparent); color: var(--sys-orange, #c76b00);
+  font-size: 10px; font-weight: 700;
+}
+
+/* New Calendar Subscription: a small panel in the sidebar, where the subscription will be. */
+.cx-subscribe {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 10px;
+  border-radius: 10px; background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.cx-subscribe-label { font-size: var(--t-13); font-weight: 600; }
+.cx-subscribe .field { width: 100%; min-width: 0; }
+.cx-subscribe-note { margin: 0; color: var(--text-3); font-size: var(--t-11); line-height: 1.35; }
+.cx-subscribe-note.is-problem { color: var(--sys-red); }
+.cx-subscribe-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+/* ---- Quick Event --------------------------------------------------------------------- */
+
+/* Under the +, opaque and simply there, as the other popovers are (no fade: WebKitGTK). */
+.cx-quick-anchor { position: relative; }
+.cx-quick {
+  background: var(--sheet, var(--glass-thick));
+  position: absolute; top: calc(100% + 6px); right: -8px; z-index: 35;
+  display: flex; flex-direction: column; gap: 10px; width: min(340px, calc(100vw - 32px)); padding: 12px;
+}
+.cx-quick-field { width: 100%; height: 32px; font-size: var(--t-15); }
+/* What the line will make: the event as its block would read, a rule in its calendar's
+   colour down the side — the one moment of colour in the panel. */
+.cx-quick-preview {
+  display: flex; flex-direction: column; gap: 3px; padding: 8px 10px 9px 12px;
+  border-left: 3px solid var(--cal); border-radius: 4px 8px 8px 4px;
+  background: color-mix(in srgb, var(--cal) 10%, transparent);
+}
+.cx-quick-preview p { margin: 0; }
+.cx-quick-title { font-size: var(--t-15); font-weight: 700; overflow-wrap: anywhere; }
+.cx-quick-when { display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: var(--t-13); }
+.cx-quick-time { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cx-quick-more { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 3px; }
+.cx-quick-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text-2); font-size: var(--t-11);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cx-quick-cal { display: flex; align-items: center; gap: 6px; padding-top: 2px; color: var(--text-3); font-size: var(--t-11); }
+.cx-quick-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+/* ---- search results: coming up, then earlier; the words found marked ------------------- */
+
+.cx-found-row { grid-template-columns: 10px minmax(0, 1fr) auto; }
+.cx-found-row.is-lit { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.cx-found-row:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.cx-found-text { display: flex; flex-direction: column; min-width: 0; }
+.cx-found-where { overflow: hidden; color: var(--text-3); font-size: var(--t-11); text-overflow: ellipsis; white-space: nowrap; }
+.cx-found-section { margin: 6px 10px 2px; color: var(--text-3); font-size: var(--t-11); font-weight: 600; }
+.cx-mark { border-radius: 2px; background: color-mix(in srgb, var(--sys-yellow, #ffcc00) 45%, transparent); color: inherit; }
+
+/* ---- week numbers --------------------------------------------------------------------- */
+
+.cx-weeknum {
+  position: absolute; top: 7px; left: 6px; z-index: 1; color: var(--text-3);
+  font-size: var(--t-11); font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.cx-minimonth-grid.has-weeks { grid-template-columns: 16px repeat(7, 1fr); }
+.cx-minimonth-wk { align-self: center; color: var(--text-3); font-size: 9px; font-variant-numeric: tabular-nums; text-align: left; }
+.cx-head-week { display: flex; align-items: flex-end; justify-content: flex-end; padding: 0 8px 6px 0; color: var(--text-3); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
+.cx-pane-week { margin-left: 8px; color: var(--text-3); }
+
+/* ---- the picked event, and one being carried to another day ---------------------------- */
+
+.cx-block.is-picked, .cx-bar-event.is-picked { box-shadow: inset 0 0 0 1.5px var(--cal); }
+.cx-item.is-picked { background: color-mix(in srgb, var(--cal, var(--text)) 18%, transparent); }
+.cx-item.is-carried, .cx-bar-event.is-carried { opacity: 0.45; }
+.cal-grid.is-carrying { cursor: grabbing; }
+.cal-grid.is-carrying .cx-item, .cal-grid.is-carrying .cx-bar-event { pointer-events: none; }
+.cx-day.is-drop { background: color-mix(in srgb, var(--sys-blue) 12%, transparent); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--sys-blue) 55%, transparent); }
+.cx-block-grip.is-top { top: 0; bottom: auto; height: 4px; }
+
+/* ---- places and links in the popover ---------------------------------------------------- */
+
+.cx-pop-place { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cx-pop-place > input { flex: 1; min-width: 0; }
+.cx-pop-link {
+  flex: none; display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 4px;
+  border-radius: 6px; color: var(--sys-blue); font-size: var(--t-11); text-decoration: none;
+}
+.cx-pop-link:hover { background: color-mix(in srgb, var(--sys-blue) 12%, transparent); }
+.cx-pop-link:focus-visible { outline: var(--focus-ring); }
+.cx-info-place { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.cx-maps { color: var(--sys-blue); font-size: var(--t-11); text-decoration: none; }
+.cx-maps:hover { text-decoration: underline; }

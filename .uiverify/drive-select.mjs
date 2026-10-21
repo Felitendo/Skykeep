@@ -22,7 +22,7 @@ await ctx.addInitScript(() => {
 });
 const page = await ctx.newPage();
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-await openScreen(page, "iCloud Drive");
+await openScreen(page, "Drive");
 await page.waitForTimeout(400);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
@@ -57,7 +57,7 @@ await page.waitForTimeout(300);
 const deleted = await page.evaluate(() => window.__driveDeletes ?? []);
 ok(deleted.length === 2 && deleted.includes("FOLDER::a") && deleted.includes("FILE::d"), `Delete sends all of the selection  ${JSON.stringify(deleted)}`);
 await page.reload({ waitUntil: "networkidle" });
-await openScreen(page, "iCloud Drive");
+await openScreen(page, "Drive");
 await page.waitForTimeout(400);
 
 // F2: rename in place, the name without its extension selected.
@@ -97,7 +97,7 @@ ok((await page.locator(".drive-head .drive-col.is-on").innerText()).includes("âŒ
 await page.locator(".drive-head").getByRole("button", { name: /^Name/ }).click();
 ok(JSON.stringify(await names()) === JSON.stringify(before), "a third click puts it back");
 await page.reload({ waitUntil: "networkidle" });
-await openScreen(page, "iCloud Drive");
+await openScreen(page, "Drive");
 await page.waitForTimeout(300);
 ok(JSON.stringify(await names()) === JSON.stringify(before), "remembered the right way round");
 await ctx.close();
@@ -123,7 +123,7 @@ await big.addInitScript(() => {
 });
 const p2 = await big.newPage();
 await p2.goto("http://localhost:4173", { waitUntil: "networkidle" });
-await openScreen(p2, "iCloud Drive");
+await openScreen(p2, "Drive");
 await p2.waitForTimeout(800);
 await p2.locator("button.drive-row-hit").first().click();
 const t0 = await p2.evaluate(() => performance.now());

@@ -15,6 +15,7 @@ macro_rules! quiet {
 }
 
 pub mod calendar;
+pub mod calendar_feeds;
 pub mod ckdocument;
 pub mod cloudkit;
 pub mod contacts;

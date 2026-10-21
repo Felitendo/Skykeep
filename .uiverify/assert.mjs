@@ -98,7 +98,7 @@ console.log("nav items      :", JSON.stringify(names));
 console.log("page errors    :", errs.length ? errs : "none");
 const collapsed =
   JSON.stringify(names) ===
-  JSON.stringify(["Reminders", "Notes", "iCloud Drive", "Photos", "Calendar", "Contacts"]);
+  JSON.stringify(["Reminders", "Notes", "Drive", "Photos", "Calendar", "Contacts"]);
 const selectsBuilt = selected === "Reminders";
 console.log(collapsed ? "PASS the sidebar holds only what works, most used first" : `FAIL the sidebar holds ${JSON.stringify(names)}`);
 console.log(selectsBuilt ? "PASS opens on the first screen" : `FAIL opened on ${selected}`);
@@ -340,7 +340,7 @@ let failures = 0;
 {
   const page = await ctx.newPage();
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
+  await page.locator(".nav-item", { hasText: "Drive" }).click();
   await page.waitForSelector(".drive-rows");
   await page.getByRole("button", { name: "New Folder" }).click();
   await page.keyboard.type("downloads");
@@ -365,7 +365,7 @@ let failures = 0;
 {
   const page = await ctx.newPage();
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
+  await page.locator(".nav-item", { hasText: "Drive" }).click();
   await page.waitForSelector(".drive-row-hit");
 
   const folderRow = page.locator(".drive-row.is-folder .drive-row-hit").first();
@@ -786,7 +786,7 @@ let failures = 0;
     ["Calendar", ".cal-grid, .cal-month, .empty-state"],
     ["Notes", ".empty-state, .notes-empty"],
     ["Contacts", ".empty-state, .contact-empty"],
-    ["iCloud Drive", ".drive-rows"],
+    ["Drive", ".drive-rows"],
   ]) {
     await page.getByRole("button", { name: screen, exact: true }).click();
     await page.waitForTimeout(350);

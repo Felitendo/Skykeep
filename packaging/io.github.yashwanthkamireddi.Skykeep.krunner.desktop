@@ -1,0 +1,18 @@
+# KRunner's plugin entry for Skykeep's D-Bus runner (src-tauri/src/search_provider.rs, the
+# org.kde.krunner1 object). Installed to /usr/share/krunner/dbusplugins/; the bus starts
+# Skykeep through the .SearchProvider.service when it is not running.
+[Desktop Entry]
+Type=Service
+Name=Skykeep
+Comment=Notes, reminders, events, contacts, files and photos from iCloud
+Icon=io.github.yashwanthkamireddi.Skykeep
+X-KDE-ServiceTypes=Plasma/Runner
+X-KDE-PluginInfo-Name=io.github.yashwanthkamireddi.Skykeep
+X-KDE-PluginInfo-Version=0.1.0
+X-KDE-PluginInfo-License=GPL-3.0-only
+X-KDE-PluginInfo-EnabledByDefault=true
+X-Plasma-API=DBus
+X-Plasma-DBusRunner-Service=io.github.yashwanthkamireddi.Skykeep.SearchProvider
+X-Plasma-DBusRunner-Path=/io/github/yashwanthkamireddi/Skykeep/KRunner
+X-Plasma-Request-Actions-Once=true
+X-Plasma-Runner-Min-Letter-Count=2

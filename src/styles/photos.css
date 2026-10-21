@@ -95,7 +95,25 @@
   overflow-y: auto;
   /* Room for the header floating over it, however many rows it takes (--bar, measured). */
   padding: calc(var(--bar, 68px) + 12px) 2px 24px;
+  /* A photo brought into view by a key lands below the floating header, never under it. */
+  scroll-padding-top: calc(var(--bar, 68px) + 8px);
+  position: relative;
+  /* Its size is its column's, never its photos': said outright, a change in the header (a
+     selection's "3 Photos Selected") no longer has the engine lay out every built month again
+     to find out. A click that selects went from ~80 ms of work to ~20 in WebKit. */
+  contain: strict;
 }
+/* The rectangle swept out to select (see sweepStart): drawn by paint where it lies, never moved
+   as a layer. */
+.px-sweep {
+  position: absolute;
+  z-index: 2;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  pointer-events: none;
+}
+.px-sweep[hidden] { display: none; }
 .px-bar { isolation: isolate; }
 .px-bar::before {
   content: "";
@@ -123,6 +141,8 @@
     0 0 / calc(100% / var(--across, 7)) calc(100% / var(--rows));
 }
 .px-scroll[data-fit] .px-later { --gap: 14px; --pad: 14px; }
+/* The rest of a month being built, under the rows already built: one gap between, as in the grid. */
+.px-grid + .px-later { margin-top: var(--gap); }
 .px-month-title {
   margin: 0;
   padding: 12px 16px 8px;
@@ -274,25 +294,44 @@
 .px-nav:active { transform: scale(0.92); }
 .px-nav.is-prev { left: 14px; }
 .px-nav.is-next { right: 14px; }
-/* Info: a floating glass card over the photo's right side, as Photos' inspector floats. */
+/* Info: a floating card at the photo's right, as Photos' inspector floats. The photo, its next
+   arrow and the filmstrip make room for it at once (no glide), so it never covers the photo. */
 .px-info {
   position: absolute;
   z-index: 2;
   top: 58px;
   right: 14px;
-  width: 260px;
-  max-height: calc(100% - 72px);
+  width: 268px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: fit-content;
+  max-height: calc(100% - 58px - 68px);
   margin: 0;
-  padding: 12px 16px 14px;
+  padding: 14px 16px 16px;
   border-radius: var(--r-float);
   background: var(--glass-thick);
   box-shadow: var(--glass-float);
   font-size: var(--t-13);
   overflow-y: auto;
 }
-.px-info dt { margin-top: 10px; color: var(--text-2); font-size: var(--t-11); font-weight: 600; }
-.px-info dt:first-child { margin-top: 0; }
-.px-info dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+/* Info takes its room by narrowing the stage itself, not by padding inside it: the photo is sized
+   in the stage's container units, and WebKit did not size it again when only the padding grew —
+   the photo ran on under the panel. */
+.px-viewer.has-info .px-stage { margin-right: 232px; }
+.px-viewer.has-info .px-nav.is-next { right: 296px; }
+/* The filmstrip keeps the window's width, centred under the photo; Info stops above it. */
+.px-viewer.has-info .px-strip-run { left: calc(50% - 141px); }
+/* Each group under a hairline: the line says where one kind of fact ends. */
+.px-info > * + * { padding-top: 12px; border-top: 1px solid var(--separator); }
+.px-info-when { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.px-info-when > div, .px-info-file { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.px-info-when strong, .px-info-file strong { font-weight: 600; overflow-wrap: anywhere; }
+.px-info-when span, .px-info-file span { color: var(--text-2); font-size: var(--t-12, 12px); font-variant-numeric: tabular-nums; }
+.px-facts { display: flex; flex-direction: column; gap: 12px; margin: 0; }
+.px-fact dt { color: var(--text-2); font-size: var(--t-11); font-weight: 600; }
+.px-fact dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+.px-caption-row + * { border-top: 0; padding-top: 0; }
 .px-video {
   position: relative;
   display: grid;
@@ -369,7 +408,7 @@
 .px-show-count { padding: 0 10px; font-size: var(--t-13); font-variant-numeric: tabular-nums; color: rgba(255, 255, 255, 0.75); }
 
 /* The caption, typed in place at the head of Info, as Photos has it. */
-.px-caption-row { margin: 0 0 4px; }
+.px-caption-row { display: flex; flex-direction: column; margin: -4px 0 0; }
 .px-title-field, .px-caption {
   display: block;
   padding: 6px 8px;
@@ -405,7 +444,7 @@
   font-variant-numeric: tabular-nums;
 }
 /* Info's stars. */
-.px-rating { display: flex; gap: 2px; margin: 4px 0 0 -4px; }
+.px-rating { display: flex; gap: 2px; margin-left: -5px; }
 .px-star {
   display: grid;
   place-items: center;
@@ -626,8 +665,7 @@
 .px-dl-row small { color: var(--text-2); font-size: var(--t-12, 12px); }
 
 /* Adjust Date and Time. */
-.px-taken { display: block; }
-.px-adjust { float: right; margin-left: 8px; font-size: var(--t-12, 12px); }
+.px-adjust { flex: none; font-size: var(--t-12, 12px); }
 .px-date-zone { margin: 8px 0 14px; text-align: center; color: var(--text-2); font-size: var(--t-12, 12px); }
 .px-date-grid { display: grid; grid-template-columns: auto 1fr; gap: 10px 10px; align-items: center; font-size: var(--t-13); }
 .px-date-grid > span, .px-date-grid > label { text-align: right; }
@@ -892,3 +930,38 @@ img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }
 .px-viewer.is-full .px-nav { background: rgba(60, 60, 64, 0.85); color: #f5f5f7; }
 .px-viewer.is-full .px-nav:hover { background: rgba(80, 80, 86, 0.95); }
 .px-viewer.is-full .px-info { top: 54px; }
+.px-viewer.is-full.has-info .px-stage { margin-right: 282px; }
+
+/* ---- a narrow window ---------------------------------------------------------------------- */
+/* The sidebar folds into one pop-up above the library (see goTo), as Notes' folders fold:
+   beside 480px of window it took half and left the photos a strip. Last in the file, so it
+   outranks the sidebar's own display. */
+.px-compact { display: none; }
+@media (max-width: 720px) {
+  .px { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .px-side { display: none; }
+  /* In the band beside the button that brings the app list back, as a toolbar would be. */
+  .px-compact { display: flex; position: relative; z-index: 6; height: 32px; margin: -44px 0 12px 34px; }
+  .px-compact .picker-button { font-weight: 600; }
+}
+/* Too narrow to set Info beside the photo — by the viewer's own width, not the window's (with
+   the sidebar open, a wide window still leaves the viewer narrow; the window's width let the
+   next arrow move into the middle of the photo): Info lies over it, as on iPhone, and the
+   arrows and filmstrip keep their places. */
+.px-viewer { container: px-viewer / inline-size; }
+@container px-viewer (max-width: 700px) {
+  .px-viewer.has-info .px-stage { margin-right: 0; }
+  .px-viewer.has-info .px-nav.is-next { right: 14px; }
+  .px-viewer.has-info .px-strip-run { left: 50%; }
+  .px-info { width: min(268px, calc(100% - 28px)); }
+}
+
+
+/* An empty view: its line in the middle of the pane, below the floating header — before, it sat
+   at the top, its symbol under the toolbar. The photos' own scroller, empty, stays under it. */
+.px-main > .px-empty {
+  position: absolute;
+  inset: var(--bar, 68px) 0 var(--bar, 68px) 0;
+  z-index: 1;
+  justify-content: center;
+}

@@ -13,7 +13,7 @@ for (const on of [false, true]) {
   const page = await ctx.newPage();
   page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
+  await page.locator(".nav-item", { hasText: "Drive" }).click();
   await page.waitForTimeout(500);
   const row = page.locator(".drive-row-hit").filter({ hasNot: page.locator("[data-kind='FOLDER']") }).last();
   const name = (await row.innerText()).split("\n")[0];

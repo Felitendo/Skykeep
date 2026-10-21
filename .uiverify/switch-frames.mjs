@@ -47,7 +47,7 @@ const switchTo = (name) => page.evaluate(async (name) => {
   return frames;
 }, name);
 
-for (const name of ["Notes", "Calendar", "Contacts", "iCloud Drive", "Notes", "Reminders", "Calendar"]) {
+for (const name of ["Notes", "Calendar", "Contacts", "Drive", "Notes", "Reminders", "Calendar"]) {
   const frames = await switchTo(name);
   // Frame 0 is the state in the click's own task, never painted; frames 1.. are each a paint.
   const painted = frames.slice(1);

@@ -168,13 +168,15 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
     `a lost release left ${JSON.stringify(left)}`);
 }
 
-// The whole of making an event from the + button: it opens, takes a title, and is saved with
-// what was typed — the thing that has to work for Calendar to be usable at all.
+// The whole of making an event with New Event (Ctrl+N; the + opens Quick Event, its own
+// suite): it opens, takes a title, and is saved with what was typed — the thing that has to
+// work for Calendar to be usable at all.
 {
-  await page.locator('button[aria-label="New event"]').click();
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.keyboard.press("Control+n");
   await page.waitForTimeout(250);
   const open = await page.locator(".cx-popover").count();
-  ok(open === 1, "the + button opens a new event", "the + button opened nothing");
+  ok(open === 1, "New Event opens a new event", "New Event opened nothing");
   await page.keyboard.type("Dinner with Asha");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.waitForTimeout(400);
@@ -261,13 +263,14 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
   });
   ok(notice?.text === "iCloud didn't accept that change, so nothing was saved." && notice.dismiss,
     "a refused delete says so in a sentence, with Dismiss", `the notice: ${JSON.stringify(notice)}`);
-  // Delete, pressed with an event open and no field in use, deletes it — as in Calendar.
+  // Delete, pressed with an event open and no field in use, deletes it once confirmed.
   if (notice?.dismiss) {
     await p.getByRole("button", { name: "Dismiss" }).click();
     await p.locator(".cx-block", { hasText: "New Event" }).first().click();
     await p.waitForTimeout(250);
     await p.evaluate(() => document.activeElement?.blur());
     await p.keyboard.press("Delete");
+    await p.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
     await p.waitForTimeout(300);
     ok((await p.locator('[role="alert"]').count()) === 1, "Delete deletes an open event, as in Calendar",
       "Delete did nothing to the open event");
@@ -323,11 +326,12 @@ ok(/Sep/.test(title) && /Oct/.test(title), `a week across two months is named fo
       `${narrow.starved} cell(s) show only "N more"`);
   }
 
-  // "+" at six: the new event, 7 to 8, crosses the 7:30 Dentist — it takes a column beside it,
+  // New Event at six: the new event, 7 to 8, crosses the 7:30 Dentist — it takes a column beside it,
   // and its popover opens by it, never over the toolbar.
   await small.getByRole("button", { name: "Week", exact: true }).click();
   await small.waitForTimeout(300);
-  await small.getByRole("button", { name: "New event" }).click();
+  await small.evaluate(() => document.activeElement?.blur());
+  await small.keyboard.press("Control+n");
   await small.waitForTimeout(300);
   const placed = await small.evaluate(() => {
     const hit = (a, b) => a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;

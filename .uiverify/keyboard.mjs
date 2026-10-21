@@ -291,7 +291,7 @@ const focused = (page) =>
 // --- Drive's Move dialog: Escape closes it, focus starts inside it ---
 {
   const { ctx, page } = await open("library");
-  await page.click('.nav-item:has-text("iCloud Drive")');
+  await page.click('.nav-item:has-text("Drive")');
   await page.waitForSelector(".drive-row-hit");
   await page.hover(".drive-row.is-folder");
   await page.click('.drive-row.is-folder .drive-action[aria-label^="Actions for"]');

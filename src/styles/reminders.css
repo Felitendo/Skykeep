@@ -130,6 +130,32 @@
 .rx-chevron svg { width: 12px; height: 12px; }
 .rx-group-row[aria-expanded="true"] .rx-chevron { transform: rotate(90deg); }
 
+.rx-smart-row .rx-badge svg { width: 13px; height: 13px; }
+
+/* Tags, as the Mac lists them under My Lists: every #name as a capsule, wrapping. The one open
+   is filled, in the system blue. */
+.rx-tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 4px 6px; }
+.rx-tag-chip {
+  max-width: 100%;
+  height: 26px;
+  padding: 0 11px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+.rx-tag-chip:hover { background: color-mix(in srgb, var(--text) 11%, transparent); }
+.rx-tag-chip:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
+.rx-tag-chip[aria-current="true"] { background: color-mix(in srgb, var(--sys-blue) 86%, #000); color: #fff; }
+.rx-side-heading { margin-top: 14px; }
+.rx-side-heading:first-of-type { margin-top: 0; }
+
 .rx-new-list { display: flex; margin-top: 4px; }
 .rx-new-list .field, .rx-list-row > .field { flex: 1; }
 .rx-search { margin-bottom: 10px; }
@@ -170,7 +196,19 @@
 /* Not `.quiet`: that is the app's quiet button, and borrowing it drew each time-of-day
    heading as a button. */
 .rx-section.is-quiet { color: var(--text-2); font-weight: 600; }
-.rx-section:first-of-type { margin-top: 4px; }
+/* The first heading sits close under the title — only when no rows come before it. */
+.rx-section:first-of-type:not(.rx-rows ~ .rx-section) { margin-top: 4px; }
+/* A list's own sections, as Reminders draws them: the name in bold over a hairline that runs
+   the width of the rows. */
+.rx-section.is-list-section {
+  margin: 22px 0 0 0;
+  padding: 0 0 6px 30px;
+  border-bottom: 1px solid var(--separator);
+  font-size: var(--t-15);
+}
+.rx-rows:empty + .rx-section.is-list-section { margin-top: 6px; }
+.rx-section-name { display: block; width: calc(100% - 14px); margin: 18px 14px 4px 0; font-weight: 700; }
+.rx-add-section { margin: 6px 0 0 30px; font-size: var(--t-13); }
 
 .rx-rows { margin: 0; padding: 0; list-style: none; }
 
@@ -182,7 +220,7 @@
   grid-template-columns: 20px minmax(0, 1fr) auto;
   column-gap: 10px;
   align-items: start;
-  padding: 7px 14px 7px 0;
+  padding: 8px 14px 8px 0;
 }
 .rx-row::after {
   content: "";
@@ -222,18 +260,10 @@
 .rx-tick:focus-visible { outline: 3px solid color-mix(in srgb, var(--tick) 40%, transparent); outline-offset: 2px; }
 .rx-tick:disabled { opacity: 0.5; }
 .rx-tick[aria-checked="true"] { border-color: var(--tick); }
-.rx-tick[aria-checked="true"]::after {
-  content: "";
-  position: absolute;
-  inset: 2.5px;
-  border-radius: 50%;
-  background: var(--tick);
-}
-/* The fill lands the instant it is pressed, with the quick spring Reminders gives it — on the
-   press only (is-pressed), never again when the list comes back into view. */
-.rx-tick.is-pressed[aria-checked="true"]::after { animation: rx-tick-in 220ms cubic-bezier(0.34, 1.56, 0.64, 1) both; }
-@keyframes rx-tick-in { from { transform: scale(0.3); opacity: 0.4; } to { transform: scale(1); opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .rx-tick.is-pressed[aria-checked="true"]::after { animation: none; } }
+/* The fill: a real element, so a press can fade it in by opacity alone (lib/fade, from the
+   click) — no keyframes, nothing handed to the compositor. */
+.rx-tick-fill { position: absolute; inset: 2.5px; border-radius: 50%; background: var(--tick); visibility: hidden; }
+.rx-tick[aria-checked="true"] .rx-tick-fill { visibility: visible; }
 .rx-tick.ghost {
   display: grid;
   place-items: center;
@@ -285,6 +315,24 @@
   line-height: 1.4;
 }
 .rx-due.overdue { color: var(--sys-red); }
+/* A tag on a row: #name in a quiet capsule. A press opens everything that carries it. */
+.rx-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-11);
+  line-height: 17px;
+  cursor: default;
+  white-space: nowrap;
+}
+button.rx-tag:hover { background: color-mix(in srgb, var(--text) 12%, transparent); color: var(--text); }
+.is-done .rx-tag { opacity: 0.7; }
 .rx-repeat { display: inline-flex; gap: 3px; }
 .rx-moved { color: var(--accent-strong); font-weight: 600; }
 
@@ -311,12 +359,50 @@
 }
 .rx-field {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-columns: 76px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
+  min-height: 28px;
 }
-.rx-field > span { color: var(--text-2); font-size: var(--t-11); }
-.rx-hint { margin: -2px 0 0 74px; color: var(--text-3); font-size: var(--t-11); }
+.rx-field > span:first-child { color: var(--text-2); font-size: var(--t-11); }
+.rx-field-notes { align-items: start; }
+.rx-field-notes > span:first-child { padding-top: 6px; }
+.rx-field textarea.field { resize: vertical; min-height: 44px; }
+/* A value read from Apple, not a control: the panel's type, quietly. */
+.rx-value { color: var(--text); font-size: var(--t-13); }
+.rx-url {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sys-blue);
+  font-size: var(--t-13);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rx-url:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* Between the panel's groups — what it says, when it is due, how it is filed — as Apple
+   separates them in its info popover. */
+.rx-detail-rule { height: 1px; margin: 2px 0; background: var(--separator); }
+.rx-hint { margin: -4px 0 0 86px; color: var(--text-3); font-size: var(--t-11); }
+.rx-tag-field { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.rx-tag.is-chip { padding: 0; height: 22px; background: color-mix(in srgb, var(--sys-blue) 12%, transparent); }
+.rx-tag-name,
+.rx-tag-remove {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--sys-blue);
+  font: inherit;
+  font-size: var(--t-13);
+  cursor: default;
+}
+.rx-tag-remove { display: grid; place-items: center; width: 20px; padding: 0; margin-left: -6px; }
+.rx-tag-name:hover { text-decoration: underline; text-underline-offset: 2px; }
+.rx-tag-name:focus-visible, .rx-tag-remove:focus-visible { outline: var(--focus-ring); }
+.rx-tag-input { min-width: 6ch; flex: 1; padding: 2px 0; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--t-13); outline: none; }
+.rx-tag-input::placeholder { color: var(--text-3); }
 .rx-detail-actions { display: flex; justify-content: space-between; margin-top: 2px; }
 
 /* The last row: where a new reminder is typed. */

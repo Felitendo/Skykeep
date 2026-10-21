@@ -1,4 +1,4 @@
-//! Pomander talks only to Apple, by construction: the client cannot resolve, so cannot reach,
+//! Skykeep talks only to Apple, by construction: the client cannot resolve, so cannot reach,
 //! any host that is not Apple's.
 
 #[test]
@@ -38,7 +38,7 @@ async fn a_client_refuses_anything_but_apple_before_connecting() {
         .expect_err("a request to a host that is not Apple's");
     let said = format!("{err:?}");
     assert!(
-        said.contains("Pomander talks only to Apple"),
+        said.contains("Skykeep talks only to Apple"),
         "refused by the resolver, not the network: {said}"
     );
 }
@@ -57,7 +57,7 @@ async fn an_address_is_refused_as_a_name_is() {
     ] {
         let err = client.get(url).send().await.expect_err(url);
         assert!(
-            format!("{err:?}").contains("Pomander talks only to Apple"),
+            format!("{err:?}").contains("Skykeep talks only to Apple"),
             "{url}: {err:?}"
         );
     }
@@ -74,6 +74,7 @@ async fn an_address_is_refused_as_a_name_is() {
     let ok = client.get(format!("{}/ok", server.uri())).send().await;
     assert_eq!(ok.unwrap().status(), 200);
     let away = client.get(format!("{}/away", server.uri())).send().await;
-    assert!(format!("{:?}", away.expect_err("redirected away"))
-        .contains("Pomander talks only to Apple"));
+    assert!(
+        format!("{:?}", away.expect_err("redirected away")).contains("Skykeep talks only to Apple")
+    );
 }

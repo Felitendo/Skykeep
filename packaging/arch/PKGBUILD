@@ -1,16 +1,16 @@
-# Builds Pomander from the checkout beside this file, so it can be installed the way any other
+# Builds Skykeep from the checkout beside this file, so it can be installed the way any other
 # program on this machine is — `makepkg -si` from here — rather than run out of a build
 # directory. That is the difference between something Yash has and something anyone has.
 #
 # For the AUR this becomes a `source=("git+https://github.com/…")` with a real `pkgver()`;
 # the build and package steps below are already what that version would use.
 
-pkgname=pomander
+pkgname=skykeep
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Your iCloud, on this computer — calendar, reminders, notes, contacts and Drive"
 arch=('x86_64')
-url="https://github.com/YashwanthKamireddi/quince"
+url="https://github.com/YashwanthKamireddi/Skykeep"
 license=('GPL-3.0-only')
 
 # WebKitGTK is what Tauri renders through on Linux, and libsecret is where the session is
@@ -68,24 +68,32 @@ package() {
   cd "$_root"
   # Cargo names the binary after its crate; `tauri build` renames it and this does not go
   # through that, so the rename happens here.
-  install -Dm755 "$srcdir/target/release/quince-app" "$pkgdir/usr/bin/pomander"
+  install -Dm755 "$srcdir/target/release/quince-app" "$pkgdir/usr/bin/skykeep"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 packaging/io.github.yashwanthkamireddi.Pomander.metainfo.xml \
-    "$pkgdir/usr/share/metainfo/io.github.yashwanthkamireddi.Pomander.metainfo.xml"
+  install -Dm644 packaging/io.github.yashwanthkamireddi.Skykeep.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.github.yashwanthkamireddi.Skykeep.metainfo.xml"
   # The same entry the .deb and .rpm get, with the names this package uses filled in.
-  sed -e 's/{{name}}/Pomander/' \
+  sed -e 's/{{name}}/Skykeep/' \
       -e 's/{{comment}}/Your iCloud, on this computer/' \
-      -e 's/{{exec}}/pomander/g' \
-      -e 's/{{icon}}/io.github.yashwanthkamireddi.Pomander/' \
+      -e 's/{{exec}}/skykeep/g' \
+      -e 's/{{icon}}/io.github.yashwanthkamireddi.Skykeep/' \
       -e 's/{{categories}}/Office;Calendar;ContactManagement;/' \
-      packaging/io.github.yashwanthkamireddi.Pomander.desktop.in \
-    > "$srcdir/io.github.yashwanthkamireddi.Pomander.desktop"
-  install -Dm644 "$srcdir/io.github.yashwanthkamireddi.Pomander.desktop" \
-    "$pkgdir/usr/share/applications/io.github.yashwanthkamireddi.Pomander.desktop"
+      packaging/io.github.yashwanthkamireddi.Skykeep.desktop.in \
+    > "$srcdir/io.github.yashwanthkamireddi.Skykeep.desktop"
+  install -Dm644 "$srcdir/io.github.yashwanthkamireddi.Skykeep.desktop" \
+    "$pkgdir/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.desktop"
   install -Dm644 src-tauri/icons/icon.png \
-    "$pkgdir/usr/share/icons/hicolor/512x512/apps/io.github.yashwanthkamireddi.Pomander.png"
-  # The six apps, each its own launcher entry (pomander --app notes, …).
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/io.github.yashwanthkamireddi.Skykeep.png"
+  # The six apps, each its own launcher entry (skykeep --app notes, …).
   for entry in packaging/apps/*.desktop; do
     install -Dm644 "$entry" "$pkgdir/usr/share/applications/$(basename "$entry")"
   done
+  # In the desktop's own search: GNOME Shell's provider, KRunner's D-Bus plugin, and the bus
+  # entry that starts Skykeep hidden when either searches and it is not running.
+  install -Dm644 packaging/io.github.yashwanthkamireddi.Skykeep.search-provider.ini \
+    "$pkgdir/usr/share/gnome-shell/search-providers/io.github.yashwanthkamireddi.Skykeep.search-provider.ini"
+  install -Dm644 packaging/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service \
+    "$pkgdir/usr/share/dbus-1/services/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service"
+  install -Dm644 packaging/io.github.yashwanthkamireddi.Skykeep.krunner.desktop \
+    "$pkgdir/usr/share/krunner/dbusplugins/io.github.yashwanthkamireddi.Skykeep.krunner.desktop"
 }

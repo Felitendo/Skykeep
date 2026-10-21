@@ -51,14 +51,21 @@ ok(fitted.built && Math.abs(fitted.before - fitted.after) < 1,
 await page.getByRole("button", { name: "Show Square Photos" }).click();
 await page.waitForTimeout(200);
 await page.locator(".px-scroll").evaluate((e) => (e.scrollTop = 0));
-await page.waitForTimeout(300);
+// Past the moment every tile re-asked for its picture at the new size (and, here, where no
+// picture comes, for its thumbnail after 1.5 s): the click is measured, not that.
+await page.waitForTimeout(1800);
+// The middle of five clicks: one click alone measured whatever else the machine was doing then.
 const ms = await page.evaluate(async () => {
-  const t = performance.now();
-  document.querySelectorAll(".px-tile")[3].click();
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  return performance.now() - t;
+  const runs = [];
+  for (let i = 0; i < 5; i++) {
+    const t = performance.now();
+    document.querySelectorAll(".px-tile")[3 + i].click();
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    runs.push(performance.now() - t);
+  }
+  return runs.sort((a, b) => a - b)[2];
 });
-ok(ms < 150, `a click that selects stays quick  (${Math.round(ms)}ms, two frames included)`);
+ok(ms < 150, `a click that selects stays quick  (${Math.round(ms)}ms, the middle of five, two frames included)`);
 
 // Down, row after row, past the months that were built when it began — after a real click,
 // with the app list holding the focus first, as it does once Photos is chosen from it.

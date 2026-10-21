@@ -14,7 +14,8 @@ const KEYRING_ENTRY: &str = "session";
 /// session may still be under, and the folders `src-tauri/src/migrate.rs` moves. The current
 /// identifier is never written here — it is tauri.conf.json's. Renaming the app means adding
 /// the identifier being replaced to the front of this list.
-pub const PREVIOUS_IDENTIFIERS: &[&str] = &["dev.quince.client"];
+pub const PREVIOUS_IDENTIFIERS: &[&str] =
+    &["io.github.yashwanthkamireddi.Pomander", "dev.quince.client"];
 
 /// The keyring services: the one the session is kept under (the app's identifier), and the
 /// ones it was kept under before — read when the current one holds nothing, moved across

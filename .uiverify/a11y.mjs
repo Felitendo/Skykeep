@@ -97,7 +97,7 @@ const screens = [
         kind: "FOLDER", size: null, childCount: 3, createdAt: 1785000000,
         modifiedAt: 1788000000, etag: null },
     ], act: async (p) => {
-      await p.click('.nav-item:has-text("iCloud Drive")');
+      await p.click('.nav-item:has-text("Drive")');
       await p.waitForSelector(".drive-row-hit");
       await p.hover(".drive-row.is-folder");
       await p.click('.drive-row.is-folder .drive-action[aria-label^="Actions for"]');

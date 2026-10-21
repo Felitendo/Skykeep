@@ -52,6 +52,13 @@ pub fn forget_passwords() {
 
 /// Open a locked note: its text and formatting. With no password, the one that opened it
 /// earlier this session is used; a wrong one is forgotten, never kept.
+/// Whether attaching files to notes is switched on (`NOTE_ATTACH_WRITES`): the window shows
+/// its paperclip and takes drops only then, so turning the backend flag on is the whole change.
+#[tauri::command]
+pub fn note_attach_enabled() -> bool {
+    quince_icloud::notes::attach::NOTE_ATTACH_WRITES
+}
+
 #[tauri::command]
 pub async fn note_unlock(
     guid: String,

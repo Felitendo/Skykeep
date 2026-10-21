@@ -1,4 +1,4 @@
-/* ── Import sheet: a file opened with Pomander (components/ImportSheet.tsx) ─────────────── */
+/* ── Import sheet: a file opened with Skykeep (components/ImportSheet.tsx) ─────────────── */
 
 /* Under the menus (z-index 80), so its calendar picker opens over it. */
 .modal-veil.ix-veil { z-index: 70; }

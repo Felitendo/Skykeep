@@ -8,7 +8,7 @@ await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, tw
   calendarFixture: true, notesFixture: true, contactsFixture: true, driveFixture: true, remindersFixture: true });
 const p = await ctx.newPage();
 await p.goto(process.env.BASE ?? "http://localhost:4173", { waitUntil: "networkidle" });
-for (const s of ["Reminders", "Notes", "iCloud Drive", "Calendar", "Contacts", "Photos", "Settings"]) {
+for (const s of ["Reminders", "Notes", "Drive", "Calendar", "Contacts", "Photos", "Settings"]) {
   if (s === "Settings") await p.locator(".sidebar-account").click();
   else await openScreen(p, s);
   await p.waitForTimeout(500);

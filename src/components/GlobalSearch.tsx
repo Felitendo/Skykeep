@@ -98,7 +98,7 @@ function sections(found: Everything): { screen: string; name: string; count: num
     },
     {
       screen: "drivews",
-      name: "iCloud Drive",
+      name: "Drive",
       count: found.counts[4],
       rows: found.files.map((f) => ({
         key: `f${f.drivewsid}`, screen: "drivews", id: f.drivewsid, within: f.parentId,

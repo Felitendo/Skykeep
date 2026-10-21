@@ -263,7 +263,7 @@ pub fn place_in_document(
         )
     };
     let theirs = crate::ckdocument::stored_text_from_base64(current).ok_or_else(|| {
-        Error::Refused("Pomander couldn't read this note's text as Apple holds it.".into())
+        Error::Refused("Skykeep couldn't read this note's text as Apple holds it.".into())
     })?;
     let place = match base {
         Some(base) if base != theirs => {
@@ -291,7 +291,7 @@ pub fn place_in_document(
     let document = crate::ckdocument::insert_attachment_in_base64(current, place, id, uti, stamp)
         .ok_or_else(|| {
         Error::Refused(
-            "Pomander can’t safely add a file to this note yet, so nothing was changed.".into(),
+            "Skykeep can’t safely add a file to this note yet, so nothing was changed.".into(),
         )
     })?;
     super::fits_inline(&document)?;

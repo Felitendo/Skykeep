@@ -25,7 +25,7 @@ await ctx.addInitScript(() => {
 });
 const page = await ctx.newPage();
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-await openScreen(page, "iCloud Drive");
+await openScreen(page, "Drive");
 await page.waitForTimeout(400);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
@@ -52,7 +52,7 @@ await pick("Date");
 const byDate = await files();
 ok(JSON.stringify(byDate) === JSON.stringify(["File 10.txt", "Semester Plan.pdf", "File 2.txt"]), `by Date, newest first  ${JSON.stringify(byDate)}`);
 await page.reload({ waitUntil: "networkidle" });
-await openScreen(page, "iCloud Drive");
+await openScreen(page, "Drive");
 await page.waitForTimeout(400);
 ok(JSON.stringify(await files()) === JSON.stringify(byDate), "the order chosen is remembered");
 // View as Grid: tiles side by side, remembered.
@@ -75,7 +75,7 @@ const mid = sheet ? Math.abs(sheet.x + sheet.width / 2 - 600) : 999;
 ok(mid < 30, `Get Info opens in the middle of the window  [${Math.round(mid)}px off]`);
 await page.keyboard.press("Escape");
 await page.reload({ waitUntil: "networkidle" });
-await openScreen(page, "iCloud Drive");
+await openScreen(page, "Drive");
 await page.waitForTimeout(400);
 ok(new Set((await tops()).slice(0, 3)).size === 1, "and Grid is remembered");
 await b.close();

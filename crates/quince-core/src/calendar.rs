@@ -203,32 +203,59 @@ impl Library {
     /// Events whose title, place or notes hold every word of `query`, accent- and
     /// case-insensitively, soonest first — what Calendar's search field finds.
     pub fn search_events(&self, query: &str) -> Result<Vec<Event>> {
+        self.search_events_near(query, now())
+    }
+
+    /// The same, read in one pass over the table — a lookup per event made a large account's
+    /// search wait — and, when there are more than are kept, the ones nearest `now`: kept
+    /// oldest first, an account with years behind it found nothing that is still to come.
+    pub fn search_events_near(&self, query: &str, now: i64) -> Result<Vec<Event>> {
+        const KEPT: usize = 300;
         let words = crate::fold::words(query);
         if words.is_empty() {
             return Ok(Vec::new());
         }
-        let mut stmt = self.conn.prepare("SELECT guid FROM events")?;
-        let guids: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        let mut found: Vec<Event> = guids
-            .iter()
-            .filter_map(|g| self.event(g).ok().flatten())
-            .filter(|e| {
-                let text = [
-                    Some(e.title.as_str()),
-                    e.location.as_deref(),
-                    e.notes.as_deref(),
-                ]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" ");
-                crate::fold::holds_all(&crate::fold::fold(&text), &words)
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, calendar_guid, title, location, starts_at, ends_at, all_day,
+                    timezone, url, notes, etag
+             FROM events",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Event {
+                guid: row.get(0)?,
+                calendar_guid: row.get(1)?,
+                title: row.get(2)?,
+                location: row.get(3)?,
+                starts_at: row.get(4)?,
+                ends_at: row.get(5)?,
+                all_day: row.get::<_, i64>(6)? != 0,
+                timezone: row.get(7)?,
+                url: row.get(8)?,
+                notes: row.get(9)?,
+                etag: row.get(10)?,
             })
-            .collect();
+        })?;
+        let mut found = Vec::new();
+        for e in rows {
+            let e = e?;
+            let text = [
+                Some(e.title.as_str()),
+                e.location.as_deref(),
+                e.notes.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+            if crate::fold::holds_all(&crate::fold::fold(&text), &words) {
+                found.push(e);
+            }
+        }
+        if found.len() > KEPT {
+            found.sort_by_key(|e| (e.ends_at.max(e.starts_at) - now).abs());
+            found.truncate(KEPT);
+        }
         found.sort_by_key(|e| e.starts_at);
-        found.truncate(200);
         Ok(found)
     }
 
@@ -475,5 +502,43 @@ mod search_tests {
             "every word, accents folded, place included"
         );
         assert!(titles("  ").is_empty());
+    }
+
+    /// Years of a weekly meeting: what is kept is around now, not the oldest few hundred.
+    #[test]
+    fn a_long_history_keeps_the_matches_nearest_now() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_calendars(&[Calendar {
+            guid: "c".into(),
+            title: "Work".into(),
+            enabled: true,
+            writable: true,
+            ..Default::default()
+        }])
+        .unwrap();
+        let week = 7 * 86_400;
+        let events: Vec<Event> = (0..1000)
+            .map(|i| Event {
+                guid: format!("s{i}"),
+                calendar_guid: "c".into(),
+                title: "Standup".into(),
+                starts_at: i * week,
+                ends_at: i * week + 900,
+                ..Default::default()
+            })
+            .collect();
+        lib.put_events(&events).unwrap();
+        let now = 900 * week;
+        let found = lib.search_events_near("standup", now).unwrap();
+        assert_eq!(found.len(), 300);
+        assert!(
+            found.iter().any(|e| e.starts_at == now),
+            "this week's is found"
+        );
+        assert!(
+            found.iter().any(|e| e.starts_at == 999 * week),
+            "the last one is found"
+        );
+        assert!(found.windows(2).all(|w| w[0].starts_at <= w[1].starts_at));
     }
 }

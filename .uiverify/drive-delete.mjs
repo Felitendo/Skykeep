@@ -28,7 +28,7 @@ for (const refuse of [false, true]) {
   let asked = false;
   page.on("dialog", (d) => { asked = true; d.accept(); });
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await openScreen(page, "iCloud Drive");
+  await openScreen(page, "Drive");
   await page.waitForTimeout(300);
   await page.getByRole("button", { name: "Actions for Semester Plan.pdf" }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();

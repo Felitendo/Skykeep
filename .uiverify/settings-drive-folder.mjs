@@ -13,7 +13,7 @@ let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 await page.locator(".sidebar-account").click();
 await page.waitForTimeout(400);
-const sw = page.getByRole("switch", { name: "iCloud Drive folder" });
+const sw = page.getByRole("switch", { name: "Drive folder" });
 ok((await sw.getAttribute("aria-checked")) === "false", "off until turned on");
 await sw.click();
 await page.waitForTimeout(200);
@@ -40,7 +40,7 @@ await page.waitForTimeout(300);
 const row = await page.locator(".settings-row", { has: sw }).innerText();
 ok((await sw.getAttribute("aria-checked")) === "false" && /already has files in it/.test(row), `one that cannot come up is left off, and says why  "${row.replace(/\n/g, " ")}"`);
 // The Photos folder: its own switch, beside Drive's, independent of it.
-const ph = page.getByRole("switch", { name: "iCloud Photos folder" });
+const ph = page.getByRole("switch", { name: "Photos folder" });
 ok((await ph.getAttribute("aria-checked")) === "false" && (await sw.getAttribute("aria-checked")) === "false", "the Photos folder has its own switch, off");
 await ph.click();
 await page.waitForTimeout(200);

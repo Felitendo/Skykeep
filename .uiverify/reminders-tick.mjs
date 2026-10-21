@@ -16,14 +16,16 @@ const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failu
 await page.evaluate(() => { window.__doneDelay = 4000; });
 const row = (t) => page.locator(".rx-row", { has: page.getByLabel(`Rename ${t}`) });
 
-// Heights of the row frame by frame from the tick: it must fold (shrink over frames), not vanish.
+// The row frame by frame from the tick: it fades out (opacity over several frames), and only
+// opacity — its height never animates, which flickered under WebKitGTK on Hyprland.
 await page.evaluate(() => {
   const r = [...document.querySelectorAll(".rx-row")].find((x) => x.querySelector('[aria-label="Rename Pick up the parcel"]'));
   window.__fold = [];
   const t0 = performance.now();
   const tick = () => {
     const h = r.isConnected ? Math.round(r.getBoundingClientRect().height) : -1;
-    window.__fold.push([Math.round(performance.now() - t0), h]);
+    const o = r.isConnected ? Number(getComputedStyle(r).opacity) : -1;
+    window.__fold.push([Math.round(performance.now() - t0), h, o]);
     if (h !== -1 && performance.now() - t0 < 2000) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
@@ -36,8 +38,9 @@ await page.waitForTimeout(900);
 ok((await row("Pick up the parcel").count()) === 0, "the row is gone within a moment, before Apple has answered");
 const fold = await page.evaluate(() => window.__fold);
 const full = fold[0][1];
-const between = fold.filter(([, h]) => h > 0 && h < full - 2);
-ok(between.length >= 3, `it folds away over several frames, not all at once  ${JSON.stringify(fold.filter(([, h]) => h !== full))}`);
+const fading = fold.filter(([, h, o]) => h !== -1 && o > 0.02 && o < 0.98);
+ok(fading.length >= 3, `it fades away over several frames, not all at once  ${JSON.stringify(fading)}`);
+ok(fold.every(([, h]) => h === -1 || h === full), `by opacity alone: its height never animates  ${JSON.stringify(fold.filter(([, h]) => h !== full))}`);
 
 await row("Plan tomorrow").locator(".rx-tick").click();
 await page.waitForTimeout(300);

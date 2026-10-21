@@ -350,6 +350,8 @@ export type EditorHandle = {
   flushChange: () => void;
   /** What the editor holds this moment: its text and how it is set. */
   current: () => { text: string; runs: Run[] } | null;
+  /** Where the cursor is, in UTF-16 units of `current().text`; null with no editor. */
+  caret: () => number | null;
 };
 
 type Props = {
@@ -781,6 +783,12 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       if (later.current !== null) report();
     },
     current: () => (view.current ? fromDoc(view.current.state.doc) : null),
+    caret: () => {
+      const v = view.current;
+      if (!v) return null;
+      // The text up to the cursor, read the way the whole note is read, is how far in it is.
+      return fromDoc(v.state.doc.cut(0, v.state.selection.head)).text.length;
+    },
   }));
 
   const [cellMenu, setCellMenu] = useState<CellMenu | null>(null);

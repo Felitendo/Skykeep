@@ -816,7 +816,7 @@ async fn send_reminder(
             Ok(())
         }
         other => Err(Error::Refused(format!(
-            "Pomander does not know how to send “{other}”."
+            "Skykeep does not know how to send “{other}”."
         ))),
     }
 }

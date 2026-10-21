@@ -141,3 +141,15 @@ test("a week starts where the region starts it, and a 24-hour clock keeps its :0
   assert.notEqual(hourLabel(12, false), "Noon");
   assert.equal(hourLabel(12, true), "Noon");
 });
+
+test("week numbers: ISO where weeks start on Monday, the week of 1 January elsewhere", async () => {
+  const { weekNumber } = await import("../src/screens/calendar/model.ts");
+  // ISO: 29 Dec 2025 (Mon) is week 1 of 2026; 28 Dec 2026 is week 53; 19 Oct 2026 is 43.
+  assert.equal(weekNumber(new Date(2025, 11, 29), 1), 1);
+  assert.equal(weekNumber(new Date(2026, 9, 19), 1), 43);
+  assert.equal(weekNumber(new Date(2026, 11, 28), 1), 53);
+  // US: the week of Sun 28 Dec 2025 holds 1 Jan, so is week 1; 18 Oct 2026 is week 43.
+  assert.equal(weekNumber(new Date(2025, 11, 28), 0), 1);
+  assert.equal(weekNumber(new Date(2026, 9, 18), 0), 43);
+  assert.equal(weekNumber(new Date(2026, 11, 27), 0), 1);
+});

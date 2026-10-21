@@ -1,0 +1,16 @@
+# The "Sponsor" button on the repository page.
+#
+# To turn it on:
+#   1. Get approved for GitHub Sponsors (github.com/sponsors → Get sponsored; see
+#      docs/github-setup.md for what it needs).
+#   2. Remove the "#" in front of the "github:" line below.
+#   3. Repository → Settings → General → Features → tick "Sponsorships".
+#
+# github: [YashwanthKamireddi]
+
+# Other platforms, if ever wanted (uncomment and fill in one or more):
+# ko_fi: your-ko-fi-name
+# buy_me_a_coffee: your-bmc-name
+# open_collective: skykeep
+# liberapay: your-liberapay-name
+# custom: ["https://example.com/donate"]

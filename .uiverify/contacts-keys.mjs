@@ -61,8 +61,8 @@ await page.locator(".contacts-search").fill("");
 await page.locator(".contact-row", { hasText: "Northfield" }).click();
 const link = await page.locator(".contact-methods a", { hasText: "northfield.example" }).getAttribute("href").catch(() => null);
 ok(link === "https://northfield.example", `a link without its scheme opens on the web  ${link}`);
-const tel = await page.locator(".contact-methods a", { hasText: "+91 891" }).getAttribute("href");
-ok(tel === "tel:+15555550100", `a number dials without its spaces  ${tel}`);
+const tel = await page.locator(".contact-methods a", { hasText: "+1 555" }).getAttribute("href");
+ok(tel === "tel:+15550100199", `a number dials without its spaces  ${tel}`);
 
 await page.locator(".contact-row", { hasText: "Zoya Ahuja" }).click();
 await ctx.grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});

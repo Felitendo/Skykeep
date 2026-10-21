@@ -85,14 +85,14 @@ pub fn is_sealed(record: &Value) -> bool {
 pub fn sealed(record: &Value) -> Result<Sealed> {
     let not_here = || {
         Error::Refused(
-            "This note is locked in a way Pomander can’t open — open it on an Apple device.".into(),
+            "This note is locked in a way Skykeep can’t open — open it on an Apple device.".into(),
         )
     };
     if record.pointer(&format!("/fields/{BODY}")).is_none()
         && record.pointer("/fields/TextDataAsset").is_some()
     {
         return Err(Error::Refused(
-            "This locked note is too long for Pomander to open yet.".into(),
+            "This locked note is too long for Skykeep to open yet.".into(),
         ));
     }
     let iterations = number_of(record, ITERATIONS)

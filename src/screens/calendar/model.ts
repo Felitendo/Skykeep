@@ -323,3 +323,21 @@ export function addDaysIn(zone: string, s: number, days: number): number {
   const d = new Date(Date.UTC(w.y, w.m - 1, w.d + days));
   return instantIn(zone, { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate(), h: w.h, min: w.min });
 }
+
+/**
+ * The number of the week starting `weekStart`, as Calendar shows them: ISO 8601's where weeks
+ * start on Monday (the week holding the year's first Thursday is 1), and elsewhere the week
+ * holding 1 January is 1 — the US way, and the way a Sunday- or Saturday-first calendar counts.
+ */
+export function weekNumber(weekStart: Date, firstDay = WEEK.firstDay): number {
+  const start = midnight(weekStart);
+  if (firstDay === 1) {
+    const thursday = addDays(start, (4 - start.getDay() + 7) % 7);
+    const jan1 = new Date(thursday.getFullYear(), 0, 1);
+    return Math.floor(Math.round((thursday.getTime() - jan1.getTime()) / 864e5) / 7) + 1;
+  }
+  // The week's last day decides the year it belongs to: the week holding 1 January is week 1.
+  const last = addDays(start, 6);
+  const firstWeek = startOfWeek(new Date(last.getFullYear(), 0, 1), firstDay);
+  return Math.round((start.getTime() - firstWeek.getTime()) / (7 * 864e5)) + 1;
+}

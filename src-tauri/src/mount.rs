@@ -661,7 +661,7 @@ pub fn drive_keep(drivewsid: String, on: bool) -> Result<Vec<String>, String> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-            .ok_or("Turn on the iCloud Drive folder in Settings to keep files on this computer.")?;
+            .ok_or("Turn on the Drive folder in Settings to keep files on this computer.")?;
         keeper.set(&drivewsid, on);
         Ok(keeper.kept())
     }

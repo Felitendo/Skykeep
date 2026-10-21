@@ -46,14 +46,12 @@
 
 .note-rows { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 0 4px 12px; }
 
-/* A group's heading, as Notes writes "Today" or "Previous 7 Days" over the list. */
+/* A group's heading, as Notes writes "Today" or "Previous 7 Days" over the list. It scrolls
+   with its notes: held at the top it needed an opaque band of its own, and over the pane's
+   glass that band showed as a stripe of a different grey. */
 .notes-section {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  margin: 10px 0 2px;
+  margin: 14px 0 2px;
   padding: 4px 10px;
-  background: var(--bg);
   color: var(--text);
   font-size: var(--t-13);
   font-weight: 700;
@@ -88,12 +86,17 @@
 .note-rows:focus-within .note-row[aria-current="true"] .note-row-snippet { color: var(--on-accent-2); }
 .note-row:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
 .note-row-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
   font-size: var(--t-13);
   font-weight: 700;
 }
+.note-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A locked note keeps its title in the list, as Notes shows it, with a small lock before it. */
+.note-row-lock { flex: none; color: var(--text-2); }
+.note-rows:focus-within .note-row[aria-current="true"] .note-row-lock { color: var(--on-accent); }
 .note-row-meta { display: flex; gap: 8px; min-width: 0; font-size: var(--t-11); }
 .note-row-when { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
 .note-row-snippet { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
@@ -105,18 +108,29 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  /* As tall with its tools as without (a locked note has none): the date never jumps. */
+  min-height: calc(var(--h-tool) + 12px);
   padding: 0 18px 12px 0;
 }
 /* The date the note was last changed, centred and quiet over the text, as Notes sets it. */
 .note-when {
   flex: 1;
+  min-width: 0;
   margin: 0;
+  /* One line beside the tools: cut short in a narrow pane, never stacked four lines deep. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-3);
   font-size: var(--t-11);
   text-align: center;
 }
 .notes-list-head { padding: 0 4px 10px; }
 .notes-search { margin-bottom: 8px; }
+/* Where a search looks, once something is typed inside a folder: everywhere, or that folder. */
+.notes-scope { display: flex; margin: -2px 0 8px; }
+.notes-scope .segment { flex: 1; min-width: 0; }
+.notes-scope-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note-bar-actions .picker { max-width: 170px; }
 
 .note-editor {
@@ -197,12 +211,12 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-mark { color: var(--text-2); text-align: left; font-variant-numeric: tabular-nums; }
 .nf-check { align-items: center; }
 .nf-circle {
-  width: 17px; height: 17px; padding: 0; border: 1.5px solid var(--text-3); border-radius: 50%;
-  background: none; box-shadow: none; cursor: pointer; transition: background 120ms ease, border-color 120ms ease;
+  width: 18px; height: 18px; padding: 0; border: 0; background: var(--text-3); box-shadow: none; cursor: pointer;
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='8.25' fill='none' stroke='black' stroke-width='1.5'/></svg>") center/18px 18px no-repeat; mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='8.25' fill='none' stroke='black' stroke-width='1.5'/></svg>") center/18px 18px no-repeat;
 }
 .nf-check.is-done .nf-circle {
-  border-color: var(--accent); background: var(--accent)
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/12px no-repeat;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><path d='M5 9.3l2.7 2.7L13 6.6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/18px 18px no-repeat, var(--accent);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='9'/></svg>"); mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='9'/></svg>");
 }
 .nf-check.is-done > span:last-child { color: var(--text-3); }
 .note-formatted a { color: var(--accent-strong); text-decoration: underline; }
@@ -260,15 +274,18 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .note-rich .nf-p[data-style="102"] { counter-increment: nf-num; }
 .note-rich .nf-p[data-style="102"]::before { content: counter(nf-num) "."; }
 /* A checklist item's circle: clicking it ticks the line (the editor reads the click). */
+/* A checklist circle, crisp as Notes draws it: an 18px vector ring masked over the theme's colour
+   and set on whole pixels. The CSS border it replaced was 17px with a 1.5px edge at a fractional
+   offset, so every edge fell between pixels and blurred. */
 .note-rich .nf-p[data-style="103"]::before {
-  content: ""; position: absolute; inset-inline-start: calc(var(--indent, 0) * 1.5em); top: 0.3em;
-  width: 17px; height: 17px; box-sizing: border-box; border: 1.5px solid var(--text-3); border-radius: 50%;
-  cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease;
+  content: ""; position: absolute; inset-inline-start: calc(var(--indent, 0) * 1.5em); top: round(0.28em, 1px);
+  width: 18px; height: 18px; background: var(--text-3);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='8.25' fill='none' stroke='black' stroke-width='1.5'/></svg>") center/18px 18px no-repeat; mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='8.25' fill='none' stroke='black' stroke-width='1.5'/></svg>") center/18px 18px no-repeat;
+  cursor: pointer;
 }
 .note-rich .nf-p[data-style="103"][data-checked="true"]::before {
-  border-color: var(--accent);
-  background: var(--accent)
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 8.2l2.6 2.6L12 5.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/12px no-repeat;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><path d='M5 9.3l2.7 2.7L13 6.6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/18px 18px no-repeat, var(--accent);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='9'/></svg>"); mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='9'/></svg>");
 }
 .note-rich .nf-p[data-style="103"][data-checked="true"] { color: var(--text-3); }
 /* A table, drawing, picture or scan on a checklist line stands on its own, full width, as Notes
@@ -452,3 +469,50 @@ textarea.note-title::placeholder { color: var(--text-3); }
 
 /* An attachment not yet known takes no room and says nothing until it is drawn. */
 .note-rich .nf-attachment.is-pending { padding: 0; margin: 0; background: none; }
+
+/* ---- a locked note ------------------------------------------------------------------
+   Calm, as Notes shows one: a lock, one line, the password and Unlock, centred a little above
+   the middle of the pane. Nothing moves. */
+.note-lock {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px 18px 12vh 0;
+  text-align: center;
+}
+.note-lock-glyph {
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  margin-bottom: 10px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-strong);
+}
+.note-lock-title { margin: 0; color: var(--text); font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.note-lock-lede { margin: 0 0 12px; color: var(--text-2); font-size: var(--t-13); }
+.note-lock-form { display: flex; flex-direction: column; gap: 8px; width: min(100%, 248px); }
+.note-lock-field { width: 100%; text-align: center; }
+.note-lock-field::placeholder { text-align: center; }
+.note-lock-open { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; }
+/* The line a wrong password leaves: room kept for it, so nothing below shifts when it comes. */
+.note-lock-problem { min-height: 1.4em; margin: 2px 0 0; color: var(--danger); font-size: var(--t-13); }
+.note-lock-hint-ask { font-size: var(--t-13); }
+.note-lock-hint { max-width: 36ch; margin: 0; color: var(--text-2); font-size: var(--t-13); overflow-wrap: anywhere; }
+.note-editor.is-unlocked .note-title { margin-bottom: 10px; }
+.note-lock-now { gap: 6px; }
+
+/* A file over the note, ready to drop: the pane outlined in the accent. No motion. */
+.note-body.is-dropping { outline: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: -6px; border-radius: 12px; }
+
+/* An empty list says so in the middle of the pane, not under an empty scroller at its foot. */
+.note-rows:empty { display: none; }
+.notes-list > .notes-empty { flex: 1; justify-content: center; padding-bottom: 18vh; }
+/* A note pane too narrow for the date beside its tools leaves the date out rather than cut it
+   to "Septe…"; the list beside it says when, too. "Saving…" and "Waiting to sync" always show. */
+.note-body { container-type: inline-size; }
+@container (max-width: 460px) { .note-bar:has(.note-bar-actions) .note-when.is-date { visibility: hidden; } }

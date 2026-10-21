@@ -26,7 +26,7 @@ const scrolls = async () => {
 await settings();
 await page.waitForTimeout(300);
 ok(await scrolls(), "Settings scrolls");
-for (const s of ["Notes", "Photos", "Calendar", "iCloud Drive", "Reminders", "Contacts"]) {
+for (const s of ["Notes", "Photos", "Calendar", "Drive", "Reminders", "Contacts"]) {
   await openScreen(page, s);
   await page.waitForTimeout(300);
   await settings();

@@ -65,7 +65,7 @@ export const schema = new Schema({
         /** A block quote line. */
         quote: { default: false },
       },
-      // Read back exactly what toDOM writes, so a copy pasted within Pomander keeps each
+      // Read back exactly what toDOM writes, so a copy pasted within Skykeep keeps each
       // line's style, tick, indent and numbering. A `<p>` from anywhere else has none of these
       // and stays plain body.
       parseDOM: [{ tag: "p", getAttrs: (d) => paragraphAttrs(d as HTMLElement) }],

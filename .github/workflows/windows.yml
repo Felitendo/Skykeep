@@ -1,8 +1,8 @@
-# Pomander for Windows, proven on Windows before anyone downloads it:
+# Skykeep for Windows, proven on Windows before anyone downloads it:
 #   1. test  — the whole test suite on a Windows machine, the real Credential Manager included;
 #      ui    — every interface suite in Edge (WebView2's engine), each screen photographed;
 #   2. build — the .msi and the per-user .exe installer, only if every test passed;
-#   3. smoke — the .exe installed silently, Pomander launched, its window seen on screen, and a
+#   3. smoke — the .exe installed silently, Skykeep launched, its window seen on screen, and a
 #              screenshot kept, so an installer that cannot even start is never handed over.
 # Run by hand (Actions → Windows build → Run workflow) or by a release (release.yml); never on
 # every push.
@@ -53,7 +53,9 @@ jobs:
       # The window's files must exist for the app crate to compile.
       - run: npm run build
       - name: Tests, on Windows
-        run: cargo test --workspace --no-fail-fast
+        # The real tests: libraries, the app and test files. The probe examples are live tools for
+        # Linux (one mounts a FUSE folder), not tests, and are not built here.
+        run: cargo test --workspace --lib --bins --tests --no-fail-fast
 
   # Every interface suite in Microsoft Edge — the engine WebView2 is — with Windows' own fonts,
   # and every screen photographed light and dark, to be looked at.
@@ -101,7 +103,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pomander-ui-in-edge
+          name: skykeep-ui-in-edge
           path: shots
           if-no-files-found: ignore
 
@@ -136,7 +138,7 @@ jobs:
       - name: Build the installers
         # The build machine's paths are never written into the program.
         env:
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=pomander
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
         run: npx tauri build
       - name: Checksums
         shell: pwsh
@@ -146,7 +148,7 @@ jobs:
             Set-Content target/release/bundle/SHA256SUMS-windows.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: pomander-windows
+          name: skykeep-windows
           path: |
             target/release/bundle/msi/*.msi
             target/release/bundle/nsis/*.exe
@@ -162,42 +164,42 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: pomander-windows
+          name: skykeep-windows
           path: dist
       - name: Install, launch, and see the window
         shell: pwsh
         run: |
           $setup = Get-ChildItem dist -Recurse -Filter *-setup.exe | Select-Object -First 1
           Start-Process $setup.FullName -ArgumentList "/S" -Wait
-          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter pomander.exe | Select-Object -First 1
-          if (-not $exe) { $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter pomander.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
-          if (-not $exe) { throw "Pomander was not installed" }
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter skykeep.exe | Select-Object -First 1
+          if (-not $exe) { $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter skykeep.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          if (-not $exe) { throw "Skykeep was not installed" }
           "installed at $($exe.FullName)"
           # Alerts are sent as the app the Start menu knows; without that ID on its entry they
           # came from "Windows PowerShell".
-          $entry = Get-StartApps | Where-Object { $_.Name -eq "Pomander" } | Select-Object -First 1
-          if (-not $entry -or $entry.AppID -ne "io.github.yashwanthkamireddi.Pomander") { throw "Start menu entry has app ID '$($entry.AppID)', not io.github.yashwanthkamireddi.Pomander" }
+          $entry = Get-StartApps | Where-Object { $_.Name -eq "Skykeep" } | Select-Object -First 1
+          if (-not $entry -or $entry.AppID -ne "io.github.yashwanthkamireddi.Skykeep") { throw "Start menu entry has app ID '$($entry.AppID)', not io.github.yashwanthkamireddi.Skykeep" }
           "start menu app ID: $($entry.AppID)"
           $p = Start-Process $exe.FullName -PassThru
           $title = ""
           for ($i = 0; $i -lt 30 -and -not $title; $i++) {
             Start-Sleep -Seconds 2
-            if ($p.HasExited) { throw "Pomander exited on start (code $($p.ExitCode))" }
+            if ($p.HasExited) { throw "Skykeep exited on start (code $($p.ExitCode))" }
             $p.Refresh(); $title = $p.MainWindowTitle
           }
-          if ($title -ne "Pomander") { throw "no Pomander window after 60 s (title: '$title')" }
+          if ($title -ne "Skykeep") { throw "no Skykeep window after 60 s (title: '$title')" }
           "window up: $title"
           Start-Sleep -Seconds 6
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
           $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
           [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-          $bmp.Save("$PWD\pomander-on-windows.png")
-          if ($p.HasExited) { throw "Pomander closed by itself" }
+          $bmp.Save("$PWD\skykeep-on-windows.png")
+          if ($p.HasExited) { throw "Skykeep closed by itself" }
           Stop-Process -Id $p.Id
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pomander-on-windows
-          path: pomander-on-windows.png
+          name: skykeep-on-windows
+          path: skykeep-on-windows.png
           if-no-files-found: ignore

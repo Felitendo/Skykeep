@@ -40,6 +40,7 @@ import { fadeIn } from "../lib/fade";
 import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
 import { useReveal } from "../lib/reveal";
+import { Picker } from "../components/Picker";
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
 const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
@@ -66,6 +67,13 @@ const ACROSS = [10, 7, 5, 3];
 
 const monthOf = (seconds: number) =>
   new Date(seconds * 1000).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+/** "Sunday, 18 October", with the year when it is not this one: a day's heading, as Photos' Days. */
+const dayOf = (seconds: number, thisYear: number) => {
+  const d = new Date(seconds * 1000);
+  return d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", ...(d.getFullYear() === thisYear ? {} : { year: "numeric" }) });
+};
+/** From this step of the zoom in (five across and closer), the library is grouped by day. */
+const DAYS_FROM = 2;
 
 /** What Photos takes, as icloud.com's picker offers it. */
 const KINDS = ["jpg", "jpeg", "heic", "heif", "png", "gif", "tif", "tiff", "webp", "dng", "mov", "mp4", "m4v", "avi"];
@@ -441,7 +449,7 @@ function idsOf(items: { photo: Photo }[]): Set<string> {
  * month again — every one was handed the whole selection — 166 ms on a 20,000-photo library.
  */
 function sameMonth(a: MonthProps, b: MonthProps): boolean {
-  if (a.label !== b.label || a.items !== b.items || a.deleted !== b.deleted || a.eager !== b.eager
+  if (a.label !== b.label || a.month !== b.month || a.items !== b.items || a.deleted !== b.deleted || a.eager !== b.eager || a.across !== b.across
     || a.fit !== b.fit || a.cell !== b.cell || a.act !== b.act) return false;
   if (a.chosen !== b.chosen) {
     // Only the photos whose selection changed are looked at (worked out once per change, not
@@ -460,13 +468,41 @@ function sameMonth(a: MonthProps, b: MonthProps): boolean {
   return true;
 }
 
+/** Where a month's photos lie — its grid and whatever of it is still to be built — on screen. */
+function photosArea(sec: HTMLElement): { top: number; height: number } {
+  const first = sec.querySelector<HTMLElement>(":scope > .px-grid, :scope > .px-later") ?? sec;
+  const top = first.getBoundingClientRect().top;
+  return { top, height: sec.getBoundingClientRect().bottom - top };
+}
+
+/**
+ * Months on their way are built a slice a frame, one month after another, in the order they
+ * came near: the work a fast scroll asks for is spread over frames instead of landing in one.
+ */
+const BUILD_TILES = 28;
+const builds: (() => boolean)[] = [];
+let buildFrame = 0;
+function buildSoon(job: () => boolean) {
+  builds.push(job);
+  if (!buildFrame) buildFrame = requestAnimationFrame(buildNext);
+}
+function buildNext() {
+  buildFrame = 0;
+  const job = builds[0];
+  if (!job) return;
+  if (job()) builds.shift();
+  if (builds.length) buildFrame = requestAnimationFrame(buildNext);
+}
+
 type MonthProps = {
   label: string;
+  month: string;
   items: { photo: Photo; index: number }[];
   chosen: Set<string>;
   anchor: number | null;
   deleted: boolean;
   eager: boolean;
+  across: number;
   fit: boolean;
   cell: number;
   act: Acts;
@@ -474,52 +510,83 @@ type MonthProps = {
 
 const Month = memo(function Month({
   label,
+  month,
   items,
   chosen,
   anchor,
   deleted,
   eager,
+  across,
   fit,
   cell,
   act,
 }: {
   label: string;
+  month: string;
   items: { photo: Photo; index: number }[];
   chosen: Set<string>;
   anchor: number | null;
   deleted: boolean;
   eager: boolean;
+  across: number;
   fit: boolean;
   cell: number;
   act: Acts;
 }) {
   const ref = useRef<HTMLElement | null>(null);
-  const [live, setLive] = useState(eager);
+  // How many of its photos are built: all at once for the first months, and for the rest a few
+  // rows a frame once the month comes near (see buildSoon). Built whole in one go, a month of a
+  // hundred and fifty photos was one task of 50–110 ms — a frame dropped every time a fast
+  // scroll reached the next month.
+  const [built, setBuilt] = useState(eager ? items.length : 0);
+  const builtNow = useRef(built);
+  builtNow.current = built;
+  const step = useRef(across);
+  step.current = across;
   useEffect(() => {
     const el = ref.current;
+    if (builtNow.current >= items.length) return undefined;
+    let gone = false;
+    const start = () =>
+      buildSoon(() => {
+        if (gone) return true;
+        const rows = Math.max(2, Math.round(BUILD_TILES / step.current));
+        const next = Math.min(items.length, builtNow.current + rows * step.current);
+        builtNow.current = next;
+        setBuilt(next);
+        return next >= items.length;
+      });
     if (!el || typeof IntersectionObserver === "undefined") {
-      setLive(true);
-      return undefined;
+      start();
+      return () => {
+        gone = true;
+      };
     }
     // Built well ahead and then kept: a month taken down and built again as it scrolls back
     // showed as a heading over nothing while its tiles came back.
     const watch = new IntersectionObserver(
       ([e]) => {
         if (!e.isIntersecting) return;
-        setLive(true);
         watch.disconnect();
+        start();
       },
       { root: el.closest(".px-scroll"), rootMargin: "4000px 0px" },
     );
     watch.observe(el);
-    return () => watch.disconnect();
-  }, []);
+    return () => {
+      gone = true;
+      watch.disconnect();
+    };
+  }, [items.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Built part way when the zoom changed: what is built stays on whole rows.
+  const shownCount = built >= items.length ? items.length : Math.floor(built / across) * across;
+  const live = shownCount > 0;
   return (
-    <section ref={ref} className="px-month" aria-label={label || undefined}>
+    <section ref={ref} className="px-month" aria-label={label || undefined} data-month={month || undefined}>
       {label && <h2 className="px-month-title">{label}</h2>}
-      {live ? (
+      {live && (
         <div className="px-grid" role="list">
-          {items.map(({ photo, index }) => {
+          {(shownCount < items.length ? items.slice(0, shownCount) : items).map(({ photo, index }) => {
             const t = deleted ? timeLeft(photo, true) : null;
             return (
               <Tile
@@ -537,12 +604,13 @@ const Month = memo(function Month({
             );
           })}
         </div>
-      ) : (
+      )}
+      {shownCount < items.length && (
         // Not built yet (far from the screen): one block as tall as its rows will be, its tiles
         // painted on it as plain boxes, so a fast scroll shows photos on their way — never an
         // empty page. One element, not one a photo: a box each was 20,000 on a large library,
         // and every focus and every frame paid for them (photos-scale).
-        <div className="px-later" aria-hidden="true" style={{ "--n": items.length } as React.CSSProperties}>
+        <div className="px-later" aria-hidden="true" style={{ "--n": items.length - shownCount } as React.CSSProperties}>
           <i className="px-later-in" />
         </div>
       )}
@@ -698,23 +766,30 @@ export function PhotosView() {
     read().catch((e) => setError(messageOf(e)));
   }, [read, due]);
 
-  // Grouped by month, as the library reads; an album is one grid in its own order.
+  // Grouped by month, as the library reads — or, zoomed in close, by day, as Photos' Days do;
+  // an album is one grid in its own order. Each group knows its month, for the month picker and
+  // the line under the title.
+  const byDay = zoom >= DAYS_FROM;
   const months = useMemo(() => {
-    const out: { label: string; items: { photo: Photo; index: number }[] }[] = [];
+    const out: { label: string; month: string; items: { photo: Photo; index: number }[] }[] = [];
     // An album keeps its own order, and Recently Deleted is in the order things were deleted:
     // grouped by the month they were taken, the same month came back again and again. Both are
     // one grid, as icloud.com shows them.
-    if (drawn.album || drawn.view === "recentlyDeleted") return [{ label: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
+    if (drawn.album || drawn.view === "recentlyDeleted") return [{ label: "", month: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
+    const thisYear = new Date().getFullYear();
     (photos ?? []).forEach((photo, index) => {
       // Rated is grouped by how many stars, as icloud.com's Rated page is.
       const stars = photo.rating ?? 0;
-      const label = drawn.view === "rated" && !drawn.album ? `${stars} ${stars === 1 ? "Star" : "Stars"}` : monthOf(sortKey(photo, sort?.by ?? "taken"));
+      const rated = drawn.view === "rated" && !drawn.album;
+      const at = sortKey(photo, sort?.by ?? "taken");
+      const month = rated ? "" : monthOf(at);
+      const label = rated ? `${stars} ${stars === 1 ? "Star" : "Stars"}` : byDay ? dayOf(at, thisYear) : month;
       const last = out[out.length - 1];
       if (last && last.label === label) last.items.push({ photo, index });
-      else out.push({ label, items: [{ photo, index }] });
+      else out.push({ label, month, items: [{ photo, index }] });
     });
     return out;
-  }, [photos, sort?.by, drawn]);
+  }, [photos, sort?.by, drawn, byDay]);
 
   const shown = open !== null ? photos?.[open] ?? null : null;
   /**
@@ -879,9 +954,14 @@ export function PhotosView() {
     return () => tintFrom(document.body);
   }, [open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** The photo the viewer was on as it closed: the library comes back with it chosen and in view. */
+  const backTo = useRef<number | null>(null);
+  const openNow = useRef(open);
+  openNow.current = open;
   const close = useCallback(() => {
     gridBehind(false);
     land();
+    backTo.current = openNow.current;
     setOpen(null);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const step = useCallback(
@@ -1001,6 +1081,19 @@ export function PhotosView() {
   // Closing the viewer inside a burst brings the library back.
   useEffect(() => {
     if (open === null && inBurst) void leaveBurst(false);
+  }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Closed after going through the photos, as Photos: the one last shown is the one chosen in
+  // the library, and the grid has it in view with the keys' focus on it — not the photo it was
+  // opened from, forty photos and two months back up the grid.
+  useLayoutEffect(() => {
+    const at = backTo.current;
+    backTo.current = null;
+    if (open !== null || at === null || inBurst) return;
+    const p = photos?.[at];
+    if (!p) return;
+    anchor.current = at;
+    setChosen((c) => (c.size === 1 && c.has(p.id) ? c : new Set([p.id])));
+    reach(at);
   }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
   /**
    * The window full screen for a photo, as icloud.com's viewer offers: the button, and Escape
@@ -1214,7 +1307,11 @@ export function PhotosView() {
         const k = e.key === "0" ? 1 : lensRef.current.k * (e.key === "-" ? 1 / 1.5 : 1.5);
         zoomAt(k, box.left + box.width / 2, box.top + box.height / 2);
       }
-      else if (e.key === " " && current?.kind === "video") void play(current);
+      // Space, as in Photos: a video plays and pauses (its player takes the key first), a Live
+      // Photo plays its moving part, and a still goes back to the library it was opened from.
+      else if (e.key === " " && current?.kind === "video" && !(videoBase && !unplayable.has(current.id))) void play(current);
+      else if (e.key === " " && current?.kind === "live" && videoBase) setMoving((m) => (m === current.id ? null : current.id));
+      else if (e.key === " " && current?.kind === "image" && !(e.target as HTMLElement | null)?.closest?.("button, [role=radio], [role=slider]")) close();
       else if (e.key.toLowerCase() === "i" && !e.metaKey && !e.ctrlKey) setInfo((v) => !v);
       // As in Photos: "." favorites, Delete sends it to Recently Deleted.
       // F as well as ".", and H as well as Ctrl+L, as icloud.com takes them.
@@ -1570,7 +1667,7 @@ export function PhotosView() {
         else void changeAll(selected, "expunged", true);
       } else if (!ctrl && (e.key === "=" || e.key === "+" || e.key === "-")) {
         // = and − size the thumbnails, as in icloud.com's grid.
-        setZoom((z) => (e.key === "-" ? Math.max(0, z - 1) : Math.min(ACROSS.length - 1, z + 1)));
+        zoomBy(e.key === "-" ? -1 : 1);
       } else if (!ctrl && e.key.toLowerCase() === "i" && selected.length) {
         // I: the selected photo, opened with its details.
         setInfo(true);
@@ -1587,6 +1684,114 @@ export function PhotosView() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  /*
+   * Sweeping out a rectangle from the space around the photos selects every photo it touches,
+   * as on a Mac — with Ctrl (⌘) or Shift, adding to what was already chosen. Worked out from
+   * the grid's geometry, not by measuring tiles: months far from the screen are not built, and
+   * a sweep that scrolls the view still reaches them. The view scrolls on its own while the
+   * pointer is held past its top or bottom edge.
+   */
+  const sweepBox = useRef<HTMLDivElement | null>(null);
+  const swept = useRef(false);
+  const sweepStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    swept.current = false;
+    const el = scroller.current;
+    if (!el || e.button !== 0 || e.pointerType === "touch") return;
+    const t = e.target as HTMLElement;
+    if (t.closest(".px-tile, button, a, input, .px-sweep") || !photos?.length) return;
+    // Past the scrollbar is the scrollbar's.
+    if (e.clientX >= el.getBoundingClientRect().left + el.clientWidth) return;
+    const box0 = el.getBoundingClientRect();
+    const start = { x: e.clientX - box0.left, y: e.clientY - box0.top + el.scrollTop };
+    const base = e.ctrlKey || e.metaKey || e.shiftKey ? new Set(chosen) : new Set<string>();
+    let pointer = { x: e.clientX, y: e.clientY };
+    let moved = false;
+    let tick = 0;
+    let last = "";
+    // The grid's geometry, read once: each group's block (built or not), and the cells' pitch.
+    const groups = [...el.querySelectorAll<HTMLElement>(".px-month")].map((sec, k) => {
+      const r = photosArea(sec);
+      return { top: r.top - box0.top + el.scrollTop, height: r.height, k };
+    });
+    const style = getComputedStyle(el);
+    const inner = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const [gap, pad] = fit ? [14, 14] : [2, 0];
+    const pitch = (inner - 2 * pad + gap) / across;
+    const left0 = parseFloat(style.paddingLeft) + pad;
+    const draw = () => {
+      const box = el.getBoundingClientRect();
+      const now = { x: Math.max(0, Math.min(el.clientWidth, pointer.x - box.left)), y: pointer.y - box.top + el.scrollTop };
+      const [x1, x2] = [Math.min(start.x, now.x), Math.max(start.x, now.x)];
+      const [y1, y2] = [Math.min(start.y, now.y), Math.max(start.y, now.y)];
+      const shown = sweepBox.current;
+      if (shown) {
+        shown.hidden = false;
+        shown.style.cssText = `left:${x1}px;top:${y1}px;width:${x2 - x1}px;height:${y2 - y1}px`;
+      }
+      const c1 = Math.max(0, Math.floor((x1 - left0) / pitch));
+      const c2 = Math.min(across - 1, Math.floor((x2 - left0) / pitch));
+      const next = new Set(base);
+      if (c2 >= c1) {
+        for (const g of groups) {
+          if (g.top > y2 || g.top + g.height < y1) continue;
+          const items = months[g.k]?.items;
+          if (!items?.length) continue;
+          const rows = Math.ceil(items.length / across);
+          const rowH = g.height / rows;
+          const r1 = Math.max(0, Math.floor((y1 - g.top) / rowH));
+          const r2 = Math.min(rows - 1, Math.floor((y2 - g.top) / rowH));
+          for (let r = r1; r <= r2; r++) {
+            for (let c = c1; c <= c2; c++) {
+              // Only the photo itself, not the hairline gap after it.
+              if (x2 < left0 + c * pitch || x1 > left0 + c * pitch + pitch - gap) continue;
+              const it = items[r * across + c];
+              if (it) next.add(it.photo.id);
+            }
+          }
+        }
+      }
+      const key = [...next].join();
+      if (key !== last) {
+        last = key;
+        setChosen(next);
+      }
+    };
+    const loop = () => {
+      tick = 0;
+      const box = el.getBoundingClientRect();
+      const top = box.top + (parseFloat(style.paddingTop) || 0) - 12;
+      const by = pointer.y < top ? -Math.min(40, (top - pointer.y) / 2 + 4) : pointer.y > box.bottom - 24 ? Math.min(40, (pointer.y - box.bottom + 24) / 2 + 4) : 0;
+      if (by) el.scrollTop += by;
+      draw();
+      if (by) tick = requestAnimationFrame(loop);
+    };
+    const move = (ev: PointerEvent) => {
+      pointer = { x: ev.clientX, y: ev.clientY };
+      if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 4) return;
+      moved = true;
+      if (!tick) tick = requestAnimationFrame(loop);
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      cancelAnimationFrame(tick);
+      if (sweepBox.current) sweepBox.current.hidden = true;
+      if (moved) {
+        swept.current = true;
+        // The keys go on from the sweep's last photo.
+        const ids = [...chosenNow.current];
+        const at = ids.length ? Math.max(...ids.map((id) => placeOf.get(id) ?? -1)) : -1;
+        anchor.current = at >= 0 ? at : anchor.current;
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  };
+  const chosenNow = useRef(chosen);
+  chosenNow.current = chosen;
 
   // A slideshow of what is selected when that is more than one photo, else of the whole view
   // from this photo on, as Photos starts one.
@@ -1724,8 +1929,8 @@ export function PhotosView() {
     },
   });
 
-  const acts = useRef({ pick, openAt, photoMenu, dragFrom });
-  acts.current = { pick, openAt, photoMenu, dragFrom };
+  const acts = useRef({ pick, openAt, photoMenu, dragFrom, zoomBy });
+  acts.current = { pick, openAt, photoMenu, dragFrom, zoomBy };
   const act = useMemo<Acts>(
     () => ({
       pick: (i, e) => acts.current.pick(i, e),
@@ -2005,17 +2210,19 @@ export function PhotosView() {
   // the two always agree.
   const monthCovers = useMemo<MonthCover[]>(() => {
     if (drawn.album || drawn.view === "rated") return [];
+    // By day, a month is several groups: the picker lists it once, with its first photo.
+    const seen = new Set<string>();
     return months
-      .filter((m) => m.label && m.items.length)
+      .filter((m) => m.month && m.items.length && !seen.has(m.month) && seen.add(m.month))
       .map((m) => {
         const cover = m.items[0].photo;
         const d = new Date(sortKey(cover, sort?.by ?? "taken") * 1000);
-        return { label: m.label, year: d.getFullYear(), month: d.getMonth(), cover };
+        return { label: m.month, year: d.getFullYear(), month: d.getMonth(), cover };
       });
   }, [months, drawn, sort?.by]);
   const goToMonth = (label: string) => {
     const el = scroller.current;
-    const at = el?.querySelector<HTMLElement>(`.px-month[aria-label="${CSS.escape(label)}"]`);
+    const at = el?.querySelector<HTMLElement>(`.px-month[data-month="${CSS.escape(label)}"]`);
     // Measured against the scroller itself: offsetTop counts from whatever positioned box
     // happens to hold the month, which is not always the scroller.
     if (el && at) {
@@ -2044,7 +2251,7 @@ export function PhotosView() {
         if (months[mid].getBoundingClientRect().bottom > edge) hi = mid;
         else lo = mid + 1;
       }
-      setHere(months[lo]?.getAttribute("aria-label") ?? null);
+      setHere(months[lo]?.dataset.month || months[lo]?.getAttribute("aria-label") || null);
     }, 120);
   }, [album]);
   useEffect(() => setHere(null), [view, album]);
@@ -2062,8 +2269,8 @@ export function PhotosView() {
     const onKey = (e: KeyboardEvent) => {
       if (!live.current) return;
       if (!(e.ctrlKey || e.metaKey) || e.altKey || viewer.current) return;
-      if (e.key === "=" || e.key === "+") setZoom((z) => Math.min(ACROSS.length - 1, z + 1));
-      else if (e.key === "-") setZoom((z) => Math.max(0, z - 1));
+      if (e.key === "=" || e.key === "+") acts.current.zoomBy(1);
+      else if (e.key === "-") acts.current.zoomBy(-1);
       else return;
       e.preventDefault();
     };
@@ -2104,6 +2311,52 @@ export function PhotosView() {
     fadeIn(scroller.current, { from: 0.35, duration: 160 });
   }, [drawn]);
   const across = ACROSS[zoom];
+  /*
+   * A zoom keeps its place, as Photos': the selected photo — or, with none in view, the photo at
+   * the top left — stays where it was on the screen while the grid around it changes size.
+   * Before, every step of the zoom left the view at a scroll offset that now meant a different
+   * month, and the photo being looked at was gone.
+   */
+  const keepAt = useRef<{ index: number; top: number } | null>(null);
+  function zoomBy(by: number) {
+    const next = Math.max(0, Math.min(ACROSS.length - 1, zoom + by));
+    if (next === zoom) return;
+    const el = scroller.current;
+    if (el && el.clientHeight) {
+      const box = el.getBoundingClientRect();
+      const pad = parseFloat(getComputedStyle(el).paddingTop) || 0;
+      const seen = (t: Element | null) => {
+        const r = t?.getBoundingClientRect();
+        return r && r.bottom > box.top + pad - 8 && r.top < box.bottom ? r : null;
+      };
+      const mine = anchor.current !== null ? el.querySelector(`.px-tile[data-index="${anchor.current}"]`) : null;
+      const tile = (seen(mine) ? mine : document.elementFromPoint(box.left + 8, box.top + pad + 8)?.closest(".px-tile")) as HTMLElement | null;
+      if (tile && el.scrollTop > 0) keepAt.current = { index: Number(tile.dataset.index), top: tile.getBoundingClientRect().top - box.top };
+    }
+    setZoom(next);
+  }
+  useLayoutEffect(() => {
+    const k = keepAt.current;
+    keepAt.current = null;
+    const el = scroller.current;
+    if (!k || !el) return;
+    const box = el.getBoundingClientRect();
+    const tile = el.querySelector<HTMLElement>(`.px-tile[data-index="${k.index}"]`);
+    let top: number | null = null;
+    if (tile) top = tile.getBoundingClientRect().top - box.top + el.scrollTop;
+    else {
+      // Its group not built yet: where its row will be, from the group's own block, whose
+      // height is exactly its rows'.
+      const g = months.findIndex((m) => m.items.length && k.index >= m.items[0].index && k.index <= m.items[m.items.length - 1].index);
+      const sec = el.querySelectorAll<HTMLElement>(".px-month")[g];
+      if (sec) {
+        const row = Math.floor((k.index - months[g].items[0].index) / across);
+        const r = photosArea(sec);
+        top = r.top - box.top + el.scrollTop + (row * r.height) / Math.ceil(months[g].items.length / across);
+      }
+    }
+    if (top !== null) el.scrollTop = Math.max(0, top - k.top);
+  }, [across]); // eslint-disable-line react-hooks/exhaustive-deps
   // A cell's width in device pixels, for the size each tile's picture is made at; in steps of
   // 32, so a window being resized does not redraw every tile on every frame.
   const [gridWidth, setGridWidth] = useState(0);
@@ -2300,8 +2553,48 @@ export function PhotosView() {
     </button>
   );
 
+  // In a narrow window the sidebar folds into one pop-up above the library, as Notes' folders
+  // do: every place the sidebar goes, in its order. Beside 480px of window the sidebar took
+  // half of it and left the photos a strip.
+  const goTo = (to: string) => {
+    const [kind, id] = [to.slice(0, to.indexOf(":")), to.slice(to.indexOf(":") + 1)];
+    endSearch();
+    setOpen(null);
+    if (kind === "view") {
+      setView(id as PhotoView);
+      setAlbum(null);
+      setAlbumsPage(false);
+      setSharedPage(false);
+    } else if (kind === "album") {
+      const a = albums.find(([x]) => x.id === id)?.[0];
+      if (!a) return;
+      setAlbum(a);
+      setAlbumsPage(false);
+      setSharedPage(false);
+    } else if (kind === "page" && id === "albums") {
+      setAlbumsPage(true);
+      setSharedPage(false);
+      setFolderPage(null);
+    } else if (kind === "page" && id === "shared") {
+      setSharedPage(true);
+      setAlbumsPage(false);
+    }
+  };
+  const placeNow = sharedPage ? "page:shared" : albumsPage ? "page:albums" : album ? `album:${album.id}` : `view:${view}`;
+  const places = [
+    ...VIEWS.map((v) => ({ value: `view:${v.key}`, label: v.label })),
+    { value: "page:albums", label: "Albums" },
+    ...albums.filter(([a]) => !a.folder && !a.id.startsWith("new:")).map(([a]) => ({ value: `album:${a.id}`, label: `\u2003${a.name}` })),
+    ...MEDIA.filter((m) => (counts[m.key] ?? 0) > 0 || (!album && !albumsPage && view === m.key)).map((v) => ({ value: `view:${v.key}`, label: v.label })),
+    ...UTILITIES.map((v) => ({ value: `view:${v.key}`, label: v.label })),
+    { value: "page:shared", label: "Shared Albums" },
+  ];
+
   return (
     <div className={`px${dropping ? " is-dropping" : ""}`} data-drop-label={album ? `Add to ${album.name}` : "Add to Library"}>
+      <div className="px-compact">
+        <Picker label="Show" value={placeNow} options={places} onChange={goTo} />
+      </div>
       <aside className="px-side" aria-label="Photos">
         <p className="side-heading px-side-heading">Photos</p>
         {VIEWS.map(source)}
@@ -2406,8 +2699,8 @@ export function PhotosView() {
                     </div>
                   </header>
                   {here.length === 0 ? (
-                    <EmptyState className="px-empty">
-                      {folder ? "This folder is empty. Make an album in it with +." : "No albums yet. Make one with +, then add photos to it from their menu or by dragging them onto it."}
+                    <EmptyState className="px-empty" icon={folder ? <FolderIcon size={28} strokeWidth={1.6} /> : <AlbumGlyph />}>
+                      {folder ? "Make an album in this folder with +." : "Make an album with +, then drag photos onto it."}
                     </EmptyState>
                   ) : (
                     <div className="px-cards" role="list">
@@ -2553,10 +2846,10 @@ export function PhotosView() {
           )}
           {jumping && <JumpTo months={monthCovers} at={jumping} current={here ?? monthCovers[0]?.label ?? null} onPick={goToMonth} onClose={() => setJumping(null)} />}
           <div className="toolbar-group" role="group" aria-label="Zoom">
-            <button className="tool px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
+            <button className="tool px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => zoomBy(-1)}>
               <Minus size={15} strokeWidth={2.2} aria-hidden="true" />
             </button>
-            <button className="tool px-cap" aria-label="Zoom In" title="Zoom In (Ctrl +)" disabled={zoom === ACROSS.length - 1} onClick={() => setZoom((z) => Math.min(ACROSS.length - 1, z + 1))}>
+            <button className="tool px-cap" aria-label="Zoom In" title="Zoom In (Ctrl +)" disabled={zoom === ACROSS.length - 1} onClick={() => zoomBy(1)}>
               <Plus size={15} strokeWidth={2.2} aria-hidden="true" />
             </button>
           </div>
@@ -2592,16 +2885,30 @@ export function PhotosView() {
           <Arriving service="photos" what="photos" className="px-empty" />
         )}
         {photos && photos.length === 0 && !(arriving && !drawn.query) && (
-          <EmptyState className="px-empty">
+          // One line, saying what the place is for, with its own symbol from the sidebar.
+          <EmptyState
+            className="px-empty"
+            icon={(() => {
+              const Icon = drawn.query ? null : drawn.album ? null : [...VIEWS, ...MEDIA, ...UTILITIES].find((v) => v.key === drawn.view)?.Icon;
+              return drawn.album ? <AlbumGlyph /> : Icon ? <Icon size={28} strokeWidth={1.6} /> : undefined;
+            })()}
+          >
             {drawn.query
               ? `No photos match “${drawn.query}”. Search finds names, titles, captions, keywords, years and months.`
-              : album
-              ? "This album is empty. Photos added to it on any device show here."
-              : view === "recentlyDeleted"
-              ? "Nothing deleted. Photos you delete stay here for 30 days."
-              : view === "favorites"
-                ? "Mark a photo with the heart and it shows here."
-                : "No photos here yet."}
+              : drawn.album
+              ? "Photos you add to this album show here."
+              : ({
+                  library: "Your photos and videos show here.",
+                  recents: "Photos you add show here first.",
+                  favorites: "Click the heart on a photo to keep it here.",
+                  videos: "Your videos show here.",
+                  portrait: "Your Portrait photos show here.",
+                  panoramas: "Your panoramas show here.",
+                  screenshots: "Your screenshots show here.",
+                  rated: "Photos you give stars to show here.",
+                  hidden: "Photos you hide wait here, out of your library.",
+                  recentlyDeleted: "Photos you delete stay here for 30 days.",
+                } as Partial<Record<PhotoView, string>>)[drawn.view] ?? "Your photos show here."}
           </EmptyState>
         )}
 
@@ -2609,8 +2916,14 @@ export function PhotosView() {
           className="px-scroll"
           ref={scroller}
           onScroll={onScroll}
+          onPointerDown={sweepStart}
           onClick={(e) => {
-            // A click on the space between photos lets the selection go, as in Photos.
+            // A click on the space between photos lets the selection go, as in Photos — not the
+            // click that ends a sweep.
+            if (swept.current) {
+              swept.current = false;
+              return;
+            }
             if (!(e.target as HTMLElement).closest(".px-tile")) setChosen(new Set());
           }} data-fit={fit || undefined} style={{ "--across": across } as React.CSSProperties}>
           {waiting && (
@@ -2627,22 +2940,25 @@ export function PhotosView() {
             <Month
               key={`${k}/${m.label}`}
               label={m.label}
+              month={m.month}
               items={m.items}
               chosen={chosen}
               anchor={anchor.current}
               deleted={drawn.view === "recentlyDeleted" && !drawn.album}
               eager={k < 3}
+              across={across}
               fit={fit}
               cell={cell}
               act={act}
             />
           ))}
           {tally && <p className="px-tally">{tally}</p>}
+          <div className="px-sweep" ref={sweepBox} aria-hidden="true" hidden />
         </div>
 
         {shown && (
           <div
-            className={`px-viewer${fullscreen ? " is-full" : ""}${fullscreen && thumbs ? " has-thumbs" : ""}`}
+            className={`px-viewer${fullscreen ? " is-full" : ""}${fullscreen && thumbs ? " has-thumbs" : ""}${info ? " has-info" : ""}`}
             ref={viewer}
             role="dialog"
             aria-label={shown.filename ?? "Photo"}
@@ -3028,10 +3344,10 @@ export function PhotosView() {
               <Filmstrip photos={photos} at={open} onPick={(i) => step(i - open)} />
             )}
             {info && (
-              <dl className="px-info">
-                {/* As in Photos' Info: the caption first, typed in place, and kept on every
-                    device; Return or leaving the field saves it, Escape puts it back. */}
-                <dd className="px-caption-row" onBlur={(e) => wordsLeft(shown, e)}>
+              <aside className="px-info" aria-label="Info">
+                {/* As in Photos' Info: the title and caption first, typed in place, and kept on
+                    every device; Return or leaving the field saves them, Escape puts them back. */}
+                <div className="px-caption-row" onBlur={(e) => wordsLeft(shown, e)}>
                   <input
                     key={`t${shown.id}`}
                     ref={titleField}
@@ -3057,101 +3373,107 @@ export function PhotosView() {
                     onFocus={(e) => grow(e.currentTarget)}
                     onKeyDown={(e) => wordKeys(e, shown.caption)}
                   />
-                </dd>
-                {/* Stars, as Info sets them: a click gives that many; the same again takes them away. */}
-                <dt>Rating</dt>
-                <dd className="px-rating" role="radiogroup" aria-label="Rating">
-                  {[1, 2, 3, 4, 5].map((n) => (
-                    <button
-                      key={n}
-                      role="radio"
-                      aria-checked={(shown.rating ?? 0) === n}
-                      aria-label={`${n} ${n === 1 ? "star" : "stars"}`}
-                      className={`px-star${(shown.rating ?? 0) >= n ? " is-on" : ""}`}
-                      disabled={view === "recentlyDeleted"}
-                      onClick={() => void rate(shown, (shown.rating ?? 0) === n ? 0 : n)}
-                    >
-                      <Star size={15} fill={(shown.rating ?? 0) >= n ? "currentColor" : "none"} strokeWidth={1.8} />
-                    </button>
-                  ))}
-                </dd>
-                <dt>Name</dt>
-                <dd>{shown.filename ?? "—"}</dd>
-                <dt>Taken</dt>
-                <dd className="px-taken">
+                </div>
+                {/* When, large, with Adjust beside it, as Photos' Info leads with the date. */}
+                <div className="px-info-when">
+                  <div>
+                    <strong>{new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "full" })}</strong>
+                    <span>{new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}</span>
+                  </div>
                   {view !== "recentlyDeleted" && (
                     <button className="px-link px-adjust" onClick={() => setAdjusting(shown)}>
                       Adjust
                     </button>
                   )}
-                  {new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "full" })} at{" "}
-                  {new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}
-                </dd>
-                <dt>Kind</dt>
-                <dd>
-                  {shown.kind === "video" ? `Video${shown.duration ? `, ${clock(shown.duration)}` : ""}` : shown.kind === "live" ? "Live Photo" : "Photo"}
-                </dd>
-                <dt>Dimensions</dt>
-                <dd>{shown.width.toLocaleString()} × {shown.height.toLocaleString()}</dd>
-                {shown.size ? (
-                  <>
-                    <dt>File size</dt>
-                    <dd>{shown.size >= 1024 * 1024 ? `${(shown.size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(shown.size / 1024))} KB`}</dd>
-                  </>
-                ) : null}
-                {shown.latitude != null && shown.longitude != null && (
-                  <>
-                    <dt>Place</dt>
-                    <dd className="px-place">
-                      <span>{degrees(shown.latitude, "N", "S")}, {degrees(shown.longitude, "E", "W")}</span>
-                      <button className="px-link" onClick={() => void api.photoOpenMap(shown.id).catch((e) => setError(messageOf(e)))}>
-                        Open in Map
-                      </button>
-                    </dd>
-                  </>
-                )}
-                {/* Keywords, as Info keeps them: each its own chip, taken away with ×; a word
-                    typed and Return adds one. */}
-                <dt>Keywords</dt>
-                <dd className="px-words-field">
-                  {(shown.keywords ?? []).map((k) => (
-                    <span key={k} className="px-chip">
-                      {k}
-                      {view !== "recentlyDeleted" && (
+                </div>
+                {/* The file, as Photos sets it: its name, then what it is, in one quiet block. */}
+                <div className="px-info-file">
+                  <strong>{shown.filename ?? "Photo"}</strong>
+                  <span>
+                    {shown.kind === "video" ? `Video${shown.duration ? `, ${clock(shown.duration)}` : ""}` : shown.kind === "live" ? "Live Photo" : "Photo"}
+                    {shown.width && shown.height && shown.kind !== "video" ? `, ${Math.round((shown.width * shown.height) / 1e6)} MP` : ""}
+                  </span>
+                  <span>
+                    {shown.width.toLocaleString()} × {shown.height.toLocaleString()}
+                    {shown.size ? `, ${shown.size >= 1024 * 1024 ? `${(shown.size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(shown.size / 1024))} KB`}` : ""}
+                  </span>
+                </div>
+                <dl className="px-facts">
+                  {/* Stars, as Info sets them: a click gives that many; the same again takes them away. */}
+                  <div className="px-fact">
+                    <dt>Rating</dt>
+                    <dd className="px-rating" role="radiogroup" aria-label="Rating">
+                      {[1, 2, 3, 4, 5].map((n) => (
                         <button
-                          aria-label={`Remove ${k}`}
-                          onClick={() => void keywords(shown, (shown.keywords ?? []).filter((x) => x !== k))}
+                          key={n}
+                          role="radio"
+                          aria-checked={(shown.rating ?? 0) === n}
+                          aria-label={`${n} ${n === 1 ? "star" : "stars"}`}
+                          className={`px-star${(shown.rating ?? 0) >= n ? " is-on" : ""}`}
+                          disabled={view === "recentlyDeleted"}
+                          onClick={() => void rate(shown, (shown.rating ?? 0) === n ? 0 : n)}
                         >
-                          <X size={10} strokeWidth={3} aria-hidden="true" />
+                          <Star size={15} fill={(shown.rating ?? 0) >= n ? "currentColor" : "none"} strokeWidth={1.8} />
                         </button>
-                      )}
-                    </span>
-                  ))}
-                  {view !== "recentlyDeleted" && (
-                    <input
-                      key={`k${shown.id}`}
-                      className="px-keyword-field"
-                      aria-label="Add a Keyword"
-                      placeholder="Add a Keyword"
-                      maxLength={100}
-                      onKeyDown={(e) => {
-                        const word = e.currentTarget.value.trim();
-                        if ((e.key === "Enter" || e.key === ",") && word) {
-                          e.preventDefault();
-                          e.currentTarget.value = "";
-                          if (!(shown.keywords ?? []).some((x) => x.toLowerCase() === word.toLowerCase())) {
-                            void keywords(shown, [...(shown.keywords ?? []), word]);
-                          }
-                        } else if (e.key === "Escape") {
-                          e.currentTarget.value = "";
-                          e.currentTarget.blur();
-                          e.stopPropagation();
-                        }
-                      }}
-                    />
+                      ))}
+                    </dd>
+                  </div>
+                  {shown.latitude != null && shown.longitude != null && (
+                    <div className="px-fact">
+                      <dt>Place</dt>
+                      <dd className="px-place">
+                        <span>{degrees(shown.latitude, "N", "S")}, {degrees(shown.longitude, "E", "W")}</span>
+                        <button className="px-link" onClick={() => void api.photoOpenMap(shown.id).catch((e) => setError(messageOf(e)))}>
+                          Open in Map
+                        </button>
+                      </dd>
+                    </div>
                   )}
-                </dd>
-              </dl>
+                  {/* Keywords, as Info keeps them: each its own chip, taken away with ×; a word
+                      typed and Return adds one. */}
+                  <div className="px-fact">
+                    <dt>Keywords</dt>
+                    <dd className="px-words-field">
+                      {(shown.keywords ?? []).map((k) => (
+                        <span key={k} className="px-chip">
+                          {k}
+                          {view !== "recentlyDeleted" && (
+                            <button
+                              aria-label={`Remove ${k}`}
+                              onClick={() => void keywords(shown, (shown.keywords ?? []).filter((x) => x !== k))}
+                            >
+                              <X size={10} strokeWidth={3} aria-hidden="true" />
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                      {view !== "recentlyDeleted" && (
+                        <input
+                          key={`k${shown.id}`}
+                          className="px-keyword-field"
+                          aria-label="Add a Keyword"
+                          placeholder="Add a Keyword"
+                          maxLength={100}
+                          onKeyDown={(e) => {
+                            const word = e.currentTarget.value.trim();
+                            if ((e.key === "Enter" || e.key === ",") && word) {
+                              e.preventDefault();
+                              e.currentTarget.value = "";
+                              if (!(shown.keywords ?? []).some((x) => x.toLowerCase() === word.toLowerCase())) {
+                                void keywords(shown, [...(shown.keywords ?? []), word]);
+                              }
+                            } else if (e.key === "Escape") {
+                              e.currentTarget.value = "";
+                              e.currentTarget.blur();
+                              e.stopPropagation();
+                            }
+                          }}
+                        />
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              </aside>
             )}
           </div>
         )}

@@ -43,7 +43,7 @@ document.addEventListener("contextmenu", (e) => {
   if (!editable) e.preventDefault();
 });
 
-// The quick-capture window (`pomander --new reminder`) is one field, not the library.
+// The quick-capture window (`skykeep --new reminder`) is one field, not the library.
 const capture = new URLSearchParams(window.location.search).get("capture");
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

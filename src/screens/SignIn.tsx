@@ -6,7 +6,7 @@ import { api, messageOf, type SignInResult } from "../lib/ipc";
 import { onWindows } from "../lib/platform";
 
 // Where the copy is kept, as this system names it.
-const STORE = onWindows ? "%APPDATA%\\io.github.yashwanthkamireddi.Pomander" : "~/.local/share/io.github.yashwanthkamireddi.Pomander";
+const STORE = onWindows ? "%APPDATA%\\io.github.yashwanthkamireddi.Skykeep" : "~/.local/share/io.github.yashwanthkamireddi.Skykeep";
 
 /**
  * An error as a sentence: some of the engine's messages start in lower case and end without
@@ -153,12 +153,12 @@ export function SignIn({
         * the rest a click away for anyone who wants it.
         */}
       <details className="disclosure">
-        <summary>How Pomander keeps you private</summary>
+        <summary>How Skykeep keeps you private</summary>
         <div className="disclosure-body">
           <p>
             <strong>Private by design.</strong> Your password never leaves this computer.
-            Pomander proves you know it without sending it, and keeps your session in your
-            system keyring. No Pomander account, no Pomander servers: it talks only to Apple.
+            Skykeep proves you know it without sending it, and keeps your session in your
+            system keyring. No Skykeep account, no Skykeep servers: it talks only to Apple, and to calendars you subscribe to.
           </p>
           <p>
             <strong>Your iCloud, right here.</strong> Your calendar, reminders, notes, contacts

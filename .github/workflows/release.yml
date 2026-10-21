@@ -35,7 +35,7 @@ jobs:
       - name: Build the packages
         # The build machine's paths are never written into the program.
         env:
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=pomander
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
         run: npx tauri build
       - name: The .deb installs and its program starts
         run: |
@@ -51,7 +51,7 @@ jobs:
           cat SHA256SUMS-linux.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: pomander-linux
+          name: skykeep-linux
           path: |
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
@@ -79,4 +79,4 @@ jobs:
         run: |
           find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' -o -name 'SHA256SUMS*' \) -print0 \
             | xargs -0 gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-                --draft --verify-tag --title "Pomander ${GITHUB_REF_NAME#v}" --generate-notes
+                --draft --verify-tag --title "Skykeep ${GITHUB_REF_NAME#v}" --generate-notes

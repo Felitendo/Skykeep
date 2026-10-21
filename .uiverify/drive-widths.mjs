@@ -15,7 +15,7 @@ for (const [w, h] of [[1920, 1040], [960, 1040], [700, 900], [480, 800]]) {
   const page = await ctx.newPage();
   page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-  await openScreen(page, "iCloud Drive").catch(() => openScreen(page, "Drive"));
+  await openScreen(page, "Drive").catch(() => openScreen(page, "Drive"));
   await page.waitForTimeout(150);
   const box = () => page.evaluate(() => {
     const bar = document.querySelector(".drive > .drive-bar"), up = [...bar.querySelectorAll("button")].find((x) => /Upload/.test(x.textContent));

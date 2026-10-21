@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use std::io::{Read, Write};
 
 fn main() -> Result<()> {
-    let entry = keyring::Entry::new("io.github.yashwanthkamireddi.Pomander", "session")?;
+    let entry = keyring::Entry::new("io.github.yashwanthkamireddi.Skykeep", "session")?;
     match std::env::args().nth(1).as_deref() {
         Some("get") => std::io::stdout().write_all(entry.get_password()?.as_bytes())?,
         Some("set") => {

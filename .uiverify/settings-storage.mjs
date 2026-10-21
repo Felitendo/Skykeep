@@ -44,7 +44,7 @@ const open = async (init) => {
   });
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await page.waitForTimeout(150);
-  const row = page.locator(".settings-row", { hasText: "iCloud Drive folder" });
+  const row = page.locator(".settings-row", { hasText: "Drive folder" });
   ok((await row.innerText()).includes("That folder is off.") && !(await page.locator(".toast.is-error").isVisible()), "a folder that cannot be opened says why on its own row");
   ok(await page.getByText("Alerts can't appear: this desktop has no notification service running.").isVisible(), "a desktop with no notification service is said under the switches");
   await page.getByRole("button", { name: "Clear", exact: true }).click();

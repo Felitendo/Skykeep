@@ -15,7 +15,12 @@ for (const [w, h] of [[1280, 800], [900, 700], [760, 700], [560, 700]]) {
   await openScreen(page, "Photos");
   await page.waitForTimeout(500);
   for (const view of ["Library", "Favorites"]) {
-    await page.locator(".px-source", { hasText: view }).first().click();
+    // From 720px down the sidebar is a pop-up above the library (photos-compact).
+    if (await page.locator(".px-side").isVisible()) await page.locator(".px-source", { hasText: view }).first().click();
+    else {
+      await page.locator(".px-compact .picker-button").click();
+      await page.getByRole("option", { name: view, exact: true }).click();
+    }
     await page.waitForTimeout(300);
     const r = await page.evaluate(() => {
       const t = document.querySelector(".px-bar h1"), span = document.querySelector(".px-bar .px-span");

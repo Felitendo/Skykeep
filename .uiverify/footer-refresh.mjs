@@ -56,9 +56,9 @@ ok(JSON.stringify(await page.evaluate(() => window.__some)) === '[["reminders"]]
 await page.waitForTimeout(700);
 ok((await said()) === "Reminders updated just now", `and settles  [${await said()}]`);
 
-await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
+await page.locator(".nav-item", { hasText: "Drive" }).click();
 await page.waitForTimeout(150);
-ok((await page.evaluate(() => window.__titles.at(-1))) === "iCloud Drive", "the title follows to iCloud Drive");
+ok((await page.evaluate(() => window.__titles.at(-1))) === "Drive", "the title follows to iCloud Drive");
 await page.keyboard.press("Control+r");
 await page.waitForTimeout(100);
 ok(JSON.stringify(await page.evaluate(() => window.__some.at(-1))) === '["drive"]', "Ctrl+R updates Drive's own service (drive, not drivews)");

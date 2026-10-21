@@ -73,8 +73,8 @@ export function SharedAlbums({ ask, onError }: { ask: (q: Question) => Promise<b
         </div>
       </header>
       {albums !== null && n === 0 ? (
-        <EmptyState className="px-empty px-shared-empty" action={{ label: "New Shared Album", run: () => setNaming(true) }}>
-          No shared albums yet. Make one to share photos with the people you choose.
+        <EmptyState className="px-empty px-shared-empty" icon={<Users size={28} strokeWidth={1.6} />} action={{ label: "New Shared Album", run: () => setNaming(true) }}>
+          Share photos with the people you choose.
         </EmptyState>
       ) : (
         <div className="px-cards" role="list" aria-busy={albums === null}>

@@ -1,4 +1,4 @@
-// Go to Date…, as in Calendar's View menu: Shift-Ctrl-T opens a date field, Return goes there,
+// Go to Date, as in Calendar's View menu: Shift-Ctrl-T opens a date field, Return goes there,
 // Escape closes it without moving.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";

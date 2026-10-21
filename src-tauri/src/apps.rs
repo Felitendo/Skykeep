@@ -1,11 +1,11 @@
-//! Pomander as six apps on one engine: Notes, Reminders, Calendar, Contacts, Drive and Photos,
-//! each a window of its own, opened from its own launcher entry (`pomander --app notes`) — one
+//! Skykeep as six apps on one engine: Notes, Reminders, Calendar, Contacts, Drive and Photos,
+//! each a window of its own, opened from its own launcher entry (`skykeep --app notes`) — one
 //! process, one sign-in, one library and one sync behind all of them, as Microsoft 365 is one
 //! install with Word and Excel each in the Start menu.
 //!
 //! Each window is known to the desktop as its app: on Wayland it says its own app ID, so a
 //! dock shows Notes and Reminders as two apps with their own icons, each matched to its own
-//! launcher entry — not six windows under one Pomander icon. (Measured: GTK 3.24's
+//! launcher entry — not six windows under one Skykeep icon. (Measured: GTK 3.24's
 //! `gdk_wayland_window_set_application_id` sets it per window, within one process.)
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -55,7 +55,7 @@ pub fn new_asked(args: &[String]) -> Option<&'static str> {
 
 /// The calendar and contact files a command line hands over — opened from a file manager,
 /// as a path (`%F`, Windows) or a `file://` URI (`%U`) — made absolute against `cwd`, the
-/// directory the launch came from. Only files of the kinds Pomander opens are taken; any
+/// directory the launch came from. Only files of the kinds Skykeep opens are taken; any
 /// other argument is someone else's business.
 pub fn files_asked(args: &[String], cwd: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut skip_next = false;
@@ -241,7 +241,7 @@ pub fn show(window: &tauri::WebviewWindow) {
     }
 }
 
-/// On Wayland, the window says it is its app, not Pomander as a whole.
+/// On Wayland, the window says it is its app, not Skykeep as a whole.
 #[cfg(target_os = "linux")]
 fn own_app_id(window: &tauri::WebviewWindow, id: &str) {
     use glib::translate::ToGlibPtr;
@@ -287,30 +287,30 @@ mod tests {
 
     #[test]
     fn a_launcher_entry_names_its_app() {
-        assert_eq!(asked(&args(&["pomander", "--app", "notes"])), Some("notes"));
+        assert_eq!(asked(&args(&["skykeep", "--app", "notes"])), Some("notes"));
         assert_eq!(
-            asked(&args(&["pomander", "--app=reminders"])),
+            asked(&args(&["skykeep", "--app=reminders"])),
             Some("reminders")
         );
         assert_eq!(
-            asked(&args(&["pomander", "--app", "drive"])),
+            asked(&args(&["skykeep", "--app", "drive"])),
             Some("drivews")
         );
-        assert_eq!(asked(&args(&["pomander", "--background"])), None);
-        assert_eq!(asked(&args(&["pomander", "--app", "mail"])), None);
-        assert_eq!(asked(&args(&["pomander", "--app"])), None);
+        assert_eq!(asked(&args(&["skykeep", "--background"])), None);
+        assert_eq!(asked(&args(&["skykeep", "--app", "mail"])), None);
+        assert_eq!(asked(&args(&["skykeep", "--app"])), None);
     }
 
     #[test]
     fn a_launcher_action_asks_for_a_quick_capture() {
         assert_eq!(
-            new_asked(&args(&["pomander", "--new", "reminder"])),
+            new_asked(&args(&["skykeep", "--new", "reminder"])),
             Some("reminder")
         );
-        assert_eq!(new_asked(&args(&["pomander", "--new=note"])), Some("note"));
-        assert_eq!(new_asked(&args(&["pomander", "--new", "event"])), None);
-        assert_eq!(new_asked(&args(&["pomander", "--new"])), None);
-        assert_eq!(new_asked(&args(&["pomander", "--app", "notes"])), None);
+        assert_eq!(new_asked(&args(&["skykeep", "--new=note"])), Some("note"));
+        assert_eq!(new_asked(&args(&["skykeep", "--new", "event"])), None);
+        assert_eq!(new_asked(&args(&["skykeep", "--new"])), None);
+        assert_eq!(new_asked(&args(&["skykeep", "--app", "notes"])), None);
     }
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
         let cwd = std::path::Path::new("/home/a/Downloads");
         let got = files_asked(
             &args(&[
-                "pomander",
+                "skykeep",
                 "--app",
                 "calendar",
                 "invite.ics",
@@ -337,6 +337,6 @@ mod tests {
                 std::path::PathBuf::from("/home/a/My Events.ics"),
             ]
         );
-        assert!(files_asked(&args(&["pomander", "--app", "x.ics"]), cwd).is_empty());
+        assert!(files_asked(&args(&["skykeep", "--app", "x.ics"]), cwd).is_empty());
     }
 }

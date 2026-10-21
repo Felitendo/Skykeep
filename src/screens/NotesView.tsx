@@ -7,10 +7,15 @@ import { SearchField } from "../components/SearchField";
 import { PaneTitle } from "../components/PaneTitle";
 import { Unsent, Waiting } from "../components/Unsent";
 import { useOutbox } from "../lib/outbox";
-import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
-import { save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, LockKeyhole, LockKeyholeOpen, Paperclip, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
+import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { editorDate, groupNotes, listDate, mergeEdits, splitTitle } from "./notes/model";
-import { api, messageOf, nestFolders, type Note, type NoteFolder } from "../lib/ipc";
+import { api, messageOf, nestFolders, notesLockApi, type Note, type NoteFolder, type UnlockedNote } from "../lib/ipc";
+import { LockScreen } from "./notes/LockedNote";
+import { fileName, useAttachEnabled } from "./notes/attach";
+import { toast } from "../components/Toast";
+import { useActiveRef } from "../lib/screen";
 import { RowMenu } from "../components/RowMenu";
 import { FormattedBody, type Run } from "./notes/Formatted";
 import { carryRuns, runsFit } from "./notes/rich";
@@ -133,6 +138,14 @@ export function NotesView() {
   /** What is typed in the search field. While it holds anything, the list is the results. */
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
+  /**
+   * Where a search looks: every folder, as Notes' search does (Ctrl+Shift+F), or only the
+   * folder in front (Ctrl+F). Means nothing in All iCloud, which is every folder already.
+   */
+  const [scope, setScope] = useState<"all" | "folder">("all");
+  const scoped = searching && scope === "folder" && folder !== ALL;
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const rowsRef = useRef<HTMLDivElement | null>(null);
 
   /** Notes outside Recently Deleted, and how many each folder holds. */
   const [counts, setCounts] = useState<{ all: number; per: Map<string, number> }>({
@@ -153,12 +166,15 @@ export function NotesView() {
     const [found, list] = await Promise.all([
       api.noteFolders(),
       // Search reaches every folder, as Apple's does — a note is found wherever it is filed.
-      searching ? api.notesSearch(query) : api.notesIn(folder === ALL ? null : folder),
+      searching
+        ? api.notesSearch(query).then((found) =>
+            scoped && Array.isArray(found) ? found.filter((n) => n.folderGuid === folder) : found)
+        : api.notesIn(folder === ALL ? null : folder),
     ]);
     setFolders(Array.isArray(found) ? found : []);
     setNotes(over(Array.isArray(list) ? list : []));
     setLoaded(true);
-  }, [folder, query, searching, over]);
+  }, [folder, query, searching, scoped, over]);
 
   // Reads the library and nothing else. `revision` ticks when a refresh finishes, whether
   // someone pressed for it or the timer came round, and that is the screen's whole
@@ -701,6 +717,105 @@ export function NotesView() {
     );
   }, [open, write]);
 
+  /**
+   * Locked notes opened this session, by note: their text, in this window's memory only —
+   * never the library, never disk. Lock Now lets every one go, and the passwords with them.
+   */
+  const [unlocked, setUnlocked] = useState<Record<string, UnlockedNote>>({});
+  const opened = open?.locked ? (unlocked[open.guid] ?? null) : null;
+  const lockNow = useCallback(() => {
+    setUnlocked({});
+    notesLockApi.noteLockForget().catch(() => {});
+  }, []);
+  /** How the last note was picked: a click goes on into its password field, an arrow key stays in the list. */
+  const pickedBy = useRef<"pointer" | "keys">("keys");
+
+  /**
+   * Adding a picture or file: the paperclip, or a file dropped on the note. Both exist only
+   * while the backend allows it (see notes/attach.ts).
+   */
+  const attachOn = useAttachEnabled();
+  const [attaching, setAttaching] = useState(false);
+  const [dropping, setDropping] = useState(false);
+  const attach = useCallback(
+    async (paths: string[]) => {
+      if (!open || open.locked || !open.editable || paths.length === 0) return;
+      const guid = open.guid;
+      // What is typed goes first, so the file lands in the text Apple holds.
+      editorRef.current?.flushChange();
+      await flush();
+      const shown = editorRef.current?.current();
+      let text = shown?.text ?? body;
+      let at = editorRef.current?.caret() ?? text?.length ?? 0;
+      setAttaching(true);
+      try {
+        for (const path of paths) {
+          const added = await notesLockApi.noteAttachFile(guid, path, at, text);
+          text = added.body;
+          at = added.offset + 1;
+          toast({ message: `Added “${fileName(path)}”`, tone: "done" });
+        }
+        // The note as Apple now holds it, file in place.
+        const [nextBody, nextRuns] = await Promise.all([api.noteBody(guid), api.noteRuns(guid)]);
+        if (nextBody !== null) setLoadedBody({ guid, text: nextBody });
+        setLoadedRuns({ guid, runs: Array.isArray(nextRuns) ? nextRuns : [] });
+        await read();
+      } catch (e) {
+        setError(messageOf(e));
+      } finally {
+        setAttaching(false);
+      }
+    },
+    [open, flush, body, read]
+  );
+  const pickAttachment = async () => {
+    try {
+      const chosen = await openFileDialog({ multiple: true, title: "Add to Note" });
+      if (!chosen) return;
+      await attach(Array.isArray(chosen) ? chosen : [chosen]);
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  };
+  const live = useActiveRef();
+  const canAttachRef = useRef(false);
+  const attachRef = useRef(attach);
+  attachRef.current = attach;
+  useEffect(() => {
+    if (!attachOn) return undefined;
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    // Over the note itself, on the screen in front: a file dropped anywhere else is not for it.
+    const overNote = (x: number, y: number) => {
+      const ratio = window.devicePixelRatio || 1;
+      return Boolean((document.elementFromPoint(x / ratio, y / ratio) as HTMLElement | null)?.closest?.(".note-body"));
+    };
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          const p = event.payload;
+          if (!live.current || !canAttachRef.current) return setDropping(false);
+          if (p.type === "over" || p.type === "enter") setDropping(overNote(p.position.x, p.position.y));
+          else if (p.type === "leave") setDropping(false);
+          else if (p.type === "drop") {
+            setDropping(false);
+            if (overNote(p.position.x, p.position.y)) void attachRef.current(p.paths);
+          }
+        })
+        .then((unlisten) => {
+          if (cancelled) unlisten();
+          else stop = unlisten;
+        })
+        .catch(() => {});
+    } catch {
+      // Outside the app shell there is no webview to listen to; the paperclip still works.
+    }
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [attachOn, live]);
+
   // A save confirmation is a moment, not a state.
   useEffect(() => {
     if (!saved) return undefined;
@@ -709,6 +824,99 @@ export function NotesView() {
   }, [saved]);
 
   const canEdit = Boolean(composing) || Boolean(open && !open.locked && open.editable && body !== null);
+  const canAttach = attachOn && !composing && !inTrash && Boolean(open && !open.locked && open.editable && body !== null);
+  canAttachRef.current = canAttach;
+
+  /** Delete from the keyboard, asked first: a key is easier to press by mistake than a button. */
+  const removeAsked = useCallback(async () => {
+    if (!open || open.locked) return;
+    // Recently Deleted asks its own, final question.
+    if (open.folderGuid === TRASH_FOLDER) return remove();
+    const name = wordsOnly(open.title) || "New Note";
+    const sure = await confirm({
+      title: `Delete \u201c${name}\u201d?`,
+      body: "It moves to Recently Deleted, where you can recover it.",
+      action: "Delete",
+      danger: true,
+      symbol: "trash",
+    });
+    if (sure) await remove();
+  }, [open, remove, confirm]);
+
+  /** The row of a note, to put focus on it. */
+  const focusRow = (guid: string | null) =>
+    window.requestAnimationFrame(() => {
+      const row = guid ? rowsRef.current?.querySelector<HTMLElement>(`[data-guid="${CSS.escape(guid)}"]`) : null;
+      (row ?? rowsRef.current?.querySelector<HTMLElement>(".note-row"))?.focus();
+    });
+
+  /** Up and Down through the list as it is shown, pinned notes first. */
+  const step = useCallback(
+    (by: 1 | -1) => {
+      const order = groupNotes(notes).flatMap((g) => g.notes.map((n) => n.guid));
+      if (order.length === 0) return;
+      const at = openGuid ? order.indexOf(openGuid) : -1;
+      const next = at < 0 ? order[0] : order[Math.max(0, Math.min(order.length - 1, at + by))];
+      pickedBy.current = "keys";
+      if (next !== openGuid) void selectNote(next);
+      focusRow(next);
+    },
+    [notes, openGuid, selectNote]
+  );
+
+  /** Into the search field: this folder (Ctrl+F) or every folder (Ctrl+Shift+F). */
+  const find = useCallback((where: "all" | "folder") => {
+    setScope(where);
+    const field = searchRef.current;
+    field?.focus();
+    field?.select();
+  }, []);
+
+  /** Out of search, back to the list where the open note is. */
+  const leaveSearch = useCallback(() => {
+    setQuery("");
+    setScope("all");
+    focusRow(openGuid);
+  }, [openGuid]);
+
+  // The keys, as Notes on a Mac has them (Ctrl here). Only while Notes is the screen in front,
+  // and never over a sheet or a menu, which answer their own keys.
+  const keys = useRef({ create, find, removeAsked, step, leaveSearch, searching });
+  keys.current = { create, find, removeAsked, step, leaveSearch, searching };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!live.current || e.defaultPrevented || e.isComposing) return;
+      if (document.querySelector('[role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"], .confirm')) return;
+      const target = e.target as HTMLElement | null;
+      const typing = Boolean(target?.closest?.("input, textarea, select, [contenteditable='true']"));
+      const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
+      const k = e.key.toLowerCase();
+      const k_ = keys.current;
+      if (mod && !e.shiftKey && k === "n") {
+        e.preventDefault();
+        if (!e.repeat) void k_.create();
+      } else if (mod && k === "f") {
+        e.preventDefault();
+        k_.find(e.shiftKey ? "all" : "folder");
+      } else if (typing) {
+        return;
+      } else if (e.key === "Escape" && k_.searching) {
+        e.preventDefault();
+        k_.leaveSearch();
+      } else if (mod && !e.shiftKey && (e.key === "Backspace" || e.key === "Delete")) {
+        e.preventDefault();
+        if (!e.repeat) void k_.removeAsked();
+      } else if (!mod && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        // Not from a control with arrows of its own — a picker, the format panel.
+        if (target && target !== document.body && !target.closest(".note-rows, .note-body, .notes-list-head")) return;
+        if (target?.closest(".note-body") && target.closest("button, a, [role='checkbox']")) return;
+        e.preventDefault();
+        k_.step(e.key === "ArrowDown" ? 1 : -1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [live]);
 
   /** Every change in the editor: to the note being composed, or to the open one. */
   const apply = (next: string, nextRuns: Run[]) => {
@@ -926,15 +1134,39 @@ export function NotesView() {
           </button>
         </header>
         <SearchField
+          ref={searchRef}
           className="notes-search"
-          placeholder="Search"
+          placeholder={folder !== ALL && scope === "folder" ? `Search ${folders.find((f) => f.guid === folder)?.title ?? "This Folder"}` : "Search"}
           aria-label="Search notes"
+          aria-keyshortcuts="Control+F Control+Shift+F"
           value={query}
           onChange={setQuery}
+          onClear={() => {
+            setQuery("");
+            setScope("all");
+            searchRef.current?.focus();
+          }}
           onKeyDown={(e) => {
-            if (e.key === "Escape") setQuery("");
+            if (e.key === "Escape") {
+              e.preventDefault();
+              leaveSearch();
+            } else if (e.key === "ArrowDown" && searching) {
+              // On into what was found.
+              e.preventDefault();
+              focusRow(openGuid && notes.some((n) => n.guid === openGuid) ? openGuid : null);
+            }
           }}
         />
+        {searching && folder !== ALL && (
+          <div className="segmented notes-scope" role="group" aria-label="Search in">
+            <button type="button" className="segment" aria-pressed={scope === "all"} onClick={() => setScope("all")}>
+              All iCloud
+            </button>
+            <button type="button" className="segment" aria-pressed={scope === "folder"} onClick={() => setScope("folder")}>
+              <span className="notes-scope-name">{folders.find((f) => f.guid === folder)?.title ?? "This Folder"}</span>
+            </button>
+          </div>
+        )}
 
         {/* Shown only when the folder column has folded away. */}
         <div className="notes-folder-picker">
@@ -951,7 +1183,7 @@ export function NotesView() {
 
         <Unsent refused={outbox.refused} what="an edit to a note" onResend={(r) => void outbox.resend(r)} onDiscard={(r) => void outbox.discard(r)} />
 
-        <div className="note-rows" role="list">
+        <div className="note-rows" role="list" ref={rowsRef}>
           {sections.map((section) => (
             <Fragment key={section.key}>
               <h2 className="notes-section">{section.heading}</h2>
@@ -959,10 +1191,22 @@ export function NotesView() {
                 <div role="listitem" key={note.guid}>
                   <button
                     className="note-row"
+                    data-guid={note.guid}
                     aria-current={openGuid === note.guid}
-                    onClick={() => void selectNote(note.guid)}
+                    onClick={(e) => {
+                      pickedBy.current = e.detail > 0 ? "pointer" : "keys";
+                      // A locked note clicked again, already open: on into its password field.
+                      if (e.detail > 0 && note.locked && note.guid === openGuid)
+                        document.querySelector<HTMLInputElement>(".notes .note-lock-field")?.focus();
+                      void selectNote(note.guid);
+                    }}
                   >
-                    <span className="note-row-title">{wordsOnly(note.title) || "New Note"}</span>
+                    <span className="note-row-title">
+                      {note.locked && (
+                        <LockKeyhole className="note-row-lock" size={12} strokeWidth={2.4} aria-label="Locked" />
+                      )}
+                      <span className="note-row-name">{wordsOnly(note.title) || "New Note"}</span>
+                    </span>
                     <span className="note-row-meta">
                       <span className="note-row-when">{listDate(note.modifiedAt)}</span>
                       <span className="note-row-snippet">
@@ -977,14 +1221,26 @@ export function NotesView() {
         </div>
 
         {loaded && notes.length === 0 && !error && !(arriving && !searching) && (
-          <EmptyState className="notes-empty">{searching ? "No results." : "No notes here."}</EmptyState>
+          searching ? (
+            <EmptyState className="notes-empty">
+              Nothing matches “{query.trim()}”{scoped ? " in this folder" : ""}.
+            </EmptyState>
+          ) : folder === TRASH_FOLDER ? (
+            <EmptyState className="notes-empty" icon={<Trash2 size={28} strokeWidth={1.5} />}>
+              Recently Deleted is empty.
+            </EmptyState>
+          ) : (
+            <EmptyState className="notes-empty" icon={<SquarePen size={28} strokeWidth={1.5} />}>
+              Notes you write here appear on all your devices.
+            </EmptyState>
+          )
         )}
         {notes.length === 0 && !searching && (
           <Arriving service="notes" what="notes" className="notes-empty" />
         )}
       </section>
 
-      <article className="note-body" aria-label="Note">
+      <article className={`note-body${dropping ? " is-dropping" : ""}`} aria-label="Note">
         {(composing || open) && (
           <div className="note-bar">
             <button
@@ -998,7 +1254,13 @@ export function NotesView() {
               <ChevronLeft size={18} strokeWidth={2.25} aria-hidden="true" />
               <span>{heading}</span>
             </button>
-            <p className="note-when">
+            <p
+              className={`note-when${
+                busy || (!saveFailed && (dirty || composing?.body.trim())) || (open && outbox.waiting.has(open.guid)) || saved
+                  ? ""
+                  : " is-date"
+              }`}
+            >
               {busy || (!saveFailed && (dirty || composing?.body.trim()))
                 ? "Saving…"
                 : open && outbox.waiting.has(open.guid)
@@ -1027,6 +1289,18 @@ export function NotesView() {
                     >
                       Aa
                     </button>
+                    {canAttach && (
+                      <button
+                        className="tool"
+                        aria-label="Add a picture or file"
+                        title="Add a picture or file"
+                        disabled={attaching || busy}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => void pickAttachment()}
+                      >
+                        <Paperclip size={17} strokeWidth={2} aria-hidden="true" />
+                      </button>
+                    )}
                     <button
                       className="tool"
                       aria-label="Make a checklist"
@@ -1118,6 +1392,14 @@ export function NotesView() {
                 )}
               </div>
             )}
+            {!composing && open?.locked && opened && (
+              <div className="toolbar-group note-bar-actions">
+                <button className="tool has-label note-lock-now" onClick={lockNow} title="Lock every opened note again">
+                  <LockKeyholeOpen size={16} strokeWidth={2} aria-hidden="true" />
+                  Lock Now
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -1152,11 +1434,26 @@ export function NotesView() {
               onBlur={leave}
             />
           </div>
+        ) : open?.locked && opened ? (
+          /* Opened with its password: read here, written on an Apple device. */
+          <div className="note-editor is-readonly is-unlocked">
+            <h1 className="note-title">{splitTitle(opened.body).title}</h1>
+            {runsFit(opened.body, opened.runs) ? (
+              <div className="note-text note-read">
+                <FormattedBody text={opened.body} runs={opened.runs} skip={splitTitle(opened.body).title.length + 1} />
+              </div>
+            ) : (
+              <pre className="note-text">{splitTitle(opened.body).rest}</pre>
+            )}
+            <p className="note-readonly">Locked notes open read-only here. Edit them on your iPhone, iPad or Mac.</p>
+          </div>
         ) : open?.locked ? (
-          <EmptyState>
-            This note is locked. Apple keeps it encrypted, so there is nothing here to show —
-            open it on a device where you can enter its password.
-          </EmptyState>
+          <LockScreen
+            guid={open.guid}
+            title={wordsOnly(open.title)}
+            autoFocus={pickedBy.current === "pointer"}
+            onOpen={(note) => setUnlocked((all) => ({ ...all, [open.guid]: note }))}
+          />
         ) : open && body === null ? (
           /* Nothing to type into until the note's own text has arrived: an empty box over a
              note whose body had not loaded would write that emptiness back. */
@@ -1172,10 +1469,8 @@ export function NotesView() {
               <pre className="note-text">{splitTitle(body ?? "").rest}</pre>
             )}
             <p className="note-readonly">
-              Pomander can’t yet save changes to this note without risking what is in it — it
-              is very long, or its copy on iCloud is out of step with your devices — so it is
-              read-only here. Editing it on an Apple device is safe, and after that Pomander can
-              usually edit it again.
+              Read-only here, to keep everything in it safe. A quick edit on your iPhone, iPad or
+              Mac usually makes it editable again.
             </p>
           </div>
         ) : (

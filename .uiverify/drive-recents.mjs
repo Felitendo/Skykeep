@@ -20,7 +20,7 @@ await ctx.addInitScript(() => {
 });
 const page = await ctx.newPage();
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
+await page.locator(".nav-item", { hasText: "Drive" }).click();
 await page.waitForTimeout(300);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
@@ -33,7 +33,7 @@ await page.waitForTimeout(200);
 const sent = await page.evaluate(() => window.__downloads?.at(-1));
 ok(sent?.drivewsid === "FILE::r1" && sent?.item?.name === "Invoice-0001", "a double-click saves it, with the file's details sent along");
 ok(/Saved to Downloads/.test(await page.locator(".toast").innerText()) && (await page.locator(".toast").getByRole("button", { name: "Show in Folder" }).count()) === 1, "and says where, with a way to see it");
-await page.locator(".crumb", { hasText: "iCloud Drive" }).click();
+await page.locator(".crumb", { hasText: "Drive" }).click();
 ok((await page.locator(".drive-group").count()) === 0, "the breadcrumb goes back to iCloud Drive");
 await b.close();
 process.exitCode = failures ? 1 : 0;

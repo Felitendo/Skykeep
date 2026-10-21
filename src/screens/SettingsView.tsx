@@ -1,11 +1,19 @@
 import { ConfirmSheet } from "../components/Confirm";
-import { toastSaved, useErrorToast } from "../components/Toast";
-import { useEffect, useState } from "react";
+import { toast, toastSaved, useErrorToast } from "../components/Toast";
+import { Progress } from "../components/Spinner";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
+  EXPORT_CANCELLED,
+  EXPORT_PROGRESS,
+  exportApi,
   type AccountInfo,
   type DriveFolder,
+  type ExportProgress,
+  type ExportService,
   type LocalStorage,
   type LoginItem,
   messageOf,
@@ -180,6 +188,136 @@ function FolderRow({
       >
         <span className="switch-knob" />
       </button>
+    </div>
+  );
+}
+
+/**
+ * Export Everything, kept outside the screen: an export runs on while Settings is closed, and
+ * coming back finds it where it is, not idle.
+ */
+type ExportState =
+  | { phase: "idle" }
+  | { phase: "running"; progress: ExportProgress | null; cancelling: boolean }
+  | { phase: "done"; path: string; photosMissing: number };
+let exportState: ExportState = { phase: "idle" };
+const exportListeners = new Set<() => void>();
+const setExportState = (s: ExportState) => {
+  exportState = s;
+  exportListeners.forEach((l) => l());
+};
+const subscribeExport = (l: () => void) => {
+  exportListeners.add(l);
+  return () => exportListeners.delete(l);
+};
+
+const SERVICE_LABEL: Record<ExportService, string> = {
+  notes: "Notes",
+  reminders: "Reminders",
+  contacts: "Contacts",
+  calendar: "Calendar",
+  drive: "Drive",
+  photos: "Photos",
+};
+
+/** How far the whole export is, 0 to 1: services done, and the share of the one under way. */
+function exportShare(p: ExportProgress | null): number | null {
+  if (!p || p.steps === 0) return null;
+  const within = p.total > 0 ? p.done / p.total : p.done === p.total ? 1 : 0;
+  return (p.step - 1 + within) / p.steps;
+}
+
+async function runExport(photos: boolean, onError: (m: string) => void) {
+  const dest = await openFileDialog({ directory: true, multiple: false, title: "Choose where to export" });
+  if (typeof dest !== "string" || !dest) return;
+  setExportState({ phase: "running", progress: null, cancelling: false });
+  const stop = listen<ExportProgress>(EXPORT_PROGRESS, (e) => {
+    if (exportState.phase === "running") setExportState({ ...exportState, progress: e.payload });
+  });
+  try {
+    const summary = await exportApi.start(dest, photos);
+    setExportState({ phase: "done", path: summary.path, photosMissing: summary.photosMissing });
+    toast({
+      message: `Exported to ${folderName(summary.path)}`,
+      tone: "done",
+      action: { label: "Show in Folder", run: () => void exportApi.reveal().catch((e) => onError(messageOf(e))) },
+    });
+  } catch (e) {
+    const message = messageOf(e);
+    setExportState({ phase: "idle" });
+    if (message === EXPORT_CANCELLED) toast("Export cancelled. Nothing was left behind.");
+    else onError(message);
+  } finally {
+    void stop.then((unlisten) => unlisten()).catch(() => {});
+  }
+}
+
+const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/** The row: what goes out and where, Export, then the bar and Cancel, then Show in Folder. */
+function ExportRow({ onError }: { onError: (m: string) => void }) {
+  const state = useSyncExternalStore(subscribeExport, () => exportState);
+  const [photos, setPhotos] = useState(false);
+  const running = state.phase === "running";
+  const p = running ? state.progress : null;
+  const hint = running
+    ? state.cancelling
+      ? "Cancelling…"
+      : p
+        ? `${SERVICE_LABEL[p.service]} · ${p.total > 0 ? `${Math.min(p.done, p.total).toLocaleString()} of ${p.total.toLocaleString()}` : "nothing to export"}`
+        : "Getting ready…"
+    : state.phase === "done"
+      ? `Exported to ${folderName(state.path)}${state.photosMissing > 0 ? ` · ${state.photosMissing.toLocaleString()} ${state.photosMissing === 1 ? "photo wasn't" : "photos weren't"} on this computer` : ""}`
+      : "Notes, reminders, contacts, calendars and Drive, in open formats";
+  return (
+    <div className="settings-row is-stacked" aria-label="Export Everything" role="group">
+      <div className="settings-row-line" style={{ alignItems: "center" }}>
+        <span className="settings-label settings-stack">
+          Export Everything
+          <span className="settings-hint" aria-live="polite" title={state.phase === "done" ? state.path : undefined}>
+            {hint}
+          </span>
+        </span>
+        {state.phase === "done" && !running && (
+          <button className="quiet" onClick={() => void exportApi.reveal().catch((e) => onError(messageOf(e)))}>
+            Show in Folder
+          </button>
+        )}
+        {running ? (
+          <button
+            className="quiet"
+            disabled={state.cancelling}
+            onClick={() => {
+              setExportState({ ...state, cancelling: true });
+              void exportApi.cancel().catch(() => {});
+            }}
+          >
+            Cancel
+          </button>
+        ) : (
+          <button className="quiet" onClick={() => void runExport(photos, onError)}>
+            Export
+          </button>
+        )}
+      </div>
+      {running ? (
+        <Progress value={exportShare(p)} label="Export progress" />
+      ) : (
+        <div className="settings-row-line" style={{ alignItems: "center" }}>
+          <span className="settings-label settings-stack">
+            <span className="settings-hint">Include Photos · only those on this computer, and it can be large</span>
+          </span>
+          <button
+            className="switch"
+            role="switch"
+            aria-checked={photos}
+            aria-label="Include Photos"
+            onClick={() => setPhotos(!photos)}
+          >
+            <span className="switch-knob" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -361,7 +499,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             {showDrive && (
               <FolderRow
                 app="drivews"
-                label="iCloud Drive folder"
+                label="Drive folder"
                 off="Your iCloud Drive in Files and every other app"
                 folder={folder}
                 busy={folderBusy}
@@ -373,7 +511,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             {showPhotos && (
               <FolderRow
                 app="photos"
-                label="iCloud Photos folder"
+                label="Photos folder"
                 off="Your photos by date and album, for every other app"
                 folder={photosFolder}
                 busy={photosBusy}
@@ -397,7 +535,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           [
             ["photos", "Photos", local?.photos],
             ["notes", "Notes", local?.notes],
-            ["drivews", "iCloud Drive", local?.drive],
+            ["drivews", "Drive", local?.drive],
             ["library", "Library", local?.library],
             ["other", "Other", local?.other],
           ] as const
@@ -422,6 +560,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             {clearing ? "Clearing…" : "Clear"}
           </button>
         </div>
+        <ExportRow onError={setError} />
       </section>
 
       <h2 className="settings-heading">General</h2>
@@ -537,7 +676,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           </button>
         </div>
       </section>
-      <p className="settings-note">Pomander talks only to Apple. It has no servers of its own.</p>
+      <p className="settings-note">Skykeep talks only to Apple, and to calendars you subscribe to. It has no servers of its own.</p>
     </div>
   );
 }

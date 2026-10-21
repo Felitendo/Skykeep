@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Quince and open it. Nothing else — no dev server, no watch mode.
+# Build Skykeep and open it. Nothing else — no dev server, no watch mode.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -25,6 +25,6 @@ pkill -f 'quince-ap[p]' 2>/dev/null || true
 sleep 1
 
 echo
-echo "Opening Quince. Close the window, or press Ctrl-C here, to stop it."
+echo "Opening Skykeep. Close the window, or press Ctrl-C here, to stop it."
 echo
 exec ./target/debug/quince-app

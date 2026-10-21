@@ -26,7 +26,7 @@ await page.goto("http://localhost:4173/", { waitUntil: "networkidle" });
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 ok(await page.evaluate(() => !!document.querySelector('meta[http-equiv="Content-Security-Policy"]')), "the policy is in force");
-for (const s of ["Reminders", "Notes", "iCloud Drive", "Photos", "Calendar", "Contacts"]) {
+for (const s of ["Reminders", "Notes", "Drive", "Photos", "Calendar", "Contacts"]) {
   await openScreen(page, s);
   await page.waitForTimeout(500);
 }

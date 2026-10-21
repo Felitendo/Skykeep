@@ -8,6 +8,7 @@ pub mod alarms;
 pub mod calendar;
 pub mod contacts;
 pub mod drive;
+pub mod export;
 pub mod fold;
 pub mod health;
 pub mod notes;

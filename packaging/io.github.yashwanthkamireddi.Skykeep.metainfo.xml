@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  What a software centre shows about Pomander. Flathub requires this file; GNOME Software and
+  What a software centre shows about Skykeep. Flathub requires this file; GNOME Software and
   KDE Discover read it to build the page someone decides from.
 
   Every claim here has to be one the app can keep. The disclaimer is not boilerplate: this
@@ -8,26 +8,26 @@
   entitled to know that before they type their Apple ID.
 -->
 <component type="desktop-application">
-  <id>io.github.yashwanthkamireddi.Pomander</id>
+  <id>io.github.yashwanthkamireddi.Skykeep</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
 
-  <name>Pomander</name>
+  <name>Skykeep</name>
   <summary>Your iCloud, on this computer</summary>
 
   <description>
     <p>
-      Pomander keeps your iCloud calendar, reminders, notes, contacts and Drive on your own
+      Skykeep keeps your iCloud calendar, reminders, notes, contacts and Drive on your own
       machine. Everything opens straight away and works without a connection, and what you
       change here reaches your other devices.
     </p>
     <p>
       You sign in once with your Apple ID and stay signed in. Nothing is stored on anybody
-      else's server: there is no Pomander account and no Pomander service, and your credentials
+      else's server: there is no Skykeep account and no Skykeep service, and your credentials
       never leave this computer.
     </p>
     <p>
-      Pomander is an independent project. It is not made by, endorsed by, or affiliated with
+      Skykeep is an independent project. It is not made by, endorsed by, or affiliated with
       Apple, and it reaches iCloud through interfaces Apple has not published, which means
       they can change without warning. Services that Apple encrypts end to end — Health,
       Messages, Keychain and others — cannot be read by any client and are shown as
@@ -35,7 +35,7 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">Pomander.desktop</launchable>
+  <launchable type="desktop-id">Skykeep.desktop</launchable>
 
   <provides>
     <mediatype>text/calendar</mediatype>
@@ -59,8 +59,8 @@
 
   <content_rating type="oars-1.1"/>
 
-  <url type="homepage">https://github.com/YashwanthKamireddi/quince</url>
-  <url type="bugtracker">https://github.com/YashwanthKamireddi/quince/issues</url>
+  <url type="homepage">https://github.com/YashwanthKamireddi/Skykeep</url>
+  <url type="bugtracker">https://github.com/YashwanthKamireddi/Skykeep/issues</url>
 
   <developer id="io.github.yashwanthkamireddi">
     <name>Yashwanth Kamireddi</name>

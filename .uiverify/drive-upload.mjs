@@ -53,7 +53,7 @@ await ctx.addInitScript(() => {
 
 const page = await ctx.newPage();
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-await page.locator(".nav-item", { hasText: "iCloud Drive" }).click();
+await page.locator(".nav-item", { hasText: "Drive" }).click();
 await page.waitForSelector(".drive-rows", { state: "attached" });
 await page.waitForTimeout(300);
 

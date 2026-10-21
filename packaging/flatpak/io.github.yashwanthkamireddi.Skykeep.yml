@@ -1,4 +1,4 @@
-# Pomander as a Flatpak, for Flathub.
+# Skykeep as a Flatpak, for Flathub.
 #
 # NOT YET BUILT: the development machine has no flatpak-builder, so this manifest has never run.
 # packaging/flatpak/README.md lists what was checked, what was not, and the open questions.
@@ -22,7 +22,7 @@
 # FUSE: no fuse3 module either. fuser is built with default-features = false, its pure-Rust mount
 # path, which links no libfuse; it needs only /dev/fuse and a fusermount3 at run time, and the
 # FUSE folders are switched off in this package anyway (see finish-args).
-app-id: io.github.yashwanthkamireddi.Pomander
+app-id: io.github.yashwanthkamireddi.Skykeep
 runtime: org.gnome.Platform
 runtime-version: '51'
 sdk: org.gnome.Sdk
@@ -30,7 +30,7 @@ sdk-extensions:
   # Both exist with a branch/26.08, the freedesktop-sdk under GNOME 51 (checked 2026-10-21).
   - org.freedesktop.Sdk.Extension.rust-stable
   - org.freedesktop.Sdk.Extension.node24
-command: pomander
+command: skykeep
 
 finish-args:
   # iCloud.
@@ -71,19 +71,19 @@ modules:
   # Flathub repository it is a git submodule at this path.
   - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
 
-  - name: pomander
+  - name: skykeep
     buildsystem: simple
     build-options:
       append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node24/bin
       env:
         # Offline: every crate and npm package comes from the generated sources below.
-        CARGO_HOME: /run/build/pomander/cargo
+        CARGO_HOME: /run/build/skykeep/cargo
         CARGO_NET_OFFLINE: 'true'
-        XDG_CACHE_HOME: /run/build/pomander/flatpak-node/cache
-        npm_config_cache: /run/build/pomander/flatpak-node/npm-cache
+        XDG_CACHE_HOME: /run/build/skykeep/flatpak-node/cache
+        npm_config_cache: /run/build/skykeep/flatpak-node/npm-cache
         npm_config_offline: 'true'
         # esbuild's binary, placed by node-sources.json for the build architecture.
-        ESBUILD_BINARY_PATH: /run/build/pomander/flatpak-node/cache/esbuild/bin/esbuild-current
+        ESBUILD_BINARY_PATH: /run/build/skykeep/flatpak-node/cache/esbuild/bin/esbuild-current
     build-commands:
       # The frontend into dist/, which tauri::generate_context! embeds at compile time.
       - npm ci --offline --no-audit --no-fund
@@ -91,7 +91,7 @@ modules:
       # The app. tauri/custom-protocol is what `tauri build` turns on: without it the binary
       # is a dev build (cfg(dev)) — dev CSP and dev behaviour in a release package.
       - cargo --offline build --release --locked -p quince-app --features tauri/custom-protocol
-      - install -Dm755 target/release/quince-app ${FLATPAK_DEST}/bin/pomander
+      - install -Dm755 target/release/quince-app ${FLATPAK_DEST}/bin/skykeep
 
       # The main launcher entry and the metainfo: written for this app ID, kept beside this
       # manifest (packaging/flatpak/), and added as file sources below.
@@ -99,8 +99,8 @@ modules:
       - install -Dm644 ${FLATPAK_ID}.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
 
       # The six per-app entries, already named under this app ID (Flatpak exports only desktop
-      # files whose names start with it). Exec stays `pomander --app …`; flatpak rewrites it to
-      # `flatpak run --command=pomander io.github.yashwanthkamireddi.Pomander --app …` when it
+      # files whose names start with it). Exec stays `skykeep --app …`; flatpak rewrites it to
+      # `flatpak run --command=skykeep io.github.yashwanthkamireddi.Skykeep --app …` when it
       # exports the file.
       - |
         for entry in packaging/apps/${FLATPAK_ID}.*.desktop; do
@@ -111,8 +111,18 @@ modules:
 
       - install -Dm644 ${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
 
+      # In the desktop's own search (src-tauri/src/search_provider.rs): GNOME Shell's provider,
+      # KRunner's D-Bus plugin, and the bus entry that starts Skykeep hidden to answer. The
+      # bus name is under the app ID, which the sandbox may own by default; Flatpak exports
+      # all three and rewrites the service's Exec to `flatpak run`.
+      - install -Dm644 packaging/${FLATPAK_ID}.search-provider.ini ${FLATPAK_DEST}/share/gnome-shell/search-providers/${FLATPAK_ID}.search-provider.ini
+      - desktop-file-validate packaging/${FLATPAK_ID}.krunner.desktop
+      - install -Dm644 packaging/${FLATPAK_ID}.krunner.desktop ${FLATPAK_DEST}/share/krunner/dbusplugins/${FLATPAK_ID}.krunner.desktop
+      - sed 's|^Exec=/usr/bin/skykeep|Exec=${FLATPAK_DEST}/bin/skykeep|' packaging/${FLATPAK_ID}.SearchProvider.service > ${FLATPAK_ID}.SearchProvider.service
+      - install -Dm644 ${FLATPAK_ID}.SearchProvider.service ${FLATPAK_DEST}/share/dbus-1/services/${FLATPAK_ID}.SearchProvider.service
+
       # Icons: the vector original, and the rendered sizes.
-      - install -Dm644 src-tauri/icons/icon.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
+      - install -Dm644 src-tauri/icons/icon.png ${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/${FLATPAK_ID}.png
       - install -Dm644 src-tauri/icons/32x32.png ${FLATPAK_DEST}/share/icons/hicolor/32x32/apps/${FLATPAK_ID}.png
       - install -Dm644 src-tauri/icons/64x64.png ${FLATPAK_DEST}/share/icons/hicolor/64x64/apps/${FLATPAK_ID}.png
       - install -Dm644 src-tauri/icons/128x128.png ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/${FLATPAK_ID}.png
@@ -127,16 +137,16 @@ modules:
       #
       # FLATHUB: replace with the public repository at a release tag, e.g.
       #   - type: git
-      #     url: https://github.com/YashwanthKamireddi/Pomander.git
+      #     url: https://github.com/YashwanthKamireddi/Skykeep.git
       #     tag: v0.1.0
       #     commit: <full sha of that tag>
       - type: git
         path: ../..
       # Not part of the git checkout, so they work before packaging/flatpak/ is committed.
       - type: file
-        path: io.github.yashwanthkamireddi.Pomander.desktop
+        path: io.github.yashwanthkamireddi.Skykeep.desktop
       - type: file
-        path: io.github.yashwanthkamireddi.Pomander.metainfo.xml
+        path: io.github.yashwanthkamireddi.Skykeep.metainfo.xml
       # Regenerate both whenever Cargo.lock or package-lock.json changes (README).
       - cargo-sources.json
       - node-sources.json

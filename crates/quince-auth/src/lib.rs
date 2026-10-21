@@ -107,7 +107,7 @@ pub enum Error {
     BadCode,
     #[error("Apple didn't return a trust token, so this session wouldn't survive a restart")]
     NoTrustToken,
-    #[error("this account signs in a way Pomander can't handle yet ({0})")]
+    #[error("this account signs in a way Skykeep can't handle yet ({0})")]
     UnsupportedAccount(String),
     /// Said without the address, which carries account and client ids.
     #[error("couldn't reach Apple: {}", if .0.is_timeout() { "it took too long to answer" } else if .0.is_connect() { "check your connection" } else { "the connection dropped" })]
@@ -1046,7 +1046,7 @@ impl Client {
 }
 
 /// Whether `host` is Apple's: its sign-in, iCloud's services and their files, push, and their
-/// China-mainland twins — every host Pomander has any reason to reach. Loopback too, which is
+/// China-mainland twins — every host Skykeep has any reason to reach. Loopback too, which is
 /// this computer.
 #[must_use]
 pub fn is_apple_host(host: &str) -> bool {
@@ -1065,10 +1065,10 @@ pub fn is_apple_host(host: &str) -> bool {
             .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
-/// Every HTTP client Pomander makes starts here: Apple's servers, and nothing else, can be
+/// Every HTTP client Skykeep makes starts here: Apple's servers, and nothing else, can be
 /// reached at all (see [`AppleOnly`]).
 pub fn apple_only() -> reqwest::ClientBuilder {
-    let mut builder = HttpClient::builder()
+    let builder = HttpClient::builder()
         .dns_resolver(Arc::new(AppleOnly))
         // The resolver alone is not enough: a URL with an address in it (`https://1.2.3.4/`)
         // is never looked up, and through a proxy the proxy looks the name up, not us. So
@@ -1080,6 +1080,12 @@ pub fn apple_only() -> reqwest::ClientBuilder {
         }));
     // Setting a proxy turns off the system's own (`HTTPS_PROXY` and the rest), which Apple's
     // hosts still go through when one is set, as they did before.
+    with_system_proxies(builder)
+}
+
+/// The system's own proxies (`HTTPS_PROXY` and the rest), put back after a refusing proxy has
+/// turned them off.
+fn with_system_proxies(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     for (scheme, names) in [
         (
             "https",
@@ -1104,8 +1110,59 @@ pub fn apple_only() -> reqwest::ClientBuilder {
     builder
 }
 
+/// The client for calendars the person subscribed to by address — and for nothing else. It
+/// reaches exactly the hosts in `hosts` (the ones those addresses name), by the same two locks
+/// as [`apple_only`]: a resolver that looks up no other name, and a check of every request's
+/// own URL, a redirect's included, so an address or a proxy cannot carry it anywhere else.
+/// Apple's own client is not widened by it; nothing else in Skykeep uses this one.
+pub fn listed_only(hosts: &[String]) -> reqwest::ClientBuilder {
+    let listed: Arc<Vec<String>> = Arc::new(hosts.iter().map(|h| normal_host(h)).collect());
+    let check = Arc::clone(&listed);
+    let builder = HttpClient::builder()
+        .dns_resolver(Arc::new(ListedOnly(Arc::clone(&listed))))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .proxy(reqwest::Proxy::custom(move |url| {
+            (!url_is_listed(url, &check)).then(|| REFUSED.to_string())
+        }));
+    with_system_proxies(builder)
+}
+
+fn normal_host(host: &str) -> String {
+    host.trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
+/// Whether a request's URL names one of the listed hosts exactly.
+fn url_is_listed(url: &reqwest::Url, listed: &[String]) -> bool {
+    url.host_str()
+        .is_some_and(|h| listed.iter().any(|l| *l == normal_host(h)))
+}
+
+/// The subscribed-calendar client's resolver: a listed host is looked up as the system looks
+/// up any name; any other is never looked up at all.
+struct ListedOnly(Arc<Vec<String>>);
+
+impl reqwest::dns::Resolve for ListedOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = normal_host(name.as_str());
+        let allowed = self.0.contains(&host);
+        Box::pin(async move {
+            if !allowed {
+                let refused: Box<dyn std::error::Error + Send + Sync> =
+                    format!("{host} is not a calendar you subscribed to").into();
+                return Err(refused);
+            }
+            let found = tokio::net::lookup_host((host.as_str(), 0)).await?;
+            let addrs: reqwest::dns::Addrs = Box::new(found.collect::<Vec<_>>().into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
 /// Where a request that is not Apple's is pointed: a name the resolver refuses.
-const REFUSED: &str = "http://refused.pomander.invalid";
+const REFUSED: &str = "http://refused.skykeep.invalid";
 
 /// Whether a request's URL may be sent: an Apple host by name, or this computer.
 fn url_is_apples(url: &reqwest::Url) -> bool {
@@ -1122,7 +1179,7 @@ fn url_is_apples(url: &reqwest::Url) -> bool {
     }
 }
 
-/// The one way Pomander's client finds a server: a host that is not Apple's is never looked
+/// The one way Skykeep's client finds a server: a host that is not Apple's is never looked
 /// up, so no request can reach one — "talks only to Apple" is how the code works, not a promise
 /// about it. Apple's are looked up as the system looks up any name.
 struct AppleOnly;
@@ -1133,13 +1190,50 @@ impl reqwest::dns::Resolve for AppleOnly {
         Box::pin(async move {
             if !is_apple_host(&host) {
                 let refused: Box<dyn std::error::Error + Send + Sync> =
-                    format!("{host} is not Apple's, and Pomander talks only to Apple").into();
+                    format!("{host} is not Apple's, and Skykeep talks only to Apple").into();
                 return Err(refused);
             }
             let found = tokio::net::lookup_host((host.as_str(), 0)).await?;
             let addrs: reqwest::dns::Addrs = Box::new(found.collect::<Vec<_>>().into_iter());
             Ok(addrs)
         })
+    }
+}
+
+#[cfg(test)]
+mod listed_tests {
+    use super::*;
+
+    /// A subscribed calendar's client reaches its own hosts and refuses every other — by
+    /// name, by address, and Apple's too — before anything leaves the machine.
+    #[tokio::test]
+    async fn the_subscription_client_refuses_a_host_nobody_subscribed_to() {
+        let http = listed_only(&["calendar.example.org".into()])
+            .build()
+            .unwrap();
+        for url in [
+            "https://elsewhere.example.net/feed.ics",
+            "https://93.184.216.34/feed.ics",
+            "https://www.icloud.com/",
+        ] {
+            let err = http.get(url).send().await.expect_err(url);
+            let text = format!("{err:?}");
+            assert!(
+                text.contains("not a calendar you subscribed to"),
+                "{url} was not refused by the list: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_listed_host_is_matched_exactly_and_without_case() {
+        let listed = vec![normal_host("Calendar.Example.org.")];
+        let ok = |u: &str| url_is_listed(&reqwest::Url::parse(u).unwrap(), &listed);
+        assert!(ok("https://calendar.example.org/a.ics"));
+        assert!(ok("http://CALENDAR.example.org:8080/a.ics"));
+        assert!(!ok("https://evil.calendar.example.org/a.ics"));
+        assert!(!ok("https://example.org/a.ics"));
+        assert!(!ok("https://calendar.example.org.evil.net/a.ics"));
     }
 }
 

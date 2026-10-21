@@ -1,5 +1,5 @@
-//! What comes into Pomander from outside its own windows: a calendar or contact file opened
-//! with it (`.ics`, `.vcf`) and the quick-capture launcher actions (`pomander --new reminder`).
+//! What comes into Skykeep from outside its own windows: a calendar or contact file opened
+//! with it (`.ics`, `.vcf`) and the quick-capture launcher actions (`skykeep --new reminder`).
 //!
 //! A file is read here, on this computer, and nothing is sent anywhere until the person says
 //! so in the import sheet: what it holds is shown first — the events with their days and
@@ -264,7 +264,7 @@ pub fn intake_capture_close(app: AppHandle) {
     }
 }
 
-/// From the quick-capture window when Pomander is not signed in: the main window, where the
+/// From the quick-capture window when Skykeep is not signed in: the main window, where the
 /// sign-in is.
 #[tauri::command]
 pub fn intake_open_main(app: AppHandle) {
@@ -770,7 +770,7 @@ pub fn parse_calendar(
             "VTODO" => {
                 refused.push(Refused {
                     title: shown(),
-                    reason: "It’s a to-do, not an event. Pomander imports events.".into(),
+                    reason: "It’s a to-do, not an event. Skykeep imports events.".into(),
                 });
                 continue;
             }
@@ -904,13 +904,13 @@ const WEEKDAYS: [(&str, Weekday); 7] = [
 fn repeat_of(c: &Component, start: &When, here: &TimeZone) -> Result<Option<EventRepeat>, String> {
     let rules: Vec<&Property> = c.all("RRULE").collect();
     if c.get("RDATE").is_some() || rules.len() > 1 {
-        return Err("It repeats on extra dates, which Pomander can’t set up.".into());
+        return Err("It repeats on extra dates, which Skykeep can’t set up.".into());
     }
     let Some(rule) = rules.first() else {
         return Ok(None);
     };
     if c.get("EXDATE").is_some() {
-        return Err("Its repeat skips some dates, which Pomander can’t set up.".into());
+        return Err("Its repeat skips some dates, which Skykeep can’t set up.".into());
     }
     let mut freq = None;
     let mut interval = 1i64;
@@ -929,7 +929,7 @@ fn repeat_of(c: &Component, start: &When, here: &TimeZone) -> Result<Option<Even
                     "YEARLY" => "yearly",
                     "HOURLY" | "MINUTELY" | "SECONDLY" => {
                         return Err(
-                            "It repeats more than once a day, which Pomander can’t set up.".into(),
+                            "It repeats more than once a day, which Skykeep can’t set up.".into(),
                         )
                     }
                     _ => return Err("Its repeat can’t be read.".into()),
@@ -962,30 +962,30 @@ fn repeat_of(c: &Component, start: &When, here: &TimeZone) -> Result<Option<Even
                     .is_some_and(|(_, day)| *day == first.weekday());
                 if !same {
                     return Err(if value.contains(',') {
-                        "It repeats on several days of the week, which Pomander can’t set up yet."
+                        "It repeats on several days of the week, which Skykeep can’t set up yet."
                             .into()
                     } else if value
                         .chars()
                         .next()
                         .is_some_and(|c| c.is_ascii_digit() || c == '-' || c == '+')
                     {
-                        "It repeats on a weekday of the month (like the second Tuesday), which Pomander can’t set up yet.".into()
+                        "It repeats on a weekday of the month (like the second Tuesday), which Skykeep can’t set up yet.".into()
                     } else {
-                        "It repeats on a different weekday than it starts on, which Pomander can’t set up.".into()
+                        "It repeats on a different weekday than it starts on, which Skykeep can’t set up.".into()
                     });
                 }
             }
             "BYMONTHDAY" => {
                 if value.parse::<i8>().ok() != Some(first.day()) {
-                    return Err("It repeats on other days of the month than it starts on, which Pomander can’t set up yet.".into());
+                    return Err("It repeats on other days of the month than it starts on, which Skykeep can’t set up yet.".into());
                 }
             }
             "BYMONTH" => {
                 if value.parse::<i8>().ok() != Some(first.month()) {
-                    return Err("It repeats in other months than it starts in, which Pomander can’t set up yet.".into());
+                    return Err("It repeats in other months than it starts in, which Skykeep can’t set up yet.".into());
                 }
             }
-            _ => return Err("It repeats in a way Pomander can’t set up yet.".into()),
+            _ => return Err("It repeats in a way Skykeep can’t set up yet.".into()),
         }
     }
     let freq = freq.ok_or("Its repeat can’t be read.")?;

@@ -33,7 +33,7 @@ for (const scheme of ["light", "dark"]) {
     (await page.locator('.nav-item[aria-current="true"]').innerText()).includes("Contacts"), `${scheme}: in Contacts, on that person`);
   await field.fill("downloads");
   await page.waitForTimeout(300);
-  ok((await panel.getByRole("region", { name: "iCloud Drive" }).count()) === 1, `${scheme}: files found by name`);
+  ok((await panel.getByRole("region", { name: "Drive" }).count()) === 1, `${scheme}: files found by name`);
   await page.keyboard.press("Escape");
   ok(!(await panel.isVisible()), `${scheme}: Escape puts the results away`);
   await page.keyboard.press("Escape");

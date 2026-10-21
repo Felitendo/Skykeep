@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { foldAway } from "../lib/fade";
+import { fadeIn, fadeOut } from "../lib/fade";
 import { useActiveRef } from "../lib/screen";
 import { listen } from "@tauri-apps/api/event";
 import { usePending } from "../lib/pending";
@@ -12,7 +12,7 @@ import { SearchField } from "../components/SearchField";
 import { PaneTitle } from "../components/PaneTitle";
 import { Portal } from "../components/Portal";
 import { TimeField } from "../components/TimeField";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, ListFilter, X } from "lucide-react";
 import {
   api,
   MOST_AT_ONCE,
@@ -23,6 +23,10 @@ import {
   type ReminderSection,
   type ReminderCounts,
   type SmartList,
+  remindersApi,
+  type ReminderDetail,
+  type ReminderSmartList,
+  type TagCount,
 } from "../lib/ipc";
 import { Arriving } from "../components/EmptyState";
 import { useArriving, useSync } from "../lib/sync";
@@ -193,8 +197,34 @@ const asShown = (r: Reminder): Reminder =>
   r.allDay && r.dueAt !== null ? { ...r, dueAt: dayToLocal(r.dueAt) } : r;
 
 
+/**
+ * Tags, links, early alerts and sections can be changed from here once Apple's side of those
+ * writes is switched on. Mirrors `REMINDER_DETAIL_WRITES` in
+ * crates/quince-icloud/src/reminders_details.rs: turn both on together.
+ */
+export const REMINDER_DETAIL_WRITES = false;
+
+/** Apple's early-alert units, by its numbering. */
+const ALERT_UNITS = ["minute", "hour", "day", "week", "month"] as const;
+/** "30 minutes early", "1 day early". */
+function earlyText(count: number, unit: number): string {
+  const word = ALERT_UNITS[unit] ?? "minute";
+  return `${count} ${word}${count === 1 ? "" : "s"} early`;
+}
+/** What the phone's Early Reminder menu offers, as [count, unit]. */
+const EARLY_CHOICES: [number, number][] = [
+  [5, 0], [15, 0], [30, 0], [1, 1], [2, 1], [1, 2], [2, 2], [1, 3], [1, 4],
+];
+
+/** A smart list's own colour, or Apple's grey for one that has none. */
+const smartColour = (s: ReminderSmartList) =>
+  s.colour && /^#[0-9a-f]{6}$/i.test(s.colour) ? s.colour : "var(--sys-gray)";
+
 type Selection =
-  { type: "smart"; kind: SmartList } | { type: "list"; guid: string };
+  | { type: "smart"; kind: SmartList }
+  | { type: "list"; guid: string }
+  | { type: "tag"; name: string }
+  | { type: "custom"; guid: string };
 
 export function RemindersView() {
   const [lists, setLists] = useState<ReminderList[]>([]);
@@ -240,6 +270,11 @@ export function RemindersView() {
     setOpenGuid(r.id);
   });
   const [items, setItems] = useState<Reminder[]>([]);
+  // Info belongs to the view it was opened in; another view starts with it closed — unless
+  // the search across everything is opening this very reminder.
+  useEffect(() => {
+    if (!revealing.current) setOpenGuid(null);
+  }, [picked]);
   useEffect(() => {
     const id = revealing.current;
     if (!id || !items.some((r) => r.guid === id)) return;
@@ -268,6 +303,17 @@ export function RemindersView() {
   const [counts, setCounts] = useState<ReminderCounts | null>(null);
   /** The headings inside the list that is open, when a real list is open. */
   const [listSections, setListSections] = useState<ReminderSection[]>([]);
+  /** Every tag on the account, with how many reminders still to do carry each. */
+  const [tags, setTags] = useState<TagCount[]>([]);
+  /** Each reminder's tags, by its id — for the chips on its row. */
+  const [tagsOf, setTagsOf] = useState<Map<string, string[]>>(() => new Map());
+  /** Smart lists made by hand on the phone or Mac, and how many each holds now. */
+  const [customLists, setCustomLists] = useState<ReminderSmartList[]>([]);
+  const [customCounts, setCustomCounts] = useState<Map<string, number>>(() => new Map());
+  /** Rules of the open smart list this app does not read yet. */
+  const [unknownRules, setUnknownRules] = useState<string[]>([]);
+  /** The open reminder's tags, link and early alerts. */
+  const [detailOf, setDetailOf] = useState<ReminderDetail | null>(null);
   /** A repeating reminder that was just ticked forward, and where it landed. */
   const [moved, setMoved] = useState<{ guid: string; text: string } | null>(
     null,
@@ -275,6 +321,11 @@ export function RemindersView() {
 
   const inList = selection.type === "list";
   const listGuid = inList ? selection.guid : null;
+  /** The built-in view open, if one is. */
+  const smartKind = selection.type === "smart" ? selection.kind : null;
+  /** A tag or a hand-made smart list: views gathered from every list, with nowhere to add. */
+  const gathered = selection.type === "tag" || selection.type === "custom";
+  const openCustom = selection.type === "custom" ? (customLists.find((x) => x.guid === selection.guid) ?? null) : null;
 
   const readLists = useCallback(async () => {
     const [found, tally, folders] = await Promise.all([
@@ -287,7 +338,31 @@ export function RemindersView() {
     setGroups(Array.isArray(folders) ? folders : []);
     setCounts(tally);
     setLoaded(true);
+    // Tags and smart lists after: an older library without them is still a working one.
+    void readExtras().catch(() => {});
   }, []);
+
+  /** Tags with each one's reminders, and custom smart lists with what each holds. */
+  const readExtras = async () => {
+    const [allTags, smart] = await Promise.all([
+      remindersApi.tags().catch(() => [] as TagCount[]),
+      remindersApi.smartLists().catch(() => [] as ReminderSmartList[]),
+    ]);
+    const named = (Array.isArray(allTags) ? allTags : []).filter((t) => t.name);
+    const custom = (Array.isArray(smart) ? smart : []).filter((x) => x.kind === "custom");
+    const [tagged, held] = await Promise.all([
+      Promise.all(named.map((t) => remindersApi.tagged(t.name).catch(() => [] as Reminder[]))),
+      Promise.all(custom.map((x) => remindersApi.inSmartList(x.guid).then((c) => c.reminders.length).catch(() => 0))),
+    ]);
+    const byReminder = new Map<string, string[]>();
+    named.forEach((t, i) => {
+      for (const r of tagged[i] ?? []) byReminder.set(r.guid, [...(byReminder.get(r.guid) ?? []), t.name]);
+    });
+    setTags(named);
+    setTagsOf(byReminder);
+    setCustomLists(custom);
+    setCustomCounts(new Map(custom.map((x, i) => [x.guid, held[i] ?? 0])));
+  };
 
   // A list's headings are read with its reminders (readItems), so they arrive together.
 
@@ -309,12 +384,20 @@ export function RemindersView() {
     const sel = picked;
     const seq = ++reads.current;
     // Search reaches every list, as Apple's does, whatever is open in the sidebar.
+    let unknown: string[] = [];
     const [found, sections] = await Promise.all([
       searching
         ? api.remindersSearch(query)
         : sel.type === "smart"
           ? api.remindersSmart(sel.kind, endOfToday())
-          : api.remindersIn(sel.guid, showDone),
+          : sel.type === "tag"
+            ? remindersApi.tagged(sel.name)
+            : sel.type === "custom"
+              ? remindersApi.inSmartList(sel.guid).then((c) => {
+                  unknown = Array.isArray(c.unknown) ? c.unknown : [];
+                  return c.reminders;
+                })
+              : api.remindersIn(sel.guid, showDone),
       sel.type === "list"
         ? api.reminderSections(sel.guid).catch(() => [] as ReminderSection[])
         : Promise.resolve([] as ReminderSection[]),
@@ -325,6 +408,7 @@ export function RemindersView() {
     setShown(sel);
     setItems(fresh);
     setListSections(Array.isArray(sections) ? sections : []);
+    setUnknownRules(unknown);
     return fresh;
   }, [picked, showDone, query, searching, over]);
 
@@ -450,17 +534,32 @@ export function RemindersView() {
   };
   const depart = (guid: string) => {
     stay(guid);
-    // A moment to see the tick land (and undo a mistaken one), then the row folds away: its
-    // height closes as it fades, so the ones below glide up instead of jumping.
+    // A moment to see the tick land (and undo a mistaken one), then the row fades and goes.
+    // Opacity only, drawn by the page frame by frame (lib/fade): a height fold, or anything
+    // handed to the compositor, flickered under WebKitGTK on Hyprland.
     departure.current.set(guid, [
       window.setTimeout(() => {
         setLeaving((was) => new Set(was).add(guid));
         const row = document.querySelector<HTMLElement>(`.rx-row[data-guid="${CSS.escape(guid)}"]`);
-        const gone = () => setDeparted((was) => new Set(was).add(guid));
-        // Folded by the page, frame by frame (lib/fade): handed to the compositor, as the Web
-        // Animations API hands it, an animation flickered on his screen.
+        // A row ticked from the keyboard hands the keys on to the one below it (or above),
+        // rather than dropping them on the page as it goes.
+        const keys = row?.contains(document.activeElement) ?? false;
+        const rowsNow = [...document.querySelectorAll<HTMLElement>(".rx-rows .rx-row")];
+        const at = row ? rowsNow.indexOf(row) : -1;
+        const heir = keys ? (rowsNow.slice(at + 1).find((el) => !el.classList.contains("is-leaving")) ?? rowsNow[at - 1]) : null;
+        const heirGuid = heir?.dataset.guid ?? null;
+        const gone = () => {
+          setDeparted((was) => new Set(was).add(guid));
+          if (heirGuid) {
+            requestAnimationFrame(() => {
+              const active = document.activeElement;
+              if (active && active !== document.body && document.contains(active)) return;
+              document.querySelector<HTMLElement>(`.rx-row[data-guid="${CSS.escape(heirGuid)}"]`)?.focus();
+            });
+          }
+        };
         if (!row) gone();
-        else foldAway(row, gone);
+        else fadeOut(row, gone, 160);
       }, 600),
     ]);
   };
@@ -592,6 +691,203 @@ export function RemindersView() {
       patch(r.guid, { parentGuid: above.guid }),
     );
   };
+
+  /** The open reminder's tags, link and early alerts, read again. */
+  const readDetail = useCallback(async (guid: string | null) => {
+    if (!guid || guid.startsWith(STAND_IN)) {
+      setDetailOf(null);
+      return;
+    }
+    try {
+      const found = await remindersApi.detail(guid);
+      setDetailOf((was) => (found && found.guid === guid ? found : was?.guid === guid ? was : null));
+    } catch {
+      // An older library without details: the panel shows what the reminder itself holds.
+      setDetailOf(null);
+    }
+  }, []);
+  useEffect(() => {
+    void readDetail(openGuid);
+  }, [openGuid, readDetail, revision, outbox.tick]);
+  // Tags and smart lists hold what is still to do, so a change sent or ticked moves them.
+  useEffect(() => {
+    void readExtras().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outbox.tick]);
+
+  const openTag = (name: string) => {
+    setQuery("");
+    setSelection({ type: "tag", name });
+    setDetail(true);
+  };
+
+  /**
+   * A change to what sits beside a reminder: shown at once in its row and its info, sent to
+   * Apple, then the details read again — Apple's copy on success, the old one on a refusal.
+   */
+  const detailWrite = async (r: Reminder, run: () => Promise<void>, predict?: (d: ReminderDetail) => ReminderDetail) => {
+    if (!REMINDER_DETAIL_WRITES || r.guid.startsWith(STAND_IN)) return;
+    if (predict) {
+      setDetailOf((d) => (d && d.guid === r.guid ? predict(d) : d));
+      setTagsOf((m) => {
+        const base = { guid: r.guid, tags: m.get(r.guid) ?? [], url: null, earlyAlerts: [], otherAttachments: 0 };
+        const next = new Map(m);
+        next.set(r.guid, predict(base).tags);
+        return next;
+      });
+    }
+    await write(r, run);
+    await Promise.all([readDetail(openGuid), readExtras().catch(() => {})]);
+  };
+  const tagAdd = (r: Reminder, raw: string) => {
+    const name = raw.trim().replace(/^#+/, "").replace(/\s+/g, "");
+    if (!name) return Promise.resolve();
+    return detailWrite(r, () => remindersApi.tagAdd(r.guid, name), (d) =>
+      d.tags.some((t) => t.toLowerCase() === name.toLowerCase()) ? d : { ...d, tags: [...d.tags, name] },
+    );
+  };
+  const tagRemove = (r: Reminder, name: string) =>
+    detailWrite(r, () => remindersApi.tagRemove(r.guid, name), (d) => ({ ...d, tags: d.tags.filter((t) => t !== name) }));
+  const setUrl = (r: Reminder, url: string | null) =>
+    detailWrite(r, () => remindersApi.urlSet(r.guid, url), (d) => ({ ...d, url }));
+  const setEarly = (r: Reminder, alert: [number, number] | null) =>
+    detailWrite(r, () => remindersApi.earlyAlertSet(r.guid, alert?.[0] ?? null, alert?.[1] ?? null), (d) => ({
+      ...d,
+      earlyAlerts: alert ? [{ id: "pending", count: alert[0], unit: alert[1] }] : [],
+    }));
+
+  /** The section of its list a reminder sits in, when that section is still there. */
+  const sectionOf = (r: Reminder) =>
+    r.sectionGuid && listSections.some((x) => x.guid === r.sectionGuid) ? r.sectionGuid : null;
+  const moveToSection = (r: Reminder, section: string | null) =>
+    !REMINDER_DETAIL_WRITES || section === sectionOf(r)
+      ? Promise.resolve(null)
+      : write(r, () => remindersApi.sectionMove(r.listGuid, r.guid, section), patch(r.guid, { sectionGuid: section }));
+  /** A new section, named in place at the foot of the list. */
+  const [namingSection, setNamingSection] = useState<string | null>(null);
+  const createSection = async (title: string) => {
+    if (!REMINDER_DETAIL_WRITES || !listGuid || !title.trim()) return;
+    const temp: ReminderSection = { guid: `${STAND_IN}section`, listGuid, title: title.trim(), createdAt: null };
+    setListSections((was) => [...was, temp]);
+    try {
+      await remindersApi.sectionCreate(listGuid, title.trim());
+    } catch (e) {
+      setError(messageOf(e));
+    }
+    await readItems().catch(() => {});
+  };
+  const renameSection = async (section: ReminderSection, title: string) => {
+    if (!REMINDER_DETAIL_WRITES || !title.trim() || title.trim() === section.title) return;
+    setListSections((was) => was.map((x) => (x.guid === section.guid ? { ...x, title: title.trim() } : x)));
+    try {
+      await remindersApi.sectionRename(section.guid, title.trim());
+    } catch (e) {
+      setError(messageOf(e));
+    }
+    await readItems().catch(() => {});
+  };
+
+  /** Deleting asks first: there is no bringing a reminder back from here. */
+  const askRemove = async (r: Reminder) => {
+    const subtasks = items.filter((x) => x.parentGuid === r.guid).length;
+    const sure = await confirm({
+      title: `Delete \u201c${r.title || "New Reminder"}\u201d?`,
+      body: subtasks
+        ? `Its ${subtasks === 1 ? "subtask goes" : `${subtasks} subtasks go`} with it, on all your devices.`
+        : "It goes from all your devices.",
+      action: "Delete",
+      danger: true,
+      symbol: "trash",
+    });
+    if (!sure) return;
+    if (openGuid === r.guid) setOpenGuid(null);
+    // The focus moves on to the row below, or above, so the keys carry on from there.
+    const rowsNow = [...document.querySelectorAll<HTMLElement>(".rx-rows .rx-row")];
+    const at = rowsNow.findIndex((el) => el.dataset.guid === r.guid);
+    const neighbour = rowsNow[at + 1] ?? rowsNow[at - 1];
+    const next = neighbour?.dataset.guid ?? null;
+    // The row goes at once (remove shows it before Apple answers), and the keys with it.
+    void remove(r);
+    if (next) {
+      requestAnimationFrame(() =>
+        document.querySelector<HTMLElement>(`.rx-row[data-guid="${CSS.escape(next)}"]`)?.focus(),
+      );
+    }
+  };
+
+  /**
+   * The keys Reminders on the Mac answers, with Ctrl for Command: Ctrl+N a new reminder,
+   * Ctrl+Shift+N a new list, Ctrl+F the search, Ctrl+I the selected reminder's info. On a row:
+   * Up and Down move, Space ticks it, Return edits it, Delete deletes it (asking first).
+   */
+  const live = useActiveRef();
+  const searchRef = useRef<HTMLInputElement>(null);
+  /** Ctrl+N from a view with nowhere to add: the default list opens, and its field takes it. */
+  const [wantAdd, setWantAdd] = useState(0);
+  useEffect(() => {
+    if (!wantAdd) return;
+    const field = document.querySelector<HTMLInputElement>(".rx-add input");
+    if (!field) return;
+    field.focus();
+    field.scrollIntoView({ block: "nearest" });
+    setWantAdd(0);
+  }, [wantAdd, selection, items]);
+  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  keys.current = (e: KeyboardEvent) => {
+    if (!live.current || e.defaultPrevented) return;
+    // A menu, a picker's list or a sheet over the screen has the keys to itself.
+    if (document.querySelector('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]')) return;
+    const target = e.target as HTMLElement | null;
+    const typing = !!target?.closest?.("input, textarea, select, [contenteditable]");
+    const command = (e.ctrlKey || e.metaKey) && !e.altKey;
+    const k = e.key.toLowerCase();
+    if (command && k === "n") {
+      e.preventDefault();
+      if (e.shiftKey) {
+        setDetail(false);
+        setAddingList(true);
+        document.querySelector<HTMLInputElement>(".rx-new-list input")?.focus();
+        return;
+      }
+      if (!targetListGuid) return;
+      setDetail(true);
+      if (searching) setQuery("");
+      if (!canAdd) setSelection({ type: "list", guid: targetListGuid });
+      setWantAdd((n) => n + 1);
+      return;
+    }
+    if (command && !e.shiftKey && k === "f") {
+      e.preventDefault();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+      return;
+    }
+    if (command && !e.shiftKey && k === "i") {
+      e.preventDefault();
+      const row = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>(".rx-row");
+      const guid = row?.dataset.guid ?? openGuid;
+      if (!guid) return;
+      setOpenGuid(openGuid === guid ? null : guid);
+      // The row keeps the keys, so Ctrl+I again closes what it opened.
+      if (row && openGuid === guid) row.focus();
+      return;
+    }
+    if (typing || command || e.altKey) return;
+    // Arrows from nowhere in particular start at the first (or last) reminder.
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !target?.closest?.(".rx-row, .rx-side, button, [role]")) {
+      const rows = [...document.querySelectorAll<HTMLElement>(".rx-rows .rx-row")];
+      const pick = e.key === "ArrowDown" ? rows[0] : rows[rows.length - 1];
+      if (pick) {
+        e.preventDefault();
+        pick.focus();
+      }
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keys.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   /** Drag and drop: what is being dragged, and the row it would land before. */
   const [dragging, setDragging] = useState<string | null>(null);
@@ -728,7 +1024,8 @@ export function RemindersView() {
     // The row is there the moment Return is pressed, and the field is ready for the next.
     const standIn = `${STAND_IN}${Date.now()}`;
     setDraft("");
-    const shownHere = inList || kind === "today" || kind === "scheduled" || kind === "flagged" || kind === "all";
+    const tagged = selection.type === "tag" ? selection.name : null;
+    const shownHere = inList || tagged !== null || kind === "today" || kind === "scheduled" || kind === "flagged" || kind === "all";
     if (shownHere) setItems((rows) => [
       ...rows,
       {
@@ -740,7 +1037,12 @@ export function RemindersView() {
       } as Reminder,
     ]);
     try {
-      await api.reminderCreate(targetListGuid, title, implied);
+      const made = await api.reminderCreate(targetListGuid, title, implied);
+      // Typed into a tag, it carries the tag, as on the phone.
+      if (tagged && REMINDER_DETAIL_WRITES && typeof made === "string" && made) {
+        await remindersApi.tagAdd(made, tagged).catch((e) => setError(messageOf(e)));
+        void readExtras().catch(() => {});
+      }
       await readItems();
     } catch (err) {
       setItems((rows) => rows.filter((r) => r.guid !== standIn));
@@ -753,8 +1055,11 @@ export function RemindersView() {
 
   const heading = inList
     ? (lists.find((l) => l.guid === listGuid)?.title ?? "Reminders")
-    : (SMART.find((s) => s.kind === (selection as { kind: SmartList }).kind)
-        ?.title ?? "Reminders");
+    : selection.type === "tag"
+      ? `#${selection.name}`
+      : selection.type === "custom"
+        ? (openCustom?.title ?? "Smart List")
+        : (SMART.find((s) => s.kind === smartKind)?.title ?? "Reminders");
   const outstanding = items.filter((r) => !r.completedAt).length;
 
   /**
@@ -765,10 +1070,10 @@ export function RemindersView() {
    * dishonest part — a list that quietly stops is worse than one that says where it stopped.
    */
   const heldBack = (() => {
-    if (items.length < MOST_AT_ONCE || !counts) return 0;
+    if (items.length < MOST_AT_ONCE || !counts || gathered) return 0;
     const total = inList
       ? (counts.lists.find(([guid]) => guid === listGuid)?.[1] ?? 0)
-      : counts[(selection as { kind: SmartList }).kind];
+      : smartKind ? counts[smartKind] : 0;
     return Math.max(0, total - items.length);
   })();
 
@@ -831,8 +1136,9 @@ export function RemindersView() {
   const showListName =
     !searching &&
     !inList &&
-    (selection as { kind: SmartList }).kind !== "all" &&
-    (selection as { kind: SmartList }).kind !== "flagged";
+    !gathered &&
+    smartKind !== "all" &&
+    smartKind !== "flagged";
 
   const sections = useMemo(() => {
     if (searching) {
@@ -874,7 +1180,7 @@ export function RemindersView() {
       ];
     }
 
-    const kind = (selection as { kind: SmartList }).kind;
+    const kind = smartKind;
     const now = new Date();
     const listOf = (guid: string) => lists.find((l) => l.guid === guid);
 
@@ -975,14 +1281,17 @@ export function RemindersView() {
 
   const countOf = (guid: string) => counts?.lists.find(([g]) => g === guid)?.[1] ?? 0;
   const openList = inList ? (lists.find((l) => l.guid === listGuid) ?? null) : null;
-  const smartOpen =
-    selection.type === "smart" ? SMART.find((x) => x.kind === selection.kind) : undefined;
+  const smartOpen = smartKind ? SMART.find((x) => x.kind === smartKind) : undefined;
   /** The colour the open view is drawn in: its list's, or its built-in view's. */
   const accent = searching
     ? "var(--text)"
     : openList
       ? colourOf(openList)
-      : (smartOpen?.colour ?? "var(--sys-blue)");
+      : openCustom
+        ? smartColour(openCustom)
+        : selection.type === "tag"
+          ? "var(--sys-blue)"
+          : (smartOpen?.colour ?? "var(--sys-blue)");
 
   /**
    * The sidebar in Apple's order: a list or group at the top level wherever it was walked,
@@ -1090,7 +1399,8 @@ export function RemindersView() {
   );
 
   /** Where a reminder typed at the foot of the view is filed, when that is a choice. */
-  const addRow = targetListGuid && !searching && (
+  const canAdd = !gathered || (selection.type === "tag" && REMINDER_DETAIL_WRITES);
+  const addRow = targetListGuid && !searching && canAdd && (
     <form className="rx-add" onSubmit={add}>
       <span className="rx-tick ghost" aria-hidden="true">
         <Glyph name="plus" />
@@ -1124,6 +1434,7 @@ export function RemindersView() {
     >
       <aside className="rx-side" aria-label="Reminder lists">
         <SearchField
+          ref={searchRef}
           className="rx-search"
           placeholder="Search"
           aria-label="Search reminders"
@@ -1184,8 +1495,59 @@ export function RemindersView() {
               </div>
             ),
           )}
+          {/* Smart lists made by hand, after the lists, as the Mac shows them: a filter in its
+              colour, with what it holds now. */}
+          {customLists.map((smart) => {
+            const title = smart.title ?? "Smart List";
+            return (
+              <div className="rx-list-row" key={smart.guid}>
+                <button
+                  className="source-row rx-list rx-smart-row"
+                  aria-current={picked.type === "custom" && picked.guid === smart.guid}
+                  onClick={() => {
+                    setQuery("");
+                    setSelection({ type: "custom", guid: smart.guid });
+                    setDetail(true);
+                  }}
+                >
+                  <span className="rx-badge" style={{ background: smartColour(smart) }}>
+                    {smart.emblem ? <Glyph name={emblemGlyph(smart.emblem)} /> : <ListFilter aria-hidden="true" strokeWidth={2.25} />}
+                  </span>
+                  <span className="source-name rx-list-name">{title}</span>
+                  <span className="count">{customCounts.get(smart.guid) ?? 0}</span>
+                </button>
+              </div>
+            );
+          })}
         </div>
         {loaded && lists.length === 0 && !arriving && <p className="side-heading">No lists yet</p>}
+
+        {tags.length > 0 && (
+          <>
+            <p className="side-heading rx-side-heading">Tags</p>
+            <div className="rx-tags" role="group" aria-label="Tags">
+              {tags.map((t) => {
+                const current = !searching && picked.type === "tag" && picked.name.toLowerCase() === t.name.toLowerCase();
+                return (
+                  <button
+                    key={t.name}
+                    className="rx-tag-chip"
+                    data-tag={t.name}
+                    aria-current={current}
+                    aria-label={`#${t.name}, ${t.open} ${t.open === 1 ? "reminder" : "reminders"}`}
+                    onClick={() => {
+                      setQuery("");
+                      setSelection({ type: "tag", name: t.name });
+                      setDetail(true);
+                    }}
+                  >
+                    #{t.name}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
 
         {addingList ? (
           <form className="rx-new-list" onSubmit={createList}>
@@ -1236,6 +1598,12 @@ export function RemindersView() {
           </EmptyState>
         )}
 
+        {unknownRules.length > 0 && selection.type === "custom" && !searching && (
+          <p className="rx-capped" role="status">
+            Shows what matches the rules read here. Your iPhone has the full list.
+          </p>
+        )}
+
         {heldBack > 0 && (
           <p className="rx-capped" role="status">
             Showing the first {MOST_AT_ONCE.toLocaleString()} — {heldBack.toLocaleString()} more
@@ -1245,14 +1613,40 @@ export function RemindersView() {
 
         {sections.map((section) => (
           <Fragment key={section.key}>
-            {section.heading && (
-              <h2
-                className={`rx-section${section.dated ? " is-quiet" : ""}`}
-                style={section.colour ? { color: section.colour } : undefined}
-              >
-                {section.heading}
-              </h2>
-            )}
+            {section.heading &&
+              (inList && REMINDER_DETAIL_WRITES && namingSection === section.key ? (
+                <input
+                  className="field rx-section-name"
+                  defaultValue={section.heading}
+                  autoFocus
+                  aria-label={`Rename section ${section.heading}`}
+                  onBlur={(e) => {
+                    setNamingSection(null);
+                    const found = listSections.find((x) => x.guid === section.key);
+                    if (found) void renameSection(found, e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") {
+                      e.currentTarget.value = section.heading ?? "";
+                      e.currentTarget.blur();
+                    }
+                  }}
+                />
+              ) : (
+                <h2
+                  className={`rx-section${section.dated ? " is-quiet" : ""}${inList ? " is-list-section" : ""}`}
+                  style={section.colour ? { color: section.colour } : undefined}
+                  data-section={inList ? section.key : undefined}
+                  onDoubleClick={
+                    inList && REMINDER_DETAIL_WRITES && !section.key.startsWith(STAND_IN)
+                      ? () => setNamingSection(section.key)
+                      : undefined
+                  }
+                >
+                  {section.heading}
+                </h2>
+              ))}
             <ul className="rx-rows">
               {section.rows.map(({ reminder, depth }) => {
                 const due =
@@ -1262,6 +1656,8 @@ export function RemindersView() {
                 const justMoved = moved?.guid === reminder.guid ? moved.text : null;
                 const home = lists.find((l) => l.guid === reminder.listGuid);
                 const mark = priorityMark(reminder.priority);
+                const rowTags =
+                  isOpen && detailOf?.guid === reminder.guid ? detailOf.tags : (tagsOf.get(reminder.guid) ?? []);
                 return (
                   <li
                     key={reminder.guid}
@@ -1280,10 +1676,13 @@ export function RemindersView() {
                     }}
                     onDragEnd={() => { setDragging(null); setDropBefore(null); }}
                     // The row itself takes the keyboard, as on icloud.com and the Mac: arrows go
-                    // from row to row, Space ticks it, Return edits its title. Delete is left out:
-                    // a reminder deleted here cannot be brought back.
+                    // from row to row, Space ticks it, Return edits its title, Delete deletes it
+                    // once confirmed — a reminder deleted here cannot be brought back.
                     tabIndex={-1}
                     data-guid={reminder.guid}
+                    // The list's colour for everything on the row drawn in it: the circle, the
+                    // priority marks.
+                    style={{ "--tick": colourOf(home) } as React.CSSProperties}
                     onKeyDown={(e) => {
                       if (e.target !== e.currentTarget) return;
                       const rows = [...document.querySelectorAll<HTMLElement>(".rx-rows .rx-row")];
@@ -1300,7 +1699,12 @@ export function RemindersView() {
                         void toggle(reminder);
                       } else if (e.key === "Enter") {
                         e.preventDefault();
-                        e.currentTarget.querySelector<HTMLInputElement>(".rx-title")?.focus();
+                        const title = e.currentTarget.querySelector<HTMLInputElement>(".rx-title");
+                        title?.focus();
+                        title?.select();
+                      } else if (e.key === "Delete" || e.key === "Backspace") {
+                        e.preventDefault();
+                        void askRemove(reminder);
                       }
                     }}
                     // Right-click, as on the Mac: what can be done to this reminder, in one menu.
@@ -1338,15 +1742,18 @@ export function RemindersView() {
                       aria-checked={Boolean(reminder.completedAt) || settling.has(reminder.guid)}
                       aria-label={reminder.title}
                       style={{ "--tick": colourOf(home) } as React.CSSProperties}
-                      // The fill springs in on the press itself, and only then: kept as state,
-                      // it sprang in again every time Reminders came back into view.
+                      // The fill fades in on the press itself, and only then (kept as state, it came
+                      // in again every time Reminders came back into view): opacity alone, on a
+                      // twenty-pixel circle, drawn by the page (lib/fade) — never the compositor.
                       onClick={(e) => {
-                        const tick = e.currentTarget;
-                        tick.classList.add("is-pressed");
-                        window.setTimeout(() => tick.classList.remove("is-pressed"), 300);
+                        const fill = e.currentTarget.querySelector<HTMLElement>(".rx-tick-fill");
+                        const filling = !reminder.completedAt;
                         toggle(reminder);
+                        if (filling) requestAnimationFrame(() => fadeIn(fill, { from: 0.25, duration: 140 }));
                       }}
-                    />
+                    >
+                      <span className="rx-tick-fill" aria-hidden="true" />
+                    </button>
 
                     <div className="rx-text">
                       <div className="rx-title-row">
@@ -1404,7 +1811,7 @@ export function RemindersView() {
                         <span className="rx-notes">{reminder.notes}</span>
                       )}
                       <Waiting shown={outbox.waiting.has(reminder.guid)} />
-                      {(due || repeat || justMoved || (showListName && home)) && (
+                      {(due || repeat || justMoved || (showListName && home) || rowTags.length > 0) && (
                         <span className="rx-meta">
                           {justMoved ? (
                             <span className="rx-moved" role="status">
@@ -1426,14 +1833,48 @@ export function RemindersView() {
                                   <span className="visually-hidden">{repeat}</span>
                                 </span>
                               )}
+                              {rowTags.map((name) => (
+                                <button
+                                  key={name}
+                                  type="button"
+                                  className="rx-tag"
+                                  tabIndex={-1}
+                                  aria-label={`Show reminders tagged ${name}`}
+                                  onClick={() => openTag(name)}
+                                >
+                                  #{name}
+                                </button>
+                              ))}
                             </>
                           )}
                         </span>
                       )}
 
                       {isOpen && (
-                        <div className="rx-detail">
-<DueField reminder={reminder} onChange={(day, time) => void setDue(reminder, day, time)} />
+                        <div className="rx-detail" role="group" aria-label={`Info for ${reminder.title}`}>
+                          <label className="rx-field rx-field-notes">
+                            <span>Notes</span>
+                            <textarea
+                              className="field"
+                              defaultValue={reminder.notes ?? ""}
+                              key={`n${reminder.guid}`}
+                              rows={2}
+                              placeholder="Add Note"
+                              onBlur={(e) => void setNotes(reminder, e.target.value)}
+                            />
+                          </label>
+                          <UrlField
+                            reminder={reminder}
+                            url={detailOf?.guid === reminder.guid ? detailOf.url : null}
+                            onSave={(url) => void setUrl(reminder, url)}
+                          />
+                          <div className="rx-detail-rule" aria-hidden="true" />
+                          <DueField reminder={reminder} onChange={(day, time) => void setDue(reminder, day, time)} />
+                          <EarlyField
+                            reminder={reminder}
+                            alerts={detailOf?.guid === reminder.guid ? detailOf.earlyAlerts : []}
+                            onChange={(alert) => void setEarly(reminder, alert)}
+                          />
                           <div className="rx-field">
                             <span>Repeat</span>
                             <Picker
@@ -1454,14 +1895,21 @@ export function RemindersView() {
                             />
                           </div>
                           {reminder.dueAt === null && (
-                            <p className="rx-hint">Give this a date before asking it to repeat.</p>
+                            <p className="rx-hint">Add a date to repeat it.</p>
                           )}
+                          <div className="rx-detail-rule" aria-hidden="true" />
+                          <TagsField
+                            reminder={reminder}
+                            tags={rowTags}
+                            onOpen={openTag}
+                            onAdd={(name) => void tagAdd(reminder, name)}
+                            onRemove={(name) => void tagRemove(reminder, name)}
+                          />
                           <div className="rx-field">
                             <span>Priority</span>
                             <Picker
                               label={`Priority for ${reminder.title}`}
                               value={String(reminder.priority)}
-                              
                               onChange={(v) => void setPriority(reminder, Number(v))}
                               options={PRIORITIES.map((p) => ({
                                 value: String(p.value),
@@ -1474,20 +1922,30 @@ export function RemindersView() {
                             <Picker
                               label={`List for ${reminder.title}`}
                               value={reminder.listGuid}
-                              
                               onChange={(guid) => void moveToList(reminder, guid)}
                               options={lists.map((l) => ({ value: l.guid, label: l.title }))}
                             />
                           </div>
-                          <label className="rx-field">
-                            <span>Notes</span>
-                            <textarea
-                              className="field"
-                              defaultValue={reminder.notes ?? ""}
-                              rows={2}
-                              onBlur={(e) => void setNotes(reminder, e.target.value)}
-                            />
-                          </label>
+                          {inList && listSections.length > 0 && (
+                            <div className="rx-field">
+                              <span>Section</span>
+                              {REMINDER_DETAIL_WRITES ? (
+                                <Picker
+                                  label={`Section for ${reminder.title}`}
+                                  value={sectionOf(reminder) ?? ""}
+                                  onChange={(guid) => void moveToSection(reminder, guid || null)}
+                                  options={[
+                                    { value: "", label: "None" },
+                                    ...listSections.map((x) => ({ value: x.guid, label: x.title })),
+                                  ]}
+                                />
+                              ) : (
+                                <span className="rx-value">
+                                  {listSections.find((x) => x.guid === sectionOf(reminder))?.title ?? "None"}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           <div className="rx-detail-actions">
                             {depth > 0 ? (
                               <button
@@ -1508,7 +1966,7 @@ export function RemindersView() {
                               className="link danger"
                               aria-label={`Delete ${reminder.title}`}
                               
-                              onClick={() => remove(reminder)}
+                              onClick={() => void askRemove(reminder)}
                             >
                               Delete
                             </button>
@@ -1549,13 +2007,39 @@ export function RemindersView() {
 
         {addRow}
 
+        {inList && REMINDER_DETAIL_WRITES && !searching && (
+          namingSection === "new" ? (
+            <input
+              className="field rx-section-name"
+              autoFocus
+              placeholder="Section name"
+              aria-label="New section name"
+              onBlur={(e) => {
+                setNamingSection(null);
+                void createSection(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") {
+                  e.currentTarget.value = "";
+                  e.currentTarget.blur();
+                }
+              }}
+            />
+          ) : (
+            <button className="link rx-add-section" onClick={() => setNamingSection("new")}>
+              Add Section
+            </button>
+          )
+        )}
+
         {loaded && items.length === 0 && !error && lists.length > 0 && (
           <EmptyState className="rx-empty">
             {searching
               ? "No reminders match."
               : inList
                 ? showDone
-                  ? "Nothing in this list."
+                  ? "Nothing in this list yet."
                   : "All done here."
                 : "No Reminders"}
           </EmptyState>
@@ -1586,8 +2070,19 @@ export function RemindersView() {
                       .map((l) => ({ label: l.title, run: () => void moveToList(r, l.guid) })),
                   }]
                 : []),
+              ...(REMINDER_DETAIL_WRITES && inList && listSections.length > 0
+                ? [{
+                    label: "Move to Section",
+                    submenu: [
+                      ...(sectionOf(r) ? [{ label: "None", run: () => void moveToSection(r, null) }] : []),
+                      ...listSections
+                        .filter((x) => x.guid !== sectionOf(r) && !x.guid.startsWith(STAND_IN))
+                        .map((x) => ({ label: x.title, run: () => void moveToSection(r, x.guid) })),
+                    ],
+                  }]
+                : []),
               null,
-              { label: "Delete", danger: true, run: () => void remove(r) },
+              { label: "Delete", danger: true, run: () => void askRemove(r) },
             ];
           })()}
         />
@@ -1749,6 +2244,141 @@ function DueField({ reminder, onChange }: { reminder: Reminder; onChange: (day: 
             hours={at.getHours()}
             minutes={at.getMinutes()}
             onChange={(h, m) => onChange(day, `${pad(h)}:${pad(m)}`)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The reminder's link: opened in the browser with a click. Typed in or cleared once Apple takes
+ * the change (REMINDER_DETAIL_WRITES); until then shown only where there is one.
+ */
+function UrlField({ reminder, url, onSave }: { reminder: Reminder; url: string | null; onSave: (url: string | null) => void }) {
+  if (!REMINDER_DETAIL_WRITES) {
+    if (!url) return null;
+    return (
+      <div className="rx-field">
+        <span>URL</span>
+        <a className="rx-url" href={url} target="_blank" rel="noreferrer" title={url}>
+          {url.replace(/^https?:\/\//, "").replace(/\/$/, "")}
+        </a>
+      </div>
+    );
+  }
+  return (
+    <label className="rx-field">
+      <span>URL</span>
+      <input
+        className="field"
+        type="url"
+        key={`${reminder.guid}-${url ?? ""}`}
+        defaultValue={url ?? ""}
+        placeholder="Add URL"
+        aria-label={`URL for ${reminder.title}`}
+        onBlur={(e) => {
+          const typed = e.target.value.trim();
+          if (typed !== (url ?? "")) onSave(typed || null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") {
+            e.currentTarget.value = url ?? "";
+            e.currentTarget.blur();
+          }
+        }}
+      />
+    </label>
+  );
+}
+
+/** "30 minutes early": a second alert before the due one. Shown once there is a date. */
+function EarlyField({ reminder, alerts, onChange }: {
+  reminder: Reminder;
+  alerts: { count: number; unit: number }[];
+  onChange: (alert: [number, number] | null) => void;
+}) {
+  const said = alerts.map((a) => earlyText(a.count, a.unit)).join(", ");
+  if (!REMINDER_DETAIL_WRITES) {
+    if (!alerts.length) return null;
+    return (
+      <div className="rx-field">
+        <span>Early alert</span>
+        <span className="rx-value">{said}</span>
+      </div>
+    );
+  }
+  if (reminder.dueAt === null && !alerts.length) return null;
+  const now = alerts[0] ? `${alerts[0].count}:${alerts[0].unit}` : "none";
+  const known = EARLY_CHOICES.some(([c, u]) => `${c}:${u}` === now);
+  return (
+    <div className="rx-field">
+      <span>Early alert</span>
+      <Picker
+        label={`Early alert for ${reminder.title}`}
+        value={now}
+        onChange={(v) => {
+          if (v === now) return;
+          const [c, u] = v.split(":").map(Number);
+          onChange(v === "none" ? null : [c, u]);
+        }}
+        options={[
+          { value: "none", label: "None" },
+          ...(!known && alerts[0] ? [{ value: now, label: said }] : []),
+          ...EARLY_CHOICES.map(([c, u]) => ({ value: `${c}:${u}`, label: earlyText(c, u) })),
+        ]}
+      />
+    </div>
+  );
+}
+
+/** Tags as Apple writes them, #name. Tap one to see everything carrying it. */
+function TagsField({ reminder, tags, onOpen, onAdd, onRemove }: {
+  reminder: Reminder;
+  tags: string[];
+  onOpen: (name: string) => void;
+  onAdd: (name: string) => void;
+  onRemove: (name: string) => void;
+}) {
+  const [typed, setTyped] = useState("");
+  if (!REMINDER_DETAIL_WRITES && tags.length === 0) return null;
+  return (
+    <div className="rx-field">
+      <span>Tags</span>
+      <div className="rx-tag-field">
+        {tags.map((name) => (
+          <span className="rx-tag is-chip" key={name}>
+            <button type="button" className="rx-tag-name" onClick={() => onOpen(name)} aria-label={`Show reminders tagged ${name}`}>
+              #{name}
+            </button>
+            {REMINDER_DETAIL_WRITES && (
+              <button type="button" className="rx-tag-remove" aria-label={`Remove tag ${name}`} onClick={() => onRemove(name)}>
+                <X aria-hidden="true" size={11} strokeWidth={2.5} />
+              </button>
+            )}
+          </span>
+        ))}
+        {REMINDER_DETAIL_WRITES && (
+          <input
+            className="rx-tag-input"
+            value={typed}
+            placeholder={tags.length ? "Add" : "Add Tag"}
+            aria-label={`Add a tag to ${reminder.title}`}
+            onChange={(e) => setTyped(e.target.value.replace(/\s/g, ""))}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || e.key === "," || e.key === " ") && typed.replace(/^#+/, "")) {
+                e.preventDefault();
+                onAdd(typed);
+                setTyped("");
+              } else if (e.key === "Backspace" && !typed && tags.length) {
+                onRemove(tags[tags.length - 1]);
+              }
+            }}
+            onBlur={() => {
+              if (typed.replace(/^#+/, "")) onAdd(typed);
+              setTyped("");
+            }}
           />
         )}
       </div>
