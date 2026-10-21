@@ -58,9 +58,8 @@ pub fn open(app: &AppHandle, key: &str) {
         return;
     };
     if let Some(w) = app.get_webview_window(&label(key)) {
-        w.show().ok();
         w.unminimize().ok();
-        w.set_focus().ok();
+        show(&w);
         return;
     }
     let made = WebviewWindowBuilder::new(
@@ -84,16 +83,35 @@ pub fn open(app: &AppHandle, key: &str) {
     if crate::tiling_compositor() {
         window.set_decorations(false).ok();
     }
+    // Shown by its window_ready once drawn; if that never comes (a page slow to load, a
+    // keyring that does not answer), shown anyway — never a launch that opens nothing.
+    let w = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if !w.is_visible().unwrap_or(true) {
+            show(&w);
+        }
+    });
+}
+
+/// An app's window put on screen, and — now that it is there — told its own app ID: GTK
+/// takes a window's app ID only once the window is shown (measured: set before, it was
+/// silently dropped and the window went on saying the program's name).
+pub fn show(window: &tauri::WebviewWindow) {
+    window.show().ok();
+    window.set_focus().ok();
     #[cfg(target_os = "linux")]
-    {
-        let id = app_id(app, key);
+    if let Some(key) = window.label().strip_prefix("app-") {
+        let id = app_id(window.app_handle(), key);
         let w = window.clone();
-        app.run_on_main_thread(move || own_app_id(&w, &id)).ok();
+        window
+            .app_handle()
+            .run_on_main_thread(move || own_app_id(&w, &id))
+            .ok();
     }
 }
 
-/// On Wayland, the window says it is its app, not Pomander as a whole. Set before it is first
-/// shown, so a dock and the compositor's rules see it as that app from the start.
+/// On Wayland, the window says it is its app, not Pomander as a whole.
 #[cfg(target_os = "linux")]
 fn own_app_id(window: &tauri::WebviewWindow, id: &str) {
     use glib::translate::ToGlibPtr;
@@ -107,7 +125,6 @@ fn own_app_id(window: &tauri::WebviewWindow, id: &str) {
     let Ok(gtk_window) = window.gtk_window() else {
         return;
     };
-    gtk_window.realize();
     let Some(gdk_window) = gtk_window.window() else {
         return;
     };

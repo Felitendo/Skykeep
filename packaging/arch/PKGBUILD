@@ -84,4 +84,8 @@ package() {
     "$pkgdir/usr/share/applications/dev.quince.client.desktop"
   install -Dm644 src-tauri/icons/icon.png \
     "$pkgdir/usr/share/icons/hicolor/512x512/apps/dev.quince.client.png"
+  # The six apps, each its own launcher entry (pomander --app notes, …).
+  for entry in packaging/apps/*.desktop; do
+    install -Dm644 "$entry" "$pkgdir/usr/share/applications/$(basename "$entry")"
+  done
 }

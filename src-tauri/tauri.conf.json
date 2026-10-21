@@ -61,7 +61,13 @@
         ],
         "desktopTemplate": "../packaging/dev.quince.client.desktop.in",
         "files": {
-          "/usr/share/metainfo/dev.quince.client.metainfo.xml": "../packaging/dev.quince.client.metainfo.xml"
+          "/usr/share/metainfo/dev.quince.client.metainfo.xml": "../packaging/dev.quince.client.metainfo.xml",
+          "/usr/share/applications/dev.quince.client.Notes.desktop": "../packaging/apps/dev.quince.client.Notes.desktop",
+          "/usr/share/applications/dev.quince.client.Reminders.desktop": "../packaging/apps/dev.quince.client.Reminders.desktop",
+          "/usr/share/applications/dev.quince.client.Calendar.desktop": "../packaging/apps/dev.quince.client.Calendar.desktop",
+          "/usr/share/applications/dev.quince.client.Contacts.desktop": "../packaging/apps/dev.quince.client.Contacts.desktop",
+          "/usr/share/applications/dev.quince.client.Drive.desktop": "../packaging/apps/dev.quince.client.Drive.desktop",
+          "/usr/share/applications/dev.quince.client.Photos.desktop": "../packaging/apps/dev.quince.client.Photos.desktop"
         }
       },
       "rpm": {
@@ -71,7 +77,13 @@
         ],
         "desktopTemplate": "../packaging/dev.quince.client.desktop.in",
         "files": {
-          "/usr/share/metainfo/dev.quince.client.metainfo.xml": "../packaging/dev.quince.client.metainfo.xml"
+          "/usr/share/metainfo/dev.quince.client.metainfo.xml": "../packaging/dev.quince.client.metainfo.xml",
+          "/usr/share/applications/dev.quince.client.Notes.desktop": "../packaging/apps/dev.quince.client.Notes.desktop",
+          "/usr/share/applications/dev.quince.client.Reminders.desktop": "../packaging/apps/dev.quince.client.Reminders.desktop",
+          "/usr/share/applications/dev.quince.client.Calendar.desktop": "../packaging/apps/dev.quince.client.Calendar.desktop",
+          "/usr/share/applications/dev.quince.client.Contacts.desktop": "../packaging/apps/dev.quince.client.Contacts.desktop",
+          "/usr/share/applications/dev.quince.client.Drive.desktop": "../packaging/apps/dev.quince.client.Drive.desktop",
+          "/usr/share/applications/dev.quince.client.Photos.desktop": "../packaging/apps/dev.quince.client.Photos.desktop"
         }
       },
       "appimage": {

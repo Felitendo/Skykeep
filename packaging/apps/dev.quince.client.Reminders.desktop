@@ -1,0 +1,15 @@
+# One of Pomander's six apps, on its own in the launcher. Its window says this file's name as
+# its app ID (src-tauri/src/apps.rs), so a dock shows it as this app. All six run in one
+# Pomander: one sign-in, one library.
+[Desktop Entry]
+Type=Application
+Name=Reminders
+GenericName=Reminders for iCloud
+Comment=Reminders from iCloud, on this computer
+Exec=pomander --app reminders
+Icon=dev.quince.client
+Terminal=false
+Categories=Office;
+Keywords=Pomander;iCloud;todo;tasks;lists;
+StartupNotify=true
+StartupWMClass=dev.quince.client.Reminders

@@ -13,3 +13,28 @@ Categories={{categories}}
 Keywords=iCloud;calendar;reminders;notes;contacts;sync;
 StartupNotify=true
 StartupWMClass={{exec}}
+Actions=notes;reminders;calendar;contacts;drive;photos;
+
+[Desktop Action notes]
+Name=Notes
+Exec={{exec}} --app notes
+
+[Desktop Action reminders]
+Name=Reminders
+Exec={{exec}} --app reminders
+
+[Desktop Action calendar]
+Name=Calendar
+Exec={{exec}} --app calendar
+
+[Desktop Action contacts]
+Name=Contacts
+Exec={{exec}} --app contacts
+
+[Desktop Action drive]
+Name=Drive
+Exec={{exec}} --app drive
+
+[Desktop Action photos]
+Name=Photos
+Exec={{exec}} --app photos

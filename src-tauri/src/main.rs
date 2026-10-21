@@ -4020,8 +4020,7 @@ pub(crate) fn tiling_compositor() -> bool {
 fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: Option<bool>) {
     // An app's own window (Notes, Reminders…): shown once it has drawn.
     if window.label() != "main" {
-        window.show().ok();
-        window.set_focus().ok();
+        apps::show(&window);
         return;
     }
     // Opened as one app from its launcher entry: the whole-library window stays put away.
