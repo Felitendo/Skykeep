@@ -8,6 +8,11 @@ name: Windows build
 
 on:
   workflow_dispatch:
+    inputs:
+      test_first:
+        description: "Run the whole test suite on Windows before building"
+        type: boolean
+        default: true
   push:
     tags: ["v*"]
 
@@ -16,6 +21,7 @@ permissions:
 
 jobs:
   test:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_first }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -34,6 +40,8 @@ jobs:
 
   build:
     needs: test
+    # After the tests pass — or straight away when a build was asked for without them.
+    if: ${{ !cancelled() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
