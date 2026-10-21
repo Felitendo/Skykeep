@@ -25,7 +25,7 @@ const ZONE: &str = "Notes";
 pub struct AttachmentInfo {
     pub id: String,
     pub uti: String,
-    /// `image`, `document` (PDF, scan), `audio`, `video`, or `file`.
+    /// `image`, `drawing`, `table`, `document` (PDF, scan), `audio`, `video`, or `file`.
     pub kind: &'static str,
     pub filename: Option<String>,
     pub title: Option<String>,
@@ -47,6 +47,10 @@ pub fn kind_of(uti: &str) -> &'static str {
         "com.apple.paper" | "com.apple.drawing" | "com.apple.drawing.2"
     ) {
         return "drawing";
+    }
+    // A table: drawn as its grid, never offered as a file to open.
+    if u == crate::table::UTI {
+        return "table";
     }
     if matches!(
         u.as_str(),
@@ -272,6 +276,8 @@ mod tests {
         // FallbackImage (1536×1242 for a 768×621 drawing) and two previews.
         assert_eq!(kind_of("com.apple.paper"), "drawing");
         assert_eq!(kind_of("com.apple.drawing.2"), "drawing");
+        // A table is never a file to open, even one the table reader cannot read.
+        assert_eq!(kind_of("com.apple.notes.table"), "table");
         assert_eq!(kind_of("com.apple.m4a-audio"), "audio");
         assert_eq!(kind_of("public.mpeg-4-audio"), "audio");
         assert_eq!(kind_of("com.apple.quicktime-movie"), "video");

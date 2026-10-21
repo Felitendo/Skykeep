@@ -42,11 +42,12 @@ for (const scheme of ["light", "dark"]) {
   // The Aa panel shows it ticked, and takes it off.
   await page.getByRole("button", { name: /^(Aa|Format)/ }).first().click().catch(() => page.locator(".notes-aa").click());
   await page.waitForTimeout(150);
-  const item = page.getByRole("menuitemcheckbox", { name: "Block Quote" });
-  ok((await item.getAttribute("aria-checked")) === "true", `${scheme}: Aa shows Block Quote ticked on a quoted line`);
+  const item = page.locator(".format-panel").getByRole("button", { name: "Block Quote" });
+  ok((await item.getAttribute("aria-pressed")) === "true", `${scheme}: Aa shows Block Quote on for a quoted line`);
   await item.click();
   await page.waitForTimeout(150);
   ok((await bar("Yashps")) === 0, `${scheme}: and takes it off`);
+  await page.keyboard.press("Escape");
   // Return on an empty quoted line ends the quote.
   // At the line's start: its middle is a link, and a click there opens it.
   await atStart("Read");

@@ -34,8 +34,10 @@ export function refreshTables() {
   liveTables.forEach((read) => read());
 }
 
-/** Whether tables can be edited here. Off until an edit made here is seen on an iPhone. */
-const TABLE_WRITES = false;
+/** Whether a table's cells can be edited here: on since a cell set here showed on an iPhone. */
+const TABLE_CELL_WRITES = true;
+/** Whether rows and columns can be added and removed: off until one made here is seen there. */
+const TABLE_LINE_WRITES = false;
 
 /** A table's right-click menu: drawn by the editor that holds the table, opened by a cell. */
 type CellMenu = { at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] };
@@ -150,6 +152,15 @@ function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     dark.addEventListener("click", show);
     dom.className = "nf-attachment is-image is-drawing";
     dom.replaceChildren(light, dark);
+  } else if (info.kind === "table") {
+    // A table this app cannot read yet: said plainly, where it stands, never offered as a file
+    // to open. It is read again after every sync, and drawn as its grid once it can be.
+    const box = document.createElement("span");
+    box.className = "nf-table-unread";
+    box.textContent = "Table — can’t be shown here yet. It’s unchanged on your other devices.";
+    dom.className = "nf-attachment is-table-unread";
+    dom.title = "";
+    dom.replaceChildren(box);
   } else if ((info.kind === "document" || info.kind === "video") && info.hasPreview) {
     const figure = document.createElement("button");
     figure.type = "button";
@@ -184,15 +195,14 @@ function attachmentView(node: PMNode) {
       row.forEach((cell, c) => {
         const td = tr.insertCell();
         const was = cell.trimEnd();
-        // Read-only for now: what Quince wrote to a table was stored at Apple but did not show
-        // on his iPhone, so no table is written until a write is seen there.
-        if (!id || !TABLE_WRITES) {
+        if (!id || !TABLE_CELL_WRITES) {
           td.textContent = was;
           td.className = was ? "nf-cell" : "nf-cell-empty";
           return;
         }
         // Right-click, as in Notes: a row added above or below this one.
         td.addEventListener("contextmenu", (e) => {
+          if (!TABLE_LINE_WRITES) return;
           e.preventDefault();
           const add = (at: number, column = false) => () => {
             dom.classList.add("is-saving");
@@ -280,7 +290,7 @@ function attachmentView(node: PMNode) {
     // Read again after every sync, so a table typed in on a phone shows its new cells here
     // without leaving the note; drawn again only when they changed.
     liveTables.set(dom, () => {
-      if (!dom.classList.contains("is-table")) return;
+      if (!dom.classList.contains("is-table") && !dom.classList.contains("is-table-unread")) return;
       api.noteTable(id).then(
         (cells) => {
           if (cells && cells.length && JSON.stringify(cells) !== JSON.stringify(tableCells.get(id))) draw(cells);
@@ -307,9 +317,17 @@ export type EditorStatus = {
   strike: boolean;
   checklist: boolean;
   quote: boolean;
+  /** The text colour where the cursor is (1 purple … 5 blue), as Notes' colour menu ticks it. */
+  colour: number | null;
 };
 
 export type EditorHandle = {
+  /** Text colour on the selection (or on what is typed next), or none. */
+  setColour: (colour: number | null) => void;
+  /** Indent or outdent the lines the selection touches. */
+  indent: (by: 1 | -1) => void;
+  /** Move the lines the selection touches up or down past the next line. */
+  moveLines: (by: 1 | -1) => void;
   /** Block Quote on the lines the selection touches, or off. */
   toggleQuote: () => void;
   /** Set every line the selection touches to one of Notes' styles. */
@@ -392,6 +410,49 @@ function shift(by: 1 | -1, onlyLists: boolean): Command {
   };
 }
 
+/** Notes' text colour on the selection, or on what is typed next when nothing is selected. */
+function colour(c: number | null): Command {
+  return (state, dispatch) => {
+    const type = schema.marks.emphasis;
+    const { from, to, empty } = state.selection;
+    const tr = state.tr;
+    if (empty) {
+      tr.removeStoredMark(type);
+      if (c) tr.addStoredMark(type.create({ color: c }));
+    } else {
+      tr.removeMark(from, to, type);
+      if (c) tr.addMark(from, to, type.create({ color: c }));
+    }
+    dispatch?.(tr);
+    return true;
+  };
+}
+
+/**
+ * The lines the selection touches moved up or down past one line, as Notes' Move Line Up
+ * and Down do — the cursor and selection go with them, and a table moves with its line.
+ */
+function moveLines(by: 1 | -1): Command {
+  return (state, dispatch) => {
+    const lines = linesIn(state);
+    if (!lines.length) return false;
+    const start = lines[0].pos;
+    const end = lines[lines.length - 1].pos + lines[lines.length - 1].node.nodeSize;
+    const first = state.doc.resolve(start).index(0);
+    const last = first + lines.length - 1;
+    if (by < 0 ? first === 0 : last >= state.doc.childCount - 1) return false;
+    const past = state.doc.child(by < 0 ? first - 1 : last + 1).nodeSize;
+    const block = state.doc.slice(start, end).content;
+    const tr = state.tr.delete(start, end);
+    const shiftBy = by < 0 ? -past : past;
+    tr.insert(start + (by < 0 ? -past : past), block);
+    const { from, to } = state.selection;
+    tr.setSelection(TextSelection.create(tr.doc, from + shiftBy, to + shiftBy));
+    dispatch?.(tr.scrollIntoView());
+    return true;
+  };
+}
+
 const parentOf = (state: EditorState) => state.selection.$from.parent;
 const inList = (state: EditorState) => LIST_STYLES.includes(parentOf(state).attrs.style);
 
@@ -456,6 +517,8 @@ function statusOf(state: EditorState): EditorStatus {
     strike: has("strike"),
     checklist: p.attrs.style === STYLE.checklist,
     quote: Boolean(p.attrs.quote),
+    colour: ((empty ? marks : state.doc.resolve(from).marksAcross(state.doc.resolve(to)) ?? marks).find((m) => m.type === schema.marks.emphasis)
+      ?.attrs.color as number | undefined) ?? null,
   };
 }
 
@@ -512,6 +575,9 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           "Mod-i": toggleMark(schema.marks.italic),
           "Mod-u": toggleMark(schema.marks.underline),
           "Mod-'": toggleQuote,
+          // Move Line Up and Down, as Notes on a Mac has them (Control-Command-Up and Down).
+          "Mod-Alt-ArrowUp": moveLines(-1),
+          "Mod-Alt-ArrowDown": moveLines(1),
           "Mod-]": shift(1, false),
           "Mod-[": shift(-1, false),
           Tab: tab,
@@ -645,6 +711,24 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       const v = view.current;
       if (!v) return;
       toggleChecklistCmd(v.state, v.dispatch);
+      v.focus();
+    },
+    setColour: (c) => {
+      const v = view.current;
+      if (!v) return;
+      colour(c)(v.state, v.dispatch);
+      v.focus();
+    },
+    indent: (by) => {
+      const v = view.current;
+      if (!v) return;
+      shift(by, false)(v.state, v.dispatch);
+      v.focus();
+    },
+    moveLines: (by) => {
+      const v = view.current;
+      if (!v) return;
+      moveLines(by)(v.state, v.dispatch);
       v.focus();
     },
     toggleQuote: () => {

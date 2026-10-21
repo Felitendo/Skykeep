@@ -1000,6 +1000,9 @@ export function NotesView() {
                         onStyle={(style) => editorRef.current?.setStyle(style)}
                         onMark={(mark) => editorRef.current?.toggleMark(mark)}
                         onQuote={() => editorRef.current?.toggleQuote()}
+                        onColour={(c) => editorRef.current?.setColour(c)}
+                        onIndent={(by) => editorRef.current?.indent(by)}
+                        onMove={(by) => editorRef.current?.moveLines(by)}
                       />
                     )}
                   </>

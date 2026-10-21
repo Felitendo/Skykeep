@@ -592,7 +592,7 @@ export type AccountInfo = {
 export type NoteAttachment = {
   id: string;
   uti: string;
-  kind: "image" | "drawing" | "document" | "audio" | "video" | "file";
+  kind: "image" | "drawing" | "table" | "document" | "audio" | "video" | "file";
   filename: string | null;
   title: string | null;
   width: number | null;

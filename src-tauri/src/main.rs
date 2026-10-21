@@ -1981,11 +1981,15 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 }
 
 /// A table's cells, row by row, as the last pass read them — `None` when none are known.
-/// Whether Quince writes to Notes tables. Off: Apple stored what Quince wrote, but his iPhone
-/// did not show it (2026-10-19), so no table is written until a write is seen on the phone.
-const TABLE_WRITES: bool = false;
+/// Whether Quince writes a table's cells. On: a cell set here — the table's and the note's
+/// modification dates stamped with it — showed on his iPhone (2026-10-21). Before those stamps
+/// (2026-10-19) Apple stored the write but the phone did not show it.
+const TABLE_CELL_WRITES: bool = true;
+/// Whether Quince adds and removes rows and columns: off until one made here is seen on the
+/// phone.
+const TABLE_LINE_WRITES: bool = false;
 const TABLE_WRITES_OFF: &str =
-    "Tables are read-only in Quince for now: edits made here did not show on iPhone yet.";
+    "Adding and removing rows and columns isn’t on in Quince yet: it waits to be seen working on an iPhone.";
 
 /// Add an empty row to a Notes table at `at` (0 is the top), as Notes does, and keep the
 /// table as Apple now holds it.
@@ -1997,7 +2001,7 @@ async fn note_table_add_row(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Vec<String>>> {
-    if !TABLE_WRITES {
+    if !TABLE_LINE_WRITES {
         return Err(TABLE_WRITES_OFF.into());
     }
     let (http, root, params) = cloudkit_context(&auth).await?;
@@ -2031,7 +2035,7 @@ async fn note_table_remove(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Vec<String>>> {
-    if !TABLE_WRITES {
+    if !TABLE_LINE_WRITES {
         return Err(TABLE_WRITES_OFF.into());
     }
     let (http, root, params) = cloudkit_context(&auth).await?;
@@ -2059,7 +2063,7 @@ async fn note_table_set_cell(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Vec<String>>> {
-    if !TABLE_WRITES {
+    if !TABLE_CELL_WRITES {
         return Err(TABLE_WRITES_OFF.into());
     }
     let (http, root, params) = cloudkit_context(&auth).await?;

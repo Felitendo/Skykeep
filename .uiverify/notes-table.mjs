@@ -1,5 +1,7 @@
-// A table in a note, drawn as its grid, its text colour shown, and copied as its cells.
-// Editing is off until an edit made here is seen on an iPhone.
+// A table in a note, drawn as its grid, its text colour shown, and copied as its cells. Its
+// cells are edited where they stand (a cell set here showed on an iPhone); adding and removing
+// rows and columns stays off until one made here is seen there. A table this app cannot read
+// says so where it stands — never a file to open.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
@@ -17,11 +19,19 @@ await page.waitForSelector(".nf-table");
 const grid = await page.locator(".nf-table tr").evaluateAll((rows) => rows.map((r) => [...r.cells].map((c) => c.textContent)));
 ok(JSON.stringify(grid) === JSON.stringify([["Item", "Qty"], ["Milk", "2"], ["", ""]]), `the table is drawn as its grid  ${JSON.stringify(grid)}`);
 
-// Read-only for now: Quince's table edits were stored at Apple but did not show on the
-// iPhone, so no cell is offered for typing and no table menu opens.
-ok((await page.locator(".nf-cell-edit").count()) === 0, "no table cell is offered for typing while table writes are off");
+// A cell typed into is saved to Apple, that cell alone.
+const empty = page.locator(".nf-table tr").nth(2).locator(".nf-cell-edit").first();
+ok((await empty.count()) === 1, "a table's cells are offered for typing, an empty one too");
+await empty.click();
+await page.keyboard.type("Eggs");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(500);
+const wrote = await page.evaluate(() => window.__cellWrites ?? []);
+ok(wrote.length === 1 && wrote[0].id === "T1" && wrote[0].row === 2 && wrote[0].column === 0 && wrote[0].text === "Eggs",
+  `typed into a cell, that cell is saved  ${JSON.stringify(wrote)}`);
+await page.evaluate(() => { window.__table[2] = ["", ""]; });
 await page.locator(".nf-table tr").nth(1).locator("td").first().click({ button: "right" });
-ok((await page.getByRole("menuitem", { name: /Add Row|Delete Row/ }).count()) === 0, "and right-click offers no row or column changes");
+ok((await page.getByRole("menuitem", { name: /Add Row|Delete Row/ }).count()) === 0, "right-click offers no row or column changes yet");
 await page.keyboard.press("Escape");
 const coloured = await page.locator(".note-rich .nf-em-4").evaluateAll((e) => e.map((x) => [x.textContent, getComputedStyle(x).color]));
 ok(coloured.length === 1 && coloured[0][0] === "end" && !/rgb\(29, 29, 31\)|rgb\(0, 0, 0\)/.test(coloured[0][1]), `text coloured on a phone shows in its colour  ${JSON.stringify(coloured)}`);
@@ -80,5 +90,17 @@ await page.evaluate(() => {
 await page.waitForTimeout(500);
 const after = await page.locator(".nf-table tr").nth(2).evaluate((r) => [...r.cells].map((c) => c.textContent));
 ok(JSON.stringify(after) === JSON.stringify(["Bread", "1"]), `a table changed elsewhere redraws after the next sync  ${JSON.stringify(after)}`);
+
+// A table this app cannot read: said so where it stands, never a file chip to open.
+const ctx2 = await b.newContext({ viewport: { width: 1280, height: 800 } });
+await ctx2.addInitScript(() => { window.__tableNote = true; window.__unreadTable = true; });
+await ctx2.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, notesFixture: true });
+const p2 = await ctx2.newPage();
+await p2.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await openScreen(p2, "Notes");
+await p2.locator(".note-row", { hasText: "Groceries" }).first().click();
+await p2.waitForTimeout(600);
+ok((await p2.locator(".nf-table-unread").count()) === 1 && (await p2.locator(".nf-file").count()) === 0,
+  `a table that can't be read says so, and is no file to open  ${await p2.locator(".nf-attachment").first().innerText().catch(() => "")}`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

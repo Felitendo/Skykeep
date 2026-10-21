@@ -263,7 +263,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             // "Groceries", a table on its own line, then a last line: the table's run names it.
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
             // "end" coloured mint on a phone (field 14).
-            return [plain(10), { ...plain(1), attachment: "T1" }, plain(1), { ...plain(3), emphasis: 4 }];
+            // `__unreadTable`: a table this app cannot read (U1).
+            return [plain(10), { ...plain(1), attachment: window.__unreadTable ? "U1" : "T1" }, plain(1), { ...plain(3), emphasis: 4 }];
           }
           // Curtains, set as a phone sets one: a title, then a dashed list and a ticked item.
           if (args.guid !== "n1") return [];
@@ -335,11 +336,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return !notesFixture ? [] : noteList.map((n) => ({ ...n }));
         case "note_attachment_info":
           if (args.id === "D1") return { id: "D1", uti: "com.apple.paper", kind: "drawing", filename: null, title: null, width: 768, height: 621, size: null, hasPreview: true };
+          if (args.id === "U1") return { id: "U1", uti: "com.apple.notes.table", kind: "table", filename: null, title: null, width: null, height: null, size: 1116, hasPreview: false };
           return args.id === "M1"
             ? { id: "M1", uti: "public.jpeg", kind: "image", filename: "beach.jpeg", title: null, width: 1200, height: 800, size: 271872, hasPreview: true }
             : { id: "M2", uti: "org.openxmlformats.spreadsheetml.sheet", kind: "file", filename: "Budget.xlsx", title: null, width: null, height: null, size: 9100, hasPreview: false };
         case "note_attachment_open": (window.__opened ??= []).push(args.id); return null;
-        case "note_table": if (/^[MD]/.test(String(args.id))) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
+        case "note_table": if (/^[MDU]/.test(String(args.id))) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
         case "photos_list": case "photos_counts": {
           const P = (id, takenAt, extra = {}) => ({ id, master: `m${id}`, takenAt, addedAt: takenAt, kind: "image",
             width: 4032, height: 3024, duration: null, filename: `IMG_${id}.JPG`, size: 2400000, uti: "public.jpeg",
