@@ -128,11 +128,14 @@ fn collection_from(v: &Value) -> Option<Calendar> {
 /// day wherever it is looked at, as on the phone. Read as midnight UTC (measured: the account
 /// stores it so), it fell on the day before for anyone west of Greenwich. So all-day dates are
 /// this machine's own midnight, which is where the interface draws a day.
+///
+/// A timed event with no zone floats, as Calendar calls it: 9:00 wherever it is looked at.
+/// Read as UTC it was drawn hours off, and an edit wrote that wrong instant back, moving the
+/// meeting on every device. So it too is this machine's clock.
 fn dates_zone(all_day: bool, timezone: Option<&str>) -> Option<String> {
-    if all_day {
-        TimeZone::system().iana_name().map(ToString::to_string)
-    } else {
-        timezone.map(ToString::to_string)
+    match timezone {
+        Some(zone) if !all_day => Some(zone.to_string()),
+        _ => TimeZone::system().iana_name().map(ToString::to_string),
     }
 }
 
@@ -488,6 +491,25 @@ impl<'a> CalendarClient<'a> {
         repeat: Option<Option<&EventRepeat>>,
         scope: Option<Scope>,
     ) -> Result<Snapshot> {
+        self.put_event_moved(event, ctag, alerts, repeat, scope, None)
+            .await
+    }
+
+    /// [`Self::put_event_full`] for an event that may be moving from another calendar:
+    /// `from` is that calendar and its ctag. As icloud.com moves one: the event is read where it
+    /// is, named with `oldpGuid`, and both calendars go in the client state. Read under the
+    /// new calendar it was not found, and was rebuilt from nothing — its alerts, guests and
+    /// repeat gone — and written as a second event.
+    pub async fn put_event_moved(
+        &self,
+        event: &Event,
+        ctag: Option<&str>,
+        alerts: Option<&[i64]>,
+        repeat: Option<Option<&EventRepeat>>,
+        scope: Option<Scope>,
+        from: Option<(&str, Option<&str>)>,
+    ) -> Result<Snapshot> {
+        let from = from.filter(|(old, _)| *old != event.calendar_guid);
         // One occurrence of a repeating event, sent as though it were an event of its own,
         // made Apple take it as the whole series — measured: a weekly event three times over
         // came back one event, repeating no more. An occurrence is changed only with its
@@ -518,7 +540,14 @@ impl<'a> CalendarClient<'a> {
         // repeats in — and Apple takes the whole event on every write. Building one from
         // our own fields alone did not merely drop those, it cleared them: a weekly meeting
         // edited here came back a one-off with no alerts and no guests.
-        let detail = self.event_detail_body(event, &day).await?;
+        let detail = match from {
+            Some((old, _)) => {
+                let mut there = event.clone();
+                there.calendar_guid = old.to_string();
+                self.event_detail_body(&there, &day).await?
+            }
+            None => self.event_detail_body(event, &day).await?,
+        };
         let existing = detail.as_ref().and_then(event_of);
         // For the whole series from one of its occurrences, the series keeps its own dates —
         // icloud.com sends the master's start and end — moved by however far this occurrence
@@ -582,11 +611,9 @@ impl<'a> CalendarClient<'a> {
             .unwrap_or_default();
         let alarms: Vec<Value> = match alerts {
             None => held,
-            Some(minutes) => minutes
-                .iter()
-                .take(2) // as icloud.com allows: an alert and a second alert
-                .map(|m| alarm_for(&owner, *m))
-                .collect(),
+            // Every one asked for: icloud.com shows two, but an event made on a Mac can hold
+            // more, and cutting to two deleted the rest from every device.
+            Some(minutes) => minutes.iter().map(|m| alarm_for(&owner, *m)).collect(),
         };
         // Only a change of alerts rewrites the event's list of them; otherwise it goes back
         // exactly as Apple sent it, beside the alert objects it names.
@@ -602,6 +629,12 @@ impl<'a> CalendarClient<'a> {
             "Event": event_value,
             "ClientState": client_state(&event.calendar_guid, ctag),
         });
+        if let Some((old, old_ctag)) = from {
+            body["Event"]["oldpGuid"] = Value::from(old);
+            if let Some(list) = body["ClientState"]["Collection"].as_array_mut() {
+                list.push(serde_json::json!({ "guid": old, "ctag": old_ctag }));
+            }
+        }
         if !alarms.is_empty() {
             body["Alarm"] = Value::Array(alarms);
         }

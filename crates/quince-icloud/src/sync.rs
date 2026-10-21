@@ -156,7 +156,7 @@ pub async fn save_event(
     ctag: Option<&str>,
     event: &quince_core::calendar::Event,
 ) -> Result<Vec<quince_core::calendar::Event>> {
-    save_event_with_alerts(http, root, params, ctag, event, None, None, None).await
+    save_event_with_alerts(http, root, params, ctag, event, None, None, None, None).await
 }
 
 /// [`save_event`], with the event's alerts set to `alerts` when given.
@@ -170,10 +170,11 @@ pub async fn save_event_with_alerts(
     alerts: Option<&[i64]>,
     repeat: Option<Option<&crate::calendar::EventRepeat>>,
     scope: Option<crate::calendar::Scope>,
+    from: Option<(&str, Option<&str>)>,
 ) -> Result<Vec<quince_core::calendar::Event>> {
     let client = CalendarClient::new(http, root, params);
     let answer = client
-        .put_event_full(event, ctag, alerts, repeat, scope)
+        .put_event_moved(event, ctag, alerts, repeat, scope, from)
         .await?;
     // What goes into the library is what Apple holds, never what was sent. Measured: a save
     // to the account answers with an empty list, and storing the sent copy instead kept an
@@ -186,13 +187,30 @@ pub async fn save_event_with_alerts(
     let zone = crate::calendar::event_zone(event);
     let day = crate::calendar::day_of(event.starts_at, zone.as_deref());
     let tz = zone.as_deref().unwrap_or("UTC");
+    // A repeat set or cleared, or a series split, gives the day's occurrence another id than
+    // the one sent (`S` and `S__<start>` are one series): found by its series, not its id.
+    let series = event
+        .guid
+        .split("__")
+        .next()
+        .unwrap_or(&event.guid)
+        .to_string();
+    let reshaped = repeat.is_some() || scope.is_some() || series != event.guid;
     let kept: Vec<_> = client
         .events(&day, &day, tz)
         .await?
         .events
         .into_iter()
-        .filter(|e| e.guid == event.guid)
+        .filter(|e| {
+            e.guid == event.guid
+                || (reshaped && (e.guid == series || e.guid.starts_with(&format!("{series}__"))))
+        })
         .collect();
+    // A series split ("this and future") lands under a new id Apple chooses: saved all the same,
+    // and the next pass brings it.
+    if kept.is_empty() && reshaped {
+        return Ok(kept);
+    }
     if kept.is_empty() {
         return Err(Error::Protocol(
             "iCloud took the event but did not keep it — nothing was saved".into(),

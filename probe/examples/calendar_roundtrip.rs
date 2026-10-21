@@ -63,8 +63,10 @@ async fn main() -> Result<()> {
                 calendar_guid: calendar.guid.clone(),
                 title: "Quince all day — safe to delete".into(),
                 location: None,
-                starts_at: start - start % 86_400,
-                ends_at: start - start % 86_400 + 86_400,
+                // A day on the calendar is this machine's midnight to midnight, as Quince reads
+                // an all-day event (Apple keeps no zone on one).
+                starts_at: local_midnight(start),
+                ends_at: local_midnight(start + 86_400),
                 all_day: true,
                 timezone: Some(tz.clone()),
                 url: None,
@@ -144,4 +146,14 @@ async fn main() -> Result<()> {
     }
     println!("every field survived the round trip, and nothing was left behind");
     Ok(())
+}
+
+/// The local midnight starting the day `s` falls on.
+fn local_midnight(s: i64) -> i64 {
+    let zoned = jiff::Timestamp::from_second(s)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(jiff::tz::TimeZone::system());
+    zoned
+        .start_of_day()
+        .map_or(s, |z| z.timestamp().as_second())
 }

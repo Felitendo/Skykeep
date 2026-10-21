@@ -18,6 +18,7 @@ import { Picker } from "../../components/Picker";
 import { RowMenu } from "../../components/RowMenu";
 import {
   addDays,
+  addDaysIn,
   allZones,
   clock,
   dateOf,
@@ -294,7 +295,8 @@ export function CalendarView() {
   draftRef.current = draft;
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   /** The last event deleted, held so the deletion can be taken back. */
-  const [undo, setUndo] = useState<CalendarEvent | null>(null);
+  /** The last event deleted, with its alerts, held so the deletion can be taken back. */
+  const [undo, setUndo] = useState<(CalendarEvent & { alerts: number[] }) | null>(null);
   const { revision } = useSync();
 
   // The current-time line moves once a minute, on the minute — not on a busy timer.
@@ -504,7 +506,7 @@ export function CalendarView() {
           title: d.title.trim() || "New Event",
           location: d.location.trim() || null,
           startsAt: d.startsAt,
-          endsAt: Math.max(d.endsAt, d.startsAt + (d.allDay ? 86_400 : 900)),
+          endsAt: Math.max(d.endsAt, (d.allDay ? addDaysIn(ZONE, d.startsAt, 1) : d.startsAt + 900)),
           allDay: d.allDay,
           timezone: d.allDay ? ZONE : (d.timezone ?? ZONE),
           notes: d.notes.trim() || null,
@@ -518,7 +520,7 @@ export function CalendarView() {
           return [...rows, {
             guid: `pending:${d.startsAt}:${d.title}`, calendarGuid: d.calendarGuid,
             title: d.title.trim() || "New Event", location: d.location.trim() || null,
-            startsAt: d.startsAt, endsAt: Math.max(d.endsAt, d.startsAt + (d.allDay ? 86_400 : 900)),
+            startsAt: d.startsAt, endsAt: Math.max(d.endsAt, (d.allDay ? addDaysIn(ZONE, d.startsAt, 1) : d.startsAt + 900)),
             allDay: d.allDay, timezone: d.allDay ? ZONE : (d.timezone ?? ZONE),
             url: d.url?.trim() || null, notes: d.notes.trim() || null, etag: null,
           }];
@@ -535,7 +537,7 @@ export function CalendarView() {
         } : e.guid === d.guid ? {
           ...e, calendarGuid: d.calendarGuid, title: d.title.trim() || "New Event",
           location: d.location.trim() || null, startsAt: d.startsAt,
-          endsAt: Math.max(d.endsAt, d.startsAt + (d.allDay ? 86_400 : 900)),
+          endsAt: Math.max(d.endsAt, (d.allDay ? addDaysIn(ZONE, d.startsAt, 1) : d.startsAt + 900)),
           allDay: d.allDay, notes: d.notes.trim() || null,
         } : e);
       });
@@ -553,6 +555,12 @@ export function CalendarView() {
       const occurrence = guid.includes("__");
       const scope = occurrence ? await whichEvents("delete") : null;
       if (occurrence && !scope) return;
+      // Its alerts, for Undo to make it again with them: read before it is gone.
+      const alerts = occurrence
+        ? []
+        : draftRef.current?.guid === guid && draftRef.current.alerts
+          ? draftRef.current.alerts
+          : await api.eventAlerts(guid).catch(() => [] as number[]);
       setDraft(null);
       // All of a series leaves every one of its days; one, only itself.
       const series = guid.split("__")[0];
@@ -565,7 +573,7 @@ export function CalendarView() {
       )) {
         // Undo makes the event again; for one day out of a series that would be a new event,
         // not the day put back, so it is not offered.
-        if (!occurrence) setUndo(gone);
+        if (!occurrence && gone) setUndo({ ...gone, alerts });
       }
     },
     [events, write]
@@ -573,7 +581,8 @@ export function CalendarView() {
   const takeBack = useCallback(async () => {
     const gone = undo;
     setUndo(null);
-    if (gone) await save({ ...draftOf(gone), guid: null });
+    // Made again as it was, its alerts with it (its guests are not this app's to invite).
+    if (gone) await save({ ...draftOf(gone), guid: null, alerts: gone.alerts, alertsChanged: gone.alerts.length > 0 });
   }, [undo, save]);
   useEffect(() => {
     if (!undo) return undefined;
@@ -1046,7 +1055,9 @@ export function CalendarView() {
           onDelete={draft.guid ? () => void remove(draft.guid as string) : undefined}
           onNudge={draft.guid ? (by) => {
             // Calendar's Control-Option-arrows: the open event moves, stays open, and is saved.
-            const moved = { ...draft, startsAt: draft.startsAt + by, endsAt: draft.endsAt + by };
+            const zone = zoneOf(draft);
+            const shift = (t: number) => ("days" in by ? addDaysIn(zone, t, by.days) : t + by.minutes * 60);
+            const moved = { ...draft, startsAt: shift(draft.startsAt), endsAt: shift(draft.endsAt) };
             setDraft(moved);
             void save(moved);
           } : undefined}
@@ -1995,7 +2006,7 @@ function EventPopover({
   onClose: () => void;
   onSave: () => void;
   onDelete?: () => void;
-  onNudge?: (bySeconds: number) => void;
+  onNudge?: (by: { days: number } | { minutes: number }) => void;
   view?: string;
 }) {
   const box = useRef<HTMLFormElement | null>(null);
@@ -2026,8 +2037,14 @@ function EventPopover({
       if (e.key === "Escape") return onClose();
       // Up/Down: fifteen minutes in Day and Week, a week in Month. Left/Right: a day.
       if (e.ctrlKey && e.altKey && onNudge && editable && e.key.startsWith("Arrow")) {
-        const step = view === "month" || draft.allDay ? 7 * 86_400 : 15 * 60;
-        const by = { ArrowUp: -step, ArrowDown: step, ArrowLeft: -86_400, ArrowRight: 86_400 }[e.key];
+        // A day is a calendar day on the event's clock, never a fixed 86,400 seconds.
+        const week = view === "month" || draft.allDay;
+        const by = {
+          ArrowUp: week ? { days: -7 } : { minutes: -15 },
+          ArrowDown: week ? { days: 7 } : { minutes: 15 },
+          ArrowLeft: { days: -1 },
+          ArrowRight: { days: 1 },
+        }[e.key];
         if (by) {
           e.preventDefault();
           onNudge(by);
@@ -2213,7 +2230,8 @@ function EventPopover({
                   const next = [...(alerts ?? [])];
                   if (v === "none") next.splice(n, 1);
                   else next[n] = Number(v);
-                  set({ alerts: next.slice(0, 2), alertsChanged: true });
+                  // Any beyond the two shown (made on a Mac) are kept, never dropped by an edit here.
+                  set({ alerts: next, alertsChanged: true });
                 }}
                 options={alerts === undefined ? [{ value: "loading", label: "…" }] : options}
               />

@@ -262,3 +262,11 @@ export function zoneName(zone: string, s: number): { city: string; offset: strin
   const offset = minutes === 0 ? "GMT" : `GMT${sign}${Math.floor(a / 60)}${a % 60 ? `:${String(a % 60).padStart(2, "0")}` : ""}`;
   return { city, offset };
 }
+
+/** `s` moved `days` calendar days in `zone`, at the same clock time — never a fixed 86,400
+ * seconds, which landed an hour off (an all-day event on the day before) across a clock change. */
+export function addDaysIn(zone: string, s: number, days: number): number {
+  const w = wallIn(zone, s);
+  const d = new Date(Date.UTC(w.y, w.m - 1, w.d + days));
+  return instantIn(zone, { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate(), h: w.h, min: w.min });
+}

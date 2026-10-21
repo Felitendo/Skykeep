@@ -117,3 +117,11 @@ test("a zone named as Calendar names it", () => {
   assert.deepEqual(zoneName("America/New_York", Z(2026, 10, 21, 0, 0)), { city: "New York", offset: "GMT−4" });
   assert.deepEqual(zoneName("UTC", Z(2026, 10, 21, 0, 0)).offset, "GMT");
 });
+import { addDaysIn } from "../src/screens/calendar/model.ts";
+test("a day on is a calendar day, across a clock change too", () => {
+  // Fri 30 Oct 2026, all day in New York, a week on: Fri 6 Nov at midnight, not Thu at 23:00.
+  const fri = Z(2026, 10, 30, 4, 0);
+  assert.equal(addDaysIn("America/New_York", fri, 7), Z(2026, 11, 6, 5, 0));
+  assert.equal(addDaysIn("Asia/Kolkata", Z(2026, 10, 21, 3, 30), 1), Z(2026, 10, 22, 3, 30));
+  assert.equal(addDaysIn("America/New_York", Z(2026, 10, 31, 4, 0), 1), Z(2026, 11, 1, 4, 0));
+});

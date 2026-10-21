@@ -712,6 +712,28 @@ pub async fn same_account(app: &tauri::AppHandle) -> bool {
     session.is_some() && session == owner
 }
 
+/// The account the session is signed in to now, as the library records its owner.
+async fn account_now(auth: &Auth) -> Option<String> {
+    auth.client
+        .lock()
+        .await
+        .session()
+        .dsid
+        .as_deref()
+        .map(account_tag)
+}
+
+/// Whether the library still belongs to `account`, taken when a command began: a result that
+/// came back after a sign-out, or another account's sign-in, is never stored over its data.
+fn still_owned(library: &quince_core::Library, account: Option<&str>) -> Result<(), String> {
+    let owner = library.state(ACCOUNT_KEY).ok().flatten();
+    if account.is_some() && owner.as_deref() == account {
+        Ok(())
+    } else {
+        Err("Signed out while this was on its way, so nothing was stored.".into())
+    }
+}
+
 /// Signed in, then the library made this account's; if it could not be, signed out again with
 /// the reason, never left signed in over someone else's data.
 async fn signed_in(app: &tauri::AppHandle, client: &mut Client) -> Result<(), String> {
@@ -1012,6 +1034,7 @@ async fn calendar_sync(
 ) -> UiResult<quince_icloud::sync::SyncSummary> {
     // Take what the sync needs and release the auth lock before the network work, so a slow
     // refresh cannot block the heartbeat or a sign-out.
+    let account = account_now(&auth).await;
     let (http, root, params) = {
         let client = auth.client.lock().await;
         let root = client
@@ -1027,6 +1050,7 @@ async fn calendar_sync(
         .await
         .map_err(|e| e.to_string())?;
     let mut library = data.0.lock().await;
+    still_owned(&library, account.as_deref())?;
     quince_icloud::sync::apply_calendar(&mut library, fetched).map_err(|e| e.to_string())
 }
 
@@ -1132,9 +1156,11 @@ async fn event_save(
     if draft.ends_at < draft.starts_at {
         return Err("An event can't end before it starts.".into());
     }
+    let account = account_now(&auth).await;
     let (http, root, params) = calendar_context(&auth).await?;
 
     // Apple's guids are uppercase UUIDs; a new event needs one before it can be addressed.
+    let was_saved = draft.guid.is_some();
     let guid = draft
         .guid
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string().to_uppercase());
@@ -1142,6 +1168,16 @@ async fn event_save(
         let library = data.0.lock().await;
         library.event(&guid).map_err(|e| e.to_string())?
     };
+    // An event opened as one already saved, and no longer here: deleted on another device
+    // since. Saved, it came back as new on every device, without its alerts or guests.
+    if was_saved && existing.is_none() && !quince_icloud::calendar::is_occurrence(&guid) {
+        return Err("This event was deleted on another device, so it wasn’t saved.".into());
+    }
+    // The calendar it is in now, when that is not the one it is saved to: a move.
+    let moved_from = existing
+        .as_ref()
+        .map(|e| e.calendar_guid.clone())
+        .filter(|old| *old != draft.calendar_guid);
 
     let event = Event {
         guid: guid.clone(),
@@ -1160,6 +1196,14 @@ async fn event_save(
     };
 
     let ctag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &event.calendar_guid);
+    // Moving to another calendar: where it is now, and that calendar's tag.
+    let from = match moved_from {
+        Some(old) => {
+            let tag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &old);
+            Some((old, tag))
+        }
+        None => None,
+    };
     let kept = quince_icloud::sync::save_event_with_alerts(
         &http,
         &root,
@@ -1169,10 +1213,13 @@ async fn event_save(
         draft.alerts.as_deref(),
         draft.repeat_changed.then_some(draft.repeat.as_ref()),
         draft.scope,
+        from.as_ref()
+            .map(|(old, tag)| (old.as_str(), tag.as_deref())),
     )
     .await
     .map_err(|e| e.to_string())?;
     let mut library = data.0.lock().await;
+    still_owned(&library, account.as_deref())?;
     quince_icloud::sync::store_events(&mut library, kept).map_err(|e| e.to_string())?;
     Ok(guid)
 }
@@ -1184,6 +1231,7 @@ async fn event_delete(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
+    let account = account_now(&auth).await;
     let _one = CALENDAR_PASS.lock().await;
     let (http, root, params) = calendar_context(&auth).await?;
     let event = {
@@ -1202,6 +1250,7 @@ async fn event_delete(
     // for this-and-future — not just the one day, which left the rest of a deleted series on
     // screen until the next sync.
     let mut library = data.0.lock().await;
+    still_owned(&library, account.as_deref())?;
     let series = quince_icloud::calendar::series_of(&event.guid).to_string();
     let gone: Vec<String> = match scope {
         Some(quince_icloud::calendar::Scope::All)
