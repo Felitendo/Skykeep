@@ -95,3 +95,25 @@ test("a time on the hour leaves off the minutes", () => {
   assert.doesNotMatch(clock(at(2026, 8, 29, 15)), /:00/);
   assert.match(clock(at(2026, 8, 29, 15, 30)), /30/);
 });
+
+import { wallIn, instantIn, sameClockIn, zoneName } from "../src/screens/calendar/model.ts";
+const Z = (y, m, d, h, min) => Date.UTC(y, m - 1, d, h, min) / 1000;
+test("a clock reading in any zone, and back", () => {
+  assert.deepEqual(wallIn("America/New_York", Z(2026, 10, 21, 13, 0)), { y: 2026, m: 10, d: 21, h: 9, min: 0 });
+  assert.equal(instantIn("America/New_York", { y: 2026, m: 10, d: 21, h: 9, min: 0 }), Z(2026, 10, 21, 13, 0));
+  assert.equal(instantIn("Asia/Kolkata", { y: 2026, m: 10, d: 21, h: 9, min: 0 }), Z(2026, 10, 21, 3, 30));
+});
+test("a zone changed keeps the clock: 9:00 in Kolkata becomes 9:00 in New York", () => {
+  assert.equal(sameClockIn("Asia/Kolkata", "America/New_York", Z(2026, 10, 21, 3, 30)), Z(2026, 10, 21, 13, 0));
+});
+test("across a clock change: a skipped time an hour on, a doubled one the first time", () => {
+  // 2:30 on 8 March 2026 never shows in New York: 3:30 EDT.
+  assert.equal(instantIn("America/New_York", { y: 2026, m: 3, d: 8, h: 2, min: 30 }), Z(2026, 3, 8, 7, 30));
+  // 1:30 on 1 November 2026 shows twice: the first, still EDT.
+  assert.equal(instantIn("America/New_York", { y: 2026, m: 11, d: 1, h: 1, min: 30 }), Z(2026, 11, 1, 5, 30));
+});
+test("a zone named as Calendar names it", () => {
+  assert.deepEqual(zoneName("Asia/Kolkata", Z(2026, 10, 21, 0, 0)), { city: "Kolkata", offset: "GMT+5:30" });
+  assert.deepEqual(zoneName("America/New_York", Z(2026, 10, 21, 0, 0)), { city: "New York", offset: "GMT−4" });
+  assert.deepEqual(zoneName("UTC", Z(2026, 10, 21, 0, 0)).offset, "GMT");
+});

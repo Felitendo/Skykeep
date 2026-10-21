@@ -18,19 +18,24 @@ import { Picker } from "../../components/Picker";
 import { RowMenu } from "../../components/RowMenu";
 import {
   addDays,
+  allZones,
   clock,
   dateOf,
   dayKey,
   hourLabel,
+  instantIn,
   midnight,
   monthDays,
   placeDayWith,
+  sameClockIn,
   sameDay,
   seconds,
   snap,
   spansDays,
   startOfWeek,
+  wallIn,
   weekSpans,
+  zoneName,
 } from "./model";
 import { dateText, timeText } from "../../lib/when";
 import { useReveal } from "../../lib/reveal";
@@ -186,12 +191,14 @@ const draftOf = (e: CalendarEvent): Draft => ({
 
 /** `YYYY-MM-DDTHH:mm` and `YYYY-MM-DD` for the date inputs, in local time. */
 const pad = (n: number) => String(n).padStart(2, "0");
+/** The zone an event's times are read in: its own, or this computer's (all-day events are
+ * dates, not instants, and read here). */
+const zoneOf = (d: { allDay: boolean; timezone: string | null }) => (d.allDay || !d.timezone ? ZONE : d.timezone);
 const toLocalInput = (s: number, dateOnly: boolean) => {
   const d = dateOf(s);
   const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   return dateOnly ? day : `${day}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
-const fromLocalInput = (value: string) => seconds(new Date(value.length === 10 ? `${value}T00:00` : value));
 
 const weekdayShort = (d: Date) => dateText(d, { weekday: "short" });
 
@@ -1833,23 +1840,29 @@ function YearView({
 
 /* ---- the event popover ---------------------------------------------------------------- */
 
-/** A date and, unless it is all day, a time — two compact fields, as Calendar lays them out. */
+/** A date and, unless it is all day, a time — two compact fields, as Calendar lays them out —
+ * read on a clock in `zone`, the event's own. */
 function When({
   at,
   allDay,
   editable,
   label,
+  zone,
   onChange,
 }: {
   at: number;
   allDay: boolean;
   editable: boolean;
   label: string;
+  zone: string;
   onChange: (s: number) => void;
 }) {
-  const d = dateOf(at);
-  const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const w = wallIn(zone, at);
+  const day = `${w.y}-${pad(w.m)}-${pad(w.d)}`;
+  const at_ = (date: string, h: number, min: number) => {
+    const [y, m, d] = date.split("-").map(Number);
+    return instantIn(zone, { y, m, d, h, min });
+  };
   return (
     <span className="cx-when">
       <input
@@ -1857,16 +1870,108 @@ function When({
         aria-label={`${label} date`}
         value={day}
         readOnly={!editable}
-        onChange={(e) => e.target.value && onChange(fromLocalInput(`${e.target.value}T${time}`))}
+        onChange={(e) => e.target.value && onChange(at_(e.target.value, allDay ? 0 : w.h, allDay ? 0 : w.min))}
       />
       {!allDay && (
         <TimeField
           label={`${label} time`}
-          hours={d.getHours()}
-          minutes={d.getMinutes()}
+          hours={w.h}
+          minutes={w.min}
           disabled={!editable}
-          onChange={(h, m) => onChange(fromLocalInput(`${day}T${pad(h)}:${pad(m)}`))}
+          onChange={(h, m) => onChange(at_(day, h, m))}
         />
+      )}
+    </span>
+  );
+}
+
+/**
+ * An event's time zone, as Calendar sets one: its city and offset shown, and a field that
+ * finds any zone by city or region as it is typed. A zone chosen keeps the event's clock time
+ * (9:00 stays 9:00, now in that zone), as Calendar does.
+ */
+function ZoneField({ zone, at, editable, onChange }: { zone: string; at: number; editable: boolean; onChange: (z: string) => void }) {
+  const [query, setQuery] = useState<string | null>(null);
+  const [lit, setLit] = useState(0);
+  const named = zoneName(zone, at);
+  const found = useMemo(() => {
+    if (query === null) return [];
+    const q = query.trim().toLowerCase().replace(/\s+/g, "_");
+    const all = allZones();
+    if (!q) return [ZONE, ...all.filter((z) => z !== ZONE)].slice(0, 8);
+    // Cities that begin with what is typed first, then a word in one that does, then the rest.
+    const rank = (z: string) => {
+      const city = (z.split("/").pop() ?? z).toLowerCase();
+      if (city.startsWith(q)) return 0;
+      if (city.split(/[_-]/).some((w) => w.startsWith(q))) return 1;
+      return z.toLowerCase().includes(q) ? 2 : 3;
+    };
+    return all
+      .map((z) => [z, rank(z)] as const)
+      .filter(([, r]) => r < 3)
+      .sort((a, b) => a[1] - b[1] || (a[0].split("/").pop() ?? "").localeCompare(b[0].split("/").pop() ?? ""))
+      .map(([z]) => z)
+      .slice(0, 8);
+  }, [query]);
+  const choose = (z: string) => {
+    setQuery(null);
+    if (z !== zone) onChange(z);
+  };
+  if (query === null) {
+    return (
+      <button
+        type="button"
+        className="cx-zone"
+        aria-label={`Time zone: ${named.city}, ${named.offset}`}
+        disabled={!editable}
+        onClick={() => { setQuery(""); setLit(0); }}
+      >
+        <span>{named.city}</span>
+        <span className="cx-zone-offset">{named.offset}</span>
+      </button>
+    );
+  }
+  return (
+    <span className="cx-zone-find">
+      <input
+        autoFocus
+        type="search"
+        role="combobox"
+        aria-label="Find a time zone"
+        aria-expanded={found.length > 0}
+        aria-controls="cx-zones"
+        placeholder="City or region"
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setLit(0); }}
+        onBlur={() => setQuery(null)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setQuery(null); }
+          else if (e.key === "ArrowDown") { e.preventDefault(); setLit((i) => Math.min(found.length - 1, i + 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setLit((i) => Math.max(0, i - 1)); }
+          else if (e.key === "Enter" && found[lit]) { e.preventDefault(); choose(found[lit]); }
+        }}
+      />
+      {found.length > 0 && (
+        <span className="cx-zones" id="cx-zones" role="listbox" aria-label="Time zones">
+          {found.map((z, i) => {
+            const n = zoneName(z, at);
+            return (
+              <span
+                key={z}
+                role="option"
+                aria-selected={i === lit}
+                className={`cx-zone-option${i === lit ? " is-lit" : ""}`}
+                // Chosen before the field loses focus and closes the list.
+                onMouseDown={(e) => { e.preventDefault(); choose(z); }}
+                onMouseMove={() => setLit(i)}
+              >
+                <span>{n.city}</span>
+                <span className="cx-zone-region">{z.includes("/") ? z.split("/")[0].replace(/_/g, " ") : ""}</span>
+                <span className="cx-zone-offset">{n.offset}</span>
+              </span>
+            );
+          })}
+        </span>
       )}
     </span>
   );
@@ -2042,6 +2147,7 @@ function EventPopover({
             allDay={draft.allDay}
             editable={editable}
             label="Starts"
+            zone={zoneOf(draft)}
             // Moving the start keeps the length, as Calendar does.
             onChange={(startsAt) => set({ startsAt, endsAt: startsAt + (draft.endsAt - draft.startsAt) })}
           />
@@ -2053,11 +2159,26 @@ function EventPopover({
             allDay={draft.allDay}
             editable={editable}
             label="Ends"
+            zone={zoneOf(draft)}
             onChange={(end) =>
               set({ endsAt: draft.allDay ? seconds(addDays(midnight(dateOf(end)), 1)) : Math.max(end, draft.startsAt + 300) })
             }
           />
         </div>
+        {!draft.allDay && (
+          <div className="cx-pop-row cal-field">
+            <span>time zone</span>
+            <ZoneField
+              zone={zoneOf(draft)}
+              at={draft.startsAt}
+              editable={editable}
+              onChange={(z) => {
+                const from = zoneOf(draft);
+                set({ timezone: z, startsAt: sameClockIn(from, z, draft.startsAt), endsAt: sameClockIn(from, z, draft.endsAt) });
+              }}
+            />
+          </div>
+        )}
         <div className="cx-pop-row cal-field">
           <span>calendar</span>
           <Picker

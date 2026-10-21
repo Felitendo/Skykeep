@@ -192,3 +192,73 @@ export function hourLabel(hour: number): string {
 export const clock = (s: number) =>
   timeText(dateOf(s), { hour: "numeric", minute: "2-digit" })
     .replace(/:00(?=\D|$)/, "");
+
+/* ---- time zones ------------------------------------------------------------------------ */
+
+/** A clock reading: what a wall clock in some zone shows. */
+export type Wall = { y: number; m: number; d: number; h: number; min: number };
+
+const clocks = new Map<string, Intl.DateTimeFormat>();
+function clockIn(zone: string): Intl.DateTimeFormat {
+  let f = clocks.get(zone);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone, hourCycle: "h23",
+      year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric",
+    });
+    clocks.set(zone, f);
+  }
+  return f;
+}
+
+/** What a clock in `zone` shows at the instant `s` (seconds). */
+export function wallIn(zone: string, s: number): Wall {
+  const parts: Record<string, number> = {};
+  for (const p of clockIn(zone).formatToParts(new Date(s * 1000))) {
+    if (p.type !== "literal") parts[p.type] = Number(p.value);
+  }
+  return { y: parts.year, m: parts.month, d: parts.day, h: parts.hour % 24, min: parts.minute };
+}
+
+/**
+ * The instant a clock in `zone` shows `w`. A reading a clock skips (the hour lost in spring)
+ * comes out an hour on, as Calendar moves one; one a clock shows twice, the first time.
+ */
+export function instantIn(zone: string, w: Wall): number {
+  const asUtc = Date.UTC(w.y, w.m - 1, w.d, w.h, w.min) / 1000;
+  const offsetAt = (s: number) => {
+    const c = wallIn(zone, s);
+    return Date.UTC(c.y, c.m - 1, c.d, c.h, c.min) / 1000 - s;
+  };
+  // The two offsets either side of any clock change near it: a reading shown under both is
+  // taken the first time; one shown under neither (skipped) is taken an hour on.
+  const tries = [asUtc - offsetAt(asUtc - 86400), asUtc - offsetAt(asUtc + 86400)];
+  const same = (s: number) => {
+    const c = wallIn(zone, s);
+    return c.y === w.y && c.m === w.m && c.d === w.d && c.h === w.h && c.min === w.min;
+  };
+  const shown = tries.filter(same);
+  return shown.length ? Math.min(...shown) : Math.max(...tries);
+}
+
+/** An instant's clock reading moved to another zone: 9:00 in one is 9:00 in the other. */
+export function sameClockIn(from: string, to: string, s: number): number {
+  return instantIn(to, wallIn(from, s));
+}
+
+/** Every zone this computer knows, by its IANA name. */
+export function allZones(): string[] {
+  const known = (Intl as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
+  return known.length ? known : ["UTC"];
+}
+
+/** A zone as Calendar names one: its city, and how far from GMT it is at `s`. */
+export function zoneName(zone: string, s: number): { city: string; offset: string } {
+  const city = (zone.split("/").pop() ?? zone).replace(/_/g, " ");
+  const w = wallIn(zone, s);
+  const minutes = Math.round((Date.UTC(w.y, w.m - 1, w.d, w.h, w.min) / 1000 - Math.floor(s / 60) * 60) / 60);
+  const sign = minutes < 0 ? "−" : "+";
+  const a = Math.abs(minutes);
+  const offset = minutes === 0 ? "GMT" : `GMT${sign}${Math.floor(a / 60)}${a % 60 ? `:${String(a % 60).padStart(2, "0")}` : ""}`;
+  return { city, offset };
+}

@@ -827,3 +827,32 @@
   width: 100%; height: 26px; margin: 0; padding: 0 6px;
   border-radius: 6px; font: inherit; font-size: var(--t-13);
 }
+
+/* An event's time zone: its city, with the offset quieter beside it; a field that finds one. */
+.cx-zone {
+  display: flex; align-items: baseline; gap: 6px; min-height: 26px; padding: 3px 8px; border: 0;
+  border-radius: 8px; background: color-mix(in srgb, var(--text) 6%, transparent); box-shadow: none;
+  color: var(--text); font: inherit; font-size: var(--t-13); text-align: start; cursor: default;
+}
+.cx-zone:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.cx-zone:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); outline: none; }
+.cx-zone:disabled { background: none; padding-inline: 0; }
+.cx-zone-offset { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.cx-zone-find { position: relative; display: block; min-width: 0; }
+.cx-popover .cx-zone-find input {
+  width: 100%; min-height: 26px; padding: 3px 8px; border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 6%, transparent); box-shadow: 0 0 0 3px var(--accent-ring);
+  font-size: var(--t-13);
+}
+.cx-zones {
+  position: absolute; z-index: 5; inset-inline: 0; top: calc(100% + 4px); display: flex; flex-direction: column;
+  padding: 4px; border-radius: 10px; background: var(--sheet, var(--bg)); box-shadow: var(--glass-float), 0 0 0 0.5px var(--separator);
+}
+.cx-zone-option {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline; gap: 8px;
+  padding: 4px 8px; border-radius: 6px; font-size: var(--t-13); cursor: default;
+}
+.cx-zone-option > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cx-zone-region { color: var(--text-3); font-size: var(--t-11); }
+.cx-zone-option.is-lit { background: var(--accent); color: var(--on-accent, #fff); }
+.cx-zone-option.is-lit .cx-zone-region, .cx-zone-option.is-lit .cx-zone-offset { color: inherit; opacity: 0.8; }
