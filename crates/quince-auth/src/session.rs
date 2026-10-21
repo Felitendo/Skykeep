@@ -212,6 +212,136 @@ fn entry_name(state_dir: &Path) -> String {
     format!("{KEYRING_ENTRY}:{:x}", digest)[..KEYRING_ENTRY.len() + 17].to_string()
 }
 
+/// One secret in the system keyring, split over as many entries as the platform needs.
+///
+/// Windows' Credential Manager keeps at most 2,560 bytes in one credential, and the keyring
+/// crate stores text there as UTF-16 — 1,280 characters. A signed-in session is larger, so on
+/// Windows sign-in failed outright ("longer than platform limit of 2560 chars"). There the
+/// secret is written as parts (`<name>#1`, `<name>#2`, …) and the entry itself holds only
+/// `pomander-parts:<n>`, written last, so a save cut short never leaves a half that reads as
+/// whole. Elsewhere the whole secret stays in the one entry, as it always has; reading takes
+/// either shape on every platform.
+trait Secrets {
+    fn get(&self, name: &str) -> Result<Option<String>, String>;
+    fn set(&self, name: &str, value: &str) -> Result<(), String>;
+    fn delete(&self, name: &str) -> Result<(), String>;
+}
+
+/// The system keyring, under this app's service name.
+struct SystemKeyring;
+
+impl Secrets for SystemKeyring {
+    fn get(&self, name: &str) -> Result<Option<String>, String> {
+        match keyring::Entry::new(KEYRING_SERVICE, name).and_then(|e| e.get_password()) {
+            Ok(v) => Ok(Some(v)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+    fn set(&self, name: &str, value: &str) -> Result<(), String> {
+        keyring::Entry::new(KEYRING_SERVICE, name)
+            .and_then(|e| e.set_password(value))
+            .map_err(|e| e.to_string())
+    }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        match keyring::Entry::new(KEYRING_SERVICE, name).and_then(|e| e.delete_credential()) {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+const PARTS: &str = "pomander-parts:";
+/// The most parts a secret may take: 32 × 1,000 characters is far past any session.
+const MOST_PARTS: usize = 32;
+
+/// How many characters one entry may hold here: Windows' limit, with room to spare; none
+/// elsewhere.
+fn part_size() -> Option<usize> {
+    if cfg!(windows) {
+        Some(1000)
+    } else {
+        None
+    }
+}
+
+fn part_name(name: &str, i: usize) -> String {
+    format!("{name}#{i}")
+}
+
+/// The secret under `name`, whole or reassembled from its parts.
+fn read_secret(k: &dyn Secrets, name: &str) -> Result<Option<String>, String> {
+    let Some(head) = k.get(name)? else {
+        return Ok(None);
+    };
+    let Some(n) = head.strip_prefix(PARTS) else {
+        return Ok(Some(head));
+    };
+    let n: usize = n
+        .parse()
+        .map_err(|_| "the stored sign-in is damaged".to_string())?;
+    if n == 0 || n > MOST_PARTS {
+        return Err("the stored sign-in is damaged".into());
+    }
+    let mut whole = String::new();
+    for i in 1..=n {
+        let part = k
+            .get(&part_name(name, i))?
+            .ok_or_else(|| "part of the stored sign-in is missing".to_string())?;
+        whole.push_str(&part);
+    }
+    Ok(Some(whole))
+}
+
+/// Keep `value` under `name`, in parts where one entry cannot hold it.
+fn write_secret(
+    k: &dyn Secrets,
+    name: &str,
+    value: &str,
+    size: Option<usize>,
+) -> Result<(), String> {
+    let chars: Vec<char> = value.chars().collect();
+    let parts: Vec<String> = match size {
+        Some(size) if chars.len() > size => {
+            chars.chunks(size).map(|c| c.iter().collect()).collect()
+        }
+        _ => Vec::new(),
+    };
+    if parts.len() > MOST_PARTS {
+        return Err("the sign-in is too large to keep".into());
+    }
+    if parts.is_empty() {
+        k.set(name, value)?;
+    } else {
+        // The parts first, then the entry that says how many: read before it is written, the
+        // old session (or nothing) is what is found, never a mix.
+        for (i, part) in parts.iter().enumerate() {
+            k.set(&part_name(name, i + 1), part)?;
+        }
+        k.set(name, &format!("{PARTS}{}", parts.len()))?;
+    }
+    // Parts left from a longer secret before: let go of.
+    for i in parts.len() + 1..=MOST_PARTS {
+        if k.get(&part_name(name, i))?.is_none() {
+            break;
+        }
+        k.delete(&part_name(name, i))?;
+    }
+    Ok(())
+}
+
+/// Forget the secret under `name`, and every part of it.
+fn delete_secret(k: &dyn Secrets, name: &str) -> Result<(), String> {
+    k.delete(name)?;
+    for i in 1..=MOST_PARTS {
+        if k.get(&part_name(name, i))?.is_none() {
+            break;
+        }
+        k.delete(&part_name(name, i))?;
+    }
+    Ok(())
+}
+
 impl Store {
     /// Production: secrets in the OS keyring.
     pub fn keyring(state_dir: &Path) -> std::io::Result<Self> {
@@ -265,12 +395,11 @@ impl Store {
         std::fs::write(&self.cooldown_path, json)
     }
 
-    fn entry(&self) -> Result<keyring::Entry, keyring::Error> {
-        let name = match &self.backend {
+    fn name(&self) -> &str {
+        match &self.backend {
             Backend::Keyring(name) => name.as_str(),
             Backend::File(_) => KEYRING_ENTRY,
-        };
-        keyring::Entry::new(KEYRING_SERVICE, name)
+        }
     }
 
     /// Load the stored session. A missing entry is normal (first run), not an error.
@@ -283,10 +412,10 @@ impl Store {
     /// the sign-in screen, and signing in then replaced the entry and its trust token.
     pub fn try_load(&self) -> Result<Session, crate::Error> {
         let json = match &self.backend {
-            Backend::Keyring(_) => match self.entry().and_then(|e| e.get_password()) {
-                Ok(j) => j,
-                Err(keyring::Error::NoEntry) => return Ok(Session::default()),
-                Err(e) => return Err(crate::Error::Keyring(e.to_string())),
+            Backend::Keyring(_) => match read_secret(&SystemKeyring, self.name()) {
+                Ok(Some(j)) => j,
+                Ok(None) => return Ok(Session::default()),
+                Err(e) => return Err(crate::Error::Keyring(e)),
             },
             Backend::File(path) => match std::fs::read_to_string(path) {
                 Ok(j) => j,
@@ -300,15 +429,14 @@ impl Store {
         let json = serde_json::to_string(session)?;
         match &self.backend {
             Backend::Keyring(_) => {
-                self.entry()
-                    .and_then(|e| e.set_password(&json))
-                    .map_err(|e| crate::Error::Keyring(e.to_string()))?;
+                write_secret(&SystemKeyring, self.name(), &json, part_size())
+                    .map_err(crate::Error::Keyring)?;
 
                 // Storing the trust token is the whole reason sign-in survives a restart, so
                 // prove it landed rather than assume. A keyring that accepts a write and
                 // loses it looks identical to working until the user reopens the app.
                 if session.trust_token.is_some() {
-                    let stored = self.entry().and_then(|e| e.get_password()).ok();
+                    let stored = read_secret(&SystemKeyring, self.name()).ok().flatten();
                     if stored.as_deref() != Some(json.as_str()) {
                         return Err(crate::Error::Keyring(
                             "the system keyring accepted the sign-in but did not keep it. \
@@ -328,12 +456,7 @@ impl Store {
     pub fn clear(&self) -> Result<(), crate::Error> {
         match &self.backend {
             Backend::Keyring(_) => {
-                if let Ok(entry) = self.entry() {
-                    match entry.delete_credential() {
-                        Ok(()) | Err(keyring::Error::NoEntry) => {}
-                        Err(e) => return Err(crate::Error::Keyring(e.to_string())),
-                    }
-                }
+                delete_secret(&SystemKeyring, self.name()).map_err(crate::Error::Keyring)?;
             }
             Backend::File(path) => {
                 if path.exists() {
@@ -549,5 +672,83 @@ mod entry_tests {
         );
         assert_ne!(entry_name(probe), entry_name(app));
         assert_eq!(entry_name(probe), entry_name(probe), "stable");
+    }
+}
+
+/// A secret kept in parts where one entry cannot hold it — Windows' Credential Manager — and
+/// read back whole, whichever shape it was written in.
+#[cfg(test)]
+mod parts_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Memory(RefCell<BTreeMap<String, String>>, Option<usize>);
+    impl Secrets for Memory {
+        fn get(&self, name: &str) -> Result<Option<String>, String> {
+            Ok(self.0.borrow().get(name).cloned())
+        }
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            // The platform's own limit, as Windows enforces it.
+            if self.1.is_some_and(|most| value.chars().count() > most) {
+                return Err("longer than platform limit".into());
+            }
+            self.0.borrow_mut().insert(name.into(), value.into());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.0.borrow_mut().remove(name);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_session_too_large_for_one_entry_is_kept_in_parts() {
+        let k = Memory(RefCell::default(), Some(1280));
+        let session = "x".repeat(3500) + "ü€";
+        write_secret(&k, "s", &session, Some(1000)).unwrap();
+        assert_eq!(
+            k.0.borrow().get("s").map(String::as_str),
+            Some("pomander-parts:4")
+        );
+        assert_eq!(
+            read_secret(&k, "s").unwrap().as_deref(),
+            Some(session.as_str())
+        );
+        // Shorter next time: the old fourth part goes.
+        write_secret(&k, "s", &"y".repeat(1500), Some(1000)).unwrap();
+        assert!(k.0.borrow().get("s#3").is_none() && k.0.borrow().get("s#4").is_none());
+        assert_eq!(read_secret(&k, "s").unwrap(), Some("y".repeat(1500)));
+        delete_secret(&k, "s").unwrap();
+        assert!(k.0.borrow().is_empty());
+        assert_eq!(read_secret(&k, "s").unwrap(), None);
+    }
+
+    #[test]
+    fn where_one_entry_holds_it_the_secret_stays_whole() {
+        let k = Memory::default();
+        let session = "z".repeat(5000);
+        write_secret(&k, "s", &session, None).unwrap();
+        assert_eq!(k.0.borrow().len(), 1);
+        assert_eq!(read_secret(&k, "s").unwrap(), Some(session));
+    }
+
+    #[test]
+    fn a_session_kept_whole_before_is_read_as_it_is() {
+        let k = Memory::default();
+        k.set("s", "{\"dsid\":\"1\"}").unwrap();
+        assert_eq!(
+            read_secret(&k, "s").unwrap().as_deref(),
+            Some("{\"dsid\":\"1\"}")
+        );
+    }
+
+    #[test]
+    fn a_missing_part_is_an_error_not_a_session() {
+        let k = Memory::default();
+        write_secret(&k, "s", &"q".repeat(2500), Some(1000)).unwrap();
+        k.delete("s#2").unwrap();
+        assert!(read_secret(&k, "s").is_err());
     }
 }

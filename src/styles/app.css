@@ -530,9 +530,7 @@
 }
 .library { --side: 236px; }
 .library.is-rail { --side: 84px; }
-/* A window that is one app (Notes, Reminders…): that app alone, no list of the others. */
-.library.is-app { --side: 34px; }
-.library.is-app > .sidebar, .library.is-app > .sidebar-toggle, .library.is-app > .sidebar-scrim { display: none; }
+
 .sidebar-toggle, .sidebar-scrim, .compact-back { display: none; }
 
 /*

@@ -1,7 +1,9 @@
-# Pomander for Windows: the .msi and the per-user .exe installer, built on GitHub's own
-# Windows machines. Run by hand (Actions → Windows build → Run workflow) or by a release tag,
-# never on every push, so it spends minutes only when a build is wanted. Unsigned for now:
-# Windows will warn before the first run until the Store or SignPath signs it.
+# Pomander for Windows, proven on Windows before anyone downloads it:
+#   1. test  — the whole test suite on a Windows machine, the real Credential Manager included;
+#   2. build — the .msi and the per-user .exe installer, only if every test passed;
+#   3. smoke — the .exe installed silently, Pomander launched, its window seen on screen, and a
+#              screenshot kept, so an installer that cannot even start is never handed over.
+# Run by hand (Actions → Windows build → Run workflow) or by a release tag; never on every push.
 name: Windows build
 
 on:
@@ -13,39 +15,49 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  test:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      # The window's files must exist for the app crate to compile.
+      - run: npm run build
+      - name: Tests, on Windows
+        run: cargo test --workspace --no-fail-fast
 
+  build:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-
-      - name: Install the window's dependencies
-        run: npm ci
-
+      - run: npm ci
       - name: Build the installers
         # The build machine's paths are never written into the program.
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=pomander
         run: npx tauri build
-
       - name: Checksums
         shell: pwsh
         run: |
           $files = Get-ChildItem target/release/bundle -Recurse -Include *.msi,*.exe
           $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
             Set-Content target/release/bundle/SHA256SUMS.txt
-
       - uses: actions/upload-artifact@v4
         with:
           name: pomander-windows
@@ -54,3 +66,45 @@ jobs:
             target/release/bundle/nsis/*.exe
             target/release/bundle/SHA256SUMS.txt
           if-no-files-found: error
+
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pomander-windows
+          path: dist
+      - name: Install, launch, and see the window
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Recurse -Filter *-setup.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList "/S" -Wait
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter pomander.exe | Select-Object -First 1
+          if (-not $exe) { $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter pomander.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          if (-not $exe) { throw "Pomander was not installed" }
+          "installed at $($exe.FullName)"
+          $p = Start-Process $exe.FullName -PassThru
+          $title = ""
+          for ($i = 0; $i -lt 30 -and -not $title; $i++) {
+            Start-Sleep -Seconds 2
+            if ($p.HasExited) { throw "Pomander exited on start (code $($p.ExitCode))" }
+            $p.Refresh(); $title = $p.MainWindowTitle
+          }
+          if ($title -ne "Pomander") { throw "no Pomander window after 60 s (title: '$title')" }
+          "window up: $title"
+          Start-Sleep -Seconds 6
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\pomander-on-windows.png")
+          if ($p.HasExited) { throw "Pomander closed by itself" }
+          Stop-Process -Id $p.Id
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pomander-on-windows
+          path: pomander-on-windows.png
+          if-no-files-found: ignore

@@ -52,8 +52,9 @@ const SCREENS: { key: string; name: string }[] = [
 const LAST_KEY = "quince.library.screen";
 const RAIL_KEY = "quince.library.rail";
 
-/** The one app this window is, when it was opened as one (`?app=notes`, from its launcher entry
- * or the tray): that app alone, with no list of the others. Otherwise the whole library. */
+/** The app this window opens on, when it was opened as one (`?app=notes`, from its launcher
+ * entry or the tray). Everything else stays — the other apps, search, Settings, the account —
+ * as in any window: an app's window is where that app is, not a place cut off from the rest. */
 const ONLY = new URLSearchParams(window.location.search).get("app");
 
 export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<void> }) {
@@ -247,7 +248,7 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
 
   return (
     <SyncProvider>
-      <div className={`library enter-library${sidebarOpen ? " is-sidebar-open" : ""}${rail ? " is-rail" : ""}${ONLY ? " is-app" : ""}`}>
+      <div className={`library enter-library${sidebarOpen ? " is-sidebar-open" : ""}${rail ? " is-rail" : ""}`}>
         {/* Only in a narrow window, where the sidebar gives its room to the content. */}
         <button
           className="sidebar-toggle"
