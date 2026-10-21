@@ -536,6 +536,13 @@ impl Cache {
         {
             // One fetch at a time for a file: two readers of the same part wait for one fetch.
             let _one = lock.lock().await;
+            // In use from now, before any part is fetched: marked only after the read, a long
+            // read of a file last read long ago could have it let go of mid-way by the
+            // eviction its own fetches set off — and the parts already found read back as
+            // zeros.
+            if let Ok(f) = std::fs::File::options().write(true).open(&path) {
+                let _ = f.set_modified(std::time::SystemTime::now());
+            }
             let first = usize::try_from(offset / CHUNK).unwrap_or(0);
             let last = usize::try_from((end - 1) / CHUNK).unwrap_or(0);
             for chunk in first..=last {

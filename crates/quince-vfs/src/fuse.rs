@@ -464,6 +464,33 @@ impl Inner {
             .block_on(async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await });
     }
 
+    /// A folder by its id, found in what the store holds by walking down from the top: for a
+    /// folder the table has not met since a restart.
+    fn find_folder(&self, id: &str) -> Option<DriveItem> {
+        let root = self.item(1)?;
+        if root.drivewsid == id {
+            return Some(root);
+        }
+        let mut queue = std::collections::VecDeque::from([root.drivewsid]);
+        let mut seen = 0usize;
+        while let Some(at) = queue.pop_front() {
+            for child in self.store.children(&at).unwrap_or_default() {
+                if !child.is_container() {
+                    continue;
+                }
+                if child.drivewsid == id {
+                    return Some(child);
+                }
+                seen += 1;
+                if seen > 20_000 {
+                    return None;
+                }
+                queue.push_back(child.drivewsid);
+            }
+        }
+        None
+    }
+
     fn item(&self, ino: u64) -> Option<DriveItem> {
         self.inodes
             .lock()
@@ -752,9 +779,14 @@ impl Inner {
                         .ino_of(&p.folder)
                         .and_then(|f| inodes.item(f).cloned())
                 };
+                // A folder not browsed since a restart is not in the table yet: found in what
+                // the library holds, from the top down. Not found at all, it is looked for
+                // again later — given up, a file waiting there from before was never sent.
+                let folder = folder.or_else(|| me.find_folder(&p.folder));
                 let Some(folder) = folder else {
-                    me.with_pending(ino, |p| p.sender = false);
-                    return;
+                    tokio::time::sleep(wait).await;
+                    wait = (wait * 2).min(LONGEST_RETRY);
+                    continue;
                 };
                 let key = format!("{}/{}", p.folder, p.name);
                 // Behind any send of the same name still under way, so this one finds it
@@ -814,25 +846,45 @@ impl Inner {
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .insert(key, sent.item.clone());
                         }
-                        let done = me
-                            .with_pending(ino, |now| {
-                                if now.generation == generation {
-                                    true
-                                } else {
-                                    // Written again while on its way: what Apple has now is
-                                    // what the next send replaces.
-                                    now.replaces = Some(sent.item.clone());
-                                    false
-                                }
-                            })
-                            .unwrap_or(true);
+                        // Deleted while on its way: what was just sent goes too, into Recently
+                        // Deleted — kept, it came back after the delete had said it was gone.
+                        if me.pending(ino).is_none() {
+                            let _ = me.remote.delete(&sent.item).await;
+                            let _ = me.remote.list(&folder.drivewsid).await;
+                            return;
+                        }
                         let _ = me.remote.list(&folder.drivewsid).await;
+                        // Written again — or renamed, or deleted — while on its way, the wait for
+                        // the listing included: decided and let go of in one step, so a save
+                        // landing in that wait is never dropped with the staged copy.
+                        // None: deleted in that wait.
+                        let done: Option<bool> = match &me.writes {
+                            None => Some(true),
+                            Some(w) => {
+                                let mut items = w
+                                    .items
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                match items.get_mut(&ino) {
+                                    Some(now) if now.generation != generation => {
+                                        // What Apple has now is what the next send replaces.
+                                        now.replaces = Some(sent.item.clone());
+                                        Some(false)
+                                    }
+                                    Some(_) => {
+                                        items.remove(&ino);
+                                        Some(true)
+                                    }
+                                    None => None,
+                                }
+                            }
+                        };
+                        let Some(done) = done else {
+                            let _ = me.remote.delete(&sent.item).await;
+                            return;
+                        };
                         if done {
                             if let Some(w) = &me.writes {
-                                w.items
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .remove(&ino);
                                 w.drop_staging(ino);
                                 w.save();
                             }
@@ -841,6 +893,18 @@ impl Inner {
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                                     .bind(ino, &sent.item);
+                                // A replace is a new document at Apple, with a new id: a file
+                                // chosen to be kept on this computer stays kept as its new self.
+                                if let Some(old) = p.replaces.as_ref() {
+                                    if old.drivewsid != sent.item.drivewsid
+                                        && me.cache.kept().chosen.contains(&old.drivewsid)
+                                    {
+                                        me.cache.set_kept(|k| {
+                                            k.chosen.remove(&old.drivewsid);
+                                            k.chosen.insert(sent.item.drivewsid.clone());
+                                        });
+                                    }
+                                }
                             }
                             return;
                         }
@@ -1017,6 +1081,13 @@ impl Inner {
                 me.with_pending(ino, |now| {
                     now.folder = to.drivewsid.clone();
                     now.name = newname.to_string();
+                    // A change, when there is something to send or a send on its way: one
+                    // under the old name is followed by one under the new, which replaces it
+                    // — finished as it was, the rename was lost.
+                    if now.dirty || now.sending {
+                        now.generation += 1;
+                        now.dirty = true;
+                    }
                 });
             }
             (None, None) => me.move_and_rename(&item, &from, &to, name, newname)?,
@@ -1471,15 +1542,31 @@ impl Filesystem for DriveFs {
         reply: ReplyEmpty,
     ) {
         let inner = &self.0;
+        // Some(true): last close of a changed file, to send. Some(false): last close of a file
+        // opened for writing and never written — its copy is let go of, or every read went on
+        // being served from that copy and changes made on the phone stayed unseen.
         let last = inner.with_pending(ino.0, |p| {
             p.open = p.open.saturating_sub(1);
-            p.open == 0 && p.dirty
+            (p.open == 0).then_some(p.dirty || p.sending || p.sender)
         });
-        if last == Some(true) {
-            if let Some(w) = &inner.writes {
-                w.save();
+        match last {
+            Some(Some(true)) => {
+                if let Some(w) = &inner.writes {
+                    w.save();
+                }
+                Inner::schedule(inner, ino.0, writes::SETTLE);
             }
-            Inner::schedule(inner, ino.0, writes::SETTLE);
+            Some(Some(false)) => {
+                if let Some(w) = &inner.writes {
+                    w.items
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&ino.0);
+                    w.drop_staging(ino.0);
+                    w.save();
+                }
+            }
+            _ => {}
         }
         reply.ok();
     }

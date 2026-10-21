@@ -282,15 +282,33 @@ pub async fn send(
     let new = remote.upload(folder, staged).await?;
     if let Some(old) = current {
         // The old one into Recently Deleted, then the new one given its name: if anything
-        // fails between, both are still there to be found — nothing is ever lost.
-        remote.delete(&old).await?;
-        if new.display_name() != name {
-            remote.rename(&new, &name).await?;
+        // fails between, both are still there to be found — nothing is ever lost. Once the new
+        // bytes are at Apple, a step after that is tried again where it stands: failing the
+        // whole send uploaded them again, and left a "name 2" beside the result each time.
+        let mut tries = 0u64;
+        while let Err(e) = remote.delete(&old).await {
+            tries += 1;
+            if tries >= 3 {
+                return Err(e);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(800 * tries)).await;
         }
-        let after = remote.list(&folder.drivewsid).await?;
-        let item = after
-            .into_iter()
-            .find(|i| i.drivewsid == new.drivewsid)
+        if new.display_name() != name {
+            let mut tries = 0u64;
+            while let Err(e) = remote.rename(&new, &name).await {
+                tries += 1;
+                if tries >= 3 {
+                    return Err(e);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(800 * tries)).await;
+            }
+        }
+        // Read back for its new version; sent all the same if the listing fails.
+        let item = remote
+            .list(&folder.drivewsid)
+            .await
+            .ok()
+            .and_then(|after| after.into_iter().find(|i| i.drivewsid == new.drivewsid))
             .unwrap_or(new);
         return Ok(Sent {
             item,

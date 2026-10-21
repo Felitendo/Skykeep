@@ -182,9 +182,11 @@ impl Remote for AppRemote {
                     (Some(u), false) => u.clone(),
                     _ => {
                         let (http, docws, params) = context(&app, "docws").await?;
-                        let u = quince_icloud::drive::download_url(&http, &docws, params, &item)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let u = quince_icloud::drive::download_url_of_version(
+                            &http, &docws, params, &item,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
                         links
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)

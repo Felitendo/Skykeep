@@ -158,6 +158,27 @@ pub async fn download_url(
     params: Vec<(String, String)>,
     item: &DriveItem,
 ) -> Result<String> {
+    link(http, docws_root, params, item, false).await
+}
+
+/// [`download_url`] for exactly the version `item` names: refused ([`Error::Conflict`]) when
+/// Apple has a newer one. For reading a file in parts, kept part by part under its version.
+pub async fn download_url_of_version(
+    http: &reqwest::Client,
+    docws_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+) -> Result<String> {
+    link(http, docws_root, params, item, true).await
+}
+
+async fn link(
+    http: &reqwest::Client,
+    docws_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    exact: bool,
+) -> Result<String> {
     // The zone in the path is the file's own. An app library — Keynote's, Shortcuts', a
     // third party's — is a zone of its own, and asking for one of its files under the
     // ordinary Drive zone gets "Could not find document" rather than the file. Every file
@@ -189,6 +210,18 @@ pub async fn download_url(
 
     let body: Value = serde_json::from_str(&text)
         .map_err(|e| Error::Protocol(format!("download reply was not JSON: {e}")))?;
+    // The link is to the version Apple has now (measured: `double_etag` is the item's own
+    // etag). A file changed elsewhere since it was listed would be read in parts of two
+    // versions and kept as one: refused instead, and read again once listed afresh.
+    if let (true, Some(known), Some(serving)) = (
+        exact,
+        item.etag.as_deref(),
+        body.get("double_etag").and_then(Value::as_str),
+    ) {
+        if known != serving {
+            return Err(Error::Conflict);
+        }
+    }
     body.pointer("/data_token/url")
         .and_then(Value::as_str)
         .map(ToString::to_string)
@@ -2348,7 +2381,19 @@ async fn upload_once(
     // itself, by id, as icloud.com reads an item (`retrieveItemDetails`) — it must be there,
     // in this folder, at this size. Reading the whole folder back instead took six of the
     // nine seconds "Checking" lasted for a 40 MB file in a full folder, for every file sent.
-    let found = item_details(http, drivews_root, &params, &stored).await?;
+    // A blip while reading it back is asked again, not taken for a failed send: retried
+    // whole, a file Apple had filed came back as a conflicted copy beside itself.
+    let mut tries = 0u64;
+    let found = loop {
+        match item_details(http, drivews_root, &params, &stored).await {
+            Ok(found) => break found,
+            Err(e) if tries >= 2 => return Err(e),
+            Err(_) => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(700 * tries)).await;
+            }
+        }
+    };
     match found {
         Some(item)
             if item.parent_id.as_deref() == Some(folder_id) && item.size == Some(size as i64) =>

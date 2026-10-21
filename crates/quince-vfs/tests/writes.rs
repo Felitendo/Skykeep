@@ -491,3 +491,80 @@ fn what_is_waiting_is_told() {
     );
     drop(session);
 }
+
+/// Starts a mount over a world whose Apple is slow, as `a_save_during_a_send_waits_its_turn`.
+fn slow_world() -> Arc<World> {
+    let world = Arc::new(World::default());
+    world
+        .folders
+        .lock()
+        .unwrap()
+        .insert(ROOT.into(), Vec::new());
+    *world.slow.lock().unwrap() = Duration::from_millis(2500);
+    world
+}
+
+fn upload_started(world: &World) {
+    for _ in 0..80 {
+        if !world.uploads.lock().unwrap().is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A file deleted while it is on its way to Apple stays deleted: what arrives goes straight
+/// to Recently Deleted (kept, it came back after `rm` had said it was gone).
+#[test]
+fn a_file_deleted_while_sending_stays_deleted() {
+    if !Path::new("/dev/fuse").exists() {
+        return;
+    }
+    let world = slow_world();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (cache, staging, at) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let root = at.path();
+    let session = mount(&world, &rt, root, cache.path(), staging.path());
+    std::fs::write(root.join("Big.mov"), b"frames\n").unwrap();
+    upload_started(&world);
+    std::fs::remove_file(root.join("Big.mov")).unwrap();
+    std::thread::sleep(Duration::from_millis(5000));
+    assert!(
+        !world.names(ROOT).iter().any(|n| n == "Big.mov"),
+        "deleted while sending, yet at Apple: {:?}",
+        world.names(ROOT)
+    );
+    drop(session);
+}
+
+/// A file renamed while it is on its way to Apple ends under its new name only.
+#[test]
+fn a_file_renamed_while_sending_ends_under_its_new_name() {
+    if !Path::new("/dev/fuse").exists() {
+        return;
+    }
+    let world = slow_world();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (cache, staging, at) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let root = at.path();
+    let session = mount(&world, &rt, root, cache.path(), staging.path());
+    std::fs::write(root.join("a.txt"), b"words\n").unwrap();
+    upload_started(&world);
+    std::fs::rename(root.join("a.txt"), root.join("b.txt")).unwrap();
+    assert!(
+        settled(&world, "b.txt", b"words\n"),
+        "{:?}",
+        world.names(ROOT)
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(world.names(ROOT), ["b.txt"], "only the new name");
+    drop(session);
+}
