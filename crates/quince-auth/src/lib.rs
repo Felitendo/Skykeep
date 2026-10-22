@@ -268,6 +268,23 @@ pub struct Client {
     /// The keyring would not answer when this started — locked, or not up yet. Not the same
     /// as nothing stored: it is asked again before anything else happens.
     keyring_error: Option<String>,
+    /// What was last written, as a hash of the session and one of the cookies: a heartbeat that
+    /// changed neither writes neither (see [`Client::persist`]).
+    persisted: std::sync::Mutex<Persisted>,
+}
+
+/// Hashes of the session and the cookie jar as last written; `None` for not written yet.
+#[derive(Default)]
+struct Persisted {
+    session: Option<u64>,
+    cookies: Option<u64>,
+}
+
+fn hash_of(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 
 impl Client {
@@ -334,6 +351,7 @@ impl Client {
             pending: None,
             awaiting_code: false,
             keyring_error,
+            persisted: std::sync::Mutex::new(Persisted::default()),
         })
     }
 
@@ -367,8 +385,41 @@ impl Client {
         }
     }
 
+    /// Keep the session and its cookies where the next start finds them — each only when it
+    /// differs from what was last written.
+    ///
+    /// Every heartbeat, so every sync and every return to the window, wrote the session to the
+    /// keyring: several D-Bus writes, deletes of old names and a read-back, all while holding
+    /// the sign-in lock, for a session that had not changed. Only a write that went through is
+    /// remembered, so one that failed is made again next time.
     fn persist(&self) -> Result<()> {
-        self.store.save(&self.session)?;
+        let session = serde_json::to_vec(&self.session)
+            .map_err(|e| Error::Protocol(format!("couldn't save the session: {e}")))?;
+        let mut cookies = Vec::new();
+        {
+            let jar = self.jar.lock().expect("cookie jar mutex poisoned");
+            cookie_store::serde::json::save(&jar, &mut cookies)
+                .map_err(|e| Error::Protocol(format!("couldn't save cookies: {e}")))?;
+        }
+        let (session, cookies) = (hash_of(&session), (hash_of(&cookies), cookies));
+        let mut last = self
+            .persisted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.session != Some(session) {
+            self.store.save(&self.session)?;
+            last.session = Some(session);
+        }
+        if last.cookies != Some(cookies.0) {
+            self.write_cookies(&cookies.1)?;
+            last.cookies = Some(cookies.0);
+        }
+        Ok(())
+    }
+
+    /// The cookie jar, as `cookie_store` wrote it, to its file.
+    fn write_cookies(&self, cookies: &[u8]) -> Result<()> {
+        use std::io::Write;
         // The session's cookies are a credential: readable by this user alone, whatever folder
         // they end up in (a backup, a copy), not only by the private data folder around them.
         let mut options = std::fs::OpenOptions::new();
@@ -386,9 +437,9 @@ impl Client {
             file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
         let mut w = std::io::BufWriter::new(file);
-        let jar = self.jar.lock().expect("cookie jar mutex poisoned");
-        cookie_store::serde::json::save(&jar, &mut w)
-            .map_err(|e| Error::Protocol(format!("couldn't save cookies: {e}")))
+        w.write_all(cookies)?;
+        w.flush()?;
+        Ok(())
     }
 
     /// Forget this account entirely.
@@ -397,6 +448,11 @@ impl Client {
         if let Ok(mut jar) = self.jar.lock() {
             jar.clear();
         }
+        // Nothing is stored any more: the next session is written whatever it is.
+        *self
+            .persisted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Persisted::default();
         self.store.clear()
     }
 

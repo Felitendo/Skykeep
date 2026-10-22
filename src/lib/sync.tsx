@@ -26,6 +26,8 @@ type Sync = {
   syncing: boolean;
   /** Ticks once per completed pass. Screens re-read when it changes. */
   revision: number;
+  /** Ticks per service whose rows a pass changed; `all` for a change not placed. */
+  revisions: Readonly<Record<string, number>>;
   /** Ask for a pass now. Safe to call while one is running; it will not start a second. */
   refresh: () => Promise<void>;
   /** The last refresh that failed outright, rather than a single service reporting trouble. */
@@ -49,7 +51,22 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const [report, setReport] = useState<Refresh | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [revisions, setRevisions] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
+  /**
+   * A pass landed. With the services it changed named, only their screens read again — and
+   * none, when it stored nothing new: a clean pass landing every service told every open
+   * screen to read its whole list seven times. Unnamed, every screen reads again.
+   */
+  const bump = useCallback((changed?: readonly string[]) => {
+    if (Array.isArray(changed) && changed.length === 0) return;
+    setRevision((n) => n + 1);
+    setRevisions((was) => {
+      const next = { ...was };
+      for (const s of Array.isArray(changed) ? changed : ["all"]) next[s] = (next[s] ?? 0) + 1;
+      return next;
+    });
+  }, []);
   // A second click while a pass is running would mean two walks of the same zones.
   const inFlight = useRef(false);
   const [updating, setUpdating] = useState<string[]>([]);
@@ -63,25 +80,32 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     setSyncing(true);
     setPassStartedAt(Math.floor(Date.now() / 1000));
     setError(null);
+    // Each service that stored something says so as it lands (the backend's event); a pass
+    // that cannot say so has every screen read again, as before.
+    let told = false;
     try {
-      setReport(await api.syncAll());
+      const done = await api.syncAll();
+      told = Array.isArray(done?.changed);
+      setReport(done);
     } catch (e) {
       setError(messageOf(e));
     } finally {
       inFlight.current = false;
       setSyncing(false);
       setPassStartedAt(null);
-      setRevision((n) => n + 1);
+      if (!told) bump();
     }
-  }, []);
+  }, [bump]);
 
   const refreshService = useCallback(async (service: string) => {
     if (serviceInFlight.current.has(service)) return;
     serviceInFlight.current.add(service);
     setUpdating([...serviceInFlight.current]);
     setServiceErrors(({ [service]: _gone, ...rest }) => rest);
+    let told = false;
     try {
       const part = await api.syncSome([service]);
+      told = Array.isArray(part?.changed);
       // The backend's event brings the whole picture; this keeps the answer on screen even
       // where no event arrives, by folding this service's own report into the last one.
       setReport((was) =>
@@ -101,9 +125,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     } finally {
       serviceInFlight.current.delete(service);
       setUpdating([...serviceInFlight.current]);
-      setRevision((n) => n + 1);
+      if (!told) bump();
     }
-  }, []);
+  }, [bump]);
 
   useEffect(() => {
     let cancelled = false;
@@ -128,7 +152,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     const stop = listen<Refresh>(SYNCED, (event) => {
       if (cancelled) return;
       setReport(event.payload);
-      setRevision((n) => n + 1);
+      bump(event.payload?.changed);
     });
 
     /*
@@ -154,11 +178,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("focus", onReturn);
       document.removeEventListener("visibilitychange", onReturn);
     };
-  }, [refresh]);
+  }, [refresh, bump]);
 
   const value = useMemo(
-    () => ({ report, syncing, revision, refresh, error, refreshService, updating, serviceErrors, passStartedAt }),
-    [report, syncing, revision, refresh, error, refreshService, updating, serviceErrors, passStartedAt]
+    () => ({ report, syncing, revision, revisions, refresh, error, refreshService, updating, serviceErrors, passStartedAt }),
+    [report, syncing, revision, revisions, refresh, error, refreshService, updating, serviceErrors, passStartedAt]
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
@@ -167,6 +191,16 @@ export function useSync(): Sync {
   const found = useContext(Context);
   if (!found) throw new Error("useSync must be used inside a SyncProvider");
   return found;
+}
+
+/**
+ * A revision for the screen that shows these services: it moves when a pass changed one of
+ * them (or changed something it could not name), and stays put for passes that changed only
+ * what another screen shows.
+ */
+export function useRevision(...services: string[]): number {
+  const { revisions } = useSync();
+  return services.reduce((n, s) => n + (revisions[s] ?? 0), revisions.all ?? 0);
 }
 
 /** "just now", "4 min ago", "yesterday" — how old the library is, in words. */

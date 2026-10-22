@@ -27,7 +27,7 @@ import {
 import { Arriving, EmptyState } from "../components/EmptyState";
 import { SearchField } from "../components/SearchField";
 import { PaneTitle } from "../components/PaneTitle";
-import { useArriving, useSync } from "../lib/sync";
+import { useArriving, useRevision } from "../lib/sync";
 import { toast, toastSaved, useErrorToast, useToastClearance } from "../components/Toast";
 import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
@@ -661,7 +661,7 @@ const Month = memo(function Month({
 }, sameMonth);
 
 export function PhotosView() {
-  const { revision } = useSync();
+  const revision = useRevision("photos");
   const arriving = useArriving("photos");
   const [view, setView] = useState<PhotoView>("library");
   /** An album open instead of a view. */

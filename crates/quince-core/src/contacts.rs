@@ -713,6 +713,17 @@ impl Library {
     ///
     /// The picture is served per row as a list scrolls, so this stays a single-row lookup
     /// rather than loading everyone and their phone numbers to answer it.
+    /// Every contact with a picture at Apple and the signature naming it, `(guid, signature)`:
+    /// what warming the picture cache needs to know, without building each card whole.
+    pub fn contact_photo_signatures(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, photo_signature FROM contacts
+             WHERE photo_url IS NOT NULL AND photo_signature IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn contact_photo_source(&self, guid: &str) -> Result<Option<ContactPhoto>> {
         let mut stmt = self.conn.prepare(
             "SELECT photo_url, photo_signature, photo_crop FROM contacts WHERE guid = ?1",
@@ -965,6 +976,34 @@ mod tests {
                 value: format!("+91{guid}"),
             }],
         }
+    }
+
+    /// Warming the picture cache asks only who has a picture and which: the same people the
+    /// whole cards say have one, with the same signatures.
+    #[test]
+    fn picture_signatures_are_read_without_building_every_card() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut alex = contact("1", Some("Alex"), Some("Rivera"));
+        alex.photo_url = Some("https://example.invalid/a".into());
+        alex.photo_signature = Some("sig-a".into());
+        // A picture with no signature is fetched as it is drawn, never warmed.
+        let mut bea = contact("2", Some("Bea"), Some("Moreno"));
+        bea.photo_url = Some("https://example.invalid/b".into());
+        let mut cy = contact("3", Some("Cy"), Some("Lane"));
+        cy.photo_signature = Some("stale".into());
+        lib.put_contacts(&[alex, bea, cy]).unwrap();
+        let mut whole: Vec<(String, String)> = lib
+            .contacts(None)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.photo_url.is_some())
+            .filter_map(|c| c.photo_signature.map(|s| (c.guid, s)))
+            .collect();
+        let mut quick = lib.contact_photo_signatures().unwrap();
+        whole.sort();
+        quick.sort();
+        assert_eq!(quick, whole);
+        assert_eq!(quick, [("1".to_string(), "sig-a".to_string())]);
     }
 
     /// Calendar's read: the people with a birthday, in the address book's order, with what

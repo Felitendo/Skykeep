@@ -737,37 +737,43 @@ pub fn memberships_from(bytes: &[u8]) -> Vec<(String, String)> {
 ///
 /// A file that will not download is skipped rather than failing the sync: the reminders are
 /// still right, and their sections simply stay as they were until the next pass.
+///
+/// Eight at a time, as Notes fetches its long notes: one after another, a walk over many lists
+/// waited on each list's file in turn.
 async fn fetch_memberships(
     http: &reqwest::Client,
     records: &[Value],
 ) -> std::collections::HashMap<String, Vec<(String, String)>> {
-    let mut out = std::collections::HashMap::new();
-    for record in records {
-        if field::record_type(record).as_deref() != Some("List") || field::flag(record, "Deleted") {
-            continue;
-        }
-        let Some(name) = field::record_name(record) else {
-            continue;
-        };
-        let Some(url) = record
-            .pointer("/fields/MembershipsOfRemindersInSectionsAsData/value/downloadURL")
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-        // The URL is a template; Apple fills the file name in with whatever it is given.
-        let Ok(response) = http.get(url.replace("${f}", "memberships")).send().await else {
-            continue;
-        };
-        if !response.status().is_success() {
-            continue;
-        }
-        let Ok(bytes) = response.bytes().await else {
-            continue;
-        };
-        out.insert(name, memberships_from(&bytes));
-    }
-    out
+    use futures_util::StreamExt;
+    let wanted: Vec<(String, String)> = records
+        .iter()
+        .filter(|r| field::record_type(r).as_deref() == Some("List") && !field::flag(r, "Deleted"))
+        .filter_map(|r| {
+            let name = field::record_name(r)?;
+            let url = r
+                .pointer("/fields/MembershipsOfRemindersInSectionsAsData/value/downloadURL")
+                .and_then(Value::as_str)?;
+            Some((name, url.to_string()))
+        })
+        .collect();
+    futures_util::stream::iter(wanted)
+        .map(|(name, url)| async move {
+            // The URL is a template; Apple fills the file name in with whatever it is given.
+            let response = http
+                .get(url.replace("${f}", "memberships"))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let bytes = response.bytes().await.ok()?;
+            Some((name, memberships_from(&bytes)))
+        })
+        .buffer_unordered(8)
+        .filter_map(|found| async move { found })
+        .collect()
+        .await
 }
 
 /// Ask Apple what changed. Touches no local state.
@@ -4929,6 +4935,64 @@ mod membership_tests {
         assert!(memberships_from(b"not json").is_empty());
         assert!(memberships_from(br#"{"memberships":"wrong"}"#).is_empty());
         assert!(memberships_from(br#"{"other":[]}"#).is_empty());
+    }
+
+    /// Every list's file is fetched, side by side rather than in turn; a deleted list and a
+    /// file that will not come are left out, as before.
+    #[tokio::test]
+    async fn every_lists_file_is_fetched_together() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let slow = std::time::Duration::from_millis(150);
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/m/missing/"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/m/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"memberships":[{"memberID":"R1","groupID":"S1"}]}"#)
+                    .set_delay(slow),
+            )
+            .mount(&server)
+            .await;
+        let list = |name: &str, deleted: bool| {
+            json!({
+                "recordType": "List",
+                "recordName": name,
+                "fields": {
+                    "Deleted": { "value": i64::from(deleted) },
+                    "MembershipsOfRemindersInSectionsAsData": {
+                        "value": { "downloadURL": format!("{}/m/{name}/${{f}}", server.uri()) }
+                    }
+                }
+            })
+        };
+        let mut records: Vec<Value> = (0..12).map(|i| list(&format!("L{i}"), false)).collect();
+        records.push(list("gone", true));
+        records.push(list("missing", false));
+        let http = reqwest::Client::new();
+        let started = std::time::Instant::now();
+        let found = fetch_memberships(&http, &records).await;
+        let took = started.elapsed();
+        assert_eq!(found.len(), 12);
+        assert!(
+            found.contains_key("L0")
+                && !found.contains_key("gone")
+                && !found.contains_key("missing")
+        );
+        assert_eq!(
+            found["L3"],
+            [("Reminder/R1".to_string(), "ListSection/S1".to_string())]
+        );
+        assert!(
+            took < slow * 6,
+            "twelve files {slow:?} each took {took:?}: fetched in turn"
+        );
     }
 }
 

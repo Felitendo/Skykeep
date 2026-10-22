@@ -58,7 +58,8 @@ impl Remote for AppRemote {
         let (app, folder) = (self.app.clone(), folder.to_string());
         Box::pin(async move {
             let (http, root, params) = context(&app, "drivews").await?;
-            let _one = crate::DRIVE_PASS.lock().await;
+            let pass = crate::drive_pass(&folder);
+            let _one = pass.lock().await;
             let items = quince_icloud::drive::fetch_folder(&http, &root, params, &folder)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -228,14 +229,75 @@ impl Remote for AppRemote {
     }
 }
 
-struct AppStore(AppHandle);
+struct AppStore {
+    app: AppHandle,
+    /// The folder's own read-only connection on the library: what it lists never waits on the
+    /// lock a sync pass or the window holds, and its version says when a listing is stale.
+    reader: Mutex<MountReader>,
+}
+
+#[derive(Default)]
+struct MountReader {
+    reader: Option<crate::library_lock::Reader>,
+    /// Which reader this is (opened again on another file, its version starts over) and what
+    /// its version last said; `version` moves whenever either does.
+    opened: u64,
+    seen: Option<(u64, i64)>,
+    version: u64,
+}
+
+impl AppStore {
+    fn new(app: AppHandle) -> Self {
+        Self {
+            app,
+            reader: Mutex::new(MountReader::default()),
+        }
+    }
+
+    /// Run `read` on the folder's reader, opened (again) as the library's file needs.
+    fn with_reader<T>(
+        &self,
+        read: impl FnOnce(&mut MountReader, &crate::library_lock::Reader) -> Option<T>,
+    ) -> Option<T> {
+        let dir = crate::state_dir(&self.app);
+        let mut held = self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !held.reader.as_ref().is_some_and(|r| r.current(&dir)) {
+            held.reader = crate::library_lock::Reader::open(&dir);
+            held.opened += 1;
+        }
+        let reader = held.reader.take()?;
+        let found = read(&mut held, &reader);
+        held.reader = Some(reader);
+        found
+    }
+}
 
 impl Store for AppStore {
     fn children(&self, folder: &str) -> Option<Vec<DriveItem>> {
-        // Called on the folder's own threads, never the async runtime's: waiting is allowed.
-        let data = self.0.state::<Data>();
-        let library = data.0.blocking_lock();
-        library.drive_children(folder).ok()
+        // Called on the folder's own threads, never the async runtime's: waiting is allowed —
+        // but a file manager's every look at a name came here, and waited out whole sync passes
+        // on the library's lock. On the folder's own reader it never waits on one.
+        if let Some(Ok(items)) = self.with_reader(|_, r| Some(r.library().drive_children(folder))) {
+            return Some(items);
+        }
+        let data = self.app.state::<Data>();
+        data.0
+            .blocking_read(|library| library.drive_children(folder))
+            .ok()
+    }
+
+    fn version(&self) -> Option<u64> {
+        self.with_reader(|held, r| {
+            let now = (held.opened, r.data_version()?);
+            if held.seen != Some(now) {
+                held.seen = Some(now);
+                held.version += 1;
+            }
+            Some(held.version)
+        })
     }
 }
 
@@ -372,7 +434,7 @@ fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), Stri
                 links: Arc::new(Mutex::new(HashMap::new())),
             });
             // What is written here waits beside the library (owner-only) until Apple has it.
-            quince_vfs::fuse::DriveFs::new(remote, Arc::new(AppStore(app.clone())), cache, rt)
+            quince_vfs::fuse::DriveFs::new(remote, Arc::new(AppStore::new(app.clone())), cache, rt)
                 .with_writes(&crate::state_dir(app).join("drive-writes"))
                 .map_err(|e| e.to_string())?
         }

@@ -271,7 +271,10 @@ async fn refresher(
                     crate::warm_contact_photos(app.clone());
                 }
                 // Every service's freshness, not only this one: the window shows the whole.
-                app.emit(SYNCED, refresh::status(&data.0).await).ok();
+                // What it stored, if anything, was told as it landed.
+                let mut status = refresh::status(&data.0).await;
+                status.changed = Some(Vec::new());
+                app.emit(SYNCED, status).ok();
             });
         }
     }

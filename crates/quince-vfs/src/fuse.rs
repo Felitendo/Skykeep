@@ -67,6 +67,9 @@ struct Inner {
     looked: Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// The account's storage as last asked, `(used, total)`.
     space: Mutex<Option<((u64, u64), std::time::Instant)>>,
+    /// Each folder's listing as last worked out, by the folder's inode, kept while nothing it
+    /// was worked out from has moved (see `Listing`).
+    listings: Mutex<std::collections::HashMap<u64, Arc<Listing>>>,
     /// Nothing in it can be changed.
     read_only: bool,
     /// New files can be added and anything deleted, nothing else (the Photos folder: a photo is
@@ -75,6 +78,45 @@ struct Inner {
 }
 
 pub struct DriveFs(Arc<Inner>);
+
+/// What a pending file in a folder brings to its listing: its inode, its name, and the file of
+/// Apple's it takes the place of.
+type LocalKey = (u64, String, Option<DriveItem>);
+
+/// A folder's listing — names, inodes and items — and everything it was worked out from: the
+/// store's version, the inode table's generation and the files being written into it. While all
+/// three stand, working it out again gives the very same listing, so it is used as it is.
+///
+/// A file manager listing a folder looks every name in it up after, and each look-up worked the
+/// whole folder out again — read from the library, named, placed — to find one name: a folder of
+/// two thousand cost four million rows, every second the kernel's answer lasted.
+struct Listing {
+    version: u64,
+    generation: u64,
+    local: Vec<LocalKey>,
+    entries: Vec<(String, u64, DriveItem)>,
+    /// Where in `entries` each name is first.
+    by_name: std::collections::HashMap<String, usize>,
+}
+
+impl Listing {
+    fn of(entries: Vec<(String, u64, DriveItem)>) -> Self {
+        let mut by_name = std::collections::HashMap::with_capacity(entries.len());
+        for (at, (name, ..)) in entries.iter().enumerate() {
+            by_name.entry(name.clone()).or_insert(at);
+        }
+        Self {
+            version: 0,
+            generation: 0,
+            local: Vec::new(),
+            entries,
+            by_name,
+        }
+    }
+}
+
+/// The most folders whose listings are kept at once.
+const KEPT_LISTINGS: usize = 256;
 
 /// The attribute that keeps a file or folder on this computer: `setfattr -n user.quince.keep
 /// -v 1 <path>` keeps it, `-x` lets it go — what the window's "Keep on This Computer" does.
@@ -129,6 +171,7 @@ impl DriveFs {
             writes: None,
             space: Mutex::new(None),
             looked: Mutex::new(std::collections::HashMap::new()),
+            listings: Mutex::new(std::collections::HashMap::new()),
             keeping: std::sync::atomic::AtomicBool::new(false),
             again: std::sync::atomic::AtomicBool::new(false),
             read_only: false,
@@ -566,26 +609,19 @@ impl Inner {
     /// A folder's items with their names and inodes: from the library — or, never opened
     /// before, from Apple once — with the files being written here among them.
     fn children(&self, ino: u64) -> Result<Vec<(String, u64, DriveItem)>, Errno> {
+        Ok(self.listing(ino)?.entries.clone())
+    }
+
+    /// The folder's listing: the one worked out last while nothing it came from has moved,
+    /// else worked out again (see `Listing`).
+    fn listing(&self, ino: u64) -> Result<Arc<Listing>, Errno> {
+        // Asked first: a change landing while this works the listing out moves it past what is
+        // recorded here, and the next look works it out again.
+        let version = self.store.version();
         let folder = self.item(ino).ok_or(Errno::ENOENT)?;
         if !folder.is_container() {
             return Err(Errno::ENOTDIR);
         }
-        let stored = self.store.children(&folder.drivewsid);
-        // A folder Apple says has things in it, with nothing stored, was never listed.
-        let listed = stored.filter(|s| !s.is_empty() || folder.child_count == Some(0));
-        let mut items = match listed {
-            Some(items) => items,
-            None => {
-                let remote = Arc::clone(&self.remote);
-                let id = folder.drivewsid.clone();
-                self.rt
-                    .block_on(
-                        async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await },
-                    )
-                    .map_err(|_| Errno::ETIMEDOUT)?
-                    .map_err(|_| Errno::EIO)?
-            }
-        };
         // Files being written here: a new one is shown beside Apple's; one taking another's
         // place is shown in it, under its own inode.
         let mut local: Vec<(u64, Pending)> = Vec::new();
@@ -600,6 +636,46 @@ impl Inner {
                 .map(|(i, p)| (*i, p.clone()))
                 .collect();
         }
+        local.sort_by_key(|(i, _)| *i);
+        let local_key: Vec<LocalKey> = local
+            .iter()
+            .map(|(i, p)| (*i, p.name.clone(), p.replaces.clone()))
+            .collect();
+        if let Some(version) = version {
+            let generation = self
+                .inodes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .generation();
+            let kept = self
+                .listings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&ino)
+                .cloned();
+            if let Some(kept) = kept.filter(|l| {
+                l.version == version && l.generation == generation && l.local == local_key
+            }) {
+                return Ok(kept);
+            }
+        }
+        let stored = self.store.children(&folder.drivewsid);
+        // A folder Apple says has things in it, with nothing stored, was never listed.
+        let listed = stored.filter(|s| !s.is_empty() || folder.child_count == Some(0));
+        let from_store = listed.is_some();
+        let mut items = match listed {
+            Some(items) => items,
+            None => {
+                let remote = Arc::clone(&self.remote);
+                let id = folder.drivewsid.clone();
+                self.rt
+                    .block_on(
+                        async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await },
+                    )
+                    .map_err(|_| Errno::ETIMEDOUT)?
+                    .map_err(|_| Errno::EIO)?
+            }
+        };
         let mut inodes = self
             .inodes
             .lock()
@@ -634,16 +710,38 @@ impl Inner {
             inodes.place(pino, ino, &p.name);
             out.push((p.name.clone(), pino, it));
         }
-        Ok(out)
+        let generation = inodes.generation();
+        drop(inodes);
+        let mut listing = Listing::of(out);
+        // Kept only when it came from the store: one read from Apple was stored on the way, which
+        // moves the store's version, and is worked out again from there next time.
+        if let (Some(version), true) = (version, from_store) {
+            listing.version = version;
+            listing.generation = generation;
+            listing.local = local_key;
+            let listing = Arc::new(listing);
+            let mut kept = self
+                .listings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if kept.len() >= KEPT_LISTINGS && !kept.contains_key(&ino) {
+                kept.clear();
+            }
+            kept.insert(ino, Arc::clone(&listing));
+            return Ok(listing);
+        }
+        Ok(Arc::new(listing))
     }
 
     /// The item called `name` in folder `parent`.
     fn child(&self, parent: u64, name: &OsStr) -> Result<(u64, DriveItem), Errno> {
-        self.children(parent)?
-            .into_iter()
-            .find(|(n, ..)| OsStr::new(n) == name)
-            .map(|(_, ino, item)| (ino, item))
-            .ok_or(Errno::ENOENT)
+        let listing = self.listing(parent)?;
+        let at = *name
+            .to_str()
+            .and_then(|n| listing.by_name.get(n))
+            .ok_or(Errno::ENOENT)?;
+        let (_, ino, item) = &listing.entries[at];
+        Ok((*ino, item.clone()))
     }
 
     /// A file of Apple's made writable: its bytes copied here (unless they are about to be
@@ -1790,4 +1888,123 @@ pub fn mount(fs: DriveFs, at: &Path) -> std::io::Result<fuser::BackgroundSession
     // another device since).
     Inner::settle_kept(&inner);
     Ok(session)
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+    use crate::{Fut, ROOT};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    struct Apple;
+    impl Remote for Apple {
+        fn list(&self, _folder: &str) -> Fut<Vec<DriveItem>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn read(&self, _item: &DriveItem, _offset: u64, _len: u64) -> Fut<Vec<u8>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    /// A library that counts how often it is read, and whose version a test moves.
+    struct Library {
+        items: Mutex<Vec<DriveItem>>,
+        reads: AtomicUsize,
+        version: AtomicU64,
+    }
+    impl Store for Library {
+        fn children(&self, folder: &str) -> Option<Vec<DriveItem>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            (folder == ROOT).then(|| self.items.lock().unwrap().clone())
+        }
+        fn version(&self) -> Option<u64> {
+            Some(self.version.load(Ordering::SeqCst))
+        }
+    }
+
+    fn file(n: usize) -> DriveItem {
+        DriveItem {
+            drivewsid: format!("FILE::{n}"),
+            parent_id: Some(ROOT.into()),
+            name: format!("Scan {n}"),
+            extension: Some("pdf".into()),
+            kind: "FILE".into(),
+            size: Some(10),
+            child_count: None,
+            created_at: Some(1_700_000_000),
+            modified_at: Some(1_700_000_000),
+            etag: Some("e1".into()),
+        }
+    }
+
+    /// A file manager listing a folder of many files looks each name up after: the folder is
+    /// read from the library once for all of them, while nothing in it changes — and again,
+    /// with the change, once something does.
+    #[test]
+    fn a_folders_names_are_looked_up_without_reading_it_again() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let library = Arc::new(Library {
+            items: Mutex::new((0..2000).map(file).collect()),
+            reads: AtomicUsize::new(0),
+            version: AtomicU64::new(1),
+        });
+        let fs = DriveFs::new(
+            Arc::new(Apple),
+            Arc::clone(&library) as Arc<dyn Store>,
+            Arc::new(Cache::new(cache.path()).unwrap()),
+            rt.handle().clone(),
+        );
+        let inner = &fs.0;
+        let listed = inner.children(1).unwrap();
+        assert_eq!(listed.len(), 2000);
+        for (name, ino, item) in &listed {
+            let (found, it) = inner.child(1, OsStr::new(name)).unwrap();
+            assert_eq!((found, &it), (*ino, item));
+        }
+        assert!(matches!(
+            inner.child(1, OsStr::new("desktop.ini")),
+            Err(Errno::ENOENT)
+        ));
+        assert_eq!(
+            library.reads.load(Ordering::SeqCst),
+            1,
+            "two thousand look-ups, one read"
+        );
+
+        // A file saved elsewhere lands in the library: the next look sees it.
+        library.items.lock().unwrap().push(file(2000));
+        library.version.fetch_add(1, Ordering::SeqCst);
+        assert!(inner.child(1, OsStr::new("Scan 2000.pdf")).is_ok());
+        assert_eq!(library.reads.load(Ordering::SeqCst), 2);
+        // The same answers as working it out from nothing.
+        let again = inner.children(1).unwrap();
+        assert_eq!(again.len(), 2001);
+        assert_eq!(&again[..2000], &listed[..]);
+    }
+
+    /// Without a version to go by, every look reads the library, as it always did.
+    #[test]
+    fn a_store_without_a_version_is_read_every_time() {
+        struct Plain(Vec<DriveItem>, AtomicUsize);
+        impl Store for Plain {
+            fn children(&self, _folder: &str) -> Option<Vec<DriveItem>> {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                Some(self.0.clone())
+            }
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let store = Arc::new(Plain(vec![file(1)], AtomicUsize::new(0)));
+        let fs = DriveFs::new(
+            Arc::new(Apple),
+            Arc::clone(&store) as Arc<dyn Store>,
+            Arc::new(Cache::new(cache.path()).unwrap()),
+            rt.handle().clone(),
+        );
+        for _ in 0..3 {
+            assert!(fs.0.child(1, OsStr::new("Scan 1.pdf")).is_ok());
+        }
+        assert_eq!(store.1.load(Ordering::SeqCst), 3);
+    }
 }

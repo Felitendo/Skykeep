@@ -26,7 +26,7 @@ import { NotePicture } from "./notes/NotePicture";
 import { OPEN_NOTE_EVENT } from "./notes/links";
 import { useReveal } from "../lib/reveal";
 import { Arriving } from "../components/EmptyState";
-import { useArriving, useSync } from "../lib/sync";
+import { useArriving, useRevision } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
 const ALL = "__all__";
@@ -140,7 +140,7 @@ export function NotesView() {
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
   const [confirm, confirmSheet] = useConfirm();
-  const { revision } = useSync();
+  const revision = useRevision("notes");
   const arriving = useArriving("notes");
   // Tables on screen keep up with a phone's edits, as the note's text does.
   useEffect(() => {

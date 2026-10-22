@@ -14,6 +14,10 @@ use quince_core::Library;
 /// two months is not.
 const MAX_WINDOW_DAYS: i32 = 28;
 
+/// How many of those windows are asked about at once: enough that a refresh is a couple of
+/// round trips rather than a dozen, few enough that Apple is not flooded.
+const CALENDAR_WINDOWS_AT_ONCE: usize = 4;
+
 fn parse_date(value: &str) -> Result<Date> {
     value
         .parse::<Date>()
@@ -81,16 +85,30 @@ pub async fn fetch_calendar(
     let mut events = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for (start, end) in &windows {
-        // `/ca/startup` reliably carries the collections but not always the events — on some
-        // accounts it returns collections alone. Asking `/ca/events` for the same window is
-        // what guarantees them, so do both and merge.
-        let startup = client.startup(start, end, timezone).await?;
+    // `/ca/startup` reliably carries the collections but not always the events — on some
+    // accounts it returns collections alone. Asking `/ca/events` for the same window is what
+    // guarantees them, so do both and merge.
+    //
+    // Every window's two questions are asked together, a few windows at a time, rather than
+    // one after another: five months was a dozen round trips in a row on every change Apple
+    // reported. The answers are taken in the windows' order, so what is kept from two that
+    // overlap is what it always was.
+    use futures_util::StreamExt;
+    let client = &client;
+    let mut answers = futures_util::stream::iter(windows)
+        .map(|(start, end)| async move {
+            futures_util::future::try_join(
+                client.startup(&start, &end, timezone),
+                client.events(&start, &end, timezone),
+            )
+            .await
+        })
+        .buffered(CALENDAR_WINDOWS_AT_ONCE);
+    while let Some(answer) = answers.next().await {
+        let (startup, windowed) = answer?;
         if calendars.is_empty() {
             calendars = startup.calendars;
         }
-        let windowed = client.events(start, end, timezone).await?;
-
         for event in startup.events.into_iter().chain(windowed.events) {
             if seen.insert(event.guid.clone()) {
                 events.push(event);
@@ -425,6 +443,66 @@ mod tests {
             timezone: Some("Asia/Kolkata".into()),
             ..Default::default()
         }
+    }
+
+    /// Five months is six windows of two questions each. Asked side by side a few windows at
+    /// a time, the whole takes a couple of Apple's answers, not twelve in a row — and gives
+    /// the same calendars and events, each once.
+    #[tokio::test]
+    async fn the_windows_are_asked_about_together() {
+        let server = MockServer::start().await;
+        let slow = std::time::Duration::from_millis(150);
+        Mock::given(method("GET"))
+            .and(path("/ca/startup"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(body())
+                    .set_delay(slow),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ca/events"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "Event": body()["Event"].clone() }))
+                    .set_delay(slow),
+            )
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let started = std::time::Instant::now();
+        let snapshot = fetch_calendar(
+            &http,
+            &server.uri(),
+            vec![],
+            "2026-08-01",
+            "2026-12-31",
+            "Asia/Kolkata",
+        )
+        .await
+        .unwrap();
+        let took = started.elapsed();
+        let asked = server.received_requests().await.unwrap().len();
+        assert_eq!(
+            asked,
+            2 * chunks(
+                parse_date("2026-08-01").unwrap(),
+                parse_date("2026-12-31").unwrap()
+            )
+            .len()
+        );
+        assert!(
+            took < slow * 6,
+            "{asked} questions answered {slow:?} apart took {took:?}: they waited on each other"
+        );
+        assert_eq!(snapshot.calendars.len(), 1);
+        let guids: Vec<&str> = snapshot.events.iter().map(|e| e.guid.as_str()).collect();
+        assert_eq!(
+            guids,
+            ["ev-1", "ev-2"],
+            "each event once, in the order first seen"
+        );
     }
 
     /// A save answers with nothing (measured on the account); what is stored is Apple's own

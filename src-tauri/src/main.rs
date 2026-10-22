@@ -21,6 +21,7 @@ mod cpu;
 mod export;
 mod grants;
 mod intake;
+mod library_lock;
 mod login;
 mod migrate;
 mod mount;
@@ -114,7 +115,7 @@ struct Status {
     library_ready: bool,
 }
 
-struct Data(Mutex<Library>);
+struct Data(library_lock::LibraryLock);
 
 /// Errors cross to the UI as plain sentences a person can act on.
 type UiResult<T> = Result<T, String>;
@@ -158,11 +159,28 @@ pub static CALENDAR_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new
 /// edit, made from it, was refused as a conflict.
 pub static CONTACTS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// One Drive folder fetched and stored at a time. A folder opened just before a rename is
-/// fetched with the old name; finishing after the rename's own re-read, it stored that old
-/// listing last and the rename looked undone. Held from fetch to store, the re-read after a
-/// write — which starts only once the write is made — always lands last.
-pub static DRIVE_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// One fetch and store of a Drive folder at a time, per folder. A folder opened just before a
+/// rename is fetched with the old name; finishing after the rename's own re-read, it stored
+/// that old listing last and the rename looked undone. Held from fetch to store, the re-read
+/// after a write — which starts only once the write is made — always lands last.
+///
+/// Per folder, not one for all of Drive: one folder's slow answer held up every other folder
+/// opened, the window's ten-second look and the Drive folder's listings behind it. The race
+/// is a folder's own. A move touches two, and every move re-reads the folder it left before
+/// the one it went to — each re-read waiting out an older look at its own folder — so the
+/// destination's, which files the item where it now is, is still the last stored.
+pub fn drive_pass(folder: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static PASSES: std::sync::Mutex<
+        Option<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::Mutex::new(None);
+    let mut passes = PASSES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let passes = passes.get_or_insert_with(std::collections::HashMap::new);
+    // Those nobody holds or waits for are let go: the map is as large as what is in use.
+    passes.retain(|_, pass| Arc::strong_count(pass) > 1);
+    Arc::clone(passes.entry(folder.to_string()).or_default())
+}
 /// One Photos pass at a time, from reading its sync position through storing what came back.
 pub static PHOTOS_PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -188,16 +206,20 @@ async fn refresh_reminders(
         .await
         .map_err(|e| e.to_string())?;
     {
-        let mut library = data.0.lock().await;
+        // Stored as one transaction, so the screens read beside it (`lock_for_pass`).
+        let mut library = data.0.lock_for_pass().await;
         owned_by(&library, asked_for.as_deref())?;
         // Changes still on their way to Apple stay as made here — stored with the pass, as one.
-        library
-            .atomically(|library| {
+        // In place, as `refresh::store` does: a whole list's records and alarms are disk and
+        // CPU work that would otherwise hold up every task queued on this worker.
+        tokio::task::block_in_place(|| {
+            library.atomically(|library| {
                 quince_icloud::reminders::apply_cloudkit(library, fetched)?;
                 outbox::replay_reminders(library)?;
                 Ok::<_, quince_icloud::Error>(())
             })
-            .map_err(|e| e.to_string())?;
+        })
+        .map_err(|e| e.to_string())?;
     }
     alerts::changed();
     Ok(())
@@ -229,16 +251,18 @@ async fn refresh_notes(
     let fetched = quince_icloud::notes::fetch_cloudkit(http, root, params, since.as_deref())
         .await
         .map_err(|e| e.to_string())?;
-    let mut library = data.0.lock().await;
+    // Stored as one transaction, so the screens read beside it (`lock_for_pass`).
+    let mut library = data.0.lock_for_pass().await;
     owned_by(&library, asked_for.as_deref())?;
     // Edits still on their way to Apple stay as typed here — stored with the pass, as one.
-    library
-        .atomically(|library| {
+    tokio::task::block_in_place(|| {
+        library.atomically(|library| {
             quince_icloud::notes::apply_cloudkit(library, fetched)?;
             outbox::replay(library, outbox::NOTES)?;
             Ok::<_, quince_icloud::Error>(())
         })
-        .map_err(|e| e.to_string())
+    })
+    .map_err(|e| e.to_string())
 }
 
 async fn cloudkit_context(
@@ -1050,6 +1074,8 @@ async fn claim_library(app: &tauri::AppHandle, client: &Client) -> Result<(), St
     if known.is_some() || home.exists() {
         let now = jiff::Timestamp::now().as_second();
         let away = known.unwrap_or_else(|| format!("unclaimed-{now}"));
+        // The screens' readers let go of the file before it moves.
+        data.0.forget_readers();
         switch_library(&mut library, &dir, &away, &home)?;
         photos::forget_links();
     }
@@ -1624,16 +1650,19 @@ async fn calendar_sync(
         .await
         .map_err(|e| e.to_string())?;
     let summary = {
-        let mut library = data.0.lock().await;
+        // Stored as one transaction, so the screens read beside it (`lock_for_pass`).
+        let mut library = data.0.lock_for_pass().await;
         still_owned(&library, account.as_deref())?;
         // Changes still on their way to Apple stay as made here — stored with the pass, as one.
-        library
-            .atomically(|library| {
+        // In place, as `refresh::store` does, so the worker's other tasks are handed on.
+        tokio::task::block_in_place(|| {
+            library.atomically(|library| {
                 let summary = quince_icloud::sync::apply_calendar(library, fetched)?;
                 outbox::replay(library, outbox::CALENDAR)?;
                 Ok::<_, quince_icloud::Error>(summary)
             })
-            .map_err(|e| e.to_string())?
+        })
+        .map_err(|e| e.to_string())?
     };
     // Apple answered: whatever waits to be sent goes now.
     outbox::kick();
@@ -1841,19 +1870,18 @@ async fn calendar_events(
     occasions: State<'_, Occasions>,
     feeds_state: State<'_, Feeds>,
 ) -> UiResult<Vec<Event>> {
-    let (mut events, people) = {
-        let library = data.0.lock().await;
-        (
-            library
-                .events_between(from, to)
-                .map_err(|e| e.to_string())?,
-            // Only who has a birthday, and their names: every card built whole was most of
-            // the cost of reading a month.
-            library
-                .contacts_with_birthdays()
-                .map_err(|e| e.to_string())?,
-        )
-    };
+    let (mut events, people) = data
+        .0
+        .read(|library| {
+            Ok((
+                library.events_between(from, to)?,
+                // Only who has a birthday, and their names: every card built whole was most of
+                // the cost of reading a month.
+                library.contacts_with_birthdays()?,
+            ))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     // Birthdays and holidays, as a phone draws them: neither is an iCloud calendar.
     events.extend(quince_icloud::occasions::birthdays(&people, from, to));
     events.extend(quince_icloud::occasions::holidays(
@@ -2336,13 +2364,11 @@ async fn calendar_list(
 ) -> UiResult<Vec<Calendar>> {
     // The library is let go before the holiday feed and subscriptions are waited for: held
     // across them, every other screen's read queued behind those locks too.
-    let (mut calendars, any_birthdays) = {
-        let library = data.0.lock().await;
-        (
-            library.calendars().map_err(|e| e.to_string())?,
-            library.any_birthday().map_err(|e| e.to_string())?,
-        )
-    };
+    let (mut calendars, any_birthdays) = data
+        .0
+        .read(|library| Ok((library.calendars()?, library.any_birthday()?)))
+        .await
+        .map_err(|e| e.to_string())?;
     let holidays = {
         let feed = occasions.feed.lock().await;
         (!feed.1.is_empty()).then(|| feed.0.clone().unwrap_or_else(|| "Holidays".into()))
@@ -2369,8 +2395,10 @@ async fn reminder_counts(
     until: i64,
     data: State<'_, Data>,
 ) -> UiResult<quince_core::reminders::ReminderCounts> {
-    let library = data.0.lock().await;
-    library.reminder_counts(until).map_err(|e| e.to_string())
+    data.0
+        .read(|library| library.reminder_counts(until))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Reminders still to do holding every word of `query`, across every enabled list.
@@ -2404,16 +2432,18 @@ async fn reminder_sections(
     list_guid: String,
     data: State<'_, Data>,
 ) -> UiResult<Vec<quince_core::reminders::ReminderSection>> {
-    let library = data.0.lock().await;
-    library
-        .reminder_sections(&list_guid)
+    data.0
+        .read(|library| library.reminder_sections(&list_guid))
+        .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn reminder_lists(data: State<'_, Data>) -> UiResult<Vec<ReminderList>> {
-    let library = data.0.lock().await;
-    library.reminder_lists().map_err(|e| e.to_string())
+    data.0
+        .read(Library::reminder_lists)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// The folders lists are filed under.
@@ -2421,8 +2451,10 @@ async fn reminder_lists(data: State<'_, Data>) -> UiResult<Vec<ReminderList>> {
 async fn reminder_groups(
     data: State<'_, Data>,
 ) -> UiResult<Vec<quince_core::reminders::ReminderGroup>> {
-    let library = data.0.lock().await;
-    library.reminder_groups().map_err(|e| e.to_string())
+    data.0
+        .read(Library::reminder_groups)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2431,9 +2463,9 @@ async fn reminders_in(
     include_done: bool,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Reminder>> {
-    let library = data.0.lock().await;
-    library
-        .reminders_in(&list_guid, include_done)
+    data.0
+        .read(|library| library.reminders_in(&list_guid, include_done))
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -2635,9 +2667,9 @@ async fn reminders_due_between(
     to: i64,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Reminder>> {
-    let library = data.0.lock().await;
-    library
-        .reminders_due_between(from, to)
+    data.0
+        .read(|library| library.reminders_due_between(from, to))
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -2736,9 +2768,9 @@ async fn reminders_smart(
     until: i64,
     data: State<'_, Data>,
 ) -> UiResult<Vec<Reminder>> {
-    let library = data.0.lock().await;
-    library
-        .reminders_smart(kind, until)
+    data.0
+        .read(|library| library.reminders_smart(kind, until))
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -2876,8 +2908,10 @@ async fn note_by_guid(data: &State<'_, Data>, guid: &str) -> Result<Note, String
 /// the unbounded payload the plan rules out. The note being read asks for its own.
 #[tauri::command]
 async fn note_body(guid: String, data: State<'_, Data>) -> UiResult<Option<String>> {
-    let library = data.0.lock().await;
-    library.note_body(&guid).map_err(|e| e.to_string())
+    data.0
+        .read(|library| library.note_body(&guid))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// A note written out as Markdown at `path` (chosen in the save dialog): its text as it is on
@@ -2933,8 +2967,11 @@ async fn note_paragraph(
 /// How a note's text is set — Apple's attribute runs, in order — as stored at the last sync.
 #[tauri::command]
 async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::Value> {
-    let library = data.0.lock().await;
-    let stored = library.note_runs(&guid).map_err(|e| e.to_string())?;
+    let stored = data
+        .0
+        .read(|library| library.note_runs(&guid))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(stored
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::Value::Array(Vec::new())))
@@ -3239,8 +3276,10 @@ async fn note_folder_delete(
 
 #[tauri::command]
 async fn note_folders(data: State<'_, Data>) -> UiResult<Vec<NoteFolder>> {
-    let library = data.0.lock().await;
-    library.note_folders().map_err(|e| e.to_string())
+    data.0
+        .read(Library::note_folders)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Notes holding every word of `query`, from every folder but Recently Deleted.
@@ -3270,16 +3309,18 @@ async fn notes_search(
 /// How many notes each folder holds, and all of them but Recently Deleted.
 #[tauri::command]
 async fn note_counts(data: State<'_, Data>) -> UiResult<(i64, Vec<(String, i64)>)> {
-    let library = data.0.lock().await;
-    library.note_counts().map_err(|e| e.to_string())
+    data.0
+        .read(Library::note_counts)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Notes in a folder, or every note when no folder is given.
 #[tauri::command]
 async fn notes_in(folder_guid: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Note>> {
-    let library = data.0.lock().await;
-    library
-        .notes_in(folder_guid.as_deref())
+    data.0
+        .read(|library| library.notes_in(folder_guid.as_deref()))
+        .await
         .map_err(|e| e.to_string())
 }
 
@@ -3322,8 +3363,11 @@ async fn resync_contacts(
 async fn contact_lists(
     data: State<'_, Data>,
 ) -> UiResult<Vec<quince_icloud::contacts::ContactList>> {
-    let library = data.0.lock().await;
-    Ok(quince_icloud::contacts::stored_lists(&library))
+    Ok(data
+        .0
+        .read(|library| Ok(quince_icloud::contacts::stored_lists(library)))
+        .await
+        .unwrap_or_default())
 }
 
 /// One Contacts list write at a time. Each reads the list as Apple holds it and sends it
@@ -3587,9 +3631,10 @@ async fn contacts_import(
 /// The card that is this person's own, as the last pass stored it.
 #[tauri::command]
 async fn contact_me(data: State<'_, Data>) -> UiResult<Option<String>> {
-    let library = data.0.lock().await;
-    Ok(library
-        .state(quince_icloud::contacts::ME_KEY)
+    Ok(data
+        .0
+        .read(|library| library.state(quince_icloud::contacts::ME_KEY))
+        .await
         .ok()
         .flatten()
         .filter(|s| !s.is_empty()))
@@ -3619,8 +3664,10 @@ async fn contacts_list(
     search: Option<String>,
     data: State<'_, Data>,
 ) -> UiResult<Vec<quince_core::contacts::Card>> {
-    let library = data.0.lock().await;
-    library.cards(search.as_deref()).map_err(|e| e.to_string())
+    data.0
+        .read(|library| library.cards(search.as_deref()))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3637,7 +3684,8 @@ async fn drive_sync_folder(
             .ok_or("Apple hasn't offered iCloud Drive for this account.")?;
         (client.http().clone(), root, client.service_params())
     };
-    let _one = DRIVE_PASS.lock().await;
+    let pass = drive_pass(&folder_id);
+    let _one = pass.lock().await;
     let items = match quince_icloud::drive::fetch_folder(&http, &root, params, &folder_id).await {
         Ok(items) => items,
         // Deleted or moved on another device: forgotten here too, so the screen can step back
@@ -3657,17 +3705,19 @@ async fn drive_sync_folder(
 
 #[tauri::command]
 async fn drive_children(folder_id: String, data: State<'_, Data>) -> UiResult<Vec<DriveItem>> {
-    let library = data.0.lock().await;
-    library
-        .drive_children(&folder_id)
+    data.0
+        .read(|library| library.drive_children(&folder_id))
+        .await
         .map_err(|e| e.to_string())
 }
 
 /// One item, for building the breadcrumb trail back to the root.
 #[tauri::command]
 async fn drive_item(drivewsid: String, data: State<'_, Data>) -> UiResult<Option<DriveItem>> {
-    let library = data.0.lock().await;
-    library.drive_item(&drivewsid).map_err(|e| e.to_string())
+    data.0
+        .read(|library| library.drive_item(&drivewsid))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Everything a Drive write needs from the session, with the auth lock released first.
@@ -3690,7 +3740,8 @@ async fn resync_drive_folder(
     data: &State<'_, Data>,
     folder_id: &str,
 ) -> Result<(), String> {
-    let _one = DRIVE_PASS.lock().await;
+    let pass = drive_pass(folder_id);
+    let _one = pass.lock().await;
     let asked_for = asked_as(&params);
     let items = quince_icloud::drive::fetch_folder(http, root, params, folder_id)
         .await
@@ -4324,69 +4375,141 @@ async fn drive_duplicate(
     settle(resync_drive_folder(&http, &drivews, params, &data, parent).await)
 }
 
-/// Apple's thumbnails for one folder's files, as `data:` URLs keyed by drivewsid.
+/// Apple's thumbnails for one folder's files, keyed by drivewsid: each an address the
+/// window's `<img>` loads from the cache on disk itself (`quince://…/dthumb/<file>`).
 ///
 /// Kept on disk beside the library, named by item and version, so a folder opened again
-/// shows its pictures at once and only a changed file is fetched anew.
+/// shows its pictures at once and only a changed file is fetched anew. Each was read, encoded
+/// as a `data:` URL and sent through IPC on every look at the folder — some megabytes of text
+/// every ten seconds for a folder of photos, parsed on the window's own thread.
 #[tauri::command]
 async fn drive_thumbnails(
     folder_id: String,
     app: tauri::AppHandle,
 ) -> UiResult<std::collections::HashMap<String, String>> {
-    use base64::Engine;
-    Ok(folder_thumbnails(&app, &folder_id)
+    Ok(folder_thumbnail_files(&app, &folder_id)
         .await?
         .into_iter()
-        .map(|(id, bytes)| {
-            let url = data_url(
-                &bytes,
-                &base64::engine::general_purpose::STANDARD.encode(&bytes),
-            );
-            (id, url)
+        .filter_map(|(id, file)| {
+            let name = file.file_name()?.to_str()?.to_string();
+            Some((id, drive_thumb_src(&name)))
         })
         .collect())
 }
 
-/// Apple's pictures of a folder's files, by item id: for the window's grid and for the iCloud
-/// Drive folder's thumbnails (mount.rs), from one cache. Kept on disk beside the library,
-/// named by item and version, so a folder opened again has its pictures at once and only a
-/// changed file is fetched anew.
+/// Where the window loads a cached thumbnail from: the address `convertFileSrc` gives
+/// `dthumb/<file>` on the `quince` scheme on this platform.
+fn drive_thumb_src(file: &str) -> String {
+    if cfg!(any(windows, target_os = "android")) {
+        format!("http://quince.localhost/dthumb/{file}")
+    } else {
+        format!("quince://localhost/dthumb/{file}")
+    }
+}
+
+/// The cached thumbnail a `quince://` request asks for: `dthumb/<file>`, a name in the
+/// thumbnail cache — letters, digits, `_` and `-` only, so never a path anywhere else.
+fn drive_thumb_part(path: &str) -> Option<String> {
+    let path = percent_decode(path.trim_start_matches('/'));
+    let file = path.strip_prefix("dthumb/")?;
+    (!file.is_empty()
+        && file
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    .then(|| file.to_string())
+}
+
+/// A cached thumbnail's bytes, for the `quince://` handler. The name holds the file's version,
+/// so what is served under one name never changes.
+async fn drive_thumb_shown(app: &tauri::AppHandle, file: &str) -> Result<Vec<u8>, String> {
+    let bytes = tokio::fs::read(state_dir(app).join("thumbnails").join(file))
+        .await
+        .map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("no picture".into());
+    }
+    Ok(bytes)
+}
+
+/// Apple's pictures of a folder's files, by item id: for the iCloud Drive folder's thumbnails
+/// (mount.rs), from the same cache as the window's grid.
 pub(crate) async fn folder_thumbnails(
     app: &tauri::AppHandle,
     folder_id: &str,
 ) -> Result<std::collections::HashMap<String, Vec<u8>>, String> {
-    let files = {
-        let data = app.state::<Data>();
-        let library = data.0.lock().await;
-        library
-            .drive_children(folder_id)
-            .map_err(|e| e.to_string())?
+    let files = folder_thumbnail_files(app, folder_id).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        files
+            .into_iter()
+            .filter_map(|(id, file)| std::fs::read(file).ok().map(|bytes| (id, bytes)))
+            .filter(|(_, bytes)| !bytes.is_empty())
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Where in the cache `file` keeps its thumbnail: named by item and version.
+fn thumbnail_file(cache: &std::path::Path, file: &quince_core::drive::DriveItem) -> PathBuf {
+    let safe = |s: &str| {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect::<String>()
     };
-    let cache = state_dir(app).join("thumbnails");
-    std::fs::create_dir_all(&cache).ok();
-    let key = |f: &quince_core::drive::DriveItem| {
-        let safe = |s: &str| {
-            s.chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect::<String>()
-        };
-        cache.join(format!(
-            "{}-{}",
-            safe(&f.drivewsid),
-            safe(f.etag.as_deref().unwrap_or(""))
-        ))
-    };
-    let mut out = std::collections::HashMap::new();
+    cache.join(format!(
+        "{}-{}",
+        safe(&file.drivewsid),
+        safe(file.etag.as_deref().unwrap_or(""))
+    ))
+}
+
+/// Which of `files` have a picture in the cache (by id, where it is), and which were never
+/// asked about at this version. One empty file records "Apple has none": in neither.
+fn cached_thumbnails(
+    cache: &std::path::Path,
+    files: &[quince_core::drive::DriveItem],
+) -> (
+    std::collections::HashMap<String, PathBuf>,
+    Vec<quince_core::drive::DriveItem>,
+) {
+    let mut found = std::collections::HashMap::new();
     let mut missing = Vec::new();
     for f in files.iter().filter(|f| f.kind == "FILE") {
-        match std::fs::read(key(f)) {
-            Ok(bytes) if bytes.is_empty() => {} // known to have none
-            Ok(bytes) => {
-                out.insert(f.drivewsid.clone(), bytes);
+        let at = thumbnail_file(cache, f);
+        match std::fs::metadata(&at) {
+            Ok(m) if m.len() == 0 => {} // known to have none
+            Ok(_) => {
+                found.insert(f.drivewsid.clone(), at);
             }
             Err(_) => missing.push(f.clone()),
         }
     }
+    (found, missing)
+}
+
+/// Apple's pictures of a folder's files, by item id, as files in the cache: those already
+/// there, and those not yet asked about fetched from Apple once and kept.
+async fn folder_thumbnail_files(
+    app: &tauri::AppHandle,
+    folder_id: &str,
+) -> Result<std::collections::HashMap<String, PathBuf>, String> {
+    let files = app
+        .state::<Data>()
+        .0
+        .read(|library| library.drive_children(folder_id))
+        .await
+        .map_err(|e| e.to_string())?;
+    let cache = state_dir(app).join("thumbnails");
+    // Looked over off the async threads: a folder of thousands is that many looks at the disk.
+    let (mut out, missing) = {
+        let cache = cache.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            std::fs::create_dir_all(&cache).ok();
+            cached_thumbnails(&cache, &files)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    };
     if !missing.is_empty() {
         let (http, docws, params) = {
             let auth = app.state::<Auth>();
@@ -4408,19 +4531,20 @@ pub(crate) async fn folder_thumbnails(
                 .iter()
                 .find(|(id, _)| id == &f.drivewsid)
                 .map(|(_, b)| b.clone());
+            let at = thumbnail_file(&cache, f);
             // An empty file records "Apple has no picture for this version", so it is not asked again.
-            std::fs::write(key(f), bytes.as_deref().unwrap_or(&[])).ok();
-            if let Some(bytes) = bytes {
-                out.insert(f.drivewsid.clone(), bytes);
+            let written = tokio::fs::write(&at, bytes.as_deref().unwrap_or(&[])).await;
+            if bytes.is_some() && written.is_ok() {
+                out.insert(f.drivewsid.clone(), at);
             }
         }
     }
     Ok(out)
 }
 
-/// An image as a `data:` URL, its type read from its first bytes.
-fn data_url(bytes: &[u8], b64: &str) -> String {
-    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+/// A thumbnail's type, read from its first bytes.
+fn thumb_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         "image/png"
     } else if bytes.starts_with(b"RIFF") {
         "image/webp"
@@ -4428,8 +4552,7 @@ fn data_url(bytes: &[u8], b64: &str) -> String {
         "image/gif"
     } else {
         "image/jpeg"
-    };
-    format!("data:{mime};base64,{b64}")
+    }
 }
 
 /// How much iCloud storage is used and how much there is, for "X GB available".
@@ -4582,8 +4705,9 @@ async fn sync_all(
     let result = refresh::all(&client, &data.0).await;
     alerts::changed();
     warm_contact_photos(app.clone());
-    // Screens read the library, not the network, so they only need to be told to look again.
-    app.emit(SYNCED, &result).ok();
+    // Screens read the library, not the network, so they only need to be told to look again —
+    // and were, service by service, as each one landed with something new.
+    app.emit(SYNCED, told(&result)).ok();
     Ok(result)
 }
 
@@ -4607,7 +4731,10 @@ async fn sync_some(
     if names.contains(&"contacts") {
         warm_contact_photos(app.clone());
     }
-    app.emit(SYNCED, refresh::status(&data.0).await).ok();
+    // What changed was told to the screens as each service landed; this brings the freshness.
+    let mut status = refresh::status(&data.0).await;
+    status.changed = Some(Vec::new());
+    app.emit(SYNCED, status).ok();
     Ok(result)
 }
 
@@ -4633,9 +4760,18 @@ fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
             let result = refresh::all(&client, &data.0).await;
             alerts::changed();
             warm_contact_photos(app.clone());
-            app.emit(SYNCED, &result).ok();
+            app.emit(SYNCED, told(&result)).ok();
         }
     });
+}
+
+/// A finished pass as the screens are told it at the end: its report and freshness, with
+/// nothing more to read again — each service that stored something said so as it landed.
+fn told(result: &refresh::Refresh) -> refresh::Refresh {
+    refresh::Refresh {
+        changed: Some(Vec::new()),
+        ..result.clone()
+    }
 }
 
 /// Where a contact's picture is cached on disk, named by the signature Apple gives it so a
@@ -4762,22 +4898,24 @@ async fn contact_photo(
 /// time; one that fails is simply tried again after the next sync.
 pub fn warm_contact_photos(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let wanted: Vec<String> = {
-            let data = app.state::<Data>();
-            let library = data.0.lock().await;
-            let dir = state_dir(&app);
-            library
-                .contacts(None)
-                .unwrap_or_default()
+        // Who has a picture, and which — not every card whole with every method, under the
+        // lock, after every pass — and then, with the library let go, which are not on disk.
+        let pictured = app
+            .state::<Data>()
+            .0
+            .read(Library::contact_photo_signatures)
+            .await
+            .unwrap_or_default();
+        let dir = state_dir(&app);
+        let wanted: Vec<String> = tauri::async_runtime::spawn_blocking(move || {
+            pictured
                 .into_iter()
-                .filter(|c| c.photo_url.is_some())
-                .filter(|c| match &c.photo_signature {
-                    Some(sig) => !photo_path(&dir, &c.guid, sig).exists(),
-                    None => false,
-                })
-                .map(|c| c.guid)
+                .filter(|(guid, sig)| !photo_path(&dir, guid, sig).exists())
+                .map(|(guid, _)| guid)
                 .collect()
-        };
+        })
+        .await
+        .unwrap_or_default();
         use futures_util::StreamExt;
         futures_util::stream::iter(wanted)
             .for_each_concurrent(3, |guid| {
@@ -5472,6 +5610,7 @@ fn main() {
             let wanted = photo_guid(uri.host(), uri.path());
             let attachment = note_part(uri.path());
             let reminder_image = reminder_image_part(uri.path());
+            let drive_thumb = drive_thumb_part(uri.path());
             // A drawing's ink for a dark page, rather than a light one.
             let ink_dark = uri.path().ends_with("drawing-dark");
             let picture = photos::requested(uri.path());
@@ -5513,6 +5652,21 @@ fn main() {
                         Ok(bytes) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", photos::content_type(&bytes, size))
+                            .header("Cache-Control", "private, max-age=86400")
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.unwrap_or_default());
+                    return;
+                }
+                // A Drive file's thumbnail, from the cache on disk.
+                if let Some(file) = drive_thumb {
+                    let response = match drive_thumb_shown(&app, &file).await {
+                        Ok(bytes) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", thumb_type(&bytes))
                             .header("Cache-Control", "private, max-age=86400")
                             .body(bytes),
                         Err(_) => tauri::http::Response::builder()
@@ -5607,7 +5761,10 @@ fn main() {
             let mut library = Library::open(&dir)?;
             timing::mark("library open");
             adopt_writer(&mut library);
-            app.manage(Data(Mutex::new(library)));
+            app.manage(Data(library_lock::LibraryLock::new(
+                library,
+                Some(dir.clone()),
+            )));
             // The sender of edits made offline, started once what it sends with — the session
             // and the library — is in place: started first, its opening pass found neither and
             // its task died, and nothing waiting was sent all session.
@@ -5670,10 +5827,13 @@ fn main() {
             spawn_auto_sync(app.handle().clone(), client);
             // Each service's part of a pass, told to the open screens as it is stored.
             let landing = app.handle().clone();
-            refresh::on_landed(move |_| {
+            refresh::on_landed(move |service, changed| {
                 let app = landing.clone();
                 tauri::async_runtime::spawn(async move {
-                    let status = refresh::status(&app.state::<Data>().0).await;
+                    let mut status = refresh::status(&app.state::<Data>().0).await;
+                    // Its freshness for every screen; a read again only for its own, and only
+                    // when it stored something.
+                    status.changed = Some(if changed { vec![service] } else { Vec::new() });
                     app.emit(SYNCED, status).ok();
                 });
             });
@@ -6143,5 +6303,78 @@ mod tests {
         assert!(note_part("/note%2FABC-1%2Fother").is_none());
         assert_eq!(percent_decode("plain-uuid"), "plain-uuid");
         assert_eq!(percent_decode("%zz"), "%zz", "malformed stays as it was");
+    }
+
+    /// A Drive thumbnail is asked for by its name in the cache, and nothing else: no path to
+    /// anywhere outside it gets through.
+    #[test]
+    fn a_drive_thumbnail_is_served_from_the_cache_alone() {
+        use super::{drive_thumb_part, drive_thumb_src};
+        let name = "FILE__com_apple_CloudDocs__ABC-etag_1";
+        assert_eq!(
+            drive_thumb_part(&format!("/dthumb/{name}")).as_deref(),
+            Some(name)
+        );
+        assert!(drive_thumb_src(name).ends_with(&format!("/dthumb/{name}")));
+        for bad in [
+            "/dthumb/",
+            "/dthumb/../library.db",
+            "/dthumb/%2E%2E%2Flibrary.db",
+            "/dthumb/a/b",
+            "/dthumb/a.b",
+            "/photo/abc",
+        ] {
+            assert!(drive_thumb_part(bad).is_none(), "{bad}");
+        }
+    }
+
+    /// What a look at a folder's pictures finds in the cache: those kept, by where they are;
+    /// those Apple has none for, nowhere; and those never asked about, to fetch. Folders have
+    /// no picture and are not asked about.
+    #[test]
+    fn the_thumbnail_cache_says_what_it_holds_without_reading_it() {
+        use super::{cached_thumbnails, thumbnail_file};
+        use quince_core::drive::DriveItem;
+        let cache = tempfile::tempdir().unwrap();
+        let item = |id: &str, kind: &str| DriveItem {
+            drivewsid: id.into(),
+            parent_id: None,
+            name: id.into(),
+            extension: None,
+            kind: kind.into(),
+            size: None,
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: Some("e1".into()),
+        };
+        let kept = item("FILE::kept", "FILE");
+        let none = item("FILE::none", "FILE");
+        let new = item("FILE::new", "FILE");
+        std::fs::write(thumbnail_file(cache.path(), &kept), b"\xff\xd8\xffpicture").unwrap();
+        std::fs::write(thumbnail_file(cache.path(), &none), b"").unwrap();
+        let files = [kept, none, new, item("FOLDER::trip", "FOLDER")];
+        let (found, missing) = cached_thumbnails(cache.path(), &files);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found["FILE::kept"], thumbnail_file(cache.path(), &files[0]));
+        let missing: Vec<&str> = missing.iter().map(|f| f.drivewsid.as_str()).collect();
+        assert_eq!(missing, ["FILE::new"]);
+    }
+
+    /// One folder's pass waits only for that folder's: another folder is read meanwhile, and
+    /// a second look at the same folder waits its turn.
+    #[tokio::test]
+    async fn drive_folders_are_fetched_side_by_side() {
+        let a = super::drive_pass("FOLDER::a");
+        let held = a.lock().await;
+        let b = super::drive_pass("FOLDER::b");
+        assert!(b.try_lock().is_ok(), "another folder is not held up");
+        let again = super::drive_pass("FOLDER::a");
+        assert!(
+            again.try_lock().is_err(),
+            "the same folder still takes turns"
+        );
+        drop(held);
+        assert!(again.try_lock().is_ok());
     }
 }

@@ -833,3 +833,55 @@ async fn a_sign_in_that_needs_a_code_asks_apple_to_send_it() {
         "from the icloud.com origin, not idmsa's"
     );
 }
+
+/// A heartbeat that changes nothing writes nothing: the keyring is not rewritten on every sync
+/// and every return to the window. One that brings something new is written as before.
+#[tokio::test]
+async fn a_heartbeat_writes_the_session_only_when_it_changed() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .up_to_n_times(2)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("scnt", "scnt-renewed")
+                .set_body_json(json!({})),
+        )
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+    client.submit_two_factor("123456").await.unwrap();
+    let stored = dir.path().join("session.json");
+    assert!(stored.exists());
+
+    // The first heartbeat of a run writes once; the next, with nothing new, does not.
+    assert!(client.heartbeat().await.unwrap());
+    std::fs::remove_file(&stored).unwrap();
+    assert!(client.heartbeat().await.unwrap());
+    assert!(!stored.exists(), "an unchanged session was written again");
+
+    // Apple hands over something new: written.
+    assert!(client.heartbeat().await.unwrap());
+    let kept = std::fs::read_to_string(&stored).expect("a changed session is written");
+    assert!(kept.contains("scnt-renewed"));
+}

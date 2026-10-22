@@ -159,6 +159,51 @@ impl Library {
         }
     }
 
+    /// Run `apply`, and say whether it changed any row outside the tables in `besides` — the
+    /// bookkeeping a pass writes every time (where it got to, and when), whatever came back.
+    ///
+    /// A pass that brought nothing new still stores its position, so "rows were written" is
+    /// true of every pass; "rows other than the position were written" is what tells a screen
+    /// it has something to read again. Errs one way only: a change it cannot place is counted
+    /// as a change.
+    pub fn changing<T>(
+        &mut self,
+        besides: &'static [&'static str],
+        apply: impl FnOnce(&mut Self) -> T,
+    ) -> (T, bool) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        /// The hook taken off again however `apply` ends, a panic included.
+        struct Unhook<'a>(&'a Connection);
+        impl Drop for Unhook<'_> {
+            fn drop(&mut self) {
+                self.0
+                    .update_hook(None::<fn(rusqlite::hooks::Action, &str, &str, i64)>);
+            }
+        }
+        let aside = std::sync::Arc::new(AtomicU64::new(0));
+        let counted = std::sync::Arc::clone(&aside);
+        self.conn.update_hook(Some(
+            move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
+                if besides.contains(&table) {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                }
+            },
+        ));
+        let before = self.conn.total_changes();
+        let out = {
+            // Not borrowed across `apply`: it takes the library whole. The hook is removed
+            // just after, and on unwinding by the guard below.
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(self)));
+            let _unhook = Unhook(&self.conn);
+            match out {
+                Ok(out) => out,
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        };
+        let written = self.conn.total_changes().saturating_sub(before);
+        (out, written > aside.load(Ordering::Relaxed))
+    }
+
     pub fn schema_version(&self) -> Result<u32> {
         Ok(self
             .conn
@@ -526,5 +571,29 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1, "a re-sync must not duplicate rows");
         assert_eq!(title, "Standup (moved)");
+    }
+
+    /// A pass that only moved its position changed nothing a screen shows; one that stored a
+    /// record did. Rolled back or not, a change it cannot place counts as one.
+    #[test]
+    fn only_rows_beyond_the_bookkeeping_count_as_a_change() {
+        let mut library = Library::in_memory().unwrap();
+        let ((), changed) = library.changing(&["sync_state"], |l| {
+            l.mark_synced("notes", Some("token-2")).unwrap();
+            l.mark_full_sync("notes").unwrap();
+        });
+        assert!(!changed, "a new position alone is not a change");
+
+        let ((), changed) = library.changing(&["sync_state"], |l| {
+            l.mark_synced("notes", Some("token-3")).unwrap();
+            l.set_state("k", "v").unwrap();
+        });
+        assert!(changed, "a row stored is a change");
+
+        // The hook is gone afterwards: nothing it counted leaks into the next call.
+        let ((), changed) = library.changing(&[], |l| l.set_state("k", "w").unwrap());
+        assert!(changed);
+        let ((), changed) = library.changing(&["sync_state"], |_| {});
+        assert!(!changed);
     }
 }

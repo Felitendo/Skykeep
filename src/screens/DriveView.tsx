@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { overlayOpen, useActiveRef, useScreenActive } from "../lib/screen";
 import { useModalFocus } from "../lib/focus";
-import { useSync } from "../lib/sync";
+import { useRevision } from "../lib/sync";
 import { toastSaved, useErrorToast } from "../components/Toast";
 import { useConfirm } from "../components/Confirm";
 import { EmptyState } from "../components/EmptyState";
@@ -447,6 +447,8 @@ export function DriveView() {
   const [inRecents, setInRecents] = useState(false);
   /** Apple's own pictures of this folder's files, where it has them; the rest keep icons. */
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  /** The folder whose pictures have been asked for and answered since it was opened. */
+  const thumbsOf = useRef<string | null>(null);
   /** What is free, as icloud.com says it under a folder's name: "5.18 GB available". */
   const [available, setAvailable] = useState<string | null>(null);
   useEffect(() => {
@@ -600,6 +602,7 @@ export function DriveView() {
       // Drive seemed to jump into folders nobody opened.
       setItems(Array.isArray(cached) ? cached : []);
       setThumbs({});
+      thumbsOf.current = null;
       await api.driveSyncFolder(folderId);
       if (token !== openToken.current) return;
       const fresh = await api.driveChildren(folderId);
@@ -607,7 +610,12 @@ export function DriveView() {
       setItems(Array.isArray(fresh) ? fresh : []);
       // Pictures last, and never in the way: a folder is usable before they arrive.
       api.driveThumbnails(folderId).then(
-        (t) => { if (token === openToken.current && t) setThumbs(t); },
+        (t) => {
+          if (token === openToken.current && t) {
+            thumbsOf.current = folderId;
+            setThumbs(t);
+          }
+        },
         () => {},
       );
     } catch (e) {
@@ -661,9 +669,18 @@ export function DriveView() {
       // Redrawn only when something in it changed: a check that found nothing new leaves the
       // rows, their selection and their pictures exactly as they were.
       const next = Array.isArray(fresh) ? fresh : [];
+      const same = sameItems(itemsRef.current, next);
       setItems((was) => (sameItems(was, next) ? was : next));
+      // Pictures only when something in the folder changed (or they never came): a check that
+      // found nothing new already has every picture it had, and asking again every ten seconds
+      // redrew every row with them.
+      if (same && thumbsOf.current === folderId) return;
       api.driveThumbnails(folderId).then(
-        (t) => { if (token === openToken.current && t) setThumbs((was) => ({ ...was, ...t })); },
+        (t) => {
+          if (token !== openToken.current || !t) return;
+          thumbsOf.current = folderId;
+          setThumbs((was) => (Object.entries(t).every(([id, src]) => was[id] === src) ? was : { ...was, ...t }));
+        },
         () => {},
       );
     } catch {
@@ -699,7 +716,7 @@ export function DriveView() {
       window.removeEventListener("focus", look);
     };
   }, [shown, refresh]);
-  const { revision } = useSync();
+  const revision = useRevision("drive");
   // A pass that lands while another screen is in front is read when this one comes back, once
   // (a screen out of sight stays mounted): each landing asked Apple for the folder again.
   const seen = useRef(revision);

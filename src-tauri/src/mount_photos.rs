@@ -123,9 +123,18 @@ fn taken(p: &Photo) -> (i16, i8) {
 }
 
 /// What a folder holds, read from the library (the app keeps it in step with Apple).
+///
+/// Read beside the library's lock, never behind it: a file manager browsing the folder waited
+/// out every sync pass the window was storing.
 fn children(app: &AppHandle, id: &str) -> Option<Vec<DriveItem>> {
-    let data = app.state::<Data>();
-    let library = data.0.blocking_lock();
+    app.state::<Data>()
+        .0
+        .blocking_read(|library| Ok(children_in(library, id)))
+        .ok()
+        .flatten()
+}
+
+fn children_in(library: &quince_core::Library, id: &str) -> Option<Vec<DriveItem>> {
     let photos = |view: View| library.photos(view).unwrap_or_default();
     Some(match id {
         ROOT => vec![
@@ -152,7 +161,7 @@ fn children(app: &AppHandle, id: &str) -> Option<Vec<DriveItem>> {
             .iter()
             .flat_map(|p| files(p, VIDEOS))
             .collect(),
-        ALBUMS => albums_in(&library, None, ALBUMS),
+        ALBUMS => albums_in(library, None, ALBUMS),
         _ => {
             if let Some(y) = id.strip_prefix("PH::y:") {
                 let y: i16 = y.parse().ok()?;
@@ -187,7 +196,7 @@ fn children(app: &AppHandle, id: &str) -> Option<Vec<DriveItem>> {
                     .iter()
                     .any(|a| a.id == album && a.folder);
                 if is_folder {
-                    albums_in(&library, Some(album), id)
+                    albums_in(library, Some(album), id)
                 } else {
                     library
                         .album_photos(album)
@@ -235,13 +244,16 @@ fn accepts(app: &AppHandle, folder: &str) -> bool {
         return true;
     }
     folder.strip_prefix("PH::album:").is_some_and(|album| {
-        let data = app.state::<Data>();
-        let library = data.0.blocking_lock();
-        library
-            .albums()
-            .unwrap_or_default()
-            .iter()
-            .any(|a| a.id == album && !a.folder)
+        app.state::<Data>()
+            .0
+            .blocking_read(|library| {
+                Ok(library
+                    .albums()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|a| a.id == album && !a.folder))
+            })
+            .unwrap_or(false)
     })
 }
 

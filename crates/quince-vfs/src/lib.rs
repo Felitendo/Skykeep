@@ -78,6 +78,12 @@ pub trait Remote: Send + Sync + 'static {
 pub trait Store: Send + Sync + 'static {
     /// A folder's items as last stored; `None` when it has never been listed.
     fn children(&self, folder: &str) -> Option<Vec<DriveItem>>;
+    /// A number that moves whenever anything [`Store::children`] answers may have changed, and
+    /// only then — so a folder's listing worked out once can be used again while it stays.
+    /// `None` (the default): not known, and every look reads the store again.
+    fn version(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// The root of iCloud Drive, as Apple names it.
@@ -92,6 +98,9 @@ pub struct Inodes {
     /// Where each item is in the folder, as the file manager names it ("Work/Deck.key").
     paths: HashMap<u64, String>,
     next: u64,
+    /// Moves on every change to the table — never for a call that changed nothing — so what was
+    /// worked out from it can be told for still current.
+    generation: u64,
 }
 
 impl Inodes {
@@ -121,8 +130,9 @@ impl Inodes {
     /// The inode of an item, given one the first time it is seen; its details kept fresh.
     pub fn ino(&mut self, item: &DriveItem) -> u64 {
         if let Some(&ino) = self.by_id.get(&item.drivewsid) {
-            if ino != 1 {
+            if ino != 1 && self.by_ino.get(&ino) != Some(item) {
                 self.by_ino.insert(ino, item.clone());
+                self.generation += 1;
             }
             return ino;
         }
@@ -130,7 +140,14 @@ impl Inodes {
         self.next += 1;
         self.by_id.insert(item.drivewsid.clone(), ino);
         self.by_ino.insert(ino, item.clone());
+        self.generation += 1;
         ino
+    }
+
+    /// Where the table is in its changes: the same number, the same table.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Where an item is, from the folder's top, as last listed.
@@ -149,7 +166,10 @@ impl Inodes {
             Some(p) => format!("{p}/{name}"),
             None => return,
         };
-        self.paths.insert(ino, at);
+        if self.paths.get(&ino) != Some(&at) {
+            self.paths.insert(ino, at);
+            self.generation += 1;
+        }
     }
 
     /// An inode for a file made on this computer and not yet at Apple: its own id
@@ -175,6 +195,7 @@ impl Inodes {
         };
         self.by_id.insert(item.drivewsid.clone(), ino);
         self.by_ino.insert(ino, item);
+        self.generation += 1;
         ino
     }
 
@@ -192,6 +213,7 @@ impl Inodes {
             }
         }
         self.by_ino.insert(ino, item.clone());
+        self.generation += 1;
     }
 
     /// The inode an item already has, by Apple's id.

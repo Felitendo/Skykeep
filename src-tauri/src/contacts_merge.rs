@@ -17,7 +17,6 @@ use quince_icloud::Error;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::State;
-use tokio::sync::Mutex;
 
 /// How long a merge waits before it is sent: the time its Undo is on screen.
 const HOLD: i64 = 10;
@@ -225,7 +224,7 @@ fn unreached(e: &Error) -> bool {
 /// Send a merge, on Apple's own cards. See the module's notes for why each step is safe to
 /// take twice.
 pub async fn send(
-    library: &Mutex<Library>,
+    library: &crate::library_lock::LibraryLock,
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
@@ -394,8 +393,11 @@ pub fn encode_photo(bytes: &[u8], limit: usize) -> Option<(String, f64)> {
 /// Cards that look like one person: the same name, or a number or email they share.
 #[tauri::command]
 pub async fn contacts_duplicates(data: State<'_, Data>) -> UiResult<Vec<Duplicates>> {
-    let library = data.0.lock().await;
-    let book = library.contacts(None).map_err(|e| e.to_string())?;
+    let book = data
+        .0
+        .read(|library| library.contacts(None))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(core_merge::find_duplicates(&book))
 }
 
@@ -657,7 +659,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let lib = Mutex::new(library());
+            let lib = crate::library_lock::LibraryLock::new(library(), None);
             let kept = record(&mut *lib.lock().await, &["A".into(), "B".into()]).unwrap();
             assert_eq!(kept, "B", "the card holding the most");
             let p = lib.lock().await.outbox_pending(CONTACTS).unwrap().remove(0);

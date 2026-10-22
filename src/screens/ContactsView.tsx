@@ -23,7 +23,7 @@ import {
   type PostalAddress,
 } from "../lib/ipc";
 import { Arriving } from "../components/EmptyState";
-import { useArriving, useSync } from "../lib/sync";
+import { useArriving, useRevision } from "../lib/sync";
 import { overlayOpen, useActiveRef, useScreenActive } from "../lib/screen";
 import { Picker } from "../components/Picker";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
@@ -158,7 +158,7 @@ export function ContactsView() {
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
   const [confirm, confirmSheet] = useConfirm();
-  const { revision } = useSync();
+  const revision = useRevision("contacts");
   // A pass that lands while another screen is in front is read when this one comes back, once,
   // not at every landing: a screen out of sight stays mounted (lib/screen).
   const active = useScreenActive();
@@ -282,6 +282,12 @@ export function ContactsView() {
 
   /** Cards saved here and not yet at Apple, and any Apple turned down. */
   const outbox = useOutbox("contacts");
+  // A card sent while another screen is in front is read when this one comes back, once — as
+  // a landed pass is (`due`): out of sight, each send read the whole book, its duplicates and
+  // the open card's addresses again, on the lock the screen in front was waiting for.
+  const seenTick = useRef(outbox.tick);
+  if (active) seenTick.current = outbox.tick;
+  const tickDue = seenTick.current;
   /** Each read is numbered: one overtaken by a later one (a key typed since) never draws. */
   const reads = useRef(0);
   const read = useCallback(async (query: string) => {
@@ -308,7 +314,7 @@ export function ContactsView() {
     };
     // Re-reading on every keystroke is the point: the filter runs in SQLite. `outbox.tick`: a
     // card sent, or turned down, changes what the library holds.
-  }, [read, search, due, outbox.tick]);
+  }, [read, search, due, tickDue]);
 
   const readLists = useCallback(async () => {
     const [found, mine] = await Promise.all([api.contactLists(), api.contactMe()]);
@@ -379,7 +385,7 @@ export function ContactsView() {
   }, []);
   useEffect(() => {
     readDupes().catch(() => {});
-  }, [readDupes, due, outbox.tick]);
+  }, [readDupes, due, tickDue]);
   /** Everyone by id, for the duplicates view to draw from. */
   const byGuid = useMemo(() => new Map(contacts.map((c) => [c.guid, c])), [contacts]);
 
@@ -447,7 +453,7 @@ export function ContactsView() {
     return () => {
       cancelled = true;
     };
-  }, [openGuid, due, outbox.tick]);
+  }, [openGuid, due, tickDue]);
 
   /**
    * Address edits: drawn at once, then sent. Turned down, the list goes back to what it was,

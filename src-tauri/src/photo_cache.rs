@@ -461,8 +461,7 @@ fn cap_blocking(app: &AppHandle) -> u64 {
             let saved = app
                 .state::<Data>()
                 .0
-                .blocking_lock()
-                .state(CAP_KEY)
+                .blocking_read(|library| library.state(CAP_KEY))
                 .ok()
                 .flatten();
             let cap = parse_cap(saved);
@@ -478,8 +477,7 @@ fn waiting_uploads(app: &AppHandle) -> Vec<(u64, u64, Option<PathBuf>)> {
     let paths: Vec<PathBuf> = app
         .state::<Data>()
         .0
-        .blocking_lock()
-        .unfinished_uploads()
+        .blocking_read(quince_core::Library::unfinished_uploads)
         .unwrap_or_default()
         .into_iter()
         .map(|u| PathBuf::from(u.path))

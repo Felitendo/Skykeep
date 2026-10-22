@@ -11,8 +11,10 @@ pub async fn contact_addresses(
     guid: String,
     data: State<'_, Data>,
 ) -> UiResult<Vec<PostalAddress>> {
-    let library = data.0.lock().await;
-    library.contact_addresses(&guid).map_err(|e| e.to_string())
+    data.0
+        .read(|library| library.contact_addresses(&guid))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Change a card's addresses: set a part, set a label, add one or take one out — any number

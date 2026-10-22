@@ -22,7 +22,7 @@ import {
   calendarFeedsApi,
   SUBSCRIPTION_PREFIX } from "../../lib/ipc";
 import { parseQuick } from "./quick";
-import { useSync } from "../../lib/sync";
+import { useRevision } from "../../lib/sync";
 import { useOutbox } from "../../lib/outbox";
 import { Unsent, Waiting } from "../../components/Unsent";
 import { Picker } from "../../components/Picker";
@@ -463,7 +463,7 @@ export function CalendarView() {
   /** The last event deleted, with its alerts (read from Apple as it goes), held so the deletion
    *  can be taken back. */
   const [undo, setUndo] = useState<(CalendarEvent & { alerts: Promise<number[]> }) | null>(null);
-  const { revision } = useSync();
+  const revision = useRevision("calendar", "reminders", "contacts");
   // Changes kept here and not yet at Apple (the outbox): a saved event says so, and one Apple
   // turned down is shown with what it held.
   const outbox = useOutbox("calendar");

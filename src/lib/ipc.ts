@@ -43,6 +43,11 @@ export type Refresh = {
   /** The stalest part of the library — the only freshness the window can claim. */
   asOf: number | null;
   tookMs: number;
+  /**
+   * The services whose stored rows this changed, when the backend knows: a screen reads again
+   * only for its own. Absent, every screen reads again.
+   */
+  changed?: string[];
 };
 
 /** Emitted by the backend whenever a refresh finishes, background ones included. */

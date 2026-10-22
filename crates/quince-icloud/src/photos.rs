@@ -32,9 +32,15 @@ pub struct PhotosFetch {
     pub complete: bool,
 }
 
-/// How many pages of the change feed one pass reads (500 records each). A library larger
-/// than this is read over several passes, each carrying on where the last stopped.
-const PASS_PAGES: usize = 100;
+/// How many pages of the change feed one fetch reads (500 records each). A library larger
+/// than this is read over several, each carrying on where the last stopped and each stored
+/// before the next is asked for: a hundred pages at once held some fifty thousand records in
+/// memory together through a whole walk.
+const PASS_PAGES: usize = 10;
+
+/// How many fetches one refresh makes before it leaves the rest of a walk to the next: the
+/// hundred pages a refresh has always gone through, ten at a time.
+pub const PASS_ROUNDS: usize = 10;
 
 /// One pass of the change feed from `since` (or from the start).
 ///
@@ -1919,5 +1925,62 @@ mod tests {
             .await
             .unwrap();
         assert!(again.incremental && again.from.as_deref() == Some("further"));
+    }
+
+    /// A whole walk read the way a refresh reads it — a few pages at a time, each stored
+    /// before the next is asked for — ends with every photo, as one long fetch did, and never
+    /// holds more than a few pages of records at once.
+    #[tokio::test]
+    async fn a_walk_read_a_few_pages_at_a_time_ends_whole() {
+        use wiremock::matchers::{body_string_contains, method, path_regex};
+        use wiremock::{Mock, MockServer};
+        const PAGES: usize = 25;
+        let server = MockServer::start().await;
+        // Page `k` is asked for with the token page `k - 1` gave; the first with none.
+        for k in (0..PAGES).rev() {
+            let reply = zone_reply(json!({
+                "records": [
+                    master_named(&format!("M{k}")),
+                    asset_named(&format!("A{k}"), &format!("M{k}"))
+                ],
+                "syncToken": format!("page-{}", k + 1),
+                "moreComing": k + 1 < PAGES
+            }));
+            let mock = Mock::given(method("POST")).and(path_regex(r".*/changes/zone"));
+            if k == 0 {
+                mock.respond_with(reply).mount(&server).await;
+            } else {
+                mock.and(body_string_contains(format!("\"page-{k}\"")))
+                    .respond_with(reply)
+                    .with_priority(1)
+                    .mount(&server)
+                    .await;
+            }
+        }
+        let http = reqwest::Client::new();
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            let since = lib.sync_token(SERVICE).unwrap();
+            let fetched = fetch(&http, &server.uri(), vec![], since.as_deref())
+                .await
+                .unwrap();
+            assert!(
+                fetched.records.len() <= 2 * PASS_PAGES,
+                "one fetch holds a few pages"
+            );
+            let complete = fetched.complete;
+            apply(&mut lib, fetched).unwrap();
+            if complete || rounds >= PASS_ROUNDS {
+                break;
+            }
+        }
+        assert_eq!(rounds, PAGES.div_ceil(PASS_PAGES));
+        assert_eq!(ids(&lib).len(), PAGES, "every photo, from every page");
+        assert_eq!(
+            lib.sync_token(SERVICE).unwrap(),
+            Some(format!("page-{PAGES}"))
+        );
     }
 }

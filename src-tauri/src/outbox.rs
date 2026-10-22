@@ -1180,7 +1180,12 @@ struct Report {
 
 /// Send what is waiting for `service`, oldest first, with `send`. Stops at the first change
 /// Apple can't be reached for, leaving it and everything after it queued, in order.
-async fn drain<F, Fut>(library: &Mutex<Library>, service: &str, pass: &Mutex<()>, send: F) -> Report
+async fn drain<F, Fut>(
+    library: &crate::library_lock::LibraryLock,
+    service: &str,
+    pass: &Mutex<()>,
+    send: F,
+) -> Report
 where
     F: Fn(Pending) -> Fut,
     Fut: std::future::Future<Output = Result<(), Error>>,
@@ -1294,7 +1299,7 @@ impl Outcome {
 }
 
 async fn send_reminder(
-    library: &Mutex<Library>,
+    library: &crate::library_lock::LibraryLock,
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
@@ -1450,7 +1455,7 @@ async fn drain_notes(app: &AppHandle) -> Outcome {
 }
 
 async fn send_note(
-    library: &Mutex<Library>,
+    library: &crate::library_lock::LibraryLock,
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
@@ -1519,7 +1524,7 @@ async fn send_note(
 }
 
 async fn send_note_save(
-    library: &Mutex<Library>,
+    library: &crate::library_lock::LibraryLock,
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
@@ -1598,7 +1603,7 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
 }
 
 async fn send_contact(
-    library: &Mutex<Library>,
+    library: &crate::library_lock::LibraryLock,
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
@@ -1702,7 +1707,7 @@ async fn drain_calendar(app: &AppHandle) -> Outcome {
 }
 
 async fn send_event(
-    library: &Mutex<Library>,
+    library: &crate::library_lock::LibraryLock,
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
@@ -2130,7 +2135,7 @@ mod tests {
     #[test]
     fn sends_in_order_keeps_what_cannot_reach_apple_and_holds_refusals() {
         tauri::async_runtime::block_on(async {
-            let lib = Mutex::new(library());
+            let lib = crate::library_lock::LibraryLock::new(library(), None);
             let pass = Mutex::new(());
             {
                 let mut l = lib.lock().await;
@@ -2649,7 +2654,8 @@ mod tests {
                 l.outbox_take(REMINDERS).unwrap();
                 made
             };
-            let lib = Mutex::new(Library::open(dir.path()).unwrap());
+            let lib =
+                crate::library_lock::LibraryLock::new(Library::open(dir.path()).unwrap(), None);
             let pass = Mutex::new(());
             // Apple, as a set of names: a create of a name it holds makes nothing.
             let apple = Arc::new(StdMutex::new(std::collections::HashSet::from([
@@ -2734,7 +2740,11 @@ mod tests {
     }
 
     /// Drain with a pretend Apple: every change is taken, unless `refuse` names its kind.
-    async fn send_all(lib: &Mutex<Library>, service: &str, refuse: &'static str) -> Report {
+    async fn send_all(
+        lib: &crate::library_lock::LibraryLock,
+        service: &str,
+        refuse: &'static str,
+    ) -> Report {
         let pass = Mutex::new(());
         drain(lib, service, &pass, move |p| async move {
             if p.kind == refuse {
@@ -2978,7 +2988,8 @@ mod tests {
                 l.outbox_take(NOTES).unwrap();
                 (made, x.guid)
             };
-            let lib = Mutex::new(Library::open(dir.path()).unwrap());
+            let lib =
+                crate::library_lock::LibraryLock::new(Library::open(dir.path()).unwrap(), None);
             {
                 let l = lib.lock().await;
                 assert!(
@@ -3057,7 +3068,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let lib = Mutex::new(l);
+            let lib = crate::library_lock::LibraryLock::new(l, None);
             for (service, kind) in [(NOTES, "create"), (CONTACTS, "delete"), (CALENDAR, "save")] {
                 let report = send_all(&lib, service, kind).await;
                 assert_eq!(report.refused.len(), 1, "{service} {kind}");

@@ -1072,7 +1072,10 @@ pub fn content_type(bytes: &[u8], size: Size) -> &'static str {
 /// A view's photos, newest first.
 #[tauri::command]
 pub async fn photos_list(view: View, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
-    data.0.lock().await.photos(view).map_err(|e| e.to_string())
+    data.0
+        .read(|library| library.photos(view))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// What the grid lays out before any photo comes: every photo's id, the date it is grouped
@@ -1085,9 +1088,8 @@ pub async fn photos_index(
     data: State<'_, Data>,
 ) -> UiResult<quince_core::photos::PhotoIndex> {
     data.0
-        .lock()
+        .read(|library| library.photo_index(&source, order))
         .await
-        .photo_index(&source, order)
         .map_err(|e| e.to_string())
 }
 
@@ -1101,9 +1103,8 @@ pub async fn photos_page(
     data: State<'_, Data>,
 ) -> UiResult<Vec<Photo>> {
     data.0
-        .lock()
+        .read(|library| library.photo_page(&source, order, offset, limit))
         .await
-        .photo_page(&source, order, offset, limit)
         .map_err(|e| e.to_string())
 }
 
@@ -1111,9 +1112,8 @@ pub async fn photos_page(
 #[tauri::command]
 pub async fn photos_get(ids: Vec<String>, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
     data.0
-        .lock()
+        .read(|library| library.photos_by_ids(&ids))
         .await
-        .photos_by_ids(&ids)
         .map_err(|e| e.to_string())
 }
 
@@ -1189,9 +1189,8 @@ pub async fn photos_albums(
 ) -> UiResult<Vec<(quince_core::photos::Album, usize, Option<String>)>> {
     let counted = data
         .0
-        .lock()
+        .read(quince_core::Library::albums_counted)
         .await
-        .albums_counted()
         .map_err(|e| e.to_string())?;
     Ok(counted
         .into_iter()
@@ -1204,9 +1203,8 @@ pub async fn photos_albums(
 #[tauri::command]
 pub async fn photos_search(query: String, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
     data.0
-        .lock()
+        .read(|library| library.search_photos(&query, 20_000))
         .await
-        .search_photos(&query, 20_000)
         .map_err(|e| e.to_string())
 }
 
@@ -1214,9 +1212,8 @@ pub async fn photos_search(query: String, data: State<'_, Data>) -> UiResult<Vec
 #[tauri::command]
 pub async fn photos_in_album(album: String, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
     data.0
-        .lock()
+        .read(|library| library.album_photos(&album))
         .await
-        .album_photos(&album)
         .map_err(|e| e.to_string())
 }
 
@@ -1973,9 +1970,8 @@ pub async fn photos_counts(app: AppHandle, data: State<'_, Data>) -> UiResult<Ve
     work(app.clone());
     keep_ahead(app);
     data.0
-        .lock()
+        .read(|library| library.photo_counts())
         .await
-        .photo_counts()
         .map_err(|e| e.to_string())
 }
 
