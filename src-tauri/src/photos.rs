@@ -576,11 +576,15 @@ pub fn keep_ahead(app: AppHandle) {
                     }
                     if let Ok(path) = crate::cpu::ahead(cached(&app, &id, size)).await {
                         let len = tokio::fs::metadata(&path).await.map_or(0, |m| m.len());
-                        let _ = budget.fetch_update(
+                        let mut b = budget.load(std::sync::atomic::Ordering::Relaxed);
+                        while let Err(now) = budget.compare_exchange_weak(
+                            b,
+                            b.saturating_sub(len),
                             std::sync::atomic::Ordering::Relaxed,
                             std::sync::atomic::Ordering::Relaxed,
-                            |b| Some(b.saturating_sub(len)),
-                        );
+                        ) {
+                            b = now;
+                        }
                     }
                 }
             })
