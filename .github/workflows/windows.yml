@@ -180,15 +180,34 @@ jobs:
           $entry = Get-StartApps | Where-Object { $_.Name -eq "Skykeep" } | Select-Object -First 1
           if (-not $entry -or $entry.AppID -ne "io.github.yashwanthkamireddi.Skykeep") { throw "Start menu entry has app ID '$($entry.AppID)', not io.github.yashwanthkamireddi.Skykeep" }
           "start menu app ID: $($entry.AppID)"
+          # Every visible top-level window the process owns, by title. MainWindowTitle names only
+          # one of them, and that may be the hidden single-instance window ("…-siw").
+          Add-Type -Namespace Win -Name U -MemberDefinition '
+            public delegate bool EnumProc(System.IntPtr h, System.IntPtr l);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, System.IntPtr l);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, out uint pid);
+            [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int n);
+          '
+          function Get-Titles([int]$procId) {
+            $found = New-Object System.Collections.Generic.List[string]
+            [Win.U]::EnumWindows({ param($h, $l)
+              $owner = 0; [void][Win.U]::GetWindowThreadProcessId($h, [ref]$owner)
+              if ($owner -eq $procId -and [Win.U]::IsWindowVisible($h)) {
+                $sb = New-Object System.Text.StringBuilder 256; [void][Win.U]::GetWindowText($h, $sb, 256); $found.Add($sb.ToString())
+              }
+              $true }, [System.IntPtr]::Zero) | Out-Null
+            $found
+          }
           $p = Start-Process $exe.FullName -PassThru
-          $title = ""
-          for ($i = 0; $i -lt 30 -and -not $title; $i++) {
+          $titles = @()
+          for ($i = 0; $i -lt 30 -and -not ($titles -contains "Skykeep"); $i++) {
             Start-Sleep -Seconds 2
             if ($p.HasExited) { throw "Skykeep exited on start (code $($p.ExitCode))" }
-            $p.Refresh(); $title = $p.MainWindowTitle
+            $titles = @(Get-Titles $p.Id)
           }
-          if ($title -ne "Skykeep") { throw "no Skykeep window after 60 s (title: '$title')" }
-          "window up: $title"
+          if (-not ($titles -contains "Skykeep")) { throw "no Skykeep window after 60 s (visible: '$($titles -join "', '")')" }
+          "window up: Skykeep"
           Start-Sleep -Seconds 6
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds

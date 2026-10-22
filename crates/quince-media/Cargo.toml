@@ -16,4 +16,6 @@ png = "0.17"
 # decoder, which needs two Store extensions most machines do not have. Left out only of the
 # MinGW cross-check, which has no vcpkg.
 [target.'cfg(not(all(windows, target_env = "gnu")))'.dependencies]
-libheif-rs = "3.0.0"
+# Only what libheif 1.17 has, the oldest in the distributions Skykeep ships for (Ubuntu 24.04);
+# the crate's default asks for 1.23, which none of their packages carry yet.
+libheif-rs = { version = "3.0.0", default-features = false, features = ["v1_17"] }
