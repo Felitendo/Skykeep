@@ -25,7 +25,8 @@ const ZONE: &str = "Notes";
 pub struct AttachmentInfo {
     pub id: String,
     pub uti: String,
-    /// `image`, `drawing`, `table`, `document` (PDF, scan), `audio`, `video`, or `file`.
+    /// `image`, `drawing`, `table`, `document` (PDF, scan), `audio`, `video`, `inline` (a
+    /// tag or a mention, drawn as its text), or `file`.
     pub kind: &'static str,
     pub filename: Option<String>,
     pub title: Option<String>,
@@ -47,6 +48,11 @@ pub fn kind_of(uti: &str) -> &'static str {
         "com.apple.paper" | "com.apple.drawing" | "com.apple.drawing.2"
     ) {
         return "drawing";
+    }
+    // Text set inside a line — a #tag (`…inlinetextattachment.hashtag`) or an @mention: drawn
+    // as the words it shows, never as a file.
+    if u.starts_with("com.apple.notes.inlinetextattachment") {
+        return "inline";
     }
     // A table: drawn as its grid, never offered as a file to open.
     if u == crate::table::UTI {
@@ -113,6 +119,9 @@ pub async fn info(
                 .map(str::to_string)
         })
         .unwrap_or_default();
+    if kind_of(&uti) == "inline" {
+        return Ok(inline_info(id, uti, &record));
+    }
     let media = match record
         .pointer("/fields/Media/value/recordName")
         .and_then(Value::as_str)
@@ -160,6 +169,42 @@ pub async fn info(
             .is_some_and(|a| !a.is_empty()),
         uti,
     })
+}
+
+/// A tag or mention, with the words it shows as its title. Notes keeps those words as the
+/// attachment's alt text, cased as typed, and a tag's normalised name as its token (upper
+/// case, no `#`); either is read, plain or in its `…Encrypted` form.
+fn inline_info(id: &str, uti: String, record: &Value) -> AttachmentInfo {
+    let field = |name: &str| {
+        decoded(record, &format!("{name}Encrypted")).or_else(|| {
+            record
+                .pointer(&format!("/fields/{name}/value"))
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+    };
+    let hashtag = uti.to_ascii_lowercase().ends_with(".hashtag");
+    let title = field("AltText").or_else(|| {
+        field("TokenContentIdentifier").map(|t| {
+            if hashtag && !t.starts_with('#') {
+                format!("#{t}")
+            } else {
+                t
+            }
+        })
+    });
+    AttachmentInfo {
+        id: id.to_string(),
+        kind: "inline",
+        filename: None,
+        title,
+        width: None,
+        height: None,
+        size: None,
+        has_preview: false,
+        uti,
+    }
 }
 
 /// Which bytes of an attachment to fetch.
@@ -286,5 +331,36 @@ mod tests {
             kind_of("dyn.ah62d4rv4ge80455crf0gn3dfs3y0g3puqfy1e4psq6"),
             "file"
         );
+    }
+
+    /// A tag shows the words it was typed as; with only its token, the token behind a `#`.
+    #[test]
+    fn a_tag_is_drawn_as_its_words() {
+        use base64::Engine;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let uti = "com.apple.notes.inlinetextattachment.hashtag";
+        assert_eq!(kind_of(uti), "inline");
+        assert_eq!(
+            kind_of("com.apple.notes.inlinetextattachment.mention"),
+            "inline"
+        );
+        let typed = serde_json::json!({ "fields": {
+            "AltTextEncrypted": { "value": b64("#Recipes") },
+            "TokenContentIdentifierEncrypted": { "value": b64("RECIPES") },
+        }});
+        let info = inline_info("A", uti.into(), &typed);
+        assert_eq!(
+            (info.kind, info.title.as_deref()),
+            ("inline", Some("#Recipes"))
+        );
+        let token = serde_json::json!({ "fields": {
+            "TokenContentIdentifier": { "value": "RECIPES" },
+        }});
+        assert_eq!(
+            inline_info("A", uti.into(), &token).title.as_deref(),
+            Some("#RECIPES")
+        );
+        let bare = serde_json::json!({ "fields": {} });
+        assert_eq!(inline_info("A", uti.into(), &bare).title, None);
     }
 }

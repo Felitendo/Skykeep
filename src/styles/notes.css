@@ -473,6 +473,10 @@ textarea.note-title::placeholder { color: var(--text-3); }
   display: block; padding: 10px 12px; border: 1px dashed var(--separator); border-radius: 8px;
   color: var(--text-3); font-size: var(--t-13, 13px);
 }
+.note-rich .nf-attachment.is-inline, .nf-attachment.is-inline {
+  display: inline; padding: 0; margin: 0; background: none; color: inherit; font-size: inherit;
+}
+.nf-inline { color: var(--accent-strong); font-weight: 500; }
 .notes-folder-rename { width: 100%; }
 
 /* An attachment not yet known: a quiet frame holding its place, no words, no motion — never

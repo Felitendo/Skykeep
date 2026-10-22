@@ -372,6 +372,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
             return [plain(5), { ...plain(1), attachment: "M1" }, plain(1), { ...plain(1), attachment: "M2" }, plain(4)];
           }
+          if (args.guid === "nG") {
+            // "Pasta\n", "Dinner for ", a #tag, " tonight": the tag one inline attachment in its line.
+            const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
+            return [{ ...plain(6), style: 0 }, plain(11), { ...plain(1), attachment: "T1" }, plain(8)];
+          }
           if (args.guid === "nD") {
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
             // "Sketch\n", "See " then "The plan" linked to that note (lower-cased, as a phone links), "\n", the drawing, "\nend".
@@ -508,6 +513,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__attachNote && !noteList.some((n) => n.guid === "nA"))
             noteList.unshift({ guid: "nA", folderGuid: "f1", title: "Attachments", snippet: "", body: `Attachments\n${"\uFFFC\n".repeat(8)}A few words to try it out \n\uFFFC`,
               locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789500000, etag: null });
+          // Opt-in: a note with a #tag in its line, as a phone sets one.
+          if (window.__tagNote && !noteList.some((n) => n.guid === "nG"))
+            noteList.unshift({ guid: "nG", folderGuid: "f1", title: "Pasta", snippet: "", body: "Pasta\nDinner for \uFFFC tonight",
+              locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789600000, etag: null });
           if (window.__tableNote && !noteList.some((n) => n.guid === "nT"))
             noteList.unshift({ guid: "nT", folderGuid: "f1", title: "Groceries", snippet: "", body: "Groceries\n\uFFFC\nend",
               locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789000000, etag: null });
@@ -535,6 +544,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             const info = { id: args.id, title: null, width: null, height: null, size: null, hasPreview: false, filename: null, ...A };
             return window.__slowInfo ? new Promise((r) => setTimeout(() => r(info), window.__slowInfo)) : info;
           }
+          if (args.id === "T1") return { id: "T1", uti: "com.apple.notes.inlinetextattachment.hashtag", kind: "inline", filename: null, title: "#Recipes", width: null, height: null, size: null, hasPreview: false };
           if (args.id === "D1") return { id: "D1", uti: "com.apple.paper", kind: "drawing", filename: null, title: null, width: 768, height: 621, size: null, hasPreview: true };
           if (args.id === "U1") return { id: "U1", uti: "com.apple.notes.table", kind: "table", filename: null, title: null, width: null, height: null, size: 1116, hasPreview: false };
           // Any other id a table is drawn for (note_table answers it): a table, as the backend

@@ -186,6 +186,16 @@ export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     });
     return img;
   };
+  // A #tag or @mention sits in its line as the words it shows, as Notes sets it — not a file.
+  if (info.kind === "inline") {
+    const words = document.createElement("span");
+    words.className = "nf-inline";
+    words.textContent = info.title ?? "";
+    dom.className = "nf-attachment is-inline";
+    dom.title = "";
+    dom.replaceChildren(words);
+    return;
+  }
   dom.title = `Open ${name}`;
   if (info.kind === "image") {
     const img = picture("file", "nf-image");
