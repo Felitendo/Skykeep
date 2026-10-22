@@ -699,7 +699,8 @@ fn copy_tree(from: &Path, to: &Path, mover: &Mover) -> io::Result<()> {
             copy_tree(&src, &dst, mover)?;
         } else {
             fs::copy(&src, &dst)?;
-            fs::File::open(&dst)?.sync_all()?;
+            // Opened for writing: Windows refuses to flush a read-only handle (Access denied).
+            fs::OpenOptions::new().write(true).open(&dst)?.sync_all()?;
             (mover.checkpoint)(Step::CopiedOne)?;
         }
     }
