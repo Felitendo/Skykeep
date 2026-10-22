@@ -38,8 +38,10 @@ export function changeWords(r: Pick<RefusedChange, "service" | "kind">): string 
  * (shown as "Waiting to sync"), and the changes Apple turned down — kept, with what was typed,
  * until the person sends them again or lets them go.
  *
- * The backend says when this moves (`quince://outbox-changed`): as it starts sending, as a
- * change lands, as one is refused. `tick` counts those, for a view to read its rows again.
+ * The backend says when this moves (`quince://outbox-changed`), once a pass of sending is over,
+ * naming the services it sent for or found waiting. `tick` counts those that name this one, for
+ * a view to read its rows again: a Notes save landing re-read Reminders and Calendar too, each
+ * whole, twice. A word with no services named (a change resent or let go) is for every view.
  */
 export function useOutbox(service: OutboxService) {
   wakeWhenOnline();
@@ -56,14 +58,16 @@ export function useOutbox(service: OutboxService) {
   useEffect(() => {
     read();
     const offs = [
-      listen(CHANGED, () => {
+      listen<{ services?: string[] } | null>(CHANGED, (e) => {
+        const services = e.payload?.services;
+        if (Array.isArray(services) && !services.includes(service)) return;
         read();
         setTick((n) => n + 1);
       }),
       listen(REFUSED, () => read()),
     ];
     return () => offs.forEach((off) => void off.then((f) => f()).catch(() => {}));
-  }, [read]);
+  }, [read, service]);
 
   const waiting = useMemo(
     () => new Set(status.waiting.filter((w) => w.service === service).map((w) => w.record)),

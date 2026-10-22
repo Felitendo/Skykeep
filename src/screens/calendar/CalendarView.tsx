@@ -460,9 +460,9 @@ export function CalendarView() {
   const draftRef = useRef<Draft | null>(null);
   draftRef.current = draft;
   const [anchor, setAnchor] = useState<Anchor | null>(null);
-  /** The last event deleted, held so the deletion can be taken back. */
-  /** The last event deleted, with its alerts, held so the deletion can be taken back. */
-  const [undo, setUndo] = useState<(CalendarEvent & { alerts: number[] }) | null>(null);
+  /** The last event deleted, with its alerts (read from Apple as it goes), held so the deletion
+   *  can be taken back. */
+  const [undo, setUndo] = useState<(CalendarEvent & { alerts: Promise<number[]> }) | null>(null);
   const { revision } = useSync();
   // Changes kept here and not yet at Apple (the outbox): a saved event says so, and one Apple
   // turned down is shown with what it held.
@@ -764,17 +764,25 @@ export function CalendarView() {
       const occurrence = guid.includes("__");
       const scope = occurrence ? await whichEvents("delete") : null;
       if (occurrence && !scope) return;
-      // Its alerts, for Undo to make it again with them: read before it is gone.
-      const alerts = occurrence
-        ? []
+      // Its alerts, for Undo to make it again with them. Read from Apple alongside the deletion,
+      // not before it: awaited first, the event stayed on the grid for a second or two online
+      // and until the request gave up offline. The read starts first, so it finds the event in
+      // the library, and the deletion is queued once it has its answer — the grid has changed
+      // long before. Never on a timer: a deletion that reached Apple first left the read
+      // nothing to find, and Undo made the event again without its alerts.
+      const alerts: Promise<number[]> = occurrence
+        ? Promise.resolve([])
         : draftRef.current?.guid === guid && draftRef.current.alerts
-          ? draftRef.current.alerts
-          : await api.eventAlerts(guid).catch(() => [] as number[]);
+          ? Promise.resolve(draftRef.current.alerts)
+          : api.eventAlerts(guid).catch(() => [] as number[]);
       setDraft(null);
       // All of a series leaves every one of its days; one, only itself.
       const series = guid.split("__")[0];
       if (await write(
-        () => api.eventDelete(guid, scope ?? undefined),
+        async () => {
+          await alerts;
+          await api.eventDelete(guid, scope ?? undefined);
+        },
         (rows) => rows.filter((e) =>
           scope === "all" ? e.guid.split("__")[0] !== series
           : scope === "future" ? !(e.guid.split("__")[0] === series && e.startsAt >= (gone?.startsAt ?? 0))
@@ -791,7 +799,9 @@ export function CalendarView() {
     const gone = undo;
     setUndo(null);
     // Made again as it was, its alerts with it (its guests are not this app's to invite).
-    if (gone) await save({ ...draftOf(gone), guid: null, alerts: gone.alerts, alertsChanged: gone.alerts.length > 0 });
+    if (!gone) return;
+    const alerts = await gone.alerts;
+    await save({ ...draftOf(gone), guid: null, alerts, alertsChanged: alerts.length > 0 });
   }, [undo, save]);
   const moveEvent = useCallback(
     (e: CalendarEvent, startsAt: number, endsAt: number) => void save({ ...draftOf(e), startsAt, endsAt }),
@@ -809,17 +819,30 @@ export function CalendarView() {
   /** Real events at Apple carry alerts and a repeat to read; birthdays and feeds do not. */
   const atApple = (guid: string) => !guid.startsWith("quince:") && !guid.startsWith("pending:");
 
-  /** ⌘D: a copy at the same time, its alerts and repeat with it, as Calendar duplicates. */
+  /**
+   * ⌘D: a copy at the same time, its alerts and repeat with it, as Calendar duplicates. The
+   * copy is drawn at once; its alerts and repeat are read from Apple meanwhile, and it is made
+   * with them once they come. Read first, the copy appeared a second or two after the key.
+   */
   const duplicate = async (e: CalendarEvent) => {
     const into = homeFor(e);
     if (!into) return;
     const occurrence = e.guid.includes("__");
-    const [alerts, repeat] = atApple(e.guid)
-      ? await Promise.all([
-          api.eventAlerts(e.guid).catch(() => [] as number[]),
-          occurrence ? Promise.resolve(null) : api.eventRepeat(e.guid).catch(() => null),
-        ])
-      : [alertsFor(into, e.allDay), null];
+    if (!atApple(e.guid)) {
+      await save({ ...draftOf(e), guid: null, calendarGuid: into, alerts: alertsFor(into, e.allDay), alertsChanged: true, repeat: null, repeatChanged: false });
+      return;
+    }
+    const copy: CalendarEvent = { ...e, guid: `pending:copy:${e.guid}:${Date.now()}`, calendarGuid: into, etag: null };
+    const draw = (rows: CalendarEvent[]) => [...rows, copy];
+    setEvents(draw);
+    const release = hold(draw);
+    const [alerts, repeat] = await Promise.all([
+      api.eventAlerts(e.guid).catch(() => [] as number[]),
+      occurrence ? Promise.resolve(null) : api.eventRepeat(e.guid).catch(() => null),
+    ]);
+    // The stand-in gives way to the copy as it is saved, in the same draw.
+    release();
+    setEvents((rows) => rows.filter((x) => x.guid !== copy.guid));
     await save({ ...draftOf(e), guid: null, calendarGuid: into, alerts, alertsChanged: true, repeat, repeatChanged: repeat !== null });
   };
   /** ⌘V: the copied event on the selected day, at its own time of day. */
@@ -3093,7 +3116,7 @@ function EventPopover({
                   // Any beyond the two shown (made on a Mac) are kept, never dropped by an edit here.
                   set({ alerts: next, alertsChanged: true, alertsDefault: false });
                 }}
-                options={alerts === undefined ? [{ value: "loading", label: "…" }] : options}
+                options={alerts === undefined ? [{ value: "loading", label: "Loading" }] : options}
               />
             </div>
           );
@@ -3108,7 +3131,7 @@ function EventPopover({
             onChange={(v) => set({ repeat: v === "never" ? null : { freq: v as EventRepeat["freq"], interval: 1, count: null }, repeatChanged: true })}
             options={
               draft.repeat === undefined
-                ? [{ value: "loading", label: "…" }]
+                ? [{ value: "loading", label: "Loading" }]
                 : [
                     ...REPEATS,
                     ...(repeatKey(draft.repeat) === "custom" ? [{ value: "custom", label: repeatText(draft.repeat) }] : []),
@@ -3437,7 +3460,7 @@ function SubscribeForm({ onDone, onCancel }: {
       )}
       <div className="cx-subscribe-actions">
         <button type="button" className="quiet" onClick={onCancel}>Cancel</button>
-        <button type="submit" className="primary" disabled={!url.trim() || busy}>{busy ? "Subscribing…" : "Subscribe"}</button>
+        <button type="submit" className="primary" disabled={!url.trim() || busy} aria-busy={busy}>Subscribe</button>
       </div>
     </form>
   );

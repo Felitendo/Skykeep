@@ -123,15 +123,18 @@ type UiResult<T> = Result<T, String>;
 /// any network work so a slow sync cannot block the heartbeat or a sign-out.
 /// Re-read reminders after a write, so what is on screen is what Apple stored.
 ///
-/// A list change moves records other than the one written, so this is a full pass rather
-/// than a delta.
+/// A delta from the stored sync token: a list change moves records other than the one written,
+/// and the walk since the token brings those back too, with each changed list's sections. A
+/// whole-zone pass here walked years of completed reminders and every list's membership file
+/// after each tag, link, reorder or repeat, and the reminder's next edit queued behind it. A
+/// token Apple refused starts the walk over from the beginning on its own.
 async fn resync_reminders(
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
     data: &State<'_, Data>,
 ) -> Result<(), String> {
-    refresh_reminders(http, root, params, data, true).await
+    refresh_reminders(http, root, params, data, false).await
 }
 
 /// Ask Apple what changed in Reminders and store it — without holding the library while
@@ -1844,7 +1847,11 @@ async fn calendar_events(
             library
                 .events_between(from, to)
                 .map_err(|e| e.to_string())?,
-            library.contacts(None).map_err(|e| e.to_string())?,
+            // Only who has a birthday, and their names: every card built whole was most of
+            // the cost of reading a month.
+            library
+                .contacts_with_birthdays()
+                .map_err(|e| e.to_string())?,
         )
     };
     // Birthdays and holidays, as a phone draws them: neither is an iCloud calendar.
@@ -1877,7 +1884,9 @@ async fn calendar_search(
         let library = data.0.lock().await;
         (
             library.search_events(&query).map_err(|e| e.to_string())?,
-            library.contacts(None).map_err(|e| e.to_string())?,
+            library
+                .contacts_with_birthdays()
+                .map_err(|e| e.to_string())?,
         )
     };
     if !words.is_empty() {
@@ -2325,16 +2334,19 @@ async fn calendar_list(
     occasions: State<'_, Occasions>,
     feeds_state: State<'_, Feeds>,
 ) -> UiResult<Vec<Calendar>> {
-    let library = data.0.lock().await;
-    let mut calendars = library.calendars().map_err(|e| e.to_string())?;
-    let any_birthdays = library
-        .contacts(None)
-        .map_err(|e| e.to_string())?
-        .iter()
-        .any(|c| c.birthday.is_some());
-    let feed = occasions.feed.lock().await;
-    let holidays =
-        (!feed.1.is_empty()).then(|| feed.0.clone().unwrap_or_else(|| "Holidays".into()));
+    // The library is let go before the holiday feed and subscriptions are waited for: held
+    // across them, every other screen's read queued behind those locks too.
+    let (mut calendars, any_birthdays) = {
+        let library = data.0.lock().await;
+        (
+            library.calendars().map_err(|e| e.to_string())?,
+            library.any_birthday().map_err(|e| e.to_string())?,
+        )
+    };
+    let holidays = {
+        let feed = occasions.feed.lock().await;
+        (!feed.1.is_empty()).then(|| feed.0.clone().unwrap_or_else(|| "Holidays".into()))
+    };
     calendars.extend(quince_icloud::occasions::calendars(
         holidays.as_deref(),
         any_birthdays,
@@ -5872,6 +5884,7 @@ fn main() {
             reminders_cmds::reminder_more,
             reminders_cmds::reminders_ending,
             reminders_cmds::reminder_marks,
+            reminders_cmds::reminder_extras,
             reminders_cmds::reminder_tags,
             reminders_cmds::reminders_tagged,
             reminders_cmds::reminder_smart_lists,

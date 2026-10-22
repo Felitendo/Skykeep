@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fadeIn, fadeOut } from "../lib/fade";
 import { overlayOpen, useActiveRef } from "../lib/screen";
 import { useModalFocus } from "../lib/focus";
@@ -32,6 +32,8 @@ import {
   type RepeatRule,
   type ReminderSmartList,
   type TagCount,
+  REMINDER_URGENT,
+  type UrgentRead,
 } from "../lib/ipc";
 import { Arriving } from "../components/EmptyState";
 import { useArriving, useSync } from "../lib/sync";
@@ -310,6 +312,9 @@ type Selection =
 
 export function RemindersView() {
   const [lists, setLists] = useState<ReminderList[]>([]);
+  /** Each list by its id: every row looks its own up, and a search through the array per row
+   *  was a thousand walks of it per draw. */
+  const listById = useMemo(() => new Map(lists.map((l) => [l.guid, l])), [lists]);
   const focusedBeforePress = useRef<Element | null>(null);
   /** A reminder's menu, from a right-click on its row. */
   const [rowMenu, setRowMenu] = useState<{ reminder: Reminder; at: { x: number; y: number; alignRight: boolean } } | null>(null);
@@ -441,26 +446,23 @@ export function RemindersView() {
     void readExtras().catch(() => {});
   }, []);
 
-  /** Tags with each one's reminders, and custom smart lists with what each holds. */
+  /**
+   * Tags with each one's reminders, and custom smart lists with what each holds. Three reads,
+   * whatever the account holds: this asked for every tag's reminders and every smart list's
+   * whole, one call each, only to know which tags each row carries and how many each list has.
+   */
   const readExtras = async () => {
-    const [allTags, smart] = await Promise.all([
+    const [allTags, smart, extras] = await Promise.all([
       remindersApi.tags().catch(() => [] as TagCount[]),
       remindersApi.smartLists().catch(() => [] as ReminderSmartList[]),
+      remindersApi.extras().catch(() => null),
     ]);
     const named = (Array.isArray(allTags) ? allTags : []).filter((t) => t.name);
     const custom = (Array.isArray(smart) ? smart : []).filter((x) => x.kind === "custom");
-    const [tagged, held] = await Promise.all([
-      Promise.all(named.map((t) => remindersApi.tagged(t.name).catch(() => [] as Reminder[]))),
-      Promise.all(custom.map((x) => remindersApi.inSmartList(x.guid).then((c) => c.reminders.length).catch(() => 0))),
-    ]);
-    const byReminder = new Map<string, string[]>();
-    named.forEach((t, i) => {
-      for (const r of tagged[i] ?? []) byReminder.set(r.guid, [...(byReminder.get(r.guid) ?? []), t.name]);
-    });
     setTags(named);
-    setTagsOf(byReminder);
+    setTagsOf(new Map(Object.entries(extras?.tagsByReminder ?? {})));
     setCustomLists(custom);
-    setCustomCounts(new Map(custom.map((x, i) => [x.guid, held[i] ?? 0])));
+    setCustomCounts(new Map(custom.map((x) => [x.guid, extras?.customCounts?.[x.guid] ?? 0])));
   };
 
   // A list's headings are read with its reminders (readItems), so they arrive together.
@@ -468,6 +470,21 @@ export function RemindersView() {
   /** What is typed in the search field. While it holds anything, the pane is the results. */
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
+  /**
+   * What is searched for: the field once typing pauses for 120 ms, as Calendar's search waits.
+   * Each key ran a search and the rows' marks again; a field emptied is taken at once.
+   */
+  const [settled, setSettled] = useState("");
+  useEffect(() => {
+    if (!query.trim()) {
+      setSettled("");
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setSettled(query), 120);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+  const sought = searching ? settled : "";
+  const seeking = sought.trim().length > 0;
   /**
    * In a narrow window one column shows at a time, as on iPhone: the lists, or the list that
    * was picked, with a way back. Searching shows the results under the search field.
@@ -485,8 +502,8 @@ export function RemindersView() {
     // Search reaches every list, as Apple's does, whatever is open in the sidebar.
     let unknown: string[] = [];
     const [found, sections] = await Promise.all([
-      searching
-        ? api.remindersSearch(query)
+      seeking
+        ? api.remindersSearch(sought)
         : sel.type === "smart"
           ? api.remindersSmart(sel.kind, endOfToday())
           : sel.type === "tag"
@@ -509,21 +526,30 @@ export function RemindersView() {
     setListSections(Array.isArray(sections) ? sections : []);
     setUnknownRules(unknown);
     return fresh;
-  }, [picked, showDone, query, searching, over]);
+  }, [picked, showDone, sought, seeking, over]);
 
   // Changes go to Apple behind the window (the outbox): once a batch has landed the library
   // holds Apple's own version, and a change Apple refused has been put back — said here, why.
+  // Through a ref, so the listeners are set up once: with `readItems` in their effect's deps,
+  // every key typed into the search took both down and set them up again.
+  const readItemsRef = useRef(readItems);
+  readItemsRef.current = readItems;
   useEffect(() => {
     const offs = [
-      listen("quince://reminders-synced", () => void readItems().catch(() => {})),
+      listen("quince://reminders-synced", () => void readItemsRef.current().catch(() => {})),
       // Said by the refused change's own notice (Unsent), which keeps what it held.
       listen<{ service: string; message: string }>("quince://outbox-refused", (e) => {
         if (e.payload.service !== "reminders") return;
-        void readItems().catch(() => {});
+        void readItemsRef.current().catch(() => {});
+      }),
+      // Urgent read from Apple behind the marks' answer, merged in as it comes.
+      listen<UrgentRead[]>(REMINDER_URGENT, (e) => {
+        const read = Array.isArray(e.payload) ? e.payload : [];
+        if (read.length) setMarks((was) => withUrgent(was, read));
       }),
     ];
     return () => offs.forEach((off) => void off.then((f) => f()).catch(() => {}));
-  }, [readItems]);
+  }, []);
 
   // Both reads come from the library. `revision` ticks when the shared refresh finishes —
   // pressed, or on the timer — so a reminder ticked on the phone appears here without this
@@ -844,7 +870,7 @@ export function RemindersView() {
     };
   }, [revision, outbox.tick, items.length, moreOf?.repeat?.endAt]);
   // The rows' marks, read again when the rows or Apple's copy change.
-  const markKey = items.map((r) => r.guid).join(",");
+  const markKey = useMemo(() => items.map((r) => r.guid).join(","), [items]);
   useEffect(() => {
     const guids = items.filter((r) => !r.guid.startsWith(STAND_IN)).map((r) => r.guid);
     if (!guids.length) return;
@@ -1057,9 +1083,17 @@ export function RemindersView() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  /** Drag and drop: what is being dragged, and the row it would land before. */
+  /** Drag and drop: what is being dragged (state, for its own row's look; a ref, for the rows
+   *  it passes over), and the row it would land before — marked on that row's element. */
   const [dragging, setDragging] = useState<string | null>(null);
-  const [dropBefore, setDropBefore] = useState<string | null>(null);
+  const draggingRef = useRef<string | null>(null);
+  const dropRow = useRef<HTMLElement | null>(null);
+  const markDrop = (row: HTMLElement | null) => {
+    if (dropRow.current !== row) dropRow.current?.classList.remove("is-drop-before");
+    // Added again on every dragover: a row drawn again mid-drag takes its class from React.
+    row?.classList.add("is-drop-before");
+    dropRow.current = row;
+  };
   const canReorder = inList && !searching;
   /** Put a reminder before another in its list — at once, then to Apple; back if refused. */
   const reorder = (guid: string, before: string) => {
@@ -1335,10 +1369,12 @@ export function RemindersView() {
       // All.
       const byList = new Map<string, typeof threaded>();
       for (const row of threaded) {
-        byList.set(row.reminder.listGuid, [...(byList.get(row.reminder.listGuid) ?? []), row]);
+        const bucket = byList.get(row.reminder.listGuid);
+        if (bucket) bucket.push(row);
+        else byList.set(row.reminder.listGuid, [row]);
       }
       return [...byList.entries()].map(([guid, rows]) => {
-        const list = lists.find((l) => l.guid === guid);
+        const list = listById.get(guid);
         return {
           key: guid,
           heading: list?.title ?? "Reminders",
@@ -1371,7 +1407,7 @@ export function RemindersView() {
 
     const kind = smartKind;
     const now = new Date();
-    const listOf = (guid: string) => lists.find((l) => l.guid === guid);
+    const listOf = (guid: string) => listById.get(guid);
 
     if (kind === "today") {
       // Apple's own buckets, each shown only when something is in it: empty "Morning" and
@@ -1466,7 +1502,7 @@ export function RemindersView() {
         dated: false,
         rows,
       }));
-  }, [threaded, inList, selection, lists, listSections, searching]);
+  }, [threaded, inList, selection, listById, listSections, searching]);
 
   const countOf = (guid: string) => counts?.lists.find(([g]) => g === guid)?.[1] ?? 0;
   const openList = inList ? (lists.find((l) => l.guid === listGuid) ?? null) : null;
@@ -1634,6 +1670,24 @@ export function RemindersView() {
       )}
     </form>
   );
+
+  const rowActions = useRef<RowActions>(null!);
+  rowActions.current = {
+    toggle, askRemove, rename, indent, outdent, flag, setNotes, setUrl, setDue, setEarly, setRepeat,
+    tagAdd, tagRemove, setPriority, moveToList, moveToSection, openTag, setOpenGuid, reorder,
+    openMenu: (reminder, at) => setRowMenu({ reminder, at }),
+    dragging: () => draggingRef.current,
+    startDrag: (guid) => {
+      draggingRef.current = guid;
+      setDragging(guid);
+    },
+    endDrag: () => {
+      draggingRef.current = null;
+      setDragging(null);
+      markDrop(null);
+    },
+    markDrop,
+  };
 
   return (
     <div
@@ -1857,421 +1911,36 @@ export function RemindersView() {
               ))}
             <ul className="rx-rows">
               {section.rows.map(({ reminder, depth }) => {
-                const due =
-                  reminder.dueAt === null ? null : dueLabel(reminder.dueAt, section.dated, reminder.allDay);
                 const isOpen = openGuid === reminder.guid;
-                const repeat = repeatLabel(reminder);
-                const justMoved = moved?.guid === reminder.guid ? moved.text : null;
-                const home = lists.find((l) => l.guid === reminder.listGuid);
-                const mark = priorityMark(reminder.priority);
-                const rowMarks = marks.get(reminder.guid);
-                // Kept in another zone, the phone adds that zone's clock: "8:30 PM (11:00 AM GMT-4)".
-                const elsewhere =
-                  due && reminder.dueAt !== null && !reminder.allDay && reminder.timezone && reminder.timezone !== LOCAL_ZONE
-                    ? zonedClock(reminder.timezone, reminder.dueAt)
-                    : null;
-                const chips = rowMarks && (rowMarks.location || rowMarks.messaging || rowMarks.url) ? rowMarks : null;
-                const rowTags =
-                  isOpen && detailOf?.guid === reminder.guid ? detailOf.tags : (tagsOf.get(reminder.guid) ?? []);
                 return (
-                  <li
+                  <ReminderRow
                     key={reminder.guid}
-                    className={`rx-row${reminder.completedAt ? " is-done" : ""}${leaving.has(reminder.guid) ? " is-leaving" : ""}${
-                      depth > 0 ? " is-subtask" : ""
-                    }${isOpen ? " is-open" : ""}${dropBefore === reminder.guid ? " is-drop-before" : ""}${
-                      dragging === reminder.guid ? " is-dragging" : ""
-                    }`}
-                    // Drag to reorder, in a list, as Reminders does — open ones among themselves.
-                    draggable={canReorder && depth === 0 && !reminder.completedAt}
-                    onDragStart={(e) => {
-                      if (!canReorder) return;
-                      e.dataTransfer.effectAllowed = "move";
-                      e.dataTransfer.setData("text/plain", reminder.guid);
-                      setDragging(reminder.guid);
-                    }}
-                    onDragEnd={() => { setDragging(null); setDropBefore(null); }}
-                    // The row itself takes the keyboard, as on icloud.com and the Mac: arrows go
-                    // from row to row, Space ticks it, Return edits its title, Delete deletes it
-                    // once confirmed — a reminder deleted here cannot be brought back.
-                    tabIndex={-1}
-                    data-guid={reminder.guid}
-                    // The list's colour for everything on the row drawn in it: the circle, the
-                    // priority marks.
-                    style={{ "--tick": colourOf(home) } as React.CSSProperties}
-                    onKeyDown={(e) => {
-                      if (e.target !== e.currentTarget) return;
-                      const rows = [...document.querySelectorAll<HTMLElement>(".rx-rows .rx-row")];
-                      const at = rows.indexOf(e.currentTarget);
-                      const go = (i: number) => rows[Math.max(0, Math.min(rows.length - 1, i))]?.focus();
-                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                        e.preventDefault();
-                        go(at + (e.key === "ArrowDown" ? 1 : -1));
-                      } else if (e.key === "Home" || e.key === "End") {
-                        e.preventDefault();
-                        go(e.key === "Home" ? 0 : rows.length - 1);
-                      } else if (e.key === " ") {
-                        e.preventDefault();
-                        void toggle(reminder);
-                      } else if (e.key === "Enter") {
-                        e.preventDefault();
-                        const title = e.currentTarget.querySelector<HTMLInputElement>(".rx-title");
-                        title?.focus();
-                        title?.select();
-                      } else if (e.key === "Delete" || e.key === "Backspace") {
-                        e.preventDefault();
-                        void askRemove(reminder);
-                      }
-                    }}
-                    // Right-click, as on the Mac: what can be done to this reminder, in one menu.
-                    onMouseDownCapture={() => {
-                      // What had focus before this press: the press itself focuses a title it
-                      // lands on, which is not the same as someone already typing in it.
-                      focusedBeforePress.current = document.activeElement;
-                    }}
-                    onContextMenu={(e) => {
-                      // Text being edited keeps its own menu; anywhere else on the row, the
-                      // reminder's — its title included, until someone is typing in it.
-                      const field = (e.target as HTMLElement).closest("input, textarea, [contenteditable=true]");
-                      if (field && field === focusedBeforePress.current) return;
-                      (document.activeElement as HTMLElement | null)?.blur?.();
-                      e.preventDefault();
-                      setRowMenu({ reminder, at: { x: e.clientX, y: e.clientY, alignRight: false } });
-                    }}
-                    onDragOver={(e) => {
-                      if (!dragging || dragging === reminder.guid || depth > 0 || reminder.completedAt) return;
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = "move";
-                      if (dropBefore !== reminder.guid) setDropBefore(reminder.guid);
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      const moving = dragging;
-                      setDragging(null);
-                      setDropBefore(null);
-                      if (moving && moving !== reminder.guid) void reorder(moving, reminder.guid);
-                    }}
-                  >
-                    <button
-                      className="rx-tick"
-                      role="checkbox"
-                      aria-checked={Boolean(reminder.completedAt) || settling.has(reminder.guid)}
-                      aria-label={reminder.title}
-                      style={{ "--tick": colourOf(home) } as React.CSSProperties}
-                      // The fill fades in on the press itself, and only then (kept as state, it came
-                      // in again every time Reminders came back into view): opacity alone, on a
-                      // twenty-pixel circle, drawn by the page (lib/fade) — never the compositor.
-                      onClick={(e) => {
-                        const fill = e.currentTarget.querySelector<HTMLElement>(".rx-tick-fill");
-                        const filling = !reminder.completedAt;
-                        toggle(reminder);
-                        if (filling) requestAnimationFrame(() => fadeIn(fill, { from: 0.25, duration: 140 }));
-                      }}
-                    >
-                      <span className="rx-tick-fill" aria-hidden="true" />
-                    </button>
-
-                    <div className="rx-text">
-                      <div className="rx-title-row">
-                        {mark && (
-                          <span
-                            className="rx-priority"
-                            role="img"
-                            aria-label={`${
-                              PRIORITIES.find((p) => p.value === reminder.priority)?.label
-                            } priority`}
-                          >
-                            {mark}
-                          </span>
-                        )}
-                        <input
-                          className="rx-title"
-                          defaultValue={reminder.title}
-                          key={`${reminder.guid}-${reminder.title}`}
-                          aria-label={`Rename ${reminder.title}`}
-                          
-                          onBlur={(e) => void rename(reminder, e.target.value)}
-                          onKeyDown={(e) => {
-                            // As in Reminders on a Mac: Return finishes it and starts the next,
-                            // Tab tucks it under the one above, Shift-Tab brings it back out.
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              e.currentTarget.blur();
-                              window.setTimeout(() => document.querySelector<HTMLInputElement>(".rx-add input")?.focus(), 0);
-                            } else if (e.key === "Escape") {
-                              // Back to the row, which then takes the arrows and Space.
-                              e.currentTarget.value = reminder.title;
-                              e.currentTarget.closest<HTMLElement>(".rx-row")?.focus();
-                            } else if (inList && (e.key === "Tab" || ((e.ctrlKey || e.metaKey) && (e.key === "]" || e.key === "[")))) {
-                              // Tab and Shift-Tab, or Command-] and Command-[ as the Mac's menu has them.
-                              e.preventDefault();
-                              const typed = e.currentTarget.value;
-                              const out = e.key === "[" || (e.key === "Tab" && e.shiftKey);
-                              void rename(reminder, typed);
-                              void (out ? (reminder.parentGuid ? outdent(reminder) : null) : (reminder.parentGuid ? null : indent(reminder)));
-                            } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
-                              // Up and Down walk the list, keeping where the caret was.
-                              const all = [...document.querySelectorAll<HTMLInputElement>(".rx-row .rx-title")];
-                              const next = all[all.indexOf(e.currentTarget) + (e.key === "ArrowDown" ? 1 : -1)];
-                              if (next) {
-                                e.preventDefault();
-                                const caret = e.currentTarget.selectionStart ?? 0;
-                                next.focus();
-                                next.setSelectionRange(Math.min(caret, next.value.length), Math.min(caret, next.value.length));
-                              }
-                            }
-                          }}
-                        />
-                      </div>
-                      {reminder.notes && !isOpen && (
-                        <span className="rx-notes">{reminder.notes}</span>
-                      )}
-                      <Waiting shown={outbox.waiting.has(reminder.guid)} />
-                      {(due || repeat || justMoved || (showListName && home) || rowTags.length > 0 || rowMarks?.urgent) && (
-                        <span className="rx-meta">
-                          {justMoved ? (
-                            <span className="rx-moved" role="status">
-                              Moved to {justMoved}
-                            </span>
-                          ) : (
-                            <>
-                              {showListName && (
-                                <span className="rx-from">{home?.title ?? "Reminders"}</span>
-                              )}
-                              {due && (
-                                <span className={`rx-due${due.overdue ? " overdue" : ""}`}>
-                                  {elsewhere ? `${due.text} (${elsewhere})` : due.text}
-                                </span>
-                              )}
-                              {repeat && (
-                                <span className="rx-repeat" title={repeat}>
-                                  <span aria-hidden="true">↻</span> {repeatWord(reminder, rowMarks?.daysOfWeek)}
-                                  <span className="visually-hidden">{repeat}</span>
-                                </span>
-                              )}
-                              {rowMarks?.urgent && (
-                                <span className="rx-urgent" role="img" aria-label="Urgent" title="Urgent">
-                                  <AlarmClock aria-hidden="true" size={13} strokeWidth={2} />
-                                </span>
-                              )}
-                              {rowTags.map((name) => (
-                                <button
-                                  key={name}
-                                  type="button"
-                                  className="rx-tag"
-                                  tabIndex={-1}
-                                  aria-label={`Show reminders tagged ${name}`}
-                                  onClick={() => openTag(name)}
-                                >
-                                  #{name}
-                                </button>
-                              ))}
-                            </>
-                          )}
-                        </span>
-                      )}
-                      {chips && !justMoved && (
-                        <span className="rx-chips">
-                          {chips.location && (
-                            <span className="rx-chip">
-                              <MapPin aria-hidden="true" size={12} strokeWidth={2.2} className="rx-chip-place" />
-                              {chips.location.proximity && <b>{chips.location.proximity === "arriving" ? "Arriving:" : "Leaving:"}</b>}
-                              {chips.location.title ?? "A place"}
-                            </span>
-                          )}
-                          {chips.messaging && (
-                            <span className="rx-chip">
-                              <MessageCircle aria-hidden="true" size={12} strokeWidth={2.2} />
-                              <b>Messaging:</b>
-                              {chips.messaging}
-                            </span>
-                          )}
-                          {chips.url && (
-                            <a className="rx-chip rx-chip-link" href={chips.url} target="_blank" rel="noreferrer" tabIndex={-1} title={chips.url}>
-                              <Link2 aria-hidden="true" size={12} strokeWidth={2.2} />
-                              {hostOf(chips.url)}
-                            </a>
-                          )}
-                        </span>
-                      )}
-
-                      {isOpen && (
-                        <div className="rx-detail" role="group" aria-label={`Info for ${reminder.title}`}>
-                          <label className="rx-field rx-field-notes">
-                            <span>Notes</span>
-                            <textarea
-                              className="field"
-                              defaultValue={reminder.notes ?? ""}
-                              key={`n${reminder.guid}`}
-                              rows={2}
-                              placeholder="Add Note"
-                              onBlur={(e) => void setNotes(reminder, e.target.value)}
-                            />
-                          </label>
-                          <UrlField
-                            reminder={reminder}
-                            url={detailOf?.guid === reminder.guid ? detailOf.url : null}
-                            onSave={(url) => void setUrl(reminder, url)}
-                          />
-                          <div className="rx-detail-rule" aria-hidden="true" />
-                          <DueField reminder={reminder} onChange={(day, time) => void setDue(reminder, day, time)} />
-                          {moreOf?.guid === reminder.guid && <ZoneAndUrgent reminder={reminder} more={moreOf} />}
-                          <EarlyField
-                            reminder={reminder}
-                            alerts={detailOf?.guid === reminder.guid ? detailOf.earlyAlerts : []}
-                            onChange={(alert) => void setEarly(reminder, alert)}
-                          />
-                          <RepeatField
-                            reminder={reminder}
-                            rule={moreOf?.guid === reminder.guid ? moreOf.repeat : null}
-                            onChange={(repeat, endAt, days) => void setRepeat(reminder, repeat, endAt, days)}
-                          />
-                          <div className="rx-detail-rule" aria-hidden="true" />
-                          <TagsField
-                            reminder={reminder}
-                            tags={rowTags}
-                            onOpen={openTag}
-                            onAdd={(name) => void tagAdd(reminder, name)}
-                            onRemove={(name) => void tagRemove(reminder, name)}
-                          />
-                          <div className="rx-field">
-                            <span>Subtasks</span>
-                            <span className="rx-value">{items.filter((x) => x.parentGuid === reminder.guid).length}</span>
-                          </div>
-                          <div className="rx-field">
-                            <span>Flag</span>
-                            <label className="rx-switch">
-                              <input
-                                type="checkbox"
-                                role="switch"
-                                aria-label={`Flag for ${reminder.title}`}
-                                checked={reminder.flagged}
-                                onChange={() => void flag(reminder)}
-                              />
-                              <span className="switch" aria-hidden="true" />
-                            </label>
-                          </div>
-                          <div className="rx-field">
-                            <span>Priority</span>
-                            <Picker
-                              label={`Priority for ${reminder.title}`}
-                              value={String(reminder.priority)}
-                              onChange={(v) => void setPriority(reminder, Number(v))}
-                              options={PRIORITIES.map((p) => ({
-                                value: String(p.value),
-                                label: p.label,
-                              }))}
-                            />
-                          </div>
-                          {moreOf?.guid === reminder.guid && <PlacesAndPeople more={moreOf} />}
-                          {detailOf?.guid === reminder.guid && detailOf.images.length > 0 && (
-                            <div className="rx-images" role="list" aria-label="Pictures">
-                              {detailOf.images.map((id) => (
-                                <img
-                                  key={id}
-                                  role="listitem"
-                                  className="rx-image"
-                                  src={reminderImageSrc(id)}
-                                  alt="Attached picture"
-                                  loading="lazy"
-                                  decoding="async"
-                                  draggable={false}
-                                />
-                              ))}
-                            </div>
-                          )}
-                          {(detailOf?.guid === reminder.guid ? detailOf.otherAttachments - detailOf.images.length : 0) > 0 && (
-                            <div className="rx-field">
-                              <span>Attachments</span>
-                              <span className="rx-value">
-                                {detailOf!.otherAttachments - detailOf!.images.length === 1
-                                  ? "1 file"
-                                  : `${detailOf!.otherAttachments - detailOf!.images.length} files`}
-                              </span>
-                            </div>
-                          )}
-                          <div className="rx-detail-rule" aria-hidden="true" />
-                          <div className="rx-field">
-                            <span>List</span>
-                            <Picker
-                              label={`List for ${reminder.title}`}
-                              value={reminder.listGuid}
-                              onChange={(guid) => void moveToList(reminder, guid)}
-                              options={lists.map((l) => ({ value: l.guid, label: l.title }))}
-                            />
-                          </div>
-                          {inList && listSections.length > 0 && (
-                            <div className="rx-field">
-                              <span>Section</span>
-                              {REMINDER_DETAIL_WRITES ? (
-                                <Picker
-                                  label={`Section for ${reminder.title}`}
-                                  value={sectionOf(reminder) ?? ""}
-                                  onChange={(guid) => void moveToSection(reminder, guid || null)}
-                                  options={[
-                                    { value: "", label: "None" },
-                                    ...listSections.map((x) => ({ value: x.guid, label: x.title })),
-                                  ]}
-                                />
-                              ) : (
-                                <span className="rx-value">
-                                  {listSections.find((x) => x.guid === sectionOf(reminder))?.title ?? "None"}
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          <div className="rx-detail-actions">
-                            {depth > 0 ? (
-                              <button
-                                className="link"
-                                onClick={() => void outdent(reminder)}
-                              >
-                                Move Out of Subtasks
-                              </button>
-                            ) : items.some((x) => x.parentGuid === reminder.guid) ? null : (
-                              <button
-                                className="link"
-                                onClick={() => void indent(reminder)}
-                              >
-                                Make Subtask
-                              </button>
-                            )}
-                            <button
-                              className="link danger"
-                              aria-label={`Delete ${reminder.title}`}
-                              
-                              onClick={() => void askRemove(reminder)}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <span className="rx-trailing">
-                      <button
-                        className="icon-button small rx-icon-button"
-                        aria-label={
-                          isOpen ? `Close details for ${reminder.title}` : `Details for ${reminder.title}`
-                        }
-                        aria-expanded={isOpen}
-                        onClick={() => setOpenGuid(isOpen ? null : reminder.guid)}
-                      >
-                        <Glyph name="info" />
-                      </button>
-                      <button
-                        className={`icon-button small is-glyph-state rx-icon-button rx-flag${reminder.flagged ? " on" : ""}`}
-                        aria-label={
-                          reminder.flagged ? `Unflag ${reminder.title}` : `Flag ${reminder.title}`
-                        }
-                        aria-pressed={reminder.flagged}
-                        
-                        onClick={() => flag(reminder)}
-                      >
-                        <Glyph name="flagged" />
-                      </button>
-                    </span>
-                  </li>
+                    reminder={reminder}
+                    depth={depth}
+                    dated={section.dated}
+                    isOpen={isOpen}
+                    marks={marks.get(reminder.guid)}
+                    tags={isOpen && detailOf?.guid === reminder.guid ? detailOf.tags : (tagsOf.get(reminder.guid) ?? NO_TAGS)}
+                    home={listById.get(reminder.listGuid)}
+                    showListName={showListName}
+                    justMoved={moved?.guid === reminder.guid ? moved.text : null}
+                    waiting={outbox.waiting.has(reminder.guid)}
+                    leaving={leaving.has(reminder.guid)}
+                    settling={settling.has(reminder.guid)}
+                    isDragging={dragging === reminder.guid}
+                    canReorder={canReorder}
+                    inList={inList}
+                    act={rowActions}
+                    focused={focusedBeforePress}
+                    // What only the open row's details read: left out of every other row, so a
+                    // change to any of it draws one row again, not a thousand.
+                    detailOf={isOpen ? detailOf : null}
+                    moreOf={isOpen ? moreOf : null}
+                    lists={isOpen ? lists : NO_LISTS}
+                    sections={isOpen ? listSections : NO_SECTIONS}
+                    section={isOpen ? sectionOf(reminder) : null}
+                    subtasks={isOpen ? items.filter((x) => x.parentGuid === reminder.guid).length : 0}
+                  />
                 );
               })}
             </ul>
@@ -2410,6 +2079,500 @@ export function RemindersView() {
     </div>
   );
 }
+
+/** The actions a row takes, kept in one ref the list fills on every draw: the row reads them
+ *  when it acts, so handing them down never changes a row's props. */
+type RowActions = {
+  toggle: (r: Reminder) => void;
+  askRemove: (r: Reminder) => Promise<void>;
+  rename: (r: Reminder, title: string) => Promise<unknown>;
+  indent: (r: Reminder) => Promise<unknown>;
+  outdent: (r: Reminder) => Promise<unknown>;
+  flag: (r: Reminder) => Promise<unknown>;
+  setNotes: (r: Reminder, notes: string) => Promise<unknown> | undefined;
+  setUrl: (r: Reminder, url: string | null) => Promise<unknown>;
+  setDue: (r: Reminder, day: string, time: string | null) => Promise<unknown>;
+  setEarly: (r: Reminder, alert: [number, number] | null) => Promise<unknown>;
+  setRepeat: (r: Reminder, repeat: { frequency: number; interval: number } | null, endAt: number | null, days?: number[]) => Promise<unknown>;
+  tagAdd: (r: Reminder, name: string) => Promise<unknown>;
+  tagRemove: (r: Reminder, name: string) => Promise<unknown>;
+  setPriority: (r: Reminder, priority: number) => Promise<unknown>;
+  moveToList: (r: Reminder, listGuid: string) => Promise<unknown>;
+  moveToSection: (r: Reminder, section: string | null) => Promise<unknown>;
+  openTag: (name: string) => void;
+  setOpenGuid: (guid: string | null) => void;
+  openMenu: (r: Reminder, at: { x: number; y: number; alignRight: boolean }) => void;
+  reorder: (guid: string, before: string) => Promise<unknown>;
+  /** The reminder being dragged now, read at the moment it is asked. */
+  dragging: () => string | null;
+  startDrag: (guid: string) => void;
+  endDrag: () => void;
+  /** Mark the row a drop would land before, and only that one. */
+  markDrop: (row: HTMLElement) => void;
+};
+
+/** Marks with Urgent read from Apple laid in: a row that had none gains them; the map is
+ *  replaced only when a row's Urgent changes, so nothing else is drawn again. */
+function withUrgent(was: Map<string, ReminderMarks>, read: UrgentRead[]): Map<string, ReminderMarks> {
+  let next: Map<string, ReminderMarks> | null = null;
+  for (const { guid, urgent } of read) {
+    const at = was.get(guid);
+    if ((at?.urgent ?? false) === urgent) continue;
+    next ??= new Map(was);
+    next.set(guid, { ...(at ?? { guid, daysOfWeek: [], urgent: false, location: null, messaging: null, url: null }), urgent });
+  }
+  return next ?? was;
+}
+
+const NO_TAGS: string[] = [];
+const NO_LISTS: ReminderList[] = [];
+const NO_SECTIONS: ReminderSection[] = [];
+
+type ReminderRowProps = {
+  reminder: Reminder;
+  depth: number;
+  /** Under a heading that already says the day, so the row says only the time. */
+  dated: boolean;
+  isOpen: boolean;
+  marks: ReminderMarks | undefined;
+  tags: string[];
+  home: ReminderList | undefined;
+  showListName: boolean;
+  justMoved: string | null;
+  waiting: boolean;
+  leaving: boolean;
+  settling: boolean;
+  isDragging: boolean;
+  canReorder: boolean;
+  inList: boolean;
+  act: React.MutableRefObject<RowActions>;
+  focused: React.MutableRefObject<Element | null>;
+  detailOf: ReminderDetail | null;
+  moreOf: ReminderMore | null;
+  lists: ReminderList[];
+  sections: ReminderSection[];
+  section: string | null;
+  subtasks: number;
+};
+
+/**
+ * One reminder's row, drawn again only when something it shows changes. Inline, every row of
+ * up to a thousand was rebuilt on each key typed into New Reminder or the search, each tick and
+ * each row the pointer crossed while dragging.
+ */
+const ReminderRow = memo(function ReminderRow({
+  reminder, depth, dated, isOpen, marks: rowMarks, tags: rowTags, home, showListName, justMoved, waiting,
+  leaving, settling, isDragging, canReorder, inList, act, focused, detailOf, moreOf, lists, sections, section, subtasks,
+}: ReminderRowProps) {
+  const due = reminder.dueAt === null ? null : dueLabel(reminder.dueAt, dated, reminder.allDay);
+  const repeat = repeatLabel(reminder);
+  const mark = priorityMark(reminder.priority);
+  // Kept in another zone, the phone adds that zone's clock: "8:30 PM (11:00 AM GMT-4)".
+  const elsewhere =
+    due && reminder.dueAt !== null && !reminder.allDay && reminder.timezone && reminder.timezone !== LOCAL_ZONE
+      ? zonedClock(reminder.timezone, reminder.dueAt)
+      : null;
+  const chips = rowMarks && (rowMarks.location || rowMarks.messaging || rowMarks.url) ? rowMarks : null;
+  return (
+    <li
+      className={`rx-row${reminder.completedAt ? " is-done" : ""}${leaving ? " is-leaving" : ""}${
+        depth > 0 ? " is-subtask" : ""
+      }${isOpen ? " is-open" : ""}${isDragging ? " is-dragging" : ""}`}
+      // Drag to reorder, in a list, as Reminders does — open ones among themselves.
+      draggable={canReorder && depth === 0 && !reminder.completedAt}
+      onDragStart={(e) => {
+        if (!canReorder) return;
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", reminder.guid);
+        act.current.startDrag(reminder.guid);
+      }}
+      onDragEnd={() => act.current.endDrag()}
+      // The row itself takes the keyboard, as on icloud.com and the Mac: arrows go
+      // from row to row, Space ticks it, Return edits its title, Delete deletes it
+      // once confirmed — a reminder deleted here cannot be brought back.
+      tabIndex={-1}
+      data-guid={reminder.guid}
+      // The list's colour for everything on the row drawn in it: the circle, the
+      // priority marks.
+      style={{ "--tick": colourOf(home) } as React.CSSProperties}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        const rows = [...document.querySelectorAll<HTMLElement>(".rx-rows .rx-row")];
+        const at = rows.indexOf(e.currentTarget);
+        const go = (i: number) => rows[Math.max(0, Math.min(rows.length - 1, i))]?.focus();
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          go(at + (e.key === "ArrowDown" ? 1 : -1));
+        } else if (e.key === "Home" || e.key === "End") {
+          e.preventDefault();
+          go(e.key === "Home" ? 0 : rows.length - 1);
+        } else if (e.key === " ") {
+          e.preventDefault();
+          act.current.toggle(reminder);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          const title = e.currentTarget.querySelector<HTMLInputElement>(".rx-title");
+          title?.focus();
+          title?.select();
+        } else if (e.key === "Delete" || e.key === "Backspace") {
+          e.preventDefault();
+          void act.current.askRemove(reminder);
+        }
+      }}
+      // Right-click, as on the Mac: what can be done to this reminder, in one menu.
+      onMouseDownCapture={() => {
+        // What had focus before this press: the press itself focuses a title it
+        // lands on, which is not the same as someone already typing in it.
+        focused.current = document.activeElement;
+      }}
+      onContextMenu={(e) => {
+        // Text being edited keeps its own menu; anywhere else on the row, the
+        // reminder's — its title included, until someone is typing in it.
+        const field = (e.target as HTMLElement).closest("input, textarea, [contenteditable=true]");
+        if (field && field === focused.current) return;
+        (document.activeElement as HTMLElement | null)?.blur?.();
+        e.preventDefault();
+        act.current.openMenu(reminder, { x: e.clientX, y: e.clientY, alignRight: false });
+      }}
+      onDragOver={(e) => {
+        const dragging = act.current.dragging();
+        if (!dragging || dragging === reminder.guid || depth > 0 || reminder.completedAt) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        // Marked on the row itself, not in state: a state change here drew the whole list
+        // again each time the pointer crossed into another row.
+        act.current.markDrop(e.currentTarget);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        const moving = act.current.dragging();
+        act.current.endDrag();
+        if (moving && moving !== reminder.guid) void act.current.reorder(moving, reminder.guid);
+      }}
+    >
+      <button
+        className="rx-tick"
+        role="checkbox"
+        aria-checked={Boolean(reminder.completedAt) || settling}
+        aria-label={reminder.title}
+        style={{ "--tick": colourOf(home) } as React.CSSProperties}
+        // The fill fades in on the press itself, and only then (kept as state, it came
+        // in again every time Reminders came back into view): opacity alone, on a
+        // twenty-pixel circle, drawn by the page (lib/fade) — never the compositor.
+        onClick={(e) => {
+          const fill = e.currentTarget.querySelector<HTMLElement>(".rx-tick-fill");
+          const filling = !reminder.completedAt;
+          act.current.toggle(reminder);
+          if (filling) requestAnimationFrame(() => fadeIn(fill, { from: 0.25, duration: 140 }));
+        }}
+      >
+        <span className="rx-tick-fill" aria-hidden="true" />
+      </button>
+
+      <div className="rx-text">
+        <div className="rx-title-row">
+          {mark && (
+            <span
+              className="rx-priority"
+              role="img"
+              aria-label={`${
+                PRIORITIES.find((p) => p.value === reminder.priority)?.label
+              } priority`}
+            >
+              {mark}
+            </span>
+          )}
+          <input
+            className="rx-title"
+            defaultValue={reminder.title}
+            key={`${reminder.guid}-${reminder.title}`}
+            aria-label={`Rename ${reminder.title}`}
+            
+            onBlur={(e) => void act.current.rename(reminder, e.target.value)}
+            onKeyDown={(e) => {
+              // As in Reminders on a Mac: Return finishes it and starts the next,
+              // Tab tucks it under the one above, Shift-Tab brings it back out.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.currentTarget.blur();
+                window.setTimeout(() => document.querySelector<HTMLInputElement>(".rx-add input")?.focus(), 0);
+              } else if (e.key === "Escape") {
+                // Back to the row, which then takes the arrows and Space.
+                e.currentTarget.value = reminder.title;
+                e.currentTarget.closest<HTMLElement>(".rx-row")?.focus();
+              } else if (inList && (e.key === "Tab" || ((e.ctrlKey || e.metaKey) && (e.key === "]" || e.key === "[")))) {
+                // Tab and Shift-Tab, or Command-] and Command-[ as the Mac's menu has them.
+                e.preventDefault();
+                const typed = e.currentTarget.value;
+                const out = e.key === "[" || (e.key === "Tab" && e.shiftKey);
+                void act.current.rename(reminder, typed);
+                void (out ? (reminder.parentGuid ? act.current.outdent(reminder) : null) : (reminder.parentGuid ? null : act.current.indent(reminder)));
+              } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
+                // Up and Down walk the list, keeping where the caret was.
+                const all = [...document.querySelectorAll<HTMLInputElement>(".rx-row .rx-title")];
+                const next = all[all.indexOf(e.currentTarget) + (e.key === "ArrowDown" ? 1 : -1)];
+                if (next) {
+                  e.preventDefault();
+                  const caret = e.currentTarget.selectionStart ?? 0;
+                  next.focus();
+                  next.setSelectionRange(Math.min(caret, next.value.length), Math.min(caret, next.value.length));
+                }
+              }
+            }}
+          />
+        </div>
+        {reminder.notes && !isOpen && (
+          <span className="rx-notes">{reminder.notes}</span>
+        )}
+        <Waiting shown={waiting} />
+        {(due || repeat || justMoved || (showListName && home) || rowTags.length > 0 || rowMarks?.urgent) && (
+          <span className="rx-meta">
+            {justMoved ? (
+              <span className="rx-moved" role="status">
+                Moved to {justMoved}
+              </span>
+            ) : (
+              <>
+                {showListName && (
+                  <span className="rx-from">{home?.title ?? "Reminders"}</span>
+                )}
+                {due && (
+                  <span className={`rx-due${due.overdue ? " overdue" : ""}`}>
+                    {elsewhere ? `${due.text} (${elsewhere})` : due.text}
+                  </span>
+                )}
+                {repeat && (
+                  <span className="rx-repeat" title={repeat}>
+                    <span aria-hidden="true">↻</span> {repeatWord(reminder, rowMarks?.daysOfWeek)}
+                    <span className="visually-hidden">{repeat}</span>
+                  </span>
+                )}
+                {rowMarks?.urgent && (
+                  <span className="rx-urgent" role="img" aria-label="Urgent" title="Urgent">
+                    <AlarmClock aria-hidden="true" size={13} strokeWidth={2} />
+                  </span>
+                )}
+                {rowTags.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className="rx-tag"
+                    tabIndex={-1}
+                    aria-label={`Show reminders tagged ${name}`}
+                    onClick={() => act.current.openTag(name)}
+                  >
+                    #{name}
+                  </button>
+                ))}
+              </>
+            )}
+          </span>
+        )}
+        {chips && !justMoved && (
+          <span className="rx-chips">
+            {chips.location && (
+              <span className="rx-chip">
+                <MapPin aria-hidden="true" size={12} strokeWidth={2.2} className="rx-chip-place" />
+                {chips.location.proximity && <b>{chips.location.proximity === "arriving" ? "Arriving:" : "Leaving:"}</b>}
+                {chips.location.title ?? "A place"}
+              </span>
+            )}
+            {chips.messaging && (
+              <span className="rx-chip">
+                <MessageCircle aria-hidden="true" size={12} strokeWidth={2.2} />
+                <b>Messaging:</b>
+                {chips.messaging}
+              </span>
+            )}
+            {chips.url && (
+              <a className="rx-chip rx-chip-link" href={chips.url} target="_blank" rel="noreferrer" tabIndex={-1} title={chips.url}>
+                <Link2 aria-hidden="true" size={12} strokeWidth={2.2} />
+                {hostOf(chips.url)}
+              </a>
+            )}
+          </span>
+        )}
+
+        {isOpen && (
+          <div className="rx-detail" role="group" aria-label={`Info for ${reminder.title}`}>
+            <label className="rx-field rx-field-notes">
+              <span>Notes</span>
+              <textarea
+                className="field"
+                defaultValue={reminder.notes ?? ""}
+                key={`n${reminder.guid}`}
+                rows={2}
+                placeholder="Add Note"
+                onBlur={(e) => void act.current.setNotes(reminder, e.target.value)}
+              />
+            </label>
+            <UrlField
+              reminder={reminder}
+              url={detailOf?.guid === reminder.guid ? detailOf.url : null}
+              onSave={(url) => void act.current.setUrl(reminder, url)}
+            />
+            <div className="rx-detail-rule" aria-hidden="true" />
+            <DueField reminder={reminder} onChange={(day, time) => void act.current.setDue(reminder, day, time)} />
+            {moreOf?.guid === reminder.guid && <ZoneAndUrgent reminder={reminder} more={moreOf} />}
+            <EarlyField
+              reminder={reminder}
+              alerts={detailOf?.guid === reminder.guid ? detailOf.earlyAlerts : []}
+              onChange={(alert) => void act.current.setEarly(reminder, alert)}
+            />
+            <RepeatField
+              reminder={reminder}
+              rule={moreOf?.guid === reminder.guid ? moreOf.repeat : null}
+              onChange={(repeat, endAt, days) => void act.current.setRepeat(reminder, repeat, endAt, days)}
+            />
+            <div className="rx-detail-rule" aria-hidden="true" />
+            <TagsField
+              reminder={reminder}
+              tags={rowTags}
+              onOpen={(name) => act.current.openTag(name)}
+              onAdd={(name) => void act.current.tagAdd(reminder, name)}
+              onRemove={(name) => void act.current.tagRemove(reminder, name)}
+            />
+            <div className="rx-field">
+              <span>Subtasks</span>
+              <span className="rx-value">{subtasks}</span>
+            </div>
+            <div className="rx-field">
+              <span>Flag</span>
+              <label className="rx-switch">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  aria-label={`Flag for ${reminder.title}`}
+                  checked={reminder.flagged}
+                  onChange={() => void act.current.flag(reminder)}
+                />
+                <span className="switch" aria-hidden="true" />
+              </label>
+            </div>
+            <div className="rx-field">
+              <span>Priority</span>
+              <Picker
+                label={`Priority for ${reminder.title}`}
+                value={String(reminder.priority)}
+                onChange={(v) => void act.current.setPriority(reminder, Number(v))}
+                options={PRIORITIES.map((p) => ({
+                  value: String(p.value),
+                  label: p.label,
+                }))}
+              />
+            </div>
+            {moreOf?.guid === reminder.guid && <PlacesAndPeople more={moreOf} />}
+            {detailOf?.guid === reminder.guid && detailOf.images.length > 0 && (
+              <div className="rx-images" role="list" aria-label="Pictures">
+                {detailOf.images.map((id) => (
+                  <img
+                    key={id}
+                    role="listitem"
+                    className="rx-image"
+                    src={reminderImageSrc(id)}
+                    alt="Attached picture"
+                    loading="lazy"
+                    decoding="async"
+                    draggable={false}
+                  />
+                ))}
+              </div>
+            )}
+            {(detailOf?.guid === reminder.guid ? detailOf.otherAttachments - detailOf.images.length : 0) > 0 && (
+              <div className="rx-field">
+                <span>Attachments</span>
+                <span className="rx-value">
+                  {detailOf!.otherAttachments - detailOf!.images.length === 1
+                    ? "1 file"
+                    : `${detailOf!.otherAttachments - detailOf!.images.length} files`}
+                </span>
+              </div>
+            )}
+            <div className="rx-detail-rule" aria-hidden="true" />
+            <div className="rx-field">
+              <span>List</span>
+              <Picker
+                label={`List for ${reminder.title}`}
+                value={reminder.listGuid}
+                onChange={(guid) => void act.current.moveToList(reminder, guid)}
+                options={lists.map((l) => ({ value: l.guid, label: l.title }))}
+              />
+            </div>
+            {inList && sections.length > 0 && (
+              <div className="rx-field">
+                <span>Section</span>
+                {REMINDER_DETAIL_WRITES ? (
+                  <Picker
+                    label={`Section for ${reminder.title}`}
+                    value={section ?? ""}
+                    onChange={(guid) => void act.current.moveToSection(reminder, guid || null)}
+                    options={[
+                      { value: "", label: "None" },
+                      ...sections.map((x) => ({ value: x.guid, label: x.title })),
+                    ]}
+                  />
+                ) : (
+                  <span className="rx-value">
+                    {sections.find((x) => x.guid === section)?.title ?? "None"}
+                  </span>
+                )}
+              </div>
+            )}
+            <div className="rx-detail-actions">
+              {depth > 0 ? (
+                <button
+                  className="link"
+                  onClick={() => void act.current.outdent(reminder)}
+                >
+                  Move Out of Subtasks
+                </button>
+              ) : subtasks > 0 ? null : (
+                <button
+                  className="link"
+                  onClick={() => void act.current.indent(reminder)}
+                >
+                  Make Subtask
+                </button>
+              )}
+              <button
+                className="link danger"
+                aria-label={`Delete ${reminder.title}`}
+                
+                onClick={() => void act.current.askRemove(reminder)}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <span className="rx-trailing">
+        <button
+          className="icon-button small rx-icon-button"
+          aria-label={
+            isOpen ? `Close details for ${reminder.title}` : `Details for ${reminder.title}`
+          }
+          aria-expanded={isOpen}
+          onClick={() => act.current.setOpenGuid(isOpen ? null : reminder.guid)}
+        >
+          <Glyph name="info" />
+        </button>
+        <button
+          className={`icon-button small is-glyph-state rx-icon-button rx-flag${reminder.flagged ? " on" : ""}`}
+          aria-label={
+            reminder.flagged ? `Unflag ${reminder.title}` : `Flag ${reminder.title}`
+          }
+          aria-pressed={reminder.flagged}
+          
+          onClick={() => void act.current.flag(reminder)}
+        >
+          <Glyph name="flagged" />
+        </button>
+      </span>
+    </li>
+  );
+});
 
 /** Apple's twelve list colours, in its picker's order, keyed as CloudKit names them. */
 const LIST_COLOURS = [

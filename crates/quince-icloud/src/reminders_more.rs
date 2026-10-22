@@ -293,8 +293,67 @@ pub async fn urgent_cloudkit(
     Ok(urgent)
 }
 
+/// Urgent files that could not be read lately, by checksum (or the reminder's name, for a record
+/// without one), and when. A failure was never kept: offline, or with Apple out of reach, every
+/// read of a list asked for the same forty files again and waited out each one's timeout.
+static URGENT_FAILED: std::sync::Mutex<
+    Option<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::Mutex::new(None);
+
+/// How long a file that could not be read is left alone before it is asked for again.
+pub const URGENT_RETRY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn urgent_key(record: &Value, guid: &str) -> String {
+    urgent_checksum(record).unwrap_or_else(|| guid.to_string())
+}
+
+/// Whether `key` failed within `retry` of `now`.
+fn failed_within(
+    failed: &std::collections::HashMap<String, std::time::Instant>,
+    key: &str,
+    now: std::time::Instant,
+    retry: std::time::Duration,
+) -> bool {
+    failed
+        .get(key)
+        .is_some_and(|at| now.saturating_duration_since(*at) < retry)
+}
+
+fn note_urgent_failed(key: String, at: std::time::Instant) {
+    if let Ok(mut failed) = URGENT_FAILED.lock() {
+        let failed = failed.get_or_insert_with(Default::default);
+        // Old failures go as new ones come, so the map never outgrows one list's worth.
+        failed.retain(|_, when| at.saturating_duration_since(*when) < URGENT_RETRY);
+        failed.insert(key, at);
+    }
+}
+
+fn forget_urgent_failed(key: &str) {
+    if let Ok(mut failed) = URGENT_FAILED.lock() {
+        if let Some(failed) = failed.as_mut() {
+            failed.remove(key);
+        }
+    }
+}
+
+/// Whether this reminder's Urgent file could not be read within the last [`URGENT_RETRY`]:
+/// it is not asked for again until then, and its row shows Urgent off, as it does while unknown.
+#[must_use]
+pub fn urgent_failed_lately(guid: &str, raw: &str) -> bool {
+    let Ok(record) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    let key = urgent_key(&record, guid);
+    URGENT_FAILED.lock().is_ok_and(|failed| {
+        failed.as_ref().is_some_and(|failed| {
+            failed_within(failed, &key, std::time::Instant::now(), URGENT_RETRY)
+        })
+    })
+}
+
 /// Whether a reminder is Urgent, read from Apple: the file's link from the record as synced
 /// first (good for about an hour), and only if that has lapsed, a fresh lookup. Read only.
+/// A file that cannot be read is not asked for again for [`URGENT_RETRY`].
 pub async fn urgent_for(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
@@ -303,6 +362,22 @@ pub async fn urgent_for(
     raw: &str,
 ) -> Option<bool> {
     let record: Value = serde_json::from_str(raw).ok()?;
+    let key = urgent_key(&record, guid);
+    let urgent = urgent_read(http, ckdatabasews_root, params, guid, &record).await;
+    match urgent {
+        Some(_) => forget_urgent_failed(&key),
+        None => note_urgent_failed(key, std::time::Instant::now()),
+    }
+    urgent
+}
+
+async fn urgent_read(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    guid: &str,
+    record: &Value,
+) -> Option<bool> {
     let url = record
         .pointer("/fields/UrgentPresentationAlarmsAsData/value/downloadURL")
         .and_then(Value::as_str)?;
@@ -310,7 +385,7 @@ pub async fn urgent_for(
         if response.status().is_success() {
             if let Ok(bytes) = response.bytes().await {
                 let urgent = urgent_from_file(&bytes);
-                if let (Some(on), Some(sum)) = (urgent, urgent_checksum(&record)) {
+                if let (Some(on), Some(sum)) = (urgent, urgent_checksum(record)) {
                     if let Ok(mut seen) = URGENT_SEEN.lock() {
                         seen.get_or_insert_with(Default::default).insert(sum, on);
                     }
@@ -328,6 +403,44 @@ pub async fn urgent_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file that could not be read is left alone for a while, then asked for again.
+    #[test]
+    fn a_failed_urgent_read_waits_before_it_is_tried_again() {
+        let now = std::time::Instant::now();
+        let mut failed = std::collections::HashMap::new();
+        assert!(!failed_within(&failed, "sum", now, URGENT_RETRY));
+        failed.insert("sum".to_string(), now);
+        assert!(failed_within(&failed, "sum", now, URGENT_RETRY));
+        assert!(failed_within(
+            &failed,
+            "sum",
+            now + URGENT_RETRY / 2,
+            URGENT_RETRY
+        ));
+        assert!(!failed_within(
+            &failed,
+            "sum",
+            now + URGENT_RETRY,
+            URGENT_RETRY
+        ));
+        assert!(!failed_within(&failed, "other", now, URGENT_RETRY));
+    }
+
+    /// Kept by the file's checksum, so a changed file (a new checksum) is read at once.
+    #[test]
+    fn a_failure_is_kept_by_checksum_and_forgotten_on_success() {
+        let raw = r#"{"recordName":"Reminder/F1","fields":{
+            "UrgentPresentationAlarmsChecksum":{"value":"sum-failed-test"},
+            "UrgentPresentationAlarmsAsData":{"value":{}}}}"#;
+        let changed = raw.replace("sum-failed-test", "sum-failed-test-2");
+        assert!(!urgent_failed_lately("Reminder/F1", raw));
+        note_urgent_failed("sum-failed-test".into(), std::time::Instant::now());
+        assert!(urgent_failed_lately("Reminder/F1", raw));
+        assert!(!urgent_failed_lately("Reminder/F1", &changed));
+        forget_urgent_failed("sum-failed-test");
+        assert!(!urgent_failed_lately("Reminder/F1", raw));
+    }
     use serde_json::json;
 
     /// The founder's "Skykeep Test" as the phone wrote it, personal text replaced.

@@ -2690,6 +2690,15 @@ fn date_holds(d: &DateFilter, r: &Reminder, now: i64) -> bool {
     }
 }
 
+/// What the Reminders sidebar and rows show beside the lists: each reminder still to do with its
+/// tags, and how many reminders each custom smart list holds, by the list's id.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderExtras {
+    pub tags_by_reminder: std::collections::HashMap<String, Vec<String>>,
+    pub custom_counts: std::collections::HashMap<String, usize>,
+}
+
 /// What a custom smart list holds now, and which parts of its filter could not be read.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -3028,6 +3037,74 @@ impl Library {
             .collect())
     }
 
+    /// Each reminder still to do with its tags, named as [`Library::reminder_tags`] names them
+    /// and in that order, and how many reminders each custom smart list holds now — what the
+    /// Reminders sidebar and rows show beside the lists, read in one go. The window used to ask
+    /// for every tag's reminders whole, and every smart list's, only to build this.
+    pub fn reminder_extras(&self, now: i64) -> Result<ReminderExtras> {
+        // Tags as the sidebar lists them: one name per tag however it is capitalised.
+        let tags = self.reminder_tags()?;
+        let order: std::collections::HashMap<String, (usize, &str)> = tags
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (tag_key(&t.name), (i, t.name.as_str())))
+            .collect();
+        let mut stmt = self.conn.prepare(
+            "SELECT h.reminder_guid, h.name FROM reminder_hashtags h
+             JOIN reminders r ON r.guid = h.reminder_guid
+             JOIN reminder_lists l ON l.guid = r.list_guid
+             WHERE l.enabled = 1 AND r.completed_at IS NULL",
+        )?;
+        let mut placed: std::collections::HashMap<String, Vec<(usize, &str)>> =
+            std::collections::HashMap::new();
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (reminder, name) = row?;
+            if let Some(&at) = order.get(&tag_key(&name)) {
+                placed.entry(reminder).or_default().push(at);
+            }
+        }
+        let tags_by_reminder = placed
+            .into_iter()
+            .map(|(reminder, mut names)| {
+                names.sort_unstable();
+                names.dedup();
+                (
+                    reminder,
+                    names.into_iter().map(|(_, n)| n.to_string()).collect(),
+                )
+            })
+            .collect();
+
+        // Every custom list's rules over one read of what is still to do, rather than one
+        // read of every open reminder per list.
+        let custom: Vec<(String, Option<String>)> = self
+            .reminder_smart_lists()?
+            .into_iter()
+            .filter(|s| s.kind == "custom")
+            .map(|s| (s.guid, s.filter))
+            .collect();
+        let mut custom_counts = std::collections::HashMap::new();
+        if !custom.is_empty() {
+            let tagged = self.all_tags_by_reminder()?;
+            let open = self.open_reminders()?;
+            let none: Vec<String> = Vec::new();
+            for (guid, filter) in custom {
+                let count = filter.map_or(0, |filter| {
+                    let filter = SmartFilter::decode(&filter);
+                    open.iter()
+                        .filter(|r| filter.holds(r, tagged.get(&r.guid).unwrap_or(&none), now))
+                        .take(MOST_AT_ONCE)
+                        .count()
+                });
+                custom_counts.insert(guid, count);
+            }
+        }
+        Ok(ReminderExtras {
+            tags_by_reminder,
+            custom_counts,
+        })
+    }
+
     /// The account id Apple writes inside early alerts, from any reminder that has one: a new
     /// alert is written with the same.
     pub fn early_alert_account(&self) -> Result<Option<String>> {
@@ -3208,6 +3285,35 @@ mod detail_tests {
         assert!(
             !tagged.contains(&"Reminder/3".to_string()),
             "done ones are not shown"
+        );
+    }
+
+    /// The sidebar's sweep in one read: the same tags per reminder and the same smart-list
+    /// counts as asking for each tag's and each list's reminders one at a time.
+    #[test]
+    fn extras_match_the_tag_and_smart_list_reads() {
+        let lib = library();
+        let extras = lib.reminder_extras(0).unwrap();
+        let tags = lib.reminder_tags().unwrap();
+        let mut one_by_one: std::collections::HashMap<String, Vec<String>> = Default::default();
+        for t in &tags {
+            for r in lib.reminders_tagged(&t.name).unwrap() {
+                one_by_one.entry(r.guid).or_default().push(t.name.clone());
+            }
+        }
+        assert_eq!(extras.tags_by_reminder, one_by_one);
+        assert!(
+            !extras.tags_by_reminder.contains_key("Reminder/3"),
+            "done ones carry no chips"
+        );
+        assert_eq!(
+            extras.custom_counts.get("SmartList/S").copied(),
+            Some(
+                lib.reminders_in_smart_list("SmartList/S", 0)
+                    .unwrap()
+                    .reminders
+                    .len()
+            )
         );
     }
 

@@ -4,8 +4,8 @@
 
 use crate::{Auth, Data, UiResult};
 use quince_core::reminders::{
-    Reminder, ReminderDetail, ReminderMarks, ReminderMore, ReminderSection, ReminderSmartList,
-    SmartListContents, TagCount,
+    Reminder, ReminderDetail, ReminderExtras, ReminderMarks, ReminderMore, ReminderSection,
+    ReminderSmartList, SmartListContents, TagCount,
 };
 use quince_icloud::reminders::{details, more};
 use tauri::State;
@@ -85,20 +85,61 @@ pub async fn reminders_ending(data: State<'_, Data>) -> UiResult<Vec<String>> {
     Ok(out)
 }
 
+/// Told to the window as Urgent is read from Apple for rows the library could not say: each
+/// reminder's id and whether it is Urgent.
+pub const URGENT_READ: &str = "quince://reminder-urgent";
+
+/// One row's Urgent, read from Apple after its marks were answered.
+#[derive(Clone, serde::Serialize)]
+pub struct UrgentRead {
+    guid: String,
+    urgent: bool,
+}
+
+/// Reminders whose Urgent file is being read now: a second read of the list while the first is
+/// still at Apple does not ask for the same files again.
+static URGENT_ASKING: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+/// Of `unread`, those not being read already, now taken as being read.
+fn take_unasked(unread: Vec<(String, String)>) -> Vec<(String, String)> {
+    let Ok(mut asking) = URGENT_ASKING.lock() else {
+        return Vec::new();
+    };
+    let asking = asking.get_or_insert_with(Default::default);
+    unread
+        .into_iter()
+        .filter(|(guid, _)| asking.insert(guid.clone()))
+        .collect()
+}
+
+fn done_asking(guids: &[String]) {
+    if let Ok(mut asking) = URGENT_ASKING.lock() {
+        if let Some(asking) = asking.as_mut() {
+            for guid in guids {
+                asking.remove(guid);
+            }
+        }
+    }
+}
+
 /// What each of these reminders' rows shows beside its date, as the phone's list does:
 /// Weekdays or Weekends, the Urgent alarm, a place, a person, a link. Only rows with any of
-/// them come back. Urgent is read from Apple for rows not read yet — a few at a time, read
-/// only — and is shown off until it is known.
+/// them come back, from the library, at once. Urgent is shown off until it is known: for rows
+/// not read yet it is read from Apple behind the answer — a few at a time, read only — and
+/// told to the window as [`URGENT_READ`]. Waiting for those files held the whole answer, so a
+/// list's place, person and link chips came seconds after its rows, and every row with one
+/// grew by a line as they did; offline, each read waited out the timeouts.
 #[tauri::command]
 pub async fn reminder_marks(
     guids: Vec<String>,
-    auth: State<'_, Auth>,
+    app: tauri::AppHandle,
     data: State<'_, Data>,
 ) -> UiResult<Vec<ReminderMarks>> {
-    /// Urgent files read in one call at most; the rest are read on the next.
+    /// Urgent files read for one call at most; the rest are read on the next.
     const MOST_UNREAD: usize = 40;
     let mut out = Vec::new();
-    let mut unread: Vec<(usize, String, String)> = Vec::new();
+    let mut unread: Vec<(String, String)> = Vec::new();
     {
         let library = data.0.lock().await;
         for guid in guids.iter().take(2_000) {
@@ -117,42 +158,27 @@ pub async fn reminder_marks(
                 .map_err(|e| e.to_string())?
                 .url;
             let urgent = more::urgent_known(raw.as_deref());
-            let marks = ReminderMarks {
+            out.push(ReminderMarks {
                 guid: guid.clone(),
                 days_of_week: found.repeat.map(|r| r.days_of_week).unwrap_or_default(),
                 urgent: urgent.unwrap_or(false),
                 location: found.location,
                 messaging,
                 url,
-            };
+            });
             if urgent.is_none() && unread.len() < MOST_UNREAD {
                 if let Some(raw) = raw {
-                    unread.push((out.len(), guid.clone(), raw));
+                    // One that failed lately is left until it is worth asking again.
+                    if !more::urgent_failed_lately(guid, &raw) {
+                        unread.push((guid.clone(), raw));
+                    }
                 }
             }
-            out.push(marks);
         }
     }
+    let unread = take_unasked(unread);
     if !unread.is_empty() {
-        if let Ok((http, root, params)) = crate::cloudkit_context(&auth).await {
-            use futures_util::StreamExt;
-            let read: Vec<(usize, Option<bool>)> = futures_util::stream::iter(unread)
-                .map(|(at, guid, raw)| {
-                    let (http, root, params) = (http.clone(), root.clone(), params.clone());
-                    async move {
-                        (
-                            at,
-                            more::urgent_for(&http, &root, params, &guid, &raw).await,
-                        )
-                    }
-                })
-                .buffer_unordered(6)
-                .collect()
-                .await;
-            for (at, urgent) in read {
-                out[at].urgent = urgent.unwrap_or(false);
-            }
-        }
+        tauri::async_runtime::spawn(read_urgent(app, unread));
     }
     out.retain(|m| {
         m.urgent
@@ -162,6 +188,32 @@ pub async fn reminder_marks(
             || m.url.is_some()
     });
     Ok(out)
+}
+
+/// Read these rows' Urgent files from Apple, six at a time, and tell the window what came back.
+async fn read_urgent(app: tauri::AppHandle, unread: Vec<(String, String)>) {
+    use futures_util::StreamExt;
+    use tauri::{Emitter, Manager};
+    let guids: Vec<String> = unread.iter().map(|(guid, _)| guid.clone()).collect();
+    let auth = app.state::<Auth>();
+    if let Ok((http, root, params)) = crate::cloudkit_context(&auth).await {
+        let read: Vec<UrgentRead> = futures_util::stream::iter(unread)
+            .map(|(guid, raw)| {
+                let (http, root, params) = (http.clone(), root.clone(), params.clone());
+                async move {
+                    let urgent = more::urgent_for(&http, &root, params, &guid, &raw).await;
+                    urgent.map(|urgent| UrgentRead { guid, urgent })
+                }
+            })
+            .buffer_unordered(6)
+            .filter_map(|found| async move { found })
+            .collect()
+            .await;
+        if !read.is_empty() {
+            let _ = app.emit(URGENT_READ, read);
+        }
+    }
+    done_asking(&guids);
 }
 
 /// Every tag on the account, with how many reminders still to do carry each.
@@ -176,6 +228,14 @@ pub async fn reminder_tags(data: State<'_, Data>) -> UiResult<Vec<TagCount>> {
 pub async fn reminders_tagged(name: String, data: State<'_, Data>) -> UiResult<Vec<Reminder>> {
     let library = data.0.lock().await;
     library.reminders_tagged(&name).map_err(|e| e.to_string())
+}
+
+/// Each reminder still to do with its tags, and how many each custom smart list holds: the
+/// sidebar's and the rows' tag chips in one read, rather than one per tag and per list.
+#[tauri::command]
+pub async fn reminder_extras(data: State<'_, Data>) -> UiResult<ReminderExtras> {
+    let library = data.0.lock().await;
+    library.reminder_extras(now()).map_err(|e| e.to_string())
 }
 
 /// The account's smart lists, built-in and custom.
@@ -340,4 +400,29 @@ pub async fn reminder_section_move(
     )
     .await;
     finish(done, &http, &root, params, &data).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row whose Urgent file is on its way is not asked for again until that read is over.
+    #[test]
+    fn a_row_being_read_is_not_asked_for_twice() {
+        let row = |g: &str| (g.to_string(), "{}".to_string());
+        let first = take_unasked(vec![row("Reminder/U1"), row("Reminder/U2")]);
+        assert_eq!(first.len(), 2);
+        let again = take_unasked(vec![row("Reminder/U1"), row("Reminder/U3")]);
+        assert_eq!(again, vec![row("Reminder/U3")]);
+        done_asking(&["Reminder/U1".to_string()]);
+        assert_eq!(
+            take_unasked(vec![row("Reminder/U1")]),
+            vec![row("Reminder/U1")]
+        );
+        done_asking(&[
+            "Reminder/U1".to_string(),
+            "Reminder/U2".to_string(),
+            "Reminder/U3".to_string(),
+        ]);
+    }
 }

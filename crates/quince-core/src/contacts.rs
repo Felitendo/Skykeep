@@ -745,6 +745,47 @@ impl Library {
         Ok(self.cards(search)?.into_iter().map(|c| c.contact).collect())
     }
 
+    /// Everyone with a birthday, in the order [`Library::contacts`] gives them, with only their
+    /// names and birthday filled in: what the Birthdays calendar draws. Calendar built every card
+    /// whole for this — each method, detail and address — on every read of a month.
+    pub fn contacts_with_birthdays(&self) -> Result<Vec<Contact>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, first_name, middle_name, last_name, company, is_company, birthday
+             FROM contacts WHERE birthday IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Contact {
+                guid: row.get(0)?,
+                first_name: row.get(1)?,
+                middle_name: row.get(2)?,
+                photo_url: None,
+                photo_signature: None,
+                photo_crop: None,
+                last_name: row.get(3)?,
+                company: row.get(4)?,
+                is_company: row.get::<_, i64>(5)? != 0,
+                birthday: row.get(6)?,
+                notes: None,
+                etag: None,
+                methods: Vec::new(),
+            })
+        })?;
+        let mut keyed: Vec<(String, Contact)> = rows
+            .map(|c| c.map(|c| (c.sort_key(), c)))
+            .collect::<rusqlite::Result<_>>()?;
+        keyed.sort_by(|(a, _), (b, _)| crate::fold::natural(a, b));
+        Ok(keyed.into_iter().map(|(_, c)| c).collect())
+    }
+
+    /// Whether anyone in the address book has a birthday: whether there is a Birthdays calendar.
+    pub fn any_birthday(&self) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM contacts WHERE birthday IS NOT NULL)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? != 0)
+    }
+
     /// [`Library::contacts`], each card whole: with the rest of its name and work, which a
     /// search matches too — a nickname or a job title finds the person.
     pub fn cards(&self, search: Option<&str>) -> Result<Vec<Card>> {
@@ -924,6 +965,41 @@ mod tests {
                 value: format!("+91{guid}"),
             }],
         }
+    }
+
+    /// Calendar's read: the people with a birthday, in the address book's order, with what
+    /// a birthday's title is made from — and whether there are any at all.
+    #[test]
+    fn birthdays_are_read_without_building_every_card() {
+        let mut lib = Library::in_memory().unwrap();
+        assert!(!lib.any_birthday().unwrap());
+        let mut alex = contact("1", Some("Alex"), Some("Rivera"));
+        alex.birthday = Some("1990-04-12".into());
+        let mut bea = contact("2", Some("Bea"), Some("Moreno"));
+        bea.birthday = Some("1604-09-30".into());
+        lib.put_contacts(&[alex, contact("3", Some("Cy"), Some("Lane")), bea])
+            .unwrap();
+        assert!(lib.any_birthday().unwrap());
+        let born = lib.contacts_with_birthdays().unwrap();
+        let whole: Vec<Contact> = lib
+            .contacts(None)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.birthday.is_some())
+            .collect();
+        let names = |cs: &[Contact]| -> Vec<String> {
+            cs.iter()
+                .map(|c| {
+                    format!(
+                        "{} {:?} {:?} {:?}",
+                        c.guid, c.first_name, c.last_name, c.birthday
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(names(&born), names(&whole));
+        assert_eq!(born.len(), 2);
+        assert!(born.iter().all(|c| c.methods.is_empty()), "names only");
     }
 
     #[test]

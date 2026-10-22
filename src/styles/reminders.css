@@ -220,12 +220,22 @@
   grid-template-columns: 20px minmax(0, 1fr) auto;
   column-gap: 10px;
   align-items: start;
-  padding: 8px 14px 8px 0;
+  /* The 4px either side of the circle's edge, given back by the margin, leave room for its
+     focus ring, which the containment below would otherwise clip. */
+  margin-left: -4px;
+  padding: 8px 14px 8px 4px;
+  /* A row out of view is neither laid out nor painted, so a list of a thousand costs what the
+     screenful on show costs. Not an animation and nothing for the compositor: the page draws
+     it, as every row here is drawn. Each skipped row holds the height it last had, or a usual
+     row's until it has been seen. Its pickers and menus open in a portal, so the containment
+     this brings clips none of them. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
 }
 .rx-row::after {
   content: "";
   position: absolute;
-  left: 30px;
+  left: 34px;
   right: 0;
   bottom: 0;
   height: var(--hairline);
@@ -243,7 +253,7 @@
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-radius: 8px;
 }
-.rx-row.is-subtask { margin-left: 30px; }
+.rx-row.is-subtask { margin-left: 26px; }
 
 /* The circle is a vector ring (::before) masked over its colour, as Notes' checklist circles
    are: the 1.5px CSS border it replaces drew lopsided — heavy on one side, faint on the

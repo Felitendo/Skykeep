@@ -3982,6 +3982,53 @@ mod tombstone_tests {
         );
     }
 
+    /// The re-read after a section write is a delta (main.rs `resync_reminders`), so the delta
+    /// must carry what a list change moves: the new section and the list's placements from its
+    /// membership file land, and nothing the walk left out is touched.
+    #[test]
+    fn an_incremental_pass_places_reminders_in_a_new_section() {
+        let mut library = library_with("Reminder/1");
+        library
+            .put_reminders(&[Reminder {
+                guid: "Reminder/2".into(),
+                list_guid: "List/a".into(),
+                title: "Untouched by the walk".into(),
+                ..library.reminder("Reminder/1").unwrap().unwrap()
+            }])
+            .unwrap();
+        let mut memberships = std::collections::HashMap::new();
+        memberships.insert(
+            "List/a".to_string(),
+            vec![("Reminder/1".to_string(), "ListSection/s".to_string())],
+        );
+        apply_cloudkit(
+            &mut library,
+            RemindersFetch {
+                memberships,
+                records: vec![json!({
+                    "recordName": "ListSection/s",
+                    "recordType": "ListSection",
+                    "fields": {
+                        "List": { "value": { "recordName": "List/a" } },
+                        "DisplayName": { "type": "STRING", "value": "Groceries" }
+                    }
+                })],
+                token: Some("t2".into()),
+                incremental: true,
+            },
+        )
+        .unwrap();
+        let sections = library.reminder_sections("List/a").unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].title, "Groceries");
+        let placed = library.reminder("Reminder/1").unwrap().unwrap();
+        assert_eq!(placed.section_guid.as_deref(), Some("ListSection/s"));
+        let other = library.reminder("Reminder/2").unwrap().unwrap();
+        assert_eq!(other.title, "Untouched by the walk");
+        assert_eq!(other.section_guid, None);
+        assert_eq!(library.reminders_in("List/a", true).unwrap().len(), 2);
+    }
+
     /// A name that matches nothing must not disturb what is there.
     #[test]
     fn a_tombstone_for_something_we_never_had_is_harmless() {

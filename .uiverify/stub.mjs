@@ -330,7 +330,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         // Reminders' details (reminders_cmds.rs): tags, a link, early alerts, custom smart lists
         // and sections. A test sets __tagMap / __details / __smartLists / __sections to change them.
         case "reminder_sections": return (window.__sections ?? []).filter((s) => s.listGuid === args.listGuid);
-        case "reminder_tags": case "reminders_tagged": case "reminder_detail": {
+        case "reminder_tags": case "reminders_tagged": case "reminder_detail": case "reminder_extras": {
           const tagMap = (window.__tagMap ??= !remindersFixture || remindersFixture === "lists" ? {} : { r1: ["home"], r2: ["errands", "home"], r3: ["fitness"] });
           const every = [...reminderItems, ...(window.__extraReminders ?? [])];
           if (cmd === "reminder_detail") {
@@ -340,6 +340,14 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const open = (name) => every.filter((r) => !r.completedAt && (tagMap[r.guid] ?? []).some((t) => t.toLowerCase() === name.toLowerCase()));
           if (cmd === "reminders_tagged") return open(args.name);
           const names = [...new Set(Object.values(tagMap).flat())].sort((a, b) => a.localeCompare(b));
+          // One read for the rows' tags and the custom smart lists' counts (reminder_extras).
+          if (cmd === "reminder_extras") {
+            const tagsByReminder = {};
+            for (const name of names) for (const r of open(name)) (tagsByReminder[r.guid] ??= []).push(name);
+            const lists = window.__smartLists ?? (!remindersFixture || remindersFixture === "lists" ? [] : [{ guid: "SL-1", kind: "custom" }]);
+            const held = every.filter((r) => !r.completedAt && r.flagged).length;
+            return { tagsByReminder, customCounts: Object.fromEntries(lists.filter((x) => x.kind === "custom").map((x) => [x.guid, held])) };
+          }
           return names.map((name) => ({ name, open: open(name).length }));
         }
         case "reminder_smart_lists": return window.__smartLists ?? (!remindersFixture || remindersFixture === "lists" ? [] : [

@@ -37,13 +37,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex, Notify};
 
 static WAKE: Notify = Notify::const_new();
-/// Set by every [`kick`] until the sender's next pass: a pass after one is never taken as idle,
-/// so a change queued and sent between two looks is still announced as it lands.
-static KICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Something was queued: send it now.
 pub fn kick() {
-    KICKED.store(true, std::sync::atomic::Ordering::SeqCst);
     WAKE.notify_one();
 }
 
@@ -1095,24 +1091,20 @@ pub fn start(app: AppHandle) {
                 () = WAKE.notified() => {}
                 () = tokio::time::sleep(wait) => {}
             }
-            // Nothing waiting is nothing to say. Told every thirty seconds regardless, each open
-            // Notes, Reminders and Contacts read its whole list (and the open note or card)
-            // again, twice, and drew it again — all day, with nothing changed.
-            let kicked = KICKED.swap(false, std::sync::atomic::Ordering::SeqCst);
-            let idle = !kicked && nothing_waiting(&app).await;
-            if !idle {
-                let _ = app.emit(CHANGED, ());
-            }
             let outcomes = [
-                drain_reminders(&app).await,
-                drain_notes(&app).await,
-                drain_contacts(&app).await,
-                drain_calendar(&app).await,
+                (REMINDERS, drain_reminders(&app).await),
+                (NOTES, drain_notes(&app).await),
+                (CONTACTS, drain_contacts(&app).await),
+                (CALENDAR, drain_calendar(&app).await),
             ];
-            if !idle {
-                let _ = app.emit(CHANGED, ());
+            // Said once, after the pass, and only to the services it touched. Told before and
+            // after every pass with no service named, each kept-mounted screen read its whole
+            // list again twice whatever had moved: a Notes save re-read Reminders and Calendar.
+            // Nothing waiting is nothing to say, so an idle pass every thirty seconds is quiet.
+            if let Some(changed) = changed(&outcomes) {
+                let _ = app.emit(CHANGED, changed);
             }
-            wait = if outcomes.iter().any(|o| matches!(o, Outcome::Later)) {
+            wait = if outcomes.iter().any(|(_, o)| matches!(o, Outcome::Later)) {
                 // Apple out of reach: wait longer each time, up to two minutes.
                 (wait * 2).clamp(Duration::from_secs(4), Duration::from_secs(120))
             } else {
@@ -1125,7 +1117,28 @@ pub fn start(app: AppHandle) {
 /// Told to the window whenever what waits may have changed.
 pub const CHANGED: &str = "quince://outbox-changed";
 
+/// What [`CHANGED`] carries after a pass: the services it sent for, or found waiting. A screen
+/// reads its rows again only when its own service is named.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Changed {
+    pub services: Vec<&'static str>,
+}
+
+/// What a pass over every service comes to for the window: the services that had anything
+/// waiting, or `None` when none did — nothing was sent, so nothing on screen moved.
+fn changed(outcomes: &[(&'static str, Outcome)]) -> Option<Changed> {
+    let services: Vec<&'static str> = outcomes
+        .iter()
+        .filter(|(_, o)| !matches!(o, Outcome::Idle))
+        .map(|(service, _)| *service)
+        .collect();
+    (!services.is_empty()).then_some(Changed { services })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
+    /// Nothing was waiting: the pass sent nothing and changed nothing.
+    Idle,
     Clear,
     Later,
 }
@@ -1229,14 +1242,6 @@ fn tell_refused(app: &AppHandle, service: &'static str, report: &Report) {
 }
 
 /// Whether anything waits for `service` — the answer when Apple can't be asked yet.
-/// No change waiting for any service (refused ones are not sent, so they do not count): a pass
-/// would send nothing and change nothing anyone is shown.
-async fn nothing_waiting(app: &AppHandle) -> bool {
-    let data = app.state::<Data>();
-    let library = data.0.lock().await;
-    library.outbox_all_pending().is_ok_and(|p| p.is_empty())
-}
-
 async fn waiting(data: &Data, service: &str) -> Outcome {
     if data
         .0
@@ -1256,7 +1261,7 @@ async fn drain_reminders(app: &AppHandle) -> Outcome {
     let auth = app.state::<Auth>();
     let data = app.state::<Data>();
     if waiting(&data, REMINDERS).await.is_clear() {
-        return Outcome::Clear;
+        return Outcome::Idle;
     }
     let session = if crate::same_account(app).await {
         cloudkit_context(&auth).await
@@ -1423,7 +1428,7 @@ async fn drain_notes(app: &AppHandle) -> Outcome {
     let auth = app.state::<Auth>();
     let data = app.state::<Data>();
     if waiting(&data, NOTES).await.is_clear() {
-        return Outcome::Clear;
+        return Outcome::Idle;
     }
     let session = if crate::same_account(app).await {
         cloudkit_context(&auth).await
@@ -1562,7 +1567,7 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
     let auth = app.state::<Auth>();
     let data = app.state::<Data>();
     if waiting(&data, CONTACTS).await.is_clear() {
-        return Outcome::Clear;
+        return Outcome::Idle;
     }
     let session = if crate::same_account(app).await {
         crate::contacts_context(&auth).await
@@ -1675,7 +1680,7 @@ async fn drain_calendar(app: &AppHandle) -> Outcome {
     let auth = app.state::<Auth>();
     let data = app.state::<Data>();
     if waiting(&data, CALENDAR).await.is_clear() {
-        return Outcome::Clear;
+        return Outcome::Idle;
     }
     let session = if crate::same_account(app).await {
         crate::calendar_context(&auth).await
@@ -2026,6 +2031,40 @@ pub async fn outbox_discard(id: i64, app: AppHandle, data: State<'_, Data>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pass names only the services it sent for or found waiting, once; an idle pass says
+    /// nothing at all.
+    #[test]
+    fn a_pass_tells_only_the_services_it_touched() {
+        assert_eq!(
+            changed(&[
+                (REMINDERS, Outcome::Idle),
+                (NOTES, Outcome::Clear),
+                (CONTACTS, Outcome::Idle),
+                (CALENDAR, Outcome::Later),
+            ]),
+            Some(Changed {
+                services: vec![NOTES, CALENDAR]
+            })
+        );
+        assert_eq!(
+            changed(&[
+                (REMINDERS, Outcome::Idle),
+                (NOTES, Outcome::Idle),
+                (CONTACTS, Outcome::Idle),
+                (CALENDAR, Outcome::Idle),
+            ]),
+            None
+        );
+        // The window reads it as `{ services: [...] }`.
+        assert_eq!(
+            serde_json::to_string(&Changed {
+                services: vec![REMINDERS]
+            })
+            .unwrap(),
+            r#"{"services":["reminders"]}"#
+        );
+    }
     use quince_core::reminders::ReminderList;
     use std::sync::{Arc, Mutex as StdMutex};
 

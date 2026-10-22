@@ -1108,6 +1108,13 @@ export type ReminderSmartList = {
 /** What a custom smart list holds now, and any part of its rules not read here. */
 export type SmartListContents = { reminders: Reminder[]; unknown: string[] };
 
+/** Each reminder still to do with its tags, and how many each custom smart list holds, by id. */
+export type ReminderExtras = { tagsByReminder: Record<string, string[]>; customCounts: Record<string, number> };
+
+/** Told as Urgent is read from Apple for rows whose marks came back without it. */
+export const REMINDER_URGENT = "quince://reminder-urgent";
+export type UrgentRead = { guid: string; urgent: boolean };
+
 export const remindersApi = {
   detail: (guid: string) => invoke<ReminderDetail>("reminder_detail", { guid }),
   more: (guid: string) => invoke<ReminderMore>("reminder_more", { guid }),
@@ -1118,6 +1125,8 @@ export const remindersApi = {
   tags: () => invoke<TagCount[]>("reminder_tags"),
   tagged: (name: string) => invoke<Reminder[]>("reminders_tagged", { name }),
   smartLists: () => invoke<ReminderSmartList[]>("reminder_smart_lists"),
+  /** Tags by reminder and smart-list counts, in one read. */
+  extras: () => invoke<ReminderExtras>("reminder_extras"),
   inSmartList: (guid: string) => invoke<SmartListContents>("reminders_in_smart_list", { guid }),
   tagAdd: (guid: string, name: string) => invoke<void>("reminder_tag_add", { guid, name }),
   tagRemove: (guid: string, name: string) => invoke<void>("reminder_tag_remove", { guid, name }),
