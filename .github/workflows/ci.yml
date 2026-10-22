@@ -31,7 +31,7 @@ env:
 jobs:
   rust:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 50  # a cold cache (new toolchain, new lockfile) compiles everything; warm runs take ~12
     steps:
       - uses: actions/checkout@v4
       - name: Build dependencies
