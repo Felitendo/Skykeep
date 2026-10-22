@@ -341,8 +341,9 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
 
   // Clicking a reminder's alert brings the window back on Reminders.
   useEffect(() => {
-    const front = () => {
-      const screen = revealedScreen;
+    // A screen asking for another (Calendar's "Show in Reminders") names it on the event.
+    const front = (e?: Event) => {
+      const screen = revealedScreen ?? (e as CustomEvent<{ screen?: string }> | undefined)?.detail?.screen ?? null;
       revealedScreen = null;
       if (screen && services.includes(screen)) choose(screen);
     };

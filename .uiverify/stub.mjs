@@ -120,6 +120,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     { guid: "r4", listGuid: "l1", title: "Water the plants", notes: null,
       dueAt: base - DAY, completedAt: base - DAY, priority: 0, flagged: false, parentGuid: null, etag: null },
   ];
+  // Opt-in: the long reminder Calendar shows (`__longReminder`), in its list here too.
+  if (remindersFixture && window.__longReminder)
+    reminderItems.push({ guid: "r9", listGuid: "l2", title: "Sort out everything for the trip to the coast before Friday, including the tickets and the bags",
+      notes: "Ask Alex Rivera about the car", dueAt: base + 4 * HOUR, completedAt: null, priority: 0, flagged: false, parentGuid: null, etag: null });
   // Shaped like a real account rather than a tidy one: the default is not the first, and one
   // of them is a subscribed feed that nothing may be written to.
   const calendars = [
@@ -252,7 +256,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const every = [...reminderItems, ...(window.__extraReminders ?? [])];
           return window.__filterLists ? every.filter((r) => r.listGuid === args.listGuid) : every;
         }
-        case "reminders_due_between": return calendarFixture ? dueReminders : [];
+        case "reminders_due_between":
+          // Opt-in: one with a title far longer than a cell, and notes, as a real list has.
+          if (window.__longReminder && calendarFixture && !dueReminders.some((r) => r.guid === "r9"))
+            dueReminders.push({ guid: "r9", listGuid: "l2", title: "Sort out everything for the trip to the coast before Friday, including the tickets and the bags",
+              notes: "Ask Alex Rivera about the car", dueAt: base + 4 * HOUR, completedAt: null, priority: 0, etag: null });
+          return calendarFixture ? dueReminders : [];
         case "reminder_create":
           // Kept, as Apple keeps it, with what the view implied.
           {

@@ -9,7 +9,7 @@
 Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that stay in sync with your iPhone.
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-2f6fd6)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20(beta)-4a5568)](#install)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-4a5568)](#install)
 [![Local-first](https://img.shields.io/badge/local--first-works%20offline-2f6fd6)](#privacy)
 [![Built with Rust and Tauri](https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri%202-b7410e)](#contributing)
 <!-- Dynamic badges: enable once the repository is public.
@@ -72,7 +72,7 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/photos-dark.png">
         <img src="docs/media/photos-light.png" alt="Skykeep Photos showing the library by month">
       </picture>
-      <b>Photos</b> <sub>preview</sub>
+      <b>Photos</b>
     </td>
     <td width="50%" align="center">
       <picture>
@@ -84,8 +84,6 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
   </tr>
 </table>
 
-<sub>Every screenshot uses an invented demo library.</sub>
-
 ## Features
 
 | App | What you can do | Coming |
@@ -95,7 +93,7 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
 | **Calendar** | Day, Week, Month and Year. Drag to create, move and resize. Repeating events, alerts, time zones, birthdays and holidays. Subscribe to any `webcal://` calendar and open `.ics` files. | |
 | **Contacts** | Every field, with Apple's labels. Lists, My Card, find and merge duplicates. Import vCard or a Google or Outlook CSV; export vCard. | |
 | **iCloud Drive** | List or grid with thumbnails. Upload files and folders, rename, move, duplicate and preview with Space. On Linux, iCloud Drive is also a real folder in your file manager. | |
-| **Photos** <sub>preview</sub> | Your library by month, albums and shared albums, Favourites and Videos. A viewer for Live Photos and videos, slideshow, upload and original-quality download. | |
+| **Photos** | Your library by month, albums and shared albums, Favourites and Videos. A viewer for Live Photos and videos, slideshow, upload and original-quality download. | |
 | **Everywhere** | Search across every app. Quick capture for a note or reminder. Results in GNOME and KDE search, a tray icon, light and dark. **Export Everything** to Markdown, iCalendar, vCard and your original files. | |
 
 ## Install
@@ -109,7 +107,7 @@ Packages arrive with the first release on the [Releases page](https://github.com
 | **Any Linux** | `.AppImage` |
 | **Arch, CachyOS, EndeavourOS, Manjaro** | AUR `skykeep-git` <sub>coming to the AUR</sub> |
 | **Any Linux, sandboxed** | Flatpak <sub>coming to Flathub</sub> |
-| **Windows 10 and 11** | `.exe` or `.msi` <sub>beta</sub> |
+| **Windows 10 and 11** | `.exe` or `.msi` |
 
 <details>
 <summary><b>Debian and Ubuntu</b></summary>
@@ -171,7 +169,7 @@ In the Flatpak, iCloud Drive and Photos open inside the app.
 </details>
 
 <details>
-<summary><b>Windows</b> (beta)</summary>
+<summary><b>Windows</b></summary>
 
 Run `Skykeep_*_x64-setup.exe` (installs for you alone, no admin needed) or the `.msi`. Skykeep opens `.ics` and `.vcf` files, and its alerts come with **Complete** and **Snooze**.
 </details>

@@ -55,7 +55,7 @@ import {
   meetingOf,
 } from "./model";
 import { dateText, timeText } from "../../lib/when";
-import { useReveal } from "../../lib/reveal";
+import { reveal, useReveal } from "../../lib/reveal";
 
 const ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -263,15 +263,64 @@ type Draft = {
  * reminder there and then. It fills at once, lingers a moment so the tick is seen, and leaves
  * the schedule — Calendar shows no completed reminders.
  */
-const TickContext = createContext<{ ticked: Set<string>; tick: (r: Reminder) => void; colour: (r: Reminder) => string } | null>(null);
+const TickContext = createContext<{
+  ticked: Set<string>;
+  tick: (r: Reminder) => void;
+  colour: (r: Reminder) => string;
+  /** Open a reminder's card beside where it was clicked: its whole title, when, list and notes. */
+  show: (r: Reminder, at: Anchor) => void;
+} | null>(null);
 /** A reminder's list colour, as Calendar on the Mac draws scheduled reminders in it. */
 const useListColour = () => {
   const ctx = useContext(TickContext);
   return (r: Reminder) => ({ "--cal": ctx?.colour(r) ?? "var(--sys-blue)" }) as React.CSSProperties;
 };
-function Ring({ reminder }: { reminder: Reminder }) {
+/**
+ * What makes a scheduled reminder open its card, as Calendar's do: a click, or Return or Space
+ * on it — and its whole title on hover, since a cell or a narrow column cuts it short. The line
+ * is the one control here for the keyboard and screen readers; its ring answers the mouse
+ * only (`quiet`), and is in the card for everyone, so no control sits inside another.
+ */
+const useShowReminder = () => {
+  const ctx = useContext(TickContext);
+  const open = (r: Reminder, el: HTMLElement, y?: number) => {
+    const box = el.getBoundingClientRect();
+    ctx?.show(r, { x: box.right, y: y ?? box.top + box.height / 2, left: box.left });
+  };
+  return (r: Reminder) => ({
+    role: "button",
+    tabIndex: 0,
+    title: r.title,
+    "aria-label": r.title,
+    // Its own press, not the day's or the timeline's: never a new event or a drag begun under it.
+    onMouseDown: (e: React.MouseEvent<HTMLElement>) => e.stopPropagation(),
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => e.stopPropagation(),
+    onClick: (e: React.MouseEvent<HTMLElement>) => {
+      e.stopPropagation();
+      open(r, e.currentTarget, e.clientY);
+    },
+    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => {
+      if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+      e.preventDefault();
+      open(r, e.currentTarget);
+    },
+  });
+};
+
+function Ring({ reminder, quiet = false }: { reminder: Reminder; quiet?: boolean }) {
   const ctx = useContext(TickContext);
   const done = ctx?.ticked.has(reminder.guid) ?? false;
+  const press = {
+    onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
+    onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+    onClick: (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!done) ctx?.tick(reminder);
+    },
+  };
+  // Inside a line that is itself the control (see useShowReminder): drawn for the mouse only,
+  // not a control of its own — the card it opens has the ring for the keyboard.
+  if (quiet) return <span className={`cx-ring${done ? " is-ticked" : ""}`} aria-hidden="true" {...press} />;
   return (
     <button
       type="button"
@@ -279,11 +328,7 @@ function Ring({ reminder }: { reminder: Reminder }) {
       role="checkbox"
       aria-checked={done}
       aria-label={`Complete ${reminder.title}`}
-      onMouseDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (!done) ctx?.tick(reminder);
-      }}
+      {...press}
     />
   );
 }
@@ -386,6 +431,10 @@ export function CalendarView() {
   const [ticked, setTicked] = useState<Set<string>>(() => new Set());
   /** Each Reminders list's colour, by list. */
   const [listColours, setListColours] = useState<Map<string, string>>(() => new Map());
+  /** Each Reminders list's name, for a reminder's card. */
+  const [listNames, setListNames] = useState<Map<string, string>>(() => new Map());
+  /** The reminder whose card is open, and where it was clicked. */
+  const [card, setCard] = useState<{ reminder: Reminder; at: Anchor } | null>(null);
   const tickValue = useMemo(() => ({
     ticked,
     colour: (r: Reminder) => listColours.get(r.listGuid) || "var(--sys-blue)",
@@ -397,7 +446,9 @@ export function CalendarView() {
         (e) => { untick(); setError(messageOf(e)); },
       );
     },
+    show: (r: Reminder, at: Anchor) => setCard({ reminder: r, at }),
   }), [ticked, listColours]);
+  const closeCard = useCallback(() => setCard(null), []);
   const [calendars, setCalendars] = useState<Calendar[]>([]);
   /** A calendar being named: "new" for New Calendar, or the guid of one being renamed. */
   const [naming, setNaming] = useState<string | null>(null);
@@ -537,6 +588,7 @@ export function CalendarView() {
     ]);
     setSubs(Array.isArray(feeds) ? feeds : []);
     setListColours(new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.colour && /^#[0-9a-f]{6}$/i.test(l.colour) ? l.colour : ""])));
+    setListNames(new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.title])));
     setEvents(over(Array.isArray(found) ? found : []));
     setCalendars(Array.isArray(cals) ? cals : []);
     // What is done is not on the schedule any more; Calendar hides completed reminders.
@@ -1719,6 +1771,14 @@ export function CalendarView() {
       )}
       {confirmSheet}
 
+    {card && (
+      <ReminderCard
+        reminder={due.find((r) => r.guid === card.reminder.guid) ?? card.reminder}
+        at={card.at}
+        list={listNames.get(card.reminder.listGuid) ?? null}
+        onClose={closeCard}
+      />
+    )}
     </div>
     </TickContext.Provider>
   );
@@ -1869,6 +1929,7 @@ const MonthView = memo(function MonthView({
   weekNumbers: boolean;
 }) {
   const listColour = useListColour();
+  const showReminder = useShowReminder();
 
   /*
    * Dragging an event to another day, as in Calendar's Month: pressed and moved a few pixels
@@ -2079,9 +2140,10 @@ const MonthView = memo(function MonthView({
                             <span
                               className={`cx-item is-reminder${item.reminder.completedAt ? " is-done" : ""}`}
                               style={listColour(item.reminder)}
-                              title={dots ? `${item.reminder.title} · ${clock(item.at)}` : undefined}
+                              {...showReminder(item.reminder)}
+                              title={dots ? `${item.reminder.title} · ${clock(item.at)}` : item.reminder.title}
                             >
-                              <Ring reminder={item.reminder} />
+                              <Ring reminder={item.reminder} quiet />
                               <span className="cx-item-title">{item.reminder.title}</span>
                               <span className="cx-item-time">{clock(item.at)}</span>
                             </span>
@@ -2178,6 +2240,7 @@ const TimeGrid = memo(function TimeGrid({
   weekNumbers: boolean;
 }) {
   const listColour = useListColour();
+  const showReminder = useShowReminder();
   const scroller = useRef<HTMLDivElement | null>(null);
   const columnsEl = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -2539,6 +2602,7 @@ const TimeGrid = memo(function TimeGrid({
                   return (
                     <span
                       key={r.guid}
+                      {...showReminder(r)}
                       className={`cx-reminder${r.completedAt ? " is-done" : ""}`}
                       style={{
                         ...listColour(r),
@@ -2547,7 +2611,7 @@ const TimeGrid = memo(function TimeGrid({
                         maxWidth: `calc(${100 / m.columns}% - 8px)`,
                       }}
                     >
-                      <Ring reminder={r} />
+                      <Ring reminder={r} quiet />
                       <span className="cx-reminder-title">{r.title}</span>
                     </span>
                   );
@@ -2833,6 +2897,101 @@ function ZoneField({ zone, at, editable, onChange }: { zone: string; at: number;
         </span>
       )}
     </span>
+  );
+}
+
+/**
+ * A scheduled reminder's card, as Calendar shows one when it is clicked: its whole title —
+ * which a cell cuts short — when it is due, its list and its notes, with its ring to complete
+ * it and a way to it in Reminders. Put away by Escape, a click elsewhere, or once it is done.
+ */
+function ReminderCard({ reminder, at, list, onClose }: {
+  reminder: Reminder;
+  at: Anchor;
+  list: string | null;
+  onClose: () => void;
+}) {
+  const box = useRef<HTMLDivElement | null>(null);
+  const ctx = useContext(TickContext);
+  const listColour = useListColour();
+  useReturnFocus(() => null);
+  const [pos, setPos] = useState<{ left: number; top: number }>({ left: at.x, top: at.y });
+  // Beside what was clicked, and always wholly on screen — as an event's popover is placed.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const gap = 12;
+    let left = at.x + gap;
+    if (left + width > window.innerWidth - 8) left = (at.left ?? at.x) - width - gap;
+    if (left < 8) left = Math.max(8, window.innerWidth - width - 8);
+    const top = Math.min(Math.max(8, at.y - 24), window.innerHeight - height - 8);
+    setPos({ left, top });
+  }, [at]);
+  const live = useActiveRef();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (live.current && e.key === "Escape") onClose();
+    };
+    const onDown = (e: PointerEvent) => {
+      if (box.current?.contains(e.target as Node)) return;
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [onClose, live]);
+  useEffect(() => {
+    box.current?.focus();
+  }, []);
+  // Completed from its ring: it leaves the calendar, and the card with it.
+  const done = ctx?.ticked.has(reminder.guid) ?? false;
+  useEffect(() => {
+    if (!done) return;
+    const t = window.setTimeout(onClose, 600);
+    return () => window.clearTimeout(t);
+  }, [done, onClose]);
+  const due = reminder.dueAt === null ? null : dateOf(reminder.dueAt);
+  const when = due
+    ? reminder.allDay
+      ? dateText(due, { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })
+      : `${dateText(due, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}, ${timeText(due, { hour: "numeric", minute: "2-digit" })}`
+    : null;
+  return (
+    <Portal>
+      <div
+        ref={box}
+        className="cx-popover is-info is-reminder"
+        role="dialog"
+        aria-label={reminder.title}
+        tabIndex={-1}
+        style={{ left: pos.left, top: pos.top, ...listColour(reminder) }}
+      >
+        <div className="cx-rcard-head">
+          <Ring reminder={reminder} />
+          <h3 className="cx-info-title">{reminder.title}</h3>
+        </div>
+        <div className="cx-rcard-body">
+        {when && <p className="cx-info-line">{when}</p>}
+        {list && <p className="cx-info-cal"><span className="cx-info-dot" aria-hidden="true" />{list}</p>}
+        {reminder.notes && <p className="cx-info-notes">{reminder.notes}</p>}
+        <button
+          type="button"
+          className="cx-rcard-open"
+          onClick={() => {
+            onClose();
+            reveal({ screen: "reminders", id: reminder.guid, within: reminder.listGuid });
+            window.dispatchEvent(new CustomEvent("quince:revealed", { detail: { screen: "reminders" } }));
+          }}
+        >
+          Show in Reminders
+        </button>
+        </div>
+      </div>
+    </Portal>
   );
 }
 
@@ -3215,6 +3374,7 @@ const DayPane = memo(function DayPane({
   children?: React.ReactNode;
 }) {
   const listColour = useListColour();
+  const showReminder = useShowReminder();
   const from = seconds(day);
   const to = seconds(addDays(day, 1));
   const today = events.filter((e) => e.startsAt < to && e.endsAt > from);
@@ -3257,10 +3417,12 @@ const DayPane = memo(function DayPane({
           {allDay.map((e) => row(e, "all-day"))}
           {timed.map((e) => row(e, `${clock(e.startsAt)} – ${clock(e.endsAt)}`))}
           {due.map((r) => (
-            <li key={r.guid} className="cx-pane-reminder" style={listColour(r)}>
-              <Ring reminder={r} />
-              <span className="cx-pane-title">{r.title}</span>
-              <span className="cx-pane-when">{clock(r.dueAt ?? 0)}</span>
+            <li key={r.guid}>
+              <div className="cx-pane-reminder" style={listColour(r)} {...showReminder(r)}>
+                <Ring reminder={r} quiet />
+                <span className="cx-pane-title">{r.title}</span>
+                <span className="cx-pane-when">{clock(r.dueAt ?? 0)}</span>
+              </div>
             </li>
           ))}
         </ul>

@@ -487,8 +487,11 @@
 /* The title is its own box so it ends in an ellipsis — as bare text in the flex row it was
    cut off mid-letter ("Book the train t"). */
 .cx-reminder-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* The label lets a drag on the timeline through; its ring is the one thing that takes a click. */
-.cx-reminder .cx-ring { pointer-events: auto; }
+/* The label lets a drag on the timeline through; its ring and its words take a click — the
+   ring to complete it, the words to open its card. The words are only as wide as they are, so
+   the rest of the line still starts a drag. */
+.cx-reminder .cx-ring,
+.cx-reminder .cx-reminder-title { pointer-events: auto; }
 .cx-reminder.is-done { color: var(--text-3); text-decoration: line-through; }
 /* Above the line for now, on a backing of its own, so the line never runs through a title. */
 /* The backing runs the slot's whole width (its shadows fill the 4px either side): as wide as
@@ -586,6 +589,20 @@
 .cx-info-line { margin: 0; font-size: var(--t-13); color: var(--text-2); }
 .cx-info-cal { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; font-size: var(--t-13); color: var(--text-2); }
 .cx-info-dot { width: 8px; height: 8px; background: var(--cal); -webkit-mask: var(--mask-disc) center/100% no-repeat; mask: var(--mask-disc) center/100% no-repeat; }
+.cx-rcard-head { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: start; }
+.cx-rcard-head .cx-ring { margin-top: 4px; }
+.cx-popover.is-reminder .cx-info-title { overflow-wrap: anywhere; }
+/* Everything under the title starts where the title's words do, clear of the ring. */
+.cx-rcard-body { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding-left: 22px; }
+.cx-rcard-body .cx-info-notes { align-self: stretch; }
+.cx-rcard-open {
+  margin: 6px 0 0; padding: 0; border: 0; background: none;
+  color: var(--sys-blue); font: inherit; font-size: var(--t-13); cursor: pointer;
+}
+.cx-rcard-open:hover { text-decoration: underline; }
+.cx-item.is-reminder, .cx-reminder, .cx-pane-reminder { cursor: default; }
+.cx-pane-reminder { border-radius: 6px; }
+.cx-pane-reminder:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 .cx-info-notes { margin: 8px 0 0; padding-top: 8px; border-top: var(--hairline) solid var(--separator); font-size: var(--t-13); white-space: pre-wrap; }
 .cx-popover input,
 .cx-popover textarea {
