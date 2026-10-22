@@ -72,7 +72,7 @@ ok(reloaded === 0, "neither key reloads the window");
 await page.evaluate(() => { window.__someFail = "Apple didn’t answer."; });
 await status.click();
 await page.waitForTimeout(800);
-ok((await said()) === "iCloud Drive didn’t update: Apple didn’t answer." && (await status.getAttribute("class")).includes("is-trouble"), `a failure says why  [${await said()}]`);
+ok((await said()) === "Drive didn’t update: Apple didn’t answer." && (await status.getAttribute("class")).includes("is-trouble"), `a failure says why  [${await said()}]`);
 
 await page.locator(".sidebar-account").click();
 await page.waitForSelector(".settings");

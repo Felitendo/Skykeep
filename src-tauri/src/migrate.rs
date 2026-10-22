@@ -352,7 +352,7 @@ fn move_dir(
         (mover.checkpoint)(Step::Marked)?;
     }
     if !mover.across {
-        match fs::rename(old, new) {
+        match rename(old, new) {
             Ok(()) => {
                 sync_dir(parent);
                 return (mover.checkpoint)(Step::Renamed);
@@ -384,7 +384,7 @@ fn finish_copy(parent: &Path, ids: Ids<'_>, mover: &Mover) -> io::Result<()> {
                 "the new folder appeared while the copy was in progress",
             ));
         }
-        fs::rename(&staging, new)?;
+        rename(&staging, new)?;
         sync_dir(parent);
     }
     (mover.checkpoint)(Step::InPlace)?;
@@ -416,7 +416,7 @@ fn merge(old: &Path, new: &Path) -> io::Result<()> {
         if present(&to) {
             continue;
         }
-        match fs::rename(entry.path(), &to) {
+        match rename(&entry.path(), &to) {
             Ok(()) => {}
             Err(e) if crosses_devices(&e) => {
                 quiet!("quince: identifier: left in the old folder: {e}");
@@ -450,7 +450,7 @@ fn autostart(dir: &Path, ids: Ids<'_>) -> io::Result<()> {
         }
         let part = dir.join(format!(".{}.desktop.part", ids.new));
         write_synced(&part, moved.as_bytes())?;
-        fs::rename(&part, &new)?;
+        rename(&part, &new)?;
         sync_dir(dir);
     }
     fs::remove_file(&old)
@@ -612,7 +612,7 @@ fn set_aside(dir: &Path) -> io::Result<()> {
         dir.display(),
         to.display()
     );
-    fs::rename(dir, &to)
+    rename(dir, &to)
 }
 
 fn write_marker(dir: &Path, ids: Ids<'_>) -> io::Result<()> {
@@ -633,6 +633,32 @@ fn holds_marker(dir: &Path) -> bool {
             .flatten()
             .any(|e| e.file_name().to_string_lossy().starts_with(MARKER_PREFIX))
     })
+}
+
+/// `fs::rename`, made to hold on Windows: a file just written may be held for a moment by the
+/// virus scanner or the search indexer (ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION), and
+/// Windows will not rename over an existing empty folder as Linux does. Both are tried again
+/// for up to two seconds; anything else is said at once.
+fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut tries = 0;
+        loop {
+            match fs::rename(from, to) {
+                Ok(()) => return Ok(()),
+                Err(e) if matches!(e.raw_os_error(), Some(5 | 32)) && tries < 40 => {
+                    if to.is_dir() && fs::read_dir(to).is_ok_and(|mut d| d.next().is_none()) {
+                        let _ = fs::remove_dir(to);
+                    }
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    fs::rename(from, to)
 }
 
 fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -935,12 +961,21 @@ mod tests {
     fn install(h: &Home) {
         let old = h.old();
         {
-            let mut library = quince_core::Library::open(&old).unwrap();
+            // Ended as a crash ends it: no checkpoint, so the row lives in the WAL alone. Made
+            // beside the folder and copied in, so this process holds nothing open inside it — a
+            // crashed app holds nothing, and Windows will not rename a folder with a file open.
+            let crashed = h.roots.primary.parent().unwrap().join("crashed-library");
+            let mut library = quince_core::Library::open(&crashed).unwrap();
             library
                 .set_state("remembered", "kept-through-the-move")
                 .unwrap();
-            // Ended as a crash ends it: no checkpoint, so the row lives in the WAL alone.
             std::mem::forget(library);
+            fs::create_dir_all(&old).unwrap();
+            for f in ["library.db", "library.db-wal", "library.db-shm"] {
+                if crashed.join(f).exists() {
+                    fs::copy(crashed.join(f), old.join(f)).unwrap();
+                }
+            }
         }
         assert!(
             fs::metadata(old.join("library.db-wal")).unwrap().len() > 0,

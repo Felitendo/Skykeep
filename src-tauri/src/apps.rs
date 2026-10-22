@@ -313,6 +313,33 @@ mod tests {
         assert_eq!(new_asked(&args(&["skykeep", "--app", "notes"])), None);
     }
 
+    /// Windows paths and links, as Explorer and a browser hand them over.
+    #[cfg(windows)]
+    #[test]
+    fn opened_files_are_taken_as_windows_paths_or_uris() {
+        let cwd = std::path::Path::new(r"C:\Users\a\Downloads");
+        let got = files_asked(
+            &args(&[
+                "skykeep",
+                "invite.ics",
+                r"C:\Temp\Card.VCF",
+                "file:///C:/Users/a/My%20Events.ics",
+                "notes.txt",
+            ]),
+            cwd,
+        );
+        assert_eq!(
+            got,
+            vec![
+                std::path::PathBuf::from(r"C:\Users\a\Downloads\invite.ics"),
+                std::path::PathBuf::from(r"C:\Temp\Card.VCF"),
+                std::path::PathBuf::from("C:/Users/a/My Events.ics"),
+            ]
+        );
+    }
+
+    /// Linux paths and links, as a file manager hands them over.
+    #[cfg(not(windows))]
     #[test]
     fn opened_files_are_taken_as_paths_or_uris() {
         let cwd = std::path::Path::new("/home/a/Downloads");

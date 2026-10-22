@@ -28,7 +28,9 @@ const sizes = await page.evaluate(async () => {
   const later = months.find((s) => s.querySelector(".px-later"));
   const before = later.getBoundingClientRect().height;
   later.scrollIntoView();
-  await new Promise((r) => setTimeout(r, 400));
+  // Built a few rows a frame: waited for, up to three seconds, not a fixed moment (a slower
+  // machine finished it later than 400ms).
+  for (let t = 0; t < 30 && later.querySelector(".px-later"); t++) await new Promise((r) => setTimeout(r, 100));
   return { before, after: later.getBoundingClientRect().height, built: !later.querySelector(".px-later") };
 });
 ok(sizes.built && Math.abs(sizes.before - sizes.after) < 1,
@@ -43,7 +45,9 @@ const fitted = await page.evaluate(async () => {
   const later = months.find((s) => s.querySelector(".px-later"));
   const before = later.getBoundingClientRect().height;
   later.scrollIntoView();
-  await new Promise((r) => setTimeout(r, 400));
+  // Built a few rows a frame: waited for, up to three seconds, not a fixed moment (a slower
+  // machine finished it later than 400ms).
+  for (let t = 0; t < 30 && later.querySelector(".px-later"); t++) await new Promise((r) => setTimeout(r, 100));
   return { before, after: later.getBoundingClientRect().height, built: !later.querySelector(".px-later") };
 });
 ok(fitted.built && Math.abs(fitted.before - fitted.after) < 1,
