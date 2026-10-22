@@ -7,10 +7,11 @@ import { usePending } from "../../lib/pending";
 import { inMenu, Portal } from "../../components/Portal";
 import { useReturnFocus } from "../../lib/focus";
 import { TimeField } from "../../components/TimeField";
-import { ChevronDown, ChevronLeft, ChevronRight, Ellipsis, MapPin, Plus, Repeat } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Ellipsis, MapPin, Plus, Repeat, Video } from "lucide-react";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   type EventRepeat,
+  type Guest,
   api,
   defaultCalendar,
   messageOf,
@@ -39,6 +40,7 @@ import {
   midnight,
   isWeekend,
   monthDays,
+  onWeekChange,
   placeDayWith,
   sameClockIn,
   sameDay,
@@ -50,6 +52,7 @@ import {
   weekNumber,
   weekSpans,
   zoneName,
+  meetingOf,
 } from "./model";
 import { dateText, timeText } from "../../lib/when";
 import { useReveal } from "../../lib/reveal";
@@ -164,6 +167,59 @@ const REFRESHES = [
 
 /** A place, for the map app this computer opens `geo:` links with. */
 const mapsHref = (place: string) => `geo:0,0?q=${encodeURIComponent(place.split("\n").join(", "))}`;
+
+/** An event's guests and their answers, as Calendar lists them: read from Apple when the event
+ *  opens; nothing shown for an event with none, or before the answer comes. */
+function Guests({ guid }: { guid: string | null | undefined }) {
+  const [guests, setGuests] = useState<Guest[]>([]);
+  useEffect(() => {
+    setGuests([]);
+    if (!guid || guid.startsWith("quince:")) return;
+    let live = true;
+    api.eventGuests(guid).then((g) => live && setGuests(g), () => {});
+    return () => {
+      live = false;
+    };
+  }, [guid]);
+  if (guests.length === 0) return null;
+  const answer = { accepted: "Accepted", declined: "Declined", tentative: "Maybe", pending: "No reply" } as const;
+  const glyph = { accepted: "✓", declined: "✕", tentative: "?", pending: "" } as const;
+  return (
+    <section className="cx-guests" aria-label="Guests">
+      <h4 className="cx-guests-head">
+        {guests.length} {guests.length === 1 ? "Guest" : "Guests"}
+      </h4>
+      <ul className="cx-guest-list">
+        {guests.map((g, i) => {
+          const name = g.name ?? g.email ?? "Guest";
+          const role = g.isOrganizer ? "Organizer" : g.isMe ? "You" : null;
+          return (
+            <li key={`${g.email ?? g.name ?? ""}-${i}`} className="cx-guest" title={g.email ?? undefined}>
+              <span className={`cx-guest-mark is-${g.status}`} aria-hidden="true">{glyph[g.status]}</span>
+              <span className="cx-guest-name">
+                {name}
+                {role && <span className="cx-guest-role"> · {role}</span>}
+              </span>
+              <span className="cx-guest-answer">{answer[g.status]}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/** Join, for an event with a video call: the call's own link, opened in its app or browser. */
+function JoinButton({ event }: { event: { url?: string | null; location?: string | null; notes?: string | null } }) {
+  const meeting = useMemo(() => meetingOf(event), [event.url, event.location, event.notes]);
+  if (!meeting) return null;
+  return (
+    <a className="cx-join" href={meeting.href} target="_blank" rel="noreferrer" title={meeting.href}>
+      <Video size={14} strokeWidth={2} aria-hidden="true" />
+      Join {meeting.service}
+    </a>
+  );
+}
 
 const readSet = (key: string) => {
   try {
@@ -437,11 +493,15 @@ export function CalendarView() {
     };
   }, []);
 
+  // The first day of the week, changed in Settings or read late from the system's LC_TIME:
+  // every view is drawn again from it.
+  const [weekStart, setWeekStartTick] = useState(0);
+  useEffect(() => onWeekChange(() => setWeekStartTick((n) => n + 1)), []);
   const week = useMemo(() => {
     const start = startOfWeek(selected);
     return Array.from({ length: 7 }, (_, i) => addDays(start, i));
-  }, [selected]);
-  const month = useMemo(() => monthDays(selected), [selected]);
+  }, [selected, weekStart]);
+  const month = useMemo(() => monthDays(selected), [selected, weekStart]);
 
   // What each view reads from the library. Day and Week read the month around them and a
   // month either side: asked for one day at a time, stepping to the next day showed the last
@@ -1885,6 +1945,7 @@ const MonthView = memo(function MonthView({
   // A cell too narrow for any title shows its day's items as dots, as Calendar does on a
   // small screen; a title cut to two letters and "3 more" squeezed below it said nothing.
   const [dots, setDots] = useState(false);
+  const [tiny, setTiny] = useState(false);
   useLayoutEffect(() => {
     const el = grid.current;
     if (!el) return undefined;
@@ -1897,7 +1958,13 @@ const MonthView = memo(function MonthView({
       const width = (week?.firstElementChild as HTMLElement | null)?.getBoundingClientRect().width ?? 0;
       // Lines 24px apart (calendar.css: each a 24px target, WCAG 2.2).
       setRows(Math.max(1, Math.floor((height - 28) / LINE)));
-      setDots(width > 0 && width < DOT_CELL);
+      // Dots too in a cell too short for one whole line under its date: one line was kept
+      // regardless, and its event drawn cut in half.
+      const short = height > 0 && height - 28 < LINE;
+      setDots((width > 0 && width < DOT_CELL) || short);
+      // Too short even for a row of 24px dots: small marks to see, the day itself the thing
+      // to press (it opens with its events), so no control is ever drawn half out of its cell.
+      setTiny(short);
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -1965,7 +2032,7 @@ const MonthView = memo(function MonthView({
                         ? dateText(day, { month: "short", day: "numeric" })
                         : day.getDate()}
                     </span>
-                    <ul className={`cx-items${dots ? " is-dots" : ""}`} style={{ marginTop: `${lanesHere * LANE}px` }}>
+                    <ul className={`cx-items${dots ? " is-dots" : ""}${tiny ? " is-tiny" : ""}`} {...(tiny ? { inert: "" } : {})} style={{ marginTop: `${lanesHere * LANE}px` }}>
                       {visible.map((item) =>
                         item.kind === "event" ? (
                           <li key={item.event.guid}>
@@ -2875,6 +2942,7 @@ function EventPopover({
         onSubmit={(e) => { e.preventDefault(); onClose(); }}
       >
         <h3 className="cx-info-title">{draft.title}</h3>
+        <JoinButton event={draft} />
         {draft.location && (
           <p className="cx-info-line cx-info-place">
             {draft.location}
@@ -2886,6 +2954,7 @@ function EventPopover({
         {draft.url && (
           <a className="cx-info-url" href={draft.url} target="_blank" rel="noreferrer">{draft.url}</a>
         )}
+        <Guests guid={draft.guid} />
         {draft.notes && <p className="cx-info-notes">{draft.notes}</p>}
       </form>
       </Portal>
@@ -2914,6 +2983,7 @@ function EventPopover({
         readOnly={!editable}
         onChange={(e) => set({ title: e.target.value })}
       />
+      <JoinButton event={draft} />
       <span className="cx-pop-place">
         <input
           className="cx-pop-line"
@@ -3061,6 +3131,7 @@ function EventPopover({
           <a className="cx-pop-link is-text" href={draft.url.trim()} target="_blank" rel="noreferrer">Open</a>
         )}
       </span>
+      <Guests guid={draft.guid} />
       <textarea
         className="cx-pop-notes"
         value={draft.notes}

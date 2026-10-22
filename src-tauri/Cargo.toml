@@ -12,7 +12,10 @@ tauri-build = { version = "2", features = [] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 quince-vfs = { path = "../crates/quince-vfs" }
 sha2 = "0.10"
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# The tray is Tauri's on Windows and macOS. On Linux it is ksni's (main.rs, linux_tray): Tauri's
+# goes through libayatana-appindicator, which never passes a click on, so a left click could
+# only ever open the menu.
+tauri = { version = "2", features = ["image-png"] }
 quince-auth = { path = "../crates/quince-auth" }
 quince-core = { path = "../crates/quince-core" }
 quince-media = { workspace = true }
@@ -31,6 +34,12 @@ notify-rust = "4"
 tauri-plugin-single-instance = "2"
 libc = "0.2"
 tauri-plugin-window-state = "2"
+# A merged card's picture made small enough for Apple (contacts_merge.rs): the same build of
+# the crate quince-media already uses, so nothing new is compiled.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
 
 # Toasts with buttons on Windows (notify-rust sends none there): the same crate notify-rust uses.
 [target.'cfg(windows)'.dependencies]
@@ -44,11 +53,18 @@ gstreamer = "0.25"
 gstreamer-app = "0.25"
 gstreamer-video = "0.25"
 zbus = "5"
+# The tray, spoken as StatusNotifierItem over D-Bus itself: a left click (Activate) opens the
+# window. async-io, as zbus here runs on, not a second D-Bus runtime.
+ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
 # Each app's window says its own app ID on Wayland (apps.rs): the GTK window under Tauri's.
 gtk = "0.18"
 gdk = "0.18"
 glib = "0.18"
+# The web views' memory cache sized for an app, not a browser (main.rs, app_cache): the same
+# build wry already compiles, so nothing new is built.
+webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
 
 [dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
 tempfile = "3"
+# A stand-in for Apple's contacts service, for sending a merge twice (contacts_merge.rs).
+wiremock = "0.6"

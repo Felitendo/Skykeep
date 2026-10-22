@@ -591,44 +591,13 @@ pub async fn edit_rich_cloudkit_from(
                     .into(),
             )
         })?;
-        let target = match base {
-            Some(base) if base != theirs => merge_edits(base, body, &theirs).ok_or_else(|| {
-                Error::Refused(
-                    "This note was changed on another device while you were writing, in the same place. Nothing was saved; your text is still here."
-                        .into(),
-                )
-            })?,
-            _ => body.to_string(),
+        let Some((target, rewritten)) =
+            rewrite_for_save(encoded, &theirs, base, body, runs, base_runs)?
+        else {
+            // Apple already holds this text, set this way: nothing to write. A save that only
+            // re-reads the note (it was opened, looked at) must never become a write.
+            return Ok(theirs);
         };
-        let rewritten = match runs {
-            Some(runs) => {
-                let laid = if target == body { runs.to_vec() } else { crate::ckdocument::carry_runs(body, runs, &target) };
-                // Lines not restyled here keep what Apple holds — a tick made on the phone.
-                let laid = match (base, base_runs) {
-                    (Some(base), Some(base_runs)) => crate::ckdocument::keep_their_formatting(
-                        base,
-                        base_runs,
-                        &theirs,
-                        &crate::ckdocument::runs_from_base64(encoded),
-                        &target,
-                        &laid,
-                    ),
-                    _ => laid,
-                };
-                crate::ckdocument::replace_rich_in_base64(encoded, &target, &laid)
-            }
-            None => crate::ckdocument::replace_text_in_base64(encoded, &target),
-        }
-        .ok_or_else(|| {
-            Error::Refused(
-                "Skykeep can’t safely save changes to this note yet, so nothing was changed. Editing it on an Apple device is safe."
-                    .into(),
-            )
-        })?;
-        fits_inline(&rewritten)?;
-        if !crate::ckdocument::attachments_sound_in_base64(encoded, &rewritten) {
-            return Err(Error::Refused(ATTACHMENTS_UNSOUND.into()));
-        }
         let (title, snippet) = title_and_snippet(&target);
         let Some(tag) = current.get("recordChangeTag").and_then(Value::as_str) else {
             return Err(Error::Refused(
@@ -664,6 +633,169 @@ pub async fn edit_rich_cloudkit_from(
     Err(Error::Refused(
         "This note keeps changing on another device, so nothing was saved yet; your text is still here.".into(),
     ))
+}
+
+/// What a save writes over Apple's document `encoded` (whose text is `theirs`): the text it
+/// ends up holding and the document to write — or `None` when that is exactly what Apple
+/// already holds, text and formatting, so nothing is written at all.
+///
+/// The formatting goes the least invasive way that gives what the editor shows: when Apple's
+/// own runs, carried over the text edit as a text-only edit carries them, already describe the
+/// formatting wanted, only the text is rewritten and every other run keeps Apple's bytes —
+/// how the runs happen to be cut (Apple's come in pieces, the editor's merged) never turns into
+/// a rewrite. Only a real restyle writes runs.
+fn rewrite_for_save(
+    encoded: &str,
+    theirs: &str,
+    base: Option<&str>,
+    body: &str,
+    runs: Option<&[crate::ckdocument::Run]>,
+    base_runs: Option<&[crate::ckdocument::Run]>,
+) -> Result<Option<(String, String)>> {
+    let target = match base {
+        Some(base) if base != theirs => merge_edits(base, body, theirs).ok_or_else(|| {
+            Error::Refused(
+                "This note was changed on another device while you were writing, in the same place. Nothing was saved; your text is still here."
+                    .into(),
+            )
+        })?,
+        _ => body.to_string(),
+    };
+    let their_runs = crate::ckdocument::runs_from_base64(encoded);
+    let wanted = runs.map(|runs| {
+        let laid = if target == body {
+            runs.to_vec()
+        } else {
+            crate::ckdocument::carry_runs(body, runs, &target)
+        };
+        // Lines not restyled here keep what Apple holds — a tick made on the phone.
+        match (base, base_runs) {
+            (Some(base), Some(base_runs)) => crate::ckdocument::keep_their_formatting(
+                base,
+                base_runs,
+                theirs,
+                &their_runs,
+                &target,
+                &laid,
+            ),
+            _ => laid,
+        }
+    });
+    if target == theirs
+        && wanted
+            .as_deref()
+            .is_none_or(|w| same_formatting(theirs, w, &their_runs))
+    {
+        return Ok(None);
+    }
+    let text_only = || crate::ckdocument::replace_text_in_base64(encoded, &target);
+    let rewritten = match wanted.as_deref() {
+        None => text_only(),
+        Some(wanted) => match text_only() {
+            Some(doc)
+                if same_formatting(
+                    &target,
+                    wanted,
+                    &crate::ckdocument::runs_from_base64(&doc),
+                ) =>
+            {
+                Some(doc)
+            }
+            _ => crate::ckdocument::replace_rich_in_base64(encoded, &target, wanted),
+        },
+    }
+    .ok_or_else(|| {
+        Error::Refused(
+            "Skykeep can’t safely save changes to this note yet, so nothing was changed. Editing it on an Apple device is safe."
+                .into(),
+        )
+    })?;
+    fits_inline(&rewritten)?;
+    if !crate::ckdocument::attachments_sound_in_base64(encoded, &rewritten) {
+        return Err(Error::Refused(ATTACHMENTS_UNSOUND.into()));
+    }
+    Ok(Some((target, rewritten)))
+}
+
+/// `runs` over `text` in one canonical shape, so two descriptions of the same formatting
+/// compare equal however they are cut: each unit takes its own character attributes and the
+/// paragraph setting of the unit that ends its line (as Apple and the editor both read a
+/// line's setting), a tick only on a checklist line, a list's start only on a numbered one —
+/// then neighbours that differ in nothing but length are one run. An attachment's run is
+/// never joined to anything: each stands for its own character. `None` when the runs do not
+/// describe the text.
+#[must_use]
+pub fn canonical_runs(
+    text: &str,
+    runs: &[crate::ckdocument::Run],
+) -> Option<Vec<crate::ckdocument::Run>> {
+    use crate::ckdocument::Run;
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if runs.iter().map(|r| r.length).sum::<u64>() != units.len() as u64 {
+        return None;
+    }
+    let mut each: Vec<&Run> = Vec::with_capacity(units.len());
+    for r in runs {
+        each.extend(std::iter::repeat_n(r, usize::try_from(r.length).ok()?));
+    }
+    // Where each unit's line ends: its newline, or the text's last unit.
+    let mut ends = vec![0usize; units.len()];
+    let mut end = units.len().saturating_sub(1);
+    for i in (0..units.len()).rev() {
+        if units[i] == u16::from(b'\n') {
+            end = i;
+        }
+        ends[i] = end;
+    }
+    let mut out: Vec<Run> = Vec::new();
+    for (i, own) in each.iter().enumerate() {
+        let line = each[ends[i]];
+        let style = line.style;
+        let unit = Run {
+            length: 1,
+            style,
+            indent: line.indent,
+            checked: (style == Some(103)).then(|| line.checked.unwrap_or(false)),
+            start: line.start.filter(|&n| style == Some(102) && n != 1),
+            quote: line.quote,
+            bold: own.bold,
+            italic: own.italic,
+            underline: own.underline,
+            strike: own.strike,
+            link: own.link.clone().filter(|l| !l.is_empty()),
+            attachment: own.attachment.clone(),
+            emphasis: own.emphasis,
+        };
+        match out.last_mut() {
+            Some(last)
+                if last.attachment.is_none()
+                    && unit.attachment.is_none()
+                    && *last
+                        == Run {
+                            length: last.length,
+                            ..unit.clone()
+                        } =>
+            {
+                last.length += 1;
+            }
+            _ => out.push(unit),
+        }
+    }
+    Some(out)
+}
+
+/// Whether `a` and `b` set `text` the same way: equal once both are in [`canonical_runs`]'s
+/// shape. Runs that do not describe the text are never the same as anything.
+#[must_use]
+pub fn same_formatting(
+    text: &str,
+    a: &[crate::ckdocument::Run],
+    b: &[crate::ckdocument::Run],
+) -> bool {
+    match (canonical_runs(text, a), canonical_runs(text, b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// One edit of `base`, character by character: which of its characters it removed, and what
@@ -1376,6 +1508,219 @@ pub async fn delete_cloudkit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ckdocument::Run;
+
+    fn plain(length: u64) -> Run {
+        Run {
+            length,
+            ..Run::default()
+        }
+    }
+
+    fn attached(id: &str) -> Run {
+        Run {
+            attachment: Some(id.into()),
+            ..plain(1)
+        }
+    }
+
+    /// Shaped like his "Attachments" note (text made generic): Apple's runs in pieces — a word
+    /// split in two, a sentence in five — and the editor's, the same formatting merged.
+    #[test]
+    fn runs_cut_differently_are_the_same_formatting() {
+        let text = "Attachments\n\u{FFFC}\n\u{FFFC}\nA few words to try it out \n\u{FFFC}";
+        let apple = vec![
+            plain(10),
+            plain(1),
+            plain(1),
+            attached("A1"),
+            plain(1),
+            attached("A2"),
+            plain(1),
+            plain(2),
+            plain(10),
+            plain(8),
+            plain(5),
+            plain(1),
+            plain(1),
+            attached("A3"),
+        ];
+        let editor = vec![
+            plain(12),
+            attached("A1"),
+            plain(1),
+            attached("A2"),
+            plain(1 + 26 + 1),
+            attached("A3"),
+        ];
+        assert!(same_formatting(text, &apple, &editor));
+        assert_eq!(canonical_runs(text, &apple), canonical_runs(text, &editor));
+        // Bold on one word is a difference; so is an attachment moved or dropped.
+        let mut bold = editor.clone();
+        bold.splice(
+            4..5,
+            [
+                plain(1),
+                Run {
+                    bold: true,
+                    ..plain(2)
+                },
+                plain(26),
+            ],
+        );
+        assert!(!same_formatting(text, &apple, &bold));
+        let mut moved = editor.clone();
+        moved[1] = attached("A2");
+        moved[3] = attached("A1");
+        assert!(!same_formatting(text, &apple, &moved));
+        let mut dropped = editor.clone();
+        dropped[1] = plain(1);
+        assert!(!same_formatting(text, &apple, &dropped));
+        // A line's setting is its newline's: a stray style on a character inside it is not one.
+        let stray = vec![
+            Run {
+                style: Some(1),
+                ..plain(5)
+            },
+            plain(5),
+            plain(2),
+            attached("A1"),
+            plain(1),
+            attached("A2"),
+            plain(28),
+            attached("A3"),
+        ];
+        assert!(same_formatting(text, &stray, &editor));
+        // Runs that do not describe the text are never the same as anything.
+        assert!(!same_formatting(text, &editor[..2], &editor[..2]));
+    }
+
+    /// A document as a phone leaves one: a title, pictures each on a line of their own (their
+    /// runs stamped, so Apple's runs come in pieces), a sentence, a last picture.
+    fn fixture() -> String {
+        let mut doc =
+            crate::ckdocument::text_to_base64("Attachments\nA few words to try it out \n");
+        for (i, at) in [12u64, 14, 16].into_iter().enumerate() {
+            doc = crate::ckdocument::insert_attachment_in_base64(
+                &doc,
+                at,
+                &format!("00000000-0000-4000-8000-00000000000{i}"),
+                "public.jpeg",
+                10 + i as u64,
+            )
+            .expect("placed")
+            .0;
+        }
+        doc
+    }
+
+    /// Opening a note and leaving it — a "save" of exactly what Apple holds, its runs merged as
+    /// the editor merges them — writes nothing.
+    #[test]
+    fn a_save_that_changes_nothing_writes_nothing() {
+        let doc = fixture();
+        let text = crate::ckdocument::stored_text_from_base64(&doc).unwrap();
+        let apple = crate::ckdocument::runs_from_base64(&doc);
+        let editor = canonical_runs(&text, &apple).unwrap();
+        assert_ne!(
+            apple.len(),
+            editor.len(),
+            "the fixture's runs come in pieces"
+        );
+        assert!(
+            rewrite_for_save(&doc, &text, Some(&text), &text, Some(&editor), Some(&apple))
+                .unwrap()
+                .is_none()
+        );
+        assert!(rewrite_for_save(&doc, &text, None, &text, None, None)
+            .unwrap()
+            .is_none());
+    }
+
+    /// A real edit writes the text, and every run it did not touch keeps Apple's bytes: the
+    /// editor's merged runs never re-cut or rewrite the rest of the note.
+    #[test]
+    fn a_real_edit_keeps_every_other_run_byte_for_byte() {
+        let doc = fixture();
+        let text = crate::ckdocument::stored_text_from_base64(&doc).unwrap();
+        let apple = crate::ckdocument::runs_from_base64(&doc);
+        let editor = canonical_runs(&text, &apple).unwrap();
+        let at = text.find("out ").unwrap() + 3;
+        let typed = format!("{}!{}", &text[..at], &text[at..]);
+        let mine = crate::ckdocument::carry_runs(&text, &editor, &typed);
+        let (kept, written) =
+            rewrite_for_save(&doc, &text, Some(&text), &typed, Some(&mine), Some(&apple))
+                .unwrap()
+                .expect("an edit is written");
+        assert_eq!(kept, typed);
+        let raw = |d: &str| {
+            use base64::Engine;
+            crate::ckdocument::debug_attribute_runs(
+                &base64::engine::general_purpose::STANDARD.decode(d).unwrap(),
+            )
+        };
+        let (before, after) = (raw(&doc), raw(&written));
+        assert_eq!(before.len(), after.len(), "the runs were re-cut");
+        let changed: Vec<usize> = (0..before.len())
+            .filter(|&i| before[i] != after[i])
+            .collect();
+        assert_eq!(
+            changed.len(),
+            1,
+            "only the run typed into changes: {changed:?}"
+        );
+        let i = changed[0];
+        assert_eq!(
+            crate::ckdocument::debug_run_length(&after[i]),
+            crate::ckdocument::debug_run_length(&before[i]) + 1
+        );
+        assert!(same_formatting(
+            &typed,
+            &crate::ckdocument::runs_from_base64(&written),
+            &mine
+        ));
+        // What the save wrote before: the editor's runs laid over the whole note, which re-cut
+        // and re-encoded runs nobody touched.
+        let old = crate::ckdocument::replace_rich_in_base64(&doc, &typed, &mine).unwrap();
+        let old = raw(&old);
+        assert!(
+            old.len() != before.len()
+                || (0..before.len()).filter(|&i| before[i] != old[i]).count() > 1,
+            "the old path rewrote only the edited run; this test would not catch the bug"
+        );
+    }
+
+    /// A restyle is written — and the lines it did not touch still read as Apple set them.
+    #[test]
+    fn a_restyle_is_written() {
+        let doc = fixture();
+        let text = crate::ckdocument::stored_text_from_base64(&doc).unwrap();
+        let apple = crate::ckdocument::runs_from_base64(&doc);
+        let mut mine = canonical_runs(&text, &apple).unwrap();
+        // The title made a title.
+        let first = mine[0].clone();
+        mine.splice(
+            0..1,
+            [
+                Run {
+                    length: 12,
+                    style: Some(0),
+                    ..first.clone()
+                },
+                Run {
+                    length: first.length - 12,
+                    ..first
+                },
+            ],
+        );
+        let (_, written) =
+            rewrite_for_save(&doc, &text, Some(&text), &text, Some(&mine), Some(&apple))
+                .unwrap()
+                .expect("a restyle is written");
+        let read = crate::ckdocument::runs_from_base64(&written);
+        assert_eq!(read[0].style, Some(0));
+        assert!(same_formatting(&text, &read, &mine));
+    }
 
     /// A table on a note's first line, or a note of nothing but attachments: the title and
     /// snippet are its words, never the marks where the attachments sit.

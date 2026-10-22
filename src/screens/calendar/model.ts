@@ -51,10 +51,72 @@ export function weekInfoOf(locale: string): WeekInfo {
   }
 }
 
-/** This computer's week, read once. */
-export const WEEK: WeekInfo = weekInfoOf(
-  (typeof navigator !== "undefined" && navigator.language) || Intl.DateTimeFormat().resolvedOptions().locale
-);
+/** The first day chosen in Settings: "auto" for the locale's, else a day (`getDay`'s number). */
+export type WeekStartChoice = "auto" | "0" | "1" | "6";
+const WEEK_KEY = "quince.weekStart";
+export function weekStartChoice(): WeekStartChoice {
+  try {
+    const v = window.localStorage.getItem(WEEK_KEY);
+    return v === "0" || v === "1" || v === "6" ? v : "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+/** The locale dates are written in: the engine's language until the system's LC_TIME is read. */
+let timeLocale =
+  (typeof navigator !== "undefined" && navigator.language) || Intl.DateTimeFormat().resolvedOptions().locale;
+
+/** The locale's own first day, whatever Settings chose. */
+export const localeFirstDay = () => weekInfoOf(timeLocale).firstDay;
+
+function weekNow(): WeekInfo {
+  const info = weekInfoOf(timeLocale);
+  const choice = typeof window === "undefined" ? "auto" : weekStartChoice();
+  return choice === "auto" ? info : { ...info, firstDay: Number(choice) };
+}
+
+/**
+ * This computer's week: its locale's (LC_TIME before LANG, read from the system), or the first
+ * day chosen in Settings. One object, kept current in place, so every default that reads it
+ * reads the latest; a change is told as `quince:week` for the views to draw again.
+ */
+export const WEEK: WeekInfo = weekNow();
+const WEEK_CHANGED = "quince:week";
+function refreshWeek() {
+  const next = weekNow();
+  if (next.firstDay === WEEK.firstDay && next.weekend.join() === WEEK.weekend.join()) return;
+  Object.assign(WEEK, next);
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(WEEK_CHANGED));
+}
+export function setWeekStart(choice: WeekStartChoice) {
+  try {
+    if (choice === "auto") window.localStorage.removeItem(WEEK_KEY);
+    else window.localStorage.setItem(WEEK_KEY, choice);
+  } catch {
+    // Applies for now; the locale's on the next launch.
+  }
+  refreshWeek();
+}
+/** Calls `run` whenever the week changes; answers the way to stop. */
+export function onWeekChange(run: () => void): () => void {
+  window.addEventListener(WEEK_CHANGED, run);
+  return () => window.removeEventListener(WEEK_CHANGED, run);
+}
+if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke<string | null>("system_time_locale"))
+    .then((tag) => {
+      if (!tag) return;
+      try {
+        new Intl.Locale(tag);
+      } catch {
+        return;
+      }
+      timeLocale = tag;
+      refreshWeek();
+    }, () => {});
+}
 export const isWeekend = (d: Date) => WEEK.weekend.includes(d.getDay());
 
 /** The day on or before `d` that a week starts on here — Sunday in the US, Monday in Europe. */
@@ -340,4 +402,42 @@ export function weekNumber(weekStart: Date, firstDay = WEEK.firstDay): number {
   const last = addDays(start, 6);
   const firstWeek = startOfWeek(new Date(last.getFullYear(), 0, 1), firstDay);
   return Math.round((start.getTime() - firstWeek.getTime()) / (7 * 864e5)) + 1;
+}
+
+/** A video call an event holds a link to, and the service it is on. */
+export type Meeting = { href: string; service: string };
+
+// Each service by the shape of its join link, never by a word in the text: a link only counts
+// when its host and path are the service's own. Hosts are matched whole (a subdomain may lead,
+// as `company.zoom.us`), so `zoom.us.example.com` or `notzoom.us` are never taken for Zoom.
+const MEETINGS: { service: string; host: RegExp; path: RegExp }[] = [
+  { service: "Zoom", host: /^([a-z0-9-]+\.)*zoom\.(us|com)$/, path: /^\/(j|my|w|wc\/join)\/[\w.-]+/ },
+  { service: "Google Meet", host: /^meet\.google\.com$/, path: /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}\b/ },
+  { service: "Microsoft Teams", host: /^teams\.(microsoft|live)\.com$/, path: /^\/(l\/meetup-join|meet)\// },
+  { service: "Webex", host: /^([a-z0-9-]+\.)*webex\.com$/, path: /^\/(meet|join|wbxmjs|[\w-]+\/j\.php)\b/ },
+  { service: "FaceTime", host: /^facetime\.apple\.com$/, path: /^\/join\b/ },
+];
+
+/**
+ * The video call to join from an event: the first service link in its URL field, then its
+ * location, then its notes — where calendars and invitations put them. Only `https:` links,
+ * trailing punctuation left off, nothing guessed: no link of a known service, no button.
+ */
+export function meetingOf(e: { url?: string | null; location?: string | null; notes?: string | null }): Meeting | null {
+  for (const text of [e.url, e.location, e.notes]) {
+    if (!text) continue;
+    for (const raw of text.match(/https:\/\/[^\s<>"'()]+/gi) ?? []) {
+      const link = raw.replace(/[.,;:!?)\]}>]+$/, "");
+      let url: URL;
+      try {
+        url = new URL(link);
+      } catch {
+        continue;
+      }
+      const host = url.hostname.toLowerCase();
+      const found = MEETINGS.find((m) => m.host.test(host) && m.path.test(url.pathname));
+      if (found) return { href: url.toString(), service: found.service };
+    }
+  }
+  return null;
 }

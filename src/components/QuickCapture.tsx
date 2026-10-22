@@ -81,14 +81,11 @@ export function QuickCapture({ initial }: { initial: Kind }) {
     };
   }, [kind]);
 
-  // Shown once drawn, never as a blank frame (window_ready, main.rs).
+  // Shown once in the page (window_ready, main.rs) — not after an animation frame, which a
+  // hidden window never draws, so the capture waited out the three-second fallback.
   useEffect(() => {
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        invoke("window_ready", { needsYou: true }).catch(() => {});
-        field.current?.focus();
-      }),
-    );
+    invoke("window_ready", { needsYou: true }).catch(() => {});
+    field.current?.focus();
   }, []);
 
   const close = () => void intakeApi.captureClose().catch(() => window.close());

@@ -7,7 +7,7 @@ const ctx = await b.newContext({ viewport: { width: 1280, height: 820 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null,
   calendarFixture: false, notesFixture: true, contactsFixture: false, driveFixture: false, remindersFixture: false });
 const page = await ctx.newPage();
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.goto(process.env.BASE ?? process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await page.locator(".nav-item", { hasText: "Notes" }).click();
 await page.waitForTimeout(400);
 

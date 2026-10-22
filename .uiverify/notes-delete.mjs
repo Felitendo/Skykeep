@@ -6,14 +6,14 @@ const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, notesFixture: true });
 const page = await ctx.newPage();
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.goto(process.env.BASE ?? process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Notes");
 await page.waitForTimeout(400);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 const titles = () => page.locator(".note-row .note-row-title, .note-row strong").allInnerTexts();
 const rows = page.locator(".note-row");
-const openTitle = () => page.locator(".note-row[aria-current='true'], .note-row.is-open, .note-row[aria-selected='true']").first().innerText();
+const openTitle = () => page.locator(".note-row.is-open, .note-row[aria-selected='true']").first().innerText();
 
 await page.evaluate(() => { window.__slowDelete = 1500; });
 const before = await rows.allInnerTexts();

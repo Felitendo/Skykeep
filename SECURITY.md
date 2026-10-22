@@ -14,7 +14,8 @@ Apple, and to calendars you subscribe to — nothing else:
 - `*.icloud.com` service addresses Apple gives the session (CloudKit, Contacts, Calendar,
   iCloud Drive, Photos), `gateway.icloud.com` and `cvws.icloud-content.com` (downloads).
 - `calendars.icloud.com` — Apple's public holiday calendars.
-- The `.com.cn` equivalents of the above, for accounts in mainland China.
+- The `.com.cn` equivalents of the above are on the allow-list too, kept for accounts in
+  mainland China. Signing in with one isn't supported yet, so today they go unused.
 - The host of each calendar you subscribe to by address (Calendar ▸ + ▸ New Subscription…),
   and only once you have: a `webcal://` or `https://` address of a public calendar file.
 

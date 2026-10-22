@@ -54,7 +54,7 @@ for (const word of ["marlowe", "zoya", "curtains"]) {
 await field.fill("marlowe");
 await page.waitForTimeout(400);
 const panel = page.getByRole("listbox", { name: "Found" });
-const more = panel.getByRole("button", { name: /^Show all \d+ in Contacts/ });
+const more = panel.getByRole("option", { name: /^Show all \d+ in Contacts/ });
 const t0 = Date.now();
 await more.click();
 await page.waitForFunction(() => document.querySelectorAll('#gsearch-results [role="option"]').length > 20);

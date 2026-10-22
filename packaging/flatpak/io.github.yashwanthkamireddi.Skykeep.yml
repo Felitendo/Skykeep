@@ -46,7 +46,7 @@ finish-args:
   - --talk-name=org.freedesktop.secrets
   # Reminder alerts (notify-rust, org.freedesktop.Notifications over D-Bus).
   - --talk-name=org.freedesktop.Notifications
-  # The tray icon (libayatana-appindicator, StatusNotifierItem).
+  # The tray icon (a StatusNotifierItem, spoken by the app over D-Bus).
   - --talk-name=org.kde.StatusNotifierWatcher
   # Files saved from Drive and Photos land in ~/Downloads: the app writes there directly
   # (main.rs, photos.rs: download_dir()), not through the file-chooser portal, so without this
@@ -67,10 +67,8 @@ finish-args:
   # - --system-talk-name=org.freedesktop.login1
 
 modules:
-  # The tray. libayatana-appindicator is not in the GNOME runtime; Flathub's shared module
-  # builds it. Clone flathub/shared-modules here first (README, "Build locally"); in the
-  # Flathub repository it is a git submodule at this path.
-  - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
+  # No tray library: the tray is a StatusNotifierItem the app speaks over D-Bus itself (ksni),
+  # registered with the host through --talk-name=org.kde.StatusNotifierWatcher above.
 
   - name: skykeep
     buildsystem: simple
@@ -116,14 +114,18 @@ modules:
       # KRunner's D-Bus plugin, and the bus entry that starts Skykeep hidden to answer. The
       # bus name is under the app ID, which the sandbox may own by default; Flatpak exports
       # all three and rewrites the service's Exec to `flatpak run`.
-      - install -Dm644 packaging/${FLATPAK_ID}.search-provider.ini ${FLATPAK_DEST}/share/gnome-shell/search-providers/${FLATPAK_ID}.search-provider.ini
+      # The provider names the .deb's launcher (Skykeep.desktop); here it is the app ID's.
+      - sed 's|^DesktopId=Skykeep.desktop$|DesktopId=${FLATPAK_ID}.desktop|' packaging/${FLATPAK_ID}.search-provider.ini > ${FLATPAK_ID}.search-provider.ini
+      - install -Dm644 ${FLATPAK_ID}.search-provider.ini ${FLATPAK_DEST}/share/gnome-shell/search-providers/${FLATPAK_ID}.search-provider.ini
       - desktop-file-validate packaging/${FLATPAK_ID}.krunner.desktop
       - install -Dm644 packaging/${FLATPAK_ID}.krunner.desktop ${FLATPAK_DEST}/share/krunner/dbusplugins/${FLATPAK_ID}.krunner.desktop
       - sed 's|^Exec=/usr/bin/skykeep|Exec=${FLATPAK_DEST}/bin/skykeep|' packaging/${FLATPAK_ID}.SearchProvider.service > ${FLATPAK_ID}.SearchProvider.service
       - install -Dm644 ${FLATPAK_ID}.SearchProvider.service ${FLATPAK_DEST}/share/dbus-1/services/${FLATPAK_ID}.SearchProvider.service
 
-      # Icons: the vector original, and the rendered sizes.
-      - install -Dm644 src-tauri/icons/icon.png ${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/${FLATPAK_ID}.png
+      # Icons: the rendered sizes, 48x48 the one the icon theme spec asks every app for.
+      - install -Dm644 src-tauri/icons/16x16.png ${FLATPAK_DEST}/share/icons/hicolor/16x16/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/24x24.png ${FLATPAK_DEST}/share/icons/hicolor/24x24/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/48x48.png ${FLATPAK_DEST}/share/icons/hicolor/48x48/apps/${FLATPAK_ID}.png
       - install -Dm644 src-tauri/icons/32x32.png ${FLATPAK_DEST}/share/icons/hicolor/32x32/apps/${FLATPAK_ID}.png
       - install -Dm644 src-tauri/icons/64x64.png ${FLATPAK_DEST}/share/icons/hicolor/64x64/apps/${FLATPAK_ID}.png
       - install -Dm644 src-tauri/icons/128x128.png ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/${FLATPAK_ID}.png

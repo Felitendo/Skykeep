@@ -208,6 +208,46 @@ fn row_to_photo(r: &rusqlite::Row<'_>) -> rusqlite::Result<Photo> {
     })
 }
 
+/// What is typed, as SQL: one condition per word (each its own parameter — what is typed is
+/// never part of the SQL), every word to match the file's name, title, caption or a keyword, or
+/// the year or month it was taken. `None` when nothing is typed.
+fn search_terms(query: &str) -> Option<(String, Vec<String>)> {
+    let words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| w.to_lowercase())
+        .filter(|w| !w.is_empty())
+        .take(8)
+        .collect();
+    if words.is_empty() {
+        return None;
+    }
+    let one = "(LOWER(COALESCE(filename, '')) LIKE ?{n} ESCAPE '\\'
+          OR LOWER(COALESCE(title, '')) LIKE ?{n} ESCAPE '\\'
+          OR LOWER(COALESCE(caption, '')) LIKE ?{n} ESCAPE '\\'
+          OR LOWER(COALESCE(keywords, '')) LIKE ?{n} ESCAPE '\\'
+          OR strftime('%Y', taken_at, 'unixepoch', 'localtime') LIKE ?{n} ESCAPE '\\'
+          OR (CASE strftime('%m', taken_at, 'unixepoch', 'localtime')
+                WHEN '01' THEN 'january' WHEN '02' THEN 'february' WHEN '03' THEN 'march'
+                WHEN '04' THEN 'april' WHEN '05' THEN 'may' WHEN '06' THEN 'june'
+                WHEN '07' THEN 'july' WHEN '08' THEN 'august' WHEN '09' THEN 'september'
+                WHEN '10' THEN 'october' WHEN '11' THEN 'november' ELSE 'december' END)
+              LIKE ?{n} ESCAPE '\\')";
+    let conditions: Vec<String> = (1..=words.len())
+        .map(|n| one.replace("{n}", &n.to_string()))
+        .collect();
+    let patterns = words
+        .iter()
+        .map(|w| {
+            let escaped = w
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            format!("%{escaped}%")
+        })
+        .collect();
+    Some((conditions.join(" AND "), patterns))
+}
+
 impl Library {
     /// Photos written or replaced, by asset id.
     pub fn put_photos(&mut self, photos: &[Photo]) -> Result<()> {
@@ -310,12 +350,17 @@ impl Library {
         if !photos.iter().any(|p| p.burst.is_some()) {
             return Ok(photos);
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT burst, COUNT(*) FROM photos WHERE burst IS NOT NULL AND deleted = 0 GROUP BY burst",
-        )?;
-        let sizes: std::collections::HashMap<String, i64> = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-            .collect::<std::result::Result<_, _>>()?;
+        // Counted for the bursts here only: a page of two hundred never counts the library's.
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT COUNT(*) FROM photos WHERE burst = ?1 AND deleted = 0")?;
+        let mut sizes: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for b in photos.iter().filter_map(|p| p.burst.as_ref()) {
+            if !sizes.contains_key(b) {
+                let n: i64 = stmt.query_row(params![b], |r| r.get(0))?;
+                sizes.insert(b.clone(), n);
+            }
+        }
         for p in &mut photos {
             if let Some(b) = &p.burst {
                 p.burst_count = sizes.get(b).copied().unwrap_or(1);
@@ -337,46 +382,14 @@ impl Library {
     /// file's name, title, caption or a keyword, or the year or month it was taken ("2025",
     /// "march"). Deleted and hidden photos are not searched. Newest first, at most `limit`.
     pub fn search_photos(&self, query: &str, limit: usize) -> Result<Vec<Photo>> {
-        let words: Vec<String> = query
-            .split_whitespace()
-            .map(|w| w.to_lowercase())
-            .filter(|w| !w.is_empty())
-            .take(8)
-            .collect();
-        if words.is_empty() {
+        let Some((conditions, patterns)) = search_terms(query) else {
             return Ok(Vec::new());
-        }
-        // One condition per word, each its own parameter: what is typed is never part of the SQL.
-        let one = "(LOWER(COALESCE(filename, '')) LIKE ?{n} ESCAPE '\\'
-              OR LOWER(COALESCE(title, '')) LIKE ?{n} ESCAPE '\\'
-              OR LOWER(COALESCE(caption, '')) LIKE ?{n} ESCAPE '\\'
-              OR LOWER(COALESCE(keywords, '')) LIKE ?{n} ESCAPE '\\'
-              OR strftime('%Y', taken_at, 'unixepoch', 'localtime') LIKE ?{n} ESCAPE '\\'
-              OR (CASE strftime('%m', taken_at, 'unixepoch', 'localtime')
-                    WHEN '01' THEN 'january' WHEN '02' THEN 'february' WHEN '03' THEN 'march'
-                    WHEN '04' THEN 'april' WHEN '05' THEN 'may' WHEN '06' THEN 'june'
-                    WHEN '07' THEN 'july' WHEN '08' THEN 'august' WHEN '09' THEN 'september'
-                    WHEN '10' THEN 'october' WHEN '11' THEN 'november' ELSE 'december' END)
-                  LIKE ?{n} ESCAPE '\\')";
-        let conditions: Vec<String> = (1..=words.len())
-            .map(|n| one.replace("{n}", &n.to_string()))
-            .collect();
+        };
         let sql = format!(
-            "SELECT {COLUMNS} FROM photos WHERE deleted = 0 AND hidden = 0 AND {ONE_PER_BURST} AND {}
+            "SELECT {COLUMNS} FROM photos WHERE deleted = 0 AND hidden = 0 AND {ONE_PER_BURST} AND {conditions}
              ORDER BY taken_at DESC, id LIMIT {}",
-            conditions.join(" AND "),
             limit.min(50_000)
         );
-        let patterns: Vec<String> = words
-            .iter()
-            .map(|w| {
-                let escaped = w
-                    .replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_");
-                format!("%{escaped}%")
-            })
-            .collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(patterns.iter()), row_to_photo)?;
         self.with_bursts(rows.collect::<std::result::Result<_, _>>()?)
@@ -752,6 +765,201 @@ impl Library {
     }
 }
 
+/// Where the photos a grid shows come from: a view, an album, a search, or one burst.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Source {
+    View(View),
+    Album(String),
+    Query(String),
+    Burst(String),
+}
+
+/// How a view the person can sort is sorted: by when taken or when added, newest or oldest
+/// first. Albums, searches, bursts, Rated and Recently Deleted keep their own order.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Order {
+    pub by: OrderBy,
+    pub oldest: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OrderBy {
+    Taken,
+    Added,
+}
+
+/// What a grid needs of every photo it shows, before any photo itself: enough to lay out every
+/// month, select, move and count — a few bytes a photo, where the photos are a kilobyte each.
+/// The photos themselves come a page at a time ([`Library::photo_page`]), in the same order.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PhotoIndex {
+    pub ids: Vec<String>,
+    /// What each is grouped by: when it was taken, or added when sorted by that.
+    pub keys: Vec<i64>,
+    /// Each one's kind and marks, packed: bits 0–1 the kind (0 image, 1 video, 2 Live), bit 2
+    /// a favorite, bits 3–5 its stars.
+    pub marks: Vec<u8>,
+    /// The earliest and latest it holds were taken, unix seconds.
+    pub first: Option<i64>,
+    pub last: Option<i64>,
+}
+
+/// One packed mark (see [`PhotoIndex::marks`]).
+fn mark(kind: &str, favorite: bool, rating: i64) -> u8 {
+    let k = match Kind::parse(kind) {
+        Kind::Image => 0,
+        Kind::Video => 1,
+        Kind::Live => 2,
+    };
+    k | (u8::from(favorite) << 2) | ((rating.clamp(0, 5) as u8) << 3)
+}
+
+/// A source's photos as SQL: what is selected from, which, in what order, with its parameters
+/// — one place for the index and the pages, so their orders never differ. `pre` qualifies the
+/// photos' columns where another table is joined (an album's items).
+struct Query {
+    from: &'static str,
+    pre: &'static str,
+    filter: String,
+    order: String,
+    key: &'static str,
+    params: Vec<String>,
+}
+
+impl Library {
+    fn source_query(source: &Source, order: Option<Order>) -> Query {
+        const TAKEN: &str = "taken_at";
+        const ADDED: &str = "COALESCE(added_at, taken_at)";
+        let plain = |filter: String, order: String, key, params| Query {
+            from: "photos",
+            pre: "",
+            filter,
+            order,
+            key,
+            params,
+        };
+        match source {
+            Source::View(view) => {
+                let (filter, own) = Self::view_query(*view);
+                let bursts = if *view == View::RecentlyDeleted {
+                    "1"
+                } else {
+                    ONE_PER_BURST
+                };
+                let sortable = !matches!(view, View::RecentlyDeleted | View::Rated);
+                let (order, key) = match order.filter(|_| sortable) {
+                    Some(o) => {
+                        let key = if o.by == OrderBy::Added { ADDED } else { TAKEN };
+                        let dir = if o.oldest { "ASC" } else { "DESC" };
+                        (format!("{key} {dir}, id"), key)
+                    }
+                    // Grouped by what it is sorted by: Recents by when added.
+                    None => (
+                        format!("{own}, id"),
+                        if *view == View::Recents { ADDED } else { TAKEN },
+                    ),
+                };
+                plain(format!("{filter} AND {bursts}"), order, key, Vec::new())
+            }
+            Source::Album(album) => Query {
+                from: "photo_album_items i JOIN photos p ON p.id = i.asset",
+                pre: "p.",
+                filter: "i.album = ?1 AND p.deleted = 0 AND p.hidden = 0".into(),
+                order: "i.position, p.taken_at DESC, p.id".into(),
+                key: "p.taken_at",
+                params: vec![album.clone()],
+            },
+            Source::Query(typed) => match search_terms(typed) {
+                Some((conditions, patterns)) => plain(
+                    format!("deleted = 0 AND hidden = 0 AND {ONE_PER_BURST} AND {conditions}"),
+                    "taken_at DESC, id".into(),
+                    TAKEN,
+                    patterns,
+                ),
+                None => plain("0".into(), "id".into(), TAKEN, Vec::new()),
+            },
+            Source::Burst(burst) => plain(
+                "burst = ?1 AND deleted = 0".into(),
+                "taken_at, id".into(),
+                TAKEN,
+                vec![burst.clone()],
+            ),
+        }
+    }
+
+    /// Every photo a source shows, as a grid lays them out (see [`PhotoIndex`]).
+    pub fn photo_index(&self, source: &Source, order: Option<Order>) -> Result<PhotoIndex> {
+        let q = Self::source_query(source, order);
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {p}id, {key}, {p}kind, {p}favorite, {p}rating, {p}taken_at FROM {from}
+             WHERE {filter} ORDER BY {order}",
+            p = q.pre,
+            key = q.key,
+            from = q.from,
+            filter = q.filter,
+            order = q.order,
+        ))?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(q.params.iter()))?;
+        let mut out = PhotoIndex::default();
+        while let Some(r) = rows.next()? {
+            out.ids.push(r.get(0)?);
+            out.keys.push(r.get(1)?);
+            out.marks.push(mark(
+                &r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)? != 0,
+                r.get(4)?,
+            ));
+            let taken: i64 = r.get(5)?;
+            out.first = Some(out.first.map_or(taken, |f| f.min(taken)));
+            out.last = Some(out.last.map_or(taken, |l| l.max(taken)));
+        }
+        Ok(out)
+    }
+
+    /// `limit` photos of a source from `offset`, in the order its index has them.
+    pub fn photo_page(
+        &self,
+        source: &Source,
+        order: Option<Order>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<Photo>> {
+        let q = Self::source_query(source, order);
+        let columns = COLUMNS
+            .split(", ")
+            .map(|c| format!("{}{}", q.pre, c.trim()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {columns} FROM {from} WHERE {filter} ORDER BY {order} LIMIT {limit} OFFSET {offset}",
+            from = q.from,
+            filter = q.filter,
+            order = q.order,
+            limit = limit.min(5_000),
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(q.params.iter()), row_to_photo)?;
+        self.with_bursts(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Photos by asset id, in the order asked; those gone are left out.
+    pub fn photos_by_ids(&self, ids: &[String]) -> Result<Vec<Photo>> {
+        let mut out = Vec::with_capacity(ids.len());
+        let mut stmt = self
+            .conn
+            .prepare_cached(&format!("SELECT {COLUMNS} FROM photos WHERE id = ?1"))?;
+        for id in ids {
+            if let Some(p) = stmt.query_row(params![id], row_to_photo).optional()? {
+                out.push(p);
+            }
+        }
+        self.with_bursts(out)
+    }
+}
+
 /// A whole read of Photos that takes more than one pass.
 ///
 /// A large library is more change feed than one pass reads, so a whole read goes on across
@@ -1057,6 +1265,149 @@ mod tests {
         assert_eq!(ids(&lib, View::Library), ["c", "b"]);
     }
 
+    /// The index and its pages are the whole list's read, cut up: the same photos in the same
+    /// order for every view, album, search and burst — sorted any way — whatever the page size,
+    /// ties on the same second broken by id as the window breaks them.
+    #[test]
+    fn the_index_and_its_pages_are_the_list_in_order() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut all = Vec::new();
+        for i in 0..40i64 {
+            let mut p = photo(&format!("p{i:02}"), 1_000 + (i % 7) * 10);
+            p.added_at = Some(5_000 - i * 3);
+            p.favorite = i % 5 == 0;
+            p.rating = i % 6;
+            p.hidden = i % 11 == 3;
+            p.deleted = i % 13 == 4;
+            p.kind = if i % 9 == 0 { Kind::Video } else { Kind::Image };
+            p.subtype = if i % 8 == 1 { 3 } else { 0 };
+            if (20..24).contains(&i) {
+                p.burst = Some("B".into());
+                p.burst_pick = i == 22;
+            }
+            p.filename = Some(format!(
+                "{}{i}.jpg",
+                if i % 2 == 0 { "beach" } else { "city" }
+            ));
+            all.push(p);
+        }
+        lib.put_photos(&all).unwrap();
+        lib.put_album_items(&[
+            ("AL".into(), "p05".into(), 3),
+            ("AL".into(), "p01".into(), 1),
+            ("AL".into(), "p30".into(), 2),
+        ])
+        .unwrap();
+        let pages = |source: &Source, order: Option<Order>, size: usize| {
+            let mut out = Vec::new();
+            for at in (0..).step_by(size) {
+                let page = lib.photo_page(source, order, at, size).unwrap();
+                let n = page.len();
+                out.extend(page);
+                if n < size {
+                    break;
+                }
+            }
+            out
+        };
+        let check = |source: Source, order: Option<Order>, want: Vec<Photo>| {
+            let index = lib.photo_index(&source, order).unwrap();
+            let ids: Vec<&str> = want.iter().map(|p| p.id.as_str()).collect();
+            assert_eq!(index.ids, ids, "{source:?} {order:?}");
+            for size in [1, 3, 7, 500] {
+                assert_eq!(
+                    pages(&source, order, size),
+                    want,
+                    "{source:?} {order:?} by {size}"
+                );
+            }
+            for (i, p) in want.iter().enumerate() {
+                let m = index.marks[i];
+                assert_eq!(m & 3, if p.kind == Kind::Video { 1 } else { 0 });
+                assert_eq!(m & 4 != 0, p.favorite);
+                assert_eq!(i64::from(m >> 3), p.rating);
+            }
+            if !want.is_empty() {
+                assert_eq!(index.first, want.iter().map(|p| p.taken_at).min());
+                assert_eq!(index.last, want.iter().map(|p| p.taken_at).max());
+            }
+        };
+        for view in [
+            View::Library,
+            View::Favorites,
+            View::Videos,
+            View::Screenshots,
+            View::Recents,
+            View::Hidden,
+            View::Rated,
+            View::RecentlyDeleted,
+        ] {
+            check(Source::View(view), None, lib.photos(view).unwrap());
+        }
+        // Sorted as the window sorts: by the key, then by id; Rated and Recently Deleted keep
+        // their own order whatever is asked.
+        for by in [OrderBy::Taken, OrderBy::Added] {
+            for oldest in [false, true] {
+                let order = Some(Order { by, oldest });
+                let mut want = lib.photos(View::Library).unwrap();
+                let key = |p: &Photo| match by {
+                    OrderBy::Taken => p.taken_at,
+                    OrderBy::Added => p.added_at.unwrap_or(p.taken_at),
+                };
+                want.sort_by(|a, b| {
+                    let k = if oldest {
+                        key(a).cmp(&key(b))
+                    } else {
+                        key(b).cmp(&key(a))
+                    };
+                    k.then_with(|| a.id.cmp(&b.id))
+                });
+                check(Source::View(View::Library), order, want);
+                check(
+                    Source::View(View::Rated),
+                    order,
+                    lib.photos(View::Rated).unwrap(),
+                );
+                let index = lib
+                    .photo_index(&Source::View(View::Library), order)
+                    .unwrap();
+                let keyed: Vec<i64> = lib
+                    .photos_by_ids(&index.ids)
+                    .unwrap()
+                    .iter()
+                    .map(key)
+                    .collect();
+                assert_eq!(index.keys, keyed, "grouped by what it is sorted by");
+            }
+        }
+        check(
+            Source::Album("AL".into()),
+            None,
+            lib.album_photos("AL").unwrap(),
+        );
+        check(Source::Album("none".into()), None, Vec::new());
+        check(
+            Source::Query("beach".into()),
+            None,
+            lib.search_photos("beach", 1000).unwrap(),
+        );
+        check(Source::Query("  ".into()), None, Vec::new());
+        check(
+            Source::Burst("B".into()),
+            None,
+            lib.burst_photos("B").unwrap(),
+        );
+        // Asked for by id: in the order asked, the gone left out, burst sizes filled.
+        let got = lib
+            .photos_by_ids(&["p22".into(), "gone".into(), "p01".into()])
+            .unwrap();
+        assert_eq!(
+            got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["p22", "p01"]
+        );
+        assert_eq!(got[0].burst_count, 4);
+    }
+
     /// Media types as Apple decides them (read from its smart albums on his library): a
     /// screenshot is assetSubtypeV2 3 and a panorama 1 — not every PNG.
     #[test]
@@ -1089,5 +1440,54 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["depth"]
         );
+    }
+
+    /// The whole library over IPC against the index and a first page, on a copy of a real
+    /// library (never the real one): `QUINCE_DB_COPY=<dir holding a copy of library.db> cargo
+    /// test -p quince-core --release ipc_paging_on_a_copy -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs a copy of a real library"]
+    fn ipc_paging_on_a_copy() {
+        let dir = std::path::PathBuf::from(std::env::var("QUINCE_DB_COPY").unwrap());
+        let lib = Library::open(&dir).unwrap();
+        let time = |f: &dyn Fn() -> usize| {
+            let mut runs: Vec<(std::time::Duration, usize)> = (0..5)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    let n = f();
+                    (t.elapsed(), n)
+                })
+                .collect();
+            runs.sort();
+            runs[2]
+        };
+        let source = Source::View(View::Library);
+        let whole = time(&|| {
+            serde_json::to_vec(&lib.photos(View::Library).unwrap())
+                .unwrap()
+                .len()
+        });
+        let index = time(&|| {
+            serde_json::to_vec(&lib.photo_index(&source, None).unwrap())
+                .unwrap()
+                .len()
+        });
+        let first = time(&|| {
+            serde_json::to_vec(&lib.photo_page(&source, None, 0, 240).unwrap())
+                .unwrap()
+                .len()
+        });
+        let ids = lib.photo_index(&source, None).unwrap().ids;
+        let mid = &ids[ids.len() / 2..(ids.len() / 2 + 240).min(ids.len())];
+        let deep = time(&|| {
+            serde_json::to_vec(&lib.photos_by_ids(mid).unwrap())
+                .unwrap()
+                .len()
+        });
+        println!("{} photos", ids.len());
+        println!("whole list:      {:>10} bytes {:?}", whole.1, whole.0);
+        println!("index:           {:>10} bytes {:?}", index.1, index.0);
+        println!("first page:      {:>10} bytes {:?}", first.1, first.0);
+        println!("page by id (mid):{:>10} bytes {:?}", deep.1, deep.0);
     }
 }

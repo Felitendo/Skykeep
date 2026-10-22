@@ -14,9 +14,12 @@ import { PICTURE_EVENT, type PictureShown } from "./NoteEditor";
 export function NotePicture() {
   const [shown, setShown] = useState<PictureShown | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // Said on the button at once, until the other app has it.
+  const [opening, setOpening] = useState(false);
   useEffect(() => {
     const show = (e: Event) => {
       setProblem(null);
+      setOpening(false);
       setShown((e as CustomEvent<PictureShown>).detail);
     };
     window.addEventListener(PICTURE_EVENT, show);
@@ -60,9 +63,17 @@ export function NotePicture() {
             {!shown.drawing && (
               <button
                 className="quiet"
-                onClick={() => void api.noteAttachmentOpen(shown.id).catch((e) => setProblem(messageOf(e)))}
+                disabled={opening}
+                aria-busy={opening}
+                onClick={() => {
+                  setOpening(true);
+                  void api
+                    .noteAttachmentOpen(shown.id)
+                    .catch((e) => setProblem(messageOf(e)))
+                    .finally(() => setOpening(false));
+                }}
               >
-                Open in Default App
+                {opening ? "Opening" : "Open in Default App"}
               </button>
             )}
             <button className="icon-button round nf-picture-close" aria-label="Close" autoFocus onClick={() => setShown(null)}>

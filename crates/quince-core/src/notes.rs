@@ -138,6 +138,17 @@ impl Library {
         Ok(())
     }
 
+    /// A note edited here, now: its time edited moved on (never back), so it goes to the top
+    /// of a list ordered by Date Edited at once, as the phone puts it, rather than at the next
+    /// pass.
+    pub fn touch_note(&mut self, guid: &str, at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notes SET modified_at = MAX(COALESCE(modified_at, 0), ?2) WHERE guid = ?1",
+            params![guid, at],
+        )?;
+        Ok(())
+    }
+
     /// A note's formatting as just saved — Apple's runs, as JSON — so a read before the next
     /// pass finds runs that describe the text it was just given.
     pub fn set_note_runs(&mut self, guid: &str, runs: &str) -> Result<()> {

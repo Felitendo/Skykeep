@@ -114,6 +114,10 @@ pub enum Error {
     Network(#[from] reqwest::Error),
     #[error("Apple sent back something unexpected: {0}")]
     Protocol(String),
+    /// Apple's servers answered but could not serve now — an outage, maintenance, too many
+    /// requests (5xx, 429). Like being offline: try again later, never "signed out".
+    #[error("Apple's servers are busy right now ({0}). Skykeep will try again shortly.")]
+    Unavailable(u16),
     #[error("Too many attempts. Try again in {seconds} seconds.")]
     CoolingDown { seconds: u64 },
     #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
@@ -132,6 +136,12 @@ pub enum Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+/// A reply that says "not now" rather than "no": Apple's servers failing or overloaded.
+fn transient(status: reqwest::StatusCode) -> Option<Error> {
+    (status.is_server_error() || status.as_u16() == 429)
+        .then(|| Error::Unavailable(status.as_u16()))
+}
 
 /// Apple returns `{"serviceErrors":[{"code":"-21669","message":"..."}]}` on failures.
 /// Surface its own words; a bare status code explains nothing.
@@ -299,10 +309,20 @@ impl Client {
             HeaderValue::from_static("en-US,en;q=0.9"),
         );
 
+        // Never waits for ever. After a sleep or a change of network a pooled connection can
+        // be dead without saying so, and a request on it hung until the kernel gave up — a
+        // quarter of an hour or more — holding the sign-in lock, so every screen waited too.
+        // A read that brings nothing for a minute is given up (a long download keeps going as
+        // long as bytes arrive); idle connections are let go of before they can go stale; and
+        // keep-alives notice a dead one.
         let http = apple_only()
             .cookie_provider(Arc::clone(&jar))
             .user_agent(UA)
             .default_headers(defaults)
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .read_timeout(std::time::Duration::from_secs(60))
+            .pool_idle_timeout(std::time::Duration::from_secs(50))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
             .build()?;
 
         Ok(Self {
@@ -471,7 +491,10 @@ impl Client {
         // from sleep mid-reconnect — the session is left exactly as it is and the caller
         // told so; signing in again here cleared the session token, failed on the network,
         // and saved the cleared state, so every launch after showed the sign-in screen.
-        if matches!(validated, Error::Network(_)) && matches!(logged_in, Error::Network(_)) {
+        // Offline, or Apple down for a while: the session is not dead, only unreachable — it
+        // is kept and tried again, rather than a sign-in that ends in "Apple signed you out".
+        let away = |e: &Error| matches!(e, Error::Network(_) | Error::Unavailable(_));
+        if away(&validated) && away(&logged_in) {
             return Err(logged_in);
         }
 
@@ -523,7 +546,8 @@ impl Client {
         let status = r.status();
         let body = r.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(Error::Protocol(format!("validate returned {status}")));
+            return Err(transient(status)
+                .unwrap_or_else(|| Error::Protocol(format!("validate returned {status}"))));
         }
         Ok(serde_json::from_str(&body).unwrap_or(Value::Null))
     }
@@ -958,9 +982,9 @@ impl Client {
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(Error::Protocol(format!(
-                "couldn't open the account ({status})"
-            )));
+            return Err(transient(status).unwrap_or_else(|| {
+                Error::Protocol(format!("couldn't open the account ({status})"))
+            }));
         }
         Ok(serde_json::from_str(&text)?)
     }
@@ -1045,22 +1069,25 @@ impl Client {
     }
 }
 
-/// Whether `host` is Apple's: its sign-in, iCloud's services and their files, push, and their
-/// China-mainland twins — every host Skykeep has any reason to reach. Loopback too, which is
-/// this computer.
+/// The domains Apple's client can reach, each with every host under it: Apple's sign-in,
+/// iCloud's services and their files, push, and their China-mainland twins. What Settings
+/// lists as what Skykeep talks to, read from here so the list is the lock itself.
+pub const APPLE_DOMAINS: [&str; 6] = [
+    "apple.com",
+    "icloud.com",
+    "icloud-content.com",
+    "apple.com.cn",
+    "icloud.com.cn",
+    "icloud-content.com.cn",
+];
+
+/// Whether `host` is Apple's: under one of [`APPLE_DOMAINS`] — every host Skykeep has any
+/// reason to reach. Loopback too, which is this computer.
 #[must_use]
 pub fn is_apple_host(host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    const APPLE: [&str; 6] = [
-        "apple.com",
-        "icloud.com",
-        "icloud-content.com",
-        "apple.com.cn",
-        "icloud.com.cn",
-        "icloud-content.com.cn",
-    ];
     host == "localhost"
-        || APPLE
+        || APPLE_DOMAINS
             .iter()
             .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }

@@ -99,6 +99,21 @@ await p2.waitForTimeout(400);
 await p2.locator('.px-tile[data-id="p3"]').dblclick();
 await p2.waitForTimeout(600);
 ok((await p2.locator(".px-stage video").count()) === 0 && (await p2.locator(".px-stage button.px-video").count()) === 1, "without the server, the still and the system's player");
+// A video this computer cannot play: a still, and words that say why and what fixes it — never
+// a black box.
+const p3 = await ctx.newPage();
+await p3.addInitScript(() => {
+  window.__videoBase = "http://127.0.0.1:9/none";
+  window.__videoSupport = { h264: false, hevc: false, missing: ["gst-libav"] };
+});
+await p3.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await openScreen(p3, "Photos");
+await p3.waitForTimeout(400);
+await p3.locator('.px-tile[data-id="p3"]').dblclick();
+await p3.waitForTimeout(2500);
+const note = await p3.locator(".px-video-note").innerText().catch(() => "");
+ok((await p3.locator(".px-stage button.px-video").count()) === 1 && /gst-libav/.test(note) && /video player/.test(note),
+  `one this computer cannot play says why, and plays in the system's player  "${note}"`);
 await b.close();
 server.close();
 process.exitCode = failures ? 1 : (process.exitCode ?? 0);

@@ -284,6 +284,11 @@
 .cx-items.is-dots .cx-item-title,
 .cx-items.is-dots .cx-item-time,
 .cx-items.is-dots .cx-more { display: none; }
+/* A cell too short for a row of dots: small marks only — seen, not pressed — and the day is
+   the target. Hidden from the keyboard and screen readers there (the day names its events). */
+.cx-items.is-tiny { pointer-events: none; gap: 2px; padding: 2px 3px; }
+.cx-items.is-tiny .cx-item { width: 6px; height: 6px; min-height: 0; }
+.cx-items.is-tiny .cx-item .cx-dot, .cx-items.is-tiny .cx-ring { width: 6px; height: 6px; margin: 0; }
 .cx-item.is-reminder.is-done .cx-item-title { color: var(--text-3); text-decoration: line-through; }
 .cx-more {
   height: 24px;
@@ -473,7 +478,9 @@
   gap: 5px;
   height: 18px;
   font-size: var(--t-11);
-  overflow: hidden;
+  /* Not clipped: the ring's 24px target reaches past the 18px line, and clipping it cut the
+     edges off what a click lands on. The title ends itself in an ellipsis instead. */
+  overflow: visible;
   white-space: nowrap;
   pointer-events: none;
 }
@@ -859,4 +866,43 @@
 .cx-pop-link:focus-visible { outline: var(--focus-ring); }
 .cx-info-place { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .cx-maps { color: var(--sys-blue); font-size: var(--t-11); text-decoration: none; }
+/* Join: the one action an event with a call asks for, as Calendar puts it — a filled pill
+   under the title, the call's service named, the link itself in the tooltip. */
+.cx-join {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin: 2px 0 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  /* A deep green: white reads on it at 5:1, where Apple's bright green gives 2.2:1. */
+  background: #1f8034;
+  color: #fff;
+  font-size: var(--t-12);
+  font-weight: 600;
+  text-decoration: none;
+}
+.cx-join:hover { filter: brightness(1.06); }
+.cx-join:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+@media (forced-colors: active) { .cx-join { border: 1px solid ButtonText; } }
+/* Guests, as Calendar lists them under an event: a count, then one quiet line each — the
+   answer as a small mark and a word, the organizer and you named as such. */
+.cx-guests { margin: 6px 0 4px; }
+.cx-guests-head { margin: 0 0 4px; font-size: var(--t-11); font-weight: 600; color: var(--text-2); }
+.cx-guest-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; max-height: 168px; overflow-y: auto; }
+.cx-guest { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; font-size: var(--t-12); }
+.cx-guest-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.cx-guest-role { color: var(--text-2); }
+.cx-guest-answer { color: var(--text-2); font-size: var(--t-11); }
+.cx-guest-mark {
+  width: 16px; height: 16px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; line-height: 1; color: #fff;
+  box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 25%, transparent);
+}
+.cx-guest-mark.is-accepted { background: #1f8034; box-shadow: none; }
+.cx-guest-mark.is-declined { background: #c62828; box-shadow: none; }
+.cx-guest-mark.is-tentative { background: #a35b00; box-shadow: none; }
+@media (forced-colors: active) { .cx-guest-mark { border: 1px solid CanvasText; } }
 .cx-maps:hover { text-decoration: underline; }

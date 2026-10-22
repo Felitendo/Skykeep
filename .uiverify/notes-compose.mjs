@@ -55,7 +55,7 @@ await ctx.addInitScript(() => {
 });
 
 const page = await ctx.newPage();
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.goto(process.env.BASE ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await page.locator(".nav-item", { hasText: "Notes" }).click();
 await page.waitForTimeout(300);
 

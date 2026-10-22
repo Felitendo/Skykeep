@@ -38,3 +38,37 @@ test("splitting a note into title and the rest loses nothing", () => {
     assert.equal(joinTitle(title, rest, text.includes("\n")), text, JSON.stringify(text));
   }
 });
+
+test("sorted by date created, the groups follow when each note was made", () => {
+  const n = (guid, created, modified) => ({ ...note(guid, modified), createdAt: created });
+  const sections = groupNotes([n("made-today", at(2026, 8, 30), at(2026, 8, 30)), n("made-in-aug", at(2026, 7, 2), at(2026, 8, 30))],
+    now, { by: "created", groupByDate: true });
+  assert.deepEqual(sections.map((s) => [s.key, s.notes.map((x) => x.guid)]), [["today", ["made-today"]], ["m7", ["made-in-aug"]]]);
+});
+
+test("sorted by title: A to Z in one run, numbers in number order, pinned still first", () => {
+  const sections = groupNotes([note("banana", at(2026, 8, 1)), note("Apple", at(2026, 8, 2)), note("item 10", at(2026, 8, 3)),
+    note("item 9", at(2026, 8, 4)), note("zed", at(2026, 8, 5), true)], now, { by: "title", groupByDate: true });
+  assert.deepEqual(sections.map((s) => [s.key, s.heading, s.notes.map((x) => x.guid)]), [
+    ["pinned", "Pinned", ["zed"]], ["notes", "Notes", ["Apple", "banana", "item 9", "item 10"]],
+  ]);
+});
+
+test("not grouped by date: one run newest first, with no heading when nothing is pinned", () => {
+  const sections = groupNotes([note("old", at(2025, 1, 1)), note("new", at(2026, 8, 30))], now, { by: "edited", groupByDate: false });
+  assert.deepEqual(sections.map((s) => [s.heading, s.notes.map((x) => x.guid)]), [["", ["new", "old"]]]);
+});
+
+test("a note with no date comes last, under Earlier, whatever the order", () => {
+  const sections = groupNotes([note("nodate", null), note("today", at(2026, 8, 30))], now, { by: "created", groupByDate: true });
+  assert.deepEqual(sections.map((s) => s.key), ["undated"].length ? sections.map((s) => s.key) : []);
+  assert.equal(sections.at(-1).key, "undated");
+});
+
+test("every note appears exactly once, in every order", () => {
+  const all = [note("a", at(2026, 8, 30)), note("b", null), note("c", at(2025, 1, 1), true), note("d", at(2026, 6, 1))];
+  for (const by of ["edited", "created", "title"]) for (const groupByDate of [true, false]) {
+    const seen = groupNotes(all, now, { by, groupByDate }).flatMap((s) => s.notes.map((n) => n.guid)).sort();
+    assert.deepEqual(seen, ["a", "b", "c", "d"], `${by} ${groupByDate}`);
+  }
+});

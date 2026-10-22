@@ -11,6 +11,7 @@ jiff = "0.2.37"
 serde.workspace = true
 thiserror = "2"
 serde_json.workspace = true
+base64 = "0.22"
 icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 
 [dev-dependencies]

@@ -30,7 +30,8 @@ lives under `~/.var/app/<id>/`), so a Flatpak starts with an empty library and f
   plugin comes from `org.freedesktop.Platform.codecs-extra`, which the runtime downloads by itself.
   HEIC decoding inside the sandbox is unverified.
 - **fuse3**: not bundled. `fuser` is built with `default-features = false`, which links no libfuse.
-- **libayatana-appindicator** (tray): from Flathub's `shared-modules`.
+- **Tray**: no library. The app speaks StatusNotifierItem over D-Bus itself (`ksni`), without a
+  well-known bus name inside the sandbox.
 
 ## Permissions
 
@@ -96,13 +97,11 @@ flatpak install --user flathub org.gnome.Platform//51 org.gnome.Sdk//51 \
 # (`flatpak info org.gnome.Sdk//51` shows it).
 
 cd packaging/flatpak
-git clone --depth 1 https://github.com/flathub/shared-modules.git
-
 flatpak-builder --user --install --force-clean build-dir io.github.yashwanthkamireddi.Skykeep.yml
 flatpak run io.github.yashwanthkamireddi.Skykeep
 ```
 
-`build-dir/`, `.flatpak-builder/` and `shared-modules/` are build output. Don't commit them.
+`build-dir/` and `.flatpak-builder/` are build output. Don't commit them.
 
 Lint before submitting:
 

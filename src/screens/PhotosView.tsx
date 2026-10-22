@@ -4,7 +4,7 @@
  * from the disk cache and are fetched once.
  */
 import { useActiveRef, useScreenActive } from "../lib/screen";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { pickOpen } from "../lib/pick";
@@ -17,6 +17,8 @@ import {
   PHOTO_UPLOAD,
   type Photo,
   type PhotoAlbum,
+  type PhotoOrder,
+  type PhotoSource,
   type PhotoView,
   type UploadEvent,
   turnStyle,
@@ -41,6 +43,7 @@ import { DownloadOptions, type Want } from "./photos/DownloadOptions";
 import { AdjustDate } from "./photos/AdjustDate";
 import { useReveal } from "../lib/reveal";
 import { Picker } from "../components/Picker";
+import { PAGE, PhotoList, PhotoStore } from "./photos/list";
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
 const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
@@ -87,9 +90,9 @@ const AlbumGlyph = () => (
 );
 
 /** "3 Photos Selected", "1 Video Selected", "5 Items Selected" — Photos' words. */
-const pickedWords = (list: Photo[]) => {
-  const videos = list.filter((p) => p.kind === "video").length;
-  const n = list.length;
+const pickedWords = (kinds: Photo["kind"][]) => {
+  const videos = kinds.filter((k) => k === "video").length;
+  const n = kinds.length;
   const noun = videos === 0 ? "Photo" : videos === n ? "Video" : "Item";
   return `${n.toLocaleString()} ${n === 1 ? noun : `${noun}s`} Selected`;
 };
@@ -104,8 +107,6 @@ type Sort = { by: "taken" | "added"; oldest: boolean };
 const SORTS_KEY = "quince.photos.sort";
 const defaultSort = (view: PhotoView): Sort => ({ by: view === "recents" ? "added" : "taken", oldest: false });
 const sortKey = (p: Photo, by: Sort["by"]) => (by === "added" ? (p.addedAt ?? p.takenAt) : p.takenAt);
-const sortList = (list: Photo[], s: Sort) =>
-  [...list].sort((a, b) => (sortKey(b, s.by) - sortKey(a, s.by)) * (s.oldest ? -1 : 1) || (a.id < b.id ? -1 : 1));
 const readSorts = (): Partial<Record<PhotoView, Sort>> => {
   try {
     return JSON.parse(window.localStorage.getItem(SORTS_KEY) ?? "{}") ?? {};
@@ -132,40 +133,6 @@ const clock = (s: number | null) => {
   return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 };
 
-/** Whether two reads of one photo are the same in every field. */
-function samePhoto(a: Photo, b: Photo): boolean {
-  for (const k in b) {
-    const x = (a as Record<string, unknown>)[k];
-    const y = (b as Record<string, unknown>)[k];
-    if (x === y) continue;
-    if (Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => v === y[i])) continue;
-    return false;
-  }
-  return true;
-}
-
-/**
- * A fresh read laid over the last one: each photo unchanged keeps the object it had, and a list
- * unchanged throughout is the last list itself. Every pass, and each service landing in one,
- * reads the library again; a read that came back new objects for the same photos drew every
- * month and every tile of the grid again for nothing.
- */
-function keepSame(before: Photo[] | null, read: Photo[]): Photo[] {
-  if (!before || before.length === 0) return read;
-  const had = new Map(before.map((p) => [p.id, p]));
-  let same = before.length === read.length;
-  const out = read.map((p, i) => {
-    const old = had.get(p.id);
-    if (old && samePhoto(old, p)) {
-      if (before[i] !== old) same = false;
-      return old;
-    }
-    same = false;
-    return p;
-  });
-  return same ? before : out;
-}
-
 /** A photo's frame when fitted: its own shape, as large as the square cell lets it be. */
 const fitFrame = (p: Photo): React.CSSProperties =>
   p.width >= p.height
@@ -181,7 +148,7 @@ const SLIP = 26;
 const SHOWN = 54;
 const GAP = 2;
 const REACH = 30;
-function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick: (index: number) => void }) {
+function Filmstrip({ photos, at, onPick }: { photos: PhotoList; at: number; onPick: (index: number) => void }) {
   // Enough either side to fill the window's width and more, so a slip is always built (and its
   // picture decoded) before it can be seen: built at the edge of the screen, slips came in
   // blank and filled in as each step was taken.
@@ -191,12 +158,20 @@ function Filmstrip({ photos, at, onPick }: { photos: Photo[]; at: number; onPick
   // Each slip has its place by its index in the whole library, so the slips built as the
   // window moves along never jump; the strip is placed to put the shown one's centre in the middle.
   const shift = -(at * (SLIP + GAP) + SHOWN / 2);
+  // The slips' photos on their way; one not here yet holds its place as an empty slip.
+  useEffect(() => void photos.need(from, to), [photos, from, to]);
   const slips = [];
   for (let i = from; i <= to; i++) {
-    const p = photos[i];
+    const p = photos.at(i);
+    const place = { transform: `translateX(${i * (SLIP + GAP) + (i > at ? SHOWN - SLIP : 0)}px)` };
+    if (!p) {
+      slips.push(<span key={photos.ids[i]} className="px-slip is-waiting" style={place} aria-hidden="true" />);
+      continue;
+    }
     slips.push(
       <button
         key={p.id}
+        data-id={p.id}
         className={`px-slip${i === at ? " is-shown" : ""}`}
         // Placed by transform, eased with its neighbours: the shown one widens as they make
         // room, all on the compositor — before, each step jumped every slip into place.
@@ -250,6 +225,20 @@ function viewSrc(p: Photo): string {
   const r = p.width && p.height ? p.width / p.height : 4 / 3;
   const w = Math.min(box.w, box.h * r, (p.width || 4000) * 1.5);
   return fitSrc(p.id, Math.max(w, w / r) * (window.devicePixelRatio || 1));
+}
+/**
+ * A small picture of a photo the window has already got and decoded — the grid's tile or the
+ * strip's slip, whichever is on the page — to paint under the viewer's picture until that is
+ * decoded. Apple's thumbnail by its own address was a picture not yet fetched: on opening, the
+ * stage showed empty (black in the dark) for the frames it took to come.
+ */
+function loadedThumb(id: string): string {
+  const esc = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id;
+  for (const sel of [`.px-slip[data-id="${esc}"] img`, `.px-tile[data-id="${esc}"] img`]) {
+    const img = document.querySelector<HTMLImageElement>(sel);
+    if (img && img.complete && img.naturalWidth) return img.currentSrc || img.src;
+  }
+  return pictureSrc(id, "thumb");
 }
 function warm(p: Photo): Promise<boolean> {
   const url = viewSrc(p);
@@ -435,10 +424,10 @@ function changedBetween(from: Set<string>, to: Set<string>): string[] {
 }
 /** A month's photo ids, made once per list of them. */
 const monthIds = new WeakMap<object, Set<string>>();
-function idsOf(items: { photo: Photo }[]): Set<string> {
+function idsOf(items: Item[]): Set<string> {
   let ids = monthIds.get(items);
   if (!ids) {
-    ids = new Set(items.map((x) => x.photo.id));
+    ids = new Set(items.map((x) => x.id));
     monthIds.set(items, ids);
   }
   return ids;
@@ -450,7 +439,7 @@ function idsOf(items: { photo: Photo }[]): Set<string> {
  * month again — every one was handed the whole selection — 166 ms on a 20,000-photo library.
  */
 function sameMonth(a: MonthProps, b: MonthProps): boolean {
-  if (a.label !== b.label || a.month !== b.month || a.items !== b.items || a.deleted !== b.deleted || a.eager !== b.eager || a.across !== b.across
+  if (a.label !== b.label || a.month !== b.month || a.items !== b.items || a.list !== b.list || a.deleted !== b.deleted || a.eager !== b.eager || a.across !== b.across
     || a.fit !== b.fit || a.cell !== b.cell || a.act !== b.act) return false;
   if (a.chosen !== b.chosen) {
     // Only the photos whose selection changed are looked at (worked out once per change, not
@@ -495,10 +484,14 @@ function buildNext() {
   if (builds.length) buildFrame = requestAnimationFrame(buildNext);
 }
 
+/** A place in the grid: the photo there, by id, and where it is in the whole list. */
+type Item = { id: string; index: number };
+
 type MonthProps = {
   label: string;
   month: string;
-  items: { photo: Photo; index: number }[];
+  items: Item[];
+  list: PhotoList;
   chosen: Set<string>;
   anchor: number | null;
   deleted: boolean;
@@ -513,6 +506,7 @@ const Month = memo(function Month({
   label,
   month,
   items,
+  list,
   chosen,
   anchor,
   deleted,
@@ -524,7 +518,8 @@ const Month = memo(function Month({
 }: {
   label: string;
   month: string;
-  items: { photo: Photo; index: number }[];
+  items: Item[];
+  list: PhotoList;
   chosen: Set<string>;
   anchor: number | null;
   deleted: boolean;
@@ -544,31 +539,74 @@ const Month = memo(function Month({
   builtNow.current = built;
   const step = useRef(across);
   step.current = across;
+  /*
+   * Its photos, a page at a time, fetched once it comes near (the first months at once) and
+   * again whenever it comes back near after they were let go (see photos/list). Until then it
+   * has only its ids, and draws as one block exactly as tall as its rows will be.
+   */
+  const [near, setNear] = useState(eager);
+  const seen = useRef<{ version: number; items: Item[] | null; sig: string }>({ version: -1, items: null, sig: "" });
+  // Watched once near, or once it has begun to build (its own watcher saw it first).
+  const watching = near || built > 0;
+  const sig = useSyncExternalStore(list.store.subscribe, () => {
+    if (!watching) return "";
+    const store = list.store;
+    if (seen.current.version === store.version && seen.current.items === items) return seen.current.sig;
+    // How many from its start are here, and each one's change count: a photo read again or
+    // changed here (a heart) draws its tile again, and nothing else does.
+    let ready = 0;
+    let turns = 0;
+    for (const { id } of items) {
+      if (!store.get(id)) break;
+      ready++;
+      turns += store.turns(id);
+    }
+    seen.current = { version: store.version, items, sig: `${ready}:${turns}` };
+    return seen.current.sig;
+  });
+  const ready = watching ? Number(sig.split(":")[0] || 0) : 0;
+  useEffect(() => {
+    if (eager && items.length) void list.need(items[0].index, items[items.length - 1].index);
+  }, [eager, list, items]);
+  // One watcher: near the screen (within 4000px), its photos are asked for and it is built a few
+  // rows a frame; gone far again before it was built, its building waits until it comes back —
+  // a fling to the foot of the library builds the months it lands on, not every month it
+  // passed on the way (they queued first, and the screen it landed on waited behind them).
   useEffect(() => {
     const el = ref.current;
-    if (builtNow.current >= items.length) return undefined;
     let gone = false;
-    const start = () =>
+    let queued = false;
+    let close = false;
+    const start = () => {
+      if (queued || builtNow.current >= items.length) return;
+      queued = true;
       buildSoon(() => {
         if (gone) return true;
+        if (!close) {
+          queued = false;
+          return true;
+        }
         const rows = Math.max(2, Math.round(BUILD_TILES / step.current));
         const next = Math.min(items.length, builtNow.current + rows * step.current);
         builtNow.current = next;
         setBuilt(next);
+        if (next >= items.length) queued = false;
         return next >= items.length;
       });
-    if (!el || typeof IntersectionObserver === "undefined") {
+    };
+    if (!el || typeof IntersectionObserver === "undefined" || !items.length) {
+      close = true;
       start();
       return () => {
         gone = true;
       };
     }
-    // Built well ahead and then kept: a month taken down and built again as it scrolls back
-    // showed as a heading over nothing while its tiles came back.
     const watch = new IntersectionObserver(
       ([e]) => {
-        if (!e.isIntersecting) return;
-        watch.disconnect();
+        close = e.isIntersecting;
+        if (!close) return;
+        setNear(true);
+        void list.need(items[0].index, items[items.length - 1].index);
         start();
       },
       { root: el.closest(".px-scroll"), rootMargin: "4000px 0px" },
@@ -578,16 +616,19 @@ const Month = memo(function Month({
       gone = true;
       watch.disconnect();
     };
-  }, [items.length]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Built part way when the zoom changed: what is built stays on whole rows.
-  const shownCount = built >= items.length ? items.length : Math.floor(built / across) * across;
+  }, [list, items]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Built part way when the zoom changed, or its photos part way here: what shows stays on whole
+  // rows, and the rest is the block below.
+  const upTo = Math.min(built, ready);
+  const shownCount = upTo >= items.length ? items.length : Math.floor(upTo / across) * across;
   const live = shownCount > 0;
   return (
     <section ref={ref} className="px-month" aria-label={label || undefined} data-month={month || undefined}>
       {label && <h2 className="px-month-title">{label}</h2>}
       {live && (
         <div className="px-grid" role="listbox" aria-multiselectable="true" aria-label={label || "Photos"}>
-          {(shownCount < items.length ? items.slice(0, shownCount) : items).map(({ photo, index }) => {
+          {(shownCount < items.length ? items.slice(0, shownCount) : items).map(({ id, index }) => {
+            const photo = list.store.get(id)!;
             const t = deleted ? timeLeft(photo, true) : null;
             return (
               <Tile
@@ -648,8 +689,14 @@ export function PhotosView() {
       }
       return next;
     });
-  /** The view's photos as read; `photos`, below, is them in the order chosen to show. */
-  const [raw, setPhotos] = useState<Photo[] | null>(null);
+  /**
+   * The view's photos: its index whole, in the order chosen (sorted where they are kept), and
+   * the photos themselves from the store as the grid and the viewer come near them. A page
+   * landing draws this screen once a frame at most; the months draw only where it landed.
+   */
+  const store = useMemo(() => new PhotoStore(), []);
+  const [photos, setPhotos] = useState<PhotoList | null>(null);
+  useSyncExternalStore(store.subscribe, () => store.version);
   /**
    * A burst opened from its chosen photo, as Photos' "View all": the viewer goes through the
    * burst's photos in the order they were shot, counted "3 of 64", until Done (or the viewer
@@ -681,7 +728,7 @@ export function PhotosView() {
   const [open, setOpen] = useState<number | null>(null);
   const [info, setInfo] = useState(false);
   /** A slideshow playing: what it shows, and where it begins. */
-  const [show, setShow] = useState<{ list: Photo[]; start: number } | null>(null);
+  const [show, setShow] = useState<{ ids: string[]; start: number } | null>(null);
   /** Photos selected in the grid, as on a Mac: a click selects, a double-click opens. */
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const anchor = useRef<number | null>(null);
@@ -725,37 +772,60 @@ export function PhotosView() {
       return was;
     });
   };
-  // Sorted where it is drawn, in the same render as the months made from it. Sorted after the
-  // render instead, a view's first frame grouped one order by another's dates: months came
-  // twice ("December 2025" four times over), and the repeated keys left stale months on screen.
-  const photos = useMemo(
-    () => (raw && sort && !inBurst ? sortList(raw, sort) : raw),
-    [raw, sort?.by, sort?.oldest, inBurst !== null], // eslint-disable-line react-hooks/exhaustive-deps
-  );
+  // The order asked of the library for what is being chosen now (the backend sorts: a view is
+  // sorted where it is kept, and its index and pages come in that order).
+  const wantSortable = !searching && !album && view !== "recentlyDeleted" && view !== "rated";
+  const want = wantSortable ? (sorts[view] ?? defaultSort(view)) : null;
 
   // Reads can pass each other: a sync's read of one view can land after another view was
   // chosen. Only the newest read may draw, or a view shows another's photos under its title.
   const reads = useRef(0);
   /** A burst is being gone through: the library's reads wait until it is left (see viewBurst). */
   const burstOpen = useRef(false);
+  const drawnNow = useRef(drawn);
+  drawnNow.current = drawn;
+  const photosNow = useRef(photos);
+  photosNow.current = photos;
   const read = useCallback(async () => {
     if (burstOpen.current) return;
     const mine = ++reads.current;
-    const [list, c, a] = await Promise.all([
-      searching ? api.photosSearch(searching) : album ? api.photosInAlbum(album.id) : api.photosList(view),
-      api.photosCounts(),
-      api.photosAlbums(),
-    ]);
+    const source: PhotoSource = searching ? { query: searching } : album ? { album: album.id } : { view };
+    const order: PhotoOrder | null = want;
+    const d = drawnNow.current;
+    const again = photosNow.current !== null && d.view === view && d.album?.id === album?.id && d.query === searching;
+    const index = api.photosIndex(source, order);
+    let indexed = false;
+    // Another place chosen: its first screen from its first page, which is small and comes at
+    // once, painted before the whole index (a large library's takes a moment) is here.
+    if (!again) {
+      api.photosPage(source, order, 0, PAGE).then(
+        (page) => {
+          if (indexed || mine !== reads.current) return;
+          setPhotos(PhotoList.of(page, store, (p) => sortKey(p, order?.by ?? "taken")));
+          setDrawn({ view, album, query: searching });
+        },
+        () => {},
+      );
+    }
+    const [read, c, a] = await Promise.all([index, api.photosCounts(), api.photosAlbums()]);
+    indexed = true;
     if (mine !== reads.current) return;
-    setPhotos((before) => keepSame(before, list));
+    const next = new PhotoList(read, store);
+    // Read again (a sync landed, a change was made): what is held is fetched again where the
+    // grid is, and only a list that changed is drawn again.
+    if (again) store.refresh();
+    store.use(next);
+    setPhotos((before) => (next.same(before) ? before : next));
+    const near = again ? store.near : 0;
+    void next.need(near - PAGE, near + PAGE);
     // The same view read again is the same view drawn: a new object here built every month
     // afresh and faded the grid in again at each landing.
-    setDrawn((d) => (d.view === view && d.album === album && d.query === searching ? d : { view, album, query: searching }));
+    setDrawn((was) => (was.view === view && was.album === album && was.query === searching ? was : { view, album, query: searching }));
     setCounts(Object.fromEntries(c));
     setAlbums(a);
     // An album deleted elsewhere is not left open, empty.
     if (album && !a.some(([x]) => x.id === album.id)) setAlbum(null);
-  }, [view, album, searching]);
+  }, [view, album, searching, want?.by, want?.oldest]); // eslint-disable-line react-hooks/exhaustive-deps
   // A pass that lands while another screen is in front is read when this one comes back, once,
   // not at every landing: a screen out of sight is still mounted (lib/screen), and each pass
   // lands a service at a time.
@@ -772,27 +842,53 @@ export function PhotosView() {
   // the line under the title.
   const byDay = zoom >= DAYS_FROM;
   const months = useMemo(() => {
-    const out: { label: string; month: string; items: { photo: Photo; index: number }[] }[] = [];
+    const out: { label: string; month: string; items: Item[] }[] = [];
     // An album keeps its own order, and Recently Deleted is in the order things were deleted:
     // grouped by the month they were taken, the same month came back again and again. Both are
     // one grid, as icloud.com shows them.
-    if (drawn.album || drawn.view === "recentlyDeleted") return [{ label: "", month: "", items: (photos ?? []).map((photo, index) => ({ photo, index })) }];
+    if (!photos) return out;
+    if (drawn.album || drawn.view === "recentlyDeleted") return [{ label: "", month: "", items: photos.ids.map((id, index) => ({ id, index })) }];
     const thisYear = new Date().getFullYear();
-    (photos ?? []).forEach((photo, index) => {
+    const rated = drawn.view === "rated" && !drawn.album;
+    // Named once a month (or day), not once a photo: fifty thousand dates formatted on every
+    // read was most of laying the grid out.
+    const names = new Map<number, [string, string]>();
+    let lastKey = NaN;
+    let lastLabel = "";
+    let lastMonth = "";
+    photos.ids.forEach((id, index) => {
       // Rated is grouped by how many stars, as icloud.com's Rated page is.
-      const stars = photo.rating ?? 0;
-      const rated = drawn.view === "rated" && !drawn.album;
-      const at = sortKey(photo, sort?.by ?? "taken");
-      const month = rated ? "" : monthOf(at);
-      const label = rated ? `${stars} ${stars === 1 ? "Star" : "Stars"}` : byDay ? dayOf(at, thisYear) : month;
+      let label: string;
+      let month: string;
+      if (rated) {
+        const stars = photos.marks[index] >> 3;
+        label = `${stars} ${stars === 1 ? "Star" : "Stars"}`;
+        month = "";
+      } else {
+        const at = photos.keys[index];
+        if (at !== lastKey) {
+          lastKey = at;
+          const d = new Date(at * 1000);
+          const bucket = byDay ? d.getFullYear() * 400 + d.getMonth() * 32 + d.getDate() : d.getFullYear() * 12 + d.getMonth();
+          let named = names.get(bucket);
+          if (!named) {
+            const m = monthOf(at);
+            named = [m, byDay ? dayOf(at, thisYear) : m];
+            names.set(bucket, named);
+          }
+          [lastMonth, lastLabel] = named;
+        }
+        label = lastLabel;
+        month = lastMonth;
+      }
       const last = out[out.length - 1];
-      if (last && last.label === label) last.items.push({ photo, index });
-      else out.push({ label, month, items: [{ photo, index }] });
+      if (last && last.label === label) last.items.push({ id, index });
+      else out.push({ label, month, items: [{ id, index }] });
     });
     return out;
-  }, [photos, sort?.by, drawn, byDay]);
+  }, [photos, drawn, byDay]);
 
-  const shown = open !== null ? photos?.[open] ?? null : null;
+  const shown = open !== null ? photos?.at(open) ?? null : null;
   /**
    * The picture last painted on the stage, kept beneath the next one until that one is decoded:
    * a step never shows a blank, nor the soft thumbnail before the sharp picture (the flicker on
@@ -821,6 +917,8 @@ export function PhotosView() {
   );
   const painted = useRef<Photo | null>(null);
   const underEl = useRef<HTMLImageElement | null>(null);
+  // The last picture painted, held under a step until the next one is decoded at the size the
+  // stage draws it: the previous sharp photo, never the soft thumbnail, and never an empty frame.
   const under = shown && shown.kind !== "video" && painted.current && painted.current.id !== shown.id && painted.current.kind !== "video" && !decoded.has(viewSrc(shown)) ? painted.current : null;
   if (!shown || shown.kind === "video") painted.current = null;
   // The viewer follows the photo, not its place: when the list moves under it — its date
@@ -836,14 +934,14 @@ export function PhotosView() {
       return;
     }
     // Only a list that changed sends it looking; a step to another photo is a new photo.
-    if (moved && openId.current && photos[open]?.id !== openId.current) {
-      const again = photos.findIndex((p) => p.id === openId.current);
+    if (moved && openId.current && photos.ids[open] !== openId.current) {
+      const again = photos.indexOf(openId.current);
       if (again >= 0) {
         setOpen(again);
         return;
       }
     }
-    openId.current = photos[open]?.id ?? null;
+    openId.current = photos.ids[open] ?? null;
   }, [open, photos]);
 
   /*
@@ -917,7 +1015,7 @@ export function PhotosView() {
   };
   const fitted = (p: Photo): React.CSSProperties => {
     // The grid's thumbnail, already decoded, painted under the picture: never a black stage.
-    const under = { backgroundImage: `url("${pictureSrc(p.id, "thumb")}")` };
+    const under = { backgroundImage: `url("${loadedThumb(p.id)}")` };
     if (!p.width || !p.height) return under;
     // Both sides set, each the smaller of the room across and the room down in the photo's own
     // proportion: WebKit sized a replaced image's height from its width alone, ignoring
@@ -934,6 +1032,9 @@ export function PhotosView() {
       maxHeight: "none",
     };
   };
+  /** A photo's shape as shown, upright (its picture's own, once learned): the box a film is
+   *  turned into. */
+  const shapeOf = (p: Photo) => ({ w: trueShape.get(p.id) ?? (p.width && p.height ? p.width / p.height : 4 / 3), h: 1 });
   const still = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   // A photo opens and closes at once, with no animation: every way of animating it — the photo
   // growing out of its tile, the backdrop fading, the bars fading, the grid behind it hidden or
@@ -965,13 +1066,20 @@ export function PhotosView() {
     backTo.current = openNow.current;
     setOpen(null);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // A step lands only on a photo that is here — the next ones are fetched well ahead (below) —
+  // so the stage never shows nothing; a key held at the edge of what is here waits for it.
   const step = useCallback(
-    (by: number) =>
-      setOpen((at) => {
-        if (at === null || !photos) return at;
-        const to = Math.max(0, Math.min(photos.length - 1, at + by));
-        return to;
-      }),
+    (by: number) => {
+      const at = openNow.current;
+      if (at === null || !photos) return;
+      const to = Math.max(0, Math.min(photos.length - 1, at + by));
+      if (to === at) return;
+      if (!photos.at(to)) {
+        void photos.need(to - PAGE / 2, to + PAGE / 2);
+        return;
+      }
+      setOpen(to);
+    },
     [photos],
   );
 
@@ -1033,8 +1141,10 @@ export function PhotosView() {
   const viewBurst = async (p: Photo) => {
     if (!p.burst) return;
     try {
-      const list = await api.photosBurst(p.burst);
+      const list = new PhotoList(await api.photosIndex({ burst: p.burst }, null), store);
+      await list.need(0, list.length - 1);
       reads.current++; // a sync's read landing now must not put the library back over it
+      store.use(list);
       setPhotos(list);
       setInBurst({ from: p.id, count: list.length });
       // Opened by the photo, not a place: the list is drawn as it is shown.
@@ -1055,7 +1165,7 @@ export function PhotosView() {
   const [reopen, setReopen] = useState<string | null>(null);
   useEffect(() => {
     if (!reopen || !photos) return;
-    const at = photos.findIndex((x) => x.id === reopen);
+    const at = photos.indexOf(reopen);
     setReopen(null);
     if (at >= 0) setOpen(at);
   }, [reopen, photos]);
@@ -1090,10 +1200,10 @@ export function PhotosView() {
     const at = backTo.current;
     backTo.current = null;
     if (open !== null || at === null || inBurst) return;
-    const p = photos?.[at];
-    if (!p) return;
+    const id = photos?.ids[at];
+    if (!id) return;
     anchor.current = at;
-    setChosen((c) => (c.size === 1 && c.has(p.id) ? c : new Set([p.id])));
+    setChosen((c) => (c.size === 1 && c.has(id) ? c : new Set([id])));
     reach(at);
   }, [open === null]); // eslint-disable-line react-hooks/exhaustive-deps
   /**
@@ -1165,7 +1275,7 @@ export function PhotosView() {
   const [moving, setMoving] = useState<string | null>(null);
   useEffect(() => setMoving(null), [shown?.id]);
   /** How the film being played is turned, as its file records it (see turnStyle). */
-  const [turn, setTurn] = useState<{ key: string; value: Turn } | null>(null);
+  const [turn, setTurn] = useState<{ key: string; value: Turn; zoom: number } | null>(null);
   /** Videos Apple keeps no streaming copy of: played from the original instead. */
   const [noCopy, setNoCopy] = useState<Set<string>>(() => new Set());
   // A video plays from Apple's streaming copy (H.264, its header first: it starts at once), not
@@ -1176,10 +1286,15 @@ export function PhotosView() {
     if (!turnFor || turn?.key === turnFor) return undefined;
     let live = true;
     const [id, which] = turnFor.split("/") as [string, "original" | "video"];
+    // Its turn and its margin, both read from the film's header.
+    const zoom = api.photoVideoZoom(id, which).catch(() => 1);
     api.photoVideoTurn(id, which).then(
-      (value) => live && setTurn({ key: turnFor, value }),
+      async (value) => {
+        const z = await zoom;
+        if (live) setTurn({ key: turnFor, value, zoom: z });
+      },
       // Not known: drawn as served, as it was before.
-      () => live && setTurn({ key: turnFor, value: [1, 0, 0, 1] }),
+      () => live && setTurn({ key: turnFor, value: [1, 0, 0, 1], zoom: 1 }),
     );
     return () => {
       live = false;
@@ -1189,8 +1304,11 @@ export function PhotosView() {
   const [unplayable, setUnplayable] = useState<Set<string>>(() => new Set());
   // The window's player reads only http(s): videos come from the app's own loopback server.
   const [videoBase, setVideoBase] = useState<string | null>(null);
+  /** What this computer's player can decode: why a video it cannot play is a still. */
+  const [videoSupport, setVideoSupport] = useState<{ missing: string[] } | null>(null);
   useEffect(() => {
     api.videoBase().then(setVideoBase, () => setVideoBase(null));
+    api.videoSupport().then(setVideoSupport, () => setVideoSupport(null));
   }, []);
   const unzoom = (glide = true) => paint({ k: 1, x: 0, y: 0 }, glide);
   // Kept so the image's edge never comes in past the middle of the stage.
@@ -1273,17 +1391,19 @@ export function PhotosView() {
   // tore in WebKitGTK.)
   useEffect(() => {
     if (open === null || !photos) return;
+    // The photos either side, well past where a held key gets to before they land.
+    void photos.need(open - PAGE / 2, open + PAGE / 2);
     for (const by of [1, -1, 2, -2]) {
-      const p = photos[open + by];
+      const p = photos.at(open + by);
       if (p && p.kind !== "video") void warm(p);
     }
-  }, [open, photos]);
+  }, [open, photos, open !== null && photos?.at(open + 1), open !== null && photos?.at(open - 1)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The viewer's keys: arrows to go through, Escape to close, I for the details.
   const live = useActiveRef();
   useEffect(() => {
     if (open === null) return undefined;
-    const current = photos?.[open] ?? null;
+    const current = photos?.at(open) ?? null;
     const onKey = (e: KeyboardEvent) => {
       if (!live.current) return;
       // Keys typed into a field — the caption — are words, not commands.
@@ -1318,7 +1438,7 @@ export function PhotosView() {
       // F as well as ".", and H as well as Ctrl+L, as icloud.com takes them.
       else if ((e.key === "." || (e.key.toLowerCase() === "f" && !e.ctrlKey && !e.metaKey)) && current && view !== "recentlyDeleted") void change(current, "favorite", !current.favorite);
       else if (((e.ctrlKey || e.metaKey) ? e.key.toLowerCase() === "l" : e.key.toLowerCase() === "h") && current && view !== "recentlyDeleted") void change(current, "hidden", view !== "hidden");
-      else if ((e.key === "Delete" || e.key === "Backspace") && current && album) void removeFrom([current]);
+      else if ((e.key === "Delete" || e.key === "Backspace") && current && album) void removeFrom([current.id]);
       else if ((e.key === "Delete" || e.key === "Backspace") && current && view !== "recentlyDeleted") void change(current, "deleted", true);
       else if ((e.key === "Delete" || e.key === "Backspace") && current && view === "recentlyDeleted" && !album) void change(current, "expunged", true);
       else return;
@@ -1333,8 +1453,9 @@ export function PhotosView() {
    * it refuses, which puts the photo back as it was and says why.
    */
   const [ask, asking] = useConfirm();
-  const change = (p: Photo, flag: Flag, on: boolean) => changeAll([p], flag, on);
-  const changeAll = async (list: Photo[], flag: Flag, on: boolean) => {
+  const change = (p: Photo, flag: Flag, on: boolean) => changeAll([p.id], flag, on);
+  /** A flag set on photos by id — what is here changes at once, the rest when it is read. */
+  const changeAll = async (list: string[], flag: Flag, on: boolean) => {
     if (list.length === 0) return;
     const n = list.length;
     // Asked first, in icloud.com's words: a delete reaches every device.
@@ -1376,7 +1497,8 @@ export function PhotosView() {
       return;
     }
     const before = photos;
-    const ids = new Set(list.map((p) => p.id));
+    const ids = new Set(list);
+    const was = list.map((id) => store.get(id)).filter((p): p is Photo => Boolean(p));
     // Which changes take a photo out of the view it is in.
     const leaves =
       flag === "expunged" ? true
@@ -1384,11 +1506,8 @@ export function PhotosView() {
       : flag === "deleted" ? (on ? view !== "recentlyDeleted" : view === "recentlyDeleted")
       : flag === "hidden" ? (on ? view !== "hidden" : view === "hidden")
       : !on && view === "favorites";
-    setPhotos((all) =>
-      leaves
-        ? (all ?? []).filter((x) => !ids.has(x.id))
-        : (all ?? []).map((x) => (ids.has(x.id) ? { ...x, [flag]: on } : x)),
-    );
+    if (leaves) setPhotos((all) => all?.without(ids) ?? all);
+    else store.patch(ids, (x) => ({ ...x, [flag]: on }));
     if (leaves) {
       setChosen((c) => new Set([...c].filter((id) => !ids.has(id))));
       // The viewer goes on to the next photo, or the one before at the end, or closes.
@@ -1400,10 +1519,11 @@ export function PhotosView() {
     }
     try {
       // The whole selection in one call: the library changes at once, Apple hears it batched.
-      await api.photosSetFlag(list.map((p) => p.id), flag, on);
+      await api.photosSetFlag(list, flag, on);
       read().catch(() => {});
     } catch (e) {
       setPhotos(before);
+      store.put(was);
       setError(messageOf(e));
       read().catch(() => {});
     }
@@ -1491,7 +1611,7 @@ export function PhotosView() {
   };
 
   /** Out of the album open; the photos stay in the library. */
-  const removeFrom = async (gone: Photo[]) => {
+  const removeFrom = async (gone: string[]) => {
     if (!album) return;
     const n = gone.length;
     const sure = await ask({
@@ -1501,8 +1621,8 @@ export function PhotosView() {
     });
     if (!sure) return;
     const before = photos;
-    const ids = new Set(gone.map((p) => p.id));
-    setPhotos((list) => (list ?? []).filter((x) => !ids.has(x.id)));
+    const ids = new Set(gone);
+    setPhotos((list) => list?.without(ids) ?? list);
     setAlbums((list) => list.map((x) => (x[0].id === album.id ? [x[0], Math.max(0, x[1] - n)] : x)));
     setOpen((at) => {
       if (at === null || !photos) return at;
@@ -1518,17 +1638,19 @@ export function PhotosView() {
     }
   };
 
-  // Where each photo is, by id: the selection is turned into photos by looking them up, in the
-  // order they are shown — not by walking the whole library on every click.
-  const placeOf = useMemo(() => new Map((photos ?? []).map((p, i) => [p.id, i] as const)), [photos]);
+  // The selection in the order shown, by id, looked up where each one is — not by walking the
+  // whole library on every click. Its photos need not be here: an action on it fetches any
+  // that are not (store.load).
   const selected = useMemo(() => {
-    const all = photos ?? [];
+    if (!photos) return [];
     return [...chosen]
-      .map((id) => placeOf.get(id))
-      .filter((i): i is number => i !== undefined)
-      .sort((x, y) => x - y)
-      .map((i) => all[i]);
-  }, [photos, chosen, placeOf]);
+      .map((id) => [id, photos.indexOf(id)] as const)
+      .filter(([, i]) => i >= 0)
+      .sort((x, y) => x[1] - y[1])
+      .map(([id]) => id);
+  }, [photos, chosen]);
+  const kindsOf = (ids: string[]) => ids.map((id) => photos?.kind(photos.indexOf(id)) ?? "image");
+  const anyPlain = (ids: string[]) => ids.some((id) => !(photos?.favorite(photos.indexOf(id)) ?? false));
 
   // A photo found by the search across everything: the whole library shown, and the photo
   // opened in the viewer once the library's photos are here.
@@ -1544,14 +1666,17 @@ export function PhotosView() {
   useEffect(() => {
     const id = revealing.current;
     if (!id || view !== "library" || album) return;
-    const at = (photos ?? []).findIndex((p) => p.id === id);
+    const at = photos?.indexOf(id) ?? -1;
     if (at < 0) return;
     revealing.current = null;
     void openAt(at);
   }, [photos, view, album]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openAt = async (index: number) => {
-    const p = photos?.[index];
+    if (!photos) return;
+    // Opened from a tile it is here; from a search, its page is fetched first.
+    if (!photos.at(index)) await photos.need(index - PAGE / 2, index + PAGE / 2);
+    const p = photos.at(index);
     if (!p) return;
     // Open at full quality: the whole picture decoded first — from disk, a moment — but never
     // waited on for longer than a blink (a click must answer at once); past that it opens on
@@ -1567,12 +1692,11 @@ export function PhotosView() {
   // A click as Photos takes it: alone it selects that one, with Ctrl (⌘) it adds or takes
   // away, with Shift it selects everything from the last one chosen.
   const pick = (index: number, e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
-    const list = photos ?? [];
-    const id = list[index]?.id;
-    if (!id) return;
+    const id = photos?.ids[index];
+    if (!photos || !id) return;
     if (e.shiftKey && anchor.current !== null) {
       const [a, b] = [Math.min(anchor.current, index), Math.max(anchor.current, index)];
-      const span = list.slice(a, b + 1).map((p) => p.id);
+      const span = photos.ids.slice(a, b + 1);
       setChosen((c) => new Set([...(e.ctrlKey || e.metaKey ? c : []), ...span]));
       return;
     }
@@ -1642,31 +1766,31 @@ export function PhotosView() {
       if (!live.current) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest?.("input, textarea, [contenteditable], .row-menu, [role=dialog]") || naming) return;
-      const list = photos ?? [];
+      const list = photos?.ids ?? [];
       const ctrl = e.ctrlKey || e.metaKey;
       // Ctrl+A is the photos' wherever the focus rests on this screen — the app list keeps it
       // after Photos is chosen there — never the page's text.
       const selectAll = ctrl && e.key.toLowerCase() === "a";
       if (!selectAll && !t?.closest?.(".px") && t !== document.body) return;
       if (ctrl && e.key.toLowerCase() === "a") {
-        setChosen(new Set(list.map((p) => p.id)));
+        setChosen(new Set(list));
       } else if (e.key === "Escape" && chosen.size) {
         setChosen(new Set());
       } else if ((e.key === "Enter" || e.key === " ") && t?.closest?.(".px-tile[data-index]") && !t.closest(".px-tile")!.matches('[aria-selected="true"]')) {
         // The photo the keys rest on — Tab lands on one before any is chosen — opens.
         e.preventDefault();
         const at = Number(t.closest(".px-tile")!.getAttribute("data-index"));
-        setChosen(new Set([list[at].id]));
+        setChosen(new Set([list[at]]));
         anchor.current = at;
         openAt(at);
       } else if ((e.key === "Enter" || e.key === " ") && selected.length) {
-        openAt(list.indexOf(selected[0]));
+        openAt(photos!.indexOf(selected[0]));
       } else if (e.key.startsWith("Arrow") && list.length) {
         const from = anchor.current ?? (e.key === "ArrowLeft" || e.key === "ArrowUp" ? list.length : -1);
         const to = from < 0 ? 0 : from >= list.length ? list.length - 1 : neighbour(from, e.key);
         if (to === null) return e.preventDefault();
-        if (e.shiftKey && anchor.current !== null) setChosen((c) => new Set([...c, list[to].id]));
-        else setChosen(new Set([list[to].id]));
+        if (e.shiftKey && anchor.current !== null) setChosen((c) => new Set([...c, list[to]]));
+        else setChosen(new Set([list[to]]));
         anchor.current = to;
         reach(to);
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected.length) {
@@ -1679,13 +1803,13 @@ export function PhotosView() {
       } else if (!ctrl && e.key.toLowerCase() === "i" && selected.length) {
         // I: the selected photo, opened with its details.
         setInfo(true);
-        openAt(list.indexOf(selected[0]));
+        openAt(photos!.indexOf(selected[0]));
       } else if ((ctrl ? e.key.toLowerCase() === "l" : e.key.toLowerCase() === "h") && selected.length && view !== "recentlyDeleted") {
         // ⌘L in Photos: hide, or in Hidden, unhide.
         void changeAll(selected, "hidden", view !== "hidden");
       } else if ((e.key === "." || (!ctrl && e.key.toLowerCase() === "f")) && selected.length && view !== "recentlyDeleted") {
         // As Photos: if any is not a favorite, all become favorites; else all stop being.
-        void changeAll(selected, "favorite", selected.some((p) => !p.favorite));
+        void changeAll(selected, "favorite", anyPlain(selected));
       } else return;
       e.preventDefault();
     };
@@ -1754,7 +1878,7 @@ export function PhotosView() {
               // Only the photo itself, not the hairline gap after it.
               if (x2 < left0 + c * pitch || x1 > left0 + c * pitch + pitch - gap) continue;
               const it = items[r * across + c];
-              if (it) next.add(it.photo.id);
+              if (it) next.add(it.id);
             }
           }
         }
@@ -1790,7 +1914,7 @@ export function PhotosView() {
         swept.current = true;
         // The keys go on from the sweep's last photo.
         const ids = [...chosenNow.current];
-        const at = ids.length ? Math.max(...ids.map((id) => placeOf.get(id) ?? -1)) : -1;
+        const at = ids.length ? Math.max(...ids.map((id) => photos?.indexOf(id) ?? -1)) : -1;
         anchor.current = at >= 0 ? at : anchor.current;
       }
     };
@@ -1804,9 +1928,9 @@ export function PhotosView() {
   // A slideshow of what is selected when that is more than one photo, else of the whole view
   // from this photo on, as Photos starts one.
   const startShow = (from: Photo) => {
-    const list = selected.length > 1 && chosen.has(from.id) ? selected : (photos ?? []);
+    const ids = selected.length > 1 && chosen.has(from.id) ? selected : (photos?.ids ?? []);
     setMenu(null);
-    setShow({ list, start: Math.max(0, list.findIndex((p) => p.id === from.id)) });
+    setShow({ ids, start: Math.max(0, ids.indexOf(from.id)) });
   };
 
   const albumEntries = (ids: string[]): MenuEntry[] => [
@@ -1818,14 +1942,14 @@ export function PhotosView() {
   const photoMenu = (p: Photo, at: { x: number; y: number; alignRight: boolean }) => {
     // A right-click on a selected photo acts on the whole selection; on any other, it
     // selects that one first, as Photos does.
-    const group = chosen.has(p.id) && selected.length > 1 ? selected : [p];
+    const group = chosen.has(p.id) && selected.length > 1 ? selected : [p.id];
     if (!chosen.has(p.id)) {
       setChosen(new Set([p.id]));
-      anchor.current = photos?.findIndex((x) => x.id === p.id) ?? null;
+      anchor.current = photos?.indexOf(p.id) ?? null;
     }
     if (group.length > 1) {
       const n = group.length;
-      const anyPlain = group.some((x) => !x.favorite);
+      const plain = anyPlain(group);
       setMenu({
         at,
         entries:
@@ -1836,13 +1960,13 @@ export function PhotosView() {
                 { label: `Delete ${n} Items`, danger: true, run: () => void changeAll(group, "expunged", true) },
               ]
             : [
-                { label: anyPlain ? "Favorite" : "Unfavorite", run: () => void changeAll(group, "favorite", anyPlain) },
+                { label: plain ? "Favorite" : "Unfavorite", run: () => void changeAll(group, "favorite", plain) },
                 null,
                 { label: `Download ${n} Items`, run: () => void downloadAs(group, "originals") },
-                { label: "More Download Options", run: () => setOptions(group) },
+                { label: "More Download Options", run: () => void store.load(group).then(setOptions, (e) => setError(messageOf(e))) },
                 null,
                 { label: "Start Slideshow", run: () => startShow(p) },
-                { label: "Add to Album", submenu: albumEntries(group.map((x) => x.id)) },
+                { label: "Add to Album", submenu: albumEntries(group) },
                 null,
                 view === "hidden" && !album
                   ? { label: `Unhide ${n} Photos`, run: () => void changeAll(group, "hidden", false) }
@@ -1873,7 +1997,7 @@ export function PhotosView() {
               ? { label: "Unhide Photo", run: () => void change(p, "hidden", false) }
               : { label: "Hide Photo", run: () => void change(p, "hidden", true) },
             album
-              ? { label: "Remove from Album", danger: true, run: () => void removeFrom([p]) }
+              ? { label: "Remove from Album", danger: true, run: () => void removeFrom([p.id]) }
               : { label: "Delete", danger: true, run: () => void change(p, "deleted", true) },
           ];
     setMenu({ at, entries });
@@ -1887,10 +2011,10 @@ export function PhotosView() {
   const dragging2 = useRef<string[] | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
   const dragFrom = (p: Photo, e: React.DragEvent) => {
-    const ids = chosen.has(p.id) ? selected.map((x) => x.id) : [p.id];
+    const ids = chosen.has(p.id) ? selected : [p.id];
     if (!chosen.has(p.id)) {
       setChosen(new Set([p.id]));
-      anchor.current = photos?.findIndex((x) => x.id === p.id) ?? null;
+      anchor.current = photos?.indexOf(p.id) ?? null;
     }
     dragging2.current = ids;
     e.dataTransfer.effectAllowed = "copy";
@@ -2019,12 +2143,11 @@ export function PhotosView() {
     void words(p, titleField.current?.value ?? p.title ?? "", captionField.current?.value ?? p.caption ?? "");
   };
   const keywords = async (p: Photo, words: string[]) => {
-    const before = photos;
-    setPhotos((all) => (all ?? []).map((x) => (x.id === p.id ? { ...x, keywords: words } : x)));
+    store.patch([p.id], (x) => ({ ...x, keywords: words }));
     try {
       await api.photoSetKeywords(p.id, words);
     } catch (e) {
-      setPhotos(before);
+      store.put([p]);
       setError(messageOf(e));
     }
   };
@@ -2032,14 +2155,14 @@ export function PhotosView() {
   const rate = async (p: Photo, rating: number) => {
     const before = photos;
     const leaves = view === "rated" && rating === 0;
-    setPhotos((all) =>
-      leaves ? (all ?? []).filter((x) => x.id !== p.id) : (all ?? []).map((x) => (x.id === p.id ? { ...x, rating } : x)),
-    );
+    if (leaves) setPhotos((all) => all?.without(new Set([p.id])) ?? all);
+    else store.patch([p.id], (x) => ({ ...x, rating }));
     try {
       await api.photoSetRating(p.id, rating);
       read().catch(() => {});
     } catch (e) {
       setPhotos(before);
+      store.put([p]);
       setError(messageOf(e));
     }
   };
@@ -2047,12 +2170,11 @@ export function PhotosView() {
   const words = async (p: Photo, title: string, caption: string) => {
     const [t, c] = [title.trim(), caption.trim()];
     if (t === (p.title ?? "") && c === (p.caption ?? "")) return;
-    const before = photos;
-    setPhotos((all) => (all ?? []).map((x) => (x.id === p.id ? { ...x, title: t || null, caption: c || null } : x)));
+    store.patch([p.id], (x) => ({ ...x, title: t || null, caption: c || null }));
     try {
       await api.photoSetText(p.id, t, c);
     } catch (e) {
-      setPhotos(before);
+      store.put([p]);
       setError(messageOf(e));
     }
   };
@@ -2078,24 +2200,23 @@ export function PhotosView() {
   const [adjusting, setAdjusting] = useState<Photo | null>(null);
   const redate = async (p: Photo, takenAt: number) => {
     setAdjusting(null);
-    const before = photos;
-    setPhotos((all) => (all ?? []).map((x) => (x.id === p.id ? { ...x, takenAt } : x)));
+    store.patch([p.id], (x) => ({ ...x, takenAt }));
     try {
       await api.photoSetDate(p.id, takenAt);
       read().catch(() => {});
     } catch (e) {
-      setPhotos(before);
+      store.put([p]);
       setError(messageOf(e));
     }
   };
 
   /** Download Options open for these photos. */
   const [options, setOptions] = useState<Photo[] | null>(null);
-  const downloadAs = async (list: Photo[], want: Want) => {
+  const downloadAs = async (list: string[], want: Want) => {
     setOptions(null);
     let last = "";
     try {
-      for (const p of list) last = await api.photoDownload(p.id, want);
+      for (const id of list) last = await api.photoDownload(id, want);
       toastSaved(last, list.length);
     } catch (e) {
       setError(messageOf(e));
@@ -2193,9 +2314,8 @@ export function PhotosView() {
 
   // Under the title, the stretch of time shown — "September – October 2026" — as Photos has it.
   const span = useMemo(() => {
-    if (!photos || photos.length === 0) return null;
-    const times = photos.map((p) => p.takenAt);
-    const [a, b] = [new Date(Math.min(...times) * 1000), new Date(Math.max(...times) * 1000)];
+    if (!photos || photos.length === 0 || photos.first === null || photos.last === null) return null;
+    const [a, b] = [new Date(photos.first * 1000), new Date(photos.last * 1000)];
     const month = (d: Date, year: boolean) => d.toLocaleDateString(undefined, year ? { month: "long", year: "numeric" } : { month: "long" });
     if (a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()) return month(b, true);
     return `${month(a, a.getFullYear() !== b.getFullYear())} – ${month(b, true)}`;
@@ -2203,7 +2323,8 @@ export function PhotosView() {
   // At the foot of the library, what it holds: "132 Photos, 2 Videos".
   const tally = useMemo(() => {
     if (!photos || photos.length === 0) return null;
-    const videos = photos.filter((p) => p.kind === "video").length;
+    let videos = 0;
+    for (const m of photos.marks) if ((m & 3) === 1) videos++;
     const stills = photos.length - videos;
     const part = (n: number, one: string) => `${n.toLocaleString()} ${n === 1 ? one : `${one}s`}`;
     return [stills && part(stills, "Photo"), videos && part(videos, "Video")].filter(Boolean).join(", ");
@@ -2223,11 +2344,10 @@ export function PhotosView() {
     return months
       .filter((m) => m.month && m.items.length && !seen.has(m.month) && seen.add(m.month))
       .map((m) => {
-        const cover = m.items[0].photo;
-        const d = new Date(sortKey(cover, sort?.by ?? "taken") * 1000);
-        return { label: m.month, year: d.getFullYear(), month: d.getMonth(), cover };
+        const d = new Date(photos!.keys[m.items[0].index] * 1000);
+        return { label: m.month, year: d.getFullYear(), month: d.getMonth(), cover: { id: m.items[0].id } };
       });
-  }, [months, drawn, sort?.by]);
+  }, [months, drawn]); // eslint-disable-line react-hooks/exhaustive-deps
   const goToMonth = (label: string) => {
     const el = scroller.current;
     const at = el?.querySelector<HTMLElement>(`.px-month[data-month="${CSS.escape(label)}"]`);
@@ -2405,17 +2525,28 @@ export function PhotosView() {
     watch.observe(el);
     return () => watch.disconnect();
   }, []);
-  const cell = Math.round(((gridWidth || 1200) / across) * (window.devicePixelRatio || 1));
+  // The screen's pixel density, followed as it changes (the window moved to another screen, the
+  // page zoomed): no size watcher sees that, and tiles stayed at the old density's pictures.
+  const [dpr, setDpr] = useState(() => window.devicePixelRatio || 1);
+  useEffect(() => {
+    const at = window.matchMedia?.(`(resolution: ${dpr}dppx)`);
+    if (!at) return undefined;
+    const changed = () => setDpr(window.devicePixelRatio || 1);
+    at.addEventListener("change", changed);
+    return () => at.removeEventListener("change", changed);
+  }, [dpr]);
+  const cell = Math.round(((gridWidth || 1200) / across) * dpr);
   // The app makes, ahead, every picture the grid and the viewer are about to show at these
   // sizes (photos_prepare): the first look at a photo is as sharp as the hundredth. Told again
   // when they change, once the window has settled.
   useEffect(() => {
     const t = window.setTimeout(() => {
       const box = stageBox.w ? stageBox : { w: Math.max(320, window.innerWidth - 400), h: Math.max(240, window.innerHeight - 140) };
-      api.photosPrepare({ cell, fit, stageW: box.w, stageH: box.h, dpr: window.devicePixelRatio || 1 }).catch(() => {});
+      // The view on screen has its pictures made first (Hidden is not in the library's).
+      api.photosPrepare({ cell, fit, stageW: box.w, stageH: box.h, dpr, view }).catch(() => {});
     }, 400);
     return () => window.clearTimeout(t);
-  }, [cell, fit, open !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cell, fit, open !== null, view, dpr]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A new album or folder, at the top or in a folder: named in place in the sidebar.
   const startNew = (parent: string | null, folder: boolean) => {
@@ -2773,7 +2904,7 @@ export function PhotosView() {
             countClassName="px-span"
             count={
               selected.length > 0
-                ? pickedWords(selected)
+                ? pickedWords(kindsOf(selected))
                 : drawn.query
                   ? photos?.length === 1 ? "1 Result" : `${(photos?.length ?? 0).toLocaleString()} Results`
                   : (here ?? span) || undefined
@@ -2796,7 +2927,7 @@ export function PhotosView() {
                   </button>
                 </>
               ) : (
-                <button className="tool has-label danger px-word" onClick={() => void changeAll(photos, "expunged", true)}>
+                <button className="tool has-label danger px-word" onClick={() => void changeAll(photos.ids, "expunged", true)}>
                   Delete All
                 </button>
               )}
@@ -2950,6 +3081,7 @@ export function PhotosView() {
               label={m.label}
               month={m.month}
               items={m.items}
+              list={photos!}
               chosen={chosen}
               anchor={anchor.current}
               deleted={drawn.view === "recentlyDeleted" && !drawn.album}
@@ -3061,7 +3193,7 @@ export function PhotosView() {
                       <Download size={17} />
                     </button>
                     {album ? (
-                      <button className="px-full-btn" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown])}>
+                      <button className="px-full-btn" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown.id])}>
                         <CopyMinus size={17} />
                       </button>
                     ) : (
@@ -3136,7 +3268,7 @@ export function PhotosView() {
                     <CopyPlus size={17} />
                   </button>
                   {album ? (
-                    <button className="tool px-cap" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown])}>
+                    <button className="tool px-cap" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown.id])}>
                       <CopyMinus size={17} />
                     </button>
                   ) : (
@@ -3176,7 +3308,8 @@ export function PhotosView() {
                   <VideoPlayer
                     key={film}
                     turn={turn?.key === film ? turn.value : undefined}
-                    shape={{ w: shown.width, h: shown.height }}
+                    zoom={turn?.key === film ? turn.zoom : 1}
+                    shape={shapeOf(shown)}
                     src={`${videoBase}/${film}`}
                     poster={viewSrc(shown)}
                     label={shown.filename ?? "Video"}
@@ -3191,12 +3324,22 @@ export function PhotosView() {
               ) : shown.kind === "video" ? (
                 // This computer's engine could not play it (no codec for it): a still, and Play
                 // opens it in the system's own player.
-                <button className="px-video" aria-label="Play in your video player" onClick={() => void play(shown)}>
-                  <img key={shown.id} className="px-shown" src={pictureSrc(shown.id, "medium")} alt={shown.filename ?? ""} decoding="async" style={fitted(shown)} />
-                  <span className="px-play" aria-hidden="true">
-                    <Play size={28} strokeWidth={0} fill="currentColor" />
-                  </span>
-                </button>
+                <div className="px-video-hold">
+                  <button className="px-video" aria-label="Play in your video player" onClick={() => void play(shown)}>
+                    <img key={shown.id} className="px-shown" src={viewSrc(shown)} alt={shown.filename ?? ""} decoding="async" style={fitted(shown)} />
+                    <span className="px-play" aria-hidden="true">
+                      <Play size={28} strokeWidth={0} fill="currentColor" />
+                    </span>
+                  </button>
+                  {/* Why it is a still: said plainly, with what would fix it. */}
+                  {videoBase && (
+                    <p className="px-video-note" role="status">
+                      {videoSupport && videoSupport.missing.length > 0
+                        ? `This video can't play here: this computer is missing ${videoSupport.missing.join(" and ")}. Install it, then reopen Skykeep. Until then, Play opens it in your video player.`
+                        : "This video can't play here. Play opens it in your video player."}
+                    </p>
+                  )}
+                </div>
               ) : (
                 <>
                 {under && (
@@ -3242,6 +3385,9 @@ export function PhotosView() {
                     alt={shown.filename ?? ""}
                     decoding="async"
                     draggable={false}
+                    // Opening from the grid, the tile's own picture (already decoded) is painted
+                    // under it until it is decoded; on a step the last sharp photo is (px-under),
+                    // never a thumbnail.
                     style={under ? { ...fitted(shown), backgroundImage: "none" } : fitted(shown)}
                     onLoad={(e) => {
                       const img = e.currentTarget;
@@ -3268,20 +3414,27 @@ export function PhotosView() {
                     // The moving part, laid exactly over the still, played once and gone —
                     // turned as it was recorded (a selfie's is a quarter turn and a mirror),
                     // and not shown until that turn is known, so it never shows sideways.
-                    <video
-                      key={`${shown.id}-live`}
-                      className="px-live"
-                      src={`${videoBase}/${shown.id}/video`}
-                      style={
-                        turn?.key === `${shown.id}/video`
-                          ? turnStyle(turn.value, shown.width, shown.height)
-                          : { visibility: "hidden" }
-                      }
-                      autoPlay
-                      playsInline
-                      onEnded={() => setMoving(null)}
-                      onError={() => setMoving(null)}
-                    />
+                    // In the still's own box, clipped to it: the film drawn the still's size and
+                    // shape whatever its own pixels, and only once a frame of it is here — until
+                    // then, and once it ends, the still itself shows, never a black frame.
+                    <div className="px-live-frame" key={`${shown.id}-live`}>
+                      <video
+                        className="px-live"
+                        src={`${videoBase}/${shown.id}/video`}
+                        style={{
+                          ...(turn?.key === `${shown.id}/video` ? turnStyle(turn.value, shapeOf(shown).w, shapeOf(shown).h, turn.zoom) : {}),
+                          opacity: 0,
+                        }}
+                        autoPlay
+                        playsInline
+                        onTimeUpdate={(e) => {
+                          const v = e.currentTarget;
+                          if (v.style.opacity === "0" && v.currentTime > 0.04 && v.readyState >= 2 && turn?.key === `${shown.id}/video`) v.style.opacity = "1";
+                        }}
+                        onEnded={() => setMoving(null)}
+                        onError={() => setMoving(null)}
+                      />
+                    </div>
                   )}
                   {/* Zoomed in, the whole picture: only then are its own pixels the ones seen. */}
                   {zoomed && (
@@ -3492,7 +3645,7 @@ export function PhotosView() {
           "fixed" was fixed to the screen and a slideshow played inside a box, not the window. */}
       {show && (
         <Portal>
-          <Slideshow photos={show.list} start={show.start} onClose={() => setShow(null)} />
+          <Slideshow ids={show.ids} start={show.start} load={(ids) => store.load(ids)} videoBase={videoBase} onClose={() => setShow(null)} />
         </Portal>
       )}
       {adjusting && (
@@ -3502,7 +3655,7 @@ export function PhotosView() {
       )}
       {options && (
         <Portal>
-          <DownloadOptions photos={options} onPick={(w) => void downloadAs(options, w)} onClose={() => setOptions(null)} />
+          <DownloadOptions photos={options} onPick={(w) => void downloadAs(options.map((p) => p.id), w)} onClose={() => setOptions(null)} />
         </Portal>
       )}
       <UploadPanel uploads={[...uploads.values()]} onDismiss={dismissUploads} cancel={api.photosUploadCancel} />

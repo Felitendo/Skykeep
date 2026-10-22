@@ -19,7 +19,9 @@ export function fadeIn(el: HTMLElement | null, { from = 0, duration = 150 }: { f
   const start = performance.now();
   el.style.opacity = String(from);
   const step = (now: number) => {
-    const t = Math.min(1, (now - start) / duration);
+    // A frame's time can be from just before the fade began (it was started mid-frame): never
+    // below where it starts.
+    const t = Math.max(0, Math.min(1, (now - start) / duration));
     // Ease out: most of the change early, settling gently.
     const k = 1 - (1 - t) * (1 - t);
     if (t >= 1) {

@@ -11,7 +11,7 @@ export const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdevi
    value it needs must arrive through the single argument. */
 /* Fixture events, so the agenda's rendering is verified without inventing rows in anyone's
    real library. Times are unix seconds relative to now. */
-export function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture, remindersFixture, demoFixture }) {
+export function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture, remindersFixture, demoFixture, extraEvents = [] }) {
   const HOUR = 3600, DAY = 86400;
   // Today at 9 in the morning, on this machine's clock. Counted from UTC's midnight it was
   // yesterday for the first hours after local midnight in a zone east of UTC — and the
@@ -42,6 +42,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     { guid: "quince:holidays:diwali:2026", calendarGuid: "quince:holidays", title: "Diwali",
       location: null, startsAt: localDay(5), endsAt: localDay(6), allDay: true,
       timezone: null, url: null, notes: null, etag: null },
+    // A suite's own events, placed `day`/`hour` from today at 9 AM, with fields as given.
+    ...extraEvents.map(({ day = 0, hour = 0, length = 1, ...rest }) => ({
+      calendarGuid: "work", location: null, allDay: false, timezone: null, url: null, notes: null, etag: null,
+      startsAt: base + day * DAY + hour * HOUR, endsAt: base + day * DAY + (hour + length) * HOUR, ...rest,
+    })),
   ];
   const dueReminders = !calendarFixture ? [] : [
     { guid: "r1", listGuid: "l1", title: "Water the plants", notes: null,
@@ -85,7 +90,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     { guid: "c4", firstName: null, lastName: null, company: null, isCompany: false,
       birthday: null, notes: null, etag: null,
       methods: [{ kind: "phone", label: null, value: "+91 90000 11111" }] },
-  ];
+  ].concat(contactsFixture ? (window.__contactsExtra ?? []) : []);
   const driveItems = !driveFixture ? [] : [
     { drivewsid: "FOLDER::a", parentId: null, name: "Downloads", extension: null,
       kind: "FOLDER", size: null, childCount: 3, createdAt: 1785000000,
@@ -232,6 +237,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "event_repeat": return String(args.guid).startsWith("SERIES__") ? { freq: "weekly", interval: 1, count: null } : null;
         case "event_alerts": return args.guid === "e2" ? [15] : [];
+        // A test sets __guests[guid] to give an event its guests.
+        case "event_guests": return (window.__guests ?? {})[args.guid] ?? [];
         case "event_save": (window.__eventSaves ??= []).push(args.draft); return "E-new";
         case "event_delete": (window.__eventDeletes ??= []).push(args); return null;
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
@@ -248,10 +255,15 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminders_due_between": return calendarFixture ? dueReminders : [];
         case "reminder_create":
           // Kept, as Apple keeps it, with what the view implied.
-          reminderItems.push({ guid: `made-${reminderItems.length}`, listGuid: args.listGuid, title: args.title,
-            notes: null, dueAt: args.dueAt ?? null, allDay: args.allDay ?? false, completedAt: null, priority: 0,
-            flagged: args.flagged ?? false, parentGuid: null, etag: null });
-          return null;
+          {
+            const guid = `made-${reminderItems.length}`;
+            (window.__creates ??= []).push(args);
+            reminderItems.push({ guid, listGuid: args.listGuid, title: args.title,
+              notes: null, dueAt: args.dueAt ?? null, allDay: args.allDay ?? false, completedAt: null, priority: 0,
+              flagged: args.flagged ?? false, parentGuid: null, etag: null });
+            // Its new id, as the app's command answers.
+            return guid;
+          }
         case "reminder_delete": return null;
         case "reminder_set_done":
           (window.__done ??= []).push(args);
@@ -260,14 +272,40 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           {
             // A repeating one rolls on, as Apple rolls it: open again, a day (or its unit) on.
             const r = (window.__extraReminders ?? []).find((x) => x.guid === args.guid);
-            if (r && r.recurFrequency !== null && r.recurFrequency !== undefined && args.done) r.dueAt += 86400 * (r.recurInterval ?? 1);
+            // Its last time before End Repeat (__ending): completed, as Apple completes it.
+            const last = (window.__ending ?? []).includes(args.guid);
+            if (r && last && args.done) { r.completedAt = Math.floor(Date.now() / 1000); window.__ending = window.__ending.filter((g) => g !== args.guid); }
+            else if (r && r.recurFrequency !== null && r.recurFrequency !== undefined && args.done) r.dueAt += 86400 * (r.recurInterval ?? 1);
           }
           return null;
-        case "reminder_set_repeat": return null;
+        case "reminder_set_repeat": {
+          (window.__repeats ??= []).push(args);
+          // Kept, as Apple keeps it: the rule on the reminder, and its end beside it.
+          const r = [...reminderItems, ...(window.__extraReminders ?? [])].find((x) => x.guid === args.guid);
+          if (r) { r.recurFrequency = args.repeat?.frequency ?? null; r.recurInterval = args.repeat?.interval ?? null; }
+          const more = (window.__more ??= {})[args.guid];
+          if (more) more.repeat = args.repeat ? { ...args.repeat, endAt: args.endAt ?? null, occurrenceCount: 0, daysOfWeek: args.daysOfWeek ?? [], other: [] } : null;
+          ((window.__marks ??= {})[args.guid] ??= {}).daysOfWeek = args.repeat ? (args.daysOfWeek ?? []) : [];
+          return null;
+        }
+        // The rest of a reminder's Details (reminders_cmds.rs reminder_more). A test sets
+        // __more[guid] to give one a place, a person, Urgent, a zone or a rule with chosen days.
+        case "reminders_ending": return window.__ending ?? [];
+        // Row marks (reminders_cmds.rs reminder_marks): a test sets __marks[guid].
+        case "reminder_marks":
+          return args.guids.filter((g) => (window.__marks ?? {})[g]).map((g) => ({ guid: g, daysOfWeek: [], urgent: false,
+            location: null, messaging: null, url: null, ...window.__marks[g] }));
+        case "reminder_more": {
+          const r = [...reminderItems, ...(window.__extraReminders ?? [])].find((x) => x.guid === args.guid);
+          const base = { guid: args.guid, repeat: r && r.recurFrequency != null ? { frequency: r.recurFrequency, interval: r.recurInterval ?? 1, endAt: null, occurrenceCount: 0,
+            daysOfWeek: (window.__marks ?? {})[args.guid]?.daysOfWeek ?? [], other: [] } : null,
+            timeZone: r?.timezone ?? null, urgent: false, location: null, messaging: null };
+          return { ...base, ...((window.__more ?? {})[args.guid] ?? {}) };
+        }
         case "reminder_edit": {
           (window.__edits ??= []).push(args.edit);
           // Kept, as Apple keeps it, so the read after a write shows the write.
-          const r = reminderItems.find((x) => x.guid === args.guid);
+          const r = [...reminderItems, ...(window.__extraReminders ?? [])].find((x) => x.guid === args.guid);
           if (r) for (const [k, v] of Object.entries(args.edit)) if (k !== "listGuid") r[k] = v;
           return null;
         }
@@ -297,7 +335,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const every = [...reminderItems, ...(window.__extraReminders ?? [])];
           if (cmd === "reminder_detail") {
             const extra = (window.__details ?? (remindersFixture ? { r2: { url: "https://www.apple.com/shop/order", earlyAlerts: [{ id: "a1", count: 30, unit: 0 }] } } : {}))[args.guid] ?? {};
-            return { guid: args.guid, tags: tagMap[args.guid] ?? [], url: null, earlyAlerts: [], otherAttachments: 0, ...extra };
+            return { guid: args.guid, tags: tagMap[args.guid] ?? [], url: null, earlyAlerts: [], otherAttachments: 0, images: [], ...extra };
           }
           const open = (name) => every.filter((r) => !r.completedAt && (tagMap[r.guid] ?? []).some((t) => t.toLowerCase() === name.toLowerCase()));
           if (cmd === "reminders_tagged") return open(args.name);
@@ -346,6 +384,16 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             return lines.map((l, i) => ({ length: l.length + (i < lines.length - 1 ? 1 : 0), style: i === 0 ? 0 : null, indent: 0,
               checked: null, bold: false, italic: false, underline: false, strike: false, link: null, ...(i === 2 ? { quote: true } : {}) }));
           }
+          if (args.guid === "nA") {
+            // Shaped like a real note made on a phone (text made generic): Apple's runs come in
+            // pieces — a word split in two, a sentence in five — that say nothing more than one
+            // run would. Eight attachments on their own lines, a sentence, then a ninth.
+            const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
+            const att = (id) => ({ ...plain(1), attachment: id });
+            const lines = [];
+            for (let i = 1; i <= 8; i++) lines.push(att(`A${i}`), plain(1));
+            return [plain(10), plain(1), plain(1), ...lines, plain(2), plain(10), plain(8), plain(5), plain(1), plain(1), att("A9")];
+          }
           if (args.guid === "nT") {
             // "Groceries", a table on its own line, then a last line: the table's run names it.
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
@@ -383,8 +431,18 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         // Adding files: off unless a test turns it on (`__attachOn`), as the backend's switch is.
         case "note_attach_enabled": return Boolean(window.__attachOn);
+        // A picture of the file being added: a tiny generated PNG, or none (__attachPreview false).
+        case "note_attach_preview": {
+          if (window.__attachPreview === false) return new ArrayBuffer(0);
+          const c = document.createElement("canvas"); c.width = 8; c.height = 8;
+          const g = c.getContext("2d"); g.fillStyle = "#2f9bff"; g.fillRect(0, 0, 8, 8);
+          const blob = await new Promise((r) => c.toBlob(r, "image/png"));
+          return await blob.arrayBuffer();
+        }
         case "note_attach_file": {
           (window.__attaches ??= []).push(args);
+          // A slow upload, when a test asks for one.
+          if (window.__attachDelay) await new Promise((r) => setTimeout(r, window.__attachDelay));
           const n = noteList.find((x) => x.guid === args.guid);
           const base = args.base ?? n?.body ?? "";
           const body = base.slice(0, args.atOffset) + "\uFFFC" + base.slice(args.atOffset);
@@ -446,6 +504,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__linkNote && !noteList.some((n) => n.guid === "nL"))
             noteList.unshift({ guid: "nL", folderGuid: "f1", title: "Links", snippet: "", body: "Links\nYashps://www.youtube.com/watch?v=5vVh0ZGx8aU\nRead https://example.org/a. Done",
               locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789200000, etag: null });
+          // Opt-in: a note of pictures, files, a recording, a film and a table, as a phone makes one.
+          if (window.__attachNote && !noteList.some((n) => n.guid === "nA"))
+            noteList.unshift({ guid: "nA", folderGuid: "f1", title: "Attachments", snippet: "", body: `Attachments\n${"\uFFFC\n".repeat(8)}A few words to try it out \n\uFFFC`,
+              locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789500000, etag: null });
           if (window.__tableNote && !noteList.some((n) => n.guid === "nT"))
             noteList.unshift({ guid: "nT", folderGuid: "f1", title: "Groceries", snippet: "", body: "Groceries\n\uFFFC\nend",
               locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: 1789000000, etag: null });
@@ -455,13 +517,34 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
               locked: true, editable: false, pinned: false, createdAt: null, modifiedAt: 1789400000, etag: null });
           return !notesFixture ? [] : noteList.map((n) => ({ ...n }));
         case "note_attachment_info":
+          if (/^A\d$/.test(String(args.id))) {
+            (window.__infoAsks ??= []).push(args.id);
+            // `__flakyInfo[id] = n`: the first n lookups of it fail, as one offline or mid-renewal does.
+            if (window.__flakyInfo?.[args.id] > 0) { window.__flakyInfo[args.id] -= 1; throw "Apple couldn’t be reached."; }
+            const A = {
+              A1: { uti: "com.apple.m4a-audio", kind: "audio", filename: "recording.m4a", size: 48200 },
+              A2: { uti: "public.json", kind: "file", filename: "servers.json", size: 2100 },
+              A3: { uti: "com.apple.quicktime-movie", kind: "video", filename: "IMG_0001.mov", size: 8_400_000, width: 1080, height: 1920, hasPreview: true },
+              A4: { uti: "public.heic", kind: "image", filename: "IMG_0002.HEIC", width: 3024, height: 4032, size: 1_900_000, hasPreview: true },
+              A5: { uti: "public.heic", kind: "image", filename: "IMG_0003.HEIC", width: 4032, height: 3024, size: 2_100_000, hasPreview: true },
+              A6: { uti: "com.apple.paper.doc.pdf", kind: "document", filename: "Form.pdf", size: 120_000, hasPreview: true },
+              A7: { uti: "public.jpeg", kind: "image", filename: "IMG_0004.JPG", width: 1200, height: 800, size: 310_000, hasPreview: true },
+              A8: { uti: "com.apple.notes.table", kind: "table", size: 1116 },
+              A9: { uti: "public.png", kind: "image", filename: "new.png", width: 800, height: 600, size: 52_000, hasPreview: true },
+            }[args.id];
+            const info = { id: args.id, title: null, width: null, height: null, size: null, hasPreview: false, filename: null, ...A };
+            return window.__slowInfo ? new Promise((r) => setTimeout(() => r(info), window.__slowInfo)) : info;
+          }
           if (args.id === "D1") return { id: "D1", uti: "com.apple.paper", kind: "drawing", filename: null, title: null, width: 768, height: 621, size: null, hasPreview: true };
           if (args.id === "U1") return { id: "U1", uti: "com.apple.notes.table", kind: "table", filename: null, title: null, width: null, height: null, size: 1116, hasPreview: false };
+          // Any other id a table is drawn for (note_table answers it): a table, as the backend
+          // describes one (note_media.rs kind_of: com.apple.notes.table → "table").
+          if (!/^M[12]$/.test(String(args.id))) return { id: args.id, uti: "com.apple.notes.table", kind: "table", filename: null, title: null, width: null, height: null, size: 1116, hasPreview: false };
           return args.id === "M1"
             ? { id: "M1", uti: "public.jpeg", kind: "image", filename: "beach.jpeg", title: null, width: 1200, height: 800, size: 271872, hasPreview: true }
             : { id: "M2", uti: "org.openxmlformats.spreadsheetml.sheet", kind: "file", filename: "Budget.xlsx", title: null, width: null, height: null, size: 9100, hasPreview: false };
         case "note_attachment_open": (window.__opened ??= []).push(args.id); return null;
-        case "note_table": if (/^[MDU]/.test(String(args.id))) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
+        case "note_table": if (/^[MDU]/.test(String(args.id)) || /^A[1-79]$/.test(String(args.id))) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
         case "photos_list": case "photos_counts": {
           const P = (id, takenAt, extra = {}) => ({ id, master: `m${id}`, takenAt, addedAt: takenAt, kind: "image",
             width: 4032, height: 3024, duration: null, filename: `IMG_${id}.JPG`, size: 2400000, uti: "public.jpeg",
@@ -485,6 +568,41 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__slowView === args.view) return new Promise((r) => setTimeout(() => r(answer), 600));
           return answer;
         }
+        // Paged: the index (ids, grouping dates, marks), the first page, and photos by id — each
+        // made from the same lists the whole-list commands answer, sorted as the backend sorts.
+        case "photos_index": case "photos_page": {
+          const self = window.__TAURI_INTERNALS__.invoke;
+          const src = args.source;
+          let list = src.view ? await self("photos_list", { view: src.view })
+            : src.album ? await self("photos_in_album", { album: src.album })
+            : src.query ? await self("photos_search", { query: src.query })
+            : await self("photos_burst", { burst: src.burst });
+          const sortable = src.view && src.view !== "rated" && src.view !== "recentlyDeleted";
+          const order = sortable ? args.order : null;
+          const key = (p) => (order?.by === "added" || (!order && src.view === "recents") ? (p.addedAt ?? p.takenAt) : p.takenAt);
+          if (order) list = [...list].sort((a, b) => (key(b) - key(a)) * (order.oldest ? -1 : 1) || (a.id < b.id ? -1 : 1));
+          if (cmd === "photos_page") return list.slice(args.offset, args.offset + args.limit);
+          (window.__indexReads ??= []).push(src);
+          // A large library's index takes a moment: a test can make it take one.
+          if (window.__indexDelay) await new Promise((r) => setTimeout(r, window.__indexDelay));
+          const taken = list.map((p) => p.takenAt);
+          return {
+            ids: list.map((p) => p.id),
+            keys: list.map(key),
+            marks: list.map((p) => (p.kind === "video" ? 1 : p.kind === "live" ? 2 : 0) | (p.favorite ? 4 : 0) | ((p.rating ?? 0) << 3)),
+            first: taken.length ? Math.min(...taken) : null,
+            last: taken.length ? Math.max(...taken) : null,
+          };
+        }
+        case "photos_get": {
+          (window.__gets ??= []).push(args.ids.length);
+          const all = window.__photos ?? [];
+          const burst = window.__burstShots ?? [];
+          // Made once per fixture: rebuilt per call, the stub's own work showed as the grid's.
+          if (window.__byIdOf?.all !== all || window.__byIdOf?.burst !== burst) window.__byIdOf = { all, burst, map: new Map([...burst, ...all].map((p) => [p.id, p])) };
+          const byId = window.__byIdOf.map;
+          return args.ids.map((id) => byId.get(id)).filter(Boolean).map((p) => ({ ...p }));
+        }
         case "photos_prepare": (window.__prepared ??= []).push(args.shown); return null;
         case "photos_shared_albums": return [...(window.__shared ??= [])];
         case "photos_shared_create": {
@@ -503,7 +621,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const pick = (window.__photos ?? []).find((p) => p.burst === args.burst);
           if (!pick) return [];
           const shot = (n) => ({ ...pick, id: `${pick.id}-s${n}`, burstPick: false, takenAt: pick.takenAt - 1 + n, filename: `IMG_burst_${n}.JPG` });
-          return [shot(0), { ...pick }, shot(2)].map((p) => ({ ...p, burstCount: 3 }));
+          return (window.__burstShots = [shot(0), { ...pick }, shot(2)].map((p) => ({ ...p, burstCount: 3 })));
         }
         case "photos_albums": {
           const albums = (window.__albums ??= [{ id: "AL1", name: "Trips", position: 0, changeTag: null, items: ["p4", "p2"] }]);
@@ -606,6 +724,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "photo_play": (window.__plays ??= []).push(args); return null;
         case "video_base": return window.__videoBase ?? null;
+        case "video_support": return window.__videoSupport ?? { h264: true, hevc: true, missing: [] };
         case "window_tint": (window.__tints ??= []).push(args.rgb.join(",")); return null;
         case "window_fullscreen": (window.__fullscreen ??= []).push(args.on); return args.on;
         case "photo_download": (window.__downloads ??= []).push(args); return `/home/test/Downloads/IMG_${args.id}.JPG`;
@@ -659,7 +778,46 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
         case "contact_delete": (window.__contactDeletes ??= []).push(args); return null;
-        case "contacts_list": return !contactsFixture ? [] : contactList;
+        case "contacts_list": return !contactsFixture ? [] : contactList.slice();
+        // Duplicates as contacts_merge.rs finds them, on the fixture: a shared number (its
+        // last ten digits), a shared email, or the same name.
+        case "contacts_duplicates": {
+          const keys = (c) => [
+            ...[c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ").toLowerCase().trim() ? [`name:${[c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ").toLowerCase().trim()}`] : [],
+            ...(c.methods ?? []).filter((m) => m.kind === "phone").map((m) => m.value.replace(/\D/g, "")).filter((d) => d.length >= 7).map((d) => `phone:${d.slice(-10)}`),
+            ...(c.methods ?? []).filter((m) => m.kind === "email").map((m) => `email:${m.value.trim().toLowerCase()}`),
+          ];
+          const groups = [];
+          for (const c of contactList) {
+            const mine = keys(c);
+            const g = groups.find((x) => x.keys.some((k) => mine.includes(k)));
+            if (g) { g.guids.push(c.guid); for (const k of mine) if (g.keys.includes(k)) g.shared.add(k.split(":")[0]); g.keys.push(...mine); }
+            else groups.push({ guids: [c.guid], keys: mine, shared: new Set() });
+          }
+          return groups.filter((g) => g.guids.length > 1).map((g) => ({ guids: g.guids, reasons: ["name", "phone", "email"].filter((r) => g.shared.has(r)) }));
+        }
+        case "contacts_merge": {
+          (window.__merges ??= []).push(args);
+          const cards = args.guids.map((id) => contactList.find((c) => c.guid === id)).filter(Boolean);
+          const kept = { ...cards[0], methods: [...cards[0].methods] };
+          for (const o of cards.slice(1)) {
+            for (const k of ["firstName", "lastName", "company", "birthday", "jobTitle", "nickname"]) if (!kept[k] && o[k]) kept[k] = o[k];
+            const key = (m) => `${m.kind}:${m.kind === "phone" ? m.value.replace(/\D/g, "").slice(-10) : m.value.trim().toLowerCase()}`;
+            for (const m of o.methods) if (!kept.methods.some((x) => key(x) === key(m))) kept.methods.push(m);
+            if (o.notes && !(kept.notes ?? "").includes(o.notes)) kept.notes = kept.notes ? `${kept.notes}\n\n${o.notes}` : o.notes;
+          }
+          (window.__mergeUndo ??= {})[kept.guid] = contactList.slice();
+          contactList.splice(0, contactList.length, ...contactList.filter((c) => !args.guids.includes(c.guid) || c.guid === kept.guid).map((c) => (c.guid === kept.guid ? kept : c)));
+          return kept.guid;
+        }
+        case "contacts_merge_undo": {
+          (window.__mergeUndos ??= []).push(args);
+          const before = window.__mergeUndo?.[args.kept];
+          if (!before || window.__mergeSent) return false;
+          contactList.splice(0, contactList.length, ...before);
+          delete window.__mergeUndo[args.kept];
+          return true;
+        }
         case "contact_me": return window.__me ?? (contactsFixture ? "c1" : null);
         case "contact_set_me": await new Promise((r) => setTimeout(r, 600)); window.__me = args.guid; return null;
         case "contacts_export": (window.__exports ??= []).push(args); return `/home/test/Downloads/${args.fileName}`;
@@ -674,6 +832,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "photos_folder_status": return window.__photosFolder ??= { on: false, path: "/home/test/iCloud Photos", problem: null };
         case "photos_folder_set": return (window.__photosFolder = { on: args.on, path: "/home/test/iCloud Photos", problem: null });
         case "photos_folder_open": (window.__opened ??= []).push("photos"); return null;
+        case "photo_video_zoom": return window.__zoom ?? 1;
         case "photo_video_turn": (window.__turnAsks ??= []).push(args); return window.__turn ?? [1, 0, 0, 1];
         case "contacts_import": (window.__imports ??= []).push(args); return window.__importAnswer ?? [2, 0, 0];
         case "plugin:dialog|open": return window.__pick ?? null;
@@ -713,6 +872,23 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const l = (window.__local ??= { library: 13_800_000, photos: 4_812_000_000, notes: 456_000_000, drive: 24_000, other: 7_400_000, total: 5_289_224_000, clearable: 4_480_000_000 });
           window.__cleared = (window.__cleared ?? 0) + 1;
           return (window.__local = { ...l, photos: l.photos - (l.clearable - l.notes - 3_000), notes: 0, drive: l.drive - 3_000, total: l.total - l.clearable, clearable: 0 });
+        }
+        // Photos Cache: a cap set lets the longest unseen go in the background, reported as an event.
+        case "photos_cache_status": case "photos_cache_set": case "photos_cache_clear": {
+          const GB = 1024 ** 3;
+          const c = (window.__cache ??= { used: 1_900_000_000, cap: 2 * GB, limit: 2 * GB, thumbnails: 160_000_000,
+            steps: [512 * 1024 ** 2, GB, 2 * GB, 5 * GB, 10 * GB, 20 * GB, 50 * GB] });
+          if (cmd === "photos_cache_set") {
+            (window.__capSets ??= []).push(args.bytes);
+            c.cap = c.limit = args.bytes;
+            if (c.used > c.cap) setTimeout(() => { c.used = Math.floor(c.cap * 0.9); window.__emit?.("quince://photo-cache", { ...c }); }, 100);
+          }
+          if (cmd === "photos_cache_clear") {
+            if (window.__cacheClearFail) throw window.__cacheClearFail;
+            window.__cacheCleared = (window.__cacheCleared ?? 0) + 1;
+            c.used = 0;
+          }
+          return { ...c };
         }
         case "alerts_shown": return window.__alertsShown ?? true;
         case "diagnostics_save": (window.__diagnostics = (window.__diagnostics ?? 0) + 1); return "/home/user/Downloads/Skykeep diagnostics 2026-10-18 20.00.txt";
@@ -812,6 +988,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "account_unsent":   return window.__unsent ?? { changes: 0, files: 0, photos: 0 };
         // Changes waiting for Apple, and ones it refused: a test sets `window.__outbox`.
         case "outbox_status":    return window.__outbox ?? { waiting: [], refused: [] };
+        // The desktop's Increase Contrast, from the Settings portal (appearance.rs).
+        case "system_contrast":  return window.__contrast ?? false;
+        // LC_TIME, LANG (appearance.rs): null leaves the engine's own language.
+        case "system_time_locale": return window.__timeLocale ?? null;
+        case "network_reach": return { apple: ["apple.com", "icloud.com", "icloud-content.com", "apple.com.cn", "icloud.com.cn", "icloud-content.com.cn"], subscribed: window.__reachSubscribed ?? [] };
         case "outbox_resend": case "outbox_discard": {
           (window.__outboxCalls ??= []).push([cmd, args.id]);
           if (window.__outbox) window.__outbox = { ...window.__outbox, refused: window.__outbox.refused.filter((r) => r.id !== args.id) };

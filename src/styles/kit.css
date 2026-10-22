@@ -481,6 +481,31 @@ textarea.field { padding-block: 5px; resize: vertical; }
 .confirm-actions.is-stacked { grid-template-columns: 1fr; }
 .confirm-actions > button { width: 100%; }
 
+/* Keyboard Shortcuts (Ctrl+/): the apps in two columns where there is room, each a quiet
+   heading over its rows — the action, then its keys as small caps of the system's keycaps. */
+.shortcuts-sheet { width: min(760px, 94vw); max-height: min(640px, 88vh); }
+.shortcuts-groups {
+  min-height: 0; overflow-y: auto; margin: 0 -22px; padding: 2px 22px 4px;
+  columns: 2 300px; column-gap: 32px;
+}
+.shortcuts-groups:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
+.shortcuts-groups section { break-inside: avoid; padding-bottom: 14px; }
+.shortcuts-groups h3 { margin: 0 0 4px; font-size: var(--t-13); font-weight: 700; color: var(--text); }
+.shortcuts-groups dl { margin: 0; }
+.shortcuts-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 4px 0; border-top: var(--hairline) solid var(--separator); font-size: var(--t-13);
+}
+.shortcuts-row:first-child { border-top: 0; }
+.shortcuts-row dt { color: var(--text-2); min-width: 0; }
+.shortcuts-row dd { margin: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: none; }
+.shortcuts-combo { display: inline-flex; gap: 2px; }
+.shortcuts-combo kbd {
+  min-width: 20px; padding: 1px 5px; border-radius: 5px; text-align: center;
+  font: inherit; font-size: var(--t-11); font-weight: 600; color: var(--text);
+  background: var(--fill); box-shadow: inset 0 calc(-1 * var(--hairline)) 0 var(--separator);
+}
+
 /* ---- small controls ---------------------------------------------------------------------- */
 
 /* A segmented control: one recessed track, a raised cap over the chosen segment. */

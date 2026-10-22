@@ -7,12 +7,12 @@ const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, contactsFixture: true });
 const page = await ctx.newPage();
 await ctx.addInitScript(autoConfirm);
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.goto(process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await openScreen(page, "Contacts");
 await page.waitForTimeout(400);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
-const chosen = () => page.locator('.contact-row[aria-current="true"] .contact-row-name').allInnerTexts();
+const chosen = () => page.locator('.contact-row[aria-selected="true"] .contact-row-name').allInnerTexts();
 const heading = () => page.locator(".contact-many h2").innerText().catch(() => "");
 
 await page.locator(".contact-row", { hasText: "Zoya Ahuja" }).click();

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useActiveRef, useScreenActive } from "../lib/screen";
+import { overlayOpen, useActiveRef, useScreenActive } from "../lib/screen";
 import { useModalFocus } from "../lib/focus";
 import { useSync } from "../lib/sync";
 import { toastSaved, useErrorToast } from "../components/Toast";
@@ -569,8 +569,12 @@ export function DriveView() {
   // back to the previous location".
   const hereRef = useRef(here.id);
   hereRef.current = here.id;
-  /** Items deleted here that Apple's listing may still carry for a moment after. */
+  /** Items deleted or moved out of a folder that Apple's listing of it may still carry for a
+   *  moment after — each kept as "folder:item", so it is hidden only in the folder it left.
+   *  By item alone, an item moved into another folder, or recovered from Recently Deleted,
+   *  stayed hidden everywhere until the app restarted. */
   const [gone, setGone] = useState<Set<string>>(new Set());
+  const goneKey = (folder: string, item: string) => `${folder}:${item}`;
 
   // A folder load is asynchronous and the id it was for is not always the one still on
   // screen by the time it resolves — a fast double click used to let a second, third,
@@ -668,8 +672,8 @@ export function DriveView() {
   }, []);
   // Apple sends no push for iCloud Drive (measured: none in 25 s for a folder made or
   // deleted), and icloud.com reads a folder only as it is opened. The folder in front is
-  // checked again every ten seconds while the window shows it, and at once when the window
-  // comes back — one small request; none while hidden — so a file saved on the phone appears
+  // checked again every ten seconds while the window has the focus, and at once when the
+  // window comes back — one small request; none while hidden or in the background — so a file saved on the phone appears
   // here as it would in Finder.
   const shown = useScreenActive();
   const shownNow = useRef(shown);
@@ -681,7 +685,12 @@ export function DriveView() {
     const look = () => {
       if (document.visibilityState === "visible" && !writingRef.current) void refresh();
     };
-    const t = window.setInterval(look, 10_000);
+    // The timed check only while the window has the focus: one merely open behind another, or
+    // on another workspace, asked Apple every ten seconds all day for a folder nobody was
+    // looking at. Coming back to it (focus) looks at once, so nothing is missed.
+    const t = window.setInterval(() => {
+      if (document.hasFocus()) look();
+    }, 10_000);
     document.addEventListener("visibilitychange", look);
     window.addEventListener("focus", look);
     return () => {
@@ -755,7 +764,8 @@ export function DriveView() {
     async (list: DriveItem[]) => {
       if (list.length === 0) return;
       setError(null);
-      const ids = list.map((i) => i.drivewsid);
+      const from = hereRef.current;
+      const ids = list.map((i) => goneKey(from, i.drivewsid));
       setGone((g) => new Set([...g, ...ids]));
       const refused: string[] = [];
       let reason = "";
@@ -780,7 +790,7 @@ export function DriveView() {
       if (refused.length) {
         setGone((g) => {
           const next = new Set(g);
-          for (const id of refused) next.delete(id);
+          for (const id of refused) next.delete(goneKey(from, id));
           return next;
         });
         setError(list.length === 1 ? reason : `${refused.length} of ${list.length} items could not be deleted: ${reason}`);
@@ -820,7 +830,8 @@ export function DriveView() {
       const going = list.filter((i) => i.drivewsid !== destinationId);
       if (going.length === 0) return;
       // Out of this folder at once; back, with the reason, if Apple refuses.
-      setGone((g) => new Set([...g, ...going.map((i) => i.drivewsid)]));
+      const from = hereRef.current;
+      setGone((g) => new Set([...g, ...going.map((i) => goneKey(from, i.drivewsid))]));
       const refused: string[] = [];
       let reason = "";
       for (const item of going) {
@@ -834,7 +845,7 @@ export function DriveView() {
       if (refused.length) {
         setGone((g) => {
           const next = new Set(g);
-          for (const id of refused) next.delete(id);
+          for (const id of refused) next.delete(goneKey(from, id));
           return next;
         });
         setError(going.length === 1 ? reason : `${refused.length} of ${going.length} items could not be moved: ${reason}`);
@@ -1099,8 +1110,8 @@ export function DriveView() {
 
   /** The rows as shown, sorted once per change to what is here or to the order. */
   const rows = useMemo(
-    () => sortItems(items.filter((item) => !gone.has(item.drivewsid)), sortBy, reversed),
-    [items, gone, sortBy, reversed],
+    () => sortItems(items.filter((item) => !gone.has(goneKey(here.id, item.drivewsid))), sortBy, reversed),
+    [items, gone, sortBy, reversed, here.id],
   );
   const pickedItems = useMemo(() => rows.filter((r) => picked.includes(r.drivewsid)), [rows, picked]);
   const primary = useMemo(() => (selected ? rows.find((r) => r.drivewsid === selected) ?? null : null), [rows, selected]);
@@ -1201,7 +1212,7 @@ export function DriveView() {
     if (renaming || creatingFolder || moving || info) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest?.("input, textarea, select, [contenteditable], .drive-bar, .upload-menu")) return;
-    if (!peeking && document.querySelector('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]')) return;
+    if (!peeking && overlayOpen()) return;
     // Return and Space press a focused button of their own; on a row or nowhere, they are Drive's.
     // A row's ⋯ is a button of its own inside the rows: Return there opens its menu, not the file.
     const ownButton = !!target?.closest?.("button, a[href]") && !target?.closest?.(".drive-row-hit");
@@ -1343,7 +1354,7 @@ export function DriveView() {
             <span className="drive-count" aria-live="polite">
               {loaded
                 ? (() => {
-                    const n = items.filter((x) => !gone.has(x.drivewsid)).length;
+                    const n = items.filter((x) => !gone.has(goneKey(here.id, x.drivewsid))).length;
                     return `${n} item${n === 1 ? "" : "s"}${available ? `, ${available} available` : ""}`;
                   })()
                 : "\u00a0"}

@@ -45,3 +45,40 @@ test("two edits merge as Notes merges them — nothing typed is lost", () => {
   assert.equal(mergeEdits("milk\neggs\nbread\njam", "milk!\neggs\nbread\njam?", "milk\neggs\nbutter\njam"), "milk!\neggs\nbutter\njam?");
   assert.equal(mergeEdits("one two three", "one three", "one two three!"), "one three!");
 });
+
+import { checklistMove } from "../src/screens/notes/rich.ts";
+// A note of lines, each "[ ] text", "[x] text", "  [ ] nested", or plain text.
+const listDoc = (lines) => {
+  const text = lines.map((l) => l.replace(/^\s*\[[ x]\] /, "")).join("\n");
+  const runs = lines.map((l, i) => {
+    const m = /^(\s*)\[([ x])\] /.exec(l);
+    const len = l.replace(/^\s*\[[ x]\] /, "").length + (i < lines.length - 1 ? 1 : 0);
+    return m ? r(len, { style: STYLE.checklist, checked: m[2] === "x", indent: m[1].length / 2 }) : r(len);
+  });
+  return toDoc(text, runs);
+};
+
+test("ticked, an item goes to the end of its own checklist, nested items with it", () => {
+  const doc = listDoc(["Title", "[x] a", "[ ] b", "  [ ] b1", "[ ] c", "after"]);
+  assert.deepEqual(checklistMove(doc, 1, true), { from: 1, to: 2, before: 5 });
+  assert.deepEqual(checklistMove(doc, 2, true), { from: 2, to: 4, before: 5 });
+});
+
+test("ticked, the last item already at the end stays; a nested item never moves on its own", () => {
+  const doc = listDoc(["[ ] a", "[ ] b", "  [ ] b1"]);
+  assert.equal(checklistMove(doc, 1, true), null);
+  assert.equal(checklistMove(doc, 2, true), null);
+});
+
+test("unticked, an item goes back above the ticked ones", () => {
+  const doc = listDoc(["[ ] a", "[x] b", "[x] c", "[ ] d"]);
+  assert.deepEqual(checklistMove(doc, 2, false), { from: 2, to: 3, before: 1 });
+  assert.equal(checklistMove(doc, 0, false), null, "already above them");
+});
+
+test("only checklist lines move, and only within their own run", () => {
+  const doc = listDoc(["[ ] a", "plain", "[ ] x", "[ ] y"]);
+  assert.equal(checklistMove(doc, 1, true), null, "a plain line is not an item");
+  assert.equal(checklistMove(doc, 0, true), null, "alone in its run, it stays");
+  assert.deepEqual(checklistMove(doc, 2, true), { from: 2, to: 3, before: 4 });
+});

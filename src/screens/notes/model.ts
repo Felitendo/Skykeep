@@ -11,29 +11,54 @@ const daysBetween = (from: Date, to: Date) =>
 /** One run of the note list under a heading. */
 export type Section = { key: string; heading: string; notes: Note[] };
 
+/** Settings ▸ Move Checked Items to the Bottom: off unless turned on, kept on this computer. */
+export const MOVE_CHECKED_KEY = "notes.moveChecked";
+
+/** How the list is ordered, as Notes' View menu offers it. */
+export type NoteSort = "edited" | "created" | "title";
+export type NoteOrder = { by: NoteSort; groupByDate: boolean };
+export const DEFAULT_ORDER: NoteOrder = { by: "edited", groupByDate: true };
+
+/** A note's title for sorting: its first line, as the list shows it. */
+const titleOf = (n: Note) => (n.title || "").trim();
+const byTitle = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
 /**
- * The list the way Notes groups it: Pinned first, then Today, Yesterday, Previous 7 Days,
- * Previous 30 Days, then each earlier month of this year by name, then each earlier year.
- * Within a group, most recently changed first. A group with nothing in it is not shown.
+ * The list the way Notes groups it: Pinned first, then — sorted by a date and grouped — Today,
+ * Yesterday, Previous 7 Days, Previous 30 Days, each earlier month of this year by name, then
+ * each earlier year, by that date. Within a group, newest first; by title, A to Z with no date
+ * groups (as Notes does). A group with nothing in it is not shown. Notes with no date at all
+ * come last, under Earlier, whatever the order.
  */
-export function groupNotes(notes: Note[], now = new Date()): Section[] {
+export function groupNotes(notes: Note[], now = new Date(), order: NoteOrder = DEFAULT_ORDER): Section[] {
+  const dateOf = (n: Note) => (order.by === "created" ? n.createdAt : n.modifiedAt) ?? null;
+  const sorted = [...notes].sort((a, b) =>
+    order.by === "title"
+      ? byTitle.compare(titleOf(a), titleOf(b)) || (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0)
+      : (dateOf(b) ?? -Infinity) - (dateOf(a) ?? -Infinity) || byTitle.compare(titleOf(a), titleOf(b)),
+  );
   const out = new Map<string, Section>();
   const add = (key: string, heading: string, note: Note) => {
     const s = out.get(key) ?? { key, heading, notes: [] };
     s.notes.push(note);
     out.set(key, s);
   };
-  const sorted = [...notes].sort((a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0));
+  const dated = order.by !== "title" && order.groupByDate;
   for (const note of sorted) {
     if (note.pinned) {
       add("pinned", "Pinned", note);
       continue;
     }
-    if (note.modifiedAt === null) {
+    if (!dated) {
+      add("notes", "Notes", note);
+      continue;
+    }
+    const at = dateOf(note);
+    if (at === null) {
       add("undated", "Earlier", note);
       continue;
     }
-    const when = new Date(note.modifiedAt * 1000);
+    const when = new Date(at * 1000);
     const ago = daysBetween(when, now);
     if (ago <= 0) add("today", "Today", note);
     else if (ago === 1) add("yesterday", "Yesterday", note);
@@ -43,11 +68,15 @@ export function groupNotes(notes: Note[], now = new Date()): Section[] {
       add(`m${when.getMonth()}`, dateText(when, { month: "long" }), note);
     else add(`y${when.getFullYear()}`, String(when.getFullYear()), note);
   }
-  // Map keeps insertion order, and notes went in newest first, so groups already run
-  // newest first — Pinned aside, which always leads.
+  // Map keeps insertion order, and notes went in sorted, so groups already run in order —
+  // Pinned aside, which always leads, and Earlier (no date), which always ends.
   const sections = [...out.values()];
   const pinned = sections.filter((s) => s.key === "pinned");
-  return [...pinned, ...sections.filter((s) => s.key !== "pinned")];
+  const undated = sections.filter((s) => s.key === "undated");
+  const rest = sections.filter((s) => s.key !== "pinned" && s.key !== "undated");
+  // With nothing pinned and no date groups, one untitled run: no "Notes" heading over it.
+  if (!dated && pinned.length === 0) rest.forEach((s) => (s.heading = ""));
+  return [...pinned, ...rest, ...undated];
 }
 
 /** The date a row shows: the time today, "Yesterday", the weekday this week, else the date. */

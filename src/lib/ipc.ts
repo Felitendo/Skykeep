@@ -1,6 +1,6 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
-export type Status = { hasStoredSession: boolean; signedIn: boolean };
+export type Status = { hasStoredSession: boolean; signedIn: boolean; libraryReady: boolean };
 
 /** A change made here waiting for Apple. */
 export type WaitingChange = { service: string; record: string; kind: string };
@@ -97,6 +97,8 @@ export const api = {
   unsent: () => invoke<{ changes: number; files: number; photos: number }>("account_unsent"),
   /** What waits to reach Apple, and what Apple turned down. */
   outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
+  /** What the network lock lets Skykeep reach: Apple's domains, and each subscribed calendar's host. */
+  networkReach: () => invoke<{ apple: string[]; subscribed: string[] }>("network_reach"),
   /** A refused change, sent again. */
   outboxResend: (id: number) => invoke<void>("outbox_resend", { id }),
   /** A refused change let go of: Apple's version stands. */
@@ -105,6 +107,8 @@ export const api = {
 
   eventSave: (draft: EventWrite) => invoke<string>("event_save", { draft }),
   eventAlerts: (guid: string) => invoke<number[]>("event_alerts", { guid }),
+  /** An event's guests and their answers, the organizer first. Read only. */
+  eventGuests: (guid: string) => invoke<Guest[]>("event_guests", { guid }),
   eventRepeat: (guid: string) => invoke<EventRepeat | null>("event_repeat", { guid }),
   eventDelete: (guid: string, scope?: EventScope) => invoke<void>("event_delete", { guid, scope: scope ?? null }),
   calendarSync: (from: string, to: string, timezone: string) =>
@@ -115,6 +119,13 @@ export const api = {
     invoke<CalendarEvent[]>("calendar_events", { from, to }),
   calendarList: () => invoke<Calendar[]>("calendar_list"),
   photosList: (view: PhotoView) => invoke<Photo[]>("photos_list", { view }),
+  /** Every photo a grid shows, as it lays them out: ids, grouping dates and marks, no photos. */
+  photosIndex: (source: PhotoSource, order: PhotoOrder | null) => invoke<PhotoIndex>("photos_index", { source, order }),
+  /** A source's photos from `offset`, in its index's order: the first screen, before the index. */
+  photosPage: (source: PhotoSource, order: PhotoOrder | null, offset: number, limit: number) =>
+    invoke<Photo[]>("photos_page", { source, order, offset, limit }),
+  /** Photos by id, in the order asked; any gone are left out. */
+  photosGet: (ids: string[]) => invoke<Photo[]>("photos_get", { ids }),
   photosCounts: () => invoke<[PhotoView, number][]>("photos_counts"),
   /** The albums the person made, each with how many photos it holds. */
   /** Each album, how many it shows, and its cover — the first photo it shows. */
@@ -123,6 +134,9 @@ export const api = {
   /** A video (or a Live Photo's moving part) opened in this computer's own player. */
   /** How a video's picture is turned, as its file records it (served upright: drawn here). */
   photoVideoTurn: (id: string, which: "original" | "video") => invoke<Turn>("photo_video_turn", { id, which }),
+  /** How much larger than its box a film is drawn, so only its clean aperture shows (a Live
+   *  Photo's moving part is recorded with a margin the still does not have). */
+  photoVideoZoom: (id: string, which: "original" | "video") => invoke<number>("photo_video_zoom", { id, which }),
   /** The iCloud Drive folder on this computer: whether it is up, where, and what stopped it. */
   driveFolderStatus: () => invoke<DriveFolder>("drive_folder_status"),
   driveFolderSet: (on: boolean) => invoke<DriveFolder>("drive_folder_set", { on }),
@@ -144,10 +158,12 @@ export const api = {
   photoPlay: (id: string) => invoke<void>("photo_play", { id }),
   /** Where the window's player fetches videos from (a loopback server), or null without one. */
   videoBase: () => invoke<string | null>("video_base"),
+  /** What this computer's player can decode; `missing` names the packages it lacks. */
+  videoSupport: () => invoke<{ h264: boolean; hevc: boolean; missing: string[] }>("video_support"),
   /** The window full screen or back; answers whether it now is. */
   windowFullscreen: (on: boolean) => invoke<boolean>("window_fullscreen", { on }),
   /** What the window shows pictures at, so the app makes them before they are shown. */
-  photosPrepare: (shown: { cell: number; fit: boolean; stageW: number; stageH: number; dpr: number }) =>
+  photosPrepare: (shown: { cell: number; fit: boolean; stageW: number; stageH: number; dpr: number; view?: PhotoView | null }) =>
     invoke<void>("photos_prepare", { shown }),
   /** Shared albums, made or joined, newest first — from Apple each time. */
   photosSharedAlbums: () => invoke<SharedAlbum[]>("photos_shared_albums"),
@@ -203,8 +219,11 @@ export const api = {
     invoke<Reminder[]>("reminders_in", { listGuid, includeDone }),
   remindersDueBetween: (from: number, to: number) =>
     invoke<Reminder[]>("reminders_due_between", { from, to }),
-  reminderSetRepeat: (guid: string, listGuid: string, repeat: Repeat | null) =>
-    invoke<void>("reminder_set_repeat", { guid, listGuid, repeat }),
+  /** A repeat, or null to stop it; `endAt` (seconds) ends it on that date, null never;
+   *  `daysOfWeek` (1 Sunday … 7 Saturday) the weekdays a weekly one falls on, empty for its
+   *  due date's day. */
+  reminderSetRepeat: (guid: string, listGuid: string, repeat: Repeat | null, endAt: number | null = null, daysOfWeek: number[] = []) =>
+    invoke<void>("reminder_set_repeat", { guid, listGuid, repeat, endAt, daysOfWeek }),
   reminderSetDone: (guid: string, listGuid: string, done: boolean) =>
     invoke<void>("reminder_set_done", { guid, listGuid, done }),
   reminderEdit: (guid: string, listGuid: string, edit: ReminderEdit) =>
@@ -293,6 +312,12 @@ export const api = {
   contactSave: (contact: Contact, base: Contact | null = null) => invoke<string>("contact_save", { contact, base }),
   contactDelete: (guid: string) => invoke<void>("contact_delete", { guid }),
   contactsList: (search: string | null) => invoke<Contact[]>("contacts_list", { search }),
+  /** Cards that look like one person. */
+  contactsDuplicates: () => invoke<Duplicates[]>("contacts_duplicates"),
+  /** These cards as one, shown at once and sent shortly after. Answers the kept card's id. */
+  contactsMerge: (guids: string[]) => invoke<string>("contacts_merge", { guids }),
+  /** Take back a merge iCloud does not have yet. Answers whether it was. */
+  contactsMergeUndo: (kept: string) => invoke<boolean>("contacts_merge_undo", { kept }),
   /** These people as a vCard file in Downloads, written by Apple. Returns the path. */
   contactsExport: (guids: string[], fileName: string) => invoke<string>("contacts_export", { guids, fileName }),
   /** Everyone in a vCard file, added to Contacts. Returns [added, could not be read]. */
@@ -406,6 +431,15 @@ export type EventWrite = {
 };
 
 /** How an event repeats, in icloud.com's words. */
+/** Someone invited to an event. `status` is "pending" until they answer. */
+export type Guest = {
+  name: string | null;
+  email: string | null;
+  status: "accepted" | "declined" | "tentative" | "pending";
+  isMe: boolean;
+  isOrganizer: boolean;
+};
+
 export type EventRepeat = { freq: "daily" | "weekly" | "monthly" | "yearly"; interval: number; count: number | null };
 
 export type CalendarEvent = {
@@ -513,6 +547,8 @@ export type Reminder = {
   sectionGuid?: string | null;
   /** Due on a day rather than at a time. */
   allDay?: boolean;
+  /** The named zone its time is kept in ("America/New_York"), as the phone's Time Zone row. */
+  timezone?: string | null;
   etag: string | null;
 };
 
@@ -596,13 +632,32 @@ export type Contact = {
   lastName: string | null;
   photoUrl: string | null;
   photoSignature: string | null;
+  /** The square chosen, `x,y,width,height` in the picture's own pixels, from its bottom left. */
+  photoCrop?: string | null;
   company: string | null;
   isCompany: boolean;
   birthday: string | null;
   notes: string | null;
   etag: string | null;
+  /**
+   * Every number, email, link, address (its lines), date (`date`, as Apple writes a birthday),
+   * related person (`related`), social profile (`profile`) and instant message (`im`, labelled
+   * by its service). Labels are Apple's own (`MOBILE` or `_$!<Mobile>!$_`) or as typed.
+   */
   methods: ContactMethod[];
+  /** The rest of the name and work, as Apple's card holds them. */
+  prefix?: string | null;
+  suffix?: string | null;
+  nickname?: string | null;
+  phoneticFirstName?: string | null;
+  phoneticLastName?: string | null;
+  phoneticCompany?: string | null;
+  jobTitle?: string | null;
+  department?: string | null;
 };
+
+/** Cards that look like one person, and what they share: `name`, `phone`, `email`. */
+export type Duplicates = { guids: string[]; reasons: string[] };
 
 /** What to show, whichever name fields a contact happens to have. */
 /**
@@ -636,6 +691,11 @@ export type NoteAttachment = {
 /** A note attachment's picture — the file itself, or Apple's rendering of it. */
 export function noteMediaSrc(id: string, part: "file" | "preview" | "drawing" | "drawing-dark"): string {
   return convertFileSrc(`note/${id}/${part}`, "quince");
+}
+
+/** A picture attached to a reminder (`Attachment/<UUID>`), fetched from Apple once and kept. */
+export function reminderImageSrc(attachment: string): string {
+  return convertFileSrc(`rimg/${attachment.replace(/^Attachment\//, "")}`, "quince");
 }
 
 /** One of a photo's pictures, served from the disk cache (fetched from Apple once). */
@@ -678,6 +738,20 @@ export type PhotoAlbum = {
   parent?: string | null;
 };
 
+/** Where a grid's photos come from (quince-core photos::Source). */
+export type PhotoSource = { view: PhotoView } | { album: string } | { query: string } | { burst: string };
+/** How a sortable view is sorted; null keeps the source's own order. */
+export type PhotoOrder = { by: "taken" | "added"; oldest: boolean };
+/** A grid's layout before its photos (quince-core photos::PhotoIndex). */
+export type PhotoIndex = {
+  ids: string[];
+  /** What each is grouped by: when taken, or when added if sorted by that. */
+  keys: number[];
+  /** Packed: bits 0–1 the kind (0 image, 1 video, 2 Live), bit 2 a favorite, bits 3–5 its stars. */
+  marks: number[];
+  first: number | null;
+  last: number | null;
+};
 export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "panoramas" | "portrait" | "recents" | "hidden" | "rated" | "recentlyDeleted";
 
 export type Photo = {
@@ -722,8 +796,21 @@ export function contactPhotoSrc(guid: string): string {
   return convertFileSrc(`photo/${guid}`, "quince");
 }
 
+/**
+ * A contact's picture, named by which picture and which square of it, so a picture changed
+ * here (or on the phone) is fetched anew rather than drawn from the webview's cache.
+ */
 export function photoSrc(c: Contact): string | null {
-  return c.photoUrl ? contactPhotoSrc(c.guid) : null;
+  if (!c.photoUrl) return null;
+  const which = c.photoSignature ?? (c.photoUrl.startsWith("data:") ? textHash(c.photoUrl) : c.photoUrl);
+  return `${contactPhotoSrc(c.guid)}?v=${encodeURIComponent(`${which}|${c.photoCrop ?? ""}`)}`;
+}
+
+/** A short, stable name for a long text. */
+function textHash(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i += 7) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+  return `${text.length.toString(36)}${h.toString(36)}`;
 }
 
 /** One thing the search across everything found (search.rs `Hit`): marks are [start, end)
@@ -804,10 +891,14 @@ export type Turn = [number, number, number, number];
  * the window, which WebKitGTK honoured in one way of drawing and not another); here it is
  * laid out in its own shape and turned into the box with the file's own matrix — CSS's
  * matrix() and the file's are the same reading — a phone's quarter turn, or the front
- * camera's quarter turn and mirror.
+ * camera's quarter turn and mirror. `w` and `h` are the photo as shown — upright — never the
+ * sensor's sides Apple records: given those, a portrait Live Photo's film was laid out in a
+ * landscape box, turned, and came out half the size of its still. `zoom` draws it that much
+ * larger, for a film recorded with a margin round what the still shows (photoVideoZoom).
  */
-export function turnStyle(turn: Turn | null | undefined, w: number, h: number): Record<string, string> {
-  if (!turn || (turn[0] === 1 && turn[1] === 0 && turn[2] === 0 && turn[3] === 1) || !w || !h) return {};
+export function turnStyle(turn: Turn | null | undefined, w: number, h: number, zoom = 1): Record<string, string> {
+  const z = zoom > 1 && zoom <= 1.5 ? zoom : 1;
+  if (!turn || (turn[0] === 1 && turn[1] === 0 && turn[2] === 0 && turn[3] === 1) || !w || !h) return z === 1 ? {} : { transform: `scale(${z})` };
   const quarter = turn[0] === 0;
   return {
     position: "absolute",
@@ -818,7 +909,7 @@ export function turnStyle(turn: Turn | null | undefined, w: number, h: number): 
     maxWidth: "none",
     maxHeight: "none",
     translate: "-50% -50%",
-    transform: `matrix(${turn[0]}, ${turn[1]}, ${turn[2]}, ${turn[3]}, 0, 0)`,
+    transform: `matrix(${turn[0] * z}, ${turn[1] * z}, ${turn[2] * z}, ${turn[3] * z}, 0, 0)`,
   };
 }
 
@@ -853,6 +944,28 @@ export const settingsApi = {
   localStorageClear: () => invoke<LocalStorage>("local_storage_clear"),
   /** False when this desktop has no notification service; null where unknown or always shown. */
   alertsShown: () => invoke<boolean | null>("alerts_shown"),
+};
+
+/** Photos' originals and previews kept on this computer, held to a cap (src-tauri/src/photo_cache.rs). */
+export type PhotoCache = {
+  /** Originals and previews on disk, in bytes. */
+  used: number;
+  /** The cap chosen. */
+  cap: number;
+  /** What it is held to now: the cap, or less while the disk is short of space. */
+  limit: number;
+  /** The grid's thumbnails, which always stay. */
+  thumbnails: number;
+  /** The caps that can be chosen, smallest first. */
+  steps: number[];
+};
+/** Told when the cache changed in the background (a trim after the cap was lowered). */
+export const PHOTO_CACHE = "quince://photo-cache";
+export const photoCacheApi = {
+  status: () => invoke<PhotoCache>("photos_cache_status"),
+  /** Answers at once; the trim a lower cap starts reports through PHOTO_CACHE. */
+  set: (bytes: number) => invoke<PhotoCache>("photos_cache_set", { bytes }),
+  clear: () => invoke<PhotoCache>("photos_cache_clear"),
 };
 
 /* ── Intake: files opened with Skykeep, and quick capture (src-tauri/src/intake.rs) ── */
@@ -944,8 +1057,37 @@ export type ReminderDetail = {
   tags: string[];
   url: string | null;
   earlyAlerts: EarlyAlert[];
-  /** File or image attachments, which are not shown here yet. */
+  /** File or image attachments, pictures included. */
   otherAttachments: number;
+  /** Its pictures' attachment ids, as the phone lists them. */
+  images: string[];
+};
+
+/** A repeat whole, as the phone's Repeat and End Repeat rows show it. Frequency is Apple's:
+ *  0 daily, 1 weekly, 2 monthly, 3 yearly, 4 hourly. `other` names rule fields (chosen days)
+ *  this app keeps but does not read. */
+export type RepeatRule = { frequency: number; interval: number; endAt: number | null; occurrenceCount: number; daysOfWeek: number[]; other: string[] };
+/** What a reminder's row shows beside its date, as the phone's list does. */
+export type ReminderMarks = {
+  guid: string;
+  daysOfWeek: number[];
+  urgent: boolean;
+  location: PlaceAlarm | null;
+  messaging: string | null;
+  url: string | null;
+};
+/** A place a reminder rings at; `proximity` is "arriving" or "leaving". */
+export type PlaceAlarm = { title: string | null; proximity: string | null; kind: string };
+/** The person a reminder comes up for when messaging them. */
+export type MessagingPerson = { name: string | null; handles: string[] };
+/** The rest of the phone's Details screen. `urgent` is null until known. */
+export type ReminderMore = {
+  guid: string;
+  repeat: RepeatRule | null;
+  timeZone: string | null;
+  urgent: boolean | null;
+  location: PlaceAlarm | null;
+  messaging: MessagingPerson | null;
 };
 
 /** A tag across the account, and how many reminders still to do carry it. */
@@ -968,6 +1110,11 @@ export type SmartListContents = { reminders: Reminder[]; unknown: string[] };
 
 export const remindersApi = {
   detail: (guid: string) => invoke<ReminderDetail>("reminder_detail", { guid }),
+  more: (guid: string) => invoke<ReminderMore>("reminder_more", { guid }),
+  /** Row marks for these reminders; only rows with any come back. */
+  marks: (guids: string[]) => invoke<ReminderMarks[]>("reminder_marks", { guids }),
+  /** Reminders whose tick now is the last of their repeat: ticked, each is completed. */
+  ending: () => invoke<string[]>("reminders_ending"),
   tags: () => invoke<TagCount[]>("reminder_tags"),
   tagged: (name: string) => invoke<Reminder[]>("reminders_tagged", { name }),
   smartLists: () => invoke<ReminderSmartList[]>("reminder_smart_lists"),
@@ -1007,6 +1154,8 @@ export const notesLockApi = {
   /** Lock every opened note again. */
   noteLockForget: () => invoke<void>("note_lock_forget"),
   /** Add the file at `path` at `atOffset` (UTF-16 units of `base`, the text on screen). */
+  /** A small picture of a file about to be added (empty for one that is not a picture). */
+  noteAttachPreview: (path: string) => invoke<ArrayBuffer>("note_attach_preview", { path }),
   noteAttachFile: (guid: string, path: string, atOffset: number, base: string | null) =>
     invoke<NoteAttached>("note_attach_file", { guid, path, atOffset, base }),
   /**

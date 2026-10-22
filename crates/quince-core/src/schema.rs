@@ -814,4 +814,38 @@ pub const MIGRATIONS: &[&str] = &[
         SELECT d.id, concat_ws(' ', c.first_name, c.middle_name, c.last_name), concat_ws(' ', c.company, (SELECT group_concat(m.value || CASE WHEN m.kind = 'phone' THEN ' ' || replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', '') || ' ' || substr(replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', ''), -10) ELSE '' END, ' ')
                                             FROM contact_methods m WHERE m.contact_guid = c.guid)) FROM search_docs d JOIN contacts c ON d.kind = 'contact' AND d.key = c.guid;
     "#,
+    // 46 — the rest of a contact's name and work, as Apple's card holds them: prefix, suffix,
+    // nickname, the phonetic spellings, job title and department. The book is read whole once
+    // so every card has them.
+    r#"
+    ALTER TABLE contacts ADD COLUMN prefix TEXT;
+    ALTER TABLE contacts ADD COLUMN suffix TEXT;
+    ALTER TABLE contacts ADD COLUMN nickname TEXT;
+    ALTER TABLE contacts ADD COLUMN phonetic_first_name TEXT;
+    ALTER TABLE contacts ADD COLUMN phonetic_last_name TEXT;
+    ALTER TABLE contacts ADD COLUMN phonetic_company TEXT;
+    ALTER TABLE contacts ADD COLUMN job_title TEXT;
+    ALTER TABLE contacts ADD COLUMN department TEXT;
+    UPDATE sync_state SET token = NULL WHERE service = 'contacts';
+    "#,
+    // 47 — the records Apple keeps beside a reminder that say how it repeats and where it
+    // rings (RecurrenceRule, Alarm, AlarmTrigger), each kept whole as Apple sent it, so the
+    // phone's whole schedule — its end date, a place, arriving or leaving — can be shown. The
+    // zone is walked again once so every library has them.
+    r#"
+    CREATE TABLE reminder_parts (
+        name          TEXT PRIMARY KEY,
+        reminder_guid TEXT,
+        kind          TEXT NOT NULL,
+        raw           TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX reminder_parts_by_reminder ON reminder_parts (reminder_guid);
+    UPDATE sync_state SET token = NULL WHERE service = 'reminders';
+    "#,
+    // 48 — a reminder's alarms found by the reminder: each row's marks and details joined
+    // reminder_alarms on reminder_guid with no index, a whole-table scan per reminder, under
+    // the library lock every list open — ticks and edits queued behind it.
+    r#"
+    CREATE INDEX IF NOT EXISTS reminder_alarms_by_reminder ON reminder_alarms (reminder_guid);
+    "#,
 ];

@@ -367,15 +367,34 @@ button.rx-tag:hover { background: color-mix(in srgb, var(--text) 12%, transparen
 }
 .rx-field {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   min-height: 28px;
 }
 .rx-field > span:first-child { color: var(--text-2); font-size: var(--t-11); }
 .rx-field-notes { align-items: start; }
+/* The link: typed in the field, opened with Open beside it — as the phone's link is tapped. */
+.rx-field-url { grid-template-columns: 96px minmax(0, 1fr) auto; }
+.rx-url-open { font-size: var(--t-12); color: var(--accent, var(--sys-blue)); text-decoration: none; }
+.rx-url-open:hover { text-decoration: underline; }
 .rx-field-notes > span:first-child { padding-top: 6px; }
 .rx-field textarea.field { resize: vertical; min-height: 44px; }
+/* A reminder's pictures, as the phone lists them: a row of even squares, each cropped to fill
+   its tile with a hairline edge so a white picture still reads as one. */
+.rx-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 8px;
+}
+.rx-image {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  box-shadow: 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 12%, transparent);
+}
 /* A value read from Apple, not a control: the panel's type, quietly. */
 .rx-value { color: var(--text); font-size: var(--t-13); }
 .rx-url {
@@ -391,7 +410,46 @@ button.rx-tag:hover { background: color-mix(in srgb, var(--text) 12%, transparen
 /* Between the panel's groups — what it says, when it is due, how it is filed — as Apple
    separates them in its info popover. */
 .rx-detail-rule { height: var(--hairline); margin: 2px 0; background: var(--separator); }
-.rx-hint { margin: -4px 0 0 86px; color: var(--text-3); font-size: var(--t-11); }
+.rx-hint { margin: -4px 0 0 106px; color: var(--text-3); font-size: var(--t-11); line-height: 1.35; }
+/* A second, quieter part of a value: the offset beside a zone, Arriving beside a place. */
+.rx-quiet { margin-left: 8px; color: var(--text-3); }
+
+/* Custom repeat: set in from the Repeat row, as the phone opens it as a page of its own. */
+.rx-custom { display: flex; flex-direction: column; gap: 8px; padding-left: 12px; border-left: 2px solid var(--separator); }
+.rx-custom .rx-hint { margin-left: 106px; }
+.rx-every { display: inline-flex; align-items: center; gap: 6px; }
+.rx-field .rx-every .rx-every-count { width: 4.5ch; text-align: center; padding-left: 4px; padding-right: 4px; }
+.rx-every-unit { color: var(--text-2); font-size: var(--t-13); }
+.rx-step {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--t-13);
+  line-height: 1;
+}
+.rx-step:disabled { color: var(--text-3); }
+.rx-step:focus-visible { outline: var(--focus-ring); }
+/* The days a rule falls on, shown as the phone's grid shows them; the one it falls on filled. */
+.rx-days { display: grid; grid-template-columns: repeat(7, 28px); gap: 4px; margin-left: 106px; }
+.rx-custom .rx-days { margin-left: 106px; }
+.rx-days.is-year { grid-template-columns: repeat(6, 40px); }
+.rx-day {
+  display: grid;
+  place-items: center;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--text-3);
+  font-size: var(--t-11);
+  font-variant-numeric: tabular-nums;
+}
+.rx-day.is-on { background: var(--sys-blue); color: #fff; font-weight: 600; }
 .rx-tag-field { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
 .rx-tag.is-chip { padding: 0; height: 22px; background: color-mix(in srgb, var(--sys-blue) 12%, transparent); }
 .rx-tag-name,
@@ -434,6 +492,28 @@ button.rx-tag:hover { background: color-mix(in srgb, var(--text) 12%, transparen
 }
 .rx-add input::placeholder { color: var(--text-3); }
 .rx-add-target { max-width: 160px; }
+/* What the line says beyond its title, under it before Return: quiet, on the text's column. */
+.rx-add-understood {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: var(--t-11);
+  color: var(--accent, var(--sys-blue));
+}
+.rx-add-reading { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rx-add-literal {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+.rx-add-literal:hover { color: var(--text); }
+.rx-add-literal:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: 4px; }
 .rx-add-target .picker-button { font-size: var(--t-11); padding: 3px 8px; }
 
 /* One column at a time, as on iPhone: the lists, or the list picked from them. Searching
@@ -473,3 +553,34 @@ button.rx-tag:hover { background: color-mix(in srgb, var(--text) 12%, transparen
 .rx-row[draggable="true"] { cursor: grab; }
 .rx-row.is-dragging { opacity: 0.45; }
 .rx-row.is-drop-before { box-shadow: inset 0 2px 0 var(--sys-blue, #0a84ff); }
+
+/* A row's marks, as the phone's list shows them: another zone's clock beside the time, the
+   Urgent alarm, and chips for a place, a person and a link. */
+.rx-urgent { display: inline-flex; align-items: center; color: var(--text-2); }
+.rx-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.rx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 10px 0 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text);
+  font-size: var(--t-11);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: none;
+}
+.rx-chip b { font-weight: 600; }
+.rx-chip svg { flex: none; color: var(--text-2); }
+.rx-chip .rx-chip-place { color: var(--sys-red); }
+.rx-chip-link:hover { background: color-mix(in srgb, var(--text) 11%, transparent); }
+/* Custom's weekday picks: the same grid, each a toggle. */
+.rx-day.is-pick { padding: 0; border: 0; background: color-mix(in srgb, var(--text) 6%, transparent); font: inherit; font-size: var(--t-11); cursor: default; }
+.rx-day.is-pick.is-on { background: var(--sys-blue); color: #fff; }
+.rx-day.is-pick:focus-visible { outline: var(--focus-ring); }
+.rx-day.is-pick:disabled { opacity: 0.6; }

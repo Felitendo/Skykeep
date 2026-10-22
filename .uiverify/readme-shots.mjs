@@ -5,7 +5,8 @@
 //   node .uiverify/readme-shots.mjs notes hero  only those scenes
 //
 // It builds the interface and previews it on PORT (4220) unless something already answers
-// there. Needs ImageMagick (`magick`) and ffmpeg. Optional: the four Unsplash pictures named
+// there. Needs ImageMagick (`magick`) and ffmpeg. PNGs are optimised with pngquant and oxipng
+// when installed, or the same engines through `uv`. Optional: the four Unsplash pictures named
 // in UNSPLASH below; without them, drawn pictures take their places.
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -149,6 +150,12 @@ const SCENES = {
   photos: async (page) => {
     await page.locator(".nav-item", { hasText: "Photos" }).click();
     await page.waitForTimeout(1800);
+    // Every tile in view drawn, not a grey placeholder still waiting on its picture.
+    await page.waitForFunction(() => [...document.querySelectorAll("img")].every((i) => {
+      const r = i.getBoundingClientRect();
+      return r.bottom < 0 || r.top > innerHeight || (i.complete && i.naturalWidth > 0);
+    }), null, { timeout: 15000 }).catch(() => console.log("photos: some tiles still loading"));
+    await page.waitForTimeout(5000);
   },
   settings: async (page) => {
     await page.locator(".sidebar-account").click();
@@ -196,12 +203,27 @@ async function sizeOf(png) {
   return { w, h };
 }
 
-/** WebP for the README (2048 px wide) and a smaller PNG for anything that can't show WebP. */
+/** A PNG for the README, 1600 px wide (sharp at the README's 880), stripped and optimised. */
 function publish(framed, name) {
-  const webp = path.join(OUT, `${name}.webp`), png = path.join(OUT, `${name}.png`);
-  sh("magick", [framed, "-strip", "-resize", "2048x", "-quality", "86", "-define", "webp:method=6", webp]);
-  sh("magick", [framed, "-strip", "-resize", "1280x", "-define", "png:compression-level=9", "-colors", "256", "-dither", "None", `PNG8:${png}`]);
-  for (const f of [webp, png]) console.log(`${path.relative(ROOT, f)}  ${Math.round(fs.statSync(f).size / 1024)} KB`);
+  const png = path.join(OUT, `${name}.png`);
+  sh("magick", [framed, "-strip", "-resize", "1600x", "-define", "png:compression-level=9", `PNG24:${png}`]);
+  optimise(png);
+  console.log(`${path.relative(ROOT, png)}  ${Math.round(fs.statSync(png).size / 1024)} KB`);
+}
+
+const has = (cmd) => { try { execFileSync("sh", ["-c", `command -v ${cmd}`], { stdio: "ignore" }); return true; } catch { return false; } };
+/** pngquant then oxipng when installed; otherwise the same two engines (libimagequant and
+ *  oxipng) through `uv`, in a throwaway environment; otherwise the PNG stays as written. */
+function optimise(png) {
+  if (has("pngquant")) { sh("pngquant", ["--force", "--skip-if-larger", "--quality", "80-95", "--strip", "--output", png, png]); if (has("oxipng")) sh("oxipng", ["-o", "4", "--strip", "all", png]); return; }
+  if (!has("uv")) return;
+  const py = `import sys, imagequant, oxipng
+from PIL import Image
+p = sys.argv[1]
+q = imagequant.quantize_pil_image(Image.open(p).convert("RGBA"), dithering_level=1.0, max_colors=256, min_quality=80, max_quality=95)
+q.save(p, optimize=True)
+oxipng.optimize(p, level=4, strip=oxipng.StripChunks.all())`;
+  sh("uv", ["run", "--quiet", "--python", "3.12", "--no-project", "--with", "imagequant", "--with", "pillow", "--with", "pyoxipng", "python", "-I", "-c", py, png]);
 }
 
 // ---- Stills.

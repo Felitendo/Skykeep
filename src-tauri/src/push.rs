@@ -1,17 +1,29 @@
 //! Apple's pushes, turned into refreshes of exactly what changed.
 //!
-//! A change made on a phone used to wait for the next five-minute pass. Now a parked
-//! connection hears of it from Apple within about a second (see
-//! `quince_icloud::push`), and only the service it was in is refreshed. The timed pass stays
-//! as the floor beneath this, for the services Apple does not push here and for any push
-//! that went missing.
+//! A change made on a phone reaches this computer two ways:
+//!
+//! - **Live:** the web push socket icloud.com itself uses (`quince_icloud::courier`). Apple
+//!   says within about a second that Notes, Reminders or Photos changed, and only that
+//!   service is refreshed. A dropped socket is reconnected with backoff; a refusal (an
+//!   endpoint Apple retired, a bad request) is tried again only after half an hour and
+//!   more, never in a loop.
+//! - **Polling, while there is no live channel:** each container's `changes/database` token —
+//!   one small read-only request — is asked every few seconds while a window has focus, less
+//!   often while one is merely open, and rarely from the tray; at once when the window gains
+//!   focus or the network comes back ([`wake`]). Only a container whose token moved is
+//!   refreshed.
+//!
+//! The log hears one line when the channel goes down and one when it is back. The timed
+//! pass stays as the floor beneath both, for anything that went missing.
 
 use crate::{alerts, refresh, Data, SYNCED};
 use quince_auth::Client;
-use std::sync::Arc;
+use quince_icloud::courier::{self, Courier, Failure, Identity};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 
 /// The containers one connection listens to, and the service each one is. Photos measured
 /// live (2026-10-19): a change made elsewhere arrives 0.7 to 1.5 seconds after it is written.
@@ -21,11 +33,12 @@ const CONTAINERS: [(&str, &str); 3] = [
     ("com.apple.photos.cloud", "photos"),
 ];
 
-/// How long one wait is left parked before it is parked afresh. Apple answers sooner when
-/// something changes; this only bounds a connection that went quiet without closing.
-const LONGEST_WAIT: Duration = Duration::from_secs(10 * 60);
+/// A registration with the push registry lasts 12 hours (`43200`); it is renewed a little
+/// before, on the same socket.
+const RENEW_REGISTRATION: Duration = Duration::from_secs(11 * 60 * 60);
 
-/// A token is made for a day (`ttl=86400`); a new one is made a little before.
+/// A token is asked for a day (`86400`); the socket is opened afresh, with a new token, a
+/// little before.
 const TOKEN_LIFE: Duration = Duration::from_secs(23 * 60 * 60);
 
 /// A phone sends a burst of pushes for one edit, one per record it saves. They are taken
@@ -40,11 +53,37 @@ fn service_of(container: &str) -> Option<&'static str> {
         .map(|(_, s)| *s)
 }
 
+/// Whether the live channel is up right now. While it is, nothing polls.
+static LIVE: AtomicBool = AtomicBool::new(false);
+
+/// Set when the channel comes back: one poll then catches up what changed while it was down.
+static CATCH_UP: AtomicBool = AtomicBool::new(false);
+
+/// Bumped by [`wake`]; the channel and the poller each watch it.
+static WAKE: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
+
+/// Something happened that makes now a good moment to look: a window gained focus, or the
+/// network came back. A channel that failed for a passing reason is tried again at once, and
+/// a poll runs at once.
+pub fn wake() {
+    WAKE.send_modify(|n| *n = n.wrapping_add(1));
+}
+
+/// Sleep for `wait`, or until [`wake`] — whichever is first. True when woken.
+async fn sleep_or_wake(wait: Duration, woken: &mut watch::Receiver<u64>) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(wait) => false,
+        r = woken.changed() => r.is_ok(),
+    }
+}
+
 pub fn spawn(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
+    crate::power::watch();
     let (tx, rx) = mpsc::unbounded_channel::<&'static str>();
     tauri::async_runtime::spawn(refresher(app.clone(), Arc::clone(&client), rx));
     tauri::async_runtime::spawn(watch_calendar(app.clone(), Arc::clone(&client), tx.clone()));
-    tauri::async_runtime::spawn(watch_contacts(app, Arc::clone(&client), tx.clone()));
+    tauri::async_runtime::spawn(watch_contacts(app.clone(), Arc::clone(&client), tx.clone()));
+    tauri::async_runtime::spawn(poll_cloudkit(app, Arc::clone(&client), tx.clone()));
     tauri::async_runtime::spawn(listen(client, tx));
 }
 
@@ -58,9 +97,9 @@ async fn watch_contacts(
 ) {
     let mut tokens: Option<quince_icloud::contacts::Tokens> = None;
     let mut backoff = Duration::from_secs(5);
+    let mut woken = WAKE.subscribe();
     loop {
-        let visible = shown(&app);
-        tokio::time::sleep(if visible { LOOK } else { LOOK_HIDDEN }).await;
+        sleep_or_wake(look_every(presence(&app)), &mut woken).await;
         let session = {
             let guard = client.lock().await;
             let s = guard.session();
@@ -102,17 +141,49 @@ async fn watch_contacts(
     }
 }
 
-/// Whether the window is in front of anyone: shown and not minimized. A minimized window is
-/// still "visible" to Windows (and to Tauri there), and was asked at the open window's pace.
-fn shown(app: &tauri::AppHandle) -> bool {
-    app.get_webview_window("main")
-        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
+/// How present the app is: a window with focus, one merely on screen, or none (the tray).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presence {
+    Focused,
+    Open,
+    Hidden,
 }
 
-/// How often Calendar and Contacts are asked whether anything changed: often while the window is open,
-/// rarely from the tray, where only an alert depends on it.
-const LOOK: Duration = Duration::from_secs(4);
-const LOOK_HIDDEN: Duration = Duration::from_secs(30);
+/// Every window counts — the whole-library one and each app's own. A minimized window is
+/// still "visible" to Windows (and to Tauri there), so it is counted as hidden.
+fn presence(app: &tauri::AppHandle) -> Presence {
+    let mut open = false;
+    for w in app.webview_windows().values() {
+        if !w.is_visible().unwrap_or(false) || w.is_minimized().unwrap_or(false) {
+            continue;
+        }
+        if w.is_focused().unwrap_or(false) {
+            return Presence::Focused;
+        }
+        open = true;
+    }
+    if open {
+        Presence::Open
+    } else {
+        Presence::Hidden
+    }
+}
+
+/// How often Calendar and Contacts — which have no push — are asked whether anything changed:
+/// every few seconds while a window has the focus, so a change made on the phone shows as it
+/// would with a push; less often while one is merely open (behind another, on another
+/// workspace), and rarely from the tray, where only an alert depends on it. Focus coming back
+/// asks at once ([`wake`]), so the slower pace is never felt. Asked every four seconds whatever
+/// the window was doing, the two of them made thirty requests a minute all day.
+/// On the battery, what no one is looking at is asked half as often (power.rs).
+fn look_every(presence: Presence) -> Duration {
+    let every = match presence {
+        Presence::Focused => Duration::from_secs(4),
+        Presence::Open => Duration::from_secs(15),
+        Presence::Hidden => Duration::from_secs(60),
+    };
+    crate::power::pace(every, presence == Presence::Focused)
+}
 
 /// Calendar has no push for the web. Its own "has anything changed" call, `/ca/idle`, answers
 /// in a few hundred milliseconds with only the calendars whose tag moved, so it is asked every
@@ -131,9 +202,9 @@ async fn watch_calendar(
     let mut known: Vec<(String, String)> = Vec::new();
     let mut seeded = false;
     let mut backoff = Duration::from_secs(5);
+    let mut woken = WAKE.subscribe();
     loop {
-        let visible = shown(&app);
-        tokio::time::sleep(if visible { LOOK } else { LOOK_HIDDEN }).await;
+        sleep_or_wake(look_every(presence(&app)), &mut woken).await;
         let session = {
             let guard = client.lock().await;
             let s = guard.session();
@@ -206,68 +277,338 @@ async fn refresher(
     }
 }
 
-/// Keep a connection parked on Apple's push channel for as long as the app runs.
+// --- The live channel ------------------------------------------------------------------------
+
+/// What kind of failure was last met, which decides how soon to try again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// The network, a dropped socket: soon, and sooner still on a wake.
+    Transient,
+    /// Apple asked to be left alone for this long.
+    Limited(Duration),
+    /// Refused outright — a retired endpoint, a bad request. Only after a long while.
+    Refused,
+    /// The session needs signing in again, which happens elsewhere.
+    Reauth,
+}
+
+impl From<&Failure> for Kind {
+    fn from(f: &Failure) -> Self {
+        match f {
+            Failure::Transient(_) => Self::Transient,
+            Failure::RateLimited(d) => Self::Limited(*d),
+            Failure::Refused(_) => Self::Refused,
+            Failure::Reauth => Self::Reauth,
+        }
+    }
+}
+
+/// A channel that stayed up this long was healthy: its loss starts the backoff over.
+const STABLE: Duration = Duration::from_secs(60);
+
+/// When to try the channel again, and when to say anything about it.
+///
+/// Pure bookkeeping, so it is tested on its own: the backoff for each kind of failure, that a
+/// channel which connects and drops at once still backs off, that a refusal is never retried
+/// in a tight loop (not even on a wake), and that the log hears one line per change of state.
+#[derive(Debug, Default)]
+struct Pace {
+    /// Failures in a row, since the channel was last healthy.
+    failures: u32,
+    last: Option<Kind>,
+    /// Down, and said so. Cleared — with one line — when it is back.
+    down_since: Option<Instant>,
+    /// Up at least once in this run.
+    ever_up: bool,
+}
+
+/// Grows `base` by doubling per failure after the first, up to `cap`.
+fn doubling(base: Duration, failures: u32, cap: Duration) -> Duration {
+    let shift = failures.saturating_sub(1).min(16);
+    base.saturating_mul(1u32 << shift).min(cap)
+}
+
+impl Pace {
+    /// How long to wait after this failure.
+    fn delay(&self) -> Duration {
+        let n = self.failures.max(1);
+        match self.last.unwrap_or(Kind::Transient) {
+            Kind::Transient => doubling(Duration::from_secs(1), n, Duration::from_secs(5 * 60)),
+            Kind::Limited(asked) => asked.max(doubling(
+                Duration::from_secs(1),
+                n,
+                Duration::from_secs(5 * 60),
+            )),
+            Kind::Refused => doubling(
+                Duration::from_secs(30 * 60),
+                n,
+                Duration::from_secs(6 * 60 * 60),
+            ),
+            Kind::Reauth => doubling(Duration::from_secs(2 * 60), n, Duration::from_secs(30 * 60)),
+        }
+    }
+
+    /// The channel could not be opened, or was lost after `lasted` (`None`: never opened).
+    /// Returns the wait before the next try, and whether this is the moment to say the channel
+    /// is down — the first failure only.
+    fn failed(&mut self, kind: Kind, lasted: Option<Duration>, now: Instant) -> (Duration, bool) {
+        if lasted.is_some_and(|l| l >= STABLE) {
+            self.failures = 0;
+        }
+        self.failures = self.failures.saturating_add(1);
+        self.last = Some(kind);
+        let announce = self.down_since.is_none();
+        if announce {
+            self.down_since = Some(now);
+        }
+        (self.delay(), announce)
+    }
+
+    /// The channel is up. `Some(how long it was down)` when that was announced, for the one
+    /// line saying it is back. The failure count stays until the channel proves stable.
+    fn up(&mut self, now: Instant) -> Option<Duration> {
+        self.ever_up = true;
+        self.down_since.take().map(|t| now.duration_since(t))
+    }
+
+    /// Whether a wake (focus, network back) may cut the wait short. Only a passing failure:
+    /// a refusal or a rate limit is waited out whatever happens.
+    fn wake_may_retry(&self) -> bool {
+        matches!(self.last, None | Some(Kind::Transient))
+    }
+}
+
+/// Keep the live channel open for as long as the app runs.
 async fn listen(client: Arc<Mutex<Client>>, tx: mpsc::UnboundedSender<&'static str>) {
-    let client_id = uuid::Uuid::new_v4().to_string().to_uppercase();
     let containers: Vec<&str> = CONTAINERS.iter().map(|(c, _)| *c).collect();
-    let mut backoff = Duration::from_secs(1);
-    let mut first = true;
+    let mut identity = Identity::new();
+    let mut pace = Pace::default();
+    let mut woken = WAKE.subscribe();
     loop {
         let session = {
             let guard = client.lock().await;
             let s = guard.session();
             s.webservices
                 .is_some()
-                .then(|| s.service_url("ckdeviceservice"))
+                .then(|| s.dsid.clone())
+                .flatten()
+                .map(|dsid| (guard.http().clone(), dsid))
+        };
+        let Some((http, dsid)) = session else {
+            // Not signed in yet: look again shortly.
+            sleep_or_wake(Duration::from_secs(30), &mut woken).await;
+            continue;
+        };
+        let opened = Instant::now();
+        let failure = match open(&http, &mut identity, &containers, &dsid).await {
+            Err(f) => (f, None),
+            Ok(mut channel) => {
+                let was_up = pace.ever_up;
+                match pace.up(Instant::now()) {
+                    Some(down) => quiet!("push: live channel back after {}s", down.as_secs()),
+                    None if !was_up => quiet!("push: live channel up"),
+                    None => {}
+                }
+                LIVE.store(true, Ordering::SeqCst);
+                // What changed while no channel was up was never pushed: one poll catches it.
+                CATCH_UP.store(true, Ordering::SeqCst);
+                wake();
+                let lost = run(&mut channel, &http, &identity, &dsid, &tx, opened).await;
+                LIVE.store(false, Ordering::SeqCst);
+                wake();
+                // Those wakes were for the poller; this loop is not to take them as its own.
+                woken.borrow_and_update();
+                channel.close().await;
+                let Some(lost) = lost else {
+                    // The token's day is nearly up: straight back with a new one, unannounced.
+                    identity.forget_token();
+                    continue;
+                };
+                (lost, Some(opened.elapsed()))
+            }
+        };
+        let (failure, lasted) = failure;
+        if let Failure::Refused(_) = failure {
+            // A fresh identity next time: whatever was refused is not offered again.
+            identity = Identity::new();
+        }
+        let (wait, announce) = pace.failed(Kind::from(&failure), lasted, Instant::now());
+        if announce {
+            quiet!(
+                "push: live channel down ({failure}); polling for changes, next try in {}s",
+                wait.as_secs()
+            );
+        }
+        let until = Instant::now() + wait;
+        while Instant::now() < until {
+            let woke = sleep_or_wake(until - Instant::now(), &mut woken).await;
+            if woke && pace.wake_may_retry() {
+                break;
+            }
+        }
+    }
+}
+
+/// Connect, get a token and register it.
+async fn open(
+    http: &reqwest::Client,
+    identity: &mut Identity,
+    containers: &[&str],
+    dsid: &str,
+) -> Result<Courier, Failure> {
+    let mut channel = Courier::connect(courier::SERVER, identity, containers).await?;
+    if let Err(f) = channel
+        .register(http, courier::REGISTRY, identity, dsid)
+        .await
+    {
+        channel.close().await;
+        return Err(f);
+    }
+    Ok(channel)
+}
+
+/// Pass pushes on until the channel is lost (`Some`) or its token is due to be renewed
+/// (`None`); renew the registration on the way.
+async fn run(
+    channel: &mut Courier,
+    http: &reqwest::Client,
+    identity: &Identity,
+    dsid: &str,
+    tx: &mpsc::UnboundedSender<&'static str>,
+    opened: Instant,
+) -> Option<Failure> {
+    let mut registered = Instant::now();
+    loop {
+        if opened.elapsed() >= TOKEN_LIFE {
+            return None;
+        }
+        if registered.elapsed() >= RENEW_REGISTRATION {
+            if let Err(f) = channel
+                .register(http, courier::REGISTRY, identity, dsid)
+                .await
+            {
+                return Some(f);
+            }
+            registered = Instant::now();
+        }
+        let until_renewal = RENEW_REGISTRATION.saturating_sub(registered.elapsed());
+        match channel
+            .next(until_renewal.min(Duration::from_secs(10 * 60)))
+            .await
+        {
+            Ok(Some(courier::Event::Changed(container))) => {
+                if let Some(service) = service_of(&container) {
+                    quiet!("push: {service} changed (live)");
+                    tx.send(service).ok();
+                }
+            }
+            Ok(Some(courier::Event::Other) | None) => {}
+            Err(f) => return Some(f),
+        }
+    }
+}
+
+// --- Polling, while there is no live channel ---------------------------------------------------
+
+/// How often the containers are asked whether anything changed while no live channel is up:
+/// often with a window in focus, less with one merely open, rarely from the tray.
+/// On the battery, what no one is looking at is asked half as often (power.rs).
+fn poll_every(presence: Presence) -> Duration {
+    let every = match presence {
+        Presence::Focused => Duration::from_secs(5),
+        Presence::Open => Duration::from_secs(15),
+        Presence::Hidden => Duration::from_secs(60),
+    };
+    crate::power::pace(every, presence == Presence::Focused)
+}
+
+/// How often a window on screen checks anyway while the live channel is up.
+const SAFETY_CHECK: Duration = Duration::from_secs(2 * 60);
+
+/// While the live channel is down, ask each container's database whether it moved, and
+/// refresh only the ones that did. The tokens are seeded once at the start, so a channel lost
+/// hours later is still compared with a known point.
+async fn poll_cloudkit(
+    app: tauri::AppHandle,
+    client: Arc<Mutex<Client>>,
+    tx: mpsc::UnboundedSender<&'static str>,
+) {
+    let mut tokens: Vec<Option<String>> = vec![None; CONTAINERS.len()];
+    let mut seeded = false;
+    let mut woken = WAKE.subscribe();
+    let mut backoff: Option<Duration> = None;
+    loop {
+        let live = LIVE.load(Ordering::SeqCst);
+        let catch_up = CATCH_UP.swap(false, Ordering::SeqCst);
+        if seeded && live && !catch_up {
+            // The channel carries it; woken when that changes. A window on screen still gets
+            // a check every couple of minutes, in case a push went astray.
+            let woke = sleep_or_wake(SAFETY_CHECK, &mut woken).await;
+            if woke || !LIVE.load(Ordering::SeqCst) || presence(&app) == Presence::Hidden {
+                continue;
+            }
+        }
+        let session = {
+            let guard = client.lock().await;
+            let s = guard.session();
+            s.webservices
+                .is_some()
+                .then(|| s.service_url("ckdatabasews"))
                 .flatten()
                 .map(|root| (guard.http().clone(), guard.service_params(), root))
         };
         let Some((http, params, root)) = session else {
-            // Not signed in, or no CloudKit for this account: look again shortly.
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            sleep_or_wake(Duration::from_secs(30), &mut woken).await;
             continue;
         };
-        let channel =
-            match quince_icloud::push::open(&http, &root, &params, &client_id, &containers).await {
-                Ok(channel) => channel,
-                Err(e) => {
-                    quiet!("push: could not open the channel: {e}");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(5 * 60));
-                    continue;
-                }
-            };
-        backoff = Duration::from_secs(1);
-        // Whatever changed while no connection was parked was never pushed: one pass catches
-        // it up. Not at launch, which runs a full pass of its own.
-        if !first {
-            for (_, service) in CONTAINERS {
-                tx.send(service).ok();
-            }
-        }
-        first = false;
-        let opened = Instant::now();
-        let mut failures = 0;
-        while opened.elapsed() < TOKEN_LIFE {
-            match quince_icloud::push::wait(&http, &channel, LONGEST_WAIT).await {
-                Ok(Some(container)) => {
-                    failures = 0;
-                    if let Some(service) = service_of(&container) {
+        let mut failed = None;
+        for (i, (container, service)) in CONTAINERS.iter().enumerate() {
+            match quince_icloud::push::database_changed(
+                &http,
+                &root,
+                &params,
+                container,
+                tokens[i].as_deref(),
+            )
+            .await
+            {
+                Ok((moved, next)) => {
+                    tokens[i] = next;
+                    if moved {
+                        if live && !catch_up {
+                            quiet!("push: {service} changed (poll; the live channel missed it)");
+                        } else {
+                            quiet!("push: {service} changed (poll)");
+                        }
                         tx.send(service).ok();
                     }
                 }
-                Ok(None) => failures = 0,
-                Err(e) => {
-                    failures += 1;
-                    quiet!("push: the wait failed ({failures}): {e}");
-                    if failures >= 3 {
-                        // Three in a row is a channel gone bad, not a blip: make a new one.
-                        break;
-                    }
-                    tokio::time::sleep(backoff * failures).await;
+                Err(quince_icloud::Error::StaleCursor) => {
+                    // Start over, and refresh in case something moved meanwhile.
+                    tokens[i] = None;
+                    tx.send(service).ok();
                 }
+                Err(e) => failed = Some(e),
             }
         }
+        seeded = true;
+        backoff = match failed {
+            None => None,
+            Some(e) => {
+                let next = backoff.map_or(Duration::from_secs(5), |b| {
+                    (b * 2).min(Duration::from_secs(5 * 60))
+                });
+                if backoff.is_none() {
+                    quiet!(
+                        "push: change check failed ({e}); trying again in {}s",
+                        next.as_secs()
+                    );
+                }
+                Some(next)
+            }
+        };
+        let wait = backoff.unwrap_or_else(|| poll_every(presence(&app)));
+        sleep_or_wake(wait, &mut woken).await;
     }
 }
 
@@ -281,5 +622,100 @@ mod tests {
         assert_eq!(service_of("com.apple.reminders"), Some("reminders"));
         assert_eq!(service_of("com.apple.photos.cloud"), Some("photos"));
         assert_eq!(service_of("com.apple.clouddocs"), None);
+    }
+
+    #[test]
+    fn a_passing_failure_backs_off_doubling_to_five_minutes() {
+        let mut pace = Pace::default();
+        let t = Instant::now();
+        let waits: Vec<u64> = (0..12)
+            .map(|_| pace.failed(Kind::Transient, None, t).0.as_secs())
+            .collect();
+        assert_eq!(&waits[..5], &[1, 2, 4, 8, 16]);
+        assert_eq!(*waits.last().unwrap(), 300, "capped at five minutes");
+        assert!(pace.wake_may_retry(), "network back retries at once");
+    }
+
+    #[test]
+    fn a_refusal_is_never_retried_in_a_tight_loop() {
+        // What Apple now answers the old endpoint: 403, "This endpoint is deprecated."
+        let mut pace = Pace::default();
+        let t = Instant::now();
+        let (first, _) = pace.failed(Kind::Refused, None, t);
+        assert!(first >= Duration::from_secs(30 * 60), "{first:?}");
+        let (second, _) = pace.failed(Kind::Refused, None, t);
+        assert!(second > first);
+        for _ in 0..20 {
+            pace.failed(Kind::Refused, None, t);
+        }
+        assert_eq!(pace.delay(), Duration::from_secs(6 * 60 * 60));
+        assert!(
+            !pace.wake_may_retry(),
+            "not even focus or the network cuts it short"
+        );
+        // A rate limit is honoured whatever the count.
+        let mut pace = Pace::default();
+        let (wait, _) = pace.failed(Kind::Limited(Duration::from_secs(900)), None, t);
+        assert_eq!(wait, Duration::from_secs(900));
+        assert!(!pace.wake_may_retry());
+    }
+
+    #[test]
+    fn a_channel_that_drops_at_once_still_backs_off() {
+        let mut pace = Pace::default();
+        let t = Instant::now();
+        let mut last = Duration::ZERO;
+        for _ in 0..6 {
+            pace.up(t);
+            let (wait, _) = pace.failed(Kind::Transient, Some(Duration::from_secs(2)), t);
+            assert!(wait >= last, "never shorter while it keeps dropping");
+            last = wait;
+        }
+        assert!(last >= Duration::from_secs(32));
+        // One that stayed up a while starts over.
+        pace.up(t);
+        let (wait, _) = pace.failed(Kind::Transient, Some(STABLE), t);
+        assert_eq!(wait, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn the_log_hears_one_line_down_and_one_line_back() {
+        let mut pace = Pace::default();
+        let t0 = Instant::now();
+        let said: Vec<bool> = (0..5)
+            .map(|_| pace.failed(Kind::Transient, None, t0).1)
+            .collect();
+        assert_eq!(said, [true, false, false, false, false]);
+        let back = pace.up(t0 + Duration::from_secs(40));
+        assert_eq!(back, Some(Duration::from_secs(40)));
+        assert_eq!(pace.up(t0 + Duration::from_secs(50)), None, "said once");
+        let (_, said) = pace.failed(Kind::Transient, Some(Duration::from_secs(600)), t0);
+        assert!(said, "a new outage is a new line");
+    }
+
+    #[test]
+    fn polling_is_quickest_with_focus_and_slowest_from_the_tray() {
+        let (f, o, h) = (
+            poll_every(Presence::Focused),
+            poll_every(Presence::Open),
+            poll_every(Presence::Hidden),
+        );
+        assert!(f <= Duration::from_secs(5), "changes show within seconds");
+        assert!(f < o && o < h);
+        assert!(h <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn calendar_and_contacts_are_asked_often_only_while_looked_at() {
+        let (f, o, h) = (
+            look_every(Presence::Focused),
+            look_every(Presence::Open),
+            look_every(Presence::Hidden),
+        );
+        assert!(f <= Duration::from_secs(5), "changes show within seconds");
+        // A window merely open — behind another, on another workspace — is not asked at the
+        // focused pace: at most four requests a minute for the two of them, not thirty.
+        assert!(o >= Duration::from_secs(15), "{o:?}");
+        assert!(o < h && h <= Duration::from_secs(120));
     }
 }

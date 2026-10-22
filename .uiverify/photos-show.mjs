@@ -6,6 +6,14 @@ import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null });
+// Real pictures (a flat colour each), so each photo is fetched and decoded as in the app: the
+// show passes over a picture that cannot be had.
+await ctx.addInitScript(() => { window.__picBase = "http://pics.test"; });
+await ctx.route("http://pics.test/**", (route) => {
+  const id = /pic%2F([^%]+)%2F/.exec(route.request().url())?.[1] ?? "x";
+  const hue = [...id].reduce((h, c) => h + c.charCodeAt(0) * 37, 0) % 360;
+  return route.fulfill({ contentType: "image/svg+xml", body: `<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1152"><rect width="1536" height="1152" fill="hsl(${hue},60%,50%)"/></svg>` });
+});
 const page = await ctx.newPage();
 page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
@@ -24,33 +32,39 @@ const fills = await page.locator(".px-show").evaluate((el) => {
   return r.left === 0 && r.top === 0 && Math.round(r.width) === innerWidth && Math.round(r.height) === innerHeight;
 });
 ok(fills, "it fills the whole window, not a box inside the screen");
-await page.waitForTimeout(4400);
+// Each photo holds 4 s, then dissolves into the next over 0.8 s.
+await page.waitForTimeout(5200);
 ok((await count()) === "3 of 5", `and goes on by itself  "${await count()}"`);
 await page.keyboard.press(" ");
-await page.waitForTimeout(4400);
+await page.waitForTimeout(5200);
 ok((await count()) === "3 of 5" && (await page.getByRole("button", { name: "Play" }).count()) === 1, "Space pauses it");
-// A step waits for the next picture to be decoded — never half shown — so a moment passes.
+// A step waits for the next picture to be decoded — never half shown — then dissolves in.
 await page.keyboard.press("ArrowRight");
-await page.waitForTimeout(150);
+await page.waitForTimeout(1000);
 ok((await count()) === "4 of 5", "the right arrow steps on");
 await page.keyboard.press("ArrowLeft");
-await page.waitForTimeout(150);
+await page.waitForTimeout(1000);
 await page.keyboard.press("ArrowLeft");
-await page.waitForTimeout(150);
+await page.waitForTimeout(1000);
 ok((await count()) === "2 of 5", "and the left back");
 // The next dissolves in over the one leaving (drawn frame by frame by the page, never the
-// compositor's), the leaving one still beneath it, then gone.
-await page.keyboard.press("ArrowRight");
-await page.waitForTimeout(250);
-const mid = await page.evaluate(() => {
-  const a = document.querySelector(".px-slide:not(.is-leaving)"), l = document.querySelector(".px-slide.is-leaving");
-  return { arriving: Number(getComputedStyle(a).opacity), leaving: l ? Number(getComputedStyle(l).opacity) : -1, engine: document.querySelector(".px-show").getAnimations({ subtree: true }).length };
+// compositor's), the leaving one still whole beneath it, then gone.
+const layers = () => page.evaluate(() => {
+  const ls = [...document.querySelectorAll(".px-slide")].sort((a, b) => +b.style.zIndex - +a.style.zIndex);
+  return { arriving: Number(getComputedStyle(ls[0]).opacity), leaving: Number(getComputedStyle(ls[1]).opacity), engine: document.querySelector(".px-show").getAnimations({ subtree: true }).length };
 });
-await page.waitForTimeout(900);
-ok(mid.arriving > 0 && mid.arriving < 1 && mid.leaving === 1 && mid.engine === 0 && (await page.locator(".px-slide.is-leaving").count()) === 0,
-  `the next dissolves in over the one leaving, none of it the engine's, then the old one goes  ${JSON.stringify(mid)}`);
+await page.keyboard.press("ArrowRight");
+let mid = await layers();
+for (let i = 0; i < 40 && !(mid.arriving > 0 && mid.arriving < 1); i++) {
+  await page.waitForTimeout(20);
+  mid = await layers();
+}
+await page.waitForTimeout(1000);
+const after = await layers();
+ok(mid.arriving > 0 && mid.arriving < 1 && mid.leaving > 0.9 && mid.engine === 0 && after.arriving === 1 && after.leaving === 0,
+  `the next dissolves in over the one leaving, none of it the engine's, then the old one goes  ${JSON.stringify({ mid, after })}`);
 await page.keyboard.press("ArrowLeft");
-await page.waitForTimeout(150);
+await page.waitForTimeout(1000);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
 ok((await page.locator(".px-show").count()) === 0 && (await page.locator(".px-tile").count()) === 5, "Escape ends it, the library as it was");

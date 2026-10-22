@@ -410,6 +410,104 @@ pub fn is_occurrence(guid: &str) -> bool {
 }
 
 /// How an event repeats, in icloud.com's words: `freq` is `daily`, `weekly`, `monthly` or
+/// Someone invited to an event, as Apple holds them: their name and address when Apple has
+/// them, their answer, and whether they are the person signed in or the one who invited.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Guest {
+    pub name: Option<String>,
+    pub email: Option<String>,
+    /// `accepted`, `declined`, `tentative`, or `pending` for no answer yet — and for any
+    /// answer this app does not know, rather than a guess.
+    pub status: &'static str,
+    pub is_me: bool,
+    pub is_organizer: bool,
+}
+
+/// The guests of `event_guid` in an `eventdetail` body: the `Invitee` objects the event names
+/// in its `invitees`, or that name it (or its series) as their parent. The organizer first,
+/// then by name. Read only.
+#[must_use]
+pub fn guests_from(body: &Value, event_guid: &str) -> Vec<Guest> {
+    let named: Vec<&str> = body
+        .get("Event")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|e| {
+            e.get("guid")
+                .and_then(Value::as_str)
+                .is_some_and(|g| g == event_guid || g == series_of(event_guid))
+        })
+        .flat_map(|e| {
+            e.get("invitees")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(Value::as_str)
+        .collect();
+    let text = |o: &Value, k: &str| {
+        o.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let mut guests: Vec<Guest> = body
+        .get("Invitee")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|i| {
+            belongs_to(i, event_guid)
+                || i.get("guid")
+                    .and_then(Value::as_str)
+                    .is_some_and(|g| named.contains(&g))
+        })
+        .map(|i| Guest {
+            name: text(i, "commonName"),
+            email: text(i, "email").map(|e| {
+                e.strip_prefix("mailto:")
+                    .or_else(|| e.strip_prefix("MAILTO:"))
+                    .unwrap_or(&e)
+                    .to_string()
+            }),
+            status: match i
+                .get("inviteeStatus")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_ascii_uppercase()
+                .as_str()
+            {
+                "ACCEPTED" => "accepted",
+                "DECLINED" => "declined",
+                "TENTATIVE" => "tentative",
+                _ => "pending",
+            },
+            is_me: i.get("isMe").and_then(Value::as_bool).unwrap_or(false),
+            is_organizer: i
+                .get("isOrganizer")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+        .collect();
+    guests.sort_by(|a, b| {
+        b.is_organizer.cmp(&a.is_organizer).then_with(|| {
+            let key = |g: &Guest| {
+                g.name
+                    .clone()
+                    .or_else(|| g.email.clone())
+                    .unwrap_or_default()
+                    .to_lowercase()
+            };
+            key(a).cmp(&key(b))
+        })
+    });
+    guests.dedup_by(|a, b| a.email.is_some() && a.email == b.email);
+    guests
+}
+
 /// `yearly`; every `interval` of them; ending after `count` times, or never.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -856,6 +954,15 @@ impl<'a> CalendarClient<'a> {
                     count: r.get("count").and_then(Value::as_i64),
                 })
             }))
+    }
+
+    /// An event's guests as Apple holds them, the organizer first. Read only.
+    pub async fn guests(&self, event: &Event) -> Result<Vec<Guest>> {
+        let day = day_of(event.starts_at, event_zone(event).as_deref());
+        let Some(body) = self.event_detail_body(event, &day).await? else {
+            return Ok(Vec::new());
+        };
+        Ok(guests_from(&body, &event.guid))
     }
 
     /// An event's alerts as Apple holds them: minutes before its start, `0` at its time.
@@ -1353,6 +1460,63 @@ pub fn changed_collections(answer: &Value) -> Vec<(String, Option<String>)> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Guests as an eventdetail answer holds them: named by the event, or naming it; the
+    /// organizer first; answers read whatever their case; anything unknown "pending".
+    #[test]
+    fn guests_are_read_from_the_invitees_an_event_names() {
+        let body = json!({
+            "Event": [{ "guid": "E1", "invitees": ["I1", "I2", "I3"] }],
+            "Invitee": [
+                { "guid": "I1", "commonName": "Zara", "email": "mailto:zara@example.com", "inviteeStatus": "ACCEPTED", "isMe": false, "isOrganizer": false },
+                { "guid": "I2", "commonName": "Ana", "email": "ana@example.com", "inviteeStatus": "needs-action", "isMe": true, "isOrganizer": false },
+                { "guid": "I3", "commonName": " ", "email": "boss@example.com", "inviteeStatus": "TENTATIVE", "isOrganizer": true },
+                { "guid": "I9", "pGuid": "OTHER", "commonName": "Not here", "inviteeStatus": "ACCEPTED" },
+                { "guid": "I4", "pGuid": "E1", "commonName": "Ravi", "inviteeStatus": "DELEGATED" },
+            ]
+        });
+        let g = guests_from(&body, "E1");
+        let shown: Vec<_> = g
+            .iter()
+            .map(|g| {
+                (
+                    g.name.as_deref(),
+                    g.email.as_deref(),
+                    g.status,
+                    g.is_me,
+                    g.is_organizer,
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                (None, Some("boss@example.com"), "tentative", false, true),
+                (Some("Ana"), Some("ana@example.com"), "pending", true, false),
+                (Some("Ravi"), None, "pending", false, false),
+                (
+                    Some("Zara"),
+                    Some("zara@example.com"),
+                    "accepted",
+                    false,
+                    false
+                ),
+            ]
+        );
+    }
+
+    /// An occurrence of a repeating event finds its series' guests; a body with none, or
+    /// shaped otherwise, gives none — never a panic.
+    #[test]
+    fn guests_of_an_occurrence_and_of_odd_bodies() {
+        let body = json!({ "Event": [{ "guid": "S1", "invitees": ["I1"] }], "Invitee": [{ "guid": "I1", "email": "a@example.com", "inviteeStatus": "DECLINED" }] });
+        assert_eq!(
+            guests_from(&body, "S1__20261102T073300Z")[0].status,
+            "declined"
+        );
+        assert!(guests_from(&json!({}), "E1").is_empty());
+        assert!(guests_from(&json!({ "Invitee": "nope", "Event": 3 }), "E1").is_empty());
+    }
 
     fn meeting() -> Event {
         Event {

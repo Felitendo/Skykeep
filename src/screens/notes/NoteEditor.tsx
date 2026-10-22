@@ -7,7 +7,16 @@ import { keymap } from "prosemirror-keymap";
 import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror-commands";
 import { Fragment, Slice, type Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
-import { fromDoc, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
+import { checklistMove, fromDoc, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
+import { MOVE_CHECKED_KEY } from "./model";
+
+function moveCheckedOn(): boolean {
+  try {
+    return localStorage.getItem(MOVE_CHECKED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 import { api, messageOf, noteMediaSrc, type NoteAttachment } from "../../lib/ipc";
 import { RowMenu, type MenuEntry } from "../../components/RowMenu";
 import { autolink, openLinkAt } from "./links";
@@ -26,6 +35,16 @@ function withoutAttachments(content: Fragment): Fragment {
   return Fragment.fromArray(kept);
 }
 
+/** Whether a piece of the note holds an attachment — a picture, a file, a table. */
+function sliceHasAttachment(slice: Slice): boolean {
+  let found = false;
+  slice.content.descendants((node) => {
+    if (node.type === schema.nodes.attachment) found = true;
+    return !found;
+  });
+  return found;
+}
+
 /** Every table on screen, by its element: how to read it again. */
 const liveTables = new Map<HTMLElement, () => void>();
 
@@ -34,9 +53,10 @@ export function refreshTables() {
   liveTables.forEach((read) => read());
 }
 
-/** Whether tables can be edited here. Off: edits made here showed on an iPhone, but Notes there
- * kept conflict copies of the note with the edited text doubled — they did not merge cleanly. */
-const TABLE_CELL_WRITES = false;
+/** Whether tables can be edited here. Mirrors `TABLE_CELL_WRITES` / `TABLE_LINE_WRITES` in
+ * src-tauri/src/main.rs. Cells are on: a cell written here showed once on his iPhone with no
+ * conflict copy (2026-10-22). Rows and columns stay off until one is watched on a phone. */
+const TABLE_CELL_WRITES = true;
 const TABLE_LINE_WRITES = false;
 
 /** A table's right-click menu: drawn by the editor that holds the table, opened by a cell. */
@@ -90,12 +110,38 @@ export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   // Opened in the app this computer uses for it; one that cannot be says why, on the chip
   // itself, rather than a click that seems to do nothing.
   let said: HTMLElement | null = null;
-  const open = () =>
-    void api.noteAttachmentOpen(info.id).catch((e) => {
-      if (!said) return;
-      said.textContent = `Couldn’t open: ${messageOf(e)}`;
-      said.classList.add("is-trouble");
-    });
+  // Answered on the click itself: the attachment dims and its line says it is opening, until
+  // the app this computer uses for it has it — a file not yet on this computer is fetched
+  // first, and a click that showed nothing meanwhile read as one that did nothing.
+  let opening = false;
+  const open = () => {
+    if (opening) return;
+    opening = true;
+    dom.classList.add("is-opening");
+    dom.setAttribute("aria-busy", "true");
+    const before = said?.textContent ?? null;
+    if (said) {
+      said.textContent = "Opening";
+      said.classList.remove("is-trouble");
+    }
+    void api
+      .noteAttachmentOpen(info.id)
+      .then(
+        () => {
+          if (said) said.textContent = before;
+        },
+        (e) => {
+          if (!said) return;
+          said.textContent = `Couldn’t open: ${messageOf(e)}`;
+          said.classList.add("is-trouble");
+        },
+      )
+      .finally(() => {
+        opening = false;
+        dom.classList.remove("is-opening");
+        dom.removeAttribute("aria-busy");
+      });
+  };
   const chip = () => {
     const c = document.createElement("button");
     c.type = "button";
@@ -123,7 +169,14 @@ export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     img.alt = name;
     img.decoding = "async";
     img.draggable = false;
-    if (info.width && info.height) img.style.aspectRatio = `${info.width} / ${info.height}`;
+    // Its own size known before a byte of it arrives, so it holds its place at its proportions
+    // (drawn no wider than the note) instead of a gap that jumps when it lands.
+    if (info.width && info.height) {
+      img.width = Math.round(info.width);
+      img.height = Math.round(info.height);
+      img.style.aspectRatio = `${info.width} / ${info.height}`;
+    }
+    img.loading = "lazy";
     img.src = noteMediaSrc(info.id, part);
     // The backend says whether the picture can be shown: a 404 (a HEIC with no decoder on
     // this computer, a fetch that failed) and it is the file's chip, drawn as one.
@@ -193,6 +246,8 @@ function attachmentView(node: PMNode) {
   dom.classList.add("is-pending");
   dom.title = "Open it on an Apple device to change it";
   const id = node.attrs.id as string | null;
+  // With no id (the note's formatting not read yet) there is nothing to look up: no frame.
+  if (!id) dom.classList.replace("is-pending", "is-anon");
 
   const draw = (cells: string[][]) => {
     if (id) tableCells.set(id, cells.map((row) => [...row]));
@@ -287,17 +342,56 @@ function attachmentView(node: PMNode) {
     dom.replaceChildren(table);
   };
 
+  /**
+   * What the attachment is, drawn once known. A lookup that fails (offline, the session being
+   * renewed, Apple slow) is asked again a little later, and again after every sync — never left
+   * a blank gap. Until then a quiet frame holds its place; after the last try it is a card
+   * that still opens it.
+   */
+  let tries = 0;
+  let retry: number | null = null;
+  let gone = false;
+  const showMedia = (mediaId: string) => {
+    if (retry !== null) window.clearTimeout(retry);
+    retry = null;
+    void describe(mediaId).then((info) => {
+      if (gone) return;
+      if (info) {
+        dom.classList.remove("is-pending", "is-unknown");
+        drawMedia(dom, info);
+        return;
+      }
+      tries += 1;
+      if (tries < 4) retry = window.setTimeout(() => showMedia(mediaId), 1500 * 2 ** tries);
+      else if (dom.classList.contains("is-pending")) {
+        drawMedia(dom, { id: mediaId, uti: "", kind: "file", filename: null, title: null, width: null, height: null, size: null, hasPreview: false });
+        dom.classList.add("is-unknown");
+      }
+    });
+  };
+
   if (id) {
-    api.noteTable(id).then(
-      (cells) => {
-        if (cells && cells.length) draw(cells);
-        else describe(id).then((info) => info && drawMedia(dom, info), () => {});
-      },
-      () => {},
-    );
+    // What it is, first — kept on disk once known — so a picture or a file is drawn at once.
+    // Asking for table cells first went to Apple for every picture on every open (a picture
+    // has no cells to keep, so the answer was never kept), and each one waited for it.
+    void describe(id).then((info) => {
+      if (info && info.kind !== "table") return showMedia(id);
+      api.noteTable(id).then(
+        (cells) => {
+          if (cells && cells.length) draw(cells);
+          else showMedia(id);
+        },
+        () => showMedia(id),
+      );
+    });
     // Read again after every sync, so a table typed in on a phone shows its new cells here
     // without leaving the note; drawn again only when they changed.
     liveTables.set(dom, () => {
+      // An attachment not yet known is asked about again now that Apple has been reached.
+      if (dom.classList.contains("is-pending") || dom.classList.contains("is-unknown")) {
+        tries = Math.min(tries, 3);
+        return showMedia(id);
+      }
       if (!dom.classList.contains("is-table") && !dom.classList.contains("is-table-unread")) return;
       api.noteTable(id).then(
         (cells) => {
@@ -309,7 +403,11 @@ function attachmentView(node: PMNode) {
   }
   return {
     dom,
-    destroy: () => void liveTables.delete(dom),
+    destroy: () => {
+      gone = true;
+      liveTables.delete(dom);
+      if (retry !== null) window.clearTimeout(retry);
+    },
     ignoreMutation: () => true,
     // A cell's keys, clicks and typing are the cell's, not the note editor's.
     stopEvent: (e: Event) => Boolean((e.target as HTMLElement | null)?.closest?.(".nf-cell-edit, .nf-image, .nf-doc, .nf-file")),
@@ -647,9 +745,13 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         ...(placeholder ? { "data-placeholder": placeholder } : {}),
       },
       dispatchTransaction(tr: Transaction) {
-        const next = v.state.apply(tr);
+        const before = v.state;
+        const next = before.apply(tr);
         v.updateState(next);
-        if (tr.docChanged) reportSoon();
+        // Only a change to what the note holds is an edit. A step that leaves the document as
+        // it was — text dragged and dropped where it lay, a mark set where it already is —
+        // is not, and must never become a save.
+        if (tr.docChanged && !next.doc.eq(before.doc)) reportSoon();
         callbacks.current.onStatus?.(statusOf(next));
       },
       // A paste never brings an attachment's reference: Apple keeps each table or picture in
@@ -700,7 +802,23 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         view.dispatch(tr.scrollIntoView());
         return true;
       },
+      // Dragging within the note moves text, as Notes does. Never an attachment: a picture or
+      // table dragged was dropped as its cells' text, the table itself gone from the note (and a
+      // drag let go where it began still wrote the note back). A drop where the dragged text
+      // already lies changes nothing and is not made.
+      handleDrop(view, event, slice, moved) {
+        if (sliceHasAttachment(slice)) return true;
+        if (!moved) return false;
+        const at = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
+        const { from, to } = view.state.selection;
+        return at === undefined || (at >= from && at <= to);
+      },
       handleDOMEvents: {
+        dragstart: (vw, event) => {
+          if (!sliceHasAttachment(vw.state.selection.content())) return false;
+          event.preventDefault();
+          return true;
+        },
         click: (_vw, event) => openLinkAt(event),
         blur: () => {
           if (later.current !== null) report();
@@ -720,7 +838,28 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           const node = vw.state.doc.nodeAt(pos);
           if (!node) return false;
           event.preventDefault();
-          vw.dispatch(vw.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked: !node.attrs.checked }));
+          const checked = !node.attrs.checked;
+          const tr = vw.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked });
+          // With "Move Checked Items to the Bottom" on, the item goes where Notes sorts it, in
+          // the same edit, so one undo puts both back.
+          if (moveCheckedOn()) {
+            const starts: number[] = [];
+            vw.state.doc.forEach((_, offset) => starts.push(offset));
+            const move = checklistMove(vw.state.doc, starts.indexOf(pos), checked);
+            if (move) {
+              const at = (i: number) => (i < starts.length ? starts[i] : vw.state.doc.content.size);
+              const slice = tr.doc.slice(at(move.from), at(move.to));
+              const target = tr.mapping.map(at(move.before));
+              if (move.before > move.from) {
+                tr.insert(target, slice.content);
+                tr.delete(at(move.from), at(move.to));
+              } else {
+                tr.delete(at(move.from), at(move.to));
+                tr.insert(target, slice.content);
+              }
+            }
+          }
+          vw.dispatch(tr);
           return true;
         },
       },
@@ -790,6 +929,13 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     replace: (nextText, nextRuns) => {
       const v = view.current;
       if (!v) return;
+      // A key typed this very moment is not yet reported: send it first, and keep what is on
+      // screen — the parent sees it pending and does not lay Apple's copy over it. Replacing
+      // now lost that key, and the report that followed sent the replaced note.
+      if (later.current !== null) {
+        report();
+        return;
+      }
       const doc = toDoc(nextText, nextRuns);
       if (doc.eq(v.state.doc)) return;
       const { from, to } = v.state.selection;

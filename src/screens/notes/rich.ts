@@ -288,3 +288,91 @@ export function carryRuns(from: string, runs: Run[], to: string): Run[] {
   }
   return out;
 }
+
+/**
+ * `runs` over `text` in one shape, so two descriptions of the same formatting compare equal
+ * however they are cut — Apple's runs come in pieces (a word split in two), the editor's
+ * merged. Each unit takes its own character attributes and the setting of the unit that ends
+ * its line; neighbours differing only in length are one run; an attachment's run is never
+ * joined to anything. The backend has the same rule (notes.rs `canonical_runs`). Null when
+ * the runs do not describe the text.
+ */
+export function canonicalRuns(text: string, runs: Run[] | null): Run[] | null {
+  if (!runsFit(text, runs)) return null;
+  const units = perUnit(text, runs);
+  const out: Run[] = [];
+  let end = text.length - 1;
+  const ends: number[] = new Array(text.length);
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (text[i] === "\n") end = i;
+    ends[i] = end;
+  }
+  for (let i = 0; i < text.length; i++) {
+    const own = units[i];
+    const line = units[ends[i]];
+    const style = line.style ?? null;
+    const unit: Run = {
+      length: 1,
+      style,
+      indent: line.indent ?? 0,
+      checked: style === STYLE.checklist ? Boolean(line.checked) : null,
+      bold: Boolean(own.bold),
+      italic: Boolean(own.italic),
+      underline: Boolean(own.underline),
+      strike: Boolean(own.strike),
+      link: own.link || null,
+      ...(style === STYLE.numbered && line.start && line.start !== 1 ? { start: line.start } : {}),
+      ...(line.quote ? { quote: true } : {}),
+      ...(own.emphasis ? { emphasis: own.emphasis } : {}),
+      ...(own.attachment ? { attachment: own.attachment } : {}),
+    };
+    const last = out[out.length - 1];
+    if (last && !last.attachment && !unit.attachment && same(last, unit)) last.length += 1;
+    else out.push(unit);
+  }
+  return out;
+}
+
+/** Whether `a` and `b` set `text` the same way, however each is cut. */
+export function sameFormatting(text: string, a: Run[] | null, b: Run[] | null): boolean {
+  const x = canonicalRuns(text, a);
+  const y = canonicalRuns(text, b);
+  return x !== null && y !== null && JSON.stringify(x) === JSON.stringify(y);
+}
+
+/**
+ * Where a checklist item goes when it is ticked or unticked with "Move Checked Items to the
+ * Bottom" on, as Notes sorts them: ticked, the item — with the items nested under it — goes
+ * to the end of its own checklist; unticked, back up to just above the ticked items. Only
+ * within the run of checklist lines it sits in, and only for a top-level item (a nested one
+ * moves with its parent). `index` is the item's place among the document's lines; `checked`
+ * its state after the change. The answer is which lines move (`from` up to `to`, not
+ * including it) and the line they go before (`before`, measured in the document as it was);
+ * `null` when nothing needs to move.
+ */
+export function checklistMove(doc: PMNode, index: number, checked: boolean): { from: number; to: number; before: number } | null {
+  const lines: PMNode[] = [];
+  doc.forEach((n) => lines.push(n));
+  const isItem = (i: number) => lines[i]?.type.name === "paragraph" && lines[i].attrs.style === STYLE.checklist;
+  const indent = (i: number) => Number(lines[i]?.attrs.indent ?? 0);
+  if (!isItem(index) || indent(index) !== 0) return null;
+  let start = index;
+  while (start > 0 && isItem(start - 1)) start--;
+  let end = index + 1;
+  while (end < lines.length && isItem(end)) end++;
+  // The item and its nested items.
+  let to = index + 1;
+  while (to < end && indent(to) > 0) to++;
+  // Top-level items of the run other than this one, by their first line.
+  const tops: number[] = [];
+  for (let i = start; i < end; i++) if (indent(i) === 0 && (i < index || i >= to)) tops.push(i);
+  if (checked) {
+    // To the end of the run, unless it is already below every other top-level item.
+    if (tops.every((i) => i < index)) return null;
+    return { from: index, to, before: end };
+  }
+  // Just above the first ticked item; where none is above it, it stays.
+  const firstTicked = tops.find((i) => lines[i].attrs.checked === true);
+  if (firstTicked === undefined || firstTicked > index) return null;
+  return { from: index, to, before: firstTicked };
+}

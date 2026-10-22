@@ -4,6 +4,12 @@
  * where it is, a scrubber, what is left, and sound. A click on the film plays or pauses it;
  * Space does too (the viewer's own keys still step through the photos).
  *
+ * Until the film's first frame is on screen its poster stands in its place — the video's own
+ * picture, sharp, made the size it is shown at — and the film is drawn over it only once a frame
+ * of it has been presented: WebKitGTK paints a video black from the moment it starts loading
+ * until its first frame arrives, and that black flashed on every open. While it waits on the
+ * network a small spinner says so.
+ *
  * The scrubber follows the film every frame (the engine's own timeupdate comes four times a
  * second, and a progress bar that jumps reads as a stutter), and dragging it seeks as it goes.
  */
@@ -26,6 +32,7 @@ export function VideoPlayer({
   label,
   style,
   turn,
+  zoom = 1,
   shape,
   onError,
 }: {
@@ -35,6 +42,8 @@ export function VideoPlayer({
   style?: React.CSSProperties;
   /** How the film is turned, as its file records it; not shown until it is known. */
   turn?: Turn;
+  /** How much larger than its box the film is drawn (its clean aperture; see turnStyle). */
+  zoom?: number;
   /** The photo's own width and height, upright: the box the film is turned into. */
   shape: { w: number; h: number };
   onError: () => void;
@@ -48,6 +57,39 @@ export function VideoPlayer({
   const [muted, setMuted] = useState(false);
   const [awake, setAwake] = useState(true);
   const [hover, setHover] = useState<{ x: number; t: number } | null>(null);
+  /** A frame of the film has been presented: drawn over its poster from then on. */
+  const [shown, setShown] = useState(false);
+  /** Waiting on its bytes for longer than a moment. */
+  const [stalled, setStalled] = useState(false);
+  const stallTimer = useRef<number | undefined>(undefined);
+  const waitOn = useCallback((on: boolean) => {
+    window.clearTimeout(stallTimer.current);
+    if (on) stallTimer.current = window.setTimeout(() => setStalled(true), 450);
+    else setStalled(false);
+  }, []);
+  useEffect(() => {
+    waitOn(true);
+    return () => window.clearTimeout(stallTimer.current);
+  }, [waitOn]);
+  // The first frame presented, as the engine says it (requestVideoFrameCallback), or failing
+  // that the clock moving: only then is the film drawn over its poster.
+  useEffect(() => {
+    const v = film.current;
+    if (!v || shown) return undefined;
+    type Rvfc = HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number; cancelVideoFrameCallback?: (id: number) => void };
+    const rv = v as Rvfc;
+    let id = 0;
+    const done = () => requestAnimationFrame(() => setShown(true));
+    if (rv.requestVideoFrameCallback) id = rv.requestVideoFrameCallback(done);
+    const moved = () => {
+      if (v.currentTime > 0.04 && v.readyState >= 2) done();
+    };
+    v.addEventListener("timeupdate", moved);
+    return () => {
+      v.removeEventListener("timeupdate", moved);
+      if (id && rv.cancelVideoFrameCallback) rv.cancelVideoFrameCallback(id);
+    };
+  }, [shown]);
   const dragging = useRef(false);
   // Another screen brought to the front pauses it, as leaving a film does on a Mac.
   const active = useScreenActive();
@@ -118,14 +160,15 @@ export function VideoPlayer({
 
   return (
     <div className={`px-player${awake || !playing ? " is-awake" : ""}`} style={style} onPointerMove={wake}>
+      {/* The video's own picture, sharp, until a frame of the film is on screen. */}
+      {!(shown && turn) && <img className="px-player-poster" src={poster} alt="" aria-hidden="true" decoding="sync" draggable={false} />}
       <video
         ref={film}
         className="px-shown"
-        // Turned as it was recorded, in the photo's own box (lib/ipc turnStyle); hidden until
-        // the turn is known, so a film never shows sideways first.
-        style={turn ? turnStyle(turn, shape.w, shape.h) : { visibility: "hidden" }}
+        // Turned as it was recorded, in the photo's own box (lib/ipc turnStyle); not drawn
+        // until the turn is known and a frame is here, so a film never shows sideways or black.
+        style={{ ...(turn ? turnStyle(turn, shape.w, shape.h, zoom) : {}), opacity: shown && turn ? 1 : 0 }}
         src={src}
-        poster={poster}
         aria-label={label}
         autoPlay
         playsInline
@@ -138,15 +181,26 @@ export function VideoPlayer({
           setPlaying(true);
           wake();
         }}
+        onWaiting={() => waitOn(true)}
+        onPlaying={() => waitOn(false)}
+        onCanPlay={() => waitOn(false)}
+        onSeeking={() => waitOn(true)}
         onPause={() => {
           setPlaying(false);
           draw();
         }}
         onLoadedMetadata={draw}
-        onSeeked={draw}
+        onSeeked={() => {
+          waitOn(false);
+          draw();
+        }}
         onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
-        onError={onError}
+        onError={() => {
+          waitOn(false);
+          onError();
+        }}
       />
+      {stalled && <span className="px-player-wait" role="status" aria-label="Loading video" />}
       <div className="px-player-bar toolbar-group" role="toolbar" aria-label="Video controls" onClick={(e) => e.stopPropagation()}>
         <button className="tool px-cap" aria-label={playing ? "Pause" : "Play"} onClick={toggle}>
           {playing ? <Pause size={17} strokeWidth={0} fill="currentColor" /> : <Play size={17} strokeWidth={0} fill="currentColor" />}

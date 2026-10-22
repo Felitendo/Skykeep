@@ -594,7 +594,12 @@ pub fn parse(text: &str, here: &TimeZone) -> Result<Feed> {
                     }
                     "X-APPLE-CALENDAR-COLOR" => {
                         let c = p.value.trim();
-                        if c.starts_with('#') && (c.len() == 7 || c.len() == 9) {
+                        // Hex only: a feed is anyone's file, and slicing a colour with a
+                        // multi-byte character in it ("#12345€") panicked mid-character.
+                        if c.starts_with('#')
+                            && (c.len() == 7 || c.len() == 9)
+                            && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
+                        {
                             feed.colour = Some(c[..7].to_ascii_lowercase());
                         }
                     }
@@ -999,6 +1004,21 @@ fn event_of(item: &Item, w: &When, calendar_guid: &str, key: i64) -> Option<Even
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A colour that is not hex — non-ASCII included — is ignored, never a panic.
+    #[test]
+    fn a_feed_colour_that_is_not_hex_is_ignored() {
+        for bad in [
+            "#12345\u{20ac}",
+            "#zzzzzz",
+            "#12\u{e9}456",
+            "#1234567\u{20ac}",
+        ] {
+            let ics =
+                format!("BEGIN:VCALENDAR\r\nX-APPLE-CALENDAR-COLOR:{bad}\r\nEND:VCALENDAR\r\n");
+            let _ = parse(&ics, &jiff::tz::TimeZone::UTC);
+        }
+    }
 
     fn kolkata() -> TimeZone {
         TimeZone::get("Asia/Kolkata").unwrap()

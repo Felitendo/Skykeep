@@ -550,8 +550,9 @@ fn open_app(app: &AppHandle, reveal: Reveal) {
 
 /// The library window, asked to search for `query`.
 fn search_in_window(app: &AppHandle, query: String) {
-    crate::show_window(app);
-    app.emit_to("main", SEARCH, query).ok();
+    crate::show_window_then(app, move |app| {
+        app.emit_to("main", SEARCH, query).ok();
+    });
 }
 
 /// Takes Skykeep's place in the desktop's search, for as long as it runs. Nothing is lost if

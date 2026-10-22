@@ -161,6 +161,15 @@ export function SignIn({
             system keyring. No Skykeep account, no Skykeep servers: it talks only to Apple, and to calendars you subscribe to.
           </p>
           <p>
+            <strong>Your full Apple Account password.</strong> An app-specific password opens
+            only mail, contacts and calendars to other apps. Notes, Reminders, Drive and Photos
+            open to a full sign-in with your two-factor code, the same one icloud.com uses.
+          </p>
+          <p>
+            <strong>Personal Apple Accounts.</strong> Accounts in mainland China and Managed
+            Apple Accounts from a school or workplace aren&rsquo;t supported yet.
+          </p>
+          <p>
             <strong>Your iCloud, right here.</strong> Your calendar, reminders, notes, contacts
             and Drive live on this computer in <code>{STORE}</code>, so everything opens
             instantly and works offline.

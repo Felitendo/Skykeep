@@ -27,7 +27,7 @@
 //! note is read again, the attachment is placed again — moved along with the other device's
 //! edit — and the three are sent again. The file is uploaded once, before any of that.
 //!
-//! Off until a supervised live test: see [`NOTE_ATTACH_WRITES`].
+//! Switched on by [`NOTE_ATTACH_WRITES`].
 
 use crate::cloudkit::ZoneClient;
 use crate::{Error, Result};
@@ -35,9 +35,10 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-/// Whether adding a file to a note may write to iCloud at all. False until the live test on a
-/// throwaway note has been watched end to end on a phone.
-pub const NOTE_ATTACH_WRITES: bool = false;
+/// Whether adding a file to a note may write to iCloud at all. On: a picture added here to a
+/// throwaway note (2026-10-22, supervised, on his account) showed on his iPhone on a line of
+/// its own, the note's other attachments and table untouched, with no conflict copy.
+pub const NOTE_ATTACH_WRITES: bool = true;
 
 const CONTAINER: &str = "com.apple.notes";
 const ZONE: &str = "Notes";
@@ -288,8 +289,12 @@ pub fn place_in_document(
         }
         _ => at,
     };
-    let document = crate::ckdocument::insert_attachment_in_base64(current, place, id, uti, stamp)
-        .ok_or_else(|| {
+    // On a paragraph of its own, as a phone places one: `place` moves to where its character
+    // landed, past the newline put before it when it went in mid-line.
+    let (document, place) = crate::ckdocument::insert_attachment_in_base64(
+        current, place, id, uti, stamp,
+    )
+    .ok_or_else(|| {
         Error::Refused(
             "Skykeep can’t safely add a file to this note yet, so nothing was changed.".into(),
         )
@@ -425,7 +430,7 @@ pub async fn attach_file_cloudkit(
     base: Option<&str>,
     at: u64,
 ) -> Result<Attached> {
-    if !NOTE_ATTACH_WRITES && !crate::supervised_live_test() {
+    if !NOTE_ATTACH_WRITES {
         return Err(Error::Refused(
             "Adding files to notes isn’t switched on yet. Nothing was changed.".into(),
         ));
@@ -717,9 +722,9 @@ mod tests {
 
     const ID: &str = "11111111-2222-3333-4444-555555555555";
 
-    /// The document change on a synthetic note: one U+FFFC where asked, a run of its own
-    /// naming the attachment, the guard satisfied — and the place carried across a phone's
-    /// edit made meanwhile.
+    /// The document change on a synthetic note: one U+FFFC where asked, on a paragraph of its
+    /// own as a phone puts one, a run of its own naming the attachment, the guard satisfied —
+    /// and the place carried across a phone's edit made meanwhile.
     #[test]
     fn the_attachment_lands_where_asked_even_after_an_edit_elsewhere() {
         let original = crate::ckdocument::text_to_base64("Shopping\nmilk\n");
@@ -727,7 +732,7 @@ mod tests {
         assert_eq!(at, 9);
         assert_eq!(
             crate::ckdocument::stored_text_from_base64(&doc).unwrap(),
-            "Shopping\n\u{FFFC}milk\n"
+            "Shopping\n\u{FFFC}\nmilk\n"
         );
         let runs = crate::ckdocument::runs_from_base64(&doc);
         let mut from = 0;
@@ -739,7 +744,7 @@ mod tests {
             })
             .collect();
         assert_eq!(mine, [(ID, 9, 1)]);
-        assert_eq!(runs.iter().map(|r| r.length).sum::<u64>(), 15);
+        assert_eq!(runs.iter().map(|r| r.length).sum::<u64>(), 16);
         assert!(crate::ckdocument::attachments_sound_adding_in_base64(
             &original, &doc, ID
         ));
@@ -750,7 +755,7 @@ mod tests {
         ));
         // Once written, editing that note again is an ordinary, sound edit.
         let edited =
-            crate::ckdocument::replace_text_in_base64(&doc, "Shopping!\n\u{FFFC}milk\n").unwrap();
+            crate::ckdocument::replace_text_in_base64(&doc, "Shopping!\n\u{FFFC}\nmilk\n").unwrap();
         assert!(crate::ckdocument::attachments_sound_in_base64(
             &doc, &edited
         ));
@@ -763,7 +768,7 @@ mod tests {
         assert_eq!(at, 15);
         assert_eq!(
             crate::ckdocument::stored_text_from_base64(&doc).unwrap(),
-            "Today\nShopping\n\u{FFFC}milk\n"
+            "Today\nShopping\n\u{FFFC}\nmilk\n"
         );
     }
 
@@ -779,10 +784,11 @@ mod tests {
         assert!(place_in_document(&doc, None, 0, ID, "public.png", 1).is_err());
     }
 
-    /// The paragraph a picture lands in keeps its setting: in a checklist line, the
-    /// attachment's run carries that line's checklist item, as the phone's did.
+    /// A picture goes on a paragraph of its own, as a phone puts one: mid-line it splits the
+    /// line, at a line's end it goes on the line below, and the line it came from keeps its
+    /// setting — a checklist item stays one, and the picture is not made one.
     #[test]
-    fn the_attachment_takes_its_paragraphs_setting() {
+    fn the_attachment_gets_a_paragraph_of_its_own() {
         use crate::ckdocument::ParagraphChange;
         let plain = crate::ckdocument::text_to_base64("todo\nbuy\n");
         let listed = crate::ckdocument::set_paragraph_in_base64(
@@ -792,11 +798,40 @@ mod tests {
             Some("buy"),
         )
         .unwrap();
-        let (doc, _) = place_in_document(&listed, None, 8, ID, "public.png", 1).unwrap();
+        // At the end of "buy": below it, as the note's last line.
+        let (doc, at) = place_in_document(&listed, None, 8, ID, "public.png", 1).unwrap();
+        assert_eq!(at, 9);
+        assert_eq!(
+            crate::ckdocument::stored_text_from_base64(&doc).unwrap(),
+            "todo\nbuy\n\u{FFFC}"
+        );
         let runs = crate::ckdocument::runs_from_base64(&doc);
         let pic = runs.iter().find(|r| r.attachment.is_some()).unwrap();
-        assert_eq!(pic.style, Some(103));
+        assert_eq!(pic.style, None);
+        assert_eq!(pic.checked, None);
+        let mut from = 0;
+        let buy: Vec<_> = runs
+            .iter()
+            .filter(|r| {
+                from += r.length;
+                from > 5 && from <= 9
+            })
+            .collect();
+        assert!(buy.iter().all(|r| r.style == Some(103)));
         assert_eq!(runs.iter().map(|r| r.length).sum::<u64>(), 10);
+
+        // Mid-line: the line is split around it.
+        let (doc, at) = place_in_document(&listed, None, 2, ID, "public.png", 1).unwrap();
+        assert_eq!(at, 3);
+        assert_eq!(
+            crate::ckdocument::stored_text_from_base64(&doc).unwrap(),
+            "to\n\u{FFFC}\ndo\nbuy\n"
+        );
+        let runs = crate::ckdocument::runs_from_base64(&doc);
+        assert_eq!(runs.iter().map(|r| r.length).sum::<u64>(), 12);
+        assert!(crate::ckdocument::attachments_sound_adding_in_base64(
+            &listed, &doc, ID
+        ));
     }
 
     fn modify_ok() -> ResponseTemplate {
@@ -882,7 +917,7 @@ mod tests {
         let done = attach_file_unguarded(&http, &server.uri(), vec![], "N", &file, Some("a\nb"), 2)
             .await
             .unwrap();
-        assert_eq!(done.body, "zz\na\n\u{FFFC}b");
+        assert_eq!(done.body, "zz\na\n\u{FFFC}\nb");
         assert_eq!(done.offset, 5);
 
         let sent = server.received_requests().await.unwrap();

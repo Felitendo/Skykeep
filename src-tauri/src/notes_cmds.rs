@@ -108,6 +108,36 @@ pub fn note_lock_forget() {
 /// Add the file at `path` to a note at `at_offset` (UTF-16 units of `base`, the text the
 /// editor shows, or of Apple's text when no base is given). Answers what was added, then
 /// brings the library up to date.
+/// A small picture of a file about to be added to a note — shown at once while the file goes
+/// up to Apple, so adding never looks stuck. Only for a file the person just picked or dropped
+/// (the same grant the add itself checks), read on this computer, never sent anywhere. Empty
+/// for a file that is not a picture.
+#[tauri::command]
+pub async fn note_attach_preview(path: String) -> UiResult<tauri::ipc::Response> {
+    crate::grants::take_read(&path)?;
+    crate::cpu::run(move || {
+        let Ok(bytes) = std::fs::read(&path) else {
+            return Vec::new();
+        };
+        let bytes = if quince_media::is_heif(&bytes) {
+            match quince_media::heic_to_jpeg(&bytes) {
+                Ok(jpeg) => jpeg,
+                Err(_) => return Vec::new(),
+            }
+        } else {
+            bytes
+        };
+        match quince_media::fit(&bytes, 480) {
+            Ok(Some(small)) => small,
+            Ok(None) => bytes,
+            Err(_) => Vec::new(),
+        }
+    })
+    .await
+    .map(tauri::ipc::Response::new)
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn note_attach_file(
     guid: String,

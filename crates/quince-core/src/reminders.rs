@@ -249,6 +249,7 @@ impl Reminder {
             1 => jiff::Span::new().weeks(interval),
             2 => jiff::Span::new().months(interval),
             3 => jiff::Span::new().years(interval),
+            4 => jiff::Span::new().hours(interval),
             _ => return None,
         };
         // Stepped in the reminder's own zone, not in UTC. A day in UTC is always exactly
@@ -272,6 +273,119 @@ impl Reminder {
         }
         Some(zoned.timestamp().as_second())
     }
+}
+
+impl Reminder {
+    /// Whether a tick at `at` is the last of the series: its repeat ends (`end_at`, End Repeat
+    /// On Date) before the next occurrence. Ticked then, it is completed, as on the iPhone,
+    /// rather than moved on to a date past its end.
+    #[must_use]
+    pub fn tick_ends_series(&self, end_at: Option<i64>, at: i64) -> bool {
+        self.tick_ends_series_on(end_at, &[], at)
+    }
+
+    /// [`Self::tick_ends_series`] for a rule that falls on chosen weekdays.
+    #[must_use]
+    pub fn tick_ends_series_on(&self, end_at: Option<i64>, days: &[i64], at: i64) -> bool {
+        let Some(end) = end_at else {
+            return false;
+        };
+        self.repeats()
+            && self
+                .next_occurrence_on(days, at)
+                .is_some_and(|next| next > end)
+    }
+
+    /// The next occurrence after `at` of a rule that falls on chosen weekdays (`days`, Apple's
+    /// numbering: 1 Sunday … 7 Saturday) — Weekdays, Weekends, or days picked in Custom. Weeks
+    /// count from Sunday, as the phone's `FirstDayOfTheWeek` 0 says, and every `interval`th
+    /// week is one it falls in. Any other rule steps as [`Self::next_occurrence_after`] does.
+    #[must_use]
+    pub fn next_occurrence_on(&self, days: &[i64], after: i64) -> Option<i64> {
+        if days.is_empty() || self.recur_frequency != Some(1) {
+            return self.next_occurrence_after(after);
+        }
+        let due = self.due_at?;
+        let interval = self.recur_interval.unwrap_or(1).clamp(1, 1_000);
+        let zone = self
+            .timezone
+            .as_deref()
+            .and_then(|name| jiff::tz::TimeZone::get(name).ok())
+            .unwrap_or_else(jiff::tz::TimeZone::system);
+        let start = jiff::Timestamp::from_second(due).ok()?.to_zoned(zone);
+        // Sunday of the week it was due in, as a day count.
+        let sunday = |d: jiff::civil::Date| {
+            let back = i64::from(d.weekday().to_sunday_zero_offset());
+            d.checked_sub(jiff::Span::new().days(back)).ok()
+        };
+        let first_week = sunday(start.date())?;
+        for step in 1..=(MAX_RECURRENCE_STEPS as i64 * 7) {
+            let candidate = start.checked_add(jiff::Span::new().days(step)).ok()?;
+            let weekday = i64::from(candidate.date().weekday().to_sunday_one_offset());
+            if !days.contains(&weekday) {
+                continue;
+            }
+            let weeks = first_week.until(sunday(candidate.date())?).ok()?.get_days() / 7;
+            if i64::from(weeks) % interval != 0 {
+                continue;
+            }
+            let at = candidate.timestamp().as_second();
+            if at > after {
+                return Some(at);
+            }
+        }
+        None
+    }
+}
+
+/// The weekdays a rule's `DaysOfTheWeek` holds — base64 of JSON as the phone writes it,
+/// `[{"dayOfTheWeek":2,"weekNumber":0},…]`, 1 Sunday … 7 Saturday — sorted. `None` when it
+/// does not read, or names a week of the month ("the first Monday"), which is not a weekday
+/// choice.
+#[must_use]
+pub fn days_of_week_from(base64_json: &str) -> Option<Vec<i64>> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_json.trim())
+        .ok()?;
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(&bytes).ok()?;
+    let mut days = Vec::with_capacity(entries.len());
+    for e in entries {
+        let day = e.get("dayOfTheWeek")?.as_i64()?;
+        if !(1..=7).contains(&day)
+            || e.get("weekNumber")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0)
+                != 0
+        {
+            return None;
+        }
+        days.push(day);
+    }
+    days.sort_unstable();
+    days.dedup();
+    Some(days)
+}
+
+/// Weekdays as the phone writes them in a rule's `DaysOfTheWeek`: base64 of compact JSON,
+/// in day order, each `{"dayOfTheWeek":n,"weekNumber":0}` — the key order of the phone's
+/// own Weekdays rule.
+#[must_use]
+pub fn days_of_week_to(days: &[i64]) -> String {
+    use base64::Engine;
+    let mut days: Vec<i64> = days
+        .iter()
+        .copied()
+        .filter(|d| (1..=7).contains(d))
+        .collect();
+    days.sort_unstable();
+    days.dedup();
+    let json = days
+        .iter()
+        .map(|d| format!(r#"{{"dayOfTheWeek":{d},"weekNumber":0}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    base64::engine::general_purpose::STANDARD.encode(format!("[{json}]"))
 }
 
 /// How far `next_occurrence_after` will walk forward before giving up.
@@ -483,7 +597,9 @@ impl Library {
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND r.due_at IS NOT NULL
                AND r.due_at >= ?1 AND r.due_at < ?2
-             ORDER BY r.due_at
+             -- Open ones first, so a busy year's finished history can never use up the cap and
+             -- leave reminders still to do off the Year view; each placed by its date anyway.
+             ORDER BY r.completed_at IS NOT NULL, r.due_at
              LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![from, to, MOST_AT_ONCE], |row| {
@@ -2158,8 +2274,10 @@ pub struct ReminderDetail {
     pub tags: Vec<String>,
     pub url: Option<String>,
     pub early_alerts: Vec<EarlyAlert>,
-    /// How many file or image attachments it has, which this app does not show yet.
+    /// How many file or image attachments it has, pictures included.
     pub other_attachments: usize,
+    /// Its pictures' attachment ids (`Attachment/<UUID>`), in the order the phone lists them.
+    pub images: Vec<String>,
 }
 
 /// A tag across the whole account, and how many reminders still to do carry it.
@@ -2695,18 +2813,27 @@ impl Library {
         tags.sort_by(|a, b| crate::fold::natural(a, b));
         tags.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         let mut stmt = self.conn.prepare(
-            "SELECT kind, url FROM reminder_attachments WHERE reminder_guid = ?1 ORDER BY guid",
+            "SELECT kind, url, guid FROM reminder_attachments WHERE reminder_guid = ?1 ORDER BY guid",
         )?;
         let attachments = stmt
             .query_map(params![guid], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let url = attachments
             .iter()
-            .find(|(kind, url)| kind == "URL" && url.is_some())
-            .and_then(|(_, url)| url.clone());
-        let other_attachments = attachments.iter().filter(|(k, _)| k != "URL").count();
+            .find(|(kind, url, _)| kind == "URL" && url.is_some())
+            .and_then(|(_, url, _)| url.clone());
+        let other_attachments = attachments.iter().filter(|(k, _, _)| k != "URL").count();
+        let images = attachments
+            .iter()
+            .filter(|(k, _, _)| k == "Image")
+            .map(|(_, _, id)| id.clone())
+            .collect();
         let mut stmt = self.conn.prepare(
             "SELECT id, count, unit FROM reminder_early_alerts WHERE reminder_guid = ?1
              ORDER BY unit, count, id",
@@ -2726,6 +2853,7 @@ impl Library {
             url,
             early_alerts,
             other_attachments,
+            images,
         })
     }
 
@@ -3263,5 +3391,468 @@ mod detail_tests {
             lib.reminder("Reminder/1").unwrap().unwrap().section_guid,
             None
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The rest of a reminder's schedule: its repeat rule whole, where it rings, who it is about.
+// ---------------------------------------------------------------------------------------
+
+/// A record Apple keeps beside a reminder, stored whole as Apple sent it: a `RecurrenceRule`
+/// (with the reminder it governs) or a place `AlarmTrigger` (reached through the reminder's
+/// alarms). Kept verbatim so anything this app does not read yet is still there to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReminderPart {
+    /// The record name, `RecurrenceRule/<id>` or `AlarmTrigger/<id>`.
+    pub name: String,
+    pub reminder_guid: Option<String>,
+    /// Apple's record type.
+    pub kind: String,
+    pub raw: String,
+}
+
+/// A repeat as the phone's Repeat and End Repeat rows show it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepeatRule {
+    /// Apple's `Frequency`: 0 daily, 1 weekly, 2 monthly, 3 yearly, 4 hourly.
+    pub frequency: i64,
+    pub interval: i64,
+    /// End Repeat On Date, as an instant in seconds.
+    pub end_at: Option<i64>,
+    /// Ends after this many times; 0 is never.
+    pub occurrence_count: i64,
+    /// The weekdays it falls on, 1 Sunday … 7 Saturday: Weekdays is 2–6, Weekends 1 and 7.
+    /// Empty when it falls on its due date's day.
+    #[serde(default)]
+    pub days_of_week: Vec<i64>,
+    /// Fields on Apple's rule this app does not read (chosen weekdays, days of the month…),
+    /// by name. A rule with any is shown as Apple's, and its days are kept as they are.
+    pub other: Vec<String>,
+}
+
+/// A place a reminder rings at: the phone's Location row.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaceAlarm {
+    /// The place as the phone names it ("Alex's Home").
+    pub title: Option<String>,
+    /// `arriving` or `leaving`, from Apple's `Proximity` (1 and 2); `None` when it says neither.
+    pub proximity: Option<String>,
+    /// Apple's trigger `Type`: `Location`, or another kind of place it knows.
+    pub kind: String,
+}
+
+/// The person a reminder comes up for when messaging them: the phone's When Messaging row.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessagingPerson {
+    /// Their name, from this account's contacts, when one of the handles is on a card.
+    pub name: Option<String>,
+    /// Their email addresses and phone numbers, as Apple keeps them.
+    pub handles: Vec<String>,
+}
+
+/// What a reminder's row shows beside its date, as the phone's list does: Weekdays or
+/// Weekends by the repeat, the Urgent alarm, the place it rings at, the person it is about.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderMarks {
+    pub guid: String,
+    /// The weekdays its repeat falls on; empty for its due date's day.
+    pub days_of_week: Vec<i64>,
+    pub urgent: bool,
+    pub location: Option<PlaceAlarm>,
+    /// The person's name, or a handle where no card has one.
+    pub messaging: Option<String>,
+    /// Its link, for the chip the phone shows.
+    pub url: Option<String>,
+}
+
+/// What the phone's Details screen shows beyond tags, a link and early alerts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderMore {
+    pub guid: String,
+    pub repeat: Option<RepeatRule>,
+    /// The named zone its time is kept in ("America/New_York").
+    pub time_zone: Option<String>,
+    /// Urgent: rings as an alarm, even in a Focus or with the sound off. `None` until known.
+    pub urgent: Option<bool>,
+    pub location: Option<PlaceAlarm>,
+    pub messaging: Option<MessagingPerson>,
+}
+
+impl Library {
+    /// Store the parts a pass brought back. A whole pass replaces what is stored; an
+    /// incremental one lays itself over it, less the records named in `gone`.
+    pub fn put_reminder_parts(
+        &mut self,
+        parts: &[ReminderPart],
+        gone: &[String],
+        whole: bool,
+    ) -> Result<()> {
+        let tx = self.conn.savepoint()?;
+        if whole {
+            tx.execute("DELETE FROM reminder_parts", [])?;
+        }
+        {
+            let mut forget = tx.prepare("DELETE FROM reminder_parts WHERE name = ?1")?;
+            for name in gone {
+                forget.execute(params![name])?;
+            }
+            let mut put = tx.prepare(
+                "INSERT INTO reminder_parts (name, reminder_guid, kind, raw) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(name) DO UPDATE SET reminder_guid = excluded.reminder_guid,
+                     kind = excluded.kind, raw = excluded.raw",
+            )?;
+            for p in parts {
+                put.execute(params![p.name, p.reminder_guid, p.kind, p.raw])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Everything kept beside one reminder: its repeat rules, and the place triggers its
+    /// alarms name.
+    pub fn reminder_parts(&self, guid: &str) -> Result<Vec<ReminderPart>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, reminder_guid, kind, raw FROM reminder_parts WHERE reminder_guid = ?1
+             UNION ALL
+             SELECT p.name, p.reminder_guid, p.kind, p.raw FROM reminder_parts p
+               JOIN reminder_alarms a ON p.name = 'AlarmTrigger/' || a.trigger_id
+              WHERE a.reminder_guid = ?1
+             ORDER BY 1",
+        )?;
+        let rows = stmt.query_map(params![guid], |r| {
+            Ok(ReminderPart {
+                name: r.get(0)?,
+                reminder_guid: r.get(1)?,
+                kind: r.get(2)?,
+                raw: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The weekdays a reminder's repeat falls on (Weekdays, Weekends, chosen days), from the
+    /// rule it names now; empty when it falls on its due date's day.
+    pub fn reminder_repeat_days(&self, guid: &str) -> Result<Vec<i64>> {
+        use rusqlite::OptionalExtension;
+        let raw: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT json_extract(p.raw, '$.fields.DaysOfTheWeek.value')
+                   FROM reminder_parts p JOIN reminders r ON r.guid = p.reminder_guid
+                  WHERE p.reminder_guid = ?1 AND p.kind = 'RecurrenceRule'
+                    AND json_valid(p.raw) AND json_valid(r.raw)
+                    AND EXISTS (SELECT 1 FROM json_each(r.raw, '$.fields.RecurrenceRuleIDs.value') j
+                                 WHERE upper(p.name) = upper('RecurrenceRule/' || j.value))
+                  LIMIT 1",
+                params![guid],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw
+            .flatten()
+            .and_then(|b| days_of_week_from(&b))
+            .unwrap_or_default())
+    }
+
+    /// When a reminder's repeat ends (End Repeat On Date), in seconds: from the rule the
+    /// reminder names now, as Apple sent it. `None` when it repeats for ever or not at all.
+    pub fn reminder_repeat_end(&self, guid: &str) -> Result<Option<i64>> {
+        Ok(self
+            .repeat_ends(Some(guid))?
+            .into_iter()
+            .next()
+            .map(|(_, end)| end))
+    }
+
+    /// Every open reminder whose repeat ends on a date, with that date in seconds.
+    pub fn reminder_repeat_ends(&self) -> Result<Vec<(String, i64)>> {
+        self.repeat_ends(None)
+    }
+
+    fn repeat_ends(&self, guid: Option<&str>) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.reminder_guid, json_extract(p.raw, '$.fields.EndDate.value')
+               FROM reminder_parts p JOIN reminders r ON r.guid = p.reminder_guid
+              WHERE (?1 IS NULL OR p.reminder_guid = ?1) AND p.kind = 'RecurrenceRule'
+                AND r.completed_at IS NULL AND r.recur_frequency IS NOT NULL
+                AND json_valid(p.raw) AND json_valid(r.raw)
+                AND json_extract(p.raw, '$.fields.EndDate.value') IS NOT NULL
+                AND EXISTS (SELECT 1 FROM json_each(r.raw, '$.fields.RecurrenceRuleIDs.value') j
+                             WHERE upper(p.name) = upper('RecurrenceRule/' || j.value))",
+        )?;
+        let rows = stmt.query_map(params![guid], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?.div_euclid(1000),
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The name on the card holding one of these email addresses or phone numbers. Numbers
+    /// are matched on their digits, the last ten where there are more, so "+91 98765 43210"
+    /// on a card finds "+919876543210".
+    pub fn contact_name_for(&self, handles: &[String]) -> Result<Option<String>> {
+        let digits = |s: &str| -> String { s.chars().filter(char::is_ascii_digit).collect() };
+        let tail = |d: &str| d[d.len().saturating_sub(10)..].to_string();
+        let mut stmt = self.conn.prepare(
+            "SELECT m.kind, m.value, trim(coalesce(c.first_name, '') || ' ' || coalesce(c.last_name, '')),
+                    c.company
+               FROM contact_methods m JOIN contacts c ON c.guid = m.contact_guid
+              ORDER BY c.guid, m.position",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for handle in handles {
+            let email = handle.contains('@');
+            let wanted = if email {
+                handle.trim().to_lowercase()
+            } else {
+                tail(&digits(handle))
+            };
+            if wanted.is_empty() {
+                continue;
+            }
+            let found = rows.iter().find(|(_, value, _, _)| {
+                if email {
+                    value.trim().to_lowercase() == wanted
+                } else {
+                    let d = digits(value);
+                    d.len() >= 6 && tail(&d) == wanted
+                }
+            });
+            if let Some((_, _, name, company)) = found {
+                let name = if name.is_empty() {
+                    company.clone().unwrap_or_default()
+                } else {
+                    name.clone()
+                };
+                if !name.trim().is_empty() {
+                    return Ok(Some(name));
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod parts_tests {
+    use super::*;
+
+    fn part(name: &str, reminder: Option<&str>, kind: &str) -> ReminderPart {
+        ReminderPart {
+            name: name.into(),
+            reminder_guid: reminder.map(Into::into),
+            kind: kind.into(),
+            raw: format!("{{\"recordName\":\"{name}\"}}"),
+        }
+    }
+
+    #[test]
+    fn a_reminder_finds_its_rule_and_the_place_its_alarm_names() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_parts(
+            &[
+                part("RecurrenceRule/R", Some("Reminder/1"), "RecurrenceRule"),
+                part("AlarmTrigger/T", None, "AlarmTrigger"),
+                part("RecurrenceRule/X", Some("Reminder/2"), "RecurrenceRule"),
+            ],
+            &[],
+            true,
+        )
+        .unwrap();
+        lib.put_alarms(
+            &[crate::alarms::Alarm {
+                id: "A".into(),
+                reminder_guid: "Reminder/1".into(),
+                trigger_id: "T".into(),
+                acknowledged_at: None,
+            }],
+            &[],
+            &[],
+            true,
+        )
+        .unwrap();
+        let names: Vec<String> = lib
+            .reminder_parts("Reminder/1")
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["AlarmTrigger/T", "RecurrenceRule/R"]);
+    }
+
+    fn repeating(due: i64, frequency: i64) -> Reminder {
+        Reminder {
+            guid: "Reminder/1".into(),
+            list_guid: "List/a".into(),
+            title: "Take vitamins".into(),
+            due_at: Some(due),
+            recur_frequency: Some(frequency),
+            recur_interval: Some(1),
+            timezone: Some("UTC".into()),
+            ..Default::default()
+        }
+    }
+
+    const DUE: i64 = 1_792_681_200; // 22 Oct 2026, 15:00 UTC
+
+    #[test]
+    fn the_last_tick_before_the_end_completes_the_series() {
+        let r = repeating(DUE, 0);
+        // Ends the evening of the 22nd: tomorrow's is past it.
+        assert!(r.tick_ends_series(Some(DUE + 8 * 3600), DUE - 60));
+        // Ends on the 23rd at 23:59: tomorrow's 15:00 is still in it.
+        assert!(!r.tick_ends_series(Some(DUE + 86_400 + 9 * 3600), DUE - 60));
+        // No end: never.
+        assert!(!r.tick_ends_series(None, DUE - 60));
+        // A one-off has no series to end.
+        let mut once = r.clone();
+        once.recur_frequency = None;
+        assert!(!once.tick_ends_series(Some(DUE), DUE - 60));
+    }
+
+    #[test]
+    fn weekdays_step_over_the_weekend_and_weekends_over_the_week() {
+        // Thu 22 Oct 2026 15:00 UTC.
+        let mut r = repeating(DUE, 1);
+        let day = 86_400;
+        let weekdays = [2, 3, 4, 5, 6];
+        assert_eq!(
+            r.next_occurrence_on(&weekdays, DUE - 60),
+            Some(DUE + day),
+            "Thursday to Friday"
+        );
+        r.due_at = Some(DUE + day);
+        assert_eq!(
+            r.next_occurrence_on(&weekdays, DUE),
+            Some(DUE + 4 * day),
+            "Friday to Monday"
+        );
+        r.due_at = Some(DUE);
+        assert_eq!(
+            r.next_occurrence_on(&[1, 7], DUE - 60),
+            Some(DUE + 2 * day),
+            "Thursday to Saturday"
+        );
+        // Mon/Wed/Fri every other week: Friday this week, then Monday a fortnight on.
+        r.recur_interval = Some(2);
+        assert_eq!(r.next_occurrence_on(&[2, 4, 6], DUE - 60), Some(DUE + day));
+        r.due_at = Some(DUE + day);
+        assert_eq!(r.next_occurrence_on(&[2, 4, 6], DUE), Some(DUE + 11 * day));
+        // No days: a week on, as before.
+        r.recur_interval = Some(1);
+        r.due_at = Some(DUE);
+        assert_eq!(r.next_occurrence_on(&[], DUE - 60), Some(DUE + 7 * day));
+        // Weekdays ending Friday night: ticked Friday, it is done.
+        r.due_at = Some(DUE + day);
+        assert!(r.tick_ends_series_on(Some(DUE + day + 3600), &weekdays, DUE));
+    }
+
+    #[test]
+    fn hourly_steps_by_the_hour_and_ends_on_time() {
+        let r = repeating(DUE, 4);
+        assert_eq!(r.next_occurrence_after(DUE - 60), Some(DUE + 3600));
+        assert!(r.tick_ends_series(Some(DUE + 1800), DUE - 60));
+        assert!(!r.tick_ends_series(Some(DUE + 3600), DUE - 60));
+    }
+
+    #[test]
+    fn the_end_is_read_from_the_rule_the_reminder_names() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_lists(&[ReminderList {
+            guid: "List/a".into(),
+            title: "A".into(),
+            enabled: true,
+            ..Default::default()
+        }])
+        .unwrap();
+        let mut r = repeating(DUE, 0);
+        r.raw = Some(
+            r#"{"fields":{"RecurrenceRuleIDs":{"type":"STRING_LIST","value":["abc-1"]}}}"#.into(),
+        );
+        lib.put_reminders(&[r]).unwrap();
+        let rule = |name: &str, end: i64| ReminderPart {
+            name: name.into(),
+            reminder_guid: Some("Reminder/1".into()),
+            kind: "RecurrenceRule".into(),
+            raw: format!(r#"{{"fields":{{"EndDate":{{"type":"TIMESTAMP","value":{end}}}}}}}"#),
+        };
+        // An old rule the reminder no longer names is not its end.
+        lib.put_reminder_parts(
+            &[
+                rule("RecurrenceRule/old", 1_000_000),
+                rule("RecurrenceRule/ABC-1", 1_792_900_000_000),
+            ],
+            &[],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            lib.reminder_repeat_end("Reminder/1").unwrap(),
+            Some(1_792_900_000)
+        );
+        lib.put_reminder_parts(
+            &[part(
+                "RecurrenceRule/ABC-1",
+                Some("Reminder/1"),
+                "RecurrenceRule",
+            )],
+            &[],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            lib.reminder_repeat_end("Reminder/1").unwrap(),
+            None,
+            "repeats for ever"
+        );
+    }
+
+    #[test]
+    fn an_incremental_pass_lays_over_and_forgets_what_is_gone() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_reminder_parts(
+            &[part(
+                "RecurrenceRule/R",
+                Some("Reminder/1"),
+                "RecurrenceRule",
+            )],
+            &[],
+            true,
+        )
+        .unwrap();
+        lib.put_reminder_parts(
+            &[part(
+                "RecurrenceRule/S",
+                Some("Reminder/1"),
+                "RecurrenceRule",
+            )],
+            &["RecurrenceRule/R".into()],
+            false,
+        )
+        .unwrap();
+        let names: Vec<String> = lib
+            .reminder_parts("Reminder/1")
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["RecurrenceRule/S"]);
     }
 }

@@ -27,7 +27,7 @@ export function changeWords(r: Pick<RefusedChange, "service" | "kind">): string 
   const words: Record<string, Record<string, string>> = {
     notes: { save: "an edit to a note", create: "a new note", move: "a note's move", delete: "a note's deletion", pin: "a note's pin" },
     reminders: { create: "a new reminder", edit: "a change to a reminder", delete: "a reminder's deletion", done: "a tick", advance: "a tick" },
-    contacts: { save: "a change to a contact", delete: "a contact's deletion" },
+    contacts: { save: "a change to a contact", delete: "a contact's deletion", merge: "a merge of duplicate cards", address: "a change to a contact's address" },
     calendar: { save: "a change to an event", delete: "an event's deletion" },
   };
   return words[r.service]?.[r.kind] ?? null;

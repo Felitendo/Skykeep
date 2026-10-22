@@ -7,7 +7,7 @@
 //! sent with the card's current etag and the book's sync token, so Apple refuses it rather
 //! than overwrite a change it has not seen.
 
-use super::{postal_from, startup, write, Tokens};
+use super::{address_wire, postal_from, startup, write, Tokens};
 use crate::{Error, Result};
 use quince_core::contacts::{country_code_for, PostalAddress, ADDRESS_FIELDS};
 use serde::{Deserialize, Serialize};
@@ -154,11 +154,11 @@ pub fn apply_edits(
 }
 
 /// Apple's entry for an address: its label, and every part that holds something.
-fn entry(address: &PostalAddress) -> Value {
+pub(super) fn entry(address: &PostalAddress) -> Value {
     let mut field = Map::new();
     for key in ADDRESS_FIELDS {
         if let Some(Some(v)) = address.field(key) {
-            field.insert(key.into(), Value::String(v.clone()));
+            field.insert(address_wire(key).into(), Value::String(v.clone()));
         }
     }
     let mut e = Map::new();
@@ -253,12 +253,18 @@ pub fn merge_addresses(theirs: &[Value], changes: &[AddressChange]) -> Value {
                     if was == now {
                         continue;
                     }
+                    // Under Apple's spelling of the part, whichever one this entry used.
+                    let wire = if field.contains_key(key) {
+                        key
+                    } else {
+                        address_wire(key)
+                    };
                     match now.and_then(Option::as_ref) {
                         Some(v) => {
-                            field.insert(key.into(), Value::String(v.clone()));
+                            field.insert(wire.into(), Value::String(v.clone()));
                         }
                         None => {
-                            field.remove(key);
+                            field.remove(wire);
                         }
                     }
                 }
@@ -284,6 +290,25 @@ pub fn merge_addresses(theirs: &[Value], changes: &[AddressChange]) -> Value {
         }
     }
     Value::Array(out.into_iter().flatten().chain(appended).collect())
+}
+
+/// `edits`, made against `base`, laid over `current` the way a write lays them over Apple's
+/// card: what changed since `base` elsewhere stays, and only what the edits touch moves. What a
+/// queued edit shows while it waits, and what it shows again over each sync pass.
+///
+/// # Errors
+/// [`Error::Refused`] when an edit names an address or part `base` does not have.
+pub fn laid_over(
+    current: &[PostalAddress],
+    base: &[PostalAddress],
+    edits: &[AddressEdit],
+) -> Result<Vec<PostalAddress>> {
+    let (_, changes) = apply_edits(base, edits)?;
+    let theirs: Vec<Value> = current.iter().map(entry).collect();
+    Ok(match merge_addresses(&theirs, &changes) {
+        Value::Array(list) => list.iter().filter_map(postal_from).collect(),
+        _ => Vec::new(),
+    })
 }
 
 /// Write `edits` to the card `guid`, over its addresses as Apple holds them now. `base` is
@@ -601,5 +626,37 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(edits.len(), 4);
+    }
+
+    /// A queued edit shows over whatever a pass last read: a part changed on the phone since
+    /// stays, the part edited here wins, and laying it twice changes nothing more.
+    #[test]
+    fn a_queued_edit_lays_over_what_a_pass_read() {
+        let base = vec![home()];
+        let edits = vec![
+            AddressEdit::SetField {
+                index: 0,
+                field: "city".into(),
+                value: Some("Pune".into()),
+            },
+            AddressEdit::Add {
+                address: PostalAddress {
+                    label: Some("WORK".into()),
+                    city: Some("Mumbai".into()),
+                    ..PostalAddress::default()
+                },
+            },
+        ];
+        let mut phone = home();
+        phone.postal_code = Some("654321".into());
+        let once = laid_over(&[phone], &base, &edits).unwrap();
+        assert_eq!(once.len(), 2);
+        assert_eq!(once[0].city.as_deref(), Some("Pune"));
+        assert_eq!(once[0].postal_code.as_deref(), Some("654321"));
+        assert_eq!(once[1].city.as_deref(), Some("Mumbai"));
+        assert_eq!(laid_over(&once, &base, &edits).unwrap(), once);
+        // A brand-new card: nothing at Apple yet, the additions are the list.
+        let fresh = laid_over(&[], &[], &edits[1..]).unwrap();
+        assert_eq!(fresh.len(), 1);
     }
 }

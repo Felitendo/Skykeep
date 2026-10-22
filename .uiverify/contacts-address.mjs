@@ -6,7 +6,7 @@
 import { engine, engineName } from "./engine.mjs";
 import { SERVICES, installStub } from "./stub.mjs";
 
-const URL = process.env.URL ?? "http://localhost:4173";
+const URL = process.env.URL ?? process.env.URL ?? "http://localhost:4173";
 const SHOTS = process.env.SHOTS ?? null;
 const b = await engine.launch();
 let failures = 0;
@@ -87,7 +87,8 @@ for (const scheme of ["light", "dark"]) {
 
   // ── Add one, with its label ──
   await page.getByRole("button", { name: "Edit", exact: true }).click();
-  await page.getByRole("button", { name: "Add address" }).click();
+  await page.getByRole("button", { name: "Add Field" }).click();
+  await page.getByRole("menuitem", { name: "Address" }).click();
   const newStreet = page.getByLabel("Street, address 3");
   ok(await newStreet.evaluate((el) => el === document.activeElement), "a new address starts in its street");
   await newStreet.fill("1 Main St");
@@ -133,6 +134,26 @@ for (const scheme of ["light", "dark"]) {
   await page.waitForFunction(() => (window.__addressEdits ?? []).length === 5);
   await page.waitForTimeout(700);
   ok((await card.locator(".contact-postal").first().innerText()).includes("Unter den Linden 1"), "trying again writes it");
+
+  // ── A brand-new card takes an address too: the card is saved, then its address queued
+  //    behind it under the id the card was given (outbox.rs keeps the order) ──
+  await page.evaluate(() => { window.__addressDelay = 50; });
+  const editsBefore = await page.evaluate(() => (window.__addressEdits ?? []).length);
+  await page.getByRole("button", { name: "New contact" }).click();
+  await page.locator(".contact-form").waitFor();
+  await page.getByLabel("First", { exact: true }).fill("Meera");
+  await page.getByRole("button", { name: "Add Field" }).click();
+  await page.getByRole("menuitem", { name: "Address" }).click();
+  await page.getByLabel("Street, address 1").fill("4 Lake View");
+  await page.getByLabel("City, address 1").fill("Chennai");
+  await page.getByLabel("Country, address 1").fill("India");
+  await page.getByRole("button", { name: "Add contact" }).click();
+  await page.waitForFunction((n) => (window.__addressEdits ?? []).length === n + 1, editsBefore);
+  const fresh = await page.evaluate(() => ({ save: window.__contactSaves.at(-1), edit: window.__addressEdits.at(-1) }));
+  ok(fresh.save.contact.firstName === "Meera" && !fresh.save.contact.guid, `the new card is saved first  ${JSON.stringify(fresh.save.contact.firstName)}`);
+  ok(fresh.edit.guid === "C-new" && fresh.edit.base.length === 0 && fresh.edit.edits.length === 1 && fresh.edit.edits[0].op === "add"
+    && fresh.edit.edits[0].address.city === "Chennai" && fresh.edit.edits[0].address.countryCode === "in",
+    `its address goes as one addition, to the card's new id  ${JSON.stringify(fresh.edit)}`);
   await ctx.close();
 }
 await b.close();

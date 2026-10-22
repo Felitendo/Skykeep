@@ -34,6 +34,9 @@ pub fn remember(links: HashMap<String, Links>) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = kept.get_or_insert_with(HashMap::new);
+    // Links past their life are of no use (each is asked of Apple again), so they go: kept,
+    // every photo's six signed links stayed in memory for as long as the app ran.
+    map.retain(|_, (_, at)| at.elapsed() < LINK_LIFE);
     for (master, l) in links {
         map.insert(master, (l, now));
     }
@@ -194,7 +197,16 @@ pub async fn fitted(app: &AppHandle, id: &str, long: u32) -> Result<Vec<u8>, Str
         .join("fit")
         .join(long.to_string())
         .join(id);
+    let preview = long > crate::photo_cache::THUMB_STEP;
     if let Ok(bytes) = tokio::fs::read(&path).await {
+        // The viewer's sizes are previews, let go of longest unseen first: seen now.
+        if preview {
+            tokio::task::spawn_blocking(move || {
+                if let Ok(f) = std::fs::File::open(&path) {
+                    let _ = f.set_modified(std::time::SystemTime::now());
+                }
+            });
+        }
         return Ok(bytes);
     }
     MAKING_READY.call_once(|| {
@@ -233,8 +245,11 @@ pub async fn fitted(app: &AppHandle, id: &str, long: u32) -> Result<Vec<u8>, Str
                 let _ = tokio::fs::create_dir_all(dir).await;
             }
             let part = path.with_extension("part");
-            if tokio::fs::write(&part, &bytes).await.is_ok() {
-                let _ = tokio::fs::rename(&part, &path).await;
+            if tokio::fs::write(&part, &bytes).await.is_ok()
+                && tokio::fs::rename(&part, &path).await.is_ok()
+                && preview
+            {
+                crate::photo_cache::grew(app);
             }
             return Ok(bytes);
         }
@@ -261,8 +276,16 @@ pub async fn picture(app: &AppHandle, id: &str, size: Size) -> Result<Vec<u8>, S
 /// held whole in memory, and a half-written file is never served.
 pub async fn cached(app: &AppHandle, id: &str, size: Size) -> Result<PathBuf, String> {
     let path = cache_path(app, id, size);
-    if tokio::fs::metadata(&path).await.is_ok() {
-        // Seen now: the last to go when the cache is trimmed (see `trim_cache`).
+    // Held for its reader as it is found, so no trim lets it go before it is read (see
+    // photo_cache): found and held in one step, never found and then lost.
+    let found = {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || crate::photo_cache::hold_if_cached(&p))
+            .await
+            .unwrap_or(false)
+    };
+    if found {
+        // Seen now: the last to go when the cache is trimmed (see `photo_cache`).
         if size != Size::Thumb {
             let touched = path.clone();
             tokio::task::spawn_blocking(move || {
@@ -323,6 +346,8 @@ async fn heic_full(app: &AppHandle, id: &str, path: &std::path::Path) -> Result<
     tokio::fs::rename(&part, path)
         .await
         .map_err(|e| e.to_string())?;
+    crate::photo_cache::hold(path);
+    crate::photo_cache::grew(app);
     Ok(path.to_path_buf())
 }
 
@@ -362,136 +387,124 @@ async fn from_apple(
     if !done && !fetch(new_link(&http, &root, params, &photo, size).await?).await? {
         return Err("Apple did not send that picture.".into());
     }
-    // A video's poster that is black (Apple makes it from the first frame) is made again from
-    // the first frame that shows something, before anyone sees it.
-    if photo.kind == quince_core::photos::Kind::Video && matches!(size, Size::Thumb | Size::Medium)
+    // Held for whoever asked, and the cache checked against its cap soon after (thumbnails are
+    // never let go of, so a thumbnail landing asks nothing).
+    crate::photo_cache::hold(&path);
+    if size != Size::Thumb {
+        crate::photo_cache::grew(app);
+    }
+    // A video's picture that is black (Apple makes them from the first frame) is made again
+    // from the first frame that shows something, before anyone sees it — every size of it.
+    if photo.kind == quince_core::photos::Kind::Video
+        && matches!(size, Size::Thumb | Size::Medium | Size::Full)
     {
         repair_poster(app, id).await;
     }
     Ok(path)
 }
 
-/// When a video's thumbnail is black, its first frame that is not (see `crate::poster`) made
-/// its thumbnail and screen-sized picture instead, at the sizes Apple's were, and every size
-/// made from the black one let go. Answers whether it was remade.
-pub async fn repair_poster(app: &AppHandle, id: &str) -> bool {
-    let thumb = cache_path(app, id, Size::Thumb);
-    let Ok(bytes) = tokio::fs::read(&thumb).await else {
-        return false;
-    };
-    if !crate::cpu::run(move || quince_media::is_blank(&bytes))
-        .await
-        .unwrap_or(false)
-    {
-        return false;
+/// A video's own picture: its first frame that shows something (see `crate::poster`), upright,
+/// read once from the film and kept (`photos/poster/<id>`). An empty file there says the film
+/// is dark all through, so it is not read again. `None` when there is none to be had.
+async fn seen_frame(app: &AppHandle, id: &str) -> Option<Vec<u8>> {
+    let kept = crate::state_dir(app).join("photos").join("poster").join(id);
+    if let Ok(bytes) = tokio::fs::read(&kept).await {
+        return (!bytes.is_empty()).then_some(bytes);
     }
-    // The original when it is on disk already; otherwise the small rendition, a few megabytes.
-    let original = cache_path(app, id, Size::Original);
-    let film = if original.exists() {
-        original
-    } else {
-        match Box::pin(cached(app, id, Size::Video)).await {
-            Ok(path) => path,
-            Err(_) => return false,
-        }
+    // The film on disk already, whichever it is; otherwise Apple's streaming copy, a few
+    // megabytes, which the player wants anyway.
+    let film = [Size::Original, Size::Video]
+        .into_iter()
+        .map(|s| cache_path(app, id, s))
+        .find(|p| p.exists());
+    let film = match film {
+        Some(path) => path,
+        None => Box::pin(cached(app, id, Size::Video)).await.ok()?,
     };
-    let Ok(Ok(Some(frame))) = crate::cpu::run(move || crate::poster::first_seen_frame(&film)).await
-    else {
-        return false;
-    };
-    for size in [Size::Thumb, Size::Medium] {
+    let frame = crate::cpu::run(move || crate::poster::first_seen_frame(&film))
+        .await
+        .ok()?
+        .ok()?;
+    if let Some(dir) = kept.parent() {
+        let _ = tokio::fs::create_dir_all(dir).await;
+    }
+    let part = kept.with_extension("part");
+    if tokio::fs::write(&part, frame.as_deref().unwrap_or_default())
+        .await
+        .is_ok()
+    {
+        let _ = tokio::fs::rename(&part, &kept).await;
+    }
+    frame
+}
+
+/// Every picture Apple made of a video that came out black — it makes them from the first
+/// frame, and a screen recording's or a fade-in's is black — made again from the video's own
+/// picture (`seen_frame`), at the size Apple's was, and every size made from a black one let
+/// go. Each picture is looked at on its own: the thumbnail repaired once did not stop a black
+/// screen-sized picture fetched later from being shown as the video's poster and slideshow
+/// still. Answers whether any was remade.
+pub async fn repair_poster(app: &AppHandle, id: &str) -> bool {
+    let mut frame: Option<Vec<u8>> = None;
+    let mut remade = false;
+    for size in [Size::Thumb, Size::Medium, Size::Full] {
         let path = cache_path(app, id, size);
-        let old = tokio::fs::read(&path).await.unwrap_or_default();
-        let src = frame.clone();
-        // Apple's own sizes: the thumbnail's long side, and the screen-sized one's.
-        let long =
-            quince_media::long_side(&old).unwrap_or(if size == Size::Thumb { 512 } else { 2048 });
+        let Ok(old) = tokio::fs::read(&path).await else {
+            continue;
+        };
+        let looked = old.clone();
+        if !crate::cpu::run(move || quince_media::is_blank(&looked))
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if frame.is_none() {
+            frame = seen_frame(app, id).await;
+        }
+        let Some(src) = frame.clone() else {
+            break;
+        };
+        // Apple's own sizes: the long side the black one had.
+        let fallback = match size {
+            Size::Thumb => 512,
+            Size::Medium => 2048,
+            _ => 4096,
+        };
+        let long = quince_media::long_side(&old).unwrap_or(fallback);
         let Ok(Ok(made)) =
             crate::cpu::run(move || quince_media::fit(&src, long).map(|m| m.unwrap_or(src))).await
         else {
             continue;
         };
-        if let Some(dir) = path.parent() {
-            let _ = tokio::fs::create_dir_all(dir).await;
-        }
         let part = path.with_extension("part");
-        if tokio::fs::write(&part, &made).await.is_ok() {
-            let _ = tokio::fs::rename(&part, &path).await;
-        }
-    }
-    for step in FITS {
-        let _ = tokio::fs::remove_file(
-            crate::state_dir(app)
-                .join("photos")
-                .join("fit")
-                .join(step.to_string())
-                .join(id),
-        )
-        .await;
-    }
-    true
-}
-
-/// Every picture the cache holds that can go — all but the grid's thumbnails, which every view
-/// draws from and which are small — with its size and when it was last seen.
-fn trimmable(root: &std::path::Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
-    let mut out = Vec::new();
-    let Ok(sizes) = std::fs::read_dir(root) else {
-        return out;
-    };
-    for dir in sizes.flatten() {
-        if dir.file_name() == Size::Thumb.name() || !dir.path().is_dir() {
-            continue;
-        }
-        for f in std::fs::read_dir(dir.path())
-            .into_iter()
-            .flatten()
-            .flatten()
+        if tokio::fs::write(&part, &made).await.is_ok()
+            && tokio::fs::rename(&part, &path).await.is_ok()
         {
-            if let Ok(m) = f.metadata() {
-                // A download still being written is never cut from under it.
-                if m.is_file() && f.path().extension().is_none_or(|e| e != "part") {
-                    let seen = m.modified().unwrap_or(std::time::UNIX_EPOCH);
-                    out.push((f.path(), m.len(), seen));
-                }
-            }
+            remade = true;
         }
     }
-    out
+    if remade {
+        for step in FITS {
+            let _ = tokio::fs::remove_file(
+                crate::state_dir(app)
+                    .join("photos")
+                    .join("fit")
+                    .join(step.to_string())
+                    .join(id),
+            )
+            .await;
+        }
+    }
+    remade
 }
 
-/// The photo cache held to its budget (`mount::budget`: 10 GB, or a fifth of the free space when
-/// less), as Photos on a Mac with "Optimize Storage" keeps what was looked at last and lets the
-/// rest go: the longest unseen go first, down to four fifths of it, so a trim is not needed again
-/// at once. A picture seen in the last five minutes stays — it is on screen. Thumbnails always
-/// stay. Answers the room left under the budget.
+/// The photo cache held to its cap (Settings; see `photo_cache`), the longest unseen originals
+/// and previews let go of first; thumbnails always stay. Off the async threads: it walks the
+/// disk. Answers the room left under the cap.
 pub fn trim_cache(app: &AppHandle) -> u64 {
-    let root = crate::state_dir(app).join("photos");
-    if std::fs::create_dir_all(&root).is_err() {
-        return 0;
-    }
-    trim(&root, crate::mount::budget(&root))
-}
-
-fn trim(root: &std::path::Path, budget: u64) -> u64 {
-    let mut files = trimmable(root);
-    let mut used: u64 = files.iter().map(|(_, len, _)| len).sum();
-    if used > budget {
-        files.sort_by_key(|(_, _, seen)| *seen);
-        let recent = std::time::SystemTime::now() - Duration::from_secs(5 * 60);
-        for (path, len, seen) in files {
-            if used <= budget / 5 * 4 {
-                break;
-            }
-            if seen > recent {
-                continue;
-            }
-            if std::fs::remove_file(&path).is_ok() {
-                used -= len;
-            }
-        }
-    }
-    budget.saturating_sub(used)
+    let (out, limit) = crate::photo_cache::trim_now(app);
+    limit.saturating_sub(out.after)
 }
 
 /// Keeps the newest photos' whole pictures, and videos, on disk ahead of being opened — as
@@ -507,10 +520,15 @@ pub fn keep_ahead(app: AppHandle) {
     }
     tauri::async_runtime::spawn(async move {
         use futures_util::StreamExt;
-        let newest = {
+        let (newest, every_video) = {
             let data = app.state::<Data>();
             let library = data.0.lock().await;
-            library.photos(View::Library).unwrap_or_default()
+            let videos: Vec<String> = grid_photos(&library, None)
+                .into_iter()
+                .filter(|p| p.kind == quince_core::photos::Kind::Video)
+                .map(|p| p.id)
+                .collect();
+            (library.photos(View::Library).unwrap_or_default(), videos)
         };
         // Videos whose black poster was kept before posters were remade: remade now, once —
         // once per video for the life of the process. Every pass decoded every video's poster
@@ -520,11 +538,10 @@ pub fn keep_ahead(app: AppHandle) {
             let looked = LOOKED
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            newest
-                .iter()
-                .filter(|p| p.kind == quince_core::photos::Kind::Video)
-                .filter(|p| looked.as_ref().is_none_or(|l| !l.contains(&p.id)))
-                .map(|p| p.id.clone())
+            // Hidden's videos too: their posters show in its grid and its slideshow.
+            every_video
+                .into_iter()
+                .filter(|id| looked.as_ref().is_none_or(|l| !l.contains(id)))
                 .collect()
         };
         for id in unlooked {
@@ -545,13 +562,15 @@ pub fn keep_ahead(app: AppHandle) {
             newest
                 .into_iter()
                 .take(600)
-                .map(|p| {
-                    let size = if p.kind == quince_core::photos::Kind::Video {
-                        Size::Original
+                // A video's streaming copy as well as its original: the copy is what the
+                // window plays (H.264, its index first, a few megabytes), so a video opens
+                // playing from the disk, never waiting on Apple for its first frame.
+                .flat_map(|p| {
+                    if p.kind == quince_core::photos::Kind::Video {
+                        vec![(p.id.clone(), Size::Video), (p.id, Size::Original)]
                     } else {
-                        Size::Full
-                    };
-                    (p.id, size)
+                        vec![(p.id, Size::Full)]
+                    }
                 })
                 .filter(|(id, size)| !cache_path(&ask, id, *size).exists())
                 .collect()
@@ -606,6 +625,28 @@ pub struct Shown {
     pub stage_w: f64,
     pub stage_h: f64,
     pub dpr: f64,
+    /// The view the grid is on: its pictures are made first.
+    #[serde(default)]
+    pub view: Option<View>,
+}
+
+/// Every photo a grid can show, the view being looked at first: the library, Hidden and
+/// Recently Deleted, each once. Made for the library alone, Hidden's pictures were made only as
+/// it was scrolled — every tile waited on one, and showed the soft thumbnail meanwhile.
+fn grid_photos(library: &quince_core::Library, first: Option<View>) -> Vec<Photo> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let views = first
+        .into_iter()
+        .chain([View::Library, View::Hidden, View::RecentlyDeleted]);
+    for view in views {
+        for p in library.photos(view).unwrap_or_default() {
+            if seen.insert(p.id.clone()) {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 /// The step a picture is made at for a longer side of `long` device pixels — the window's own
@@ -668,19 +709,27 @@ pub fn prepare(app: AppHandle) {
         let photos = {
             let data = app.state::<Data>();
             let library = data.0.lock().await;
-            library.photos(View::Library).unwrap_or_default()
+            grid_photos(&library, shown.view)
         };
         let fit_dir = crate::state_dir(&app).join("photos").join("fit");
         // A stat per picture, off the runtime's workers (see keep_ahead).
         let wanted: Vec<(String, u32)> = tauri::async_runtime::spawn_blocking(move || {
-            photos
-                .iter()
-                .filter(|p| p.kind != quince_core::photos::Kind::Video)
+            // The grid's pictures for the whole library while they are thumbnail-sized (kept
+            // always); larger ones — a close zoom on a wide screen — are previews the cache's cap
+            // lets go of, so only the newest are made ahead: made for every photo, they were let
+            // go and made again after every sync.
+            let stills = || {
+                photos
+                    .iter()
+                    .filter(|p| p.kind != quince_core::photos::Kind::Video)
+            };
+            stills()
                 .map(|p| (p.id.clone(), steps_of(p, shown).0))
+                .enumerate()
+                .filter(|(i, (_, step))| *step <= crate::photo_cache::THUMB_STEP || *i < 600)
+                .map(|(_, w)| w)
                 .chain(
-                    photos
-                        .iter()
-                        .filter(|p| p.kind != quince_core::photos::Kind::Video)
+                    stills()
                         .take(600)
                         .map(|p| (p.id.clone(), steps_of(p, shown).1)),
                 )
@@ -827,7 +876,13 @@ pub enum Film {
 /// served from the bytes as they land.
 pub async fn film(app: &AppHandle, id: &str, size: Size) -> Result<Film, String> {
     let path = cache_path(app, id, size);
-    if tokio::fs::metadata(&path).await.is_ok() {
+    let found = {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || crate::photo_cache::hold_if_cached(&p))
+            .await
+            .unwrap_or(false)
+    };
+    if found {
         return Ok(Film::Whole(path));
     }
     if let Some(g) = GROWING
@@ -890,6 +945,7 @@ pub async fn film(app: &AppHandle, id: &str, size: Size) -> Result<Film, String>
         map.insert(path.clone(), growth.clone());
     }
     let g = growth.clone();
+    let app = app.clone();
     tauri::async_runtime::spawn(async move {
         use futures_util::StreamExt;
         use std::sync::atomic::Ordering;
@@ -913,7 +969,11 @@ pub async fn film(app: &AppHandle, id: &str, size: Size) -> Result<Film, String>
         drop(out);
         ok = ok && g.have.load(Ordering::SeqCst) == g.total;
         let whole = ok && tokio::fs::rename(&g.part, &path).await.is_ok();
-        if !whole {
+        if whole {
+            // Still being played from: held, and the cap checked once it is whole.
+            crate::photo_cache::hold(&path);
+            crate::photo_cache::grew(&app);
+        } else {
             let _ = tokio::fs::remove_file(&g.part).await;
         }
         g.ended(whole);
@@ -937,6 +997,27 @@ pub async fn film_turn(app: &AppHandle, id: &str, size: Size) -> Result<[i32; 4]
         Film::Growing(g) => g.matrix().await?,
     };
     Ok(found.map_or([1, 0, 0, 1], |(_, m)| m))
+}
+
+/// How much a film is drawn larger than its box so only its clean aperture shows (see
+/// `quince_media::video_zoom`): a Live Photo's moving part then lies exactly over its still.
+pub async fn film_zoom(app: &AppHandle, id: &str, size: Size) -> Result<f64, String> {
+    let path = match film(app, id, size).await? {
+        Film::Whole(path) => path,
+        Film::Growing(g) => {
+            // Its header landed (a streaming copy keeps it at the front).
+            g.matrix().await?;
+            if g.kept.exists() {
+                g.kept.clone()
+            } else {
+                g.part.clone()
+            }
+        }
+    };
+    tokio::task::spawn_blocking(move || quince_media::video_zoom(&path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// What a picture's bytes are, for the window to draw them.
@@ -992,6 +1073,48 @@ pub fn content_type(bytes: &[u8], size: Size) -> &'static str {
 #[tauri::command]
 pub async fn photos_list(view: View, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
     data.0.lock().await.photos(view).map_err(|e| e.to_string())
+}
+
+/// What the grid lays out before any photo comes: every photo's id, the date it is grouped
+/// by and its marks, a few bytes each (see `PhotoIndex`). The photos follow a page at a time,
+/// as the grid comes near them — a library of fifty thousand is never sent whole.
+#[tauri::command]
+pub async fn photos_index(
+    source: quince_core::photos::Source,
+    order: Option<quince_core::photos::Order>,
+    data: State<'_, Data>,
+) -> UiResult<quince_core::photos::PhotoIndex> {
+    data.0
+        .lock()
+        .await
+        .photo_index(&source, order)
+        .map_err(|e| e.to_string())
+}
+
+/// `limit` photos from `offset` of a source, in its index's order.
+#[tauri::command]
+pub async fn photos_page(
+    source: quince_core::photos::Source,
+    order: Option<quince_core::photos::Order>,
+    offset: usize,
+    limit: usize,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Photo>> {
+    data.0
+        .lock()
+        .await
+        .photo_page(&source, order, offset, limit)
+        .map_err(|e| e.to_string())
+}
+
+/// Photos by id — a selection reaching past the pages the window holds.
+#[tauri::command]
+pub async fn photos_get(ids: Vec<String>, data: State<'_, Data>) -> UiResult<Vec<Photo>> {
+    data.0
+        .lock()
+        .await
+        .photos_by_ids(&ids)
+        .map_err(|e| e.to_string())
 }
 
 /// The Shared Albums service for the signed-in account: its client, address and params.
@@ -1644,6 +1767,17 @@ pub async fn photo_video_turn(id: String, which: String, app: AppHandle) -> UiRe
         Size::Original
     };
     film_turn(&app, &id, size).await
+}
+
+/// How much larger than its box a film is drawn (see `film_zoom`).
+#[tauri::command]
+pub async fn photo_video_zoom(id: String, which: String, app: AppHandle) -> UiResult<f64> {
+    let size = if which == "video" {
+        Size::Video
+    } else {
+        Size::Original
+    };
+    film_zoom(&app, &id, size).await
 }
 
 /// A video opened in this computer's own player. WebKitGTK plays nothing without GStreamer's
@@ -2591,38 +2725,6 @@ async fn refresh_photos(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-
-    /// Over its budget, the cache lets the longest-unseen pictures go first, down to four
-    /// fifths; thumbnails and what was seen in the last minutes stay.
-    #[test]
-    fn the_cache_keeps_to_its_budget_longest_unseen_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let put = |size: &str, name: &str, ago: u64| {
-            std::fs::create_dir_all(root.join(size)).unwrap();
-            let p = root.join(size).join(name);
-            std::fs::write(&p, vec![0u8; 100]).unwrap();
-            let f = std::fs::File::options().write(true).open(&p).unwrap();
-            f.set_modified(std::time::SystemTime::now() - Duration::from_secs(ago))
-                .unwrap();
-        };
-        put("thumb", "t", 99_999);
-        put("original", "oldest", 9_000);
-        put("full", "older", 8_000);
-        put("full", "old", 7_000);
-        put("original", "now", 10);
-        // 400 bytes held against 300: down to 240 — the two longest unseen go.
-        let room = trim(root, 300);
-        assert!(!root.join("original/oldest").exists() && !root.join("full/older").exists());
-        assert!(root.join("full/old").exists(), "no more than needed");
-        assert!(
-            root.join("original/now").exists(),
-            "what is on screen stays"
-        );
-        assert!(root.join("thumb/t").exists(), "thumbnails always stay");
-        assert_eq!(room, 100);
-    }
-
     use super::*;
 
     #[test]
@@ -2656,6 +2758,34 @@ mod tests {
         assert_eq!(byte_range(None, 0, all), None);
     }
 
+    /// Pictures are made ahead for every photo a grid can show — Hidden and Recently Deleted
+    /// too, not the library alone — each once, the view being looked at first.
+    #[test]
+    fn hidden_and_deleted_are_made_ahead_too_the_view_shown_first() {
+        let photo = |id: &str, t: i64, hidden: bool, deleted: bool| -> Photo {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "master": format!("m{id}"), "takenAt": t, "kind": "image", "width": 4032,
+                "height": 3024, "favorite": false, "hidden": hidden, "deleted": deleted, "subtype": 0
+            }))
+            .unwrap()
+        };
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        lib.put_photos(&[
+            photo("L1", 30, false, false),
+            photo("H1", 20, true, false),
+            photo("H2", 10, true, false),
+            photo("D1", 5, false, true),
+        ])
+        .unwrap();
+        let ids =
+            |first| -> Vec<String> { grid_photos(&lib, first).into_iter().map(|p| p.id).collect() };
+        assert_eq!(ids(None), ["L1", "H1", "H2", "D1"]);
+        assert_eq!(ids(Some(View::Hidden)), ["H1", "H2", "L1", "D1"]);
+        assert_eq!(ids(Some(View::Library)), ["L1", "H1", "H2", "D1"]);
+        // A view inside the library (Favorites) adds nothing the library does not have.
+        assert_eq!(ids(Some(View::Favorites)), ["L1", "H1", "H2", "D1"]);
+    }
+
     /// The steps made ahead are the ones the window asks for (fitSrc, tileSrc, viewSrc).
     #[test]
     fn steps_are_the_window_s() {
@@ -2670,6 +2800,7 @@ mod tests {
             stage_w: 1300.0,
             stage_h: 800.0,
             dpr: 1.0,
+            view: None,
         };
         // A square crop of a 4:3 photo reaches 240 along its long side; the stage draws it
         // 1066 wide (800 high × 4/3).

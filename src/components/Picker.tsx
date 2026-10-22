@@ -2,7 +2,9 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { Portal } from "./Portal";
 import { useTypeSelect } from "./RowMenu";
 
-export type PickerOption = { value: string; label: string };
+/** `divider` draws a rule above the choice, setting it apart from the ones before it;
+ *  `disabled` shows a choice greyed, as a Mac menu shows one that cannot be taken here. */
+export type PickerOption = { value: string; label: string; divider?: boolean; disabled?: boolean };
 
 /**
  * A pop-up button, in the shape macOS actually uses.
@@ -112,6 +114,7 @@ export function Picker({
   const choose = useCallback(
     (index: number) => {
       const option = options[index];
+      if (option?.disabled) return;
       if (option) onChange(option.value);
       close(true);
     },
@@ -199,7 +202,13 @@ export function Picker({
         setLit(true);
         return;
       }
-      setActive((at) => Math.max(0, Math.min(to(at), options.length - 1)));
+      setActive((at) => {
+        let next = Math.max(0, Math.min(to(at), options.length - 1));
+        // A greyed choice is passed over, in the direction the key went.
+        const step = next >= at ? 1 : -1;
+        while (options[next]?.disabled && next + step >= 0 && next + step < options.length) next += step;
+        return options[next]?.disabled ? at : next;
+      });
     };
     // Typing goes to the choice that begins with it, as a Mac pop-up's menu does.
     const typedTo = typeSelect(e, litNow.current ? active : -1);
@@ -274,8 +283,9 @@ export function Picker({
               }}
               role="option"
               aria-selected={option.value === value}
+              aria-disabled={option.disabled || undefined}
               tabIndex={index === active ? 0 : -1}
-              className={lit && index === active ? "is-active" : undefined}
+              className={[lit && index === active ? "is-active" : "", option.divider ? "has-divider" : "", option.disabled ? "is-disabled" : ""].join(" ").trim() || undefined}
               onKeyDown={onListKey}
               onClick={() => choose(index)}
               // The pointer highlights a row only once it moves. The menu opens over the
@@ -286,7 +296,7 @@ export function Picker({
                 if (at && at.x === e.clientX && at.y === e.clientY) return;
                 const first = at === null;
                 pointer.current = { x: e.clientX, y: e.clientY };
-                if (first) return;
+                if (first || option.disabled) return;
                 byKeyboard.current = false;
                 setLit(true);
                 setActive(index);

@@ -147,12 +147,19 @@ function ToastCard({ toast: t }: { toast: Toast }) {
   // Gone by itself after a moment — longer when there is something to do — but never while
   // the pointer or the keys are on it.
   const held = useRef(false);
-  const duration = t.duration === undefined ? (t.tone === "error" ? null : t.action ? 6000 : 4000) : t.duration;
+  const duration = t.duration === undefined ? (t.tone === "error" ? null : readingTime(t.message, !!t.action)) : t.duration;
   useEffect(() => {
     if (duration === null) return undefined;
+    // Counted only while it can be read: not while held, nor while the window is out of
+    // sight — a notice that ran out behind another window was never seen at all.
+    let left = duration;
+    let last = performance.now();
     const timer = window.setInterval(() => {
-      if (!held.current) dismiss();
-    }, duration);
+      const now = performance.now();
+      if (!held.current && document.visibilityState === "visible") left -= now - last;
+      last = now;
+      if (left <= 0) dismiss();
+    }, 250);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duration]);
@@ -219,4 +226,15 @@ export function toastSaved(path: string, count = 1) {
       run: () => void api.downloadReveal(path).catch((e) => toast({ message: messageOf(e), tone: "error" })),
     },
   });
+}
+
+/**
+ * How long a notice stays: long enough to read it. At least five seconds (eight with an
+ * action to take), plus about a quarter of a second for each word past the first five, and
+ * never more than twelve — a long file name read in four seconds was gone before it was read.
+ */
+export function readingTime(message: string, hasAction: boolean): number {
+  const words = message.trim().split(/\s+/).filter(Boolean).length;
+  const base = hasAction ? 8000 : 5000;
+  return Math.min(12000, base + Math.max(0, words - 5) * 250);
 }

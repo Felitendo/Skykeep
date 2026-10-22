@@ -45,17 +45,17 @@ ok(at("Return the library books") > at("## Errands") && at("Buy oat milk") < at(
 ok(at("Fix the balcony light") > at("## At home"), "the last section holds its own");
 ok(await page.locator(".rx-section.is-list-section").count() === 2, "two section headings");
 
-// The info panel names the section, read only while section writes are off.
+// The info panel names the section; section writes are on (proven on the iPhone).
 await page.getByRole("button", { name: "Details for Buy oat milk" }).click();
 await page.waitForTimeout(300);
 const field = await page.locator(".rx-detail .rx-field", { hasText: "Section" }).innerText();
 ok(field.includes("Errands"), `the info names its section  ${JSON.stringify(field)}`);
-ok(await page.getByRole("button", { name: "Add Section" }).count() === 0, "no Add Section while section writes are off");
-// The row menu offers no section move while off.
+ok(await page.getByRole("button", { name: "Add Section" }).count() > 0, "Add Section is offered now section writes are on");
+// The row menu offers the move to a section.
 await page.locator(".rx-row", { has: page.getByLabel("Rename Buy oat milk") }).click({ button: "right", position: { x: 300, y: 10 } });
 await page.waitForTimeout(200);
 const menu = await page.locator('[role="menu"] [role="menuitem"]').allInnerTexts();
-ok(!menu.some((m) => m.includes("Move to Section")), `no Move to Section while off  ${JSON.stringify(menu)}`);
+ok(menu.some((m) => m.includes("Move to Section")), `Move to Section is offered  ${JSON.stringify(menu)}`);
 await page.keyboard.press("Escape");
 
 // Smart views gather from every list and do not use a list's sections.

@@ -29,8 +29,6 @@ jobs:
           fetch-depth: 0
       - name: The checkout, trusted inside the container
         run: git config --global --add safe.directory '*'
-      - name: Flathub's shared modules (the tray library)
-        run: git clone --depth 1 https://github.com/flathub/shared-modules.git packaging/flatpak/shared-modules
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           manifest-path: packaging/flatpak/io.github.yashwanthkamireddi.Skykeep.yml

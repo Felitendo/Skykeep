@@ -4,6 +4,102 @@ use crate::{Library, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+/// Apple's own names for the labels on a card's numbers, addresses, dates and people.
+#[path = "contacts_labels.rs"]
+pub mod labels;
+
+/// Cards that are one person twice, and putting them back together.
+#[path = "contacts_merge.rs"]
+pub mod merge;
+
+/// The rest of a person's name and work, as Apple's card holds them. Kept beside [`Contact`]
+/// rather than in it, so code that builds a `Contact` by hand is not made to name them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactDetails {
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub suffix: Option<String>,
+    #[serde(default)]
+    pub nickname: Option<String>,
+    #[serde(default)]
+    pub phonetic_first_name: Option<String>,
+    #[serde(default)]
+    pub phonetic_last_name: Option<String>,
+    #[serde(default)]
+    pub phonetic_company: Option<String>,
+    #[serde(default)]
+    pub job_title: Option<String>,
+    #[serde(default)]
+    pub department: Option<String>,
+}
+
+/// Each detail by the key Apple's card names it with (`/co/` contact JSON).
+pub const DETAIL_KEYS: [&str; 8] = [
+    "prefix",
+    "suffix",
+    "nickName",
+    "phoneticFirstName",
+    "phoneticLastName",
+    "phoneticCompanyName",
+    "jobTitle",
+    "department",
+];
+
+impl ContactDetails {
+    /// One detail by Apple's key for it; `None` for a key that is not one.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&Option<String>> {
+        Some(match key {
+            "prefix" => &self.prefix,
+            "suffix" => &self.suffix,
+            "nickName" => &self.nickname,
+            "phoneticFirstName" => &self.phonetic_first_name,
+            "phoneticLastName" => &self.phonetic_last_name,
+            "phoneticCompanyName" => &self.phonetic_company,
+            "jobTitle" => &self.job_title,
+            "department" => &self.department,
+            _ => return None,
+        })
+    }
+
+    /// Set one detail by Apple's key, blank meaning cleared. False for a key that is not one.
+    pub fn set(&mut self, key: &str, value: Option<&str>) -> bool {
+        let slot = match key {
+            "prefix" => &mut self.prefix,
+            "suffix" => &mut self.suffix,
+            "nickName" => &mut self.nickname,
+            "phoneticFirstName" => &mut self.phonetic_first_name,
+            "phoneticLastName" => &mut self.phonetic_last_name,
+            "phoneticCompanyName" => &mut self.phonetic_company,
+            "jobTitle" => &mut self.job_title,
+            "department" => &mut self.department,
+            _ => return false,
+        };
+        *slot = clean(value);
+        true
+    }
+
+    /// Nothing in any of them.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        DETAIL_KEYS
+            .iter()
+            .all(|k| self.get(k).is_none_or(Option::is_none))
+    }
+}
+
+/// A whole card as the interface reads and writes it: the person and the rest of their name
+/// and work, side by side in one object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Card {
+    #[serde(flatten)]
+    pub contact: Contact,
+    #[serde(flatten)]
+    pub details: ContactDetails,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ContactMethod {
@@ -286,7 +382,7 @@ impl Contact {
     }
 
     /// Sorted on last name where there is one, which is how Apple orders the list.
-    fn sort_key(&self) -> String {
+    pub(crate) fn sort_key(&self) -> String {
         let key = [self.last_name.as_deref(), self.first_name.as_deref()]
             .into_iter()
             .flatten()
@@ -333,6 +429,91 @@ impl Library {
         tx.execute("DELETE FROM contacts WHERE guid = ?1", params![guid])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Store the rest of each card's name and work, as a read of the book found them. A whole
+    /// book clears every card's first, so a nickname taken off on the phone goes here too.
+    pub fn put_contact_details(
+        &mut self,
+        book: &[(String, ContactDetails)],
+        whole_book: bool,
+    ) -> Result<()> {
+        let tx = self.conn.savepoint()?;
+        if whole_book {
+            tx.execute(
+                "UPDATE contacts SET prefix = NULL, suffix = NULL, nickname = NULL,
+                    phonetic_first_name = NULL, phonetic_last_name = NULL,
+                    phonetic_company = NULL, job_title = NULL, department = NULL",
+                [],
+            )?;
+        }
+        {
+            let mut set = tx.prepare(
+                "UPDATE contacts SET prefix = ?2, suffix = ?3, nickname = ?4,
+                    phonetic_first_name = ?5, phonetic_last_name = ?6, phonetic_company = ?7,
+                    job_title = ?8, department = ?9
+                 WHERE guid = ?1",
+            )?;
+            for (guid, d) in book {
+                set.execute(params![
+                    guid,
+                    d.prefix,
+                    d.suffix,
+                    d.nickname,
+                    d.phonetic_first_name,
+                    d.phonetic_last_name,
+                    d.phonetic_company,
+                    d.job_title,
+                    d.department
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// One card, whole, as it now stands — made or edited here — leaving everyone else as
+    /// they are.
+    pub fn put_card(&mut self, card: &Card) -> Result<()> {
+        self.atomically(|l| {
+            l.put_contact(&card.contact)?;
+            l.put_contact_details(&[(card.contact.guid.clone(), card.details.clone())], false)
+        })
+    }
+
+    /// The rest of one card's name and work.
+    pub fn contact_details(&self, guid: &str) -> Result<ContactDetails> {
+        Ok(self
+            .details_by_guid(Some(guid))?
+            .remove(guid)
+            .unwrap_or_default())
+    }
+
+    fn details_by_guid(
+        &self,
+        guid: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, ContactDetails>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT guid, prefix, suffix, nickname, phonetic_first_name, phonetic_last_name,
+                    phonetic_company, job_title, department
+             FROM contacts WHERE ?1 IS NULL OR guid = ?1",
+        )?;
+        let rows = stmt.query_map(params![guid], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ContactDetails {
+                    prefix: row.get(1)?,
+                    suffix: row.get(2)?,
+                    nickname: row.get(3)?,
+                    phonetic_first_name: row.get(4)?,
+                    phonetic_last_name: row.get(5)?,
+                    phonetic_company: row.get(6)?,
+                    job_title: row.get(7)?,
+                    department: row.get(8)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     fn store_contacts(&mut self, contacts: &[Contact], whole_book: bool) -> Result<()> {
@@ -561,6 +742,12 @@ impl Library {
     /// "+91 98765-43210". That is done here rather than in SQL, which folds ASCII alone and
     /// knows nothing about phone formatting.
     pub fn contacts(&self, search: Option<&str>) -> Result<Vec<Contact>> {
+        Ok(self.cards(search)?.into_iter().map(|c| c.contact).collect())
+    }
+
+    /// [`Library::contacts`], each card whole: with the rest of its name and work, which a
+    /// search matches too — a nickname or a job title finds the person.
+    pub fn cards(&self, search: Option<&str>) -> Result<Vec<Card>> {
         let words = crate::fold::words(search.unwrap_or(""));
 
         let mut stmt = self.conn.prepare(
@@ -612,12 +799,22 @@ impl Library {
         for contact in &mut contacts {
             contact.methods = methods.remove(&contact.guid).unwrap_or_default();
         }
+        let mut details = self.details_by_guid(None)?;
+        let mut cards: Vec<Card> = contacts
+            .into_iter()
+            .map(|contact| Card {
+                details: details.remove(&contact.guid).unwrap_or_default(),
+                contact,
+            })
+            .collect();
 
         if !words.is_empty() {
-            contacts.retain(|c| c.matches(&words));
+            cards.retain(|c| c.contact.matches(&words, &c.details));
         }
-        let mut keyed: Vec<(String, Contact)> =
-            contacts.into_iter().map(|c| (c.sort_key(), c)).collect();
+        let mut keyed: Vec<(String, Card)> = cards
+            .into_iter()
+            .map(|c| (c.contact.sort_key(), c))
+            .collect();
         keyed.sort_by(|(a, _), (b, _)| crate::fold::natural(a, b));
         Ok(keyed.into_iter().map(|(_, c)| c).collect())
     }
@@ -665,18 +862,24 @@ fn looks_like_number(word: &str) -> bool {
 }
 
 impl Contact {
-    fn matches(&self, words: &[String]) -> bool {
+    fn matches(&self, words: &[String], details: &ContactDetails) -> bool {
         let mut text = [
             self.first_name.as_deref(),
             self.middle_name.as_deref(),
             self.last_name.as_deref(),
             self.company.as_deref(),
+            details.nickname.as_deref(),
+            details.job_title.as_deref(),
+            details.department.as_deref(),
+            details.phonetic_first_name.as_deref(),
+            details.phonetic_last_name.as_deref(),
         ]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
         .join(" ");
-        for m in &self.methods {
+        // A date is not something a person searches for by its digits.
+        for m in self.methods.iter().filter(|m| m.kind != "date") {
             text.push('\n');
             text.push_str(&m.value);
         }

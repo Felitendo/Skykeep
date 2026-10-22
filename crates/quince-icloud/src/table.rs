@@ -950,6 +950,17 @@ fn edit_table_text(
     put_len(4, writers, &mut lent);
     let edited = edit(&lent)?;
     let new_writers = bytes(&fields(&edited)?, 4).next()?.to_vec();
+    // A writer new to the table must come last: this text alone is renumbered by the edit,
+    // and the table's other texts would keep the old numbers.
+    let (before, after) = (
+        TableWriters::read(writers),
+        TableWriters::read(&new_writers),
+    );
+    if let (Some(b), Some(a)) = (&before, &after) {
+        if a.0.len() != b.0.len() && a.0.get(..b.0.len()) != Some(&b.0[..]) {
+            return None;
+        }
+    }
     // Apple keeps this list sorted by uuid and reads a writer number as a place in that
     // order; a writer appended out of order would hand the phone's characters to another
     // writer (docs/notes-tables-crdt.md). Row and column writes do not renumber, so they are

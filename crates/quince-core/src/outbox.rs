@@ -251,6 +251,26 @@ impl Library {
         Ok(())
     }
 
+    /// A waiting change taken back before any of it was sent: gone from the queue. False when
+    /// it may already be on its way (or is not waiting), and so cannot be taken back.
+    pub fn outbox_withdraw(&mut self, id: i64) -> Result<bool> {
+        let n = self.conn.execute(
+            "DELETE FROM outbox WHERE id = ?1 AND tries = 0 AND refused_at IS NULL",
+            params![id],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// A change taken to send that reached nothing at Apple — it failed before its first
+    /// write — counted as never tried, so it can still be taken back.
+    pub fn outbox_untry(&mut self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE outbox SET tries = 0 WHERE id = ?1 AND refused_at IS NULL",
+            params![id],
+        )?;
+        Ok(())
+    }
+
     /// The list a reminder is in, if it is in the library.
     pub fn reminder_list_of(&self, guid: &str) -> Result<Option<String>> {
         Ok(self

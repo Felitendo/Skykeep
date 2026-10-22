@@ -178,32 +178,58 @@ pub fn rgb_lightness(data: &[u8], w: u32, h: u32, stride: usize) -> f64 {
     }
 }
 
-/// Whether a picture shows nothing: every part of it black, as Apple's poster for a video
-/// whose first frame is black (a screen recording's) is — 0.0 on average, to the last pixel.
+/// Whether a picture shows nothing: black all but a speck, as Apple's poster for a video whose
+/// first frame is black (a screen recording's, a film that fades in) is. A few bright pixels —
+/// a recording's status-bar dot, a JPEG's ringing at an edge — still read as black: at most
+/// one pixel in 200 may be lit.
 #[must_use]
 pub fn is_blank(bytes: &[u8]) -> bool {
     let Ok(picture) = image::load_from_memory(bytes) else {
         return false;
     };
     let gray = picture.to_luma8();
-    let brightest = gray.pixels().map(|p| p.0[0]).max().unwrap_or(0);
-    brightest < 24
+    let total = u64::from(gray.width()) * u64::from(gray.height());
+    if total == 0 {
+        return false;
+    }
+    let lit = gray.pixels().filter(|p| p.0[0] >= 24).count() as u64;
+    lit * 200 <= total
 }
 
-/// A video's turn as its file records it: the picture track's matrix (QuickTime/MP4 `tkhd`) as
-/// `[a, b, c, d]`, each -1, 0 or 1, and where in the file the matrix's 36 bytes are. A phone
-/// records upright video sideways and says how to turn it here; the front camera's is also a
-/// mirror (`[0, 1, 1, 0]`). `None` for a file with no picture track or no such header.
-///
-/// # Errors
-/// When the file cannot be read.
-pub fn video_matrix(path: &std::path::Path) -> std::io::Result<Option<(u64, [i32; 4])>> {
+#[cfg(test)]
+mod blank_tests {
+    fn jpeg(w: u32, h: u32, lit: u32) -> Vec<u8> {
+        let mut img = image::GrayImage::new(w, h);
+        for i in 0..lit {
+            img.put_pixel(i % w, i / w, image::Luma([255]));
+        }
+        let mut out = Vec::new();
+        image::DynamicImage::ImageLuma8(img)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn black_with_a_speck_is_blank_and_a_picture_is_not() {
+        assert!(super::is_blank(&jpeg(100, 100, 0)));
+        assert!(super::is_blank(&jpeg(100, 100, 30)), "a status-bar dot");
+        assert!(
+            !super::is_blank(&jpeg(100, 100, 2000)),
+            "a dark picture with something in it"
+        );
+    }
+}
+
+/// The `moov` box of the film at `path`, wherever among the top-level boxes it is, and where
+/// it starts. `None` for a file with none (or one too large to be a film's tables).
+fn read_moov(path: &std::path::Path) -> std::io::Result<Option<(u64, Vec<u8>)>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     // The `moov` box, wherever among the top-level boxes it is (after the film, often).
     let mut at = 0u64;
-    let (moov_at, moov) = loop {
+    let found = loop {
         if at + 8 > len {
             return Ok(None);
         }
@@ -234,6 +260,63 @@ pub fn video_matrix(path: &std::path::Path) -> std::io::Result<Option<(u64, [i32
             break (at, moov);
         }
         at += size;
+    };
+    Ok(Some(found))
+}
+
+/// How much larger a film's picture is than the part of it meant to be seen: a Live Photo's
+/// moving part is recorded with a margin round it (its `clap`, the clean aperture — 872 × 654 of
+/// a 960 × 720 picture in his library), and the still is that inner part. Drawn whole, the film
+/// showed a wider view than the still, smaller within it. 1.0 when the film says nothing of it.
+///
+/// # Errors
+/// When the file cannot be read.
+pub fn video_zoom(path: &std::path::Path) -> std::io::Result<f64> {
+    let Some((_, moov)) = read_moov(path)? else {
+        return Ok(1.0);
+    };
+    let u32_at = |i: usize| -> Option<u32> {
+        Some(u32::from_be_bytes(moov.get(i..i + 4)?.try_into().ok()?))
+    };
+    let Some(clap) = moov.windows(4).position(|w| w == b"clap") else {
+        return Ok(1.0);
+    };
+    // The picture's own width, from the sample entry the aperture belongs to.
+    let entry = moov[..clap]
+        .windows(4)
+        .rposition(|w| matches!(w, b"avc1" | b"avc3" | b"hvc1" | b"hev1"));
+    let (Some(entry), Some(wn), Some(wd)) = (entry, u32_at(clap + 4), u32_at(clap + 8)) else {
+        return Ok(1.0);
+    };
+    // Sample entry: size, type, 6 reserved, data reference (2), 16 pre-defined: then width.
+    let Some(width) = moov
+        .get(entry + 28..entry + 30)
+        .map(|b| f64::from(u16::from_be_bytes([b[0], b[1]])))
+    else {
+        return Ok(1.0);
+    };
+    if wd == 0 || wn == 0 {
+        return Ok(1.0);
+    }
+    let seen = f64::from(wn) / f64::from(wd);
+    let zoom = width / seen;
+    Ok(if (1.0..=1.5).contains(&zoom) {
+        zoom
+    } else {
+        1.0
+    })
+}
+
+/// A video's turn as its file records it: the picture track's matrix (QuickTime/MP4 `tkhd`) as
+/// `[a, b, c, d]`, each -1, 0 or 1, and where in the file the matrix's 36 bytes are. A phone
+/// records upright video sideways and says how to turn it here; the front camera's is also a
+/// mirror (`[0, 1, 1, 0]`). `None` for a file with no picture track or no such header.
+///
+/// # Errors
+/// When the file cannot be read.
+pub fn video_matrix(path: &std::path::Path) -> std::io::Result<Option<(u64, [i32; 4])>> {
+    let Some((moov_at, moov)) = read_moov(path)? else {
+        return Ok(None);
     };
     let boxes = |from: usize, to: usize| {
         let mut out = Vec::new();
@@ -770,5 +853,49 @@ mod tests {
     fn bytes_that_are_not_a_picture_are_an_error_not_a_panic() {
         assert!(avatar(b"404 Not Found", None, 64).is_err());
         assert!(avatar(b"", None, 64).is_err());
+    }
+}
+
+#[cfg(test)]
+mod zoom_tests {
+    fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut out = u32::try_from(body.len() + 8)
+            .unwrap()
+            .to_be_bytes()
+            .to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// A Live Photo's film as Apple writes it: a 960 × 720 picture whose clean aperture is
+    /// 872 × 654. Drawn 960 / 872 larger, only what the still shows is seen.
+    #[test]
+    fn a_films_margin_is_read_from_its_clean_aperture() {
+        let mut clap = Vec::new();
+        for v in [872u32, 1, 654, 1, 0, 1, 0, 1] {
+            clap.extend_from_slice(&v.to_be_bytes());
+        }
+        let mut entry = vec![0u8; 24];
+        entry.extend_from_slice(&960u16.to_be_bytes());
+        entry.extend_from_slice(&720u16.to_be_bytes());
+        entry.extend_from_slice(&[0u8; 50]);
+        entry.extend(boxed(b"clap", &clap));
+        let moov = boxed(b"moov", &boxed(b"stsd", &boxed(b"avc1", &entry)));
+        let mut file = boxed(b"ftyp", b"qt  \0\0\0\0");
+        file.extend(moov);
+        let dir = std::env::temp_dir().join(format!("quince-zoom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("live.mov");
+        std::fs::write(&path, &file).unwrap();
+        let z = super::video_zoom(&path).unwrap();
+        assert!((z - 960.0 / 872.0).abs() < 1e-9, "{z}");
+        // No aperture said: drawn as it is.
+        let plain = dir.join("plain.mov");
+        let mut f = boxed(b"ftyp", b"qt  \0\0\0\0");
+        f.extend(boxed(b"moov", &boxed(b"stsd", &[0u8; 16])));
+        std::fs::write(&plain, &f).unwrap();
+        assert!((super::video_zoom(&plain).unwrap() - 1.0).abs() < 1e-9);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

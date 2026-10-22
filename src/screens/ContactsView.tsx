@@ -7,7 +7,7 @@ import { ConfirmSheet, useConfirm } from "../components/Confirm";
 import { EmptyState } from "../components/EmptyState";
 import { SearchField } from "../components/SearchField";
 import { PaneTitle } from "../components/PaneTitle";
-import { ChevronLeft, Plus, UserPlus, UsersRound, UserRound } from "lucide-react";
+import { Camera, ChevronLeft, Plus, UserPlus, UsersRound, UserRound } from "lucide-react";
 import {
   api,
   contactsApi,
@@ -16,6 +16,7 @@ import {
   photoSrc,
   type Contact,
   type ContactList,
+  type Duplicates,
   type ContactMethod,
   type AddressEdit,
   type AddressPart,
@@ -23,12 +24,15 @@ import {
 } from "../lib/ipc";
 import { Arriving } from "../components/EmptyState";
 import { useArriving, useSync } from "../lib/sync";
-import { useActiveRef, useScreenActive } from "../lib/screen";
+import { overlayOpen, useActiveRef, useScreenActive } from "../lib/screen";
 import { Picker } from "../components/Picker";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { pickOpen } from "../lib/pick";
-import { dateText } from "../lib/when";
 import { useReveal } from "../lib/reveal";
+import { FIRST_LABEL, OFFERED, labelText, offeredMatch, profileHref } from "../lib/contactLabels";
+import { DateField, dateWords } from "./contacts/DateField";
+import { PhotoSheet } from "./contacts/PhotoSheet";
+import { DuplicatesBanner, DuplicatesView } from "./contacts/Duplicates";
 
 /** The sidebar row that is every contact rather than a list. */
 const ALL = "";
@@ -42,19 +46,6 @@ const KINDS = [
   { value: "url", label: "link" },
 ] as const;
 
-/**
- * Apple's own labels for each kind of detail, as icloud.com's contact editor offers them
- * (contacts2 bundle). Stored in Apple's spelling, so a label picked here reads as the phone's
- * own "mobile" or "work" there, not as a custom label that happens to say the same thing.
- */
-const LABELS: Record<string, string[]> = {
-  phone: ["MOBILE", "IPHONE", "APPLE WATCH", "HOME", "WORK", "SCHOOL", "MAIN", "HOME FAX", "WORK FAX", "PAGER"],
-  email: ["HOME", "WORK", "SCHOOL", "ICLOUD"],
-  url: ["HOMEPAGE", "HOME", "WORK", "SCHOOL"],
-};
-const SHOWN: Record<string, string> = { IPHONE: "iPhone", "APPLE WATCH": "Apple Watch", ICLOUD: "iCloud" };
-/** A label as Contacts writes it: Apple's names in their own case, anything else as typed. */
-const labelText = (label: string) => SHOWN[label] ?? (label === label.toUpperCase() ? label.toLowerCase() : label);
 const CUSTOM = "\u0000custom";
 
 /**
@@ -63,12 +54,44 @@ const CUSTOM = "\u0000custom";
  * The image is allowed to fail — a photo Apple has moved, or no network yet — and when it
  * does the initials underneath are what shows, rather than a broken frame.
  */
-function Avatar({ contact, large }: { contact: Contact; large?: boolean }) {
+function Avatar({ contact, large, preview }: { contact: Contact; large?: boolean; preview?: string | null }) {
   return (
     <span className={`avatar${large ? " large" : ""}`} aria-hidden="true">
-      <Face src={photoSrc(contact)} initials={initials(contact)} />
+      <Face src={preview !== undefined ? preview : photoSrc(contact)} initials={initials(contact)} />
     </span>
   );
+}
+
+/** The parts of a name and work that Contacts adds only when asked, in its order. */
+const NAME_FIELDS = [
+  { key: "prefix", label: "Prefix" },
+  { key: "phoneticFirstName", label: "Phonetic first name" },
+  { key: "middleName", label: "Middle name" },
+  { key: "phoneticLastName", label: "Phonetic last name" },
+  { key: "suffix", label: "Suffix" },
+  { key: "nickname", label: "Nickname" },
+  { key: "jobTitle", label: "Job title" },
+  { key: "department", label: "Department" },
+  { key: "phoneticCompany", label: "Phonetic company name" },
+] as const;
+type NameKey = (typeof NAME_FIELDS)[number]["key"];
+
+/** The details a card can gain from Add Field, by Apple's names for them. */
+const ADDABLE = [
+  { kind: "phone", label: "Phone" },
+  { kind: "email", label: "Email" },
+  { kind: "url", label: "URL" },
+  { kind: "date", label: "Date" },
+  { kind: "related", label: "Related Name" },
+  { kind: "profile", label: "Social Profile" },
+  { kind: "im", label: "Instant Message" },
+] as const;
+
+/** The whole name, as the top of a card shows it: prefix and suffix included. */
+function fullName(c: Contact): string {
+  const name = [c.prefix, c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ");
+  if (!name.trim()) return displayName(c);
+  return c.suffix ? `${name}, ${c.suffix}` : name;
 }
 
 const blank = (): Contact => ({
@@ -91,13 +114,26 @@ const KIND_LABEL: Record<string, string> = {
   email: "email",
   url: "link",
   address: "address",
-  profile: "profile",
+  profile: "social profile",
+  date: "date",
+  related: "related name",
+  im: "instant message",
 };
 
-/** What this app can safely write back. Apple stores an address as a structured thing and a
- *  profile as an encoded handle; editing either as one line here would mangle it, so they
- *  are shown and left alone rather than half-supported. */
-const EDITABLE_KINDS = new Set(["phone", "email", "url"]);
+/** What a value of each kind looks like, as a field's hint. */
+const PLACEHOLDER: Record<string, string> = {
+  phone: "+1 555 0100",
+  email: "name@example.com",
+  url: "example.com",
+  related: "Name",
+  profile: "Username",
+  im: "Username",
+};
+
+/** Every kind written back here. An address is written part by part, on its own (below). */
+const EDITABLE_KINDS = new Set(["phone", "email", "url", "date", "related", "profile", "im"]);
+/** The kinds a detail can be switched between, as the first three always could. */
+const SWITCHABLE = new Set(["phone", "email", "url"]);
 
 /** Initials for the avatar, from whichever name fields exist. */
 function initials(contact: Contact): string {
@@ -134,6 +170,22 @@ export function ContactsView() {
   const [draft, setDraft] = useState<Contact | null>(null);
   /** Details whose label is being typed rather than picked, by their place on the card. */
   const [customAt, setCustomAt] = useState<Set<number>>(() => new Set());
+  /** The photo sheet, open over the form. */
+  const [photoSheet, setPhotoSheet] = useState(false);
+  /** A picture chosen in the form, small, shown until iCloud has it; null once taken away. */
+  const [draftPreview, setDraftPreview] = useState<string | null | undefined>(undefined);
+  /** Name and work fields added to the form, besides those already holding something. */
+  const [shownFields, setShownFields] = useState<Set<NameKey>>(() => new Set());
+  const [addMenu, setAddMenu] = useState<MenuAt | null>(null);
+  /** A detail just added takes the focus, once. */
+  const [focusAt, setFocusAt] = useState<number | null>(null);
+  /** A name field or the birthday just added takes the focus, once. */
+  const [focusName, setFocusName] = useState<string | null>(null);
+  /** Cards that look like one person, and whether they are what the pane shows. */
+  const [dupes, setDupes] = useState<Duplicates[]>([]);
+  const [showDupes, setShowDupes] = useState(false);
+  /** The cards just made one, while their merge can still be undone. */
+  const [lastMerge, setLastMerge] = useState<string[]>([]);
   /**
    * The card as the form opened it. Saving writes only what differs from it, over Apple's
    * card as it is then — so a change made on the phone while the form was open stays.
@@ -161,10 +213,23 @@ export function ContactsView() {
     setAddressCustom(new Set());
     setAddedKey(null);
   };
+  const resetForm = () => {
+    setCustomAt(new Set());
+    setDraftPreview(undefined);
+    setShownFields(new Set());
+    setFocusAt(null);
+    setFocusName(null);
+  };
+  const startNew = () => {
+    resetForm();
+    setShowDupes(false);
+    setDraft(blank());
+    startAddresses([]);
+  };
   const edit = (c: Contact) => {
     draftBase.current = c;
     setDraft({ ...c });
-    setCustomAt(new Set());
+    resetForm();
     if (addresses?.guid === c.guid) startAddresses(addresses.list);
     else {
       startAddresses([]);
@@ -307,6 +372,61 @@ export function ContactsView() {
   useEffect(() => {
     readLists().catch((e) => setError(messageOf(e)));
   }, [readLists, due]);
+
+  const readDupes = useCallback(async () => {
+    const found = await api.contactsDuplicates();
+    setDupes(Array.isArray(found) ? found : []);
+  }, []);
+  useEffect(() => {
+    readDupes().catch(() => {});
+  }, [readDupes, due, outbox.tick]);
+  /** Everyone by id, for the duplicates view to draw from. */
+  const byGuid = useMemo(() => new Map(contacts.map((c) => [c.guid, c])), [contacts]);
+
+  /**
+   * Cards made one: shown at once, sent shortly after (contacts_merge.rs), and undoable until
+   * they are. Merging a group the view shows goes on with the rest; the last shows the card.
+   */
+  const undoMerge = useCallback(async (kept: string[]) => {
+    const undone = await Promise.all(kept.map((k) => api.contactsMergeUndo(k).catch(() => false)));
+    setLastMerge([]);
+    await Promise.all([read(search), readLists(), readDupes()]).catch(() => {});
+    if (undone.every(Boolean)) toast({ message: "Merge undone.", tone: "done" });
+    else toast({ message: "iCloud already has this merge, so the cards stay merged.", tone: "error" });
+  }, [read, readLists, readDupes, search]);
+  const mergeGroups = async (groups: Duplicates[]) => {
+    if (groups.length === 0) return;
+    const name = (g: Duplicates) => {
+      const people = g.guids.map((id) => byGuid.get(id)).filter((c): c is Contact => !!c);
+      return people.map(displayName).find((n) => /\p{L}/u.test(n)) ?? "this person";
+    };
+    setBusy(true);
+    setError(null);
+    const kept: string[] = [];
+    try {
+      for (const g of groups) kept.push(await api.contactsMerge(g.guids));
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setBusy(false);
+    }
+    await Promise.all([read(search), readLists(), readDupes()]).catch(() => {});
+    if (kept.length === 0) return;
+    setLastMerge(kept);
+    const left = dupes.length - groups.length;
+    if (left <= 0) {
+      setShowDupes(false);
+      setOpenGuid(kept[0]);
+    }
+    toast({
+      message: groups.length === 1
+        ? `Merged ${groups[0].guids.length} cards into one for ${name(groups[0])}.`
+        : `Merged the cards of ${groups.length} people.`,
+      tone: "done",
+      duration: 10000,
+      action: { label: "Undo", run: () => void undoMerge(kept) },
+    });
+  };
   // A list deleted elsewhere is not left open, empty, with nothing to say why.
   useEffect(() => {
     if (list !== ALL && !lists.some((l) => l.guid === list)) setList(ALL);
@@ -494,11 +614,13 @@ export function ContactsView() {
 
   const saveDraft = useCallback(async () => {
     if (!draft) return;
-    const saving = draft;
+    // A birthday added and left empty is none.
+    const saving = { ...draft, birthday: draft.birthday || null };
     let guid = saving.guid;
     // Addresses are written part by part on their own; the rest of the card only if it changed.
+    // A new card's go as additions, queued behind the card itself.
     const base = addressBase.current;
-    const edits = saving.guid ? addressEdits(base, draftAddresses) : [];
+    const edits = addressEdits(base, draftAddresses);
     const after = predicted(base, draftAddresses);
     const cardChanged = !saving.guid || JSON.stringify(saving) !== JSON.stringify(draftBase.current);
     if (!cardChanged) {
@@ -506,15 +628,16 @@ export function ContactsView() {
       if (edits.length) sendAddresses(saving.guid, base, edits, after);
       return;
     }
-    if (edits.length) setAddresses({ guid: saving.guid, list: after });
+    if (edits.length && saving.guid) setAddresses({ guid: saving.guid, list: after });
     const ok = await write(async () => {
       guid = await api.contactSave(saving, saving.guid ? draftBase.current : null);
     });
     if (ok) {
       setDraft(null);
       setOpenGuid(guid);
+      readDupes().catch(() => {});
       if (edits.length) sendAddresses(guid, base, edits, after);
-    } else if (edits.length) setAddresses({ guid: saving.guid, list: base });
+    } else if (edits.length && saving.guid) setAddresses({ guid: saving.guid, list: base });
   }, [draft, draftAddresses, sendAddresses, write]);
 
   /**
@@ -631,6 +754,7 @@ export function ContactsView() {
           }
         }
         setPicked([]);
+        setShowDupes(false);
         setOpenGuid(contact.guid);
         setDetail(true);
       },
@@ -680,7 +804,7 @@ export function ContactsView() {
   keys.current = (e: KeyboardEvent) => {
     if (!live.current || e.defaultPrevented) return;
     // A menu, a picker's list or a sheet open over the screen has the keys to itself.
-    if (document.querySelector('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]')) return;
+    if (overlayOpen()) return;
     const target = e.target as HTMLElement | null;
     const inSearch = target === searchRef.current;
     const typing = !inSearch && !!target?.closest?.("input, textarea, select, [contenteditable]");
@@ -690,7 +814,7 @@ export function ContactsView() {
       e.preventDefault();
       if (!busy) {
         setPicked([]);
-        setDraft(blank());
+        startNew();
       }
       return;
     }
@@ -827,7 +951,7 @@ export function ContactsView() {
         <header className="pane-head contacts-head">
           <PaneTitle count={`${shown.length} ${shown.length === 1 ? "contact" : "contacts"}`}>{openList?.name ?? "Contacts"}</PaneTitle>
           <div className="contacts-head-actions">
-            <button className="icon-button" aria-label="New contact" title="New Contact" disabled={busy} onClick={() => setDraft(blank())}>
+            <button className="icon-button" aria-label="New contact" title="New Contact" disabled={busy} onClick={startNew}>
               <UserPlus size={18} strokeWidth={2} aria-hidden="true" />
             </button>
             <button
@@ -877,10 +1001,26 @@ export function ContactsView() {
           />
         )}
 
+        {dupes.length > 0 && list === ALL && !search && !showDupes && (
+          <DuplicatesBanner
+            count={dupes.length}
+            onOpen={() => {
+              setPicked([]);
+              setDraft(null);
+              setShowDupes(true);
+              setDetail(true);
+            }}
+          />
+        )}
         <div className="contact-rows-wrap">
         <ul
           className={`contact-rows${listFocused ? " is-focused" : ""}`}
           ref={rowsRef}
+          // A list box of people: the open card is the selected option, or every picked one.
+          role="listbox"
+          aria-label="Contacts"
+          aria-multiselectable="true"
+          data-rows=""
           // Whether the focus is in the list, for the selection's colour — a class rather than
           // :focus-within, which made WebKit restyle every row at each arrow press.
           onFocus={() => setListFocused(true)}
@@ -901,7 +1041,7 @@ export function ContactsView() {
           {lettered.map(({ contact, letter, starts }) => (
             <Fragment key={contact.guid}>
             {starts && (
-              <li className="contact-letter" data-letter={letter} aria-hidden="true">{letter}</li>
+              <li className="contact-letter" data-letter={letter} role="presentation" aria-hidden="true">{letter}</li>
             )}
             <ContactRow
               contact={contact}
@@ -976,7 +1116,7 @@ export function ContactsView() {
 
       <article className="contact-detail" aria-label="Contact">
         {!draft && (
-          <button className="compact-back" onClick={() => setDetail(false)}>
+          <button className="compact-back" onClick={() => { setDetail(false); setShowDupes(false); }}>
             <ChevronLeft size={18} strokeWidth={2.25} aria-hidden="true" />
             <span>Contacts</span>
           </button>
@@ -989,62 +1129,106 @@ export function ContactsView() {
               void saveDraft();
             }}
           >
-            <h2>{draft.guid ? "Edit contact" : "New contact"}</h2>
-
-            <div className="contact-names">
-              <label>
-                <span>First</span>
-                <input
-                  value={draft.firstName ?? ""}
-                  autoFocus
-                  onChange={(e) => setDraft({ ...draft, firstName: e.target.value || null })}
-                />
-              </label>
-              <label>
-                <span>Last</span>
-                <input
-                  value={draft.lastName ?? ""}
-                  onChange={(e) => setDraft({ ...draft, lastName: e.target.value || null })}
-                />
-              </label>
-              <label>
-                <span>Company</span>
-                <input
-                  value={draft.company ?? ""}
-                  onChange={(e) => setDraft({ ...draft, company: e.target.value || null })}
-                />
-              </label>
+            <div className="contact-form-head">
+              <button
+                type="button"
+                className="contact-photo-edit"
+                aria-label={draft.photoUrl ? "Edit photo" : "Add photo"}
+                onClick={() => setPhotoSheet(true)}
+              >
+                <Avatar contact={draft} large preview={draftPreview} />
+                <span className="contact-photo-badge" aria-hidden="true">
+                  <Camera size={13} strokeWidth={2} />
+                </span>
+              </button>
+              <h2>{draft.guid ? "Edit contact" : "New contact"}</h2>
             </div>
+            {photoSheet && (
+              <PhotoSheet
+                hasPhoto={!!draft.photoUrl}
+                onCancel={() => setPhotoSheet(false)}
+                onRemove={() => {
+                  setPhotoSheet(false);
+                  setDraftPreview(null);
+                  setDraft({ ...draft, photoUrl: null, photoSignature: null, photoCrop: null });
+                }}
+                onDone={(photo) => {
+                  setPhotoSheet(false);
+                  setDraftPreview(photo.preview);
+                  setDraft({ ...draft, photoUrl: photo.url, photoSignature: null, photoCrop: photo.crop });
+                }}
+              />
+            )}
+
+            {(() => {
+                const shown = (key: NameKey) => shownFields.has(key) || !!draft[key];
+                const field = (key: NameKey | "firstName" | "lastName" | "company", label: string, first?: boolean) => (
+                  <label key={key}>
+                    <span>{label}</span>
+                    <input
+                      value={draft[key] ?? ""}
+                      autoFocus={first || focusName === key}
+                      onChange={(e) => setDraft({ ...draft, [key]: e.target.value || null })}
+                    />
+                  </label>
+                );
+                // The name as Contacts orders it, each phonetic spelling beside its part; then
+                // the work, on lines of its own.
+                return (
+                  <>
+                    <div className="contact-names">
+                      {shown("prefix") && field("prefix", "Prefix")}
+                      {field("firstName", "First", true)}
+                      {shown("phoneticFirstName") && field("phoneticFirstName", "Phonetic first")}
+                      {shown("middleName") && field("middleName", "Middle")}
+                      {field("lastName", "Last")}
+                      {shown("phoneticLastName") && field("phoneticLastName", "Phonetic last")}
+                      {shown("suffix") && field("suffix", "Suffix")}
+                      {shown("nickname") && field("nickname", "Nickname")}
+                    </div>
+                    <div className="contact-names">
+                      {field("company", "Company")}
+                      {shown("phoneticCompany") && field("phoneticCompany", "Phonetic company")}
+                      {shown("jobTitle") && field("jobTitle", "Job title")}
+                      {shown("department") && field("department", "Department")}
+                    </div>
+                  </>
+                );
+              })()}
 
             <ul className="contact-method-rows">
               {draft.methods.map((m, index) =>
                 // An existing card's addresses are written part by part, below.
                 m.kind === "address" && draft.guid ? null : !EDITABLE_KINDS.has(m.kind) ? (
-                  // Shown so it is not a surprise that it exists, but not offered for
-                  // editing — this app cannot write a structured address back safely.
+                  // A new card's address lines, from a vCard: kept as they came.
                   <li key={index} className="contact-method-fixed">
                     <span>{KIND_LABEL[m.kind] ?? m.kind}</span>
                     <span className="contact-address">{m.value}</span>
-                    <span className="badge">edited on an Apple device</span>
                   </li>
                 ) : (
                 <li key={index}>
-                  <Picker
-                    label={`Kind of detail ${index + 1}`}
-                    className="contact-kind"
-                    value={m.kind}
-                    onChange={(kind) => editMethod(index, { kind })}
-                    options={KINDS.map((k) => ({ value: k.value, label: k.label }))}
-                  />
+                  {SWITCHABLE.has(m.kind) ? (
+                    <Picker
+                      label={`Kind of detail ${index + 1}`}
+                      className="contact-kind"
+                      value={m.kind}
+                      onChange={(kind) => editMethod(index, { kind })}
+                      options={KINDS.map((k) => ({ value: k.value, label: k.label }))}
+                    />
+                  ) : (
+                    <span className="contact-kind-fixed">{KIND_LABEL[m.kind] ?? m.kind}</span>
+                  )}
                   {(() => {
-                    const standard = LABELS[m.kind] ?? [];
-                    // Apple's names match whatever their case, so "mobile" is the phone's own.
-                    const match = standard.find((v) => v === m.label?.toUpperCase());
-                    const custom = customAt.has(index) || (m.label !== null && !match);
+                    const standard = OFFERED[m.kind] ?? [];
+                    // Apple's names match in either spelling, so "mobile" is the phone's own.
+                    const match = offeredMatch(m.kind, m.label);
+                    // A service is chosen from Apple's list alone, as icloud.com offers it.
+                    const fixedList = m.kind === "im";
+                    const custom = !fixedList && (customAt.has(index) || (m.label !== null && !match));
                     return (
                       <span className="contact-label-cell">
                         <Picker
-                          label={`Label for detail ${index + 1}`}
+                          label={`${m.kind === "im" ? "Service" : "Label"} for detail ${index + 1}`}
                           className="contact-label-pick"
                           value={custom ? CUSTOM : (match ?? "")}
                           onChange={(v) => {
@@ -1053,12 +1237,14 @@ export function ContactsView() {
                               return;
                             }
                             setCustomAt((was) => { const next = new Set(was); next.delete(index); return next; });
-                            editMethod(index, { label: v || null });
+                            // The label already on the card, in whichever spelling it came, when
+                            // it is the one picked again.
+                            editMethod(index, { label: v ? (match === v ? m.label : v) : null });
                           }}
                           options={[
                             ...(m.label === null && !custom ? [{ value: "", label: "no label" }] : []),
                             ...standard.map((v) => ({ value: v, label: labelText(v) })),
-                            { value: CUSTOM, label: "Custom" },
+                            ...(fixedList ? [] : [{ value: CUSTOM, label: "Custom" }]),
                           ]}
                         />
                         {custom && (
@@ -1073,13 +1259,24 @@ export function ContactsView() {
                       </span>
                     );
                   })()}
-                  <input
-                    className="contact-method-value"
-                    value={m.value}
-                    placeholder={m.kind === "email" ? "name@example.com" : "+1 555 0100"}
-                    aria-label={`Value for detail ${index + 1}`}
-                    onChange={(e) => editMethod(index, { value: e.target.value })}
-                  />
+                  {m.kind === "date" ? (
+                    <DateField
+                      compact
+                      label={`Date ${index + 1}`}
+                      value={m.value || null}
+                      autoFocus={focusAt === index}
+                      onChange={(v) => editMethod(index, { value: v ?? "" })}
+                    />
+                  ) : (
+                    <input
+                      className="contact-method-value"
+                      value={m.value}
+                      placeholder={PLACEHOLDER[m.kind] ?? ""}
+                      aria-label={`Value for detail ${index + 1}`}
+                      autoFocus={focusAt === index}
+                      onChange={(e) => editMethod(index, { value: e.target.value })}
+                    />
+                  )}
                   <button
                     type="button"
                     className="quiet danger"
@@ -1091,6 +1288,7 @@ export function ContactsView() {
                       });
                       // Places shift up by one; which were being typed is worked out again.
                       setCustomAt(new Set());
+                      setFocusAt(null);
                     }}
                   >
                     ✕
@@ -1100,7 +1298,7 @@ export function ContactsView() {
               )}
             </ul>
 
-            {draft.guid && draftAddresses.length > 0 && (
+            {draftAddresses.length > 0 && (
               <ul className="contact-method-rows contact-address-rows" aria-label="Addresses">
                 {draftAddresses.map((d, i) => (
                   <AddressEditor
@@ -1126,65 +1324,76 @@ export function ContactsView() {
               </ul>
             )}
 
+            {draft.birthday !== null && (
+              <div className="contact-birthday-field">
+                <span className="contact-kind-fixed">birthday</span>
+                <DateField
+                  label="Birthday"
+                  value={draft.birthday || null}
+                  autoFocus={focusName === "birthday"}
+                  onChange={(v) => setDraft({ ...draft, birthday: v ?? "" })}
+                />
+                <button
+                  type="button"
+                  className="quiet danger"
+                  aria-label="Remove birthday"
+                  onClick={() => setDraft({ ...draft, birthday: null })}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             <div className="contact-form-adds">
               <button
                 type="button"
                 className="quiet"
-                onClick={() =>
-                  setDraft({
-                    ...draft,
-                    methods: [...draft.methods, { kind: "phone", label: "MOBILE", value: "" }],
-                  })
-                }
+                aria-haspopup="menu"
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setAddMenu({ x: r.left, y: r.bottom + 4, alignRight: false });
+                }}
               >
-                Add phone, email or link
+                <Plus size={14} strokeWidth={2} aria-hidden="true" />
+                Add Field
               </button>
-              {draft.guid && (
-                <button
-                  type="button"
-                  className="quiet"
-                  onClick={() => {
-                    const key = ++addressKey.current;
-                    setDraftAddresses((all) => [...all, { key, from: null, address: blankAddress() }]);
-                    setAddedKey(key);
-                  }}
-                >
-                  Add address
-                </button>
-              )}
-            </div>
-
-            <div className="contact-birthday-field">
-              <label>
-                <span>Birthday</span>
-                <input
-                  type="date"
-                  aria-label="Birthday"
-                  value={draft.birthday ? (draft.birthday.startsWith(NO_YEAR) ? `2000${draft.birthday.slice(4, 10)}` : draft.birthday.slice(0, 10)) : ""}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (!v) return setDraft({ ...draft, birthday: null });
-                    const unknown = draft.birthday?.startsWith(NO_YEAR) ?? false;
-                    setDraft({ ...draft, birthday: unknown ? `${NO_YEAR}${v.slice(4)}` : v });
-                  }}
+              {addMenu && (
+                <RowMenu
+                  at={addMenu}
+                  onClose={() => setAddMenu(null)}
+                  entries={[
+                    ...ADDABLE.map((a) => ({
+                      label: a.label,
+                      run: () => {
+                        setFocusAt(draft.methods.length);
+                        setDraft({ ...draft, methods: [...draft.methods, { kind: a.kind, label: FIRST_LABEL[a.kind] ?? null, value: "" }] });
+                      },
+                    })),
+                    {
+                      label: "Address",
+                      run: () => {
+                        const key = ++addressKey.current;
+                        setDraftAddresses((all) => [...all, { key, from: null, address: blankAddress() }]);
+                        setAddedKey(key);
+                      },
+                    },
+                    ...(draft.birthday === null
+                      ? [{ label: "Birthday", run: () => { setFocusName("birthday"); setDraft({ ...draft, birthday: "" }); } }]
+                      : []),
+                    ...(() => {
+                      const hidden = NAME_FIELDS.filter((f) => !shownFields.has(f.key) && !draft[f.key]);
+                      return hidden.length
+                        ? [null, ...hidden.map((f) => ({
+                            label: f.label.charAt(0).toUpperCase() + f.label.slice(1),
+                            run: () => {
+                              setFocusName(f.key);
+                              setShownFields((was) => new Set(was).add(f.key));
+                            },
+                          }))]
+                        : [];
+                    })(),
+                  ]}
                 />
-              </label>
-              {draft.birthday && (
-                <label className="contact-birthday-noyear">
-                  <input
-                    type="checkbox"
-                    checked={draft.birthday.startsWith(NO_YEAR)}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        birthday: e.target.checked
-                          ? `${NO_YEAR}${draft.birthday!.slice(4, 10)}`
-                          : `${new Date().getFullYear()}${draft.birthday!.slice(4, 10)}`,
-                      })
-                    }
-                  />
-                  Year unknown
-                </label>
               )}
             </div>
 
@@ -1205,13 +1414,27 @@ export function ContactsView() {
                   busy || !(draft.firstName || draft.lastName || draft.company)
                 }
               >
-                {busy ? "Saving…" : draft.guid ? "Save" : "Add contact"}
+                {busy ? "Saving" : draft.guid ? "Save" : "Add contact"}
               </button>
               <button type="button" className="quiet" onClick={() => setDraft(null)}>
                 Cancel
               </button>
             </div>
           </form>
+        ) : showDupes ? (
+          <DuplicatesView
+            groups={dupes}
+            book={byGuid}
+            Face={Avatar}
+            busy={busy}
+            onMerge={(g) => void mergeGroups([g])}
+            onMergeAll={() => void mergeGroups(dupes)}
+            onShow={(guid) => {
+              setShowDupes(false);
+              setOpenGuid(guid);
+              showRow(guid, false);
+            }}
+          />
         ) : multi ? (
           <div className="contact-many">
             <div className="contact-many-faces" aria-hidden="true">
@@ -1257,7 +1480,14 @@ export function ContactsView() {
             <div className="contact-head">
               <Avatar contact={open} large />
               <div className="contact-head-names">
-                <h2>{displayName(open)}</h2>
+                {(open.phoneticFirstName || open.phoneticLastName) && (
+                  <p className="contact-phonetic">{[open.phoneticFirstName, open.phoneticLastName].filter(Boolean).join(" ")}</p>
+                )}
+                <h2>{fullName(open)}</h2>
+                {open.nickname && <p className="contact-nickname">{`\u201c${open.nickname}\u201d`}</p>}
+                {(open.jobTitle || open.department) && (
+                  <p className="contact-company">{[open.jobTitle, open.department].filter(Boolean).join(", ")}</p>
+                )}
                 {open.company && !open.isCompany && (
                   <p className="contact-company">{open.company}</p>
                 )}
@@ -1291,6 +1521,10 @@ export function ContactsView() {
                       <a href={`tel:${m.value.replace(/[^\d+#*,;]/g, "")}`}>{m.value}</a>
                     ) : m.kind === "url" ? (
                       <a href={webHref(m.value)}>{m.value}</a>
+                    ) : m.kind === "date" ? (
+                      dateWords(m.value)
+                    ) : m.kind === "profile" && profileHref(m.label, m.value) ? (
+                      <a href={profileHref(m.label, m.value)!}>{m.label?.toUpperCase() === "TWITTER" ? `@${m.value.replace(/^@+/, "")}` : m.value}</a>
                     ) : m.kind === "address" ? (
                       // A postal address is several lines and stays that way.
                       <>
@@ -1332,7 +1566,7 @@ export function ContactsView() {
               {open.birthday && (
                 <div>
                   <dt>birthday</dt>
-                  <dd>{birthdayText(open.birthday)}</dd>
+                  <dd>{dateWords(open.birthday)}</dd>
                 </div>
               )}
             </dl>
@@ -1346,6 +1580,11 @@ export function ContactsView() {
               <button className="quiet" disabled={busy} onClick={() => edit(open)}>
                 Edit
               </button>
+              {lastMerge.includes(open.guid) && outbox.waiting.has(open.guid) && (
+                <button className="quiet" onClick={() => void undoMerge(lastMerge)}>
+                  Undo Merge
+                </button>
+              )}
               <button
                 className="quiet"
                 aria-haspopup="menu"
@@ -1401,6 +1640,7 @@ const ContactRow = memo(function ContactRow({ contact, current, mine, draggable,
 }) {
   return (
     <li
+      role="presentation"
       // Dragged onto a list, a person joins it — as in Contacts on the Mac.
       draggable={draggable}
       onDragStart={(e) => actions.dragStart(contact, e)}
@@ -1409,8 +1649,9 @@ const ContactRow = memo(function ContactRow({ contact, current, mine, draggable,
     >
       <button
         className="contact-row"
+        role="option"
         data-guid={contact.guid}
-        aria-current={current}
+        aria-selected={current}
         onClick={(e) => actions.click(contact, e)}
       >
         <Avatar contact={contact} />
@@ -1540,17 +1781,6 @@ function NameField({ initial, label, onDone, onCancel }: {
   );
 }
 
-/** The year Apple writes for a birthday given without one. */
-const NO_YEAR = "1604";
-
-/** "17 March", or "17 March 1998" when the year is known — as a contact card shows it. */
-function birthdayText(raw: string): string {
-  const [y, m, d] = raw.slice(0, 10).split("-").map(Number);
-  if (!m || !d) return raw;
-  const date = new Date(y === Number(NO_YEAR) ? 2000 : y, m - 1, d);
-  return dateText(date, y === Number(NO_YEAR) ? { day: "numeric", month: "long" } : { dateStyle: "long" });
-}
-
 /**
  * The order Contacts keeps: by last name, then first — a company by its name — letters
  * before anything else, accents and case aside, and a card with no name at all ("#") last.
@@ -1632,7 +1862,7 @@ const PART_NAME: Record<(typeof ADDRESS_PARTS)[number], string> = {
   postalCode: "Postcode",
   country: "Country",
 };
-const ADDRESS_LABELS = ["HOME", "WORK", "OTHER"];
+const ADDRESS_LABELS = OFFERED.address;
 const ALL_PARTS: AddressPart[] = ["street", "subLocality", "city", "subAdministrativeArea", "state", "postalCode", "country", "countryCode"];
 
 const blankAddress = (): PostalAddress => ({

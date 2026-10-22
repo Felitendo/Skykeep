@@ -19,6 +19,7 @@ pub mod calendar_feeds;
 pub mod ckdocument;
 pub mod cloudkit;
 pub mod contacts;
+pub mod courier;
 pub mod drive;
 pub mod markdown;
 pub mod mergeable;
@@ -33,17 +34,6 @@ pub mod shared_albums;
 pub mod sync;
 pub mod table;
 pub mod topotext;
-
-/// Lets the gated writes (note attachments, reminder details) run for one supervised live
-/// test, from the probe that drives it (`probe/examples/skykeep_live.rs`) against the throwaway
-/// records the founder named. The app never sets it; the gating constants stay as they are.
-#[doc(hidden)]
-pub static SUPERVISED_LIVE_TEST: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-pub(crate) fn supervised_live_test() -> bool {
-    SUPERVISED_LIVE_TEST.load(std::sync::atomic::Ordering::SeqCst)
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

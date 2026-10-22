@@ -10,10 +10,10 @@
  * floating surface gets a real border here, selection takes Highlight, focus a Highlight
  * outline, and the glyphs drawn in an app's colour take the text colour.
  *
- * On Linux neither query fires today: WebKitGTK does not map GTK's high-contrast theme or the
- * Settings portal's org.freedesktop.appearance contrast key to prefers-contrast, and it has no
- * forced-colours mode (docs/accessibility.md). The rules are written so the moment either is
- * mapped — by WebKitGTK, or by the app reading the portal — they apply as they are.
+ * On Linux WebKitGTK maps neither: it has no forced-colours mode, and it does not turn the
+ * Settings portal's org.freedesktop.appearance contrast key into prefers-contrast. The app
+ * reads that key itself (appearance.rs) and marks the root data-contrast="more"; the rules
+ * under that mark below are the Increase Contrast ones, so GNOME's and KDE's switch applies.
  */
 
 /* ---- Increase Contrast ---------------------------------------------------------------- */
@@ -75,9 +75,65 @@
   :is(.quiet, .segment, .picker-button) { box-shadow: inset 0 0 0 1px var(--field-edge); }
 }
 
+/* ---- Increase Contrast, read from the desktop ---------------------------------------- */
+/* The same rules, where the engine does not map the setting and the app reads it instead
+   (Linux: the Settings portal, appearance.rs, marks the root data-contrast="more"). Kept in
+   step with the blocks above and with tokens.css's glass rule. */
+:root:root:root[data-contrast="more"] {
+  --glass: var(--bg);
+  --glass-thick: var(--sheet);
+  --glass-blur: none;
+  --text-2: #3a3a3e;
+  --text-3: #4a4a4f;
+  --separator: rgba(0, 0, 0, 0.42);
+  --field-edge: rgba(0, 0, 0, 0.6);
+  --field-edge-hover: rgba(0, 0, 0, 0.75);
+  --glass-edge: rgba(0, 0, 0, 0.5);
+  --fill: color-mix(in srgb, var(--text) 12%, transparent);
+  --fill-selected: color-mix(in srgb, var(--text) 20%, transparent);
+  --accent-ring: var(--accent-strong);
+  --ring: 0 0 0 2px var(--accent-strong);
+  --focus-ring: 2px solid var(--text);
+}
+@media (prefers-color-scheme: dark) {
+  :root:root:root[data-contrast="more"]:not([data-theme="light"]) {
+    --text-2: #d1d1d6;
+    --text-3: #c2c2c7;
+    --separator: rgba(255, 255, 255, 0.45);
+    --field-edge: rgba(255, 255, 255, 0.6);
+    --field-edge-hover: rgba(255, 255, 255, 0.75);
+    --glass-edge: rgba(255, 255, 255, 0.45);
+    --accent-strong: #40a9ff;
+    --danger: #ff9999;
+  }
+  :root:root:root[data-contrast="more"]:not([data-theme="light"])[data-app="calendar"] { --accent-strong: #ff7a7a; }
+  :root:root:root[data-contrast="more"]:not([data-theme="light"])[data-app="notes"] { --accent-strong: #ffd600; }
+}
+:root:root:root[data-contrast="more"][data-theme="dark"] {
+  --text-2: #d1d1d6;
+  --text-3: #c2c2c7;
+  --separator: rgba(255, 255, 255, 0.45);
+  --field-edge: rgba(255, 255, 255, 0.6);
+  --field-edge-hover: rgba(255, 255, 255, 0.75);
+  --glass-edge: rgba(255, 255, 255, 0.45);
+  --accent-strong: #40a9ff;
+  --danger: #ff9999;
+}
+:root:root:root[data-contrast="more"][data-theme="dark"][data-app="calendar"] { --accent-strong: #ff7a7a; }
+:root:root:root[data-contrast="more"][data-theme="dark"][data-app="notes"] { --accent-strong: #ffd600; }
+:root[data-contrast="more"] :is(.modal-sheet, .popover, .toast, .row-menu, .picker-menu, .cx-popover, .cx-zones,
+  .gsearch-panel, .gsearch-out, .format-panel, .upload-menu, .upload-tray, .px-info, .px-jump,
+  .toolbar-group, .sidebar) {
+  outline: 1px solid var(--glass-edge);
+  outline-offset: -1px;
+}
+:root[data-contrast="more"] :is(.quiet, .segment, .picker-button) { box-shadow: inset 0 0 0 1px var(--field-edge); }
+
 /* ---- Forced colours (Windows High Contrast) -------------------------------------------- */
 
 @media (forced-colors: active) {
+  /* A note's table is framed by a shadow, which forced colours drop: a real border instead. */
+  .nf-table { border: 1px solid CanvasText; }
   /* Every control with an edge of its own: the fill that marked it is gone. */
   :is(.primary, .quiet, .icon-button, .tool, .segment, .picker-button, .toast-action,
     .sidebar-toggle, .compact-back, .search-clear, .confirm-answer) {

@@ -284,7 +284,7 @@ await group("notes", async () => {
 
 await group("states", async () => {
   // Reminders' sample alone: Calendar's sample reminders share its ids.
-  const { ctx, page } = await fresh({}, null, { remindersFixture: true, notesFixture: true, calendarFixture: false });
+  const { ctx, page } = await fresh({}, null, { remindersFixture: true, notesFixture: true, contactsFixture: true, calendarFixture: false });
   ok((await page.locator('.nav-item[aria-current="true"]').count()) === 1, "states: the sidebar marks its current app aria-current");
   await openScreen(page, "Reminders");
   await wait(page, 400);
@@ -303,7 +303,22 @@ await group("states", async () => {
   ok((await page.locator('.cx-day[role="gridcell"][aria-selected="true"]').count()) === 1, "states: the chosen day is aria-selected in the month grid");
   await openScreen(page, "Notes");
   await wait(page, 300);
-  ok((await page.locator('.note-row[aria-current="true"]').count()) === 1, "states: the open note is marked in its list");
+  ok((await page.locator('.note-row[aria-selected="true"]').count()) === 1, "states: the open note is marked in its list");
+  // A list box of options, not a list of buttons marked current: the open row is selected.
+  const notesBox = page.getByRole("listbox", { name: "Notes" });
+  ok((await notesBox.count()) === 1 && (await notesBox.getByRole("option", { selected: true }).count()) === 1
+    && (await page.locator('.note-row[aria-current]').count()) === 0, "states: Notes is a list box whose open note is its selected option");
+  ok((await notesBox.getByRole("group").count()) >= 1, "states: each heading of notes is a named group");
+  await openScreen(page, "Contacts");
+  await wait(page, 300);
+  const peopleBox = page.getByRole("listbox", { name: "Contacts" });
+  const people = await page.locator(".contact-row").evaluateAll((rows) => rows.map((r) => [r.getAttribute("role"), r.getAttribute("aria-selected"), r.hasAttribute("aria-current")]));
+  ok((await peopleBox.count()) === 1 && (await peopleBox.getAttribute("aria-multiselectable")) === "true" && people.length > 0
+    && people.every(([role, sel, cur]) => role === "option" && (sel === "true" || sel === "false") && !cur), `states: Contacts is a multi-select list box of options, each selected or not  ${JSON.stringify(people.slice(0, 3))}`);
+  // A screen's own list box is not a menu: its keys still answer.
+  await page.keyboard.press("Control+f");
+  ok(await page.evaluate(() => document.activeElement?.matches?.('input[type="search"], .contacts input')), "states: the screen's keys answer beside its own list box");
+  await page.keyboard.press("Escape");
   // A notice is said by a live region that was there before it.
   const region = page.locator('.visually-hidden[role="status"][aria-live="polite"]').last();
   ok((await region.count()) === 1, "states: a polite live region waits for notices");
@@ -383,6 +398,28 @@ await group("increase contrast", async () => {
     return `${s.outlineStyle} ${s.outlineWidth}`;
   });
   ok(/solid 2px/.test(drawn), `increase contrast: a focused control draws it  (${drawn})`);
+  await ctx.close();
+});
+
+// The desktop's own switch, where the engine does not map it (Linux: the Settings portal, read
+// by appearance.rs): the same firmer look, and it follows the switch both ways while open.
+await group("contrast from the desktop", async () => {
+  const { ctx, page } = await fresh({}, () => { window.__contrast = true; });
+  await wait(page, 300);
+  const look = () => page.evaluate(() => ({
+    mark: document.documentElement.dataset.contrast ?? null,
+    sep: getComputedStyle(document.documentElement).getPropertyValue("--separator").trim(),
+    glass: getComputedStyle(document.documentElement).getPropertyValue("--glass-blur").trim(),
+  }));
+  let now = await look();
+  ok(now.mark === "more" && /rgba\(0, 0, 0, 0?\.42\)/.test(now.sep) && now.glass === "none", `desktop contrast: the root is marked and the edges firm up  ${JSON.stringify(now)}`);
+  await page.evaluate(() => window.__emit("quince://contrast", false));
+  await wait(page, 100);
+  now = await look();
+  ok(now.mark === null && !/rgba\(0, 0, 0, 0?\.42\)/.test(now.sep), `desktop contrast: switched off, it goes back  ${JSON.stringify(now)}`);
+  await page.evaluate(() => window.__emit("quince://contrast", true));
+  await wait(page, 100);
+  ok((await look()).mark === "more", "desktop contrast: switched on while open, it applies at once");
   await ctx.close();
 });
 

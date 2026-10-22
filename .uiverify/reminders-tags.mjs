@@ -33,7 +33,7 @@ const shown = await page.locator(".rx-row .rx-title").evaluateAll((els) => els.m
 ok(heading === "#home", `tapping a tag opens it  ${heading}`);
 ok(JSON.stringify(shown) === JSON.stringify(["Pick up the parcel", "Plan tomorrow"]), `and shows only what carries it  ${JSON.stringify(shown)}`);
 ok(await page.locator('.rx-tag-chip[aria-current="true"]', { hasText: "#home" }).count() === 1, "the open tag is marked in the sidebar");
-ok(await page.locator(".rx-add").count() === 0, "a tag view has no add field while tag writes are off");
+ok(await page.locator(".rx-add").count() === 1, "a tag view has its add field now tag writes are on");
 // A chip on a row opens its tag too.
 await row("Pick up the parcel").locator(".rx-meta .rx-tag", { hasText: "#errands" }).click();
 await page.waitForTimeout(300);
@@ -57,19 +57,21 @@ await page.waitForTimeout(300);
 await page.getByRole("button", { name: "Details for Pick up the parcel" }).click();
 await page.waitForTimeout(300);
 const panel = page.locator(".rx-detail");
-const early = await panel.locator(".rx-field", { hasText: "Early alert" }).innerText().catch(() => "");
-ok(early.includes("30 minutes early"), `the info shows the early alert  ${JSON.stringify(early)}`);
-const link = panel.locator("a.rx-url");
-ok((await link.getAttribute("href")) === "https://www.apple.com/shop/order", "and the link, ready to open");
-ok((await link.innerText()) === "www.apple.com/shop/order", `shown without its scheme  ${await link.innerText()}`);
+const early = await panel.locator(".rx-field", { hasText: "Early Reminder" }).innerText().catch(() => "");
+ok(early.includes("30 minutes before"), `the info shows the early alert  ${JSON.stringify(early)}`);
+// Links can be changed (proven on the iPhone): the field holds it, Open opens it.
+const field = panel.getByLabel("URL for Pick up the parcel");
+ok((await field.inputValue()) === "https://www.apple.com/shop/order", "the link is in its field");
+ok((await panel.locator("a.rx-url-open").getAttribute("href")) === "https://www.apple.com/shop/order", "and Open opens it");
 const tagsField = await panel.locator(".rx-tag-field .rx-tag-name").allInnerTexts();
 ok(JSON.stringify(tagsField) === JSON.stringify(["#errands", "#home"]), `and its tags  ${JSON.stringify(tagsField)}`);
-ok(await panel.locator(".rx-tag-remove, .rx-tag-input, input[type=url]").count() === 0, "no tag or link controls while those writes are off");
+ok(await panel.locator("input[type=url]").count() === 1, "the link can be changed now link writes are on");
 // A reminder with none of these shows no empty rows for them.
 await page.getByRole("button", { name: "Details for Plan tomorrow" }).click();
 await page.waitForTimeout(300);
-ok(await page.locator(".rx-detail .rx-field", { hasText: "Early alert" }).count() === 0, "no Early alert row where there is none");
-ok(await page.locator(".rx-detail a.rx-url").count() === 0, "no URL row where there is none");
+// Early alerts can be set (proven on the iPhone): the row is there, at None, as on the phone.
+ok(/None/.test(await page.locator(".rx-detail .rx-field", { hasText: "Early Reminder" }).innerText().catch(() => "")), "an Early Reminder row at None where there is none");
+ok(await page.locator(".rx-detail a.rx-url-open").count() === 0, "no Open where there is no link");
 ok(await page.locator(".rx-detail").count() === 1, "one info panel open at a time");
 
 // Rules not read here are said, once.

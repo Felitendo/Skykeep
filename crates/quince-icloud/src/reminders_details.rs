@@ -37,10 +37,11 @@ use serde_json::{json, Value};
 const CONTAINER: &str = "com.apple.reminders";
 const ZONE: &str = "Reminders";
 
-/// Writes of tags, links, early alerts and sections stay off until each has been tried once,
-/// supervised, against a real account and seen to arrive on a phone as written. Until then
-/// every write function refuses before touching the network. Reading is unaffected.
-pub const REMINDER_DETAIL_WRITES: bool = false;
+/// Writes of tags, links, early alerts and sections. On: each was tried once, supervised, on
+/// his account (2026-10-22) and seen on his iPhone as written — a tag added and removed, a
+/// link changed, a 15-minute early alert, a section made, renamed, a reminder moved into it,
+/// and the section removed. While off, every write function refuses before the network.
+pub const REMINDER_DETAIL_WRITES: bool = true;
 
 /// The version Apple writes into each of these JSON blobs, as measured.
 const MINIMUM_SUPPORTED_VERSION: i64 = 20_230_430;
@@ -60,7 +61,7 @@ fn gate(enabled: bool) -> Result<()> {
 }
 
 fn writes() -> Result<()> {
-    gate(REMINDER_DETAIL_WRITES || cfg!(test) || crate::supervised_live_test())
+    gate(REMINDER_DETAIL_WRITES)
 }
 
 fn apple_now() -> f64 {
@@ -305,41 +306,48 @@ pub fn early_alert_json(
 }
 
 /// The list's membership file with one reminder placed in `section` (a section record name),
-/// or out of every one. Every other entry, and any key Apple added, is kept as it was; the
-/// entry changed carries `modified_on` (Apple's seconds), which is what devices merge by.
+/// or out of every one. Only that reminder's entry is written: every other entry, and every
+/// other byte of the file Apple wrote — its key order, its numbers as Apple formatted them —
+/// is kept exactly ([`splice_memberships`]). The entry changed carries `modified_on` (Apple's
+/// seconds), which is what devices merge by.
 pub fn place_in_section(
     file: Option<&[u8]>,
     reminder_guid: &str,
     section: Option<&str>,
     modified_on: f64,
 ) -> Result<Vec<u8>> {
-    let mut doc: Value = match file.filter(|b| !b.is_empty()) {
+    let refused = || {
+        Error::Refused(
+            "This list's sections are in a form Skykeep doesn't read, so nothing was moved.".into(),
+        )
+    };
+    let original = file.filter(|b| !b.is_empty());
+    let mut doc: Value = match original {
         None => json!({ "minimumSupportedVersion": MINIMUM_SUPPORTED_VERSION, "memberships": [] }),
-        Some(bytes) => serde_json::from_slice(bytes).map_err(|_| {
-            Error::Refused(
-                "This list's sections are in a form Skykeep doesn't read, so nothing was moved."
-                    .into(),
-            )
-        })?,
+        Some(bytes) => serde_json::from_slice(bytes).map_err(|_| refused())?,
     };
     if !doc.is_object() {
-        return Err(Error::Refused(
-            "This list's sections are in a form Skykeep doesn't read, so nothing was moved.".into(),
-        ));
+        return Err(refused());
     }
-    if !doc.get("memberships").is_some_and(Value::is_array) {
+    if doc.get("memberships").is_some_and(|m| !m.is_array()) {
+        return Err(refused());
+    }
+    if doc.get("memberships").is_none() {
         doc["memberships"] = json!([]);
     }
     let member = bare(reminder_guid).to_string();
     let entries = doc["memberships"]
         .as_array_mut()
-        .expect("made an array above");
+        .expect("checked an array above");
     let at = entries.iter().position(|m| {
         m.get("memberID")
             .and_then(Value::as_str)
             .is_some_and(|id| id.eq_ignore_ascii_case(&member))
     });
     let mut entry = at.map_or_else(|| json!({ "memberID": member }), |i| entries[i].clone());
+    if !entry.is_object() {
+        return Err(refused());
+    }
     match section {
         Some(s) => entry["groupID"] = json!(bare(s)),
         None => {
@@ -350,10 +358,216 @@ pub fn place_in_section(
     }
     entry["modifiedOn"] = json!(modified_on);
     match at {
-        Some(i) => entries[i] = entry,
-        None => entries.push(entry),
+        Some(i) => entries[i] = entry.clone(),
+        None => entries.push(entry.clone()),
     }
-    serde_json::to_vec(&doc).map_err(|e| Error::Protocol(e.to_string()))
+    let Some(bytes) = original else {
+        return serde_json::to_vec(&doc).map_err(|e| Error::Protocol(e.to_string()));
+    };
+    let (changed, appended) = match at {
+        Some(i) => (vec![(i, entry)], None),
+        None => (Vec::new(), Some(entry)),
+    };
+    splice_memberships(bytes, &changed, appended.as_ref(), &doc).ok_or_else(refused)
+}
+
+/// Where a membership file's entries sit in its bytes: the `memberships` array's closing
+/// bracket and each entry's span, or no array at all (`None` inside). `None` for a file this
+/// cannot walk exactly.
+struct MembershipSpans {
+    /// Index of the array's `]`, or of the object's closing `}` when there is no array.
+    close: usize,
+    /// Whether the array (or, with no array, the object) already holds something.
+    has_items: bool,
+    array: bool,
+    entries: Vec<(usize, usize)>,
+}
+
+fn json_ws(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+        i += 1;
+    }
+    i
+}
+
+/// Past the string starting at `i` (its opening quote).
+fn json_string_end(b: &[u8], i: usize) -> Option<usize> {
+    if b.get(i) != Some(&b'"') {
+        return None;
+    }
+    let mut j = i + 1;
+    while j < b.len() {
+        match b[j] {
+            b'\\' => j += 2,
+            b'"' => return Some(j + 1),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Past the value starting at `i`.
+fn json_value_end(b: &[u8], i: usize) -> Option<usize> {
+    match *b.get(i)? {
+        b'"' => json_string_end(b, i),
+        b'{' | b'[' => {
+            let mut depth = 0usize;
+            let mut j = i;
+            while j < b.len() {
+                match b[j] {
+                    b'"' => {
+                        j = json_string_end(b, j)?;
+                        continue;
+                    }
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' => {
+                        depth = depth.checked_sub(1)?;
+                        if depth == 0 {
+                            return Some(j + 1);
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            None
+        }
+        _ => {
+            let mut j = i;
+            while j < b.len() && !matches!(b[j], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r')
+            {
+                j += 1;
+            }
+            (j > i).then_some(j)
+        }
+    }
+}
+
+fn membership_spans(b: &[u8]) -> Option<MembershipSpans> {
+    let mut i = json_ws(b, 0);
+    if b.get(i) != Some(&b'{') {
+        return None;
+    }
+    i = json_ws(b, i + 1);
+    let mut members = 0usize;
+    loop {
+        if b.get(i) == Some(&b'}') {
+            if json_ws(b, i + 1) != b.len() {
+                return None;
+            }
+            return Some(MembershipSpans {
+                close: i,
+                has_items: members > 0,
+                array: false,
+                entries: Vec::new(),
+            });
+        }
+        if members > 0 {
+            if b.get(i) != Some(&b',') {
+                return None;
+            }
+            i = json_ws(b, i + 1);
+        }
+        let key_end = json_string_end(b, i)?;
+        let key: String = serde_json::from_slice(&b[i..key_end]).ok()?;
+        i = json_ws(b, key_end);
+        if b.get(i) != Some(&b':') {
+            return None;
+        }
+        i = json_ws(b, i + 1);
+        let value_end = json_value_end(b, i)?;
+        if key == "memberships" {
+            if b.get(i) != Some(&b'[') {
+                return None;
+            }
+            let mut entries = Vec::new();
+            let mut j = json_ws(b, i + 1);
+            loop {
+                if b.get(j) == Some(&b']') {
+                    if j + 1 != value_end {
+                        return None;
+                    }
+                    let has_items = !entries.is_empty();
+                    return Some(MembershipSpans {
+                        close: j,
+                        has_items,
+                        array: true,
+                        entries,
+                    });
+                }
+                if !entries.is_empty() {
+                    if b.get(j) != Some(&b',') {
+                        return None;
+                    }
+                    j = json_ws(b, j + 1);
+                }
+                let end = json_value_end(b, j)?;
+                entries.push((j, end));
+                j = json_ws(b, end);
+            }
+        }
+        members += 1;
+        i = json_ws(b, value_end);
+    }
+}
+
+/// Apple's membership file with only the named entries rewritten (`changed`, by index) and
+/// one appended, every other byte kept exactly. The result must read back as `expected` — the
+/// whole edit made on the parsed file — or nothing is answered, so a file this walks wrongly
+/// is refused rather than written.
+fn splice_memberships(
+    bytes: &[u8],
+    changed: &[(usize, Value)],
+    appended: Option<&Value>,
+    expected: &Value,
+) -> Option<Vec<u8>> {
+    let spans = membership_spans(bytes)?;
+    let parsed: Value = serde_json::from_slice(bytes).ok()?;
+    let count = parsed
+        .get("memberships")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if spans.array && spans.entries.len() != count {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() + 128);
+    let mut from = 0usize;
+    let mut changed: Vec<&(usize, Value)> = changed.iter().collect();
+    changed.sort_by_key(|(i, _)| *i);
+    for (i, entry) in changed {
+        let (start, end) = *spans.entries.get(*i)?;
+        out.extend_from_slice(&bytes[from..start]);
+        out.extend(serde_json::to_vec(entry).ok()?);
+        from = end;
+    }
+    if let Some(entry) = appended {
+        let text = serde_json::to_vec(entry).ok()?;
+        if spans.array {
+            match spans.entries.last() {
+                Some(&(_, end)) => {
+                    out.extend_from_slice(&bytes[from..end]);
+                    out.push(b',');
+                    from = end;
+                }
+                None => {
+                    out.extend_from_slice(&bytes[from..spans.close]);
+                    from = spans.close;
+                }
+            }
+            out.extend(text);
+        } else {
+            out.extend_from_slice(&bytes[from..spans.close]);
+            from = spans.close;
+            if spans.has_items {
+                out.push(b',');
+            }
+            out.extend_from_slice(b"\"memberships\":[");
+            out.extend(text);
+            out.push(b']');
+        }
+    }
+    out.extend_from_slice(&bytes[from..]);
+    (serde_json::from_slice::<Value>(&out).ok()? == *expected).then_some(out)
 }
 
 /// The checksum written beside the membership file: SHA-512 of its bytes, in hex.
@@ -490,12 +704,16 @@ pub async fn add_tag_cloudkit(
         ZONE,
         &guid,
         "Hashtag",
+        // As a phone writes one (measured on his account, 2026-10-22): the name encrypted,
+        // as every name a person types into Reminders is, `Type` 0 (a tag a person typed),
+        // `CreationDate`, `Imported` 0. No `ResolutionTokenMap`: Apple's carry none.
         json!({
-            // Encrypted as every other name a person types into Reminders is (a list's, a
-            // section's, a smart list's).
             "Name": { "type": "STRING", "value": name, "isEncrypted": true },
             "Reminder": zc.reference_to(ZONE, reminder_guid),
+            "Type": { "type": "NUMBER_INT64", "value": 0 },
+            "CreationDate": { "type": "TIMESTAMP", "value": now_millis() },
             "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+            "Imported": { "type": "NUMBER_INT64", "value": 0 },
         }),
     )
     .await?;
@@ -536,15 +754,11 @@ pub async fn remove_tag_cloudkit(
         without_ids(r, "HashtagIDs", &ids)
     })
     .await?;
+    // Removed as a phone removes one: the Hashtag record deleted outright. Measured on his
+    // account (2026-10-22): 253 Hashtag tombstones in the zone and not one Hashtag an Apple
+    // device left with `Deleted` 1; a tag only marked `Deleted` 1 still showed on his iPhone.
     for guid in &matching {
-        zc.update_record(
-            ZONE,
-            guid,
-            "Hashtag",
-            None,
-            json!({ "Deleted": { "type": "NUMBER_INT64", "value": 1 } }),
-        )
-        .await?;
+        zc.delete_record(ZONE, guid).await?;
     }
     Ok(())
 }
@@ -568,8 +782,9 @@ pub async fn set_url_cloudkit(
         .filter(|a| field::string(a, "Type").as_deref() == Some("URL"))
         .filter_map(field::record_name)
         .collect();
-    let url_field =
-        |u: &str| json!({ "type": "ENCRYPTED_BYTES", "value": B64.encode(u.as_bytes()) });
+    // An encrypted STRING, as the phone writes it (measured on his account, 2026-10-22: a
+    // URL attachment made on an iPhone). Bytes here would not be the field Apple reads.
+    let url_field = |u: &str| json!({ "type": "STRING", "value": u, "isEncrypted": true });
     match (url, existing.first()) {
         (Some(u), Some(guid)) => {
             zc.update_record(
@@ -706,7 +921,10 @@ pub async fn create_section_cloudkit(
     let zc = client(http, root, params);
     let guid = format!("ListSection/{}", new_id());
     let stamp = now_millis();
-    zc.create_record_signed(
+    // A phone's new section carries a token for exactly these four (measured on his account:
+    // `Deleted` and `Imported` get none, `minimumSupportedVersion` one with no field of its
+    // own), so they are stamped and nothing else.
+    zc.create_record(
         ZONE,
         &guid,
         "ListSection",
@@ -716,6 +934,11 @@ pub async fn create_section_cloudkit(
             "CreationDate": { "type": "TIMESTAMP", "value": stamp },
             "Deleted": { "type": "NUMBER_INT64", "value": 0 },
             "Imported": { "type": "NUMBER_INT64", "value": 0 },
+            "ResolutionTokenMap": stamp_only(
+                &json!({}),
+                &["minimumSupportedVersion", "list", "creationDate", "displayName"],
+                apple_now(),
+            ),
         }),
     )
     .await?;
@@ -860,6 +1083,105 @@ pub async fn move_to_section_cloudkit(
             _ => return Err(Error::Refused("That section isn't in this list.".into())),
         }
     }
+    edit_memberships(http, root, &params, list_guid, |current, now| {
+        place_in_section(current, reminder_guid, section, now).map(Some)
+    })
+    .await
+}
+
+/// The list's membership file with every reminder in `section` taken out of it (its entry
+/// kept, without a `groupID`, as Apple keeps a reminder in no section), or `None` when none
+/// is in it. Every other entry and key is kept as it was.
+pub fn out_of_section(
+    file: Option<&[u8]>,
+    section: &str,
+    modified_on: f64,
+) -> Result<Option<Vec<u8>>> {
+    let Some(bytes) = file.filter(|b| !b.is_empty()) else {
+        return Ok(None);
+    };
+    let unreadable = || {
+        Error::Refused(
+            "This list's sections are in a form Skykeep doesn't read, so nothing was changed."
+                .into(),
+        )
+    };
+    let mut doc: Value = serde_json::from_slice(bytes).map_err(|_| unreadable())?;
+    let group = bare(section);
+    let mut changed = Vec::new();
+    for (i, entry) in doc
+        .get_mut("memberships")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(unreadable)?
+        .iter_mut()
+        .enumerate()
+    {
+        let here = entry
+            .get("groupID")
+            .and_then(Value::as_str)
+            .is_some_and(|g| g.eq_ignore_ascii_case(group));
+        if here {
+            if let Some(o) = entry.as_object_mut() {
+                o.remove("groupID");
+                o.insert("modifiedOn".into(), json!(modified_on));
+                changed.push((i, entry.clone()));
+            }
+        }
+    }
+    if changed.is_empty() {
+        return Ok(None);
+    }
+    splice_memberships(bytes, &changed, None, &doc)
+        .map(Some)
+        .ok_or_else(unreadable)
+}
+
+/// Remove a section from its list, as a phone removes one (measured on his account: a
+/// section deleted on an iPhone keeps its record with `Deleted` 1 and no `List`, and only
+/// the `list` token advanced). Its reminders are taken out of it first, so none is left in a
+/// section that is gone; they stay in the list.
+pub async fn delete_section_cloudkit(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    list_guid: &str,
+    section_guid: &str,
+) -> Result<()> {
+    writes()?;
+    let zc = client(http, root, params.clone());
+    match zc.lookup_record(ZONE, section_guid).await? {
+        Some(s) if !deleted(&s) && field::reference(&s, "List").as_deref() == Some(list_guid) => {}
+        _ => return Err(Error::Refused("That section isn't in this list.".into())),
+    }
+    edit_memberships(http, root, &params, list_guid, |current, now| {
+        out_of_section(current, section_guid, now)
+    })
+    .await?;
+    zc.edit_record(ZONE, section_guid, "ListSection", |s| {
+        if deleted(s) {
+            return None;
+        }
+        Some(json!({
+            "Deleted": { "type": "NUMBER_INT64", "value": 1 },
+            "List": { "type": "REFERENCE", "value": null },
+            "ResolutionTokenMap": stamp_only(s, &["list"], apple_now()),
+        }))
+    })
+    .await?;
+    Ok(())
+}
+
+/// Rewrite a list's membership file: `edit` gets the file as Apple holds it now (or none)
+/// and answers the new one, or `None` for no change. Uploaded and written onto the list over
+/// exactly the version read; another device's write meanwhile is read again and kept.
+async fn edit_memberships(
+    http: &reqwest::Client,
+    root: &str,
+    params: &[(String, String)],
+    list_guid: &str,
+    edit: impl Fn(Option<&[u8]>, f64) -> Result<Option<Vec<u8>>>,
+) -> Result<()> {
+    let zc = client(http, root, params.to_vec());
     for _ in 0..5 {
         let Some(list) = zc.lookup_record(ZONE, list_guid).await? else {
             return Err(Error::Refused("That list is no longer in iCloud.".into()));
@@ -884,18 +1206,12 @@ pub async fn move_to_section_cloudkit(
             }
         };
         let now = apple_now();
-        let file = place_in_section(current.as_deref(), reminder_guid, section, now)?;
+        let Some(file) = edit(current.as_deref(), now)? else {
+            return Ok(());
+        };
         let sum = membership_checksum(&file);
-        let receipt = upload_asset(
-            http,
-            root,
-            &params,
-            "List",
-            list_guid,
-            MEMBERSHIP_FILE,
-            file,
-        )
-        .await?;
+        let receipt =
+            upload_asset(http, root, params, "List", list_guid, MEMBERSHIP_FILE, file).await?;
         let changes = json!({
             MEMBERSHIP_FILE: { "type": "ASSETID", "value": receipt },
             MEMBERSHIP_SUM: { "type": "STRING", "value": sum, "isEncrypted": true },
@@ -920,10 +1236,115 @@ mod tests {
         B64.encode(s.as_bytes())
     }
 
-    /// The gate refuses when off, and is off: flipping it is for a supervised live test.
+    /// Apple's own file shape: keys in either order, numbers in 17 significant digits that
+    /// a shortest-form writer would shorten.
+    const APPLE_FILE: &[u8] = br#"{"minimumSupportedVersion":20230430,"memberships":[{"modifiedOn":776521004.53464794,"memberID":"A4722061-AEE0-4B0A-AC0E-595C5FE268BC"},{"memberID":"BA60D351-AF45-451B-AC56-84D5F30BA1BB","modifiedOn":777393833.63318706},{"memberID":"C0FFEE00-0000-0000-0000-000000000001","groupID":"S1","modifiedOn":785142271.29329395}]}"#;
+
+    /// A no-op edit gives back Apple's bytes exactly.
     #[test]
-    fn writes_stay_off_until_a_supervised_live_test() {
-        const { assert!(!REMINDER_DETAIL_WRITES) };
+    fn a_no_op_splice_is_byte_identical() {
+        let doc: Value = serde_json::from_slice(APPLE_FILE).unwrap();
+        assert_eq!(
+            splice_memberships(APPLE_FILE, &[], None, &doc).unwrap(),
+            APPLE_FILE
+        );
+        // Spaced and newlined, too.
+        let spaced = b"{ \"memberships\" : [ {\"memberID\":\"A\", \"modifiedOn\":1.10000000000000009} ,\n {\"memberID\":\"B\"} ] , \"x\":\"]}\\\"\" }";
+        let doc: Value = serde_json::from_slice(spaced).unwrap();
+        assert_eq!(splice_memberships(spaced, &[], None, &doc).unwrap(), spaced);
+        // Nothing to take out: nothing to write.
+        assert!(out_of_section(Some(APPLE_FILE), "ListSection/S9", 9.0)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Moving one reminder changes only its entry's span: every byte before and after it is
+    /// Apple's. A new member is appended after the last entry and nothing else moves.
+    #[test]
+    fn a_move_changes_only_that_entrys_span() {
+        let second = br#"{"memberID":"BA60D351-AF45-451B-AC56-84D5F30BA1BB","modifiedOn":777393833.63318706}"#;
+        let start = APPLE_FILE
+            .windows(second.len())
+            .position(|w| w == second)
+            .unwrap();
+        let end = start + second.len();
+        let out = place_in_section(
+            Some(APPLE_FILE),
+            "Reminder/BA60D351-AF45-451B-AC56-84D5F30BA1BB",
+            Some("ListSection/S2"),
+            9.5,
+        )
+        .unwrap();
+        assert_eq!(out[..start], APPLE_FILE[..start]);
+        let tail = &APPLE_FILE[end..];
+        assert_eq!(out[out.len() - tail.len()..], *tail);
+        let entry: Value = serde_json::from_slice(&out[start..out.len() - tail.len()]).unwrap();
+        assert_eq!(
+            entry,
+            json!({"memberID":"BA60D351-AF45-451B-AC56-84D5F30BA1BB","groupID":"S2","modifiedOn":9.5})
+        );
+
+        // A new member: Apple's text up to the array's end, then the one entry.
+        let close = APPLE_FILE.len() - 2;
+        let added = place_in_section(
+            Some(APPLE_FILE),
+            "Reminder/NEW",
+            Some("ListSection/S2"),
+            9.5,
+        )
+        .unwrap();
+        assert_eq!(added[..close], APPLE_FILE[..close]);
+        assert_eq!(
+            &added[close..],
+            br#",{"groupID":"S2","memberID":"NEW","modifiedOn":9.5}]}"#
+        );
+
+        // Out of a section: only the entries in it change.
+        let s1 = br#"{"memberID":"C0FFEE00-0000-0000-0000-000000000001","groupID":"S1","modifiedOn":785142271.29329395}"#;
+        let at = APPLE_FILE.windows(s1.len()).position(|w| w == s1).unwrap();
+        let out = out_of_section(Some(APPLE_FILE), "ListSection/S1", 10.0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(out[..at], APPLE_FILE[..at]);
+        assert_eq!(
+            &out[at..],
+            br#"{"memberID":"C0FFEE00-0000-0000-0000-000000000001","modifiedOn":10.0}]}"#
+        );
+    }
+
+    /// Removing a section takes every reminder in it out of it — the entry kept, without a
+    /// `groupID`, as Apple keeps a reminder in no section — and touches nothing else.
+    #[test]
+    fn removing_a_section_takes_its_reminders_out_of_it() {
+        let file = br#"{"minimumSupportedVersion":20230430,"memberships":[
+            {"memberID":"A","groupID":"S1","modifiedOn":1.5},
+            {"memberID":"B","groupID":"S2","modifiedOn":2.5},
+            {"memberID":"C","modifiedOn":3.5}]}"#;
+        let out = out_of_section(Some(file), "ListSection/S1", 9.0)
+            .unwrap()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["minimumSupportedVersion"], 20_230_430);
+        let m = v["memberships"].as_array().unwrap();
+        assert_eq!(m[0], json!({ "memberID": "A", "modifiedOn": 9.0 }));
+        assert_eq!(
+            m[1],
+            json!({ "memberID": "B", "groupID": "S2", "modifiedOn": 2.5 })
+        );
+        assert_eq!(m[2], json!({ "memberID": "C", "modifiedOn": 3.5 }));
+        // Nobody in it: nothing to write.
+        assert!(out_of_section(Some(file), "ListSection/S9", 9.0)
+            .unwrap()
+            .is_none());
+        assert!(out_of_section(None, "ListSection/S1", 9.0)
+            .unwrap()
+            .is_none());
+    }
+
+    /// The gate refuses when off; it is on since the supervised live test (2026-10-22).
+    #[test]
+    fn the_gate_refuses_when_off() {
+        const { assert!(REMINDER_DETAIL_WRITES) };
         assert!(matches!(gate(false), Err(Error::Refused(_))));
         assert!(gate(true).is_ok());
     }
@@ -1247,6 +1668,44 @@ mod tests {
             );
         }
 
+        /// Removing a tag unlists it from the reminder and deletes its Hashtag record outright,
+        /// as a phone does: a tag only marked `Deleted` still shows on an iPhone.
+        #[tokio::test]
+        async fn removing_a_tag_deletes_its_record() {
+            let server = MockServer::start().await;
+            let mut r = reminder();
+            r["fields"]["HashtagIDs"] = json!({ "type": "STRING_LIST", "value": ["T1", "T2"] });
+            lookup(&server, "Reminder/R1", r).await;
+            lookup(&server, "Hashtag/T1", json!({ "recordName": "Hashtag/T1", "recordType": "Hashtag",
+                "recordChangeTag": "h1", "fields": { "Name": { "type": "STRING", "value": "Errands" },
+                "Deleted": { "type": "NUMBER_INT64", "value": 0 } } })).await;
+            lookup(
+                &server,
+                "Hashtag/T2",
+                json!({ "recordName": "Hashtag/T2", "recordType": "Hashtag",
+                "recordChangeTag": "h2", "fields": { "Name": { "type": "STRING", "value": "Home" },
+                "Deleted": { "type": "NUMBER_INT64", "value": 0 } } }),
+            )
+            .await;
+            modify_ok(&server).await;
+            let http = reqwest::Client::new();
+            remove_tag_cloudkit(&http, &server.uri(), vec![], "Reminder/R1", "#errands")
+                .await
+                .unwrap();
+            let ops = modifies(&server.received_requests().await.unwrap());
+            assert_eq!(ops.len(), 2, "{ops:?}");
+            assert_eq!(ops[0]["operationType"], "update");
+            assert_eq!(
+                ops[0]["record"]["fields"]["HashtagIDs"]["value"],
+                json!(["T2"])
+            );
+            assert_eq!(ops[1]["operationType"], "forceDelete");
+            assert_eq!(ops[1]["record"]["recordName"], "Hashtag/T1");
+            assert!(ops
+                .iter()
+                .all(|o| o["record"]["recordName"] != "Hashtag/T2"));
+        }
+
         #[tokio::test]
         async fn a_link_is_a_new_url_attachment() {
             let server = MockServer::start().await;
@@ -1266,7 +1725,11 @@ mod tests {
             let made = &ops[0]["record"];
             assert_eq!(made["recordType"], "Attachment");
             assert_eq!(made["fields"]["Type"]["value"], "URL");
-            assert_eq!(made["fields"]["URL"]["value"], b64("https://apple.com"));
+            // An encrypted string, as a phone writes it, not bytes.
+            assert_eq!(
+                made["fields"]["URL"],
+                json!({ "type": "STRING", "value": "https://apple.com", "isEncrypted": true })
+            );
             let id = bare(made["recordName"].as_str().unwrap()).to_string();
             assert_eq!(
                 ops[1]["record"]["fields"]["AttachmentIDs"]["value"],

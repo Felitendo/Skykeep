@@ -102,7 +102,15 @@
      selection's "3 Photos Selected") no longer has the engine lay out every built month again
      to find out. A click that selects went from ~80 ms of work to ~20 in WebKit. */
   contain: strict;
+  /* Never moved by the engine to follow a box: every month is as tall unbuilt as built, so
+     nothing above the view changes height. With anchoring on, WebKit followed the block below a
+     month's built rows as rows were built over it, and the view slid down a few rows a frame —
+     a jump landed months away, and the top of the grid slid up under the header. */
+  overflow-anchor: none;
 }
+/* Its scrollbar starts under the header: drawn under it, the bar's thumb was hidden exactly
+   when the grid was at the top. */
+.px-scroll::-webkit-scrollbar-track { margin-top: calc(var(--bar, 68px) + 4px); }
 /* The rectangle swept out to select (see sweepStart): drawn by paint where it lies, never moved
    as a layer. */
 .px-sweep {
@@ -344,7 +352,7 @@
   box-shadow: none;
 }
 .px-video img { max-width: 100%; max-height: calc(100vh - 120px); object-fit: contain; }
-.px-video video { display: block; background-color: #000; background-size: 100% 100%; outline: none; }
+.px-video video { display: block; background-size: 100% 100%; outline: none; }
 .px-play {
   position: absolute;
   display: grid;
@@ -356,6 +364,23 @@
   color: #fff;
 }
 .px-video:hover .px-play { background: rgba(0, 0, 0, 0.65); }
+.px-video-hold { position: relative; display: grid; place-items: center; max-width: 100%; max-height: 100%; }
+.px-video-note {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  translate: -50% 0;
+  max-width: min(440px, calc(100% - 32px));
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgba(28, 28, 30, 0.78);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: var(--t-12, 12px);
+  line-height: 1.4;
+  text-align: center;
+  pointer-events: none;
+}
 
 /* What is dragged: the photo, with how many when it is more than one. */
 .px-ghost { position: fixed; top: -200px; left: -200px; width: 72px; height: 72px; }
@@ -380,15 +405,18 @@
 .px-slide {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  /* No CSS animation: the arriving photo fades in over the leaving one frame by frame from the
-     page (fadeIn), the leaving one still beneath it. The slow zoom across each photo was a
-     long compositor animation on a full-screen picture — the kind that glitched on his screen. */
+  /* No CSS animation: the arriving layer's opacity is set by the page frame by frame
+     (Slideshow.tsx), the leaving one whole beneath it. The two layers are made once and take
+     turns; never torn down, so neither paints an empty frame. */
   z-index: 1;
+  pointer-events: none;
 }
-.px-slide.is-leaving { z-index: 0; pointer-events: none; }
+.px-slide > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.px-slide > img:not([src]) { visibility: hidden; }
+/* A video's film, in its picture's own box, drawn over its picture once a frame is here. */
+.px-slide-film { position: absolute; overflow: hidden; }
+.px-slide-film[hidden] { display: none; }
+.px-slide-film > video { display: block; width: 100%; height: 100%; object-fit: contain; background: transparent; }
 .px-show-bar {
   position: absolute;
   z-index: 2;
@@ -593,6 +621,8 @@
   opacity: 0.82;
 }
 .px-slip:hover { opacity: 1; }
+/* A slip whose photo is still on its way: its place, nothing to press. */
+.px-slip.is-waiting { pointer-events: none; }
 .px-slip img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .px-slip.is-shown { width: 54px; top: 0; height: 44px; opacity: 1; }
 /* The shown one's frame drawn inside it, over the picture: drawn outside, the strip's own edge
@@ -689,10 +719,31 @@
 
 /* ---- a video, as Photos plays one: the film alone, its controls in a capsule floating over
    its foot that fades while the pointer rests (always there while paused) ----------------- */
-.px-player { position: relative; display: block; overflow: hidden; max-width: none; max-height: none; background: #000 center / 100% 100% no-repeat; }
-.px-player > video { display: block; width: 100%; height: 100%; object-fit: contain; outline: none; }
+.px-player { position: relative; display: block; overflow: hidden; max-width: none; max-height: none; background: transparent center / 100% 100% no-repeat; }
+.px-player > video { position: relative; z-index: 1; display: block; width: 100%; height: 100%; object-fit: contain; outline: none; background: transparent; }
+/* The video's own picture under the film until a frame of it is on screen. */
+.px-player-poster { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+/* Waiting on the network: a small ring, never a black box. */
+.px-player-wait {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 50%;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #fff;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.35);
+  animation: px-spin 0.9s linear infinite;
+  pointer-events: none;
+}
+@keyframes px-spin { to { rotate: 360deg; } }
+@media (prefers-reduced-motion: reduce) { .px-player-wait { animation: none; } }
 .px-player-bar {
   position: absolute;
+  z-index: 3;
   left: 50%;
   bottom: 14px;
   width: min(560px, calc(100% - 28px));
@@ -801,7 +852,8 @@
   background: var(--accent);
 }
 /* A Live Photo's moving part, exactly over its still. */
-.px-live { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; pointer-events: none; }
+.px-live-frame { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.px-live { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; pointer-events: none; background: transparent; }
 
 /* ---- going to a month: the years down the side, a year's months as tiles with a photo -- */
 .px-jump {

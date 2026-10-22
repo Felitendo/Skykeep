@@ -167,11 +167,17 @@ impl Default for Mover<'_> {
 /// identifier to run as — `current` (tauri.conf.json's), or an earlier one whose folders could
 /// not be moved this time.
 pub fn at_launch(current: &str) -> String {
-    // One running under the current identifier: the single-instance plugin hands off to it.
-    // Nothing is moved under a running app.
+    // One running under the current identifier: handed this launch's arguments, as the
+    // single-instance plugin would hand them, and this launch ends — here, before GTK, WebKit
+    // and Tauri are brought up only for the plugin to find the same instance and exit. Nothing
+    // is moved under a running app.
+    crate::timing::mark("asking for a running instance");
     if instance::running(current) {
-        return current.to_string();
+        instance::hand_off(current);
+        crate::timing::mark("handed off");
+        std::process::exit(0);
     }
+    crate::timing::mark("none under the current identifier");
     // One running under an earlier one (the build before this one, still open after an
     // update, or this build after a failed move): it has the library open, so nothing moves
     // under it. It is shown, as the single-instance plugin would show it, and this launch ends.

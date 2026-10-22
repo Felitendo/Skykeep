@@ -17,7 +17,7 @@ await ctx.addInitScript(() => {
   };
 });
 const page = await ctx.newPage();
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.goto(process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await page.locator(".nav-item", { hasText: "Contacts" }).click();
 await page.waitForTimeout(400);
 await page.locator(".contact-row", { hasText: "Zoya" }).click();
@@ -32,15 +32,29 @@ ok(/birthday\s*(17 March|March 17)/i.test(card) && !card.includes("1604"),
 
 await page.getByRole("button", { name: "Edit", exact: true }).click();
 await page.waitForTimeout(200);
-const noYear = page.getByLabel("Year unknown");
-ok(await noYear.isChecked(), "editing keeps it as a birthday with no year", "the year-unknown box is not ticked");
-await noYear.uncheck();
-await page.getByLabel("Birthday").fill("1998-03-17");
+// Month, day and year as three fields, the year left empty for a birthday Apple keeps without one.
+const month = await page.getByLabel("Birthday, month").innerText();
+const day = await page.getByLabel("Birthday, day").inputValue();
+const year = await page.getByLabel("Birthday, year").inputValue();
+ok(/March/.test(month) && day === "17" && year === "", "editing keeps it as a birthday with no year",
+  `month ${month}, day ${day}, year ${year}`);
+await page.getByLabel("Birthday, year").fill("1998");
 await page.getByRole("button", { name: "Save" }).click();
 await page.waitForTimeout(300);
 const sent = await page.evaluate(() => (window.__contactSaves ?? []).at(-1));
 const birthday = JSON.stringify(sent ?? {}).match(/"birthday":"([^"]*)"/)?.[1];
 ok(birthday === "1998-03-17", "and a birthday set here goes to iCloud as Apple writes it", `sent: ${birthday}`);
+
+// The year taken away again: Apple's no-year 1604.
+await page.locator(".contact-row", { hasText: "Zoya" }).click();
+await page.getByRole("button", { name: "Edit", exact: true }).click();
+await page.waitForTimeout(200);
+await page.getByLabel("Birthday, year").fill("");
+await page.getByLabel("Birthday, day").fill("31");
+await page.getByRole("button", { name: "Save" }).click();
+await page.waitForTimeout(300);
+const again = JSON.stringify(await page.evaluate(() => (window.__contactSaves ?? []).at(-1)) ?? {}).match(/"birthday":"([^"]*)"/)?.[1];
+ok(again === "1604-03-31", "with no year it goes as Apple writes one", `sent: ${again}`);
 
 await b.close();
 process.exitCode = failures === 0 ? 0 : 1;

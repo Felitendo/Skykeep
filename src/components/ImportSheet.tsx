@@ -14,12 +14,17 @@ import "../styles/intake.css";
  * Mounted once per window; it shows the files that arrived for this window, one at a time.
  */
 export function ImportSheet() {
-  const [queue, setQueue] = useState<Arrival[]>([]);
+  // Each file with an id of its own, given as it arrives: the sheet is keyed on it and put
+  // away by it. Keyed on the queue's length, a second file arriving mid-import remade the
+  // sheet with Add live again (the events added twice); put away as "the first", a finished
+  // import whose sheet had already gone dropped the next file unseen.
+  const [queue, setQueue] = useState<{ id: number; arrival: Arrival }[]>([]);
+  const nextId = useRef(0);
 
   const collect = useCallback(() => {
     intakeApi
       .pending()
-      .then((more) => more.length && setQueue((q) => [...q, ...more]))
+      .then((more) => more.length && setQueue((q) => [...q, ...more.map((arrival) => ({ id: nextId.current++, arrival }))]))
       .catch(() => {});
   }, []);
 
@@ -31,15 +36,16 @@ export function ImportSheet() {
     };
   }, [collect]);
 
-  const current = queue[0];
-  if (!current) return null;
-  const done = () => setQueue((q) => q.slice(1));
+  const head = queue[0];
+  if (!head) return null;
+  const current = head.arrival;
+  const done = () => setQueue((q) => q.filter((x) => x.id !== head.id));
   return createPortal(
     <div className="modal-veil ix-veil">
       {current.kind === "events" ? (
-        <EventsSheet key={current.file + queue.length} arrival={current} onDone={done} />
+        <EventsSheet key={head.id} arrival={current} onDone={done} />
       ) : current.kind === "contacts" ? (
-        <ContactsSheet key={current.file + queue.length} arrival={current} onDone={done} />
+        <ContactsSheet key={head.id} arrival={current} onDone={done} />
       ) : (
         <Shell label={`Can’t open “${current.file}”`} onCancel={done}>
           <h2>Can’t open “{current.file}”</h2>
@@ -177,7 +183,8 @@ function EventsSheet({ arrival, onDone }: { arrival: Extract<Arrival, { kind: "e
   const options = (calendars ?? []).map((c) => ({ value: c.guid, label: c.title }));
 
   return (
-    <Shell label={`Import “${arrival.file}”`} onCancel={onDone}>
+    // Not put away mid-import: the import finishing would then put away the next file.
+    <Shell label={`Import “${arrival.file}”`} onCancel={busy ? () => {} : onDone}>
       <div className="ix-head">
         <h2>{heading}</h2>
         {fresh.length > 0 && calendars && calendars.length > 0 && (
@@ -258,7 +265,7 @@ function ContactsSheet({ arrival, onDone }: { arrival: Extract<Arrival, { kind: 
   }
 
   return (
-    <Shell label={`Import “${arrival.file}”`} onCancel={onDone}>
+    <Shell label={`Import “${arrival.file}”`} onCancel={busy ? () => {} : onDone}>
       <h2>{heading}</h2>
       <p className="ix-file">{arrival.file}</p>
       <ul className="ix-list" aria-label="Contacts in this file">

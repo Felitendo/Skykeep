@@ -5,11 +5,11 @@
  */
 import { useActiveRef } from "../../lib/screen";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { fitSrc, type Photo } from "../../lib/ipc";
+import { fitSrc } from "../../lib/ipc";
 import { Portal } from "../../components/Portal";
 import { fadeIn } from "../../lib/fade";
 
-export type MonthCover = { label: string; year: number; month: number; cover: Photo };
+export type MonthCover = { label: string; year: number; month: number; cover: { id: string } };
 
 const SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 

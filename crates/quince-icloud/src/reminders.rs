@@ -395,6 +395,10 @@ use crate::cloudkit::{field, ZoneClient};
 #[path = "reminders_details.rs"]
 pub mod details;
 
+/// The rest of the Details screen: the repeat whole, time zone, Urgent, a place, a person.
+#[path = "reminders_more.rs"]
+pub mod more;
+
 const CONTAINER: &str = "com.apple.reminders";
 const ZONE: &str = "Reminders";
 
@@ -831,6 +835,9 @@ fn apply_cloudkit_whole(
         whole: !incremental,
         ..Default::default()
     };
+    // Repeat rules and place triggers, kept whole beside their reminders.
+    let mut parts: Vec<quince_core::reminders::ReminderPart> = Vec::new();
+    let mut gone_parts: Vec<String> = Vec::new();
 
     for record in &records {
         let Some(name) = field::record_name(record) else {
@@ -851,6 +858,7 @@ fn apply_cloudkit_whole(
             if removed {
                 gone_reminders.push(name.clone());
                 gone_sections.push(name.clone());
+                gone_parts.push(name.clone());
                 gone_alarms.push(name.clone());
                 details.gone.push(name.clone());
                 gone_lists.push(name);
@@ -930,11 +938,21 @@ fn apply_cloudkit_whole(
                 (false, Some(alarm)) => alarms.push(alarm),
                 _ => gone_alarms.push(name),
             },
-            "AlarmTrigger" => match (removed, trigger_from_record(record)) {
-                (false, Some(trigger)) => triggers.push(trigger),
-                _ => gone_alarms.push(name),
-            },
+            "AlarmTrigger" => {
+                match (removed, more::part_from_record(record)) {
+                    (false, Some(part)) => parts.push(part),
+                    _ => gone_parts.push(name.clone()),
+                }
+                match (removed, trigger_from_record(record)) {
+                    (false, Some(trigger)) => triggers.push(trigger),
+                    _ => gone_alarms.push(name),
+                }
+            }
             "RecurrenceRule" => {
+                match (removed, more::part_from_record(record)) {
+                    (false, Some(part)) => parts.push(part),
+                    _ => gone_parts.push(name.clone()),
+                }
                 if !removed {
                     if let Some(target) = field::reference(record, "Reminder") {
                         let frequency = field::int(record, "Frequency").unwrap_or(0);
@@ -1070,6 +1088,7 @@ fn apply_cloudkit_whole(
         library.set_reminder_repeat(target, *frequency, *interval)?;
     }
     library.put_alarms(&alarms, &triggers, &gone_alarms, !incremental)?;
+    library.put_reminder_parts(&parts, &gone_parts, !incremental)?;
     if !gone_reminders.is_empty() || !gone_lists.is_empty() {
         library.forget_reminders(&gone_reminders, &gone_lists)?;
     }
@@ -1373,14 +1392,43 @@ async fn place_in_list(
     Ok(())
 }
 
-/// How often a reminder comes back.
+/// How often a reminder comes back, and until when.
 ///
-/// Apple's frequency is 0 daily, 1 weekly, 2 monthly, 3 yearly — the same numbering the
-/// stored rule uses, so nothing is translated between here and the wire.
+/// Apple's frequency is 0 daily, 1 weekly, 2 monthly, 3 yearly, 4 hourly — the same
+/// numbering the stored rule uses, so nothing is translated between here and the wire. The
+/// phone's presets are these with an interval: Biweekly is weekly every 2, Every 3 Months is
+/// monthly every 3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct Repeat {
     pub frequency: i64,
     pub interval: i64,
+}
+
+/// A `RecurrenceRule` record's fields, as the iPhone writes one: the five numbers every rule
+/// on a real account carries, `EndDate` only when the repeat ends, and the reminder it
+/// governs. Nothing else — a field Apple did not write is not invented here.
+fn rule_fields(repeat: &Repeat, end_at: Option<i64>, days: &[i64], reminder: Value) -> Value {
+    let mut fields = serde_json::json!({
+        "Frequency": { "type": "NUMBER_INT64", "value": repeat.frequency },
+        "Interval": { "type": "NUMBER_INT64", "value": repeat.interval.clamp(1, 1_000) },
+        "FirstDayOfTheWeek": { "type": "NUMBER_INT64", "value": 0 },
+        "OccurrenceCount": { "type": "NUMBER_INT64", "value": 0 },
+        "Imported": { "type": "NUMBER_INT64", "value": 0 },
+        "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+        "Reminder": reminder,
+    });
+    // Weekdays, Weekends or days chosen in Custom: a weekly rule's `DaysOfTheWeek`, BYTES.
+    if repeat.frequency == 1 && !days.is_empty() {
+        fields["DaysOfTheWeek"] = serde_json::json!({
+            "type": "BYTES",
+            "value": quince_core::reminders::days_of_week_to(days),
+        });
+    }
+    if let Some(end) = end_at {
+        fields["EndDate"] =
+            serde_json::json!({ "type": "TIMESTAMP", "value": end.saturating_mul(1000) });
+    }
+    fields
 }
 
 /// Set or clear a reminder's repeat.
@@ -1396,6 +1444,21 @@ pub async fn set_recurrence_cloudkit(
     params: Vec<(String, String)>,
     reminder: &Reminder,
     repeat: Option<Repeat>,
+) -> Result<()> {
+    set_repeat_until_cloudkit(http, ckdatabasews_root, params, reminder, repeat, None, &[]).await
+}
+
+/// [`set_recurrence_cloudkit`] with the phone's End Repeat — `end_at` (seconds) ends it on that
+/// date, `None` repeats for ever — and, for a weekly repeat, the weekdays it falls on (1 Sunday
+/// … 7 Saturday; Weekdays is 2–6, Weekends 1 and 7), empty for its due date's day.
+pub async fn set_repeat_until_cloudkit(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder: &Reminder,
+    repeat: Option<Repeat>,
+    end_at: Option<i64>,
+    days: &[i64],
 ) -> Result<()> {
     // Apple will not schedule a repeat with nothing to repeat from, and a reminder that
     // repeats from no date would simply never come back.
@@ -1426,8 +1489,13 @@ pub async fn set_recurrence_cloudkit(
     let wanted: Vec<String> = match repeat {
         None => Vec::new(),
         Some(repeat) => {
-            if !(0..=3).contains(&repeat.frequency) {
+            if !(0..=more::MOST_FREQUENCY).contains(&repeat.frequency) {
                 return Err(Error::Protocol("that is not a repeat Apple knows".into()));
+            }
+            if end_at.is_some_and(|end| reminder.due_at.is_some_and(|due| end < due)) {
+                return Err(Error::Protocol(
+                    "choose an end date on or after the day it is due".into(),
+                ));
             }
             // The list holds the bare id; the record is named with a prefix. Apple's own
             // records are written that way, and a mismatch leaves a rule nothing points at.
@@ -1437,15 +1505,12 @@ pub async fn set_recurrence_cloudkit(
                     ZONE,
                     &format!("RecurrenceRule/{id}"),
                     "RecurrenceRule",
-                    serde_json::json!({
-                        "Frequency": { "type": "NUMBER_INT64", "value": repeat.frequency },
-                        "Interval": { "type": "NUMBER_INT64", "value": repeat.interval.clamp(1, 1_000) },
-                        "FirstDayOfTheWeek": { "type": "NUMBER_INT64", "value": 0 },
-                        "OccurrenceCount": { "type": "NUMBER_INT64", "value": 0 },
-                        "Imported": { "type": "NUMBER_INT64", "value": 0 },
-                        "Deleted": { "type": "NUMBER_INT64", "value": 0 },
-                        "Reminder": client.reference_to(ZONE, &reminder.guid),
-                    }),
+                    rule_fields(
+                        &repeat,
+                        end_at,
+                        days,
+                        client.reference_to(ZONE, &reminder.guid),
+                    ),
                 )
                 .await?;
             vec![id]
@@ -1664,7 +1729,9 @@ async fn edit_once(
             "AllDay".into(),
             serde_json::json!({ "type": "NUMBER_INT64", "value": i64::from(all_day) }),
         );
-        if due.is_some() && !all_day {
+        // A reminder already kept in a zone keeps it, as the phone does when its time is
+        // changed: the field is left out, so Apple's copy stays exactly as it was.
+        if due.is_some() && !all_day && reminder.timezone.is_none() {
             let zone = jiff::tz::TimeZone::system();
             fields.insert(
                 "TimeZone".into(),
@@ -2086,6 +2153,29 @@ pub async fn set_completed_cloudkit(
         } else {
             format!("RecurrenceRule/{rule}")
         };
+        // The last tick of a repeat that ends (End Repeat On Date): the phone completes it
+        // rather than moving it past its end. Read from Apple's rule as it is now, and from
+        // when it is due at Apple now.
+        let rule_now = client.lookup_record(ZONE, &rule).await?;
+        let end = rule_now
+            .as_ref()
+            .and_then(|r| field::timestamp_seconds(r, "EndDate"));
+        let days = rule_now
+            .as_ref()
+            .and_then(|r| field::string(r, "DaysOfTheWeek"))
+            .and_then(|b| quince_core::reminders::days_of_week_from(&b))
+            .unwrap_or_default();
+        let mut at_apple = reminder.clone();
+        at_apple.due_at = field::timestamp_seconds(&current, "DueDate").or(reminder.due_at);
+        if at_apple.tick_ends_series_on(end, &days, now_millis() / 1000) {
+            return complete_once(
+                &client,
+                reminder,
+                current.get("recordChangeTag").and_then(Value::as_str),
+                true,
+            )
+            .await;
+        }
         let zone = reminder.timezone.clone().unwrap_or_else(|| {
             jiff::tz::TimeZone::system()
                 .iana_name()
@@ -2114,26 +2204,30 @@ pub async fn set_completed_cloudkit(
         return Ok(());
     }
 
+    complete_once(&client, reminder, reminder.etag.as_deref(), done).await
+}
+
+/// Set or clear `Completed` on the reminder itself, with when, as the phone records it.
+async fn complete_once(
+    client: &ZoneClient<'_>,
+    reminder: &Reminder,
+    tag: Option<&str>,
+    done: bool,
+) -> Result<()> {
     client
-        .update_record_signed(
-            ZONE,
-            &reminder.guid,
-            "Reminder",
-            reminder.etag.as_deref(),
-            {
-                let mut fields = serde_json::json!({
-                    "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" },
-                    "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
-                });
-                // When it was ticked, as the phone records it: without it a reminder ticked
-                // again here kept the date it was first completed on, everywhere.
-                if done {
-                    fields["CompletionDate"] =
-                        serde_json::json!({ "value": now_millis(), "type": "TIMESTAMP" });
-                }
-                fields
-            },
-        )
+        .update_record_signed(ZONE, &reminder.guid, "Reminder", tag, {
+            let mut fields = serde_json::json!({
+                "Completed": { "value": i64::from(done), "type": "NUMBER_INT64" },
+                "LastModifiedDate": { "value": now_millis(), "type": "TIMESTAMP" },
+            });
+            // When it was ticked, as the phone records it: without it a reminder ticked
+            // again here kept the date it was first completed on, everywhere.
+            if done {
+                fields["CompletionDate"] =
+                    serde_json::json!({ "value": now_millis(), "type": "TIMESTAMP" });
+            }
+            fields
+        })
         .await?;
     Ok(())
 }
@@ -5112,5 +5206,529 @@ mod atomic_apply_tests {
             Some("old")
         );
         assert!(library.conn().is_autocommit());
+    }
+}
+
+/// Writes compared field for field with what the iPhone wrote on the founder's own "Skykeep
+/// Test" reminder (personal text replaced): a write sends only what changed, so every field
+/// Skykeep does not touch — tags, the place, the person, Urgent — stays exactly as the phone
+/// left it.
+#[cfg(test)]
+mod parity_write_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const GUID: &str = "Reminder/B51EAE34-018C-4F06-B97C-130C02E98799";
+
+    /// The phone's record, as `reminders_more` tests hold it, plus the fields every write
+    /// must leave alone.
+    fn phone_record() -> Value {
+        json!({
+            "recordName": GUID,
+            "recordType": "Reminder",
+            "recordChangeTag": "jfv",
+            "fields": {
+                "AlarmIDs": { "type": "STRING_LIST", "value": ["18154128-7CA1-46FA-9AB3-1E597CF2D3DC", "4FB1FED5-72D2-486C-A9F9-4F2123118C4A"] },
+                "AllDay": { "type": "NUMBER_INT64", "value": 0 },
+                "AttachmentIDs": { "type": "STRING_LIST", "value": ["1274F1BE-5C0B-4C15-AB91-0BBF5D252476"] },
+                "Completed": { "type": "NUMBER_INT64", "value": 0 },
+                "ContactHandles": { "isEncrypted": true, "type": "STRING", "value": "{\"emails\":[\"someone@example.com\"]}" },
+                "DueDate": { "type": "TIMESTAMP", "value": 1_792_681_200_000_i64 },
+                "Flagged": { "type": "NUMBER_INT64", "value": 1 },
+                "HashtagIDs": { "type": "STRING_LIST", "value": ["E805CCFA-D039-4FC5-ABEB-780FA9B9A3B8"] },
+                "Priority": { "type": "NUMBER_INT64", "value": 5 },
+                "RecurrenceRuleIDs": { "type": "STRING_LIST", "value": ["049EF968-7FAE-4585-94FB-E22D108B537D"] },
+                "TimeZone": { "type": "STRING", "value": "America/New_York" },
+                "TitleDocument": { "type": "ENCRYPTED_BYTES", "value": crate::ckdocument::text_to_base64("Test") },
+                "UrgentPresentationAlarmsChecksum": { "isEncrypted": true, "type": "STRING", "value": "ddfd7f9a" }
+            }
+        })
+    }
+
+    fn reminder() -> Reminder {
+        Reminder {
+            guid: GUID.into(),
+            list_guid: "List/FED5023E-668F-4670-89CB-2B7765A41F53".into(),
+            title: "Test".into(),
+            notes: None,
+            due_at: Some(1_792_681_200),
+            completed_at: None,
+            priority: 5,
+            parent_guid: None,
+            flagged: true,
+            recur_frequency: Some(0),
+            recur_interval: Some(1),
+            etag: Some("jfv".into()),
+            raw: Some(phone_record().to_string()),
+            timezone: Some("America/New_York".into()),
+            section_guid: None,
+            all_day: false,
+        }
+    }
+
+    async fn phone() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [phone_record()] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": GUID }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn operations(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("/records/modify"))
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["operations"][0].clone())
+            .collect()
+    }
+
+    fn keys(fields: &Value) -> Vec<String> {
+        let mut k: Vec<String> = fields.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    /// The phone's daily rule, field for field (less the reminder reference).
+    #[test]
+    fn a_daily_rule_is_the_phones_daily_rule() {
+        let written = rule_fields(
+            &Repeat {
+                frequency: 0,
+                interval: 1,
+            },
+            None,
+            &[],
+            json!("ref"),
+        );
+        let phone = json!({
+            "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+            "FirstDayOfTheWeek": { "type": "NUMBER_INT64", "value": 0 },
+            "Frequency": { "type": "NUMBER_INT64", "value": 0 },
+            "Imported": { "type": "NUMBER_INT64", "value": 0 },
+            "Interval": { "type": "NUMBER_INT64", "value": 1 },
+            "OccurrenceCount": { "type": "NUMBER_INT64", "value": 0 },
+            "Reminder": "ref"
+        });
+        assert_eq!(written, phone);
+    }
+
+    /// Hourly ending on a date, as the phone wrote one: frequency 4 and a TIMESTAMP end.
+    #[test]
+    fn an_hourly_rule_ending_on_a_date_is_the_phones() {
+        let written = rule_fields(
+            &Repeat {
+                frequency: 4,
+                interval: 1,
+            },
+            Some(1_791_557_520),
+            &[],
+            json!("ref"),
+        );
+        assert_eq!(written["Frequency"]["value"], 4);
+        assert_eq!(
+            written["EndDate"],
+            json!({ "type": "TIMESTAMP", "value": 1_791_557_520_000_i64 })
+        );
+        assert_eq!(
+            keys(&written),
+            [
+                "Deleted",
+                "EndDate",
+                "FirstDayOfTheWeek",
+                "Frequency",
+                "Imported",
+                "Interval",
+                "OccurrenceCount",
+                "Reminder"
+            ]
+        );
+    }
+
+    /// "Repeating 1" as the phone wrote it — Weekdays, ending on a date — field for field.
+    #[test]
+    fn weekdays_ending_on_a_date_is_the_phones_rule() {
+        let written = rule_fields(
+            &Repeat {
+                frequency: 1,
+                interval: 1,
+            },
+            Some(1_792_656_031),
+            &[2, 3, 4, 5, 6],
+            json!("ref"),
+        );
+        let phone = json!({
+            "DaysOfTheWeek": { "type": "BYTES", "value": "W3siZGF5T2ZUaGVXZWVrIjoyLCJ3ZWVrTnVtYmVyIjowfSx7ImRheU9mVGhlV2VlayI6Mywid2Vla051bWJlciI6MH0seyJkYXlPZlRoZVdlZWsiOjQsIndlZWtOdW1iZXIiOjB9LHsiZGF5T2ZUaGVXZWVrIjo1LCJ3ZWVrTnVtYmVyIjowfSx7ImRheU9mVGhlV2VlayI6Niwid2Vla051bWJlciI6MH1d" },
+            "Deleted": { "type": "NUMBER_INT64", "value": 0 },
+            "EndDate": { "type": "TIMESTAMP", "value": 1_792_656_031_000_i64 },
+            "FirstDayOfTheWeek": { "type": "NUMBER_INT64", "value": 0 },
+            "Frequency": { "type": "NUMBER_INT64", "value": 1 },
+            "Imported": { "type": "NUMBER_INT64", "value": 0 },
+            "Interval": { "type": "NUMBER_INT64", "value": 1 },
+            "OccurrenceCount": { "type": "NUMBER_INT64", "value": 0 },
+            "Reminder": "ref"
+        });
+        assert_eq!(written, phone);
+    }
+
+    /// "Rep 4" — Weekends — and the plain presets ("Rep 5" weekly, "Rep 6" biweekly, "Rep 7"
+    /// monthly, "Repeating a" hourly) carry no days.
+    #[test]
+    fn weekends_and_plain_presets_are_the_phones_rules() {
+        let weekends = rule_fields(
+            &Repeat {
+                frequency: 1,
+                interval: 1,
+            },
+            None,
+            &[1, 7],
+            json!("ref"),
+        );
+        assert_eq!(
+            weekends["DaysOfTheWeek"]["value"],
+            "W3siZGF5T2ZUaGVXZWVrIjoxLCJ3ZWVrTnVtYmVyIjowfSx7ImRheU9mVGhlV2VlayI6Nywid2Vla051bWJlciI6MH1d"
+        );
+        for (f, i) in [(1, 1), (1, 2), (2, 1), (4, 1)] {
+            let w = rule_fields(
+                &Repeat {
+                    frequency: f,
+                    interval: i,
+                },
+                None,
+                &[],
+                json!("ref"),
+            );
+            assert!(w.get("DaysOfTheWeek").is_none());
+            assert_eq!(
+                keys(&w),
+                [
+                    "Deleted",
+                    "FirstDayOfTheWeek",
+                    "Frequency",
+                    "Imported",
+                    "Interval",
+                    "OccurrenceCount",
+                    "Reminder"
+                ]
+            );
+        }
+        // Days only mean something weekly; anything else is written without them.
+        let monthly = rule_fields(
+            &Repeat {
+                frequency: 2,
+                interval: 1,
+            },
+            None,
+            &[2],
+            json!("ref"),
+        );
+        assert!(monthly.get("DaysOfTheWeek").is_none());
+    }
+
+    /// The phone's presets are frequency and interval: Biweekly, Every 3 and 6 Months.
+    #[test]
+    fn presets_are_a_frequency_and_an_interval() {
+        for (frequency, interval) in [(1, 2), (2, 3), (2, 6), (3, 1)] {
+            let w = rule_fields(
+                &Repeat {
+                    frequency,
+                    interval,
+                },
+                None,
+                &[],
+                json!("ref"),
+            );
+            assert_eq!(
+                (
+                    w["Frequency"]["value"].as_i64(),
+                    w["Interval"]["value"].as_i64()
+                ),
+                (Some(frequency), Some(interval))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn repeating_hourly_until_a_date_writes_the_rule_and_only_relinks_the_reminder() {
+        let server = phone().await;
+        set_repeat_until_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            Some(Repeat {
+                frequency: 4,
+                interval: 1,
+            }),
+            Some(1_792_900_000),
+            &[],
+        )
+        .await
+        .unwrap();
+        let ops = operations(&server).await;
+        assert_eq!(ops[0]["record"]["recordType"], "RecurrenceRule");
+        assert_eq!(ops[0]["record"]["fields"]["Frequency"]["value"], 4);
+        assert_eq!(
+            ops[0]["record"]["fields"]["EndDate"]["value"],
+            1_792_900_000_000_i64
+        );
+        // The reminder: its rule list and its clock, nothing of the phone's touched.
+        let link = &ops[1]["record"]["fields"];
+        assert_eq!(ops[1]["operationType"], "update");
+        let sent = keys(link);
+        for untouched in [
+            "HashtagIDs",
+            "AlarmIDs",
+            "ContactHandles",
+            "TimeZone",
+            "Flagged",
+            "Priority",
+            "AttachmentIDs",
+        ] {
+            assert!(
+                !sent.contains(&untouched.to_string()),
+                "{untouched} must not be sent: {sent:?}"
+            );
+        }
+        // The old rule is retired only after.
+        assert!(ops[2]["recordName"]
+            .as_str()
+            .or(ops[2]["record"]["recordName"].as_str())
+            .is_some_and(|n| n.contains("049EF968")));
+    }
+
+    #[tokio::test]
+    async fn an_end_before_the_due_date_is_refused_before_anything_is_sent() {
+        let server = phone().await;
+        let refused = set_repeat_until_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            Some(Repeat {
+                frequency: 0,
+                interval: 1,
+            }),
+            Some(1_792_000_000),
+            &[],
+        )
+        .await;
+        assert!(refused.is_err());
+        assert!(operations(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_new_time_keeps_new_york_and_sends_only_the_date() {
+        let server = phone().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                due_at: Some(Some(1_792_684_800)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let fields = &operations(&server).await[0]["record"]["fields"];
+        assert_eq!(fields["DueDate"]["value"], 1_792_684_800_000_i64);
+        assert!(
+            fields.get("TimeZone").is_none(),
+            "New York stays as the phone set it"
+        );
+        let mut sent = keys(fields);
+        sent.retain(|k| k != "ResolutionTokenMap");
+        assert_eq!(sent, ["AllDay", "DueDate", "LastModifiedDate"]);
+    }
+
+    #[tokio::test]
+    async fn flag_priority_and_completion_send_only_themselves() {
+        let server = phone().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                flagged: Some(false),
+                priority: Some(9),
+                completed: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let fields = &operations(&server).await[0]["record"]["fields"];
+        assert_eq!(fields["Flagged"]["value"], 0);
+        assert_eq!(fields["Priority"]["value"], 9, "Low, on Apple's scale");
+        assert_eq!(fields["Completed"]["value"], 1);
+        let mut sent = keys(fields);
+        sent.retain(|k| k != "ResolutionTokenMap");
+        assert_eq!(
+            sent,
+            ["Completed", "Flagged", "LastModifiedDate", "Priority"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_title_rewrites_the_phones_document_and_nothing_else() {
+        let server = phone().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                title: Some("Renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let fields = &operations(&server).await[0]["record"]["fields"];
+        let doc = fields["TitleDocument"]["value"].as_str().unwrap();
+        assert_eq!(
+            crate::ckdocument::text_from_base64(doc).as_deref(),
+            Some("Renamed")
+        );
+        let mut sent = keys(fields);
+        sent.retain(|k| k != "ResolutionTokenMap");
+        assert_eq!(sent, ["LastModifiedDate", "TitleDocument"]);
+    }
+
+    #[tokio::test]
+    async fn a_day_with_no_time_is_all_day_at_utc_midnight() {
+        let server = phone().await;
+        edit_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            &ReminderEdit {
+                due_at: Some(Some(1_792_627_200)),
+                all_day: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let fields = &operations(&server).await[0]["record"]["fields"];
+        assert_eq!(fields["AllDay"]["value"], 1);
+        assert_eq!(fields["DueDate"]["value"], 1_792_627_200_000_i64);
+        assert!(fields.get("TimeZone").is_none());
+    }
+
+    /// The founder's daily rule, ending on a date, as Apple would answer a lookup of it.
+    async fn ending_phone(end_ms: i64) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .and(wiremock::matchers::body_string_contains("RecurrenceRule/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [{
+                "recordName": "RecurrenceRule/049EF968-7FAE-4585-94FB-E22D108B537D",
+                "recordType": "RecurrenceRule",
+                "recordChangeTag": "r1",
+                "fields": {
+                    "Frequency": { "type": "NUMBER_INT64", "value": 0 },
+                    "Interval": { "type": "NUMBER_INT64", "value": 1 },
+                    "EndDate": { "type": "TIMESTAMP", "value": end_ms }
+                }
+            }] })),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [phone_record()] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/(modify|query)$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": GUID }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn paths(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.url.path().rsplit('/').next().unwrap_or("").to_string())
+            .filter(|p| p != "lookup")
+            .collect()
+    }
+
+    /// Past End Repeat there is no next one: ticked, it is completed on the record, as the
+    /// phone completes it — not sent to Apple to be moved past its end.
+    #[tokio::test]
+    async fn the_last_tick_before_end_repeat_completes_it() {
+        // Due 22 Oct 15:00 UTC; ends that evening — tomorrow's is past it. (The tick is made
+        // now, after the due date, so the next one counted is after now: still past the end.)
+        let server = ending_phone((1_792_681_200 + 8 * 3600) * 1000).await;
+        set_completed_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(paths(&server).await, ["modify"], "completed, not moved on");
+        let fields = &operations(&server).await[0]["record"]["fields"];
+        assert_eq!(fields["Completed"]["value"], 1);
+        assert!(fields.get("CompletionDate").is_some());
+        assert!(
+            fields.get("DueDate").is_none(),
+            "its date stays the last one"
+        );
+    }
+
+    /// With time left before its end, it is moved on by Apple, as every repeat is.
+    #[tokio::test]
+    async fn a_tick_with_time_left_still_moves_on() {
+        let server = ending_phone(4_102_444_800_000).await;
+        set_completed_cloudkit(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &reminder(),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            paths(&server).await,
+            ["query"],
+            "CompleteRecurringReminder, as before"
+        );
     }
 }

@@ -3,7 +3,7 @@
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
-const ctx = await b.newContext({ viewport: { width: 1300, height: 850 } });
+const ctx = await b.newContext({ viewport: { width: 1300, height: 1100 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, calendarFixture: true, remindersFixture: true });
 const page = await ctx.newPage();
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });

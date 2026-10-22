@@ -27,6 +27,74 @@ pub fn video_base() -> Option<String> {
     BASE.get().cloned()
 }
 
+/// What the window's player can decode on this computer, so a video it cannot play says why
+/// rather than standing black: the GStreamer pieces WebKitGTK plays through, by the package that
+/// brings each. `missing` lists those packages; empty when everything is there (and always
+/// elsewhere than Linux, where the webview brings its own decoders).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VideoSupport {
+    pub h264: bool,
+    pub hevc: bool,
+    pub missing: Vec<&'static str>,
+}
+
+#[tauri::command]
+pub fn video_support() -> VideoSupport {
+    support()
+}
+
+#[cfg(target_os = "linux")]
+fn support() -> VideoSupport {
+    use gstreamer as gst;
+    if gst::init().is_err() {
+        return VideoSupport {
+            h264: false,
+            hevc: false,
+            missing: vec!["gstreamer"],
+        };
+    }
+    let any = |names: &[&str]| names.iter().any(|n| gst::ElementFactory::find(n).is_some());
+    let h264 = any(&[
+        "avdec_h264",
+        "vah264dec",
+        "vaapih264dec",
+        "openh264dec",
+        "nvh264dec",
+        "v4l2slh264dec",
+    ]);
+    let hevc = any(&[
+        "avdec_h265",
+        "vah265dec",
+        "vaapih265dec",
+        "nvh265dec",
+        "v4l2slh265dec",
+    ]);
+    let mut missing = Vec::new();
+    if !any(&["playbin3", "videoconvert"]) {
+        missing.push("gst-plugins-base");
+    }
+    if !any(&["qtdemux"]) {
+        missing.push("gst-plugins-good");
+    }
+    if !h264 || !hevc {
+        missing.push("gst-libav");
+    }
+    VideoSupport {
+        h264,
+        hevc,
+        missing,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn support() -> VideoSupport {
+    VideoSupport {
+        h264: true,
+        hevc: true,
+        missing: Vec::new(),
+    }
+}
+
 /// Listens on the loopback interface for as long as the app runs.
 pub fn serve(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -496,6 +564,15 @@ mod tests {
             },
             &l,
         )
+    }
+
+    /// This computer's decoders, as the window is told them: H.264 at least wherever the
+    /// player can play anything, and a package named for each piece that is missing.
+    #[test]
+    fn says_what_it_can_decode() {
+        let s = support();
+        assert_eq!(s.missing.contains(&"gst-libav"), !(s.h264 && s.hevc));
+        println!("{s:?}");
     }
 
     #[test]

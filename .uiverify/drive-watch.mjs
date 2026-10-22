@@ -55,5 +55,16 @@ await page.waitForTimeout(10_600);
 ok((await page.evaluate(() => window.__checks)) === during, "no check while a rename is on its way");
 ok((await names()).some((n) => n.startsWith("Downloads 2")), "and the new name stays on screen meanwhile");
 
+// The window open but not in front (behind another, on another workspace): no timed checks —
+// and focus coming back checks at once.
+await page.waitForTimeout(2500); // the rename's answer lands
+await page.evaluate(() => { document.hasFocus = () => false; });
+const away = await page.evaluate(() => window.__checks);
+await page.waitForTimeout(10_600);
+ok((await page.evaluate(() => window.__checks)) === away, "no timed check while the window is in the background");
+await page.evaluate(() => { document.hasFocus = () => true; window.dispatchEvent(new Event("focus")); });
+await page.waitForTimeout(300);
+ok((await page.evaluate(() => window.__checks)) > away, "and one at once when it comes to the front");
+
 await b.close();
 if (failures) process.exitCode = 1;

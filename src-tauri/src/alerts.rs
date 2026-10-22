@@ -80,8 +80,10 @@ fn answer(app: &AppHandle, due: &DueAlarm, due_then: Option<Option<i64>>, action
             changed();
         }
         "default" => {
-            crate::show_window(app);
-            app.emit(OPEN_REMINDER, &due.reminder_guid).ok();
+            let guid = due.reminder_guid.clone();
+            crate::show_window_then(app, move |app| {
+                app.emit(OPEN_REMINDER, &guid).ok();
+            });
         }
         _ => {}
     }

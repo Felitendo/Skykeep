@@ -8,7 +8,7 @@ const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1180, height: 820 } });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, remindersFixture: true });
 const page = await ctx.newPage();
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.goto(process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await page.waitForTimeout(400);
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
@@ -96,7 +96,7 @@ ok((await page.locator(".sidebar-account .account-avatar").innerText()).trim() =
   await c2.addInitScript(() => { window.__webAccess = false; });
   await c2.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, remindersFixture: true });
   const p2 = await c2.newPage();
-  await p2.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await p2.goto(process.env.URL ?? "http://localhost:4173", { waitUntil: "networkidle" });
   await p2.waitForTimeout(500);
   ok(await p2.getByText("Access iCloud Data on the Web").first().isVisible(), "web access off says how to turn it on, instead of failing screen by screen");
   await c2.close();

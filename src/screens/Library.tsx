@@ -1,4 +1,4 @@
-import { ToastHost } from "../components/Toast";
+import { ToastHost, toast } from "../components/Toast";
 import { EmptyState } from "../components/EmptyState";
 import { StatusLine } from "../components/StatusLine";
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -52,6 +52,7 @@ import { ScreenBoundary } from "../components/ScreenBoundary";
 import { ScreenActive } from "../lib/screen";
 import { AppIcon } from "../components/AppIcon";
 import { GlobalSearch } from "../components/GlobalSearch";
+import { ShortcutsSheet } from "../components/ShortcutsSheet";
 
 /**
  * What the sidebar holds: the services with a real screen behind them, most used first.
@@ -93,6 +94,55 @@ function UpdateKeys({ screen }: { screen: string | null }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [screen, refresh, refreshService]);
+  return null;
+}
+
+/**
+ * Ctrl+, opens Settings and Ctrl+/ (or Ctrl+?) the Keyboard Shortcuts sheet, from any app —
+ * as ⌘, and the Help menu's shortcuts do on a Mac. Typing in a field keeps its own Ctrl+/.
+ */
+function AppKeys({ screen, onSettings }: { screen: string | null; onSettings: () => void }) {
+  const [sheet, setSheet] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.defaultPrevented) return;
+      if (e.key === ",") {
+        e.preventDefault();
+        onSettings();
+      } else if (e.key === "/" || e.key === "?") {
+        e.preventDefault();
+        setSheet(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onSettings]);
+  return sheet ? <ShortcutsSheet front={screen} onClose={() => setSheet(false)} /> : null;
+}
+
+/**
+ * The first time a library arrives on this computer, one line on what to try: change
+ * something on the phone and watch it land here — the moment that shows what Skykeep is.
+ * Once per computer, only for a library that had nothing synced when the window opened.
+ */
+const FIRST_HINT_KEY = "quince.firstSyncHint";
+function FirstSyncHint() {
+  const { report } = useSync();
+  const startedEmpty = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!report) return;
+    const synced = report.services.some((s) => s.lastSyncedAt);
+    if (startedEmpty.current === null) startedEmpty.current = !synced;
+    if (!startedEmpty.current || !synced) return;
+    startedEmpty.current = false;
+    try {
+      if (window.localStorage.getItem(FIRST_HINT_KEY)) return;
+      window.localStorage.setItem(FIRST_HINT_KEY, "1");
+    } catch {
+      return;
+    }
+    toast({ message: "Your iCloud is here. Edit a reminder or note on your iPhone and watch it change here in seconds.", duration: 9000 });
+  }, [report]);
   return null;
 }
 
@@ -350,6 +400,8 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
   return (
     <SyncProvider>
       <UpdateKeys screen={selected} />
+      <AppKeys screen={selected} onSettings={() => choose("settings")} />
+      <FirstSyncHint />
       <div className={`library enter-library${sidebarOpen ? " is-sidebar-open" : ""}${rail ? " is-rail" : ""}`}>
         {/* Only in a narrow window, where the sidebar gives its room to the content. */}
         <button

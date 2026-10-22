@@ -23,7 +23,7 @@ async function open(setup = () => {}) {
   await page.waitForTimeout(500);
   return { ctx, page };
 }
-const current = (page) => page.evaluate(() => document.querySelector('.note-row[aria-current="true"] .note-row-name')?.textContent ?? null);
+const current = (page) => page.evaluate(() => document.querySelector('.note-row[aria-selected="true"] .note-row-name')?.textContent ?? null);
 const focusIn = (page, sel) => page.evaluate((s) => Boolean(document.activeElement?.closest(s)), sel);
 
 {

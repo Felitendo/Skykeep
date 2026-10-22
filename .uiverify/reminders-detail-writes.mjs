@@ -48,8 +48,8 @@ await url.press("Enter");
 await page.waitForTimeout(200);
 ok((await writes()).some((w) => w.cmd === "reminder_url_set" && w.url === "https://example.com/parcel"), "a link is saved");
 // Early alert.
-await page.getByRole("button", { name: /Early alert for Pick up the parcel/ }).click();
-await page.locator(".picker-menu li", { hasText: "15 minutes early" }).click();
+await page.getByRole("button", { name: /Early reminder for Pick up the parcel/ }).click();
+await page.locator(".picker-menu li", { hasText: "15 minutes before" }).click();
 await page.waitForTimeout(200);
 ok((await writes()).some((w) => w.cmd === "reminder_early_alert_set" && w.count === 15 && w.unit === 0), "an early alert is set");
 // Sections: move, make, rename.

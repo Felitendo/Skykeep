@@ -141,6 +141,7 @@ pub fn open(app: &AppHandle, key: &str) {
     let Some((key, name)) = APPS.iter().find(|(k, _)| *k == key).copied() else {
         return;
     };
+    crate::timing::mark(format_args!("app {key} asked"));
     if let Some(w) = app.get_webview_window(&label(key)) {
         w.unminimize().ok();
         show(&w);
@@ -157,6 +158,7 @@ pub fn open(app: &AppHandle, key: &str) {
     // Shown by its own window_ready, once it has drawn: never a blank frame.
     .visible(false)
     .build();
+    crate::timing::mark(format_args!("app {key} window made"));
     let window = match made {
         Ok(w) => w,
         Err(e) => {
@@ -178,7 +180,8 @@ pub fn open(app: &AppHandle, key: &str) {
     });
 }
 
-/// How long a closed app window is kept, put away, before its memory is given back.
+/// How long a closed window — an app's, or the whole-library one — is kept, put away, before
+/// its memory is given back.
 const KEPT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// When each put-away app window was closed: shown again, it is taken off the list, so a
@@ -186,8 +189,9 @@ const KEPT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 static PUT_AWAY: std::sync::Mutex<Vec<(String, std::time::Instant)>> =
     std::sync::Mutex::new(Vec::new());
 
-/// A closed app window, kept hidden for a while and then closed for good if it was not opened
-/// again meanwhile.
+/// A closed window, kept hidden for a while and then closed for good if it was not opened again
+/// meanwhile. The whole-library window too: `show_window` makes it again when it is next asked
+/// for, and the app goes on behind the tray with no window at all (main.rs, `ExitRequested`).
 pub fn put_away(window: &tauri::Window) {
     let label = window.label().to_string();
     let at = std::time::Instant::now();
@@ -228,6 +232,7 @@ pub fn show(window: &tauri::WebviewWindow) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .retain(|(l, _)| l != window.label());
+    crate::timing::mark(format_args!("{} shown", window.label()));
     window.show().ok();
     window.set_focus().ok();
     #[cfg(target_os = "linux")]

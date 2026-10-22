@@ -13,8 +13,10 @@ macro_rules! quiet {
 }
 
 mod alerts;
+mod appearance;
 mod apps;
 mod contacts_cmds;
+mod contacts_merge;
 mod cpu;
 mod export;
 mod grants;
@@ -25,9 +27,11 @@ mod mount;
 mod mount_photos;
 mod notes_cmds;
 mod outbox;
+mod photo_cache;
 mod photos;
 #[cfg(target_os = "linux")]
 mod poster;
+mod power;
 #[cfg(not(target_os = "linux"))]
 mod poster {
     //! Elsewhere than Linux there is no GStreamer to read a frame with: Apple's own poster stands.
@@ -42,11 +46,11 @@ mod reminders_cmds;
 #[cfg(target_os = "linux")]
 mod search_provider;
 mod settings;
+mod timing;
 mod video;
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
 use quince_core::calendar::{Calendar, Event};
-use quince_core::contacts::Contact;
 use quince_core::drive::DriveItem;
 use quince_core::notes::{Note, NoteFolder};
 use quince_core::reminders::{Reminder, ReminderList, SmartList};
@@ -64,6 +68,29 @@ struct Auth {
     /// A sign-in is in flight. The mutex would serialise a second click rather than reject
     /// it, so it would run a whole second SRP exchange and trigger another code push.
     signing_in: AtomicBool,
+    /// What `auth_status` last read of the session, for a window that opens while the session
+    /// is busy — being taken up, or checked by the timer — behind its lock: read from here it
+    /// opens at once, never waiting out a round trip to Apple first.
+    known: std::sync::Mutex<SessionFacts>,
+}
+
+/// What a window asks of the session as it opens.
+#[derive(Clone, Default)]
+struct SessionFacts {
+    has_stored_session: bool,
+    signed_in: bool,
+    /// The account it is (`account_tag`).
+    account: Option<String>,
+}
+
+impl SessionFacts {
+    fn of(client: &Client) -> Self {
+        SessionFacts {
+            has_stored_session: client.has_stored_session(),
+            signed_in: client.session().webservices.is_some(),
+            account: client.session().dsid.as_deref().map(account_tag),
+        }
+    }
 }
 
 /// Clears the in-flight flag however the guarded block exits.
@@ -82,6 +109,9 @@ struct Status {
     has_stored_session: bool,
     /// Apple's service map is loaded, i.e. we are actually signed in right now.
     signed_in: bool,
+    /// The stored session's account is the one the library already belongs to: the library
+    /// can open on what it holds at once, while the session is taken up again behind it.
+    library_ready: bool,
 }
 
 struct Data(Mutex<Library>);
@@ -235,6 +265,52 @@ fn note_part(path: &str) -> Option<(String, quince_icloud::note_media::Part)> {
     (!id.is_empty()).then(|| (id.to_string(), part))
 }
 
+/// The reminder picture a `quince://` request asks for: `rimg/<UUID>`, the `Attachment/`
+/// record it stands for.
+fn reminder_image_part(path: &str) -> Option<String> {
+    let path = percent_decode(path.trim_start_matches('/'));
+    let id = path.strip_prefix("rimg/")?;
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+        .then(|| format!("Attachment/{id}"))
+}
+
+/// A reminder's picture as the window can draw it: from disk when fetched before, from Apple
+/// when not, and a HEIC (what an iPhone takes) made a JPEG once — the engine draws no HEIC.
+async fn reminder_image_shown(app: &tauri::AppHandle, attachment: &str) -> Result<Vec<u8>, String> {
+    let dir = state_dir(app).join("reminder-media");
+    let safe = media_file_id(attachment);
+    let shown = dir.join(format!("{safe}-shown"));
+    if let Ok(bytes) = tokio::fs::read(&shown).await {
+        return Ok(bytes);
+    }
+    let (http, root, params) = {
+        let auth = app.state::<Auth>();
+        let client = auth.client.lock().await;
+        let root = client
+            .session()
+            .service_url("ckdatabasews")
+            .ok_or("no CloudKit")?;
+        (client.http().clone(), root, client.service_params())
+    };
+    let bytes = quince_icloud::reminders::more::attachment_file(&http, &root, params, attachment)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no such picture")?;
+    let bytes = if quince_media::is_heif(&bytes) {
+        crate::cpu::run(move || quince_media::heic_to_jpeg(&bytes))
+            .await
+            .map_err(|e| e.to_string())??
+    } else {
+        bytes
+    };
+    tokio::fs::create_dir_all(&dir).await.ok();
+    let part = shown.with_extension("part");
+    if tokio::fs::write(&part, &bytes).await.is_ok() {
+        let _ = tokio::fs::rename(&part, &shown).await;
+    }
+    Ok(bytes)
+}
+
 /// A note attachment's id as part of a file name in `note-media`: letters, digits and dashes,
 /// so an id from a request is never a path.
 fn media_file_id(id: &str) -> String {
@@ -283,7 +359,13 @@ async fn note_media_cached(
     if let Some(dir) = path.parent() {
         tokio::fs::create_dir_all(dir).await.ok();
     }
-    tokio::fs::write(&path, &bytes).await.ok();
+    // Whole or not at all: written beside it and renamed in, so a second request for the same
+    // picture (a drawing's light and dark ink, the viewer) never reads half a file — which
+    // the window took for a broken picture and showed as a file for the rest of the session.
+    let part = path.with_extension("part");
+    if tokio::fs::write(&part, &bytes).await.is_ok() {
+        let _ = tokio::fs::rename(&part, &path).await;
+    }
     Ok(bytes)
 }
 
@@ -437,61 +519,130 @@ async fn diagnostics_save(app: tauri::AppHandle, data: State<'_, Data>) -> UiRes
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// What a note's attachment is, to draw it where it sits.
+/// What a note's attachment is, to draw it where it sits. Asked of Apple once and kept in the
+/// library — an attachment never changes under its id — so a note opens on its pictures and
+/// cards at once, offline too, instead of two lookups per attachment every time it is drawn.
+/// Read only: nothing is written to Apple.
 #[tauri::command]
 async fn note_attachment_info(
     id: String,
     auth: State<'_, Auth>,
-) -> UiResult<quince_icloud::note_media::AttachmentInfo> {
+    data: State<'_, Data>,
+) -> UiResult<serde_json::Value> {
+    let key = format!("notes.attachment.{id}");
+    if let Ok(Some(kept)) = data.0.lock().await.state(&key) {
+        if let Ok(info) = serde_json::from_str::<serde_json::Value>(&kept) {
+            return Ok(info);
+        }
+    }
     let (http, root, params) = cloudkit_context(&auth).await?;
-    quince_icloud::note_media::info(&http, &root, params, &id)
+    let info = quince_icloud::note_media::info(&http, &root, params, &id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let info = serde_json::to_value(&info).map_err(|e| e.to_string())?;
+    if let Ok(json) = serde_json::to_string(&info) {
+        let _ = data.0.lock().await.set_state(&key, &json);
+    }
+    Ok(info)
 }
 
 /// Open a note's attachment in the app this computer uses for it: the file is fetched,
-/// saved beside the others under its own name, and handed over.
+/// saved beside the others under its own name, and handed over. Opened before, it is handed
+/// over from where it was saved at once — an attachment never changes under its id — with
+/// nothing asked of Apple: asking its name again first, every time, kept each open waiting a
+/// round trip, and behind the session's lock whenever a check of the session held it.
 #[tauri::command]
 async fn note_attachment_open(
     id: String,
     app: tauri::AppHandle,
     auth: State<'_, Auth>,
 ) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-    let info = quince_icloud::note_media::info(&http, &root, params, &id)
-        .await
-        .map_err(|e| e.to_string())?;
-    let bytes = note_media_cached(&app, &id, quince_icloud::note_media::Part::File).await?;
+    timing::mark("attachment asked");
     let folder: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
     if folder.is_empty() {
         return Err("That attachment is not one Skykeep knows.".into());
     }
+    let dir = state_dir(&app).join("note-files").join(&folder);
+    if let Some(path) = saved_attachment(&dir).await {
+        return hand_over_attachment(&app, &path).await;
+    }
+    // Its name and its bytes asked for together, not one after the other.
+    let (http, root, params) = cloudkit_context(&auth).await?;
+    let (info, bytes) = tokio::join!(
+        quince_icloud::note_media::info(&http, &root, params, &id),
+        note_media_cached(&app, &id, quince_icloud::note_media::Part::File),
+    );
+    let info = info.map_err(|e| e.to_string())?;
+    let bytes = bytes?;
+    timing::mark("attachment fetched");
     // The name is whoever shared the note's to choose: made a plain file name here, never a
     // path, and never one that pretends to be something else.
     let name = attachment_name(info.filename.as_deref(), &folder);
-    let dir = state_dir(&app).join("note-files").join(&folder);
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| e.to_string())?;
     let path = dir.join(&name);
-    tokio::fs::write(&path, &bytes)
+    // Written beside it and renamed into place: a file cut short by a crash is never the one a
+    // later open finds and hands over. Hidden (a leading dot) until whole, which no saved name
+    // has.
+    let partial = dir.join(".partial");
+    tokio::fs::write(&partial, &bytes)
         .await
         .map_err(|e| e.to_string())?;
     // Readable by this user alone, and never runnable, whatever was there before.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        tokio::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o600))
             .await
             .map_err(|e| e.to_string())?;
     }
+    tokio::fs::rename(&partial, &path)
+        .await
+        .map_err(|e| e.to_string())?;
+    hand_over_attachment(&app, &path).await
+}
+
+/// The attachment saved in `dir` by an earlier open: the one whole file there.
+async fn saved_attachment(dir: &std::path::Path) -> Option<PathBuf> {
+    let mut entries = tokio::fs::read_dir(dir).await.ok()?;
+    let mut found = None;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if !entry.file_type().await.is_ok_and(|t| t.is_file()) || found.is_some() {
+            return None;
+        }
+        found = Some(entry.path());
+    }
+    found
+}
+
+/// A saved attachment handed to the app this computer uses for it — or, if it is a program,
+/// a script or a launcher, shown in its folder instead: opening it would run it, and a shared
+/// note can carry one from anyone.
+async fn hand_over_attachment(app: &tauri::AppHandle, path: &std::path::Path) -> UiResult<()> {
     use tauri_plugin_opener::OpenerExt;
-    // A program, a script or a launcher is shown in its folder, not opened: opening it would
-    // run it, and a shared note can carry one from anyone.
-    if runs_code(&name, &bytes) {
+    use tokio::io::AsyncReadExt;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // What `runs_code` reads of a file: its first bytes.
+    let mut head = Vec::with_capacity(64);
+    tokio::fs::File::open(path)
+        .await
+        .map_err(|e| e.to_string())?
+        .take(64)
+        .read_to_end(&mut head)
+        .await
+        .map_err(|e| e.to_string())?;
+    timing::mark("attachment handed over");
+    if runs_code(&name, &head) {
         return app
             .opener()
-            .reveal_item_in_dir(&path)
+            .reveal_item_in_dir(path)
             .map_err(|e| e.to_string());
     }
     app.opener()
@@ -707,30 +858,62 @@ fn state_dir(app: &tauri::AppHandle) -> PathBuf {
 }
 
 #[tauri::command]
-async fn auth_status(auth: State<'_, Auth>) -> UiResult<Status> {
-    let client = auth.client.lock().await;
+async fn auth_status(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<Status> {
+    timing::mark("auth_status asked");
+    let known = |facts: Option<SessionFacts>| {
+        let mut kept = auth
+            .known
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match facts {
+            Some(facts) => {
+                *kept = facts.clone();
+                facts
+            }
+            None => kept.clone(),
+        }
+    };
+    // Busy (a resume, a sign-in, the timer's check): what was last known, rather than a wait.
+    let facts = match auth.client.try_lock() {
+        Ok(client) => known(Some(SessionFacts::of(&client))),
+        Err(_) => known(None),
+    };
+    let owner = data.0.lock().await.state(ACCOUNT_KEY).ok().flatten();
+    timing::mark("auth_status answered");
     Ok(Status {
-        has_stored_session: client.has_stored_session(),
-        signed_in: client.session().webservices.is_some(),
+        has_stored_session: facts.has_stored_session,
+        signed_in: facts.signed_in,
+        library_ready: facts.has_stored_session
+            && facts.account.is_some()
+            && owner == facts.account,
     })
 }
 
 /// Try the stored session. `false` just means a sign-in is needed — not an error.
 #[tauri::command]
 async fn auth_resume(app: tauri::AppHandle, auth: State<'_, Auth>) -> UiResult<&'static str> {
+    timing::mark("auth_resume asked");
     if LIVE.load(Ordering::SeqCst) {
         return Ok("library");
     }
     let outcome = {
         let mut client = auth.client.lock().await;
+        // Another window took the session up while this one waited for it (each window asks
+        // as it opens): asking Apple again would only be a second wait.
+        if LIVE.load(Ordering::SeqCst) {
+            return Ok("library");
+        }
         let outcome = resume_session(&mut client).await?;
+        timing::mark("auth_resume: session resumed");
         if outcome == "library" {
             signed_in(&app, &mut client).await?;
+            timing::mark("auth_resume: library claimed");
         }
         outcome
     };
     if outcome == "library" {
         folders_up(&app).await;
+        timing::mark("auth_resume: folders up");
     }
     Ok(outcome)
 }
@@ -741,7 +924,11 @@ async fn resume_session(client: &mut Client) -> UiResult<&'static str> {
         // Offline with a session kept: the library opens on what it holds, as a local-first
         // app should, and the next refresh — on the timer, or when the network is back —
         // signs back in.
-        Err(quince_auth::Error::Network(_)) if client.has_stored_session() => true,
+        Err(quince_auth::Error::Network(_) | quince_auth::Error::Unavailable(_))
+            if client.has_stored_session() =>
+        {
+            true
+        }
         Err(e) => return Err(e.to_string()),
     };
     // Back in; or back in but for the code Apple wants before trusting this computer again;
@@ -1021,6 +1208,12 @@ async fn signed_in(app: &tauri::AppHandle, client: &mut Client) -> Result<(), St
         return Err(e);
     }
     LIVE.store(true, Ordering::SeqCst);
+    if let Some(auth) = app.try_state::<Auth>() {
+        *auth
+            .known
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = SessionFacts::of(client);
+    }
     Ok(())
 }
 
@@ -1513,6 +1706,27 @@ async fn event_alerts(
         .map_err(|e| e.to_string())
 }
 
+/// An event's guests and their answers, as Apple holds them, the organizer first. Read only.
+#[tauri::command]
+async fn event_guests(
+    guid: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<Vec<quince_icloud::calendar::Guest>> {
+    let event = {
+        let library = data.0.lock().await;
+        library.event(&guid).map_err(|e| e.to_string())?
+    };
+    let Some(event) = event else {
+        return Ok(Vec::new());
+    };
+    let (http, root, params) = calendar_context(&auth).await?;
+    quince_icloud::calendar::CalendarClient::new(&http, &root, params)
+        .guests(&event)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// How an event repeats, as Apple holds it.
 #[tauri::command]
 async fn event_repeat(
@@ -1757,6 +1971,32 @@ fn save_subscriptions(
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// What Skykeep can reach, for Settings: Apple's domains as the network lock holds them
+/// (`quince_auth::APPLE_DOMAINS`, the list the resolver checks), and the host of each calendar
+/// subscribed to, which only its own client can reach.
+#[derive(serde::Serialize)]
+struct Reach {
+    apple: Vec<&'static str>,
+    subscribed: Vec<String>,
+}
+
+#[tauri::command]
+async fn network_reach(feeds: State<'_, Feeds>) -> UiResult<Reach> {
+    let mut subscribed: Vec<String> = feeds
+        .subs
+        .lock()
+        .await
+        .iter()
+        .filter_map(|(s, _)| feeds::host_of(&s.url))
+        .collect();
+    subscribed.sort();
+    subscribed.dedup();
+    Ok(Reach {
+        apple: quince_auth::APPLE_DOMAINS.to_vec(),
+        subscribed,
+    })
 }
 
 /// Fetch one subscription's file with the client that reaches its host and nothing else.
@@ -2292,11 +2532,22 @@ async fn set_done(
     _list_guid: &str,
     done: bool,
 ) -> UiResult<()> {
-    let reminder = {
+    let (reminder, last) = {
         let library = data.0.lock().await;
-        reminder_to_write(&library, guid)?
+        let reminder = reminder_to_write(&library, guid)?;
+        // The last tick of a repeat that ends: completed, as the phone completes it, rather
+        // than moved past its End Repeat date.
+        let end = library
+            .reminder_repeat_end(guid)
+            .map_err(|e| e.to_string())?;
+        let days = library
+            .reminder_repeat_days(guid)
+            .map_err(|e| e.to_string())?;
+        let last =
+            done && reminder.tick_ends_series_on(end, &days, jiff::Timestamp::now().as_second());
+        (reminder, last)
     };
-    if !(done && reminder.repeats()) {
+    if last || !(done && reminder.repeats()) {
         let now = jiff::Timestamp::now().as_second();
         let payload =
             serde_json::to_string(&outbox::Done { done, at: now }).map_err(|e| e.to_string())?;
@@ -2337,6 +2588,10 @@ async fn reminder_set_repeat(
     // The list the window saw it in: a hint that can be stale, never checked (reminder_to_write).
     #[allow(unused_variables)] list_guid: String,
     repeat: Option<quince_icloud::reminders::Repeat>,
+    // End Repeat On Date, in seconds; absent repeats for ever.
+    end_at: Option<i64>,
+    // A weekly repeat's weekdays, 1 Sunday … 7 Saturday; absent falls on the due date's day.
+    days_of_week: Option<Vec<i64>>,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
@@ -2347,12 +2602,14 @@ async fn reminder_set_repeat(
         reminder_to_write(&library, &guid)?
     };
 
-    quince_icloud::reminders::set_recurrence_cloudkit(
+    quince_icloud::reminders::set_repeat_until_cloudkit(
         &http,
         &root,
         params.clone(),
         &reminder,
         repeat,
+        end_at,
+        days_of_week.as_deref().unwrap_or(&[]),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -2672,11 +2929,16 @@ async fn note_runs(guid: String, data: State<'_, Data>) -> UiResult<serde_json::
 }
 
 /// A table's cells, row by row, as the last pass read them — `None` when none are known.
-/// Whether Quince writes to Notes tables. OFF: a cell and a row and a column written here
-/// showed on his iPhone (2026-10-21), but Notes there then kept two conflict copies of the note,
-/// one with the written cells' text doubled and tripled — it could not merge these edits
-/// cleanly. No table is written until a write is shown to merge on the phone with no copy.
-const TABLE_CELL_WRITES: bool = false;
+/// Whether Quince writes to Notes tables.
+///
+/// Cells: ON. On 2026-10-21 cell, row and column writes showed on his iPhone but left two
+/// conflict copies with the text doubled — this app's writer had been appended to the table's
+/// writer list out of uuid order. With the list kept sorted, a cell written here (2026-10-22,
+/// supervised, on his account) showed once on his iPhone with no conflict copy.
+///
+/// Rows and columns: still OFF. Only a cell write was tried live after the fix; adding or
+/// removing a row or column has not been watched on a phone since.
+const TABLE_CELL_WRITES: bool = true;
 const TABLE_LINE_WRITES: bool = false;
 const TABLE_WRITES_OFF: &str =
     "Tables are read-only in Skykeep for now: edits made here didn’t merge cleanly on iPhone yet.";
@@ -3154,12 +3416,15 @@ async fn contact_list_write(
 /// related names, social profiles — is written back untouched rather than dropped.
 #[tauri::command]
 async fn contact_save(
-    contact: Contact,
+    contact: quince_core::contacts::Card,
     // The card as the form opened it: only what differs from it is written.
-    base: Option<Contact>,
+    base: Option<quince_core::contacts::Card>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
-    if contact.guid.is_empty() && quince_icloud::contacts::blank_card(&contact) {
+    if contact.contact.guid.is_empty()
+        && quince_icloud::contacts::blank_card(&contact.contact)
+        && contact.details.is_empty()
+    {
         return Err("Add a name, a phone number or an email address first.".into());
     }
     // In the library at once — a new card under the id it will have at Apple — and queued
@@ -3167,7 +3432,7 @@ async fn contact_save(
     // model — a photo, related names, social profiles — is written back untouched.
     let guid = {
         let mut library = data.0.lock().await;
-        outbox::record_contact_save(&mut library, &contact, base).map_err(|e| e.to_string())?
+        outbox::record_card_save(&mut library, &contact, base).map_err(|e| e.to_string())?
     };
     outbox::kick();
     Ok(guid)
@@ -3338,11 +3603,12 @@ async fn contact_set_me(
 
 /// The address book, optionally filtered by name or by any stored number or address.
 #[tauri::command]
-async fn contacts_list(search: Option<String>, data: State<'_, Data>) -> UiResult<Vec<Contact>> {
+async fn contacts_list(
+    search: Option<String>,
+    data: State<'_, Data>,
+) -> UiResult<Vec<quince_core::contacts::Card>> {
     let library = data.0.lock().await;
-    library
-        .contacts(search.as_deref())
-        .map_err(|e| e.to_string())
+    library.cards(search.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3837,7 +4103,11 @@ async fn drive_upload(
     )
     .ok();
 
-    let results: Vec<Option<String>> = futures_util::stream::iter(jobs)
+    // Every file's stop is made and registered before any starts, so Cancel — the batch's, or
+    // one waiting file's ✕ — reaches the files still waiting. Made as each began (three at a
+    // time), only those three could be stopped and every other planned file went on up.
+    let prepared: Vec<_> = jobs
+        .into_iter()
         .map(|job| {
             let (app, http, docws, root, params) = (
                 app.clone(),
@@ -3925,6 +4195,8 @@ async fn drive_upload(
                 }
             }
         })
+        .collect();
+    let results: Vec<Option<String>> = futures_util::stream::iter(prepared)
         .buffer_unordered(3)
         .collect()
         .await;
@@ -4434,16 +4706,25 @@ async fn contact_photo(
         }
     }
 
-    let (http, params) = {
-        let auth = app.state::<Auth>();
-        let client = auth.client.lock().await;
-        (client.http().clone(), client.service_params())
+    // A picture chosen here and not yet at Apple is the image itself, as icloud.com sends it.
+    let bytes = if let Some(data) = photo.url.strip_prefix("data:") {
+        use base64::Engine;
+        let (_, encoded) = data
+            .split_once(',')
+            .ok_or("that picture could not be read")?;
+        base64::engine::general_purpose::STANDARD.decode(encoded)?
+    } else {
+        let (http, params) = {
+            let auth = app.state::<Auth>();
+            let client = auth.client.lock().await;
+            (client.http().clone(), client.service_params())
+        };
+        let response = http.get(&photo.url).query(&params).send().await?;
+        if !response.status().is_success() {
+            return Err(format!("Apple returned {}", response.status()).into());
+        }
+        response.bytes().await?.to_vec()
     };
-    let response = http.get(&photo.url).query(&params).send().await?;
-    if !response.status().is_success() {
-        return Err(format!("Apple returned {}", response.status()).into());
-    }
-    let bytes = response.bytes().await?.to_vec();
 
     // Cut to the square its owner chose and sized for a face, off the interface's thread.
     // Apple stores these whole — one of them is 1696x2528 — and a list of them has to scroll.
@@ -4596,19 +4877,23 @@ pub(crate) fn tiling_compositor() -> bool {
 /// never says so still leaves a window to use.
 #[tauri::command]
 fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: Option<bool>) {
+    timing::mark(format_args!("window_ready {}", window.label()));
     // An app's own window (Notes, Reminders…): shown once it has drawn.
     if window.label() != "main" {
         apps::show(&window);
         return;
     }
-    // Opened as one app from its launcher entry: the whole-library window stays put away.
-    if LAUNCHED_AS_APP.load(Ordering::SeqCst) {
+    // Opened as one app from its launcher entry: the whole-library window stays put away —
+    // unless it was asked for since, and made for that (show_window).
+    if LAUNCHED_AS_APP.load(Ordering::SeqCst) && !MAIN_ASKED.load(Ordering::SeqCst) {
         return;
     }
     // Started at login, with nothing for the person to do: everything runs, the window waits
     // in the tray.
     // Never without the tray to come back from.
-    if app.tray_by_id("quince").is_some() && login::stay_hidden(needs_you.unwrap_or(true)) {
+    if tray_reachable(&app) && login::stay_hidden(needs_you.unwrap_or(true)) {
+        // Its page has done what a launch needs of it (the session taken up again): it waits,
+        // drawn and hidden, so the tray opens it at once.
         return;
     }
     show_window(&app);
@@ -4668,17 +4953,318 @@ fn show_when_ready(app: &tauri::AppHandle) {
     });
 }
 
-/// Bring the window back, wherever it went.
-fn show_window(app: &tauri::AppHandle) {
+/// The whole-library window was asked for after a launch as one app, which does not make it.
+static MAIN_ASKED: AtomicBool = AtomicBool::new(false);
+
+/// The whole-library window, made hidden (tauri.conf.json's "main"; shown by its window_ready
+/// once drawn). Not made at startup by Tauri: a launch as one app (`--app notes`) built it
+/// anyway, a second web view loading the whole library, resuming the session and starting a
+/// refresh behind the one window asked for — contending with it for every step of its launch.
+fn make_main(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     if let Some(window) = app.get_webview_window("main") {
+        return Some(window);
+    }
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")?
+        .clone();
+    let window = match tauri::WebviewWindowBuilder::from_config(app, &config)
+        .and_then(tauri::WebviewWindowBuilder::build)
+    {
+        Ok(window) => window,
+        Err(e) => {
+            quiet!("the window could not be made: {e}");
+            return None;
+        }
+    };
+    timing::mark("main made");
+    // A tiling compositor places, sizes and closes windows itself; a title bar with minimise
+    // and maximise there only takes room and does nothing it does not. On a desktop that
+    // floats windows — GNOME, KDE — it is how a window is moved, so it stays.
+    if tiling_compositor() {
+        window.set_decorations(false).ok();
+    }
+    Some(window)
+}
+
+/// Bring the window back, wherever it went; made first if this launch had not made it. Answers
+/// whether it had to be made — its page is then still loading, not yet listening.
+fn show_window(app: &tauri::AppHandle) -> bool {
+    if let Some(window) = app.get_webview_window("main") {
+        timing::mark("main shown");
         window.show().ok();
         window.unminimize().ok();
         window.set_focus().ok();
+        return false;
     }
+    MAIN_ASKED.store(true, Ordering::SeqCst);
+    let Some(window) = make_main(app) else {
+        return false;
+    };
+    // Shown by its window_ready once drawn; shown anyway if that never comes.
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        if !window.is_visible().unwrap_or(true) {
+            window.show().ok();
+            window.set_focus().ok();
+        }
+    });
+    true
+}
+
+/// `then`, once the whole-library window can hear it: at once if it was open, or once a window
+/// just made has drawn (its page is up, and listening, by then) — never sent to a page still
+/// loading, which would drop it.
+pub(crate) fn show_window_then(
+    app: &tauri::AppHandle,
+    then: impl FnOnce(&tauri::AppHandle) + Send + 'static,
+) {
+    if !show_window(app) {
+        then(app);
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < until {
+            if app
+                .get_webview_window("main")
+                .is_some_and(|w| w.is_visible().unwrap_or(false))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        then(&app);
+    });
+}
+
+/// The web views' memory cache, sized for an app rather than a browser. WebKitGTK's default
+/// (the "web browser" model) keeps up to half a gigabyte of decoded pictures on a 16 GB
+/// machine, for pages a browser expects to be revisited. Here every picture is this app's own,
+/// served from disk in a few milliseconds by the `quince` scheme, so keeping them gained
+/// nothing: measured on 1,589 photos (the Hidden album), one scroll through left the web
+/// process 650 MB larger, and it stayed so after leaving Photos. The "document viewer" model
+/// keeps what is on screen and near it, gives the rest back, and keeps no disk cache of a
+/// page that is never fetched over the network. Set on the one web context every window
+/// shares, so once is enough; each new window sets it again harmlessly.
+#[cfg(target_os = "linux")]
+fn app_cache(webview: &tauri::Webview) {
+    let done = webview.with_webview(|platform| {
+        use webkit2gtk::{WebContextExt, WebViewExt};
+        if let Some(context) = platform.inner().context() {
+            context.set_cache_model(webkit2gtk::CacheModel::DocumentViewer);
+        }
+    });
+    if let Err(e) = done {
+        quiet!("the web view's cache could not be set: {e}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn app_cache(_webview: &tauri::Webview) {}
+
+/// Whether the tray icon can be seen, so a closed window can be put away behind it. On Linux a
+/// tray icon is a StatusNotifierItem, shown only where a host is on the session bus (KDE's
+/// panel, waybar, Quickshell, Ubuntu's AppIndicator extension…). Stock GNOME (Fedora, Debian)
+/// has none: the icon is made and never shown, and a window put away there left Skykeep running
+/// with no way back but its launcher and no way to quit at all. Where no host is there, closing
+/// the window quits, as it does where no tray could be made.
+///
+/// Asked when it matters rather than once at start, because a panel started at login can
+/// register after Skykeep. A bus that cannot be asked is taken as a tray that is there.
+#[cfg(target_os = "linux")]
+fn tray_reachable(_app: &tauri::AppHandle) -> bool {
+    linux_tray::made() && status_notifier_host().unwrap_or(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tray_reachable(app: &tauri::AppHandle) -> bool {
+    app.tray_by_id("quince").is_some()
+}
+
+/// Whether a StatusNotifierItem host is registered: `None` when the session bus cannot be
+/// asked, `Some(false)` when no watcher, or no host behind it, is there.
+#[cfg(target_os = "linux")]
+fn status_notifier_host() -> Option<bool> {
+    let bus = zbus::blocking::connection::Builder::session()
+        .ok()?
+        .method_timeout(Duration::from_secs(1))
+        .build()
+        .ok()?;
+    let reply = bus.call_method(
+        Some("org.kde.StatusNotifierWatcher"),
+        "/StatusNotifierWatcher",
+        Some("org.freedesktop.DBus.Properties"),
+        "Get",
+        &(
+            "org.kde.StatusNotifierWatcher",
+            "IsStatusNotifierHostRegistered",
+        ),
+    );
+    let reply = match reply {
+        Ok(reply) => reply,
+        // No watcher on the bus at all: nothing shows tray icons here.
+        Err(zbus::Error::MethodError(name, _, _))
+            if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" =>
+        {
+            return Some(false)
+        }
+        Err(_) => return None,
+    };
+    let value: zbus::zvariant::OwnedValue = reply.body().deserialize().ok()?;
+    Some(bool::try_from(value).unwrap_or(false))
+}
+
+/// The tray on Linux: a StatusNotifierItem spoken over D-Bus by ksni, not Tauri's tray.
+/// Tauri's goes through libayatana-appindicator, which never passes a click on — a left click
+/// could only open the menu. Here a left click (the host's Activate) opens the window at once,
+/// and the right click's menu is the one Windows and macOS have.
+///
+/// Made even where no host is there yet (`assume_sni_available`): a panel that starts after
+/// Skykeep at login picks the icon up when it registers. Where none ever does (stock GNOME),
+/// `tray_reachable` says so, and closing the window quits.
+#[cfg(target_os = "linux")]
+mod linux_tray {
+    use super::{intake, show_window, shutdown};
+    use ksni::TrayMethods;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static MADE: AtomicBool = AtomicBool::new(false);
+
+    /// Whether the tray's D-Bus service is up.
+    pub fn made() -> bool {
+        MADE.load(Ordering::SeqCst)
+    }
+
+    struct SkykeepTray {
+        app: tauri::AppHandle,
+        icon: Vec<ksni::Icon>,
+    }
+
+    impl SkykeepTray {
+        /// `then` on the main thread, where the windows live; the tray's calls arrive on
+        /// ksni's own.
+        fn on_main(&self, then: fn(&tauri::AppHandle)) {
+            let app = self.app.clone();
+            self.app.run_on_main_thread(move || then(&app)).ok();
+        }
+    }
+
+    impl ksni::Tray for SkykeepTray {
+        fn id(&self) -> String {
+            "skykeep".into()
+        }
+        fn title(&self) -> String {
+            "Skykeep".into()
+        }
+        fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+            self.icon.clone()
+        }
+        fn tool_tip(&self) -> ksni::ToolTip {
+            ksni::ToolTip {
+                title: "Skykeep".into(),
+                ..Default::default()
+            }
+        }
+        // The left click.
+        fn activate(&mut self, _x: i32, _y: i32) {
+            self.on_main(|app| {
+                show_window(app);
+            });
+        }
+        fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+            use ksni::menu::StandardItem;
+            use ksni::MenuItem;
+            let item = |label: &str, then: fn(&tauri::AppHandle)| -> MenuItem<Self> {
+                StandardItem {
+                    label: label.into(),
+                    activate: Box::new(move |tray: &mut Self| tray.on_main(then)),
+                    ..Default::default()
+                }
+                .into()
+            };
+            // The same four lines as Tauri's tray on Windows and macOS (build_tray).
+            vec![
+                item("Open Skykeep", |app| {
+                    show_window(app);
+                }),
+                MenuItem::Separator,
+                item("New Reminder", |app| intake::capture(app, "reminder")),
+                item("New Note", |app| intake::capture(app, "note")),
+                MenuItem::Separator,
+                item("Quit Skykeep", |app| shutdown(app, 0)),
+            ]
+        }
+        // A panel restarting, or not there yet: the icon comes back when it does.
+        fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
+            true
+        }
+    }
+
+    /// The tray's mark at every size a panel draws one, each made from the vector master with
+    /// a margin all round (as Vesktop's), as StatusNotifierItem wants it: ARGB32, in network
+    /// byte order. Given only 64px, a panel shrank it itself — soft, and the k clipped at an
+    /// edge it rounded off.
+    fn pixmap() -> Vec<ksni::Icon> {
+        let sizes: [&[u8]; 6] = [
+            include_bytes!("../icons/tray-16.png"),
+            include_bytes!("../icons/tray-22.png"),
+            include_bytes!("../icons/tray-24.png"),
+            include_bytes!("../icons/tray-32.png"),
+            include_bytes!("../icons/tray-48.png"),
+            include_bytes!("../icons/tray-64.png"),
+        ];
+        sizes
+            .iter()
+            .filter_map(|bytes| tauri::image::Image::from_bytes(bytes).ok())
+            .map(|image| ksni::Icon {
+                width: image.width() as i32,
+                height: image.height() as i32,
+                data: image
+                    .rgba()
+                    .chunks_exact(4)
+                    .flat_map(|p| [p[3], p[0], p[1], p[2]])
+                    .collect(),
+            })
+            .collect()
+    }
+
+    pub fn spawn(app: tauri::AppHandle) {
+        let tray = SkykeepTray {
+            app,
+            icon: pixmap(),
+        };
+        // Inside the Flatpak sandbox the per-process bus name the spec asks for cannot be
+        // owned; the watcher takes the item by its unique name instead.
+        let sandboxed = std::path::Path::new("/.flatpak-info").exists();
+        tauri::async_runtime::spawn(async move {
+            match tray
+                .disable_dbus_name(sandboxed)
+                .assume_sni_available(true)
+                .spawn()
+                .await
+            {
+                // The service runs on its own; the handle is only for changing it later.
+                Ok(_handle) => MADE.store(true, Ordering::SeqCst),
+                Err(e) => quiet!("no tray on this desktop, so closing the window quits: {e}"),
+            }
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    linux_tray::spawn(app.handle().clone());
+    Ok(())
 }
 
 /// A place in the tray, so Quince stays running — and ringing reminders — with its window
 /// closed, and can be opened again or quit from there.
+#[cfg(not(target_os = "linux"))]
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::PredefinedMenuItem;
     use tauri::menu::{Menu, MenuItem};
@@ -4703,7 +5289,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         // the menu is the right click's. A Mac menu-bar extra opens its menu on any click.
         .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "open" => show_window(app),
+            "open" => {
+                show_window(app);
+            }
             "quit" => shutdown(app, 0),
             "new:reminder" => intake::capture(app, "reminder"),
             "new:note" => intake::capture(app, "note"),
@@ -4738,6 +5326,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn main() {
+    timing::start();
     login::note_launch();
     steady_drawing();
     smooth_video();
@@ -4748,6 +5337,7 @@ fn main() {
     let mut context = tauri::generate_context!();
     let current = context.config().identifier.clone();
     let identifier = migrate::at_launch(&current);
+    timing::mark("identifier settled");
     if identifier != current {
         context.config_mut().identifier = identifier;
     }
@@ -4764,6 +5354,7 @@ fn main() {
         // One Quince at a time: opening it again brings back the one already running, which
         // may be sitting in the tray with its window closed.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            timing::mark("handed a launch");
             // A file opened with Skykeep, or a quick capture (`--new reminder`): handled
             // here, in the one already running.
             if intake::arrived(app, &args, std::path::Path::new(&cwd)) {
@@ -4772,7 +5363,9 @@ fn main() {
             // `--app notes` from a launcher entry: that app's window, in this same process.
             match apps::asked(&args) {
                 Some(key) => apps::open(app, key),
-                None => show_window(app),
+                None => {
+                    show_window(app);
+                }
             }
         }))
         // Each window — the library, and every app's own — reopens at the size and place it was
@@ -4814,11 +5407,12 @@ fn main() {
                     }
                     inside
                 })
+                .on_webview_ready(|webview| app_cache(&webview))
                 .build(),
         )
         // Closing the window hides it rather than quitting, so reminders still ring. Quit is
-        // in the tray. Where no tray could be made there is nowhere to come back from, so
-        // there closing quits as it always did.
+        // in the tray. Where no tray could be made, or none is shown (tray_reachable), there
+        // is nowhere to come back from, so there closing quits as it always did.
         // Files dropped on a window are the person's to hand over: granted to the commands
         // that read them (grants.rs) here, before the page hears of the drop.
         .on_webview_event(|_, event| {
@@ -4830,16 +5424,23 @@ fn main() {
             if let tauri::WindowEvent::DragDrop(drop) = event {
                 grants::dropped(drop);
             }
+            // Coming back to a window is when a change made elsewhere is looked for at once.
+            if let tauri::WindowEvent::Focused(true) = event {
+                push::wake();
+            }
             // The whole-library window is put away, as the engine keeps running behind the
             // tray. An app's own window is put away too, so opening it again is instant rather
             // than a new web view built from nothing — and given back for good once it has
             // gone unused for a while, so six put-away windows do not sit on memory.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.app_handle().tray_by_id("quince").is_none() {
+                if !tray_reachable(window.app_handle()) {
                     return;
                 }
                 if window.label() == "main" {
                     api.prevent_close();
+                    // Hidden, never given back: the tray's click shows it at once, already
+                    // drawn. Remade on demand it took about half a second, which the founder
+                    // asked to be gone; keeping its web view costs about 190 MB in the tray.
                     window.hide().ok();
                 } else if window.label().starts_with("app-") {
                     api.prevent_close();
@@ -4858,6 +5459,7 @@ fn main() {
             let uri = request.uri();
             let wanted = photo_guid(uri.host(), uri.path());
             let attachment = note_part(uri.path());
+            let reminder_image = reminder_image_part(uri.path());
             // A drawing's ink for a dark page, rather than a light one.
             let ink_dark = uri.path().ends_with("drawing-dark");
             let picture = photos::requested(uri.path());
@@ -4899,6 +5501,21 @@ fn main() {
                         Ok(bytes) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", photos::content_type(&bytes, size))
+                            .header("Cache-Control", "private, max-age=86400")
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.unwrap_or_default());
+                    return;
+                }
+                // A picture attached to a reminder.
+                if let Some(id) = reminder_image {
+                    let response = match reminder_image_shown(&app, &id).await {
+                        Ok(bytes) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", image_type(&bytes))
                             .header("Cache-Control", "private, max-age=86400")
                             .body(bytes),
                         Err(_) => tauri::http::Response::builder()
@@ -4961,23 +5578,29 @@ fn main() {
             });
         })
         .setup(|app| {
+            timing::mark("setup");
             video::serve(app.handle().clone());
             let dir = state_dir(app.handle());
             keep_private(&dir);
-            let client = Arc::new(Mutex::new(Client::new(&dir)?));
+            let client = Client::new(&dir)?;
+            let known = std::sync::Mutex::new(SessionFacts::of(&client));
+            let client = Arc::new(Mutex::new(client));
             app.manage(Auth {
                 client: Arc::clone(&client),
                 signing_in: AtomicBool::new(false),
+                known,
             });
             // The local library. Opened once at startup so every command shares one
             // connection and the WAL behaves.
             let mut library = Library::open(&dir)?;
+            timing::mark("library open");
             adopt_writer(&mut library);
             app.manage(Data(Mutex::new(library)));
             // The sender of edits made offline, started once what it sends with — the session
             // and the library — is in place: started first, its opening pass found neither and
             // its task died, and nothing waiting was sent all session.
             outbox::start(app.handle().clone());
+            appearance::watch(app.handle().clone());
             // A photo cache past what this computer can spare now — the disk filled since —
             // is brought back under its budget first thing.
             let trim = app.handle().clone();
@@ -5047,14 +5670,6 @@ fn main() {
             search_provider::serve(app.handle().clone());
             alerts::spawn(app.handle().clone());
             alerts::spawn_events(app.handle().clone());
-            // A tiling compositor places, sizes and closes windows itself; a title bar with
-            // minimise and maximise there only takes room and does nothing it does not. On a
-            // desktop that floats windows — GNOME, KDE — it is how a window is moved, so it stays.
-            if tiling_compositor() {
-                if let Some(window) = app.get_webview_window("main") {
-                    window.set_decorations(false).ok();
-                }
-            }
             if let Err(e) = build_tray(app) {
                 quiet!("no tray on this desktop, so closing the window quits: {e}");
             }
@@ -5067,7 +5682,24 @@ fn main() {
                 LAUNCHED_AS_APP.store(true, Ordering::SeqCst);
                 apps::open(app.handle(), key);
             }
+            // The whole-library window, unless this launch is one app's or one file's — then
+            // made a little later, hidden, once that app's window is up, so the tray still
+            // opens the whole library at once.
+            if !LAUNCHED_AS_APP.load(Ordering::SeqCst) {
+                make_main(app.handle());
+            } else {
+                let app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    let warm = app.clone();
+                    app.run_on_main_thread(move || {
+                        make_main(&warm);
+                    })
+                    .ok();
+                });
+            }
             show_when_ready(app.handle());
+            timing::mark("setup done");
             // Photos uploads a quit left half done carry on.
             photos::work(app.handle().clone());
             Ok(())
@@ -5082,6 +5714,9 @@ fn main() {
             outbox::outbox_resend,
             outbox::outbox_discard,
             outbox::outbox_wake,
+            appearance::system_contrast,
+            appearance::system_time_locale,
+            network_reach,
             auth_status,
             auth_resume,
             auth_sign_in,
@@ -5115,6 +5750,7 @@ fn main() {
             calendar_events,
             event_save,
             event_alerts,
+            event_guests,
             event_repeat,
             event_delete,
             calendar_create,
@@ -5166,13 +5802,21 @@ fn main() {
             mount::photos_folder_set,
             mount::photos_folder_open,
             photos::photo_video_turn,
+            photos::photo_video_zoom,
             photos::photos_set_flag,
             photos::photos_burst,
             photos::photos_shared_albums,
             photos::photos_shared_create,
             photos::photos_shared_delete,
             photos::photos_prepare,
+            photos::photos_index,
+            photos::photos_page,
+            photos::photos_get,
+            photo_cache::photos_cache_status,
+            photo_cache::photos_cache_set,
+            photo_cache::photos_cache_clear,
             video::video_base,
+            video::video_support,
             window_tint,
             window_fullscreen,
             photos::photos_upload,
@@ -5215,12 +5859,19 @@ fn main() {
             contact_delete,
             contacts_cmds::contact_addresses,
             contacts_cmds::contact_address_edit,
+            contacts_merge::contacts_duplicates,
+            contacts_merge::contacts_merge,
+            contacts_merge::contacts_merge_undo,
             notes_cmds::note_unlock,
             notes_cmds::note_lock_hint,
             notes_cmds::note_lock_forget,
             notes_cmds::note_attach_file,
+            notes_cmds::note_attach_preview,
             notes_cmds::note_attach_enabled,
             reminders_cmds::reminder_detail,
+            reminders_cmds::reminder_more,
+            reminders_cmds::reminders_ending,
+            reminders_cmds::reminder_marks,
             reminders_cmds::reminder_tags,
             reminders_cmds::reminders_tagged,
             reminders_cmds::reminder_smart_lists,
@@ -5256,6 +5907,19 @@ fn main() {
         .build(context)
         .expect("Skykeep failed to start")
         .run(|_app, event| {
+            // The last window given back (put away, then closed for good — see apps::put_away)
+            // is not the app ending: it goes on behind the tray, ringing alerts and keeping
+            // the library current. Quit, a logout or a signal ends it through `shutdown`;
+            // with no tray to come back from, closing the window still quits.
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = &event
+            {
+                if tray_reachable(_app) {
+                    api.prevent_exit();
+                    return;
+                }
+            }
             // The iCloud Drive folder goes with the app: left mounted, it would answer
             // nothing ("Transport endpoint is not connected").
             if let tauri::RunEvent::Exit = event {

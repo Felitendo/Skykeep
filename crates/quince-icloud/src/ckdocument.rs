@@ -1265,31 +1265,30 @@ fn with_runs(note: &[u8], runs: &[Vec<u8>]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The run Notes gives an attachment's one character, as a phone writes it (measured on a
-/// picture added on his iPhone): `1` length 1, `12` the attachment — `1` its id, `2` its
-/// type identifier — `13` when it was placed (Unix seconds), then `2` the paragraph's setting,
-/// which every run of a paragraph shares.
-fn attachment_run(id: &str, uti: &str, stamp: u64, paragraph: Option<&[u8]>) -> Vec<u8> {
+/// The paragraph setting Notes gives a paragraph holding an attachment: `3` 1 and a fresh
+/// paragraph uuid at `9`. Measured on every attachment his devices placed (2026-10-22, all
+/// notes): each sits on a paragraph of its own — after a newline or at the start, followed by
+/// a newline or the end — with this setting, most with `3` 1, the newline after it sharing it.
+fn attachment_paragraph(uuid: &[u8; 16]) -> Vec<u8> {
+    let mut p = varint_field(3, 1);
+    p.extend(length_delimited(9, uuid));
+    p
+}
+
+/// The run Notes gives an attachment's one character, as a phone writes it, fields in the
+/// phone's order: `1` length 1, `2` the paragraph's setting, `12` the attachment — `1` its id,
+/// `2` its type identifier — and `13` when it was placed (Unix seconds).
+fn attachment_run(id: &str, uti: &str, stamp: u64, paragraph: &[u8]) -> Vec<u8> {
     let mut info = length_delimited(1, id.as_bytes());
     info.extend(length_delimited(2, uti.as_bytes()));
     let mut run = varint_field(1, 1);
+    run.extend(length_delimited(2, paragraph));
     run.extend(length_delimited(ATTACHMENT_INFO, &info));
     run.extend(varint_field(13, stamp));
-    if let Some(p) = paragraph {
-        run.extend(length_delimited(2, p));
-    }
     run
 }
 
-/// A note with an attachment placed at UTF-16 offset `at`: one object-replacement character
-/// (U+FFFC) inserted there, the merge records edited for that one insertion as a device edits
-/// them, and the character given a run of its own naming the attachment.
-///
-/// Everything else is copied through: the text around it, every other run, the versions. The
-/// new run takes the setting of the paragraph it lands in — its style, its checklist item —
-/// from that paragraph's own runs, so a picture put in a checklist line stays in that line.
-/// `None`, and nothing to write, for an offset past the end or inside a surrogate pair, and for
-/// any document [`replace_text`] would refuse.
+/// A note with an attachment placed at UTF-16 offset `at`. See [`insert_attachment_placed`].
 #[must_use]
 pub fn insert_attachment(
     original: &[u8],
@@ -1298,6 +1297,29 @@ pub fn insert_attachment(
     uti: &str,
     stamp: u64,
 ) -> Option<Vec<u8>> {
+    insert_attachment_placed(original, at, id, uti, stamp).map(|(d, _)| d)
+}
+
+/// A note with an attachment placed at UTF-16 offset `at`, as a phone places one: on a
+/// paragraph of its own. One object-replacement character (U+FFFC) goes in, with a newline
+/// before it when `at` is inside a line, and a newline after it unless it is the note's last
+/// character; at the very end of a line it goes on the line below. Its paragraph gets the
+/// setting a phone gives one ([`attachment_paragraph`]); the newline before it ends the
+/// paragraph it came from, in that paragraph's setting. The merge records are edited for the
+/// one insertion as a device edits them.
+///
+/// Everything else is copied through: the text around it, every other run, the versions.
+/// Answers the document and the offset of the attachment's character in it. `None`, and
+/// nothing to write, for an offset past the end or inside a surrogate pair, and for any
+/// document [`replace_text`] would refuse.
+#[must_use]
+pub fn insert_attachment_placed(
+    original: &[u8],
+    at: u64,
+    id: &str,
+    uti: &str,
+    stamp: u64,
+) -> Option<(Vec<u8>, u64)> {
     let plain = inflate(original)?;
     let current = field_at(&plain, TEXT_PATH)?;
     // The same proof an edit needs: the document can be walked and put back byte for byte.
@@ -1306,7 +1328,7 @@ pub fn insert_attachment(
     }
     let old_text = std::str::from_utf8(current).ok()?;
     let units: Vec<u16> = old_text.encode_utf16().collect();
-    let place = usize::try_from(at).ok()?;
+    let mut place = usize::try_from(at).ok()?;
     if place > units.len()
         || units
             .get(place)
@@ -1316,55 +1338,94 @@ pub fn insert_attachment(
     }
     let note = field_at(&plain, &TEXT_PATH[..2])?;
     // Runs that do not describe the text are not built on.
-    if runs_in(note)?.iter().map(|r| run_length(r)).sum::<u64>() != units.len() as u64 {
+    let old_runs = runs_in(note)?;
+    if old_runs.iter().map(|r| run_length(r)).sum::<u64>() != units.len() as u64 {
         return None;
     }
-    let mut new_units = units;
-    new_units.insert(place, 0xFFFC);
+    let newline = u16::from(b'\n');
+    let inside_line = |p: usize| p > 0 && units[p - 1] != newline;
+    // At the end of a line that has more after it: on the next line instead, so the line's
+    // own newline stays its own.
+    if inside_line(place) && units.get(place) == Some(&newline) {
+        place += 1;
+    }
+    let before = inside_line(place);
+    let after = place < units.len();
+    let mut inserted: Vec<u16> = Vec::with_capacity(3);
+    if before {
+        inserted.push(newline);
+    }
+    inserted.push(0xFFFC);
+    if after {
+        inserted.push(newline);
+    }
+    let n = inserted.len() as u64;
+    let at = place as u64;
+    let mut new_units = units.clone();
+    new_units.splice(place..place, inserted.iter().copied());
     let new_text = String::from_utf16(&new_units).ok()?;
-    let rebuilt = rebuild_note_with(note, old_text, &new_text, &[(at, 0, 1)])?;
+    let rebuilt = rebuild_note_with(note, old_text, &new_text, &[(at, 0, n)])?;
     let runs = runs_in(&rebuilt)?;
 
-    // Which run speaks for the paragraph: the one over its newline, or — the last paragraph,
-    // which has none — over its last character other than the new one.
-    let newline = new_units[place + 1..]
-        .iter()
-        .position(|&u| u == u16::from(b'\n'))
-        .map(|i| place + 1 + i);
-    let speaker = newline
-        .or_else(|| (new_units.len() > place + 1).then(|| new_units.len() - 1))
-        .or_else(|| (place > 0 && new_units[place - 1] != u16::from(b'\n')).then(|| place - 1));
-    let run_over = |unit: usize| {
-        let mut end = 0usize;
-        runs.iter().find(|r| {
-            end += usize::try_from(run_length(r)).unwrap_or(usize::MAX);
-            unit < end
-        })
-    };
-    let paragraph = speaker.and_then(run_over).and_then(|r| bytes_field(r, 2));
+    // The runs the new characters get.
+    let mut uuid = [0u8; 16];
+    uuid.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    let paragraph = attachment_paragraph(&uuid);
+    let mut placed_runs = Vec::with_capacity(3);
+    if before {
+        // The newline closing the line it was put in: that line's run, one long.
+        let mut end = 0u64;
+        let line = old_runs.iter().find(|r| {
+            end += run_length(r);
+            end >= at
+        })?;
+        let line = without_field(line, ATTACHMENT_INFO)?;
+        placed_runs.push(set_varint_field(
+            &set_varint_field(&line, 1, 1)?,
+            13,
+            stamp,
+        )?);
+    }
+    placed_runs.push(attachment_run(id, uti, stamp, &paragraph));
+    if after {
+        let mut run = varint_field(1, 1);
+        run.extend(length_delimited(2, &paragraph));
+        placed_runs.push(run);
+    }
 
-    let mut out = Vec::with_capacity(runs.len() + 2);
+    let mut out = Vec::with_capacity(runs.len() + 4);
     let mut start = 0u64;
+    let mut done = false;
     for run in &runs {
         let end = start + run_length(run);
-        if (start..end).contains(&at) {
+        if !done && (start..end).contains(&at) {
+            // The rebuild put every new character in this one run; they are given theirs.
+            if end < at + n {
+                return None;
+            }
             if at > start {
                 out.push(set_varint_field(run, 1, at - start)?);
             }
-            out.push(attachment_run(id, uti, stamp, paragraph.as_deref()));
-            if end > at + 1 {
-                out.push(set_varint_field(run, 1, end - at - 1)?);
+            out.extend(placed_runs.iter().cloned());
+            if end > at + n {
+                out.push(set_varint_field(run, 1, end - at - n)?);
             }
+            done = true;
         } else {
             out.push(run.clone());
         }
         start = end;
     }
+    if !done {
+        return None;
+    }
     let placed = with_runs(&rebuilt, &out)?;
-    ensure_versions(&rewrite(&plain, &TEXT_PATH[..2], &placed)?)
+    let document = ensure_versions(&rewrite(&plain, &TEXT_PATH[..2], &placed)?)?;
+    Some((document, at + u64::from(before)))
 }
 
-/// [`insert_attachment`] over the base64 a CloudKit field carries, gzipped on the way back.
+/// [`insert_attachment_placed`] over the base64 a CloudKit field carries, gzipped on the way
+/// back, with where the attachment's character landed.
 #[must_use]
 pub fn insert_attachment_in_base64(
     original: &str,
@@ -1372,9 +1433,10 @@ pub fn insert_attachment_in_base64(
     id: &str,
     uti: &str,
     stamp: u64,
-) -> Option<String> {
+) -> Option<(String, u64)> {
     let raw = B64.decode(original.trim()).ok()?;
-    Some(B64.encode(gzip(&insert_attachment(&raw, at, id, uti, stamp)?)))
+    let (document, offset) = insert_attachment_placed(&raw, at, id, uti, stamp)?;
+    Some((B64.encode(gzip(&document)), offset))
 }
 
 /// The text and its formatting together: the text replaced as [`replace_text`] replaces it,
@@ -2680,21 +2742,27 @@ mod rewrite_tests {
         let (was, now) = (records(&before), records(&after));
         let (was_ids, now_ids) = (was.live_ids(), now.live_ids());
         assert_eq!(now.live_length(), 17);
+        // The list stays sorted by uuid, as Apple keeps it: the phone's number is its place.
+        let writers = now.writer_clocks();
+        assert!(writers.windows(2).all(|w| w[0].0 < w[1].0));
+        let phone = writers.iter().position(|w| w.0 == PHONE).unwrap() as u64 + 1;
+        let me = 3 - phone;
+        let theirs = |ids: &[(u64, u64)]| ids.iter().map(|&(_, c)| (phone, c)).collect::<Vec<_>>();
         assert_eq!(
             now_ids[..6],
-            was_ids[..6],
+            theirs(&was_ids[..6])[..],
             "\"first \" is still the phone's"
         );
         assert_eq!(
             now_ids[12..],
-            was_ids[6..],
+            theirs(&was_ids[6..])[..],
             "\"draft\" is still the phone's"
         );
         assert!(
-            now_ids[6..12].iter().all(|&(writer, _)| writer == 2),
+            now_ids[6..12].iter().all(|&(writer, _)| writer == me),
             "the typed words are this app's"
         );
-        assert_eq!(now.writer_clocks()[0], (PHONE.to_vec(), vec![11, 1]));
+        assert_eq!(writers[phone as usize - 1], (PHONE.to_vec(), vec![11, 1]));
     }
 
     #[test]

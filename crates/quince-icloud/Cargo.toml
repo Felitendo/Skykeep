@@ -16,7 +16,7 @@ plist = "1.10"
 base64 = "0.22"
 flate2 = "1"
 uuid = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "time", "net"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 sha1 = "0.10"
 # Locked notes (notes_locked.rs): PBKDF2-SHA256 → AES key unwrap (RFC 3394) → AES-GCM.
@@ -25,6 +25,10 @@ pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 aes = "0.8"
 aes-kw = "0.2"
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+# The live push channel (courier.rs): Apple's web push socket, its P-256 signed connect.
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

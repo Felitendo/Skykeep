@@ -16,7 +16,7 @@ let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 
 ok(await page.locator(".cx-weeknum").count() === 0, "no week numbers by default");
-await page.getByRole("button", { name: "More" }).click();
+await page.getByRole("button", { name: "More", exact: true }).click();
 await page.getByRole("menuitemcheckbox", { name: "Show Week Numbers" }).click();
 await page.waitForTimeout(200);
 const nums = await page.locator(".cx-weeknum").allInnerTexts();

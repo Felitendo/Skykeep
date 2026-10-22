@@ -336,6 +336,15 @@ impl Topo {
     }
 
     /// This app's place in the list of writers, adding it if it is not there yet.
+    ///
+    /// Apple keeps the list sorted by uuid, and a phone reads a writer number as a place in
+    /// that sorted list (docs/notes-tables-crdt.md: a table whose list this app had appended
+    /// to came back from a Mac sorted, every number left as it was, and the phone's own
+    /// characters attributed to someone else — doubled text and conflict copies). Every
+    /// multi-writer note body an Apple device last wrote is sorted (census, 2026-10-22). So a
+    /// writer new to a sorted list goes in at its sorted place, and every number from that
+    /// place up moves up one, which reads the same whether the list is taken in order or
+    /// sorted. A list already out of order (an older build's append) is appended to, as before.
     fn own_writer(&mut self) -> usize {
         let me = writer();
         if let Some(i) = self.writers.iter().position(|w| w.uuid == me) {
@@ -344,11 +353,31 @@ impl Topo {
             }
             return i;
         }
-        self.writers.push(Writer {
-            uuid: me.to_vec(),
-            clocks: vec![0, 0],
-        });
-        self.writers.len() - 1
+        let sorted = self.writers.windows(2).all(|w| w[0].uuid < w[1].uuid);
+        let at = if sorted {
+            self.writers
+                .partition_point(|w| w.uuid.as_slice() < me.as_slice())
+        } else {
+            self.writers.len()
+        };
+        self.writers.insert(
+            at,
+            Writer {
+                uuid: me.to_vec(),
+                clocks: vec![0, 0],
+            },
+        );
+        // Numbers are 1-based; the markers' 0 is nobody's and stays.
+        let from = at as u64 + 1;
+        for s in &mut self.substrings {
+            if s.writer >= from {
+                s.writer += 1;
+            }
+            if s.stamp_writer >= from {
+                s.stamp_writer += 1;
+            }
+        }
+        at
     }
 
     /// New text of `length` units at `at`, as a substring of this app's own.
@@ -548,6 +577,54 @@ mod tests {
         assert_eq!((s[1].stamp_writer, s[1].stamp_clock), (1, 0));
         assert_eq!((s[2].writer, s[2].clock, s[2].stamp_clock), (0, END, END));
         assert_eq!(t.writers[0].clocks, vec![20, 1]);
+        assert_eq!(roundtrip(&t), t);
+    }
+
+    /// A writer new to a sorted list goes in at its sorted place, and every number from there
+    /// up moves with its writer — the phone's characters stay the phone's however the list is
+    /// read.
+    #[test]
+    fn a_new_writer_takes_its_sorted_place_and_numbers_follow() {
+        let marker = |clock| Substring {
+            writer: 0,
+            clock,
+            length: 0,
+            stamp_writer: 0,
+            stamp_clock: clock,
+            deleted: false,
+        };
+        let text = |writer, length| Substring {
+            writer,
+            clock: 0,
+            length,
+            stamp_writer: writer,
+            stamp_clock: 0,
+            deleted: false,
+        };
+        let mut t = Topo {
+            substrings: vec![marker(0), text(1, 3), text(2, 4), marker(END)],
+            writers: vec![
+                Writer {
+                    uuid: vec![0x00; 16],
+                    clocks: vec![3, 1],
+                },
+                Writer {
+                    uuid: vec![0xFF; 16],
+                    clocks: vec![4, 1],
+                },
+            ],
+        };
+        t.edit(7, 0, 2);
+        assert_eq!(t.writers.len(), 3);
+        assert!(t.writers.windows(2).all(|w| w[0].uuid < w[1].uuid));
+        assert_eq!(t.writers[1].uuid, writer().to_vec());
+        let ids: Vec<u64> = t.live_ids().iter().map(|&(w, _)| w).collect();
+        assert_eq!(ids, [1, 1, 1, 3, 3, 3, 3, 2, 2]);
+        assert!(t
+            .substrings
+            .iter()
+            .filter(|s| s.length > 0)
+            .all(|s| s.stamp_writer == s.writer));
         assert_eq!(roundtrip(&t), t);
     }
 

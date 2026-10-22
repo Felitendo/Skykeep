@@ -20,3 +20,17 @@ export function useActiveRef() {
   }, [active]);
   return ref;
 }
+
+/**
+ * Whether a menu, a picker's list or a sheet is open in front, which answers its own keys. A
+ * screen's own list of rows (a list box marked `data-rows`, as Notes and Contacts draw theirs)
+ * is not one, and nothing in a screen kept out of sight counts.
+ */
+export function overlayOpen(): boolean {
+  const open = document.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"], .confirm');
+  for (const el of open) {
+    if (el.matches("[data-rows]") || el.closest("[inert], [hidden]")) continue;
+    return true;
+  }
+  return false;
+}

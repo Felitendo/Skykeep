@@ -1,7 +1,8 @@
+import { MOVE_CHECKED_KEY } from "./notes/model";
 import { ConfirmSheet } from "../components/Confirm";
 import { toast, toastSaved, useErrorToast } from "../components/Toast";
 import { Progress } from "../components/Spinner";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { pickOpen } from "../lib/pick";
@@ -17,12 +18,17 @@ import {
   type LocalStorage,
   type LoginItem,
   messageOf,
+  PHOTO_CACHE,
+  photoCacheApi,
+  type PhotoCache,
   settingsApi,
 } from "../lib/ipc";
 import { freshness, useSync } from "../lib/sync";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
 import { AccountAvatar } from "../components/Account";
+import { Picker } from "../components/Picker";
+import { localeFirstDay, setWeekStart, weekStartChoice, type WeekStartChoice } from "./calendar/model";
 
 /** The app each service's freshness belongs to, for its icon. */
 const ICON: Record<string, string> = {
@@ -322,6 +328,146 @@ function ExportRow({ onError }: { onError: (m: string) => void }) {
   );
 }
 
+/** A cap as Settings says it: "512 MB", "2 GB". */
+const capWords = (bytes: number) => (bytes < 1024 ** 3 ? `${Math.round(bytes / 1024 ** 2)} MB` : `${Math.round(bytes / 1024 ** 3)} GB`);
+
+/**
+ * Photos' originals and previews on this computer, as a Mac's Optimize Storage keeps them: what
+ * they take against the cap, the cap as a ruler of sizes, and Clear Cache. The cap moves at once
+ * and is sent when the hand stops; a lower one lets the longest unseen go in the background, and
+ * the figure follows when that is done (PHOTO_CACHE).
+ */
+function PhotoCacheGroup({ onError }: { onError: (m: string) => void }) {
+  const [cache, setCache] = useState<PhotoCache | null>(null);
+  /** The step the ruler shows while it is being moved, before the backend has it. */
+  const [moving, setMoving] = useState<number | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [freed, setFreed] = useState<number | null>(null);
+  const send = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    photoCacheApi.status().then(setCache, () => {});
+    const stop = listen<PhotoCache>(PHOTO_CACHE, (e) => setCache(e.payload));
+    return () => {
+      window.clearTimeout(send.current);
+      void stop.then((un) => un()).catch(() => {});
+    };
+  }, []);
+  if (!cache) return null;
+  const steps = cache.steps;
+  const at = moving ?? Math.max(0, steps.indexOf(cache.cap));
+  const cap = steps[at] ?? cache.cap;
+  const choose = (i: number) => {
+    setMoving(i);
+    setFreed(null);
+    window.clearTimeout(send.current);
+    send.current = window.setTimeout(() => {
+      photoCacheApi.set(steps[i]).then(
+        (now) => {
+          setCache(now);
+          setMoving(null);
+        },
+        (e) => {
+          setMoving(null);
+          onError(messageOf(e));
+        },
+      );
+    }, 350);
+  };
+  const clear = () => {
+    const before = cache.used;
+    setClearing(true);
+    photoCacheApi
+      .clear()
+      .then(
+        (now) => {
+          setCache(now);
+          setFreed(Math.max(0, before - now.used));
+        },
+        (e) => onError(messageOf(e)),
+      )
+      .finally(() => setClearing(false));
+  };
+  const share = cap > 0 ? Math.min(1, cache.used / cap) : 0;
+  const limited = moving === null && cache.limit < cache.cap;
+  return (
+    <>
+      <h2 className="settings-heading settings-heading-line">
+        <span>Photos Cache</span>
+        <span className="settings-heading-value">
+          {size(cache.used)} of {capWords(cap)}
+        </span>
+      </h2>
+      <section className="settings-group" aria-label="Photos Cache">
+        <div className="settings-row is-stacked">
+          <div
+            className="storage-bar"
+            role="meter"
+            aria-label="Photos cache used"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(share * 100)}
+            aria-valuetext={`${size(cache.used)} of ${capWords(cap)}`}
+          >
+            <span style={{ width: `${share * 100}%` }} />
+          </div>
+          <span className="settings-hint settings-hint-wrap">
+            {limited
+              ? `Using up to ${size(cache.limit)} for now, to leave room on this disk. `
+              : "Recently viewed photos stay ready, even offline. "}
+            Thumbnails always stay.
+          </span>
+        </div>
+        <div className="settings-row is-stacked">
+          <div className="settings-row-line">
+            <label className="settings-label" htmlFor="photo-cache-cap">
+              Keep up to
+            </label>
+            <span className="settings-value">{capWords(cap)}</span>
+          </div>
+          <div className="cap-ruler" style={{ "--stops": steps.length } as React.CSSProperties}>
+            <input
+              id="photo-cache-cap"
+              type="range"
+              min={0}
+              max={steps.length - 1}
+              step={1}
+              value={at}
+              aria-valuetext={capWords(cap)}
+              onChange={(e) => choose(Number(e.currentTarget.value))}
+            />
+            <div className="cap-ruler-stops" aria-hidden="true">
+              {steps.map((s, i) => (
+                <button
+                  key={s}
+                  tabIndex={-1}
+                  className={i === at ? "is-here" : undefined}
+                  style={{ left: `${(i / (steps.length - 1)) * 100}%` }}
+                  onClick={() => choose(i)}
+                >
+                  {capWords(s)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label settings-stack">
+            Clear Cache
+            <span className="settings-hint" aria-live="polite">
+              {freed !== null
+                ? `Cleared ${size(freed)}. Photos download again as you open them.`
+                : "Photos download again from iCloud as you open them."}
+            </span>
+          </span>
+          <button className="quiet" onClick={clear} disabled={clearing || cache.used < 1024 ** 2}>
+            {clearing ? "Clearing" : "Clear Cache"}
+          </button>
+        </div>
+      </section>
+    </>
+  );
+}
+
 export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Promise<void> }) {
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [storage, setStorage] = useState<{ usedBytes: number; totalBytes: number } | null>(null);
@@ -563,6 +709,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         <ExportRow onError={setError} />
       </section>
 
+      <PhotoCacheGroup onError={setError} />
+
       <h2 className="settings-heading">General</h2>
       <section className="settings-group">
         <div className="settings-row">
@@ -583,6 +731,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
             ))}
           </div>
         </div>
+        <WeekStartRow />
+        <MoveCheckedRow />
         <div className="settings-row">
           <span className="settings-label settings-stack">
             Open at Login
@@ -651,6 +801,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         )}
       </section>
 
+      <ReachGroup />
+
       <h2 className="settings-heading">About</h2>
       <section className="settings-group">
         <div className="settings-row">
@@ -677,6 +829,116 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         </div>
       </section>
       <p className="settings-note">Skykeep talks only to Apple, and to calendars you subscribe to. It has no servers of its own.</p>
+    </div>
+  );
+}
+
+/** Calendar's first day of the week: the locale's, or one chosen here, as Calendar on a Mac. */
+function WeekStartRow() {
+  const [choice, setChoice] = useState<WeekStartChoice>(weekStartChoice);
+  const day = (n: number) => new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(new Date(2026, 0, 4 + n));
+  // The locale's own day, named in Automatic, so it is clear what Automatic gives.
+  const locale = localeFirstDay();
+  return (
+    <div className="settings-row">
+      <span className="settings-label">First Day of Week</span>
+      <Picker
+        label="First Day of Week"
+        value={choice}
+        onChange={(v) => {
+          const next = v as WeekStartChoice;
+          setChoice(next);
+          setWeekStart(next);
+        }}
+        options={[
+          { value: "auto", label: `Automatic (${day(locale)})` },
+          { value: "0", label: day(0) },
+          { value: "1", label: day(1) },
+          { value: "6", label: day(6) },
+        ]}
+      />
+    </div>
+  );
+}
+
+/**
+ * What Skykeep talks to, read from the network lock itself (`quince_auth::APPLE_DOMAINS`): a
+ * request to anywhere else fails before a connection exists. Subscribed calendars are listed
+ * by host, each reached by a client of its own.
+ */
+function ReachGroup() {
+  const [reach, setReach] = useState<{ apple: string[]; subscribed: string[] } | null>(null);
+  useEffect(() => {
+    api.networkReach().then(setReach, () => {});
+  }, []);
+  if (!reach) return null;
+  const apple = reach.apple.filter((d) => !d.endsWith(".cn"));
+  return (
+    <>
+      <h2 className="settings-heading">What Skykeep Talks To</h2>
+      <section className="settings-group settings-reach" aria-label="What Skykeep Talks To">
+        <div className="settings-row is-stacked">
+          <span className="settings-label">Apple</span>
+          <span className="settings-hint settings-hint-wrap">
+            {apple.map((d, i) => (
+              <span key={d}>
+                {i > 0 && ", "}
+                <code>{d}</code>
+              </span>
+            ))}{" "}
+            and their mainland China versions. Any other address is refused before a connection opens.
+          </span>
+        </div>
+        <div className="settings-row is-stacked">
+          <span className="settings-label">Calendar Subscriptions</span>
+          <span className="settings-hint settings-hint-wrap">
+            {reach.subscribed.length === 0
+              ? "None. A calendar you subscribe to adds its own address here."
+              : reach.subscribed.map((h, i) => (
+                  <span key={h}>
+                    {i > 0 && ", "}
+                    <code>{h}</code>
+                  </span>
+                ))}
+          </span>
+        </div>
+      </section>
+    </>
+  );
+}
+
+/** Notes' Move Checked Items to the Bottom: on this computer, as each iPhone keeps its own. */
+function MoveCheckedRow() {
+  const [on, setOn] = useState(() => {
+    try {
+      return localStorage.getItem(MOVE_CHECKED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  return (
+    <div className="settings-row">
+      <span className="settings-label settings-stack">
+        Move Checked Items to the Bottom
+        <span className="settings-hint">In Notes checklists, ticked items sort below the rest</span>
+      </span>
+      <button
+        className="switch"
+        role="switch"
+        aria-checked={on}
+        aria-label="Move Checked Items to the Bottom"
+        onClick={() => {
+          const next = !on;
+          setOn(next);
+          try {
+            localStorage.setItem(MOVE_CHECKED_KEY, next ? "1" : "0");
+          } catch {
+            /* kept for this session only */
+          }
+        }}
+      >
+        <span className="switch-knob" />
+      </button>
     </div>
   );
 }

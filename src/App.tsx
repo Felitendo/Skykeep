@@ -12,19 +12,17 @@ type Phase = "checking" | "signin" | "code" | "library";
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("checking");
-  // The window is shown once the first real screen (the library, or sign-in) has been drawn:
-  // never the session check before it, never a half-drawn frame (see window_ready, main.rs).
+  // The window is shown once the first real screen (the library, or sign-in) is in the page:
+  // never the session check before it (see window_ready, main.rs). Said as soon as React has
+  // put it there, not after an animation frame: the window is hidden until then, and a hidden
+  // WebKitGTK window draws no frames, so waiting on one left every launch to the three-second
+  // fallback. The page is laid out by now and the window paints it as it maps.
   const [shown, setShown] = useState(false);
   useEffect(() => {
     if (shown || phase === "checking") return;
     setShown(true);
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        // Started at login, the window stays in the tray unless the person is needed here.
-        invoke("window_ready", { needsYou: phase !== "library" })
-          .catch(() => {});
-      }),
-    );
+    // Started at login, the window stays in the tray unless the person is needed here.
+    invoke("window_ready", { needsYou: phase !== "library" }).catch(() => {});
   }, [phase, shown]);
 
   // On launch, try the stored session before showing anything. This is the whole promise:
@@ -37,6 +35,21 @@ export default function App() {
         // Always resume rather than trusting stored metadata. Apple's service endpoints
         // authenticate by cookie, and holding a token is not the same as being able to call
         // them — resuming is what establishes the cookies that make the session usable.
+        if (status.hasStoredSession && status.libraryReady) {
+          // The library is this session's account's already: it opens at once on what it
+          // holds, and the session is taken up behind it — a round trip to Apple (seconds on
+          // a slow network) is never what stands between a launch and the window. The first
+          // refresh waits on it in the engine. Apple wanting a code shows the code screen;
+          // a session it will not take back leaves the library readable with the sign-in
+          // line over it, as a lapse does.
+          const resumed = api.resume();
+          setPhase("library");
+          const next = await resumed.catch(() => "signin" as const);
+          if (cancelled) return;
+          if (next === "code") setPhase("code");
+          else if (next === "signin") setLapsed(true);
+          return;
+        }
         if (status.hasStoredSession) {
           const next = await api.resume();
           if (next !== "signin") return !cancelled && setPhase(next);

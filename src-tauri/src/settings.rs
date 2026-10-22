@@ -157,11 +157,12 @@ pub fn measure(dir: &Path) -> LocalStorage {
     }
 }
 
-/// Remove the cached pictures under `dir`, answering how the folder is used after. Files only:
-/// the folders stay, so a picture being saved this moment never finds its folder gone.
-pub fn clear(dir: &Path) -> LocalStorage {
+/// Remove the cached pictures under `dir` through `remove` (which may decline a file in use),
+/// answering how the folder is used after. Files only: the folders stay, so a picture being
+/// saved this moment never finds its folder gone.
+pub fn clear(dir: &Path, remove: &dyn Fn(&Path)) -> LocalStorage {
     for f in clearable_files(dir) {
-        let _ = std::fs::remove_file(f);
+        remove(&f);
     }
     measure(dir)
 }
@@ -176,12 +177,30 @@ pub async fn local_storage(app: tauri::AppHandle) -> Result<LocalStorage, String
 }
 
 /// Let go of the pictures Apple still has (see `CLEARABLE`); answers how the copy is used now.
+/// A photo being read this moment, or waiting to be uploaded, stays (see `photo_cache`).
 #[tauri::command]
 pub async fn local_storage_clear(app: tauri::AppHandle) -> Result<LocalStorage, String> {
     let dir = crate::state_dir(&app);
-    tauri::async_runtime::spawn_blocking(move || clear(&dir))
-        .await
-        .map_err(|e| e.to_string())
+    let waiting: Vec<PathBuf> = {
+        use tauri::Manager;
+        app.state::<crate::Data>()
+            .0
+            .lock()
+            .await
+            .unfinished_uploads()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|u| PathBuf::from(u.path))
+            .collect()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let protected = crate::photo_cache::identities(&waiting);
+        clear(&dir, &|f| {
+            crate::photo_cache::remove_unless_in_use(f, &protected);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Whether this desktop shows alerts: on Linux an alert is shown by a notification service,
@@ -252,7 +271,9 @@ mod tests {
         let t = folder();
         let d = t.path();
         let before = measure(d);
-        let after = clear(d);
+        let after = clear(d, &|f| {
+            let _ = std::fs::remove_file(f);
+        });
         for kept in [
             "library.db",
             "library.db-wal",
@@ -300,7 +321,9 @@ mod tests {
         let linked = measure(d);
         assert_eq!(linked.total, before.total);
         assert_eq!(linked.clearable, before.clearable);
-        clear(d);
+        clear(d, &|f| {
+            let _ = std::fs::remove_file(f);
+        });
         assert!(!d.join("photos/open/V/Clip.mov").exists());
     }
 
@@ -309,6 +332,9 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         assert_eq!(measure(t.path()), LocalStorage::default());
         assert_eq!(measure(&t.path().join("none")), LocalStorage::default());
-        assert_eq!(clear(&t.path().join("none")), LocalStorage::default());
+        assert_eq!(
+            clear(&t.path().join("none"), &|_| {}),
+            LocalStorage::default()
+        );
     }
 }

@@ -22,12 +22,13 @@
 
 use crate::{cloudkit_context, Auth, Data};
 use quince_core::calendar::Event;
-use quince_core::contacts::Contact;
+use quince_core::contacts::{Card, Contact, ContactDetails, PostalAddress};
 use quince_core::outbox::Pending;
 use quince_core::reminders::Reminder;
 use quince_core::Library;
 use quince_icloud::calendar::{EventRepeat, Scope};
 use quince_icloud::ckdocument::Run;
+use quince_icloud::contacts::address::{self as postal, AddressEdit};
 use quince_icloud::reminders::ReminderEdit;
 use quince_icloud::Error;
 use serde::{Deserialize, Serialize};
@@ -36,9 +37,13 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex, Notify};
 
 static WAKE: Notify = Notify::const_new();
+/// Set by every [`kick`] until the sender's next pass: a pass after one is never taken as idle,
+/// so a change queued and sent between two looks is still announced as it lands.
+static KICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Something was queued: send it now.
 pub fn kick() {
+    KICKED.store(true, std::sync::atomic::Ordering::SeqCst);
     WAKE.notify_one();
 }
 
@@ -219,6 +224,23 @@ pub struct ContactSave {
     pub contact: Contact,
     pub base: Option<Contact>,
     pub create: bool,
+    /// The rest of the name and work, from a form that shows them; `None` (a change queued
+    /// before there was one) leaves Apple's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<ContactDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_details: Option<ContactDetails>,
+}
+
+/// A card's addresses edited here: the edits, and the list the form opened them from. Sent,
+/// they are laid over Apple's addresses as they stand then (`contacts::address::edit`), so a
+/// send that already landed lands again as no change. `name` is who the card is, for a notice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContactAddress {
+    pub base: Vec<PostalAddress>,
+    pub edits: Vec<AddressEdit>,
+    #[serde(default)]
+    pub name: String,
 }
 
 /// A repeating reminder ticked here: Apple moves it on to its next date. `from_due` is the
@@ -333,6 +355,10 @@ fn last_word(
 /// A note's text, saved here. Several saves before one is sent become one, sent from the
 /// text the first was typed over; one already on its way is followed by the next, typed over
 /// what it sends.
+///
+/// A save that changes nothing — the text it was typed over, set the same way however the
+/// runs are cut — is no save: it is never queued, and one that undoes the change still waiting
+/// takes that change back. Opening or looking at a note must never write it.
 pub fn record_note_save(
     library: &mut Library,
     guid: &str,
@@ -343,6 +369,9 @@ pub fn record_note_save(
 ) -> quince_core::Result<()> {
     library.atomically(|l| {
         let stored = l.note_body(guid)?;
+        let stored_runs: Option<Vec<Run>> = l
+            .note_runs(guid)?
+            .and_then(|r| serde_json::from_str(&r).ok());
         let waiting: Option<(Pending, NoteSave)> = l
             .outbox_waiting(NOTES, guid, "save")?
             .into_iter()
@@ -356,12 +385,30 @@ pub fn record_note_save(
         };
         match waiting {
             Some((p, before)) if p.tries == 0 => {
-                let merged = save(before.base, before.base_runs);
-                if !l.outbox_amend(p.id, &json(&merged)?)? {
-                    l.outbox_append(NOTES, guid, "save", &json(&merged)?)?;
+                if changes_nothing(
+                    body,
+                    runs.as_deref(),
+                    before.base.as_deref(),
+                    before.base_runs.as_deref(),
+                ) && l.outbox_withdraw(p.id)?
+                {
+                    // Back to what Apple holds: the change waiting is taken back, not sent.
+                } else {
+                    let merged = save(before.base, before.base_runs);
+                    if !l.outbox_amend(p.id, &json(&merged)?)? {
+                        l.outbox_append(NOTES, guid, "save", &json(&merged)?)?;
+                    }
                 }
             }
             Some((_, before)) => {
+                if changes_nothing(
+                    body,
+                    runs.as_deref(),
+                    Some(&before.body),
+                    before.runs.as_deref(),
+                ) {
+                    return Ok(());
+                }
                 l.outbox_append(
                     NOTES,
                     guid,
@@ -373,11 +420,42 @@ pub fn record_note_save(
                 // Nothing waiting: the library holds what Apple holds, the base when the
                 // editor did not say.
                 let base = base.or(stored);
+                let base_runs = base_runs.or(stored_runs);
+                if changes_nothing(body, runs.as_deref(), base.as_deref(), base_runs.as_deref()) {
+                    return Ok(());
+                }
                 l.outbox_append(NOTES, guid, "save", &json(&save(base, base_runs))?)?;
             }
         }
-        lay_note(l, guid, body, runs.as_deref())
+        lay_note(l, guid, body, runs.as_deref())?;
+        l.touch_note(guid, chrono_now())
     })
+}
+
+/// Now, in unix seconds.
+fn chrono_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Whether a note save of `body` set by `runs`, typed over `base` set by `base_runs`, changes
+/// nothing: the same text, and — when it carries formatting — the same formatting once both
+/// are in one shape ([`quince_icloud::notes::same_formatting`]: Apple's runs come in pieces,
+/// an editor's merged, and that difference alone is not an edit).
+fn changes_nothing(
+    body: &str,
+    runs: Option<&[Run]>,
+    base: Option<&str>,
+    base_runs: Option<&[Run]>,
+) -> bool {
+    base == Some(body)
+        && match runs {
+            None => true,
+            Some(runs) => {
+                base_runs.is_some_and(|b| quince_icloud::notes::same_formatting(body, runs, b))
+            }
+        }
 }
 
 fn lay_note(
@@ -495,11 +573,37 @@ fn lay_delete(l: &mut Library, d: &Delete) -> quince_core::Result<()> {
     l.forget_reminders(&gone, &[])
 }
 
-/// A card saved here — made (no id yet: one is given now) or edited. Answers its id.
+/// A card saved here — made (no id yet: one is given now) or edited. Answers its id. The
+/// shape a save had before the form showed the rest of the name and work: kept for the tests
+/// that queue one, as a window from before would have.
+#[cfg(test)]
 pub fn record_contact_save(
     library: &mut Library,
     contact: &Contact,
     base: Option<Contact>,
+) -> quince_core::Result<String> {
+    record_save(library, contact, None, base.map(|b| (b, None)))
+}
+
+/// [`record_contact_save`] for a whole card: the rest of its name and work go too.
+pub fn record_card_save(
+    library: &mut Library,
+    card: &Card,
+    base: Option<Card>,
+) -> quince_core::Result<String> {
+    record_save(
+        library,
+        &card.contact,
+        Some(&card.details),
+        base.map(|b| (b.contact, Some(b.details))),
+    )
+}
+
+fn record_save(
+    library: &mut Library,
+    contact: &Contact,
+    details: Option<&ContactDetails>,
+    base: Option<(Contact, Option<ContactDetails>)>,
 ) -> quince_core::Result<String> {
     let create = contact.guid.is_empty();
     let mut contact = contact.clone();
@@ -508,6 +612,7 @@ pub fn record_contact_save(
         contact.etag = None;
     }
     let guid = contact.guid.clone();
+    let details = details.cloned();
     library.atomically(|l| {
         let waiting = last_word(l, CONTACTS, &guid, "save")?.and_then(|p| {
             serde_json::from_str::<ContactSave>(&p.payload)
@@ -521,6 +626,8 @@ pub fn record_contact_save(
                     contact: contact.clone(),
                     base: before.base,
                     create: before.create,
+                    details: details.clone().or(before.details),
+                    base_details: before.base_details,
                 };
                 if !l.outbox_amend(p.id, &json(&save)?)? {
                     l.outbox_append(CONTACTS, &guid, "save", &json(&save)?)?;
@@ -532,21 +639,41 @@ pub fn record_contact_save(
                     contact: contact.clone(),
                     base: Some(before.contact),
                     create: false,
+                    base_details: before.details.clone(),
+                    details: details.clone().or(before.details),
                 };
                 l.outbox_append(CONTACTS, &guid, "save", &json(&save)?)?;
             }
             None => {
+                let (base, base_details) = match (&base, create) {
+                    (Some((b, d)), false) => (Some(b.clone()), d.clone()),
+                    _ => (None, None),
+                };
                 let save = ContactSave {
                     contact: contact.clone(),
-                    base: if create { None } else { base.clone() },
+                    base,
                     create,
+                    details: details.clone(),
+                    base_details,
                 };
                 l.outbox_append(CONTACTS, &guid, "save", &json(&save)?)?;
             }
         }
-        l.put_contact(&contact)?;
+        lay_contact_save(l, &contact, details.as_ref())?;
         Ok(guid.clone())
     })
+}
+
+fn lay_contact_save(
+    l: &mut Library,
+    contact: &Contact,
+    details: Option<&ContactDetails>,
+) -> quince_core::Result<()> {
+    l.put_contact(contact)?;
+    if let Some(d) = details {
+        l.put_contact_details(&[(contact.guid.clone(), d.clone())], false)?;
+    }
+    Ok(())
 }
 
 /// A repeating reminder ticked: moved on to its next date here at once, and queued for Apple,
@@ -575,7 +702,14 @@ fn lay_advance(l: &mut Library, guid: &str, a: &Advance) -> quince_core::Result<
     if r.due_at != a.from_due {
         return Ok(());
     }
-    if let Some(next) = r.next_occurrence_after(a.at) {
+    // Past its End Repeat date there is no next one: the series is done, as on the phone.
+    // Weekdays, Weekends or chosen days: on to the next of those, not a week on.
+    let days = l.reminder_repeat_days(guid)?;
+    if r.tick_ends_series_on(l.reminder_repeat_end(guid)?, &days, a.at) {
+        r.completed_at = Some(a.at);
+        return l.put_reminder_local(&r);
+    }
+    if let Some(next) = r.next_occurrence_on(&days, a.at) {
         r.due_at = Some(next);
     }
     r.completed_at = None;
@@ -705,6 +839,44 @@ pub fn record_contact_delete(library: &mut Library, contact: &Contact) -> quince
         l.outbox_append(CONTACTS, &contact.guid, "delete", &json(&d)?)?;
         l.forget_contact(&contact.guid)
     })
+}
+
+/// A card's addresses edited: shown at once, sent behind — after the card itself, when it was
+/// made here and waits too, since the queue keeps the order changes were made in. Answers
+/// the list as it now shows.
+pub fn record_contact_address(
+    library: &mut Library,
+    guid: &str,
+    base: Vec<PostalAddress>,
+    edits: Vec<AddressEdit>,
+) -> quince_core::Result<Vec<PostalAddress>> {
+    library.atomically(|l| {
+        let current = l.contact_addresses(guid)?;
+        let after = postal::laid_over(&current, &base, &edits)
+            .map_err(|e| quince_core::Error::Io(std::io::Error::other(e.to_string())))?;
+        let name = l
+            .contacts(None)?
+            .into_iter()
+            .find(|c| c.guid == guid)
+            .map(|c| c.display_name())
+            .unwrap_or_default();
+        let change = ContactAddress { base, edits, name };
+        l.outbox_append(CONTACTS, guid, "address", &json(&change)?)?;
+        l.set_contact_addresses(guid, &after)?;
+        Ok(after)
+    })
+}
+
+fn lay_contact_address(l: &mut Library, guid: &str, a: &ContactAddress) -> quince_core::Result<()> {
+    // A card deleted here, or gone at Apple, has nowhere to show them.
+    if !l.contacts(None)?.iter().any(|c| c.guid == guid) {
+        return Ok(());
+    }
+    let current = l.contact_addresses(guid)?;
+    if let Ok(after) = postal::laid_over(&current, &a.base, &a.edits) {
+        l.set_contact_addresses(guid, &after)?;
+    }
+    Ok(())
 }
 
 /// An event made or saved here: shown at once, sent behind. Saves not yet sent and still the
@@ -857,10 +1029,20 @@ fn lay(l: &mut Library, p: &Pending) -> quince_core::Result<()> {
         }
         (CONTACTS, "save") => {
             if let Ok(s) = serde_json::from_str::<ContactSave>(&p.payload) {
-                l.put_contact(&s.contact)?;
+                lay_contact_save(l, &s.contact, s.details.as_ref())?;
+            }
+        }
+        (CONTACTS, "merge") => {
+            if let Ok(m) = serde_json::from_str::<crate::contacts_merge::ContactMerge>(&p.payload) {
+                crate::contacts_merge::lay(l, &m)?;
             }
         }
         (CONTACTS, "delete") => l.forget_contact(&p.record)?,
+        (CONTACTS, "address") => {
+            if let Ok(a) = serde_json::from_str::<ContactAddress>(&p.payload) {
+                lay_contact_address(l, &p.record, &a)?;
+            }
+        }
         (CALENDAR, "save") => {
             if let Ok(s) = serde_json::from_str::<EventSave>(&p.payload) {
                 lay_event_save(l, &s)?;
@@ -913,14 +1095,23 @@ pub fn start(app: AppHandle) {
                 () = WAKE.notified() => {}
                 () = tokio::time::sleep(wait) => {}
             }
-            let _ = app.emit(CHANGED, ());
+            // Nothing waiting is nothing to say. Told every thirty seconds regardless, each open
+            // Notes, Reminders and Contacts read its whole list (and the open note or card)
+            // again, twice, and drew it again — all day, with nothing changed.
+            let kicked = KICKED.swap(false, std::sync::atomic::Ordering::SeqCst);
+            let idle = !kicked && nothing_waiting(&app).await;
+            if !idle {
+                let _ = app.emit(CHANGED, ());
+            }
             let outcomes = [
                 drain_reminders(&app).await,
                 drain_notes(&app).await,
                 drain_contacts(&app).await,
                 drain_calendar(&app).await,
             ];
-            let _ = app.emit(CHANGED, ());
+            if !idle {
+                let _ = app.emit(CHANGED, ());
+            }
             wait = if outcomes.iter().any(|o| matches!(o, Outcome::Later)) {
                 // Apple out of reach: wait longer each time, up to two minutes.
                 (wait * 2).clamp(Duration::from_secs(4), Duration::from_secs(120))
@@ -1038,6 +1229,14 @@ fn tell_refused(app: &AppHandle, service: &'static str, report: &Report) {
 }
 
 /// Whether anything waits for `service` — the answer when Apple can't be asked yet.
+/// No change waiting for any service (refused ones are not sent, so they do not count): a pass
+/// would send nothing and change nothing anyone is shown.
+async fn nothing_waiting(app: &AppHandle) -> bool {
+    let data = app.state::<Data>();
+    let library = data.0.lock().await;
+    library.outbox_all_pending().is_ok_and(|p| p.is_empty())
+}
+
 async fn waiting(data: &Data, service: &str) -> Outcome {
     if data
         .0
@@ -1373,8 +1572,16 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
     let Ok((http, root, params)) = session else {
         return Outcome::Later;
     };
+    // A merge waits a moment before it goes, so it can still be undone.
+    if let Some(wait) = crate::contacts_merge::held(&data).await {
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(wait).await;
+            kick();
+        });
+        return Outcome::Clear;
+    }
     let report = drain(&data.0, CONTACTS, &crate::CONTACTS_PASS, |p| {
-        send_contact(&http, &root, params.clone(), p)
+        send_contact(&data.0, &http, &root, params.clone(), p)
     })
     .await;
     tell_refused(app, CONTACTS, &report);
@@ -1386,12 +1593,22 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
 }
 
 async fn send_contact(
+    library: &Mutex<Library>,
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
     p: Pending,
 ) -> Result<(), Error> {
     use quince_icloud::contacts as c;
+    if p.kind == "merge" {
+        return crate::contacts_merge::send(library, http, root, params, &p).await;
+    }
+    if p.kind == "address" {
+        let a: ContactAddress = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+        return c::address::edit(http, root, params, &p.record, &a.base, &a.edits)
+            .await
+            .map(|_| ());
+    }
     if p.kind == "delete" {
         let (people, tokens) = c::fetch_with_tokens(http, root, params.clone()).await?;
         // Gone already — deleted elsewhere, or by an earlier send of this one.
@@ -1402,6 +1619,42 @@ async fn send_contact(
     }
     let s: ContactSave = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
     let (_, tokens) = c::fetch_with_tokens(http, root, params.clone()).await?;
+    if let Some(details) = &s.details {
+        let whole = |contact: &Contact, details: &ContactDetails| Card {
+            contact: contact.clone(),
+            details: details.clone(),
+        };
+        let mine = whole(&s.contact, details);
+        if s.create {
+            return c::create_card_named(http, root, params, &tokens, &p.record, &mine).await;
+        }
+        let card = c::card(http, root, params.clone(), &p.record).await?;
+        // A base from before the form showed these has none: compared with Apple's own, so
+        // only what this form changed is written.
+        let base_details = match &s.base_details {
+            Some(d) => Some(d.clone()),
+            None => card.as_ref().map(|v| {
+                c::parse_cards(&serde_json::json!({ "contacts": [v] }))
+                    .pop()
+                    .map(|c| c.details)
+                    .unwrap_or_default()
+            }),
+        };
+        let base = s
+            .base
+            .as_ref()
+            .map(|b| whole(b, &base_details.clone().unwrap_or_default()));
+        return c::update_card(
+            http,
+            root,
+            params,
+            &tokens,
+            &mine,
+            card.as_ref(),
+            base.as_ref(),
+        )
+        .await;
+    }
     if s.create {
         return c::create_named(http, root, params, &tokens, &p.record, &s.contact).await;
     }
@@ -1597,6 +1850,7 @@ fn watch_network() {
                 if let Ok(state) = signal.body().deserialize::<u32>() {
                     if came_online(&mut was, nm_online(state)) {
                         kick();
+                        crate::push::wake();
                     }
                 }
             }
@@ -1622,6 +1876,7 @@ fn watch_network() {
                 if let Ok(state) = String::try_from(value) {
                     if came_online(&mut was, connman_online(&state)) {
                         kick();
+                        crate::push::wake();
                     }
                 }
             }
@@ -1634,6 +1889,8 @@ fn watch_network() {
 #[tauri::command]
 pub fn outbox_wake() {
     kick();
+    // And look for what changed elsewhere while offline (push.rs).
+    crate::push::wake();
 }
 
 // --- What the window asks.
@@ -1678,6 +1935,7 @@ fn content_of(p: &Pending) -> String {
         (REMINDERS, "edit") => s("/title").or_else(|| s("/notes")),
         (REMINDERS, "delete") => s("/reminder/title"),
         (CALENDAR, _) => s("/event/title"),
+        (CONTACTS, "address") => s("/name"),
         (CONTACTS, _) => {
             let name: Vec<String> = [
                 "/contact/firstName",
@@ -2034,6 +2292,122 @@ mod tests {
         );
     }
 
+    /// Opening a note is not an edit. His "Attachments" note (text made generic) queued a save
+    /// on being opened: the same text, Apple's runs in pieces against the editor's merged.
+    /// That save — and one typed then undone — is never queued; a real edit is.
+    #[test]
+    fn a_save_that_changes_nothing_is_never_queued() {
+        let plain = |length| Run {
+            length,
+            ..Run::default()
+        };
+        let at = |id: &str| Run {
+            attachment: Some(id.into()),
+            ..plain(1)
+        };
+        let text = "Attachments\n\u{FFFC}\n\u{FFFC}\nA few words to try it out \n\u{FFFC}";
+        let apple = vec![
+            plain(10),
+            plain(1),
+            plain(1),
+            at("A1"),
+            plain(1),
+            at("A2"),
+            plain(1),
+            plain(2),
+            plain(10),
+            plain(8),
+            plain(5),
+            plain(1),
+            plain(1),
+            at("A3"),
+        ];
+        let editor = vec![plain(12), at("A1"), plain(1), at("A2"), plain(28), at("A3")];
+        let mut lib = Library::in_memory().unwrap();
+        note(&mut lib, "N", text);
+        lib.set_note_runs("N", &serde_json::to_string(&apple).unwrap())
+            .unwrap();
+
+        // As the window sent it, with the base it read — and with none, from the library.
+        record_note_save(
+            &mut lib,
+            "N",
+            text,
+            Some(text.into()),
+            Some(editor.clone()),
+            Some(apple.clone()),
+        )
+        .unwrap();
+        record_note_save(&mut lib, "N", text, None, Some(editor.clone()), None).unwrap();
+        record_note_save(&mut lib, "N", text, None, None, None).unwrap();
+        assert!(
+            lib.outbox_pending(NOTES).unwrap().is_empty(),
+            "opening a note queued a save"
+        );
+        let kept: Vec<Run> = serde_json::from_str(&lib.note_runs("N").unwrap().unwrap()).unwrap();
+        assert_eq!(kept, apple, "the library's runs were rewritten");
+
+        // Typed, then undone before it went: the change is taken back, not sent.
+        let typed = text.replace("out ", "out! ");
+        let mut mine = editor.clone();
+        mine[4].length += 1;
+        record_note_save(
+            &mut lib,
+            "N",
+            &typed,
+            Some(text.into()),
+            Some(mine.clone()),
+            Some(apple.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            lib.outbox_pending(NOTES).unwrap().len(),
+            1,
+            "a real edit is queued"
+        );
+        record_note_save(
+            &mut lib,
+            "N",
+            text,
+            Some(text.into()),
+            Some(editor.clone()),
+            Some(apple.clone()),
+        )
+        .unwrap();
+        assert!(
+            lib.outbox_pending(NOTES).unwrap().is_empty(),
+            "an undone edit was still sent"
+        );
+
+        // A restyle with the same text is an edit.
+        let mut bold = editor.clone();
+        bold.splice(
+            4..5,
+            [
+                plain(1),
+                Run {
+                    bold: true,
+                    ..plain(1)
+                },
+                plain(26),
+            ],
+        );
+        record_note_save(
+            &mut lib,
+            "N",
+            text,
+            Some(text.into()),
+            Some(bold),
+            Some(apple),
+        )
+        .unwrap();
+        assert_eq!(
+            lib.outbox_pending(NOTES).unwrap().len(),
+            1,
+            "a restyle is queued"
+        );
+    }
+
     /// Note saves: shown at once; several unsent are one, from the first base; one on its way
     /// is followed by the next typed over what it sends; a pass is laid over.
     #[test]
@@ -2119,6 +2493,91 @@ mod tests {
             .collect();
         assert!(names.contains(&(guid.clone(), Some("Asha Rao".into()))));
         assert!(names.contains(&("X".into(), Some("New".into()))));
+    }
+
+    fn address(city: &str) -> PostalAddress {
+        PostalAddress {
+            label: Some("HOME".into()),
+            street: Some("1 Example Road".into()),
+            city: Some(city.into()),
+            country: Some("India".into()),
+            ..PostalAddress::default()
+        }
+    }
+
+    /// Contacts: an address added to a card made here, before Apple has the card, shows at
+    /// once and waits behind the card's own create, in order; a pass that has neither yet
+    /// keeps both on screen. Nothing is sent to Apple until the card is.
+    #[test]
+    fn an_address_on_a_new_card_waits_behind_its_create() {
+        let mut lib = Library::in_memory().unwrap();
+        let guid = record_contact_save(&mut lib, &person("", "Asha"), None).unwrap();
+        let add = vec![AddressEdit::Add {
+            address: address("Pune"),
+        }];
+        let shown = record_contact_address(&mut lib, &guid, vec![], add.clone()).unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(lib.contact_addresses(&guid).unwrap(), shown);
+
+        let p = lib.outbox_pending(CONTACTS).unwrap();
+        let kinds: Vec<&str> = p.iter().map(|p| p.kind.as_str()).collect();
+        assert_eq!(kinds, ["save", "address"], "the card goes first");
+        let a: ContactAddress = serde_json::from_str(&p[1].payload).unwrap();
+        assert_eq!((a.base.len(), a.edits.clone()), (0, add));
+        assert_eq!(a.name, "Asha");
+
+        // A pass from before either: the book without the card. Both are laid back.
+        lib.put_contacts(&[]).unwrap();
+        replay(&mut lib, CONTACTS).unwrap();
+        assert_eq!(lib.contact_addresses(&guid).unwrap(), shown);
+
+        // The notice for a refusal names the person.
+        assert_eq!(content_of(&p[1]), "Asha");
+    }
+
+    /// An address edit on a card Apple has is laid over each pass: a part the phone changed
+    /// meanwhile stays, the part edited here wins, and laying it again changes nothing.
+    #[test]
+    fn an_address_edit_lays_over_each_pass_once() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_contacts(&[person("X", "Ravi")]).unwrap();
+        lib.set_contact_addresses("X", &[address("Pune")]).unwrap();
+        let edit = vec![AddressEdit::SetField {
+            index: 0,
+            field: "city".into(),
+            value: Some("Mumbai".into()),
+        }];
+        record_contact_address(&mut lib, "X", vec![address("Pune")], edit).unwrap();
+        // The phone added a postcode meanwhile; a pass brings Apple's older city with it.
+        let mut phone = address("Pune");
+        phone.postal_code = Some("411001".into());
+        lib.set_contact_addresses("X", &[phone]).unwrap();
+        replay(&mut lib, CONTACTS).unwrap();
+        replay(&mut lib, CONTACTS).unwrap();
+        let now = lib.contact_addresses("X").unwrap();
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].city.as_deref(), Some("Mumbai"));
+        assert_eq!(now[0].postal_code.as_deref(), Some("411001"));
+    }
+
+    /// An address edit for a card deleted here before it went: nothing to show it on, and
+    /// the replay leaves no orphaned address behind.
+    #[test]
+    fn an_address_for_a_deleted_card_is_not_laid() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_contacts(&[person("X", "Ravi")]).unwrap();
+        record_contact_address(
+            &mut lib,
+            "X",
+            vec![],
+            vec![AddressEdit::Add {
+                address: address("Pune"),
+            }],
+        )
+        .unwrap();
+        record_contact_delete(&mut lib, &person("X", "Ravi")).unwrap();
+        replay(&mut lib, CONTACTS).unwrap();
+        assert!(lib.contact_addresses("X").unwrap().is_empty());
     }
 
     /// Sent twice — the app died after Apple took it, before the queue heard — a change does
@@ -2246,6 +2705,83 @@ mod tests {
             }
         })
         .await
+    }
+
+    /// The last tick before End Repeat: completed here at once, never moved past its end; and
+    /// one with time left still moves on.
+    #[test]
+    fn the_last_tick_before_end_repeat_completes_it() {
+        let mut lib = library();
+        let due = 4_102_444_800; // 2100-01-01 00:00 UTC
+        let mut daily = lib.reminder("a").unwrap().unwrap();
+        daily.due_at = Some(due);
+        daily.recur_frequency = Some(0);
+        daily.recur_interval = Some(1);
+        daily.timezone = Some("UTC".into());
+        daily.raw = Some(
+            r#"{"fields":{"RecurrenceRuleIDs":{"type":"STRING_LIST","value":["R1"]}}}"#.into(),
+        );
+        lib.put_reminders(std::slice::from_ref(&daily)).unwrap();
+        let rule = |end: i64| quince_core::reminders::ReminderPart {
+            name: "RecurrenceRule/R1".into(),
+            reminder_guid: Some("a".into()),
+            kind: "RecurrenceRule".into(),
+            raw: format!(r#"{{"fields":{{"EndDate":{{"type":"TIMESTAMP","value":{end}}}}}}}"#),
+        };
+        // Ends that evening: tomorrow is past it.
+        lib.put_reminder_parts(&[rule((due + 12 * 3600) * 1000)], &[], true)
+            .unwrap();
+        record_reminder_advance(&mut lib, &daily, 1_000).unwrap();
+        let after = lib.reminder("a").unwrap().unwrap();
+        assert_eq!(after.due_at, Some(due), "not moved past its end");
+        assert_eq!(
+            after.completed_at,
+            Some(1_000),
+            "completed, as on the phone"
+        );
+
+        // Ends two days on: moved on, open.
+        let mut lib = library();
+        lib.put_reminders(std::slice::from_ref(&daily)).unwrap();
+        lib.put_reminder_parts(&[rule((due + 2 * 86_400) * 1000)], &[], true)
+            .unwrap();
+        record_reminder_advance(&mut lib, &daily, 1_000).unwrap();
+        let after = lib.reminder("a").unwrap().unwrap();
+        assert_eq!(
+            (after.due_at, after.completed_at),
+            (Some(due + 86_400), None)
+        );
+    }
+
+    /// Weekdays, as the phone wrote "Repeating 1": ticked on a Friday, it moves on to Monday.
+    #[test]
+    fn a_weekdays_tick_on_friday_moves_on_to_monday() {
+        let mut lib = library();
+        let friday = 1_792_771_200; // Fri 23 Oct 2026, 00:00 UTC
+        let mut r = lib.reminder("a").unwrap().unwrap();
+        r.due_at = Some(friday);
+        r.recur_frequency = Some(1);
+        r.recur_interval = Some(1);
+        r.timezone = Some("UTC".into());
+        r.raw = Some(r#"{"fields":{"RecurrenceRuleIDs":{"type":"STRING_LIST","value":["EC08DD7D-132C-412C-AFDD-064AAECBA6A9"]}}}"#.into());
+        lib.put_reminders(std::slice::from_ref(&r)).unwrap();
+        lib.put_reminder_parts(
+            &[quince_core::reminders::ReminderPart {
+                name: "RecurrenceRule/EC08DD7D-132C-412C-AFDD-064AAECBA6A9".into(),
+                reminder_guid: Some("a".into()),
+                kind: "RecurrenceRule".into(),
+                raw: r#"{"fields":{"DaysOfTheWeek":{"type":"BYTES","value":"W3siZGF5T2ZUaGVXZWVrIjoyLCJ3ZWVrTnVtYmVyIjowfSx7ImRheU9mVGhlV2VlayI6Mywid2Vla051bWJlciI6MH0seyJkYXlPZlRoZVdlZWsiOjQsIndlZWtOdW1iZXIiOjB9LHsiZGF5T2ZUaGVXZWVrIjo1LCJ3ZWVrTnVtYmVyIjowfSx7ImRheU9mVGhlV2VlayI6Niwid2Vla051bWJlciI6MH1d"},"Frequency":{"type":"NUMBER_INT64","value":1}}}"#.into(),
+            }],
+            &[],
+            true,
+        )
+        .unwrap();
+        record_reminder_advance(&mut lib, &r, friday - 60).unwrap();
+        assert_eq!(
+            lib.reminder("a").unwrap().unwrap().due_at,
+            Some(friday + 3 * 86_400),
+            "Monday, not next Friday"
+        );
     }
 
     /// A repeating reminder ticked moves on to its next date at once, open; a pass from before

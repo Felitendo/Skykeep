@@ -1,7 +1,10 @@
-//! CloudKit's push channel: how a change made on a phone reaches this computer in about a
-//! second, rather than at the next timed pass.
+//! CloudKit's push channel, as it was, and the cheap "has anything changed" check that stands in
+//! for it when no live channel can be had.
 //!
-//! As icloud.com's CloudKit JS does it, measured against the real service:
+//! **Retired by Apple (measured 2026-10-22):** `tokens/create` below now answers
+//! `403 ACCESS_DENIED, "This endpoint is deprecated."`. icloud.com moved to the web push
+//! socket, which `crate::courier` speaks; `open` and `wait` stay only for the probes that
+//! measured the old path. What it was, as icloud.com's CloudKit JS did it:
 //!
 //! - `POST {ckdevice}/device/1/<container>/production/tokens/create` with
 //!   `{apnsEnvironment: "production", clientId}` answers `{apnsToken, webcourierURL}`.
@@ -128,6 +131,59 @@ pub async fn wait(
     Ok(container_of(&body))
 }
 
+/// Whether a container's private database moved since `token`: one
+/// `changes/database` call, a few hundred bytes, read-only. Returns whether any zone changed
+/// and the token to ask from next time. With no token it only seeds one — the zones it lists
+/// are everything there is, not a change.
+pub async fn database_changed(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: &[(String, String)],
+    container: &str,
+    token: Option<&str>,
+) -> Result<(bool, Option<String>)> {
+    let url = format!(
+        "{}/database/1/{container}/production/private/changes/database",
+        ckdatabasews_root.trim_end_matches('/')
+    );
+    let mut body = json!({});
+    if let Some(t) = token.filter(|t| !t.is_empty()) {
+        body["syncToken"] = Value::String(t.to_string());
+    }
+    let response = http
+        .post(url)
+        .query(&query(params))
+        .json(&body)
+        .send()
+        .await?;
+    let status = response.status();
+    if matches!(status.as_u16(), 401 | 421 | 450) {
+        return Err(Error::ReauthRequired);
+    }
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        // An expired or unreadable token is started over, not reported.
+        if text.contains("CHANGE_TOKEN_EXPIRED") || status.as_u16() == 400 && token.is_some() {
+            return Err(Error::StaleCursor);
+        }
+        return Err(Error::Protocol(format!(
+            "changes/database answered {status}"
+        )));
+    }
+    let body: Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("changes/database sent invalid JSON: {e}")))?;
+    let next = body
+        .get("syncToken")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let zones = body
+        .get("zones")
+        .and_then(Value::as_array)
+        .is_some_and(|z| !z.is_empty());
+    let moved = token.is_some() && (zones || body.get("moreComing") == Some(&Value::Bool(true)));
+    Ok((moved, next.or_else(|| token.map(str::to_string))))
+}
+
 /// Which container a push is about.
 #[must_use]
 pub fn container_of(push: &Value) -> Option<String> {
@@ -206,6 +262,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got.as_deref(), Some("com.apple.reminders"));
+    }
+
+    #[tokio::test]
+    async fn the_first_database_check_seeds_and_later_ones_report_moves() {
+        let server = MockServer::start().await;
+        let path_ = "/database/1/com.apple.notes/production/private/changes/database";
+        Mock::given(method("POST"))
+            .and(path(path_))
+            .and(wiremock::matchers::body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "syncToken": "S1", "zones": [{"zoneID": {"zoneName": "Notes"}}], "moreComing": false
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(path_))
+            .and(wiremock::matchers::body_json(json!({"syncToken": "S1"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "syncToken": "S1", "zones": [], "moreComing": false
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(path_))
+            .and(wiremock::matchers::body_json(json!({"syncToken": "S2"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "syncToken": "S3", "zones": [{"zoneID": {"zoneName": "Notes"}}]
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let root = server.uri();
+        let c = "com.apple.notes";
+        let (moved, t) = database_changed(&http, &root, &[], c, None).await.unwrap();
+        assert!(!moved, "a seed is not a change");
+        assert_eq!(t.as_deref(), Some("S1"));
+        let (moved, t) = database_changed(&http, &root, &[], c, Some("S1"))
+            .await
+            .unwrap();
+        assert!(!moved);
+        assert_eq!(t.as_deref(), Some("S1"));
+        let (moved, t) = database_changed(&http, &root, &[], c, Some("S2"))
+            .await
+            .unwrap();
+        assert!(moved);
+        assert_eq!(t.as_deref(), Some("S3"));
     }
 
     #[tokio::test]

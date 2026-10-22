@@ -7,18 +7,19 @@ import { SearchField } from "../components/SearchField";
 import { PaneTitle } from "../components/PaneTitle";
 import { Unsent, Waiting } from "../components/Unsent";
 import { useOutbox } from "../lib/outbox";
-import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, LockKeyhole, LockKeyholeOpen, Paperclip, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
+import { ArrowDownUp, ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, LockKeyhole, LockKeyholeOpen, Paperclip, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
 import { pickOpen, pickSave } from "../lib/pick";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { editorDate, groupNotes, listDate, mergeEdits, splitTitle } from "./notes/model";
+import { DEFAULT_ORDER, editorDate, groupNotes, listDate, mergeEdits, splitTitle, type NoteOrder } from "./notes/model";
 import { api, messageOf, nestFolders, notesLockApi, type Note, type NoteFolder, type UnlockedNote } from "../lib/ipc";
 import { LockScreen } from "./notes/LockedNote";
 import { fileName, useAttachEnabled } from "./notes/attach";
 import { toast } from "../components/Toast";
-import { useActiveRef } from "../lib/screen";
+import { overlayOpen, useActiveRef } from "../lib/screen";
 import { RowMenu } from "../components/RowMenu";
+import { Spinner } from "../components/Spinner";
 import { FormattedBody, type Run } from "./notes/Formatted";
-import { carryRuns, runsFit } from "./notes/rich";
+import { carryRuns, runsFit, sameFormatting } from "./notes/rich";
 import { NoteEditor, refreshTables, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
 import { FormatPanel } from "./notes/FormatPanel";
 import { NotePicture } from "./notes/NotePicture";
@@ -106,6 +107,26 @@ export function NotesView() {
     if (fit) setFoldersWidth(Math.max(208, Math.min(fit, 320)));
   }, [folders]);
   const [folderMenu, setFolderMenu] = useState<{ folder: NoteFolder; x: number; y: number; alignRight: boolean } | null>(null);
+  // How the list is ordered (View menu), kept on this computer: a convenience, so a storage
+  // that is missing or full only means the default order.
+  const [listOrder, setListOrder] = useState<NoteOrder>(() => {
+    try {
+      const kept = JSON.parse(localStorage.getItem("notes.order") ?? "null");
+      if (kept && ["edited", "created", "title"].includes(kept.by) && typeof kept.groupByDate === "boolean") return kept;
+    } catch {
+      /* the default */
+    }
+    return DEFAULT_ORDER;
+  });
+  const orderBy = (next: NoteOrder) => {
+    setListOrder(next);
+    try {
+      localStorage.setItem("notes.order", JSON.stringify(next));
+    } catch {
+      /* kept for this session only */
+    }
+  };
+  const [viewMenu, setViewMenu] = useState<{ x: number; y: number; alignRight: boolean } | null>(null);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [folder, setFolder] = useState<string>(ALL);
   const [notes, setNotes] = useState<Note[]>([]);
@@ -350,7 +371,9 @@ export function NotesView() {
     let cancelled = false;
     api.noteRuns(openGuid).then(
       (runs) => { if (!cancelled) setLoadedRuns({ guid: openGuid, runs: Array.isArray(runs) ? runs : [] }); },
-      () => {},
+      // Unreadable formatting still opens the note — as text only (formatSafe stays false),
+      // which saves the words and leaves Apple's formatting as it is.
+      () => { if (!cancelled) setLoadedRuns((cur) => (cur?.guid === openGuid ? cur : { guid: openGuid, runs: [] })); },
     );
     return () => { cancelled = true; };
   }, [openGuid, revision, outbox.tick]);
@@ -368,6 +391,9 @@ export function NotesView() {
   const editorRef = useRef<EditorHandle | null>(null);
   /** A new note's id once it is made, so the editor it was typed in stays the one shown. */
   const adoptedKey = useRef<string | null>(null);
+  /** Which New Note this is: each gets an editor of its own, so a second New Note can never
+   *  start out holding the first one's text (and save it again as a copy). */
+  const composeSeq = useRef(0);
   /** The formatting on screen now, beside `draft` — the text on screen now. */
   const draftRuns = useRef<Run[] | null>(null);
 
@@ -458,8 +484,10 @@ export function NotesView() {
       setEdits((n) => n + 1);
       setSaved(false);
       // Compared only when the text is back to what Apple holds — never on an ordinary key,
-      // which in a long note would be a second walk of the whole thing per keystroke.
-      const unchanged = typed === body && (!formatSafe || JSON.stringify(typedRuns) === JSON.stringify(runs));
+      // which in a long note would be a second walk of the whole thing per keystroke. The
+      // formatting is compared as formatting, not as runs: Apple's come in pieces where the
+      // editor's are merged, and that difference alone queued a save of a note only opened.
+      const unchanged = typed === body && (!formatSafe || sameFormatting(typed, typedRuns, runs));
       pending.current = unchanged ? null : { guid: open.guid, body: typed, runs: formatSafe ? typedRuns : null };
     },
     [open, body, runs, formatSafe]
@@ -561,6 +589,12 @@ export function NotesView() {
       setDraft(latest);
       setEdits((n) => n + 1);
       pending.current = { guid, body: latest, runs: typedRuns };
+      // Its formatting known from the start — what was set while composing, or the title line
+      // Notes gives a new note — so the editor writes formatting from the first key. Without
+      // it a key typed before the first save dropped the title, and every save after was
+      // words only, so what was set here never reached Apple.
+      const plain: Run = { length: latest.length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null };
+      setLoadedRuns({ guid, runs: typedRuns ?? titled(latest, latest.length ? [plain] : []) });
       // In the list at once, so the note is open — and its editor still there — before the
       // list is read again.
       const now = Math.floor(Date.now() / 1000);
@@ -601,6 +635,8 @@ export function NotesView() {
   const create = useCallback(async () => {
     if (composingRef.current) await commitComposing();
     await flush();
+    composeSeq.current += 1;
+    adoptedKey.current = null;
     setComposing({ folderGuid: folder === ALL ? null : folder, body: "" });
     setOpenGuid(null);
     setDetail(true);
@@ -680,12 +716,12 @@ export function NotesView() {
     const gone = open.guid;
     // The note below opens in its place, or the one above at the end, as in Notes: the order
     // is the list's as shown, pinned notes first.
-    const order = groupNotes(notes).flatMap((g) => g.notes.map((n) => n.guid));
+    const order = groupNotes(notes, new Date(), listOrder).flatMap((g) => g.notes.map((n) => n.guid));
     const at = order.indexOf(gone);
     const next = order[at + 1] ?? order[at - 1] ?? null;
     setOpenGuid(next);
     await write(() => api.noteDelete(gone), (rows) => rows.filter((n) => n.guid !== gone));
-  }, [open, write, notes, confirm]);
+  }, [open, write, notes, confirm, listOrder]);
 
   /** Out of Recently Deleted and back into Notes — Apple's "Notes" folder where there is one. */
   const recover = useCallback(async () => {
@@ -740,6 +776,9 @@ export function NotesView() {
    */
   const attachOn = useAttachEnabled();
   const [attaching, setAttaching] = useState(false);
+  /** Files on their way into the note, shown at once with a picture of each where there is
+   *  one — beside the text, never in it, so nothing half-added is ever saved. */
+  const [adding, setAdding] = useState<{ name: string; src: string | null }[]>([]);
   const [dropping, setDropping] = useState(false);
   const attach = useCallback(
     async (paths: string[]) => {
@@ -752,6 +791,20 @@ export function NotesView() {
       let text = shown?.text ?? body;
       let at = editorRef.current?.caret() ?? text?.length ?? 0;
       setAttaching(true);
+      setAdding(paths.map((p) => ({ name: fileName(p), src: null })));
+      // Each file's picture, made on this computer while it uploads (a moment for a photo).
+      const previews: string[] = [];
+      paths.forEach((p, i) =>
+        void notesLockApi
+          .noteAttachPreview(p)
+          .then((buf) => {
+            if (!buf || buf.byteLength === 0) return;
+            const src = URL.createObjectURL(new Blob([buf]));
+            previews.push(src);
+            setAdding((list) => list.map((x, j) => (j === i ? { ...x, src } : x)));
+          })
+          .catch(() => {}),
+      );
       try {
         for (const path of paths) {
           const added = await notesLockApi.noteAttachFile(guid, path, at, text);
@@ -768,6 +821,8 @@ export function NotesView() {
         setError(messageOf(e));
       } finally {
         setAttaching(false);
+        setAdding([]);
+        previews.forEach((u) => URL.revokeObjectURL(u));
       }
     },
     [open, flush, body, read]
@@ -827,7 +882,10 @@ export function NotesView() {
     return () => window.clearTimeout(timer);
   }, [saved]);
 
-  const canEdit = Boolean(composing) || Boolean(open && !open.locked && open.editable && body !== null);
+  // Editable once the words AND their formatting are in. Opened on the words alone, the editor
+  // came up plain; a key typed before the formatting arrived was then saved as the note's
+  // formatting, and took its titles, checklists and bold off every device.
+  const canEdit = Boolean(composing) || Boolean(open && !open.locked && open.editable && body !== null && runs !== null);
   const canAttach = attachOn && !composing && !inTrash && Boolean(open && !open.locked && open.editable && body !== null);
   canAttachRef.current = canAttach;
 
@@ -857,7 +915,7 @@ export function NotesView() {
   /** Up and Down through the list as it is shown, pinned notes first. */
   const step = useCallback(
     (by: 1 | -1) => {
-      const order = groupNotes(notes).flatMap((g) => g.notes.map((n) => n.guid));
+      const order = groupNotes(notes, new Date(), listOrder).flatMap((g) => g.notes.map((n) => n.guid));
       if (order.length === 0) return;
       const at = openGuid ? order.indexOf(openGuid) : -1;
       const next = at < 0 ? order[0] : order[Math.max(0, Math.min(order.length - 1, at + by))];
@@ -865,7 +923,7 @@ export function NotesView() {
       if (next !== openGuid) void selectNote(next);
       focusRow(next);
     },
-    [notes, openGuid, selectNote]
+    [notes, openGuid, selectNote, listOrder]
   );
 
   /** Into the search field: this folder (Ctrl+F) or every folder (Ctrl+Shift+F). */
@@ -890,7 +948,7 @@ export function NotesView() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!live.current || e.defaultPrevented || e.isComposing) return;
-      if (document.querySelector('[role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"], .confirm')) return;
+      if (overlayOpen()) return;
       const target = e.target as HTMLElement | null;
       const typing = Boolean(target?.closest?.("input, textarea, select, [contenteditable='true']"));
       const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
@@ -981,7 +1039,7 @@ export function NotesView() {
   // Another folder is another list, and a narrow window shows that list, not a note from the last.
   useEffect(() => setDetail(false), [folder]);
 
-  const sections = useMemo(() => groupNotes(notes), [notes]);
+  const sections = useMemo(() => groupNotes(notes, new Date(), listOrder), [notes, listOrder]);
   const heading = searching
     ? "Search"
     : folder === ALL
@@ -1129,6 +1187,33 @@ export function NotesView() {
           <PaneTitle count={`${notes.length} ${notes.length === 1 ? "note" : "notes"}`}>{heading}</PaneTitle>
           <button
             className="icon-button"
+            aria-label="View Options"
+            title="View Options"
+            aria-haspopup="menu"
+            aria-expanded={!!viewMenu}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setViewMenu({ x: r.right, y: r.bottom + 4, alignRight: true });
+            }}
+          >
+            <ArrowDownUp size={17} strokeWidth={2} aria-hidden="true" />
+          </button>
+          {viewMenu && (
+            <RowMenu
+              at={viewMenu}
+              onClose={() => setViewMenu(null)}
+              entries={[
+                { label: "Date Edited", checked: listOrder.by === "edited", run: () => orderBy({ ...listOrder, by: "edited" }) },
+                { label: "Date Created", checked: listOrder.by === "created", run: () => orderBy({ ...listOrder, by: "created" }) },
+                { label: "Title", checked: listOrder.by === "title", run: () => orderBy({ ...listOrder, by: "title" }) },
+                ...(listOrder.by === "title"
+                  ? []
+                  : [null, { label: "Group By Date", checked: listOrder.groupByDate, run: () => orderBy({ ...listOrder, groupByDate: !listOrder.groupByDate }) }]),
+              ]}
+            />
+          )}
+          <button
+            className="icon-button"
             aria-label="New note"
             title="New Note"
             onClick={() => void create()}
@@ -1187,18 +1272,20 @@ export function NotesView() {
 
         <Unsent refused={outbox.refused} what="an edit to a note" onResend={(r) => void outbox.resend(r)} onDiscard={(r) => void outbox.discard(r)} />
 
-        <div className="note-rows" ref={rowsRef}>
+        {/* One list box of notes, a group per heading: the open note is its selected option.
+            The heading is drawn for the eye; the group's name says it to a screen reader. */}
+        <div className="note-rows" ref={rowsRef} role="listbox" aria-label="Notes" data-rows="">
           {sections.map((section) => (
             <Fragment key={section.key}>
-              <h2 className="notes-section">{section.heading}</h2>
-              {/* A list per heading: a list holds its items and nothing else. */}
-              <div role="list" aria-label={section.heading}>
+              <div className="notes-section" aria-hidden="true">{section.heading}</div>
+              <div role="group" aria-label={section.heading}>
               {section.notes.map((note) => (
-                <div role="listitem" key={note.guid}>
+                <div role="presentation" className="note-item" key={note.guid}>
                   <button
                     className="note-row"
+                    role="option"
                     data-guid={note.guid}
-                    aria-current={openGuid === note.guid}
+                    aria-selected={openGuid === note.guid}
                     onClick={(e) => {
                       pickedBy.current = e.detail > 0 ? "pointer" : "keys";
                       // A locked note clicked again, already open: on into its password field.
@@ -1418,6 +1505,7 @@ export function NotesView() {
           * saved is always the two put back together.
           */}
         {canEdit ? (
+          <>
           <div className="note-editor"
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "s") {
@@ -1428,11 +1516,11 @@ export function NotesView() {
           >
             <NoteEditor
               // One editor per note, so nothing typed in one can be shown in another.
-              key={composing || (open && adoptedKey.current === open.guid) ? "composing" : open?.guid}
+              key={composing || (open && adoptedKey.current === open.guid) ? `composing-${composeSeq.current}` : open?.guid}
               ref={editorRef}
               text={composing ? composing.body : (draft ?? body ?? "")}
               runs={composing ? draftRuns.current : formatSafe ? runs : null}
-              editable
+              editable={!attaching}
               autoFocus={Boolean(composing)}
               label={composing ? "New note" : `${open?.title ?? "Note"}`}
               placeholder={composing ? "New Note" : undefined}
@@ -1441,6 +1529,30 @@ export function NotesView() {
               onBlur={leave}
             />
           </div>
+          {attaching && (
+            // The note waits while a file goes in, so nothing typed meanwhile is lost when
+            // it comes back from Apple with the file in place.
+            <div className="note-adding" role="status" aria-live="polite">
+              <div className="note-adding-card">
+                {adding.map((f, i) => (
+                  <div className="note-adding-file" key={`${f.name}-${i}`}>
+                    {f.src ? (
+                      <img className="note-adding-thumb" src={f.src} alt="" draggable={false} />
+                    ) : (
+                      <span className="note-adding-thumb is-file" aria-hidden="true">
+                        <Paperclip size={18} strokeWidth={2} />
+                      </span>
+                    )}
+                    <span className="note-adding-name">{f.name}</span>
+                  </div>
+                ))}
+                <span className="note-adding-state">
+                  <Spinner small /> Adding to the note
+                </span>
+              </div>
+            </div>
+          )}
+          </>
         ) : open?.locked && opened ? (
           /* Opened with its password: read here, written on an Apple device. */
           <div className="note-editor is-readonly is-unlocked">

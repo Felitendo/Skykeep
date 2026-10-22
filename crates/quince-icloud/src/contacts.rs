@@ -4,12 +4,18 @@
 //! CloudKit, so `/co/startup` is the whole of it.
 
 use crate::{Error, Result};
-use quince_core::contacts::{Contact, ContactMethod, PostalAddress, ADDRESS_FIELDS};
+use quince_core::contacts::{
+    Card, Contact, ContactDetails, ContactMethod, PostalAddress, ADDRESS_FIELDS, DETAIL_KEYS,
+};
 use serde_json::Value;
 
 /// Editing a card's postal addresses part by part.
 #[path = "contacts_address.rs"]
 pub mod address;
+
+/// Merging cards that are one person, on Apple's own cards.
+#[path = "contacts_merge.rs"]
+pub mod merge;
 
 fn string(v: &Value, key: &str) -> Option<String> {
     v.get(key)
@@ -65,11 +71,26 @@ fn postal_from(entry: &Value) -> Option<PostalAddress> {
         address.street = Some(text.trim().to_string()).filter(|s| !s.is_empty());
     } else {
         for key in ADDRESS_FIELDS {
-            let value = field.get(key).and_then(Value::as_str);
+            let value = field
+                .get(address_wire(key))
+                .or_else(|| field.get(key))
+                .and_then(Value::as_str);
             address.set_field(key, value);
         }
     }
     (!address.is_empty()).then_some(address)
+}
+
+/// The key Apple's card holds an address part under. Apple spells one part with a small `a`
+/// (`subadministrativeArea`, contacts2 bundle schema, 2026-10); the library names it as the
+/// Contacts framework does. Read under either, written as Apple spells it.
+#[must_use]
+pub(crate) fn address_wire(key: &str) -> &str {
+    if key == "subAdministrativeArea" {
+        "subadministrativeArea"
+    } else {
+        key
+    }
 }
 
 /// Every card's addresses, part by part, as the library keeps them beside the card.
@@ -119,6 +140,28 @@ fn contact_from(v: &Value) -> Option<Contact> {
             .unwrap_or_default(),
     );
 
+    methods.extend(methods_from(v, "relatedNames", "related"));
+    methods.extend(methods_from(v, "dates", "date"));
+    // Instant messaging is labelled by its service, as icloud.com's editor labels it, and
+    // the name is inside: `{ "field": { "userName", "IMService" } }`.
+    methods.extend(
+        v.get("IMs")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some(ContactMethod {
+                            kind: "im".into(),
+                            label: entry_label("im", entry),
+                            value: entry_value("im", entry)?,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
+
     // A profile carries both an encoded handle and the readable one a person typed. The
     // readable one is the point; `x-apple:%2B91%2090000` is not an answer to "who is this".
     methods.extend(
@@ -131,7 +174,7 @@ fn contact_from(v: &Value) -> Option<Contact> {
                         Some(ContactMethod {
                             kind: "profile".into(),
                             label: string(entry, "label"),
-                            value: string(entry, "user").or_else(|| string(entry, "field"))?,
+                            value: entry_value("profile", entry)?,
                         })
                     })
                     .collect::<Vec<_>>()
@@ -162,6 +205,140 @@ fn contact_from(v: &Value) -> Option<Contact> {
         etag: string(v, "etag"),
         methods,
     })
+}
+
+/// The rest of a card's name and work, by Apple's keys.
+fn details_from(v: &Value) -> ContactDetails {
+    let mut d = ContactDetails::default();
+    for key in DETAIL_KEYS {
+        d.set(key, v.get(key).and_then(Value::as_str));
+    }
+    d
+}
+
+/// Every card's prefix, suffix, nickname, phonetic names, job title and department.
+#[must_use]
+pub fn parse_details(body: &Value) -> Vec<(String, ContactDetails)> {
+    body.get("contacts")
+        .and_then(Value::as_array)
+        .map(|cards| {
+            cards
+                .iter()
+                .filter_map(|card| Some((string(card, "contactId")?, details_from(card))))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Each card whole, as one read found it.
+#[must_use]
+pub fn parse_cards(body: &Value) -> Vec<Card> {
+    body.get("contacts")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| {
+                    Some(Card {
+                        contact: contact_from(v)?,
+                        details: details_from(v),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Where each kind of detail lives on Apple's card.
+const METHOD_KEYS: [(&str, &str); 7] = [
+    ("phones", "phone"),
+    ("emailAddresses", "email"),
+    ("urls", "url"),
+    ("relatedNames", "related"),
+    ("dates", "date"),
+    ("profiles", "profile"),
+    ("IMs", "im"),
+];
+
+/// What an entry of one kind holds, as icloud.com's editor reads it: most hold a string in
+/// `field`; a profile the handle a person typed (`user`, else its display name, else its
+/// link); instant messaging the name inside `field`.
+fn entry_value(kind: &str, entry: &Value) -> Option<String> {
+    match kind {
+        "profile" => string(entry, "user")
+            .or_else(|| string(entry, "displayname"))
+            .or_else(|| string(entry, "field")),
+        "im" => entry
+            .pointer("/field/userName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string),
+        _ => string(entry, "field"),
+    }
+}
+
+/// An entry's label: for instant messaging, its service.
+fn entry_label(kind: &str, entry: &Value) -> Option<String> {
+    match kind {
+        "im" => entry
+            .pointer("/field/IMService")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        _ => entry
+            .get("label")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+    }
+}
+
+/// Apple's entry for a detail — or, given the entry it replaces, that entry changed as
+/// icloud.com's editor changes one: the value and label set, everything else on it kept.
+fn build_entry(kind: &str, value: &str, label: Option<&str>, from: Option<&Value>) -> Value {
+    let mut e = from.and_then(Value::as_object).cloned().unwrap_or_default();
+    match kind {
+        "im" => {
+            let mut field = e
+                .get("field")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            field.insert("userName".into(), Value::String(value.into()));
+            match label {
+                Some(l) => field.insert("IMService".into(), Value::String(l.into())),
+                None => field.remove("IMService"),
+            };
+            e.insert("field".into(), Value::Object(field));
+        }
+        "profile" => {
+            e.insert("user".into(), Value::String(value.into()));
+            set_label(&mut e, label);
+        }
+        _ => {
+            e.insert("field".into(), Value::String(value.into()));
+            set_label(&mut e, label);
+        }
+    }
+    Value::Object(e)
+}
+
+fn set_label(e: &mut serde_json::Map<String, Value>, label: Option<&str>) {
+    match label {
+        Some(l) => e.insert("label".into(), Value::String(l.into())),
+        None => e.remove("label"),
+    };
+}
+
+/// A crop as Apple's card holds it, from the `x,y,width,height` the library keeps.
+fn crop_value(crop: Option<&str>) -> Option<Value> {
+    let n: Vec<i64> = crop?
+        .split(',')
+        .map(|p| p.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    let [x, y, width, height] = n[..] else {
+        return None;
+    };
+    (width > 0 && height > 0)
+        .then(|| serde_json::json!({ "x": x, "y": y, "width": width, "height": height }))
 }
 
 #[must_use]
@@ -277,6 +454,7 @@ pub async fn fetch_book_with_tokens(
             lists: parse_lists(&body),
             me: me_card(&body),
             addresses: parse_addresses(&body),
+            details: parse_details(&body),
         },
         Tokens {
             sync: token("syncToken")?,
@@ -363,21 +541,25 @@ pub async fn fetch_with_tokens(
     ))
 }
 
-/// Apple's card, built from ours.
-///
-/// Every field Apple sends back is sent again on a write, including the ones this app does
-/// not model — a card written with only the fields we understand would quietly drop
-/// everything else about the person.
-fn card_from(contact: &Contact, existing: Option<&Value>) -> Value {
-    card_merged(contact, existing, None)
+/// [`card_written`] for a card without the rest of its name and work: those stay as Apple
+/// has them.
+fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contact>) -> Value {
+    card_written(contact, None, existing, base, None)
 }
 
 /// The card to send: Apple's own as it stands now, with the fields this person changed —
 /// and only those — set from the form. `base` is the card as the form opened it; a field the
 /// form left as it found it keeps Apple's current value, so a name or number changed on the
 /// phone while the form was open is not put back. Without a base every modelled field is
-/// written, as a new card needs.
-fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contact>) -> Value {
+/// written, as a new card needs. `details` (with the form's `base_details`) are the rest of
+/// the name and work; `None` leaves Apple's.
+fn card_written(
+    contact: &Contact,
+    details: Option<&ContactDetails>,
+    existing: Option<&Value>,
+    base: Option<&Contact>,
+    base_details: Option<&ContactDetails>,
+) -> Value {
     // Apple's card is the starting point, and Apple is not obliged to send an object; a
     // write that panicked on network input would take the whole window down with it.
     let mut card = existing
@@ -398,12 +580,20 @@ fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contac
             &contact.first_name,
             (|c: &Contact| &c.first_name) as fn(&Contact) -> &Option<String>,
         ),
+        ("middleName", &contact.middle_name, |c: &Contact| {
+            &c.middle_name
+        }),
         ("lastName", &contact.last_name, |c: &Contact| &c.last_name),
         ("companyName", &contact.company, |c: &Contact| &c.company),
         ("birthday", &contact.birthday, |c: &Contact| &c.birthday),
         ("notes", &contact.notes, |c: &Contact| &c.notes),
     ] {
         if existing.is_some() && unchanged(pick) {
+            continue;
+        }
+        // A middle name is written only when one is given or one is being taken away: the
+        // forms before this one never held it, and a card made without one needs no key.
+        if key == "middleName" && value.is_none() && base.is_none_or(|b| b.middle_name.is_none()) {
             continue;
         }
         match value {
@@ -418,65 +608,91 @@ fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contac
         }
     }
 
-    let of_kind = |kind: &str| -> Value {
-        Value::Array(
-            contact
-                .methods
+    // The rest of the name and work: written when given, and then only what changed — on a
+    // new card, only what holds something.
+    if let Some(details) = details {
+        for key in DETAIL_KEYS {
+            let mine = details.get(key).cloned().flatten();
+            let write = if existing.is_none() {
+                mine.is_some()
+            } else {
+                base_details.is_none_or(|b| b.get(key).cloned().flatten() != mine)
+            };
+            if write {
+                object.insert(key.into(), Value::String(mine.unwrap_or_default()));
+            }
+        }
+    }
+
+    for (key, kind) in METHOD_KEYS {
+        let of = |c: &Contact| -> Vec<(String, Option<String>)> {
+            c.methods
                 .iter()
                 .filter(|m| m.kind == kind && !m.value.trim().is_empty())
-                .map(|m| {
-                    let mut entry = serde_json::Map::new();
-                    entry.insert("field".into(), Value::String(m.value.trim().to_string()));
-                    if let Some(label) = &m.label {
-                        entry.insert("label".into(), Value::String(label.clone()));
-                    }
-                    Value::Object(entry)
-                })
-                .collect(),
-        )
-    };
-    let kind_unchanged = |kind: &str| {
-        base.is_some_and(|b| {
-            let of = |c: &Contact| {
-                c.methods
-                    .iter()
-                    .filter(|m| m.kind == kind)
-                    .cloned()
-                    .collect::<Vec<_>>()
-            };
-            of(b) == of(contact)
-        })
-    };
-    for (key, kind) in [
-        ("phones", "phone"),
-        ("emailAddresses", "email"),
-        ("urls", "url"),
-    ] {
-        if existing.is_some() && kind_unchanged(kind) {
+                .map(|m| (m.value.trim().to_string(), m.label.clone()))
+                .collect()
+        };
+        let mine = of(contact);
+        if existing.is_some() && base.is_some_and(|b| of(b) == mine) {
             continue;
         }
+        // The kinds this app read but never wrote are written only by a form that knows
+        // them: one from before, with no base, leaves them as Apple has them.
+        if base.is_none() && existing.is_some() && !matches!(kind, "phone" | "email" | "url") {
+            continue;
+        }
+        if existing.is_none() && mine.is_empty() && !matches!(kind, "phone" | "email" | "url") {
+            continue;
+        }
+        let theirs = existing
+            .and_then(|card| card.get(key))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         // Edited from a base over Apple's current card: the edit laid over Apple's list, not
         // the form's list written whole — a number added on the phone while the form was open
         // here stays, as a name changed there does.
-        let merged = match (base, existing) {
-            (Some(base), Some(card)) => {
-                let of = |c: &Contact| -> Vec<(String, Option<String>)> {
-                    c.methods
-                        .iter()
-                        .filter(|m| m.kind == kind && !m.value.trim().is_empty())
-                        .map(|m| (m.value.trim().to_string(), m.label.clone()))
-                        .collect()
-                };
-                let theirs = card
-                    .get(key)
-                    .and_then(Value::as_array)
+        let value = match (base, existing) {
+            (Some(base), Some(_)) => merge_methods(kind, &theirs, &of(base), &mine),
+            _ => Value::Array(
+                mine.iter()
+                    .map(|(v, l)| build_entry(kind, v, l.as_deref(), None))
+                    .collect(),
+            ),
+        };
+        object.insert(key.into(), value);
+    }
+
+    // The picture: a new one goes as icloud.com sends it — the image itself as a `data:` URL,
+    // with the square chosen — a new square for the same picture keeps the rest of Apple's
+    // entry, and a picture taken away is `null`.
+    let photo_of = |c: &Contact| (c.photo_url.clone(), c.photo_crop.clone());
+    let photo_changed = match base {
+        Some(b) => photo_of(b) != photo_of(contact),
+        None => existing.is_none() && contact.photo_url.is_some(),
+    };
+    if photo_changed {
+        let value = match &contact.photo_url {
+            None => Value::Null,
+            Some(url) => {
+                let same_picture = base.is_some_and(|b| b.photo_url.as_deref() == Some(url));
+                let mut photo = existing
+                    .filter(|_| same_picture)
+                    .and_then(|e| e.get("photo"))
+                    .and_then(Value::as_object)
                     .cloned()
                     .unwrap_or_default();
-                Some(merge_methods(&theirs, &of(base), &of(contact)))
+                if !same_picture {
+                    photo.insert("url".into(), Value::String(url.clone()));
+                }
+                match crop_value(contact.photo_crop.as_deref()) {
+                    Some(crop) => photo.insert("crop".into(), crop),
+                    None => photo.remove("crop"),
+                };
+                Value::Object(photo)
             }
-            _ => None,
         };
-        object.insert(key.into(), merged.unwrap_or_else(|| of_kind(kind)));
+        object.insert("photo".into(), value);
     }
 
     // Laid over Apple's current card, the write is against that card's version; otherwise
@@ -494,26 +710,19 @@ fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contac
     card
 }
 
-/// One kind of a card's numbers or addresses, as Apple holds it now (`theirs`), with the change
-/// the form made (`base` to `mine`) laid over it: what the form took out goes, what it put in
-/// is added — an edited entry in the old one's place — and everything else Apple has stays as
-/// Apple has it, entries made on another device included.
+/// One kind of a card's details, as Apple holds it now (`theirs`), with the change the form
+/// made (`base` to `mine`) laid over it: what the form took out goes, what it put in is added —
+/// an edited entry in the old one's place, keeping what else Apple kept on it — and everything
+/// else Apple has stays as Apple has it, entries made on another device included.
 fn merge_methods(
+    kind: &str,
     theirs: &[Value],
     base: &[(String, Option<String>)],
     mine: &[(String, Option<String>)],
 ) -> Value {
     let matches = |entry: &Value, (value, label): &(String, Option<String>)| {
-        entry.get("field").and_then(Value::as_str).map(str::trim) == Some(value.as_str())
-            && entry.get("label").and_then(Value::as_str) == label.as_deref()
-    };
-    let entry = |(value, label): &(String, Option<String>)| {
-        let mut e = serde_json::Map::new();
-        e.insert("field".into(), Value::String(value.clone()));
-        if let Some(label) = label {
-            e.insert("label".into(), Value::String(label.clone()));
-        }
-        Value::Object(e)
+        entry_value(kind, entry).as_deref() == Some(value.as_str())
+            && entry_label(kind, entry).as_deref() == label.as_deref()
     };
     let removed: Vec<&(String, Option<String>)> =
         base.iter().filter(|b| !mine.contains(b)).collect();
@@ -526,14 +735,14 @@ fn merge_methods(
     for t in theirs {
         if removed.iter().any(|r| matches(t, r)) {
             // Edited rather than taken out: the new entry where the old one was.
-            if let Some(a) = added.next() {
-                out.push(entry(a));
+            if let Some((v, l)) = added.next() {
+                out.push(build_entry(kind, v, l.as_deref(), Some(t)));
             }
         } else {
             out.push(t.clone());
         }
     }
-    out.extend(added.map(entry));
+    out.extend(added.map(|(v, l)| build_entry(kind, v, l.as_deref(), None)));
     Value::Array(out)
 }
 
@@ -658,6 +867,18 @@ async fn write_new(
     guid: &str,
     contact: &Contact,
 ) -> Result<()> {
+    write_new_card(http, root, params, tokens, guid, contact, None).await
+}
+
+async fn write_new_card(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    guid: &str,
+    contact: &Contact,
+    details: Option<&ContactDetails>,
+) -> Result<()> {
     let mut fresh = contact.clone();
     fresh.guid = guid.to_string();
     fresh.etag = None;
@@ -668,7 +889,73 @@ async fn write_new(
         params,
         tokens,
         reqwest::Method::POST,
-        card_from(&fresh, None),
+        card_written(&fresh, details, None, None, None),
+    )
+    .await?;
+    Ok(())
+}
+
+/// [`create_named`] for a whole card: the rest of its name and work, and a picture, go too.
+pub async fn create_card_named(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    guid: &str,
+    card: &Card,
+) -> Result<()> {
+    if blank_card(&card.contact) && card.details.is_empty() {
+        return Err(Error::Refused(
+            "Add a name, a phone number or an email address first.".into(),
+        ));
+    }
+    if self::card(http, root, params.clone(), guid)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    write_new_card(
+        http,
+        root,
+        params,
+        tokens,
+        guid,
+        &card.contact,
+        Some(&card.details),
+    )
+    .await
+}
+
+/// [`update_from`] for a whole card: only what changed from `base`, the rest of the name and
+/// work and the picture included, over Apple's current card.
+pub async fn update_card(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    tokens: &Tokens,
+    card: &Card,
+    existing: Option<&Value>,
+    base: Option<&Card>,
+) -> Result<()> {
+    if existing.is_none() {
+        return Err(Error::Refused(
+            "This contact was deleted on another device, so it wasn't saved.".into(),
+        ));
+    }
+    write(
+        http,
+        root,
+        params,
+        tokens,
+        reqwest::Method::PUT,
+        card_written(
+            &card.contact,
+            Some(&card.details),
+            existing,
+            base.map(|b| &b.contact),
+            base.map(|b| &b.details),
+        ),
     )
     .await?;
     Ok(())
@@ -791,6 +1078,8 @@ pub struct AddressBook {
     pub me: Option<String>,
     /// Each card's postal addresses, part by part.
     pub addresses: Vec<(String, Vec<PostalAddress>)>,
+    /// The rest of each card's name and work.
+    pub details: Vec<(String, ContactDetails)>,
 }
 
 /// Where the my-card id is kept between passes.
@@ -1429,6 +1718,7 @@ pub async fn fetch(
         lists: parse_lists(&body),
         me: me_card(&body),
         addresses: parse_addresses(&body),
+        details: parse_details(&body),
     })
 }
 
@@ -1536,6 +1826,7 @@ pub fn apply(library: &mut quince_core::Library, book: AddressBook) -> Result<us
 fn apply_whole(library: &mut quince_core::Library, book: AddressBook) -> Result<usize> {
     library.put_contacts(&book.contacts)?;
     library.put_addresses(&book.addresses, true)?;
+    library.put_contact_details(&book.details, true)?;
     library.set_state(
         LISTS_KEY,
         &serde_json::to_string(&book.lists).unwrap_or_else(|_| "[]".into()),
@@ -2495,7 +2786,7 @@ mod odd_card_tests {
             serde_json::json!("text"),
             serde_json::json!(7),
         ] {
-            let card = card_from(&contact, Some(&odd));
+            let card = card_merged(&contact, Some(&odd), None);
             assert_eq!(card["firstName"], "Ada", "{odd} still produces the card");
         }
     }
@@ -2544,6 +2835,7 @@ mod atomic_apply_tests {
                 lists: vec![],
                 me: None,
                 addresses: vec![],
+                details: vec![],
             },
         );
         assert!(failed.is_err());
@@ -2554,5 +2846,208 @@ mod atomic_apply_tests {
             .map(|c| c.guid)
             .collect();
         assert_eq!(guids, vec!["A".to_string()], "the old book, whole");
+    }
+}
+
+#[cfg(test)]
+mod field_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn apple() -> Value {
+        json!({
+            "contactId": "C1", "etag": "e1", "prefix": "Dr.", "firstName": "Asha",
+            "middleName": "K", "lastName": "Rao", "suffix": "Jr.", "nickName": "Ash",
+            "phoneticFirstName": "AA-sha", "phoneticLastName": "Rao",
+            "phoneticCompanyName": "nor-th-field", "companyName": "Northfield",
+            "jobTitle": "Architect", "department": "Design",
+            "birthday": "1604-03-17",
+            "phones": [{ "label": "MOBILE", "field": "+91 1" }, { "label": "Grandma's", "field": "+91 2" }],
+            "emailAddresses": [{ "label": "_$!<Work>!$_", "field": "a@x.in" }],
+            "urls": [{ "label": "HOMEPAGE", "field": "asha.in" }],
+            "dates": [{ "label": "ANNIVERSARY", "field": "2015-02-14" }, { "field": "1604-08-01", "label": "first day" }],
+            "relatedNames": [{ "label": "MOTHER", "field": "Amma" }],
+            "profiles": [{ "label": "TWITTER", "user": "asha", "field": "https://twitter.com/asha", "userId": "42" }],
+            "IMs": [{ "label": "HOME", "field": { "userName": "asha.k", "IMService": "SKYPE" } }],
+            "photo": { "url": "https://p/C1", "signature": "s1", "crop": { "x": 1, "y": 2, "width": 30, "height": 30 } },
+            "streetAddresses": [{ "label": "HOME", "field": { "city": "Pune" } }],
+        })
+    }
+
+    fn read() -> Card {
+        parse_cards(&json!({ "contacts": [apple()] })).remove(0)
+    }
+
+    #[test]
+    fn every_field_apple_keeps_is_read() {
+        let c = read();
+        let d = &c.details;
+        assert_eq!(d.prefix.as_deref(), Some("Dr."));
+        assert_eq!(d.suffix.as_deref(), Some("Jr."));
+        assert_eq!(d.nickname.as_deref(), Some("Ash"));
+        assert_eq!(d.phonetic_first_name.as_deref(), Some("AA-sha"));
+        assert_eq!(d.phonetic_company.as_deref(), Some("nor-th-field"));
+        assert_eq!(d.job_title.as_deref(), Some("Architect"));
+        assert_eq!(d.department.as_deref(), Some("Design"));
+        assert_eq!(c.contact.middle_name.as_deref(), Some("K"));
+        assert_eq!(c.contact.birthday.as_deref(), Some("1604-03-17"));
+        let of = |kind: &str| -> Vec<(Option<String>, String)> {
+            c.contact
+                .methods
+                .iter()
+                .filter(|m| m.kind == kind)
+                .map(|m| (m.label.clone(), m.value.clone()))
+                .collect()
+        };
+        assert_eq!(of("date").len(), 2);
+        assert_eq!(of("related"), [(Some("MOTHER".into()), "Amma".into())]);
+        assert_eq!(of("im"), [(Some("SKYPE".into()), "asha.k".into())]);
+        assert_eq!(of("profile"), [(Some("TWITTER".into()), "asha".into())]);
+        assert_eq!(
+            of("phone")[1].0.as_deref(),
+            Some("Grandma's"),
+            "a custom label as typed"
+        );
+    }
+
+    /// Opened and saved with nothing changed, the card goes back exactly as Apple sent it.
+    #[test]
+    fn a_card_saved_unchanged_goes_back_byte_for_byte() {
+        let c = read();
+        let written = card_written(
+            &c.contact,
+            Some(&c.details),
+            Some(&apple()),
+            Some(&c.contact),
+            Some(&c.details),
+        );
+        let mut want = apple();
+        want["isCompany"] = json!(false);
+        assert_eq!(written, want);
+    }
+
+    #[test]
+    fn each_new_field_is_written_as_apple_keeps_it() {
+        let base = read();
+        let mut c = base.clone();
+        c.details.nickname = None;
+        c.details.job_title = Some("Principal Architect".into());
+        c.contact.middle_name = None;
+        // An instant message edited: its outer label stays, as icloud.com keeps it.
+        let im = c
+            .contact
+            .methods
+            .iter_mut()
+            .find(|m| m.kind == "im")
+            .unwrap();
+        im.value = "asha.rao".into();
+        let profile = c
+            .contact
+            .methods
+            .iter_mut()
+            .find(|m| m.kind == "profile")
+            .unwrap();
+        profile.value = "asharao".into();
+        c.contact.methods.push(ContactMethod {
+            kind: "related".into(),
+            label: Some("SPOUSE".into()),
+            value: "Ravi".into(),
+        });
+        c.contact.methods.push(ContactMethod {
+            kind: "date".into(),
+            label: Some("ANNIVERSARY".into()),
+            value: "1604-11-02".into(),
+        });
+        let w = card_written(
+            &c.contact,
+            Some(&c.details),
+            Some(&apple()),
+            Some(&base.contact),
+            Some(&base.details),
+        );
+        assert_eq!(w["nickName"], "", "a cleared field is sent empty");
+        assert_eq!(w["jobTitle"], "Principal Architect");
+        assert_eq!(w["prefix"], "Dr.", "untouched");
+        assert_eq!(w["middleName"], "");
+        assert_eq!(
+            w["IMs"][0],
+            json!({ "label": "HOME", "field": { "userName": "asha.rao", "IMService": "SKYPE" } })
+        );
+        assert_eq!(w["profiles"][0]["user"], "asharao");
+        assert_eq!(w["profiles"][0]["label"], "TWITTER");
+        assert_eq!(
+            w["relatedNames"][1],
+            json!({ "label": "SPOUSE", "field": "Ravi" })
+        );
+        assert_eq!(
+            w["dates"][2],
+            json!({ "label": "ANNIVERSARY", "field": "1604-11-02" })
+        );
+        assert_eq!(
+            w["emailAddresses"][0]["label"], "_$!<Work>!$_",
+            "Apple's own spelling kept"
+        );
+    }
+
+    #[test]
+    fn a_new_card_carries_only_what_holds_something() {
+        let mut c = read();
+        c.contact.guid = "NEW".into();
+        c.contact.photo_url = None;
+        c.details.department = None;
+        let w = card_written(&c.contact, Some(&c.details), None, None, None);
+        assert_eq!(w["nickName"], "Ash");
+        assert!(w.get("department").is_none());
+        assert!(w.get("photo").is_none());
+        assert_eq!(w["IMs"][0]["field"]["IMService"], "SKYPE");
+    }
+
+    #[test]
+    fn a_picture_is_sent_whole_cropped_again_or_taken_away() {
+        let base = read();
+        let mut c = base.clone();
+        c.contact.photo_url = Some("data:image/jpeg;base64,AAAA".into());
+        c.contact.photo_crop = Some("0,10,200,200".into());
+        let w = card_written(&c.contact, None, Some(&apple()), Some(&base.contact), None);
+        assert_eq!(
+            w["photo"],
+            json!({ "url": "data:image/jpeg;base64,AAAA", "crop": { "x": 0, "y": 10, "width": 200, "height": 200 } })
+        );
+
+        let mut c = base.clone();
+        c.contact.photo_crop = Some("5,5,20,20".into());
+        let w = card_written(&c.contact, None, Some(&apple()), Some(&base.contact), None);
+        assert_eq!(w["photo"]["url"], "https://p/C1", "the same picture");
+        assert_eq!(w["photo"]["signature"], "s1");
+        assert_eq!(w["photo"]["crop"]["width"], 20);
+
+        let mut c = base.clone();
+        c.contact.photo_url = None;
+        let w = card_written(&c.contact, None, Some(&apple()), Some(&base.contact), None);
+        assert_eq!(w["photo"], Value::Null);
+
+        let mut c = base;
+        c.contact.guid = "NEW".into();
+        c.contact.photo_url = Some("data:image/jpeg;base64,BBBB".into());
+        c.contact.photo_crop = None;
+        let w = card_written(&c.contact, None, None, None, None);
+        assert_eq!(w["photo"], json!({ "url": "data:image/jpeg;base64,BBBB" }));
+    }
+
+    #[test]
+    fn a_whole_card_round_trips_through_json_as_the_interface_sends_it() {
+        let c = read();
+        let text = serde_json::to_string(&c).unwrap();
+        assert!(text.contains("\"jobTitle\":\"Architect\""));
+        assert!(text.contains("\"firstName\":\"Asha\""));
+        let back: Card = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, c);
+        // A card from an older window, with none of the new fields, still reads.
+        let old: Card = serde_json::from_value(json!({
+            "guid": "X", "firstName": "A", "lastName": null, "company": null, "isCompany": false,
+            "birthday": null, "notes": null, "etag": null, "methods": []
+        }))
+        .unwrap();
+        assert!(old.details.is_empty());
     }
 }

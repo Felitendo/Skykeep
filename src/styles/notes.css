@@ -73,17 +73,17 @@
   cursor: default;
 }
 /* Rows are separated by a hairline that stops short of the selected row, as in Notes. */
-[role="listitem"] + [role="listitem"] > .note-row:not([aria-current="true"]) {
+.note-item + .note-item > .note-row:not([aria-selected="true"]) {
   box-shadow: inset 0 1px 0 var(--separator);
   border-radius: 0 0 8px 8px;
 }
 .note-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 /* The selection as macOS draws it: the accent, text in white, while the list has focus;
    a quiet grey once focus is elsewhere — in the note being written, say. */
-.note-row[aria-current="true"] { background: color-mix(in srgb, var(--text) 11%, transparent); box-shadow: none; }
-.note-rows:focus-within .note-row[aria-current="true"] { background: var(--accent); color: var(--on-accent); }
-.note-rows:focus-within .note-row[aria-current="true"] .note-row-when,
-.note-rows:focus-within .note-row[aria-current="true"] .note-row-snippet { color: var(--on-accent-2); }
+.note-row[aria-selected="true"] { background: color-mix(in srgb, var(--text) 11%, transparent); box-shadow: none; }
+.note-rows:focus-within .note-row[aria-selected="true"] { background: var(--accent); color: var(--on-accent); }
+.note-rows:focus-within .note-row[aria-selected="true"] .note-row-when,
+.note-rows:focus-within .note-row[aria-selected="true"] .note-row-snippet { color: var(--on-accent-2); }
 .note-row:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
 .note-row-title {
   display: flex;
@@ -96,7 +96,7 @@
 .note-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A locked note keeps its title in the list, as Notes shows it, with a small lock before it. */
 .note-row-lock { flex: none; color: var(--text-2); }
-.note-rows:focus-within .note-row[aria-current="true"] .note-row-lock { color: var(--on-accent); }
+.note-rows:focus-within .note-row[aria-selected="true"] .note-row-lock { color: var(--on-accent); }
 .note-row-meta { display: flex; gap: 8px; min-width: 0; font-size: var(--t-11); }
 .note-row-when { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
 .note-row-snippet { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
@@ -366,9 +366,13 @@ textarea.note-title::placeholder { color: var(--text-3); }
   display: block; padding: 3px; margin: 8px -3px; border-radius: 0; background: none;
   color: inherit; font-size: inherit; overflow-x: auto; overflow-y: hidden;
 }
+/* The frame is an inset shadow, not a border. At a fractional scale (1.25×) the note's column
+   starts between two device pixels, and WebKit drew a bordered table's left edge not at all and
+   its right edge two pixels wide, soft. The shadow is drawn the same weight on both sides at
+   every scale, as each line between the cells is. */
 .nf-table {
   width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0;
-  border: var(--hairline) solid var(--table-line); border-radius: 8px; overflow: hidden;
+  border: 0; box-shadow: inset 0 0 0 var(--hairline) var(--table-line); border-radius: 8px; overflow: hidden;
 }
 .nf-table td {
   min-width: 96px; padding: 8px 10px; height: 2.6em; line-height: 1.4;
@@ -457,9 +461,12 @@ textarea.note-title::placeholder { color: var(--text-3); }
 /* A table chosen whole: its own frame takes the accent, as the phone rings a chosen table —
    drawn on the frame itself, so the scroll box round it can never cut it to one edge. */
 .note-rich .nf-attachment.is-table.ProseMirror-selectednode > .nf-table {
-  border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent);
+  box-shadow: inset 0 0 0 var(--hairline) var(--accent), 0 0 0 1px var(--accent);
 }
 .nf-file-meta.is-trouble { color: var(--danger); white-space: normal; }
+/* Opening: answered at once, dimmed in place (no motion), until the other app has it. */
+.nf-attachment.is-opening .nf-file,
+.nf-attachment.is-opening .nf-doc { opacity: 0.6; cursor: progress; }
 
 /* A table not readable here yet: a quiet dashed frame where the grid will be. */
 .nf-table-unread {
@@ -468,8 +475,15 @@ textarea.note-title::placeholder { color: var(--text-3); }
 }
 .notes-folder-rename { width: 100%; }
 
-/* An attachment not yet known takes no room and says nothing until it is drawn. */
-.note-rich .nf-attachment.is-pending { padding: 0; margin: 0; background: none; }
+/* An attachment not yet known: a quiet frame holding its place, no words, no motion — never
+   a blank gap that later jumps open. */
+.note-rich .nf-attachment.is-pending {
+  display: inline-block; vertical-align: top; width: min(100%, 220px); height: 46px; padding: 0; margin: 2px 0;
+  border-radius: 12px; background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.note-rich .nf-attachment.is-anon { padding: 0; margin: 0; background: none; }
+/* One that could not be looked up even after asking again: a card that still opens it. */
+.note-rich .nf-attachment.is-unknown .nf-file-glyph { background: color-mix(in srgb, var(--text) 30%, transparent); }
 
 /* ---- a locked note ------------------------------------------------------------------
    Calm, as Notes shows one: a lock, one line, the password and Unlock, centred a little above
@@ -517,3 +531,38 @@ textarea.note-title::placeholder { color: var(--text-3); }
    to "Septe…"; the list beside it says when, too. "Saving…" and "Waiting to sync" always show. */
 .note-body { container-type: inline-size; }
 @container (max-width: 460px) { .note-bar:has(.note-bar-actions) .note-when.is-date { visibility: hidden; } }
+
+/* A file on its way into the note: a card over the note while it uploads, the picture already
+   there, so adding never looks stuck. The note — text and toolbar — waits under a clear cover
+   pinned to the note's panel (the text scrolls; the panel does not), so nothing typed or done
+   in those seconds is lost when it comes back from Apple. No motion: it appears and goes. */
+.note-body { position: relative; }
+.note-adding {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 24px;
+  cursor: progress;
+}
+.note-adding-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(420px, 100%);
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 14%, transparent), 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.note-adding-file { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 10px; }
+.note-adding-thumb {
+  width: 48px; height: 48px; border-radius: 8px; object-fit: cover;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  box-shadow: 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 12%, transparent);
+}
+.note-adding-thumb.is-file { display: grid; place-items: center; color: var(--text-2); }
+.note-adding-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-13); color: var(--text); }
+.note-adding-state { display: flex; align-items: center; gap: 8px; font-size: var(--t-11); color: var(--text-2); }
