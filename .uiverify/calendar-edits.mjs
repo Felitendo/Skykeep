@@ -78,8 +78,11 @@ await page.waitForTimeout(300);
 s = await saves();
 ok(s.at(-1)?.guid === "e1" && s.at(-1)?.calendarGuid === "personal", "Calendar ▸ Personal moves it");
 
-// Delete, from the keyboard, asks first.
-await page.locator(".cx-item", { hasText: "Dentist" }).click();
+// Delete, from the keyboard, asks first. In Week, where every event of the day is drawn: a
+// Month day shows as many lines as fit, and today has grown by the copies made above.
+await page.keyboard.press("Control+2");
+await page.waitForTimeout(300);
+await page.locator(".cx-block", { hasText: "Dentist" }).first().click();
 await page.waitForTimeout(200);
 await page.keyboard.press("Escape");
 await page.keyboard.press("Delete");

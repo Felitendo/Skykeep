@@ -43,25 +43,26 @@ for (const scheme of ["light", "dark"]) {
   // puts it back; the keys reach every row of it.
   await field.fill("marlowe");
   await page.waitForTimeout(300);
-  const more = panel.getByRole("button", { name: /^Show all \d+ in / }).first();
+  const more = panel.getByRole("option", { name: /^Show all \d+ in / }).first();
   const label = await more.getAttribute("aria-label").catch(() => null);
   if (!label) ok(false, `${scheme}: some section has more than it shows`);
   else {
     const [, total, name] = /Show all (\d+) in (.+)/.exec(label);
     const region = panel.getByRole("group", { name });
-    const short = await region.getByRole("option").count();
+    const rows = () => region.getByRole("option").filter({ hasNotText: /^Show (All|Less)$/ }).count();
+    const short = await rows();
     await more.click();
     await page.waitForTimeout(300);
-    const all = await region.getByRole("option").count();
+    const all = await rows();
     ok(short === 5 && all === Number(total), `${scheme}: Show All shows ${name} whole  (${short} → ${all} of ${total})`);
     ok(await field.evaluate((f) => f === document.activeElement), `${scheme}: and the field keeps the keys`);
-    await region.getByRole("button", { name: "Show Less" }).click();
+    await panel.getByRole("option", { name: `Show less of ${name}` }).click();
     await page.waitForTimeout(300);
-    ok((await region.getByRole("option").count()) === 5, `${scheme}: Show Less puts it back`);
+    ok((await rows()) === 5, `${scheme}: Show Less puts it back`);
   }
   await field.fill("qqqzzz");
   await page.waitForTimeout(300);
-  ok(/No results for “qqqzzz”/.test(await panel.innerText()), `${scheme}: nothing found says so`);
+  ok(/No results for “qqqzzz”/.test(await page.locator("#gsearch-results").innerText()), `${scheme}: nothing found says so`);
   await ctx.close();
 }
 await b.close();
