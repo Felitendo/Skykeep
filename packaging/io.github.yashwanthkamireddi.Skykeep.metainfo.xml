@@ -57,6 +57,25 @@
     <keyword>sync</keyword>
   </keywords>
 
+  <screenshots>
+    <screenshot type="default">
+      <caption>Notes, in their folders</caption>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/notes-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Reminders, in their lists</caption>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/reminders-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Calendar</caption>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/calendar-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The photo library</caption>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/photos-light.png</image>
+    </screenshot>
+  </screenshots>
+
   <content_rating type="oars-1.1"/>
 
   <url type="homepage">https://github.com/YashwanthKamireddi/Skykeep</url>

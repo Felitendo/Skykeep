@@ -7,7 +7,7 @@ import { useActiveRef, useScreenActive } from "../lib/screen";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { pickOpen } from "../lib/pick";
 import { ChevronLeft, ChevronRight, Ellipsis, GalleryThumbnails, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
 import {
   api,
@@ -342,7 +342,8 @@ const Tile = memo(function Tile({
   }, [src, under]);
   return (
     <button
-      role="listitem"
+      // A photo is chosen as an option in a listbox is: aria-selected belongs to an option.
+      role="option"
       className="px-tile"
       aria-label={`${photo.filename ?? "Photo"}, ${new Date(photo.takenAt * 1000).toLocaleString()}`}
       data-id={photo.id}
@@ -585,7 +586,7 @@ const Month = memo(function Month({
     <section ref={ref} className="px-month" aria-label={label || undefined} data-month={month || undefined}>
       {label && <h2 className="px-month-title">{label}</h2>}
       {live && (
-        <div className="px-grid" role="list">
+        <div className="px-grid" role="listbox" aria-multiselectable="true" aria-label={label || "Photos"}>
           {(shownCount < items.length ? items.slice(0, shownCount) : items).map(({ photo, index }) => {
             const t = deleted ? timeLeft(photo, true) : null;
             return (
@@ -1651,6 +1652,13 @@ export function PhotosView() {
         setChosen(new Set(list.map((p) => p.id)));
       } else if (e.key === "Escape" && chosen.size) {
         setChosen(new Set());
+      } else if ((e.key === "Enter" || e.key === " ") && t?.closest?.(".px-tile[data-index]") && !t.closest(".px-tile")!.matches('[aria-selected="true"]')) {
+        // The photo the keys rest on — Tab lands on one before any is chosen — opens.
+        e.preventDefault();
+        const at = Number(t.closest(".px-tile")!.getAttribute("data-index"));
+        setChosen(new Set([list[at].id]));
+        anchor.current = at;
+        openAt(at);
       } else if ((e.key === "Enter" || e.key === " ") && selected.length) {
         openAt(list.indexOf(selected[0]));
       } else if (e.key.startsWith("Arrow") && list.length) {
@@ -2141,12 +2149,12 @@ export function PhotosView() {
 
   const choose = async () => {
     try {
-      const chosen = await openFileDialog({
+      const chosen = await pickOpen({
         multiple: true,
         title: "Add to iCloud Photos",
         filters: [{ name: "Photos and Videos", extensions: KINDS }],
       });
-      if (chosen) await add(Array.isArray(chosen) ? chosen : [chosen]);
+      if (chosen) await add(chosen);
     } catch (e) {
       setError(messageOf(e));
     }

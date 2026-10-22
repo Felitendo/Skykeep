@@ -2003,6 +2003,51 @@ pub async fn tick_overtaken(
     Ok(changed > (made_at + 5) * 1000)
 }
 
+/// Tick a repeating reminder on to its next date — once, however many times it is sent.
+///
+/// `from_due` is when it was due as it was ticked here (seconds) and `made_at` when. Apple's
+/// reminder no longer due then — moved on by an earlier send of this same tick whose answer
+/// was lost, or by another device — or changed after the tick was made, has been advanced
+/// already: nothing is sent, so a daily reminder never skips a day. Gone at Apple, there is
+/// nothing to tick.
+pub async fn advance_cloudkit_once(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    reminder: &Reminder,
+    from_due: Option<i64>,
+    made_at: i64,
+) -> Result<()> {
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
+    let Some(current) = client.lookup_record(ZONE, &reminder.guid).await? else {
+        return Ok(());
+    };
+    if advanced_already(&current, from_due, made_at) {
+        return Ok(());
+    }
+    set_completed_cloudkit(http, ckdatabasews_root, params, reminder, true).await
+}
+
+/// Whether Apple's record shows a tick made here at `made_at`, from `from_due`, as done.
+fn advanced_already(current: &Value, from_due: Option<i64>, made_at: i64) -> bool {
+    if field::flag(current, "Deleted") {
+        return true;
+    }
+    if field::timestamp_seconds(current, "DueDate") != from_due {
+        return true;
+    }
+    let changed = [
+        current.pointer("/fields/LastModifiedDate/value"),
+        current.pointer("/modified/timestamp"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_i64)
+    .max()
+    .unwrap_or(0);
+    changed > (made_at + 5) * 1000
+}
+
 /// Tick a CloudKit reminder off, or put it back.
 ///
 /// Sends only the fields that change, guarded by the record's change tag, so a reminder
@@ -3346,6 +3391,69 @@ mod recurring_tick_tests {
             "RecurrenceRule/RULE-1"
         );
         assert_eq!(filters[2]["fieldValue"]["value"], "Asia/Kolkata");
+    }
+
+    /// A queued tick of a repeating reminder advances it once: sent again after Apple has
+    /// moved it on — the answer lost, the app closed — it asks nothing more of Apple.
+    #[tokio::test]
+    async fn a_repeating_tick_sent_twice_advances_once() {
+        let server = MockServer::start().await;
+        // Apple's reminder, still due when it was ticked here.
+        let due_ms = FUTURE * 1000;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "records": [{
+                "recordName": "Reminder/1", "recordType": "Reminder", "recordChangeTag": "t",
+                "fields": {
+                    "RecurrenceRuleIDs": { "type": "STRING_LIST", "value": ["RULE-1"] },
+                    "DueDate": { "type": "TIMESTAMP", "value": due_ms },
+                    "LastModifiedDate": { "type": "TIMESTAMP", "value": 1_000_000 },
+                }
+            }] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/query$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({ "records": [{ "recordName": "Reminder/1", "recordType": "Reminder" }] }),
+            ))
+            .mount(&server)
+            .await;
+        let daily = repeating(0, 1, FUTURE);
+        let http = reqwest::Client::new();
+        async fn queries(server: &MockServer) -> usize {
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.url.path().ends_with("/records/query"))
+                .count()
+        }
+        // Due when ticked: Apple is asked to move it on.
+        advance_cloudkit_once(&http, &server.uri(), vec![], &daily, Some(FUTURE), 2_000)
+            .await
+            .unwrap();
+        assert_eq!(queries(&server).await, 1);
+        // Sent again, from a date Apple has moved past: nothing more.
+        advance_cloudkit_once(
+            &http,
+            &server.uri(),
+            vec![],
+            &daily,
+            Some(FUTURE - 86_400),
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(queries(&server).await, 1, "never advanced twice");
+        // Changed at Apple after the tick was made (another device): theirs stands.
+        advance_cloudkit_once(&http, &server.uri(), vec![], &daily, Some(FUTURE), 100)
+            .await
+            .unwrap();
+        assert_eq!(queries(&server).await, 1, "a later change elsewhere wins");
     }
 
     /// Unticking, or ticking a reminder that does not repeat, is the ordinary field write.

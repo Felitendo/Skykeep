@@ -1,5 +1,6 @@
 import { Portal } from "./Portal";
 import { useActiveRef } from "../lib/screen";
+import { useReturnFocus } from "../lib/focus";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
@@ -61,6 +62,10 @@ export function useTypeSelect(labels: () => string[]) {
  */
 export function RowMenu({ at, entries, onClose }: { at: Anchor; entries: MenuEntry[]; onClose: () => void }) {
   const live = useActiveRef();
+  // Closed with the focus still in it (Escape, or a choice that opens nothing), the focus goes
+  // back to what opened it — its ⋯, or the row a menu key opened it from. Left on the menu that
+  // went, it fell to the page and the keys began again from the top.
+  useReturnFocus();
   useEffect(() => {
     // Any press outside every level of this menu dismisses it.
     const down = (e: MouseEvent) => {

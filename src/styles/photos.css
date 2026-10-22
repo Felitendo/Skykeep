@@ -22,7 +22,7 @@
   gap: 1px;
   min-height: 0;
   padding: 4px 10px 10px;
-  border-right: 1px solid var(--separator);
+  border-right: var(--hairline) solid var(--separator);
   overflow-y: auto;
 }
 .px-glyph { flex: none; color: var(--accent); }
@@ -194,7 +194,7 @@
    does: the picture is in one place at a time, never the tile and the photo both. */
 .px-tile[data-lifted] .px-pic { visibility: hidden; }
 .px-tile:focus-visible { outline: none; }
-.px-tile:focus-visible .px-pic::after { opacity: 1; border-color: var(--accent-ring); }
+.px-tile:focus-visible .px-pic::after { opacity: 1; border-color: var(--accent-strong); }
 .px-tile[aria-selected="true"]:focus-visible .px-pic::after { border-color: var(--accent); }
 .px-badge {
   position: absolute;
@@ -204,7 +204,7 @@
   align-items: center;
   gap: 3px;
   color: #fff;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
@@ -323,7 +323,7 @@
 /* The filmstrip keeps the window's width, centred under the photo; Info stops above it. */
 .px-viewer.has-info .px-strip-run { left: calc(50% - 141px); }
 /* Each group under a hairline: the line says where one kind of fact ends. */
-.px-info > * + * { padding-top: 12px; border-top: 1px solid var(--separator); }
+.px-info > * + * { padding-top: 12px; border-top: var(--hairline) solid var(--separator); }
 .px-info-when { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .px-info-when > div, .px-info-file { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .px-info-when strong, .px-info-file strong { font-weight: 600; overflow-wrap: anywhere; }
@@ -397,7 +397,7 @@
   transform: translateX(-50%);
   align-items: center;
   background: rgba(40, 40, 44, 0.62);
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.18), 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.18), 0 10px 30px rgba(0, 0, 0, 0.5);
   color: #fff;
   opacity: 0;
   transition: none;
@@ -438,7 +438,7 @@
   border-radius: 5px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   line-height: 15px;
   font-variant-numeric: tabular-nums;
@@ -461,7 +461,7 @@
 .px-star.is-on { color: #ff9f0a; }
 .px-star:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .px-star:active:not(:disabled) { transform: scale(0.88); }
-.px-star:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
+.px-star:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 
 /* ---- the sidebar's branches: Albums and Media Types open to what they hold ---------------- */
 .px-parent-row { position: relative; display: flex; align-items: center; }
@@ -473,7 +473,7 @@
 .px-children { display: flex; flex-direction: column; gap: 1px; }
 .px-children .px-source, .px-children .px-naming { padding-left: 30px; }
 /* An album's cover in the sidebar, where a symbol stands for the others. */
-.px-cover { flex: none; width: 18px; height: 18px; border-radius: 4px; object-fit: cover; box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--text) 18%, transparent); }
+.px-cover { flex: none; width: 18px; height: 18px; border-radius: 4px; object-fit: cover; box-shadow: 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 18%, transparent); }
 
 /* ---- uploads: a panel at the right, as icloud.com shows them --------------------------------- */
 .px-up {
@@ -487,7 +487,7 @@
   flex-direction: column;
   /* Solid, as icloud.com's: the toolbar's controls must not show through the words. */
   background: var(--sheet);
-  box-shadow: inset 0.5px 0 0 var(--separator), -18px 0 40px rgba(0, 0, 0, 0.18);
+  box-shadow: inset var(--hairline) 0 0 var(--separator), -18px 0 40px rgba(0, 0, 0, 0.18);
 }
 .px-up-head { padding: 12px 16px 0; }
 .px-up-hero { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 22px 16px; text-align: center; }
@@ -549,7 +549,7 @@
   z-index: 1;
   display: grid;
   place-items: center;
-  width: 20px;
+  width: 24px;
   height: 30px;
   padding: 0;
   border: 0;
@@ -557,7 +557,7 @@
   cursor: default;
 }
 .px-twisty[aria-expanded="true"] .px-chevron { transform: rotate(90deg); }
-.px-parent-row .px-parent { padding-left: 20px; }
+.px-parent-row .px-parent { padding-left: 24px; }
 
 /* ---- the viewer's filmstrip: slips either side, the photo shown wider in the middle --------- */
 .px-strip {
@@ -658,7 +658,7 @@
 .px-dl-pics { display: flex; justify-content: center; gap: 4px; }
 .px-dl-pics img { width: 58px; height: 58px; border-radius: 8px; object-fit: cover; background: color-mix(in srgb, var(--text) 8%, transparent); }
 .px-dl-count { margin: 6px 0 14px; text-align: center; font-size: var(--t-13); font-weight: 600; }
-.px-dl-head { margin: 12px 0 2px; padding-top: 12px; border-top: 1px solid var(--separator); font-size: var(--t-13); font-weight: 700; }
+.px-dl-head { margin: 12px 0 2px; padding-top: 12px; border-top: var(--hairline) solid var(--separator); font-size: var(--t-13); font-weight: 700; }
 .px-dl-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
 .px-dl-row span { display: flex; flex-direction: column; }
 .px-dl-row strong { font-size: var(--t-13); font-weight: 600; }
@@ -718,7 +718,7 @@
   text-align: center;
 }
 .px-scrub { position: relative; flex: 1; height: 28px; display: flex; align-items: center; cursor: default; touch-action: none; }
-.px-scrub:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.px-scrub:focus-visible { outline: var(--focus-ring); outline-offset: 2px; border-radius: 6px; }
 .px-scrub-track { position: relative; width: 100%; height: 4px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--text) 20%, transparent); transition: height 160ms ease; }
 .px-scrub:hover .px-scrub-track { height: 6px; }
 .px-scrub-fill { position: absolute; inset: 0; transform-origin: left center; transform: scaleX(0); background: var(--text); }
@@ -753,7 +753,7 @@
 @media (prefers-reduced-motion: reduce) { .px-player-bar, .px-scrub-track, .px-scrub-knob { transition: none; } }
 /* Over the film the controls are dark glass in light and dark alike, as QuickTime and Photos
    draw them: they sit on the picture, not on the page. */
-.px-player-bar { background: rgba(28, 28, 30, 0.74); box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.14), 0 8px 24px rgba(0, 0, 0, 0.35); }
+.px-player-bar { background: rgba(28, 28, 30, 0.74); box-shadow: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.14), 0 8px 24px rgba(0, 0, 0, 0.35); }
 .px-player-bar .px-cap { color: #fff; }
 .px-player-bar .px-cap:hover { background: rgba(255, 255, 255, 0.14); }
 .px-player-bar .px-player-time { color: rgba(255, 255, 255, 0.78); }
@@ -784,7 +784,7 @@
   letter-spacing: 0.04em;
   color: #fff;
   background: rgba(28, 28, 30, 0.62);
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.14);
   cursor: default;
 }
 .px-mark:hover, .px-mark.is-on { background: rgba(28, 28, 30, 0.82); }
@@ -819,7 +819,7 @@
   /* Fades in frame by frame from the page (fadeIn), never a CSS animation: animated by the
      engine's compositor it glitched on his screen as it opened. */
 }
-.px-jump-years { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; border-right: 1px solid var(--separator); overflow-y: auto; }
+.px-jump-years { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; border-right: var(--hairline) solid var(--separator); overflow-y: auto; }
 .px-jump-year {
   height: 30px;
   border: 0;
@@ -856,7 +856,7 @@
 .px-jump-month span { z-index: 1; }
 .px-jump-month:hover img { filter: brightness(1.08); }
 .px-jump-month.is-here { box-shadow: inset 0 0 0 2px var(--accent); }
-.px-jump-month:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.px-jump-month:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 
 /* A picture that could not be had at all draws nothing — never the engine's broken box (a
    white frame, a question mark, the file's name); what is under it shows. */
@@ -879,7 +879,7 @@ img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }
   grid-row: 2;
   height: 64px;
   background: #1c1c1e;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: var(--hairline) solid rgba(255, 255, 255, 0.08);
 }
 .px-viewer.is-full .px-strip-run { top: 10px; }
 .px-full-bar {
@@ -894,7 +894,7 @@ img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }
   padding: 0 10px;
   /* Solid, not a live blur (WebKitGTK repaints a blur every frame under it). */
   background: rgba(40, 36, 34, 0.92);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: var(--hairline) solid rgba(255, 255, 255, 0.06);
 }
 /* Away: out of sight at once (an animated hide is the compositor's, and flickered). */
 .px-full-bar.is-away { visibility: hidden; }
@@ -916,7 +916,7 @@ img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }
 }
 .px-full-btn:hover { background: rgba(255, 255, 255, 0.1); }
 .px-full-btn[aria-pressed="true"] { background: rgba(255, 255, 255, 0.16); }
-.px-full-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.px-full-btn:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 .px-full-btn.is-small { width: 22px; height: 24px; color: rgba(245, 245, 247, 0.75); }
 .px-zoom { display: flex; align-items: center; gap: 2px; margin-left: 6px; }
 .px-zoom input[type="range"] {

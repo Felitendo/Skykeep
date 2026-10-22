@@ -1,0 +1,141 @@
+# Every push and pull request to main, on Linux only (the repository is private, and Actions
+# minutes on it are counted):
+#   rust — cargo fmt, clippy with warnings as errors, and the real tests (libraries, the app
+#          and test files; the probe examples are live tools, not tests);
+#   web  — npm ci, the type check, the production build, the model tests, and a smoke run of
+#          the key interface suites in Chromium against `vite preview`.
+# The two run side by side. A newer push to the same branch or pull request cancels the older
+# run. Windows is proven by windows.yml, by hand or by a release.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # No debug info in CI builds: smaller cache, faster links, same checks.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsecret-1-dev libheif-dev libfuse3-dev pkg-config \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main writes the cache; pull requests read it, so they cannot crowd it out.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --all --check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # The window's files must exist for the app crate to compile (tauri::generate_context!).
+      - run: npm ci --no-audit --no-fund
+      # The installer build refuses a Tauri npm package and Rust crate on different minor
+      # versions; caught here in seconds rather than at the end of a Windows build.
+      - name: Tauri versions match
+        run: |
+          node -e '
+            const lock = require("./package-lock.json").packages;
+            const npm = lock["node_modules/@tauri-apps/api"].version;
+            const rust = require("fs").readFileSync("Cargo.lock", "utf8").match(/name = "tauri"\nversion = "([^"]+)"/)[1];
+            const mm = (v) => v.split(".").slice(0, 2).join(".");
+            console.log(`@tauri-apps/api ${npm}, tauri crate ${rust}`);
+            if (mm(npm) !== mm(rust)) { console.error("Tauri npm package and crate differ: align them"); process.exit(1); }'
+      - run: npx vite build
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --lib --bins --tests --locked --no-fail-fast
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc --noEmit
+      - run: npx vite build
+      - name: Model tests
+        run: node --test .uiverify/*.test.mjs
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(node -p 'require("playwright/package.json").version')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ steps.pw.outputs.version }}
+      - name: Chromium
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: Interface smoke, in Chromium
+        env:
+          ENGINE: chromium
+        run: |
+          shots="$RUNNER_TEMP/shots"; mkdir -p "$shots"
+          export TMPDIR="$shots"
+          # The preview server, on every address so "localhost" answers as 127.0.0.1 or ::1.
+          node node_modules/vite/bin/vite.js preview --port 4173 --strictPort --host >"$shots/preview.log" 2>&1 &
+          preview=$!
+          up=
+          for _ in $(seq 60); do
+            if ! kill -0 "$preview" 2>/dev/null; then break; fi
+            if curl -sf -o /dev/null http://localhost:4173/; then up=1; break; fi
+            sleep 0.5
+          done
+          if [ -z "$up" ]; then
+            cat "$shots/preview.log"
+            echo "::error::the preview server did not come up on :4173"
+            exit 1
+          fi
+          echo "preview up"
+          # The key flows, one or two per app: the window's security policy, accessibility,
+          # sign-out, and an instant write in each app.
+          suites="csp a11y boundary signout notes-compose notes-instant reminders-add-done
+                  reminders-instant calendar-edits contacts-select drive-nav photos settings
+                  search-everything"
+          failed=()
+          for t in $suites; do
+            if node ".uiverify/$t.mjs" >"$shots/$t.log" 2>&1; then
+              echo "ok   $t"
+            else
+              echo "FAIL $t"; failed+=("$t"); sed 's/^/    /' "$shots/$t.log" | tail -40
+            fi
+          done
+          kill "$preview" 2>/dev/null || true
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::${#failed[@]} suite(s) failed: ${failed[*]}"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ui-smoke
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
+          retention-days: 7

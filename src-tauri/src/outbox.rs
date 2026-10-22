@@ -21,10 +21,12 @@
 //! every pass lays the waiting changes over what it read (see [`replay`]).
 
 use crate::{cloudkit_context, Auth, Data};
+use quince_core::calendar::Event;
 use quince_core::contacts::Contact;
 use quince_core::outbox::Pending;
 use quince_core::reminders::Reminder;
 use quince_core::Library;
+use quince_icloud::calendar::{EventRepeat, Scope};
 use quince_icloud::ckdocument::Run;
 use quince_icloud::reminders::ReminderEdit;
 use quince_icloud::Error;
@@ -43,6 +45,7 @@ pub fn kick() {
 pub const REMINDERS: &str = "reminders";
 pub const NOTES: &str = "notes";
 pub const CONTACTS: &str = "contacts";
+pub const CALENDAR: &str = "calendar";
 
 /// What a waiting change does to a reminder: ticked (`at` the moment) or not.
 #[derive(Serialize, Deserialize)]
@@ -216,6 +219,92 @@ pub struct ContactSave {
     pub contact: Contact,
     pub base: Option<Contact>,
     pub create: bool,
+}
+
+/// A repeating reminder ticked here: Apple moves it on to its next date. `from_due` is the
+/// date it was due as it was ticked, so the tick moves it on once — never twice — however
+/// many times it is sent or laid over a pass.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Advance {
+    pub from_due: Option<i64>,
+    pub at: i64,
+}
+
+/// A note made here, under the name it was given here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoteCreate {
+    pub folder_guid: Option<String>,
+    pub body: String,
+    pub at: i64,
+}
+
+/// A note moved here into a folder (`None`: Apple's own "Notes").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoteMove {
+    pub folder_guid: Option<String>,
+}
+
+/// A note deleted here: to Recently Deleted, or — from there — for good. `from_folder` is
+/// where it was, which says which; `title` what it was called, for a refusal to name it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoteDelete {
+    pub from_folder: Option<String>,
+    pub title: String,
+}
+
+/// A note pinned or unpinned here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotePin {
+    pub pinned: bool,
+}
+
+/// A card deleted here, as it was.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContactDelete {
+    pub contact: Contact,
+}
+
+/// An event made or saved here: as the person left it, and as it was before (`None` for a new
+/// one) — what a conflict is merged against, and where a move is made from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventSave {
+    pub event: Event,
+    pub base: Option<Event>,
+    pub create: bool,
+    /// Alerts set to exactly these; `None` leaves Apple's.
+    pub alerts: Option<Vec<i64>>,
+    /// Whether the repeat is set (to `repeat`, `None` for never) or left as Apple holds it.
+    pub repeat_changed: bool,
+    pub repeat: Option<EventRepeat>,
+    /// For one occurrence of a repeating event: which events the change is for.
+    pub scope: Option<Scope>,
+}
+
+impl EventSave {
+    /// A later save of the same event, not yet sent, laid over this one: one save, from the
+    /// event as this one began from it.
+    fn then(self, later: Self) -> Self {
+        Self {
+            event: later.event,
+            base: self.base,
+            create: self.create,
+            alerts: later.alerts.or(self.alerts),
+            repeat_changed: self.repeat_changed || later.repeat_changed,
+            repeat: if later.repeat_changed {
+                later.repeat
+            } else {
+                self.repeat
+            },
+            scope: later.scope,
+        }
+    }
+}
+
+/// An event deleted here — with its scope, for one of a repeating series.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventDelete {
+    pub event: Event,
+    pub scope: Option<Scope>,
 }
 
 fn json<T: Serialize>(v: &T) -> quince_core::Result<String> {
@@ -460,6 +549,257 @@ pub fn record_contact_save(
     })
 }
 
+/// A repeating reminder ticked: moved on to its next date here at once, and queued for Apple,
+/// which keeps the history and moves its own copy on. Each tick is its own change — two ticks
+/// are two days — and each moves it on from the date it had when it was made, once.
+pub fn record_reminder_advance(
+    library: &mut Library,
+    reminder: &Reminder,
+    at: i64,
+) -> quince_core::Result<()> {
+    library.atomically(|l| {
+        let advance = Advance {
+            from_due: reminder.due_at,
+            at,
+        };
+        l.outbox_append(REMINDERS, &reminder.guid, "advance", &json(&advance)?)?;
+        lay_advance(l, &reminder.guid, &advance)
+    })
+}
+
+fn lay_advance(l: &mut Library, guid: &str, a: &Advance) -> quince_core::Result<()> {
+    let Some(mut r) = l.reminder(guid)? else {
+        return Ok(());
+    };
+    // Moved on already — by this same tick laid before, or by Apple's own answer — stays.
+    if r.due_at != a.from_due {
+        return Ok(());
+    }
+    if let Some(next) = r.next_occurrence_after(a.at) {
+        r.due_at = Some(next);
+    }
+    r.completed_at = None;
+    l.put_reminder_local(&r)
+}
+
+/// A note made here: named now (an uppercase UUID, as Apple names one), shown now, sent
+/// behind. Answers its name.
+pub fn record_note_create(
+    library: &mut Library,
+    folder_guid: Option<String>,
+    body: &str,
+) -> quince_core::Result<String> {
+    let guid = quince_icloud::notes::new_note_name();
+    let create = NoteCreate {
+        folder_guid,
+        body: body.to_string(),
+        at: jiff::Timestamp::now().as_second(),
+    };
+    library.atomically(|l| {
+        l.outbox_append(NOTES, &guid, "create", &json(&create)?)?;
+        lay_note_create(l, &guid, &create)?;
+        Ok(guid.clone())
+    })
+}
+
+/// A folder this library holds, or none: a note filed under one it does not know would break
+/// the library's own link from note to folder.
+fn known_folder(l: &Library, folder: Option<&str>) -> quince_core::Result<Option<String>> {
+    let Some(folder) = folder else {
+        return Ok(None);
+    };
+    Ok(l.note_folders()?
+        .into_iter()
+        .any(|f| f.guid == folder)
+        .then(|| folder.to_string()))
+}
+
+fn lay_note_create(l: &mut Library, guid: &str, c: &NoteCreate) -> quince_core::Result<()> {
+    if l.note(guid)?.is_some() {
+        return Ok(());
+    }
+    let (title, snippet) = quince_icloud::notes::title_and_snippet(&c.body);
+    let folder_guid = known_folder(l, c.folder_guid.as_deref())?;
+    l.put_notes(&[quince_core::notes::Note {
+        guid: guid.to_string(),
+        folder_guid,
+        title,
+        snippet: Some(snippet).filter(|s| !s.is_empty()),
+        body: Some(c.body.clone()),
+        locked: false,
+        pinned: false,
+        created_at: Some(c.at),
+        modified_at: Some(c.at),
+        editable: true,
+        etag: None,
+        runs: None,
+    }])
+}
+
+/// A note moved to a folder. Only where it ends up needs to reach Apple: an earlier move not
+/// yet sent is replaced.
+pub fn record_note_move(
+    library: &mut Library,
+    guid: &str,
+    folder_guid: Option<String>,
+) -> quince_core::Result<()> {
+    library.atomically(|l| {
+        let m = NoteMove { folder_guid };
+        l.outbox_push(NOTES, guid, "move", &json(&m)?)?;
+        lay_note_move(l, guid, &m)
+    })
+}
+
+fn lay_note_move(l: &mut Library, guid: &str, m: &NoteMove) -> quince_core::Result<()> {
+    // No folder is Apple's own "Notes", where Apple files it.
+    let to = m
+        .folder_guid
+        .as_deref()
+        .unwrap_or(quince_icloud::notes::DEFAULT_FOLDER);
+    let folder = known_folder(l, Some(to))?;
+    l.set_note_folder(guid, folder.as_deref())
+}
+
+/// A note deleted: to Recently Deleted, or from there for good.
+pub fn record_note_delete(
+    library: &mut Library,
+    note: &quince_core::notes::Note,
+) -> quince_core::Result<()> {
+    library.atomically(|l| {
+        let d = NoteDelete {
+            from_folder: note.folder_guid.clone(),
+            title: note.title.clone(),
+        };
+        l.outbox_append(NOTES, &note.guid, "delete", &json(&d)?)?;
+        lay_note_delete(l, &note.guid, &d)
+    })
+}
+
+fn lay_note_delete(l: &mut Library, guid: &str, d: &NoteDelete) -> quince_core::Result<()> {
+    use quince_core::notes::TRASH_FOLDER;
+    if d.from_folder.as_deref() == Some(TRASH_FOLDER) {
+        return l.forget_notes(&[guid.to_string()]);
+    }
+    let trash = known_folder(l, Some(TRASH_FOLDER))?;
+    if trash.is_none() {
+        // No Recently Deleted to show it in: out of sight, as it would be on the phone.
+        return l.forget_notes(&[guid.to_string()]);
+    }
+    l.set_note_folder(guid, trash.as_deref())
+}
+
+/// A note pinned or unpinned: the last word is the one sent.
+pub fn record_note_pin(library: &mut Library, guid: &str, pinned: bool) -> quince_core::Result<()> {
+    library.atomically(|l| {
+        l.outbox_push(NOTES, guid, "pin", &json(&NotePin { pinned })?)?;
+        l.set_note_pinned(guid, pinned)
+    })
+}
+
+/// A card deleted here: gone at once, deleted at Apple behind.
+pub fn record_contact_delete(library: &mut Library, contact: &Contact) -> quince_core::Result<()> {
+    library.atomically(|l| {
+        let d = ContactDelete {
+            contact: contact.clone(),
+        };
+        l.outbox_append(CONTACTS, &contact.guid, "delete", &json(&d)?)?;
+        l.forget_contact(&contact.guid)
+    })
+}
+
+/// An event made or saved here: shown at once, sent behind. Saves not yet sent and still the
+/// last word on the event, for the same events of a series, are one save; one already on its
+/// way is followed by the next, made from what it sends.
+pub fn record_event_save(library: &mut Library, save: EventSave) -> quince_core::Result<()> {
+    let guid = save.event.guid.clone();
+    library.atomically(|l| {
+        let waiting = last_word(l, CALENDAR, &guid, "save")?.and_then(|p| {
+            serde_json::from_str::<EventSave>(&p.payload)
+                .ok()
+                .map(|s| (p, s))
+        });
+        let save = match waiting {
+            Some((p, before)) if p.tries == 0 && before.scope == save.scope => {
+                let merged = before.then(save);
+                if !l.outbox_amend(p.id, &json(&merged)?)? {
+                    l.outbox_append(CALENDAR, &guid, "save", &json(&merged)?)?;
+                }
+                merged
+            }
+            Some((_, before)) => {
+                let after = EventSave {
+                    base: Some(before.event),
+                    create: false,
+                    ..save
+                };
+                l.outbox_append(CALENDAR, &guid, "save", &json(&after)?)?;
+                after
+            }
+            None => {
+                l.outbox_append(CALENDAR, &guid, "save", &json(&save)?)?;
+                save
+            }
+        };
+        lay_event_save(l, &save)
+    })
+}
+
+fn lay_event_save(l: &mut Library, s: &EventSave) -> quince_core::Result<()> {
+    if !l
+        .calendars()?
+        .iter()
+        .any(|c| c.guid == s.event.calendar_guid)
+    {
+        return Ok(());
+    }
+    let mut event = s.event.clone();
+    // Apple's tag for it stays what the library last heard: what a write is made against.
+    event.etag = l.event(&event.guid)?.and_then(|e| e.etag);
+    l.put_events(&[event])
+}
+
+/// An event deleted here — the one day, those after it, or the whole series.
+pub fn record_event_delete(
+    library: &mut Library,
+    event: &Event,
+    scope: Option<Scope>,
+) -> quince_core::Result<()> {
+    library.atomically(|l| {
+        let d = EventDelete {
+            event: event.clone(),
+            scope,
+        };
+        l.outbox_append(CALENDAR, &event.guid, "delete", &json(&d)?)?;
+        lay_event_delete(l, &d)
+    })
+}
+
+fn lay_event_delete(l: &mut Library, d: &EventDelete) -> quince_core::Result<()> {
+    use quince_icloud::calendar::series_of;
+    // What goes at Apple goes here: the whole series for all of it, this day and those after
+    // for this-and-future — not just the one day.
+    let series = series_of(&d.event.guid).to_string();
+    let gone: Vec<String> = match d.scope {
+        Some(Scope::All | Scope::Future) => {
+            let mut gone = Vec::new();
+            for (g, _) in l.events_starting_between(i64::MIN / 2, i64::MAX / 2)? {
+                if series_of(&g) != series {
+                    continue;
+                }
+                let keep = d.scope == Some(Scope::Future)
+                    && l.event(&g)?
+                        .is_some_and(|e| e.starts_at < d.event.starts_at);
+                if !keep {
+                    gone.push(g);
+                }
+            }
+            gone
+        }
+        _ => vec![d.event.guid.clone()],
+    };
+    l.forget_events(&gone)
+}
+
 /// Lay one waiting change over the library.
 fn lay(l: &mut Library, p: &Pending) -> quince_core::Result<()> {
     match (p.service.as_str(), p.kind.as_str()) {
@@ -490,9 +830,45 @@ fn lay(l: &mut Library, p: &Pending) -> quince_core::Result<()> {
                 }
             }
         }
+        (REMINDERS, "advance") => {
+            if let Ok(a) = serde_json::from_str::<Advance>(&p.payload) {
+                lay_advance(l, &p.record, &a)?;
+            }
+        }
+        (NOTES, "create") => {
+            if let Ok(c) = serde_json::from_str::<NoteCreate>(&p.payload) {
+                lay_note_create(l, &p.record, &c)?;
+            }
+        }
+        (NOTES, "move") => {
+            if let Ok(m) = serde_json::from_str::<NoteMove>(&p.payload) {
+                lay_note_move(l, &p.record, &m)?;
+            }
+        }
+        (NOTES, "delete") => {
+            if let Ok(d) = serde_json::from_str::<NoteDelete>(&p.payload) {
+                lay_note_delete(l, &p.record, &d)?;
+            }
+        }
+        (NOTES, "pin") => {
+            if let Ok(x) = serde_json::from_str::<NotePin>(&p.payload) {
+                l.set_note_pinned(&p.record, x.pinned)?;
+            }
+        }
         (CONTACTS, "save") => {
             if let Ok(s) = serde_json::from_str::<ContactSave>(&p.payload) {
                 l.put_contact(&s.contact)?;
+            }
+        }
+        (CONTACTS, "delete") => l.forget_contact(&p.record)?,
+        (CALENDAR, "save") => {
+            if let Ok(s) = serde_json::from_str::<EventSave>(&p.payload) {
+                lay_event_save(l, &s)?;
+            }
+        }
+        (CALENDAR, "delete") => {
+            if let Ok(d) = serde_json::from_str::<EventDelete>(&p.payload) {
+                lay_event_delete(l, &d)?;
             }
         }
         _ => {}
@@ -509,6 +885,17 @@ pub fn replay(library: &mut Library, service: &str) -> quince_core::Result<()> {
     Ok(())
 }
 
+/// Every change still waiting for `service` but `except`, laid over the library: what Apple
+/// answered for one just sent is stored, and what still waits behind it stays as made.
+fn replay_except(library: &mut Library, service: &str, except: i64) -> quince_core::Result<()> {
+    for p in library.outbox_pending(service)? {
+        if p.id != except {
+            lay(library, &p)?;
+        }
+    }
+    Ok(())
+}
+
 /// The reminder changes still waiting, laid over what a pass stored.
 pub fn replay_reminders(library: &mut Library) -> quince_core::Result<()> {
     replay(library, REMINDERS)
@@ -518,6 +905,7 @@ pub fn replay_reminders(library: &mut Library) -> quince_core::Result<()> {
 
 /// Runs for as long as the app does. Starts by sending whatever an earlier run left.
 pub fn start(app: AppHandle) {
+    watch_network();
     tauri::async_runtime::spawn(async move {
         let mut wait = Duration::ZERO;
         loop {
@@ -530,6 +918,7 @@ pub fn start(app: AppHandle) {
                 drain_reminders(&app).await,
                 drain_notes(&app).await,
                 drain_contacts(&app).await,
+                drain_calendar(&app).await,
             ];
             let _ = app.emit(CHANGED, ());
             wait = if outcomes.iter().any(|o| matches!(o, Outcome::Later)) {
@@ -755,6 +1144,16 @@ async fn send_reminder(
             }
             Ok(())
         }
+        "advance" => {
+            let a: Advance = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+            // Gone from the library (deleted here or elsewhere): nothing left to tick.
+            let Some(reminder) = stored else {
+                return Ok(());
+            };
+            // Moved on at Apple already — by an earlier send of this tick, or on another
+            // device since — it is not moved on again.
+            r::advance_cloudkit_once(http, root, params, &reminder, a.from_due, a.at).await
+        }
         "edit" => {
             let e: Edit = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
             let Some(mut reminder) = stored else {
@@ -853,6 +1252,75 @@ async fn send_note(
     params: Vec<(String, String)>,
     p: Pending,
 ) -> Result<(), Error> {
+    use quince_icloud::notes as n;
+    match p.kind.as_str() {
+        "save" => send_note_save(library, http, root, params, p).await,
+        "create" => {
+            let c: NoteCreate = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+            // The shape of a document Apple wrote, noticed during a sync: a note built without
+            // it reads back here perfectly and shows on a phone as an empty note.
+            let template = library.lock().await.state(n::TEMPLATE_KEY)?;
+            n::create_cloudkit_named(
+                http,
+                root,
+                params,
+                &p.record,
+                c.folder_guid.as_deref(),
+                &c.body,
+                template.as_deref(),
+            )
+            .await
+        }
+        "move" => {
+            let m: NoteMove = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+            let Some(note) = library.lock().await.note(&p.record)? else {
+                return Err(Error::Refused(
+                    "This note was deleted on another device, so it wasn’t moved.".into(),
+                ));
+            };
+            n::move_cloudkit(http, root, params, &note, m.folder_guid.as_deref()).await
+        }
+        "delete" => {
+            let d: NoteDelete = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+            let stored = library.lock().await.note(&p.record)?;
+            // Sent as the note was when it was deleted: from Recently Deleted is for good.
+            let note = quince_core::notes::Note {
+                guid: p.record.clone(),
+                folder_guid: d.from_folder.clone(),
+                title: d.title.clone(),
+                snippet: None,
+                body: None,
+                locked: false,
+                pinned: false,
+                created_at: None,
+                modified_at: None,
+                editable: true,
+                etag: stored.and_then(|s| s.etag),
+                runs: None,
+            };
+            n::delete_cloudkit(http, root, params, &note).await
+        }
+        "pin" => {
+            let x: NotePin = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+            // Gone since: nothing left to pin.
+            let Some(note) = library.lock().await.note(&p.record)? else {
+                return Ok(());
+            };
+            n::pin_cloudkit(http, root, params, &note, x.pinned).await
+        }
+        other => Err(Error::Refused(format!(
+            "Skykeep does not know how to send “{other}”."
+        ))),
+    }
+}
+
+async fn send_note_save(
+    library: &Mutex<Library>,
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    p: Pending,
+) -> Result<(), Error> {
     let s: NoteSave = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
     let Some(note) = library.lock().await.note(&p.record)? else {
         return Err(Error::Refused(
@@ -924,6 +1392,14 @@ async fn send_contact(
     p: Pending,
 ) -> Result<(), Error> {
     use quince_icloud::contacts as c;
+    if p.kind == "delete" {
+        let (people, tokens) = c::fetch_with_tokens(http, root, params.clone()).await?;
+        // Gone already — deleted elsewhere, or by an earlier send of this one.
+        let Some(card) = people.into_iter().find(|x| x.guid == p.record) else {
+            return Ok(());
+        };
+        return c::delete(http, root, params, &tokens, &card).await;
+    }
     let s: ContactSave = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
     let (_, tokens) = c::fetch_with_tokens(http, root, params.clone()).await?;
     if s.create {
@@ -940,6 +1416,224 @@ async fn send_contact(
         s.base.as_ref(),
     )
     .await
+}
+
+async fn drain_calendar(app: &AppHandle) -> Outcome {
+    let auth = app.state::<Auth>();
+    let data = app.state::<Data>();
+    if waiting(&data, CALENDAR).await.is_clear() {
+        return Outcome::Clear;
+    }
+    let session = if crate::same_account(app).await {
+        crate::calendar_context(&auth).await
+    } else {
+        Err(String::new())
+    };
+    let Ok((http, root, params)) = session else {
+        return Outcome::Later;
+    };
+    let report = drain(&data.0, CALENDAR, &crate::CALENDAR_PASS, |p| {
+        send_event(&data.0, &http, &root, params.clone(), p)
+    })
+    .await;
+    tell_refused(app, CALENDAR, &report);
+    if report.sent || !report.refused.is_empty() {
+        let _ = app.emit("quince://calendar-synced", ());
+    }
+    report.outcome
+}
+
+async fn send_event(
+    library: &Mutex<Library>,
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    p: Pending,
+) -> Result<(), Error> {
+    use quince_icloud::calendar::CalendarClient;
+    use quince_icloud::sync::{calendar_ctag, save_event_merging, store_events};
+    match p.kind.as_str() {
+        "save" => {
+            let s: EventSave = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+            let (event, ctag, from) = {
+                let l = library.lock().await;
+                let mut event = s.event.clone();
+                // Written against the version the library last heard of from Apple.
+                event.etag = l.event(&event.guid)?.and_then(|e| e.etag);
+                let ctag = calendar_ctag(&l, &event.calendar_guid);
+                // Saved to another calendar than it was in: a move, from there.
+                let from = s
+                    .base
+                    .as_ref()
+                    .map(|b| b.calendar_guid.clone())
+                    .filter(|old| *old != event.calendar_guid)
+                    .map(|old| {
+                        let tag = calendar_ctag(&l, &old);
+                        (old, tag)
+                    });
+                (event, ctag, from)
+            };
+            // A create sent again — its answer lost — merges against itself: no change.
+            let base = s.base.clone().or_else(|| s.create.then(|| s.event.clone()));
+            let kept = save_event_merging(
+                http,
+                root,
+                params,
+                ctag.as_deref(),
+                &event,
+                base.as_ref(),
+                s.alerts.as_deref(),
+                s.repeat_changed.then_some(s.repeat.as_ref()),
+                s.scope,
+                from.as_ref()
+                    .map(|(old, tag)| (old.as_str(), tag.as_deref())),
+            )
+            .await?;
+            // What Apple holds is stored — its tag the next write is made against — and what
+            // still waits behind it laid back over.
+            let mut l = library.lock().await;
+            l.atomically(|l| {
+                store_events(l, kept)?;
+                replay_except(l, CALENDAR, p.id)?;
+                Ok::<_, Error>(())
+            })
+        }
+        "delete" => {
+            let d: EventDelete = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+            let mut event = d.event.clone();
+            let ctag = calendar_ctag(&*library.lock().await, &event.calendar_guid);
+            let client = CalendarClient::new(http, root, params);
+            match client
+                .delete_event_scoped(&event, ctag.as_deref(), d.scope)
+                .await
+            {
+                Err(Error::Conflict) => {
+                    // Changed at Apple since it was read: deleted all the same, as asked, against
+                    // Apple's newest version — or done already, if it is gone.
+                    let Some(theirs) = client.current_event(&event).await? else {
+                        return Ok(());
+                    };
+                    event.etag = theirs.etag;
+                    let ctag = client
+                        .current_ctag(&event.calendar_guid)
+                        .await
+                        .ok()
+                        .flatten();
+                    client
+                        .delete_event_scoped(&event, ctag.as_deref(), d.scope)
+                        .await
+                }
+                other => other,
+            }
+        }
+        other => Err(Error::Refused(format!(
+            "Skykeep does not know how to send “{other}”."
+        ))),
+    }
+}
+
+// --- Waking the sender when the network returns.
+
+/// Whether a change in connectivity is the network coming back: online now, and not known to
+/// be online before. `was` is updated to now.
+fn came_online(was: &mut Option<bool>, online: bool) -> bool {
+    let back = online && *was != Some(true);
+    *was = Some(online);
+    back
+}
+
+/// NetworkManager's `NMState`: 60 is reaching the local site, 70 the internet. Apple may be
+/// reachable at either (a captive portal clears to 70), so both count.
+fn nm_online(state: u32) -> bool {
+    state >= 60
+}
+
+/// connman's `State`: "ready" is connected, "online" connected and checked.
+fn connman_online(state: &str) -> bool {
+    matches!(state, "ready" | "online")
+}
+
+/// Send what waits the moment the network comes back, rather than on the next backoff tick:
+/// NetworkManager's `StateChanged`, or connman's `State`, on the system bus. Where neither
+/// runs, the window's `online` event does the same ([`outbox_wake`]).
+fn watch_network() {
+    #[cfg(target_os = "linux")]
+    tauri::async_runtime::spawn(async {
+        use futures_util::StreamExt;
+        let Ok(bus) = zbus::Connection::system().await else {
+            return;
+        };
+        let proxy = |dest: &'static str, path: &'static str, iface: &'static str| {
+            let bus = bus.clone();
+            async move {
+                zbus::proxy::Builder::<zbus::Proxy<'static>>::new(&bus)
+                    .destination(dest)
+                    .ok()?
+                    .path(path)
+                    .ok()?
+                    .interface(iface)
+                    .ok()?
+                    .cache_properties(zbus::proxy::CacheProperties::No)
+                    .build()
+                    .await
+                    .ok()
+            }
+        };
+        let nm = async {
+            let Some(nm) = proxy(
+                "org.freedesktop.NetworkManager",
+                "/org/freedesktop/NetworkManager",
+                "org.freedesktop.NetworkManager",
+            )
+            .await
+            else {
+                return;
+            };
+            let Ok(mut changes) = nm.receive_signal("StateChanged").await else {
+                return;
+            };
+            let mut was = None;
+            while let Some(signal) = changes.next().await {
+                if let Ok(state) = signal.body().deserialize::<u32>() {
+                    if came_online(&mut was, nm_online(state)) {
+                        kick();
+                    }
+                }
+            }
+        };
+        let connman = async {
+            let Some(cm) = proxy("net.connman", "/", "net.connman.Manager").await else {
+                return;
+            };
+            let Ok(mut changes) = cm.receive_signal("PropertyChanged").await else {
+                return;
+            };
+            let mut was = None;
+            while let Some(signal) = changes.next().await {
+                let Ok((name, value)) = signal
+                    .body()
+                    .deserialize::<(String, zbus::zvariant::OwnedValue)>()
+                else {
+                    continue;
+                };
+                if name != "State" {
+                    continue;
+                }
+                if let Ok(state) = String::try_from(value) {
+                    if came_online(&mut was, connman_online(&state)) {
+                        kick();
+                    }
+                }
+            }
+        };
+        tokio::join!(nm, connman);
+    });
+}
+
+/// The window saw the network come back (its `online` event): send what waits now.
+#[tauri::command]
+pub fn outbox_wake() {
+    kick();
 }
 
 // --- What the window asks.
@@ -978,10 +1672,12 @@ fn content_of(p: &Pending) -> String {
     let v: serde_json::Value = serde_json::from_str(&p.payload).unwrap_or_default();
     let s = |ptr: &str| v.pointer(ptr).and_then(|x| x.as_str()).map(str::to_string);
     match (p.service.as_str(), p.kind.as_str()) {
-        (NOTES, _) => s("/body"),
+        (NOTES, "delete") => s("/title"),
+        (NOTES, "create" | "save") => s("/body"),
         (REMINDERS, "create") => s("/title"),
         (REMINDERS, "edit") => s("/title").or_else(|| s("/notes")),
         (REMINDERS, "delete") => s("/reminder/title"),
+        (CALENDAR, _) => s("/event/title"),
         (CONTACTS, _) => {
             let name: Vec<String> = [
                 "/contact/firstName",
@@ -1486,6 +2182,498 @@ mod tests {
                 .outbox_pending(REMINDERS)
                 .unwrap()
                 .is_empty());
+        });
+    }
+
+    // --- The kinds added for everyday offline edits.
+
+    fn folders(lib: &mut Library) {
+        use quince_core::notes::{NoteFolder, TRASH_FOLDER};
+        let f = |g: &str| NoteFolder {
+            guid: g.into(),
+            title: g.into(),
+            sort_order: 0,
+            parent_guid: None,
+        };
+        lib.put_note_folders(&[
+            f(quince_icloud::notes::DEFAULT_FOLDER),
+            f(TRASH_FOLDER),
+            f("F"),
+        ])
+        .unwrap();
+    }
+
+    fn calendars(lib: &mut Library) {
+        use quince_core::calendar::Calendar;
+        let c = |g: &str| Calendar {
+            guid: g.into(),
+            title: g.into(),
+            enabled: true,
+            writable: true,
+            ..Default::default()
+        };
+        lib.put_calendars(&[c("work"), c("home")]).unwrap();
+    }
+
+    fn event(guid: &str, title: &str, starts_at: i64) -> Event {
+        Event {
+            guid: guid.into(),
+            calendar_guid: "work".into(),
+            title: title.into(),
+            starts_at,
+            ends_at: starts_at + 3600,
+            etag: Some("apple".into()),
+            ..Default::default()
+        }
+    }
+
+    fn kinds(lib: &Library, service: &str) -> Vec<(String, String)> {
+        lib.outbox_pending(service)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.record, p.kind))
+            .collect()
+    }
+
+    /// Drain with a pretend Apple: every change is taken, unless `refuse` names its kind.
+    async fn send_all(lib: &Mutex<Library>, service: &str, refuse: &'static str) -> Report {
+        let pass = Mutex::new(());
+        drain(lib, service, &pass, move |p| async move {
+            if p.kind == refuse {
+                Err(Error::Refused("turned down".into()))
+            } else {
+                Ok(())
+            }
+        })
+        .await
+    }
+
+    /// A repeating reminder ticked moves on to its next date at once, open; a pass from before
+    /// the tick is laid over once, never twice; two ticks are two days, sent in order.
+    #[test]
+    fn a_repeating_tick_moves_on_once_and_two_ticks_are_two_days() {
+        let mut lib = library();
+        let day = 86_400;
+        let due = 4_102_444_800; // 2100-01-01, so "next" is one step on
+        let mut daily = lib.reminder("a").unwrap().unwrap();
+        daily.due_at = Some(due);
+        daily.recur_frequency = Some(0);
+        daily.recur_interval = Some(1);
+        daily.timezone = Some("UTC".into());
+        lib.put_reminders(std::slice::from_ref(&daily)).unwrap();
+
+        record_reminder_advance(&mut lib, &daily, 1_000).unwrap();
+        let after = lib.reminder("a").unwrap().unwrap();
+        assert_eq!(after.due_at, Some(due + day), "on to tomorrow, at once");
+        assert!(after.completed_at.is_none(), "and open again");
+        // Laid again (a replay with nothing new from Apple): not moved on twice.
+        replay_reminders(&mut lib).unwrap();
+        assert_eq!(lib.reminder("a").unwrap().unwrap().due_at, Some(due + day));
+
+        // Ticked again, deliberately: a second day.
+        record_reminder_advance(&mut lib, &after, 1_001).unwrap();
+        assert_eq!(
+            lib.reminder("a").unwrap().unwrap().due_at,
+            Some(due + 2 * day)
+        );
+        let p = lib.outbox_pending(REMINDERS).unwrap();
+        let froms: Vec<Option<i64>> = p
+            .iter()
+            .map(|x| {
+                serde_json::from_str::<Advance>(&x.payload)
+                    .unwrap()
+                    .from_due
+            })
+            .collect();
+        assert_eq!(
+            froms,
+            vec![Some(due), Some(due + day)],
+            "each from its own day, in order"
+        );
+
+        // A pass reads Apple's copy from before either: both are laid back, once each.
+        lib.put_reminders(&[
+            daily.clone(),
+            lib.reminder("b").unwrap().unwrap(),
+            lib.reminder("c").unwrap().unwrap(),
+        ])
+        .unwrap();
+        replay_reminders(&mut lib).unwrap();
+        assert_eq!(
+            lib.reminder("a").unwrap().unwrap().due_at,
+            Some(due + 2 * day)
+        );
+        // Apple has taken the first: its copy is one day on; laid over, still two, not three.
+        let mut moved = daily.clone();
+        moved.due_at = Some(due + day);
+        lib.put_reminder_local(&moved).unwrap();
+        let first = lib.outbox_pending(REMINDERS).unwrap()[0].id;
+        lib.outbox_done(first).unwrap();
+        replay_reminders(&mut lib).unwrap();
+        assert_eq!(
+            lib.reminder("a").unwrap().unwrap().due_at,
+            Some(due + 2 * day)
+        );
+    }
+
+    /// Notes made, moved, pinned and deleted offline: each shows at once, a pass from before
+    /// them all is laid over with them in order, and they go in the order they were made.
+    #[test]
+    fn note_changes_show_at_once_survive_a_pass_and_go_in_order() {
+        let mut lib = Library::in_memory().unwrap();
+        folders(&mut lib);
+        note(&mut lib, "N", "Old note");
+        let made = record_note_create(&mut lib, Some("F".into()), "Packing\npassport").unwrap();
+        assert_eq!(made.len(), 36, "named here, as Apple names one: {made}");
+        assert_eq!(made, made.to_uppercase());
+        let shown = lib.note(&made).unwrap().unwrap();
+        assert_eq!(
+            (shown.title.as_str(), shown.folder_guid.as_deref()),
+            ("Packing", Some("F"))
+        );
+
+        record_note_pin(&mut lib, &made, true).unwrap();
+        record_note_move(&mut lib, "N", Some("F".into())).unwrap();
+        record_note_move(&mut lib, "N", None).unwrap();
+        let n = lib.note("N").unwrap().unwrap();
+        record_note_delete(&mut lib, &n).unwrap();
+        assert!(lib.note(&made).unwrap().unwrap().pinned);
+        assert_eq!(
+            lib.note("N").unwrap().unwrap().folder_guid.as_deref(),
+            Some(quince_core::notes::TRASH_FOLDER),
+            "to Recently Deleted"
+        );
+        assert_eq!(
+            kinds(&lib, NOTES),
+            vec![
+                (made.clone(), "create".into()),
+                (made.clone(), "pin".into()),
+                ("N".into(), "move".into()),
+                ("N".into(), "delete".into()),
+            ],
+            "two moves not yet sent are one, the last"
+        );
+        let mv: NoteMove =
+            serde_json::from_str(&lib.outbox_pending(NOTES).unwrap()[2].payload).unwrap();
+        assert_eq!(mv.folder_guid, None);
+
+        // A full pass from before any of it: the new note is not there, N where it was.
+        lib.retain_notes(&["N".into()]).unwrap();
+        note(&mut lib, "N", "Old note");
+        replay(&mut lib, NOTES).unwrap();
+        let back = lib.note(&made).unwrap().unwrap();
+        assert!(back.pinned && back.folder_guid.as_deref() == Some("F"));
+        assert_eq!(
+            lib.note("N").unwrap().unwrap().folder_guid.as_deref(),
+            Some(quince_core::notes::TRASH_FOLDER)
+        );
+
+        // Deleted from Recently Deleted: gone here at once.
+        let trashed = lib.note("N").unwrap().unwrap();
+        record_note_delete(&mut lib, &trashed).unwrap();
+        assert!(lib.note("N").unwrap().is_none());
+        let last: NoteDelete =
+            serde_json::from_str(&lib.outbox_pending(NOTES).unwrap().last().unwrap().payload)
+                .unwrap();
+        assert_eq!(
+            last.from_folder.as_deref(),
+            Some(quince_core::notes::TRASH_FOLDER),
+            "for good"
+        );
+    }
+
+    /// Recorded, then the app dies: reopened, every new kind is there in order, laid over the
+    /// library still, and each goes once — the create already at Apple is not made again.
+    #[test]
+    fn new_kinds_survive_a_crash_between_record_and_send_and_go_once() {
+        tauri::async_runtime::block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (made, card) = {
+                let mut l = Library::open(dir.path()).unwrap();
+                folders(&mut l);
+                calendars(&mut l);
+                l.put_contacts(&[person("X", "Asha")]).unwrap();
+                l.put_events(&[event("E", "Dentist", 1_000_000)]).unwrap();
+                let made = record_note_create(&mut l, None, "Offline thought").unwrap();
+                let x = l.contacts(None).unwrap().remove(0);
+                record_contact_delete(&mut l, &x).unwrap();
+                let e = l.event("E").unwrap().unwrap();
+                record_event_delete(&mut l, &e, None).unwrap();
+                // Taken and sent; the process dies before it is marked done.
+                l.outbox_take(NOTES).unwrap();
+                (made, x.guid)
+            };
+            let lib = Mutex::new(Library::open(dir.path()).unwrap());
+            {
+                let l = lib.lock().await;
+                assert!(
+                    l.note(&made).unwrap().is_some(),
+                    "still shown after the restart"
+                );
+                assert!(l.contacts(None).unwrap().is_empty());
+                assert!(l.event("E").unwrap().is_none());
+                assert_eq!(
+                    l.outbox_pending(NOTES).unwrap()[0].tries,
+                    1,
+                    "counted as tried"
+                );
+            }
+            // Apple, as a set of names: what it holds already is not made again.
+            let apple = Arc::new(StdMutex::new(std::collections::HashSet::from([
+                made.clone()
+            ])));
+            let made_again = Arc::new(StdMutex::new(Vec::new()));
+            let pass = Mutex::new(());
+            for service in [NOTES, CONTACTS, CALENDAR] {
+                let (a, m) = (apple.clone(), made_again.clone());
+                let report = drain(&lib, service, &pass, move |p| {
+                    let (a, m) = (a.clone(), m.clone());
+                    async move {
+                        if p.kind == "create" && a.lock().unwrap().insert(p.record.clone()) {
+                            m.lock().unwrap().push(p.record);
+                        }
+                        Ok(())
+                    }
+                })
+                .await;
+                assert!(report.sent && report.outcome.is_clear());
+            }
+            assert!(
+                made_again.lock().unwrap().is_empty(),
+                "already at Apple: made once"
+            );
+            assert_eq!(
+                lib.lock().await.outbox_count().unwrap(),
+                0,
+                "each sent once"
+            );
+            let _ = card;
+        });
+    }
+
+    /// One Apple turns down is kept — never dropped — with what it held, and the rest go.
+    #[test]
+    fn a_refused_change_of_each_new_kind_is_kept_with_what_it_held() {
+        tauri::async_runtime::block_on(async {
+            let mut l = Library::in_memory().unwrap();
+            folders(&mut l);
+            calendars(&mut l);
+            note(&mut l, "N", "Shopping");
+            l.put_contacts(&[person("X", "Asha")]).unwrap();
+            l.put_events(&[event("E", "Dentist", 1_000_000)]).unwrap();
+            let n = l.note("N").unwrap().unwrap();
+            record_note_delete(&mut l, &n).unwrap();
+            record_note_create(&mut l, None, "Kept words").unwrap();
+            let x = l.contacts(None).unwrap().remove(0);
+            record_contact_delete(&mut l, &x).unwrap();
+            let mut e = l.event("E").unwrap().unwrap();
+            e.title = "Dentist, moved".into();
+            let base = l.event("E").unwrap();
+            record_event_save(
+                &mut l,
+                EventSave {
+                    event: e.clone(),
+                    base,
+                    create: false,
+                    alerts: None,
+                    repeat_changed: false,
+                    repeat: None,
+                    scope: None,
+                },
+            )
+            .unwrap();
+            let lib = Mutex::new(l);
+            for (service, kind) in [(NOTES, "create"), (CONTACTS, "delete"), (CALENDAR, "save")] {
+                let report = send_all(&lib, service, kind).await;
+                assert_eq!(report.refused.len(), 1, "{service} {kind}");
+                assert!(report.outcome.is_clear(), "the rest went");
+            }
+            let l = lib.lock().await;
+            let st = status(&l).unwrap();
+            assert!(st.waiting.is_empty());
+            let held: Vec<(String, String, String)> = st
+                .refused
+                .into_iter()
+                .map(|r| (r.service, r.kind, r.content))
+                .collect();
+            assert_eq!(
+                held,
+                vec![
+                    (NOTES.into(), "create".into(), "Kept words".into()),
+                    (CONTACTS.into(), "delete".into(), "Asha".into()),
+                    (CALENDAR.into(), "save".into(), "Dentist, moved".into()),
+                ]
+            );
+        });
+    }
+
+    /// Contacts: a card deleted shows gone at once and stays gone over a pass that still has
+    /// it; edited then deleted, both go, in that order.
+    #[test]
+    fn a_deleted_card_stays_gone_over_a_pass() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_contacts(&[person("X", "Asha"), person("Y", "Ravi")])
+            .unwrap();
+        record_contact_save(&mut lib, &person("X", "Asha R"), Some(person("X", "Asha"))).unwrap();
+        let x = person("X", "Asha R");
+        record_contact_delete(&mut lib, &x).unwrap();
+        let names = |lib: &Library| -> Vec<String> {
+            lib.contacts(None)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.guid)
+                .collect()
+        };
+        assert_eq!(names(&lib), vec!["Y".to_string()]);
+        assert_eq!(
+            kinds(&lib, CONTACTS),
+            vec![("X".into(), "save".into()), ("X".into(), "delete".into())]
+        );
+        lib.put_contacts(&[person("X", "Asha"), person("Y", "Ravi")])
+            .unwrap();
+        replay(&mut lib, CONTACTS).unwrap();
+        assert_eq!(
+            names(&lib),
+            vec!["Y".to_string()],
+            "the pass does not bring it back"
+        );
+    }
+
+    /// Calendar: a new event shows at once under the id it will have; edits before it is sent
+    /// stay one create, from nothing; an edit on its way is followed, from what it sends; a
+    /// pass from before is laid over; deletes take the days they were asked to.
+    #[test]
+    fn event_changes_show_at_once_coalesce_and_survive_a_pass() {
+        let mut lib = Library::in_memory().unwrap();
+        calendars(&mut lib);
+        let save = |event: Event, base: Option<Event>, create: bool| EventSave {
+            event,
+            base,
+            create,
+            alerts: None,
+            repeat_changed: false,
+            repeat: None,
+            scope: None,
+        };
+        let mut fresh = event("NEW", "Lunch", 2_000_000);
+        fresh.etag = None;
+        record_event_save(&mut lib, save(fresh.clone(), None, true)).unwrap();
+        assert_eq!(
+            lib.event("NEW").unwrap().unwrap().title,
+            "Lunch",
+            "shown at once"
+        );
+        let mut renamed = fresh.clone();
+        renamed.title = "Lunch with Asha".into();
+        record_event_save(
+            &mut lib,
+            EventSave {
+                alerts: Some(vec![15]),
+                ..save(renamed, None, false)
+            },
+        )
+        .unwrap();
+        let p = lib.outbox_pending(CALENDAR).unwrap();
+        assert_eq!(p.len(), 1, "one create");
+        let s: EventSave = serde_json::from_str(&p[0].payload).unwrap();
+        assert!(s.create && s.base.is_none());
+        assert_eq!(
+            (s.event.title.as_str(), s.alerts),
+            ("Lunch with Asha", Some(vec![15]))
+        );
+
+        // On its way: the next edit follows, made from what it sends.
+        lib.outbox_take(CALENDAR).unwrap();
+        let mut later = s.event.clone();
+        later.location = Some("Cafe".into());
+        record_event_save(&mut lib, save(later, None, false)).unwrap();
+        let p = lib.outbox_pending(CALENDAR).unwrap();
+        let s2: EventSave = serde_json::from_str(&p[1].payload).unwrap();
+        assert!(!s2.create);
+        assert_eq!(s2.base.unwrap().title, "Lunch with Asha");
+
+        // A repeating series, and deletes of its days.
+        let series: Vec<Event> = (0..4)
+            .map(|i| event(&format!("S__{i}"), "Standup", 3_000_000 + i * 86_400))
+            .collect();
+        lib.put_events(&series).unwrap();
+        lib.put_events(&[event("E", "Dentist", 1_000_000)]).unwrap();
+        record_event_delete(&mut lib, &series[2], Some(Scope::Future)).unwrap();
+        let left = |lib: &Library| -> Vec<String> {
+            let mut v: Vec<String> = lib
+                .events_starting_between(0, i64::MAX / 2)
+                .unwrap()
+                .into_iter()
+                .map(|(g, _)| g)
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            left(&lib),
+            vec!["E", "NEW", "S__0", "S__1"],
+            "this day and those after"
+        );
+        let mut moved = lib.event("E").unwrap().unwrap();
+        moved.calendar_guid = "home".into();
+        let base = lib.event("E").unwrap();
+        record_event_save(&mut lib, save(moved, base, false)).unwrap();
+        assert_eq!(
+            lib.event("E").unwrap().unwrap().etag.as_deref(),
+            Some("apple"),
+            "Apple's tag kept"
+        );
+
+        // A pass from before all of it.
+        let mut stale = series.clone();
+        stale.push(event("E", "Dentist", 1_000_000));
+        lib.put_events(&stale).unwrap();
+        lib.forget_events(&["NEW".into()]).unwrap();
+        replay(&mut lib, CALENDAR).unwrap();
+        assert_eq!(left(&lib), vec!["E", "NEW", "S__0", "S__1"]);
+        let new = lib.event("NEW").unwrap().unwrap();
+        assert_eq!(
+            (new.title.as_str(), new.location.as_deref()),
+            ("Lunch with Asha", Some("Cafe"))
+        );
+        assert_eq!(lib.event("E").unwrap().unwrap().calendar_guid, "home");
+        assert_eq!(
+            kinds(&lib, CALENDAR)
+                .into_iter()
+                .map(|(_, k)| k)
+                .collect::<Vec<_>>(),
+            vec!["save", "save", "delete", "save"],
+            "in the order made"
+        );
+    }
+
+    /// The sender wakes when the network comes back — once per return, not on every report of
+    /// "still online" — and when told to by the window.
+    #[test]
+    fn the_sender_wakes_when_the_network_comes_back() {
+        let mut was = None;
+        assert!(came_online(&mut was, nm_online(70)), "first word: online");
+        assert!(
+            !came_online(&mut was, nm_online(70)),
+            "still online: no new wake"
+        );
+        assert!(!came_online(&mut was, nm_online(20)), "gone offline");
+        assert!(!came_online(&mut was, nm_online(40)), "connecting");
+        assert!(came_online(&mut was, nm_online(60)), "back");
+        let mut was = None;
+        assert!(!came_online(&mut was, connman_online("idle")));
+        assert!(came_online(&mut was, connman_online("ready")));
+        assert!(!came_online(&mut was, connman_online("online")));
+        assert!(!came_online(&mut was, connman_online("offline")));
+        assert!(came_online(&mut was, connman_online("online")));
+
+        // `outbox_wake` (the window's `online` event) and every trigger above end in a kick,
+        // which wakes a sender waiting out its backoff at once.
+        tauri::async_runtime::block_on(async {
+            outbox_wake();
+            tokio::time::timeout(Duration::from_secs(1), WAKE.notified())
+                .await
+                .expect("the sender is woken");
         });
     }
 

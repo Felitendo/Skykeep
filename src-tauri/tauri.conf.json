@@ -73,7 +73,13 @@
       "deb": {
         "depends": [
           "libsecret-1-0",
-          "libheif1"
+          "libheif1",
+          "libheif-plugin-libde265",
+          "libgstreamer1.0-0",
+          "libgstreamer-plugins-base1.0-0",
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-plugins-good",
+          "gstreamer1.0-libav"
         ],
         "desktopTemplate": "../packaging/io.github.yashwanthkamireddi.Skykeep.desktop.in",
         "files": {
@@ -92,7 +98,11 @@
       "rpm": {
         "depends": [
           "libsecret",
-          "libheif"
+          "libheif",
+          "gstreamer1",
+          "gstreamer1-plugins-base",
+          "gstreamer1-plugins-good",
+          "gstreamer1-plugin-libav"
         ],
         "desktopTemplate": "../packaging/io.github.yashwanthkamireddi.Skykeep.desktop.in",
         "files": {
@@ -109,7 +119,7 @@
         }
       },
       "appimage": {
-        "bundleMediaFramework": false
+        "bundleMediaFramework": true
       }
     }
   },

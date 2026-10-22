@@ -136,6 +136,14 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
       return false;
     }
   });
+  /** Folding applies to a wide window only; a narrow one has its sidebar whole, over the content. */
+  const [wide, setWide] = useState(() => window.matchMedia("(min-width: 901px)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 901px)");
+    const on = () => setWide(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
   const content = useRef<HTMLElement | null>(null);
   /** Where the content began before a fold, for it to slide from. */
   const slideFrom = useRef<number | null>(null);
@@ -267,9 +275,18 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
 
   useEffect(() => {
     if (!sidebarOpen) return undefined;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSidebarOpen(false);
+    // Escape a field or menu inside it answered for itself (the search steps back first) is not
+    // this one's.
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && setSidebarOpen(false);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      // Put away with the focus inside it: back to the button that brings it out, rather than
+      // left in a sidebar no longer drawn.
+      if (document.activeElement?.closest(".sidebar") && window.matchMedia("(max-width: 900px)").matches) {
+        document.querySelector<HTMLElement>(".sidebar-toggle")?.focus({ preventScroll: true });
+      }
+    };
   }, [sidebarOpen]);
 
   // Clicking a reminder's alert brings the window back on Reminders.
@@ -358,7 +375,16 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
               <PanelLeft size={16} strokeWidth={2} aria-hidden="true" />
             </button>
           </div>
-          {!rail && <GlobalSearch available={services} onOpen={(screen) => choose(screen)} />}
+          {/* Folded, a magnifier stands in for the field; Ctrl+K reaches it either way, and in a
+              narrow window brings the sidebar out to it. */}
+          <GlobalSearch
+            available={services}
+            folded={rail && wide}
+            onSummon={() => {
+              if (window.matchMedia("(max-width: 900px)").matches) setSidebarOpen(true);
+            }}
+            onOpen={(screen) => choose(screen)}
+          />
           {services.map(item)}
           {!ready && !error && <StatusLine tone="pending">Loading…</StatusLine>}
           {error && <StatusLine tone="error">{error}</StatusLine>}

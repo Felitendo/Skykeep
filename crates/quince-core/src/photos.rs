@@ -167,7 +167,7 @@ const COLUMNS: &str = "id, master, taken_at, added_at, kind, width, height, dura
 /// A burst shows as its chosen photo, as Photos shows it (Apple's library says as much: its
 /// `burstsExcludedFromPhotosCount` is every burst's photos less one each). A burst whose chosen
 /// photo is not in the library shows whole rather than not at all.
-const ONE_PER_BURST: &str =
+pub(crate) const ONE_PER_BURST: &str =
     "(burst IS NULL OR burst_pick = 1 OR NOT EXISTS (SELECT 1 FROM photos k \
                              WHERE k.burst = photos.burst AND k.burst_pick = 1 AND k.deleted = 0))";
 

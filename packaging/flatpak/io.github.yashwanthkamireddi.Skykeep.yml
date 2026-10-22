@@ -1,6 +1,7 @@
 # Skykeep as a Flatpak, for Flathub.
 #
-# NOT YET BUILT: the development machine has no flatpak-builder, so this manifest has never run.
+# Built in CI by hand (.github/workflows/flatpak.yml, Actions → Flatpak → Run workflow), which
+# needs nothing installed locally; until that has passed once, treat it as unbuilt.
 # packaging/flatpak/README.md lists what was checked, what was not, and the open questions.
 #
 # The Tauri identifier (src-tauri/tauri.conf.json) is this app ID, so the window's Wayland app

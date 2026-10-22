@@ -25,7 +25,7 @@
   min-height: 0;
   overflow-y: auto;
   padding: 2px 12px 12px;
-  border-right: 1px solid var(--separator);
+  border-right: var(--hairline) solid var(--separator);
 }
 /* Apple's folders are drawn in the accent, which in Notes is its yellow — here, quince gold. */
 .notes-folder-glyph { flex: none; color: var(--accent); }
@@ -38,7 +38,7 @@
   min-width: 0;
   min-height: 0;
   padding: 0 10px;
-  border-right: 1px solid var(--separator);
+  border-right: var(--hairline) solid var(--separator);
 }
 
 .notes-folder-picker { display: none; margin-bottom: 8px; }
@@ -84,7 +84,7 @@
 .note-rows:focus-within .note-row[aria-current="true"] { background: var(--accent); color: var(--on-accent); }
 .note-rows:focus-within .note-row[aria-current="true"] .note-row-when,
 .note-rows:focus-within .note-row[aria-current="true"] .note-row-snippet { color: var(--on-accent-2); }
-.note-row:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
+.note-row:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
 .note-row-title {
   display: flex;
   align-items: center;
@@ -158,7 +158,7 @@
 .note-editor .note-title {
   margin: 0 0 6px;
   overflow: hidden;
-  font-size: 24px;
+  font-size: 1.5rem;
   font-weight: 700;
   letter-spacing: -0.015em;
   line-height: 1.25;
@@ -202,10 +202,10 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .note-read { cursor: text; outline: none; }
 .note-formatted { font-size: var(--t-15); line-height: 1.55; overflow-wrap: anywhere; }
 .note-formatted p, .note-formatted h2, .note-formatted h3, .note-formatted h4, .note-formatted pre { margin: 0; }
-.nf-title { font-size: 24px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; margin-top: 6px !important; }
-.nf-heading { font-size: 19px; font-weight: 700; line-height: 1.35; margin-top: 4px !important; }
-.nf-subheading { font-size: 16px; font-weight: 600; }
-.nf-mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 13.5px; white-space: pre-wrap; }
+.nf-title { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; margin-top: 6px !important; }
+.nf-heading { font-size: 1.1875rem; font-weight: 700; line-height: 1.35; margin-top: 4px !important; }
+.nf-subheading { font-size: 1rem; font-weight: 600; }
+.nf-mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 0.8438rem; white-space: pre-wrap; }
 .nf-body { white-space: pre-wrap; min-height: 1.55em; }
 .nf-item { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); align-items: baseline; white-space: pre-wrap; }
 .nf-mark { color: var(--text-2); text-align: left; font-variant-numeric: tabular-nums; }
@@ -221,7 +221,7 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-check.is-done > span:last-child { color: var(--text-3); }
 .note-formatted a { color: var(--accent-strong); text-decoration: underline; }
 /* Aa, as Notes writes it on its toolbar. */
-.notes-aa { font-weight: 600; font-size: 14px; letter-spacing: -0.02em; padding-inline: 8px; }
+.notes-aa { font-weight: 600; font-size: 0.875rem; letter-spacing: -0.02em; padding-inline: 8px; }
 
 /* ---- the editor ------------------------------------------------------------------
    One document, edited formatted, as Notes edits it. Sizes after Notes on the Mac: title
@@ -249,14 +249,14 @@ textarea.note-title::placeholder { color: var(--text-3); }
   content: attr(data-placeholder);
   content: "New Note";
   position: absolute; inset-inline-start: 0; top: 0;
-  color: var(--text-3); pointer-events: none; font-size: 24px; font-weight: 700;
+  color: var(--text-3); pointer-events: none; font-size: 1.5rem; font-weight: 700;
 }
 /* The title, explicit or — Notes' own rule — the first line when it has no style. */
 .note-rich .nf-p[data-style="0"],
-.note-rich .nf-p:first-child[data-style="none"] { font-size: 24px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; margin-bottom: 6px; }
-.note-rich .nf-p[data-style="1"] { font-size: 19px; font-weight: 700; line-height: 1.35; margin-top: 4px; }
-.note-rich .nf-p[data-style="2"] { font-size: 16px; font-weight: 600; }
-.note-rich .nf-p[data-style="4"] { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 13.5px; }
+.note-rich .nf-p:first-child[data-style="none"] { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; margin-bottom: 6px; }
+.note-rich .nf-p[data-style="1"] { font-size: 1.1875rem; font-weight: 700; line-height: 1.35; margin-top: 4px; }
+.note-rich .nf-p[data-style="2"] { font-size: 1rem; font-weight: 600; }
+.note-rich .nf-p[data-style="4"] { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 0.8438rem; }
 /* Lists: the mark sits in a gutter of its own, so wrapped lines line up with the text. */
 .note-rich .nf-p[data-style="100"],
 .note-rich .nf-p[data-style="101"],
@@ -316,10 +316,10 @@ textarea.note-title::placeholder { color: var(--text-3); }
   box-shadow: var(--glass-float);
   color: var(--text);
 }
-.fp-marks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 0 4px 8px; border-bottom: 1px solid var(--separator); margin-bottom: 6px; }
+.fp-marks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 0 4px 8px; border-bottom: var(--hairline) solid var(--separator); margin-bottom: 6px; }
 .fp-mark {
   height: 30px; border: 0; border-radius: 8px; background: none; box-shadow: none;
-  color: var(--text); font: inherit; font-size: 16px; cursor: default;
+  color: var(--text); font: inherit; font-size: 1rem; cursor: default;
 }
 .fp-mark:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .fp-mark[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-strong); }
@@ -328,20 +328,20 @@ textarea.note-title::placeholder { color: var(--text-3); }
 /* Notes' colours as the phone shows them: a dot each, the chosen one ringed. */
 .fp-colours {
   display: flex; justify-content: space-between; padding: 2px 8px 10px; margin-bottom: 6px;
-  border-bottom: 1px solid var(--separator);
+  border-bottom: var(--hairline) solid var(--separator);
 }
 .fp-colour {
   width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; cursor: default;
   background: var(--swatch); box-shadow: none;
 }
-.fp-colour[aria-checked="true"] { box-shadow: 0 0 0 2px var(--glass-thick, var(--bg)), 0 0 0 3.5px var(--swatch, var(--text-3)); }
-.fp-colour:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.fp-colour[aria-checked="true"] { box-shadow: 0 0 0 2px var(--glass-thick, var(--bg)), 0 0 0 4px var(--swatch, var(--text-3)); }
+.fp-colour:focus-visible { outline: var(--focus-ring); outline-offset: 3px; }
 /* None: a hairline ring with a stroke through it. */
 .fp-colour.is-none {
   background: linear-gradient(135deg, transparent calc(50% - 0.75px), var(--text-3) calc(50% - 0.75px) calc(50% + 0.75px), transparent calc(50% + 0.75px));
   box-shadow: inset 0 0 0 1.5px var(--text-3);
 }
-.fp-colour.is-none[aria-checked="true"] { box-shadow: inset 0 0 0 1.5px var(--text-3), 0 0 0 2px var(--glass-thick, var(--bg)), 0 0 0 3.5px var(--text-3); }
+.fp-colour.is-none[aria-checked="true"] { box-shadow: inset 0 0 0 1.5px var(--text-3), 0 0 0 2px var(--glass-thick, var(--bg)), 0 0 0 4px var(--text-3); }
 .fp-styles { display: flex; flex-direction: column; }
 .fp-style {
   display: grid; grid-template-columns: 22px auto 1fr; align-items: center; column-gap: 2px;
@@ -349,12 +349,13 @@ textarea.note-title::placeholder { color: var(--text-3); }
   background: none; box-shadow: none; color: var(--text); font: inherit; font-size: var(--t-15); text-align: start; cursor: default;
 }
 .fp-style:hover, .fp-style:focus-visible { background: color-mix(in srgb, var(--text) 7%, transparent); outline: none; }
+.fp-style:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 .fp-style:not(:has(.fp-list-mark)) > span:last-child { grid-column: 2 / 4; }
 .fp-check { display: grid; place-items: center; color: var(--text); }
-.fp-title { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
-.fp-heading { font-size: 18px; font-weight: 700; }
-.fp-subheading { font-size: 15px; font-weight: 600; }
-.fp-mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 14px; }
+.fp-title { font-size: 1.375rem; font-weight: 700; letter-spacing: -0.01em; }
+.fp-heading { font-size: 1.125rem; font-weight: 700; }
+.fp-subheading { font-size: 0.9375rem; font-weight: 600; }
+.fp-mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-size: 0.875rem; }
 .fp-list-mark { width: 16px; color: var(--text-2); }
 
 /* A table in a note, as Notes draws one: hairline cells, the text set as the note's. */
@@ -367,11 +368,11 @@ textarea.note-title::placeholder { color: var(--text-3); }
 }
 .nf-table {
   width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0;
-  border: 1px solid var(--table-line); border-radius: 8px; overflow: hidden;
+  border: var(--hairline) solid var(--table-line); border-radius: 8px; overflow: hidden;
 }
 .nf-table td {
   min-width: 96px; padding: 8px 10px; height: 2.6em; line-height: 1.4;
-  border-right: 1px solid var(--table-line); border-bottom: 1px solid var(--table-line);
+  border-right: var(--hairline) solid var(--table-line); border-bottom: var(--hairline) solid var(--table-line);
   vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .nf-table tr > td:last-child { border-right: none; }
@@ -401,12 +402,12 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-image { display: block; max-width: min(100%, 640px); height: auto; border-radius: 10px; cursor: zoom-in; background: color-mix(in srgb, var(--text) 6%, transparent); }
 .nf-doc { display: inline-flex; flex-direction: column; gap: 6px; padding: 8px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); font: inherit; cursor: pointer; text-align: left; }
 .nf-doc:hover { background: color-mix(in srgb, var(--text) 9%, transparent); }
-.nf-doc-preview { display: block; width: 180px; max-width: 100%; height: auto; border-radius: 6px; box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--text) 16%, transparent); background: #fff; }
+.nf-doc-preview { display: block; width: 180px; max-width: 100%; height: auto; border-radius: 6px; box-shadow: 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 16%, transparent); background: #fff; }
 .nf-doc.is-video .nf-doc-preview { background: #000; }
 .nf-doc-name { font-size: var(--t-11); color: var(--text-2); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nf-file { display: inline-flex; align-items: center; gap: 10px; max-width: 360px; padding: 8px 12px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); font: inherit; font-size: var(--t-13); cursor: pointer; }
 .nf-file:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
-.nf-file-glyph { flex: none; display: grid; place-items: center; min-width: 30px; height: 30px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-size: 9px; font-weight: 700; letter-spacing: 0.02em; }
+.nf-file-glyph { flex: none; display: grid; place-items: center; min-width: 30px; height: 30px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-size: 0.5625rem; font-weight: 700; letter-spacing: 0.02em; }
 .nf-file.is-audio .nf-file-glyph, .nf-file.is-video .nf-file-glyph { font-size: 13px; }
 .nf-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nf-file-meta { flex: none; color: var(--text-3); font-size: var(--t-11); }
@@ -493,7 +494,7 @@ textarea.note-title::placeholder { color: var(--text-3); }
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent-strong);
 }
-.note-lock-title { margin: 0; color: var(--text); font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.note-lock-title { margin: 0; color: var(--text); font-size: 1.0625rem; font-weight: 650; letter-spacing: -0.01em; }
 .note-lock-lede { margin: 0 0 12px; color: var(--text-2); font-size: var(--t-13); }
 .note-lock-form { display: flex; flex-direction: column; gap: 8px; width: min(100%, 248px); }
 .note-lock-field { width: 100%; text-align: center; }

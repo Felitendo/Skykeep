@@ -283,15 +283,15 @@ fn refusal(path: &str, status: reqwest::StatusCode, body: &str) -> Error {
     quiet!("calendar: a request was refused ({status})");
     match status.as_u16() {
         409 | 412 => Error::Conflict,
-        400 | 422 => Error::Refused("iCloud didn't accept that change, so nothing was saved.".into()),
+        400 | 422 => {
+            Error::Refused("iCloud didn't accept that change, so nothing was saved.".into())
+        }
         401 | 403 => Error::Refused(
             "iCloud won't let this calendar be changed from here — it may be read-only.".into(),
         ),
-        429 => Error::Refused("iCloud asked Skykeep to slow down. Try again in a minute.".into()),
-        500..=599 => Error::Refused(
-            "iCloud's calendar isn't answering right now. Nothing was changed — try again in a moment."
-                .into(),
-        ),
+        // Not a refusal of the change: Apple can't take it now. A change waiting to go is kept
+        // and sent again later (the outbox), never held as turned down.
+        429 | 500..=599 => Error::Busy,
         code => Error::Refused(format!(
             "iCloud's calendar turned that down (status {code}). Nothing was changed."
         )),
@@ -456,6 +456,30 @@ pub fn merge_edit(base: &Event, mine: &Event, theirs: &Event) -> Event {
         notes: pick(&base.notes, &mine.notes, &theirs.notes),
         etag: theirs.etag.clone(),
     }
+}
+
+/// Of the events Apple answered for `known`, the one that is it as Apple holds it now.
+///
+/// An event is found by its id. One occurrence of a repeating event may come back as itself
+/// (an exception made to it, or the day asked for) or only as its series; read through its
+/// series, it is the series' fields on this occurrence's own day and times — the series' first
+/// date is not this day's, and taking it would move the occurrence there.
+#[must_use]
+pub fn theirs_for(known: &Event, found: Vec<Event>) -> Option<Event> {
+    if let Some(exact) = found.iter().find(|e| e.guid == known.guid) {
+        return Some(exact.clone());
+    }
+    if !is_occurrence(&known.guid) {
+        return found.into_iter().next();
+    }
+    let series = series_of(&known.guid);
+    let mut theirs = found.into_iter().find(|e| series_of(&e.guid) == series)?;
+    theirs.guid.clone_from(&known.guid);
+    theirs.starts_at = known.starts_at;
+    theirs.ends_at = known.ends_at;
+    theirs.all_day = known.all_day;
+    theirs.timezone.clone_from(&known.timezone);
+    Some(theirs)
 }
 
 /// Apple's calendar service.
@@ -890,10 +914,15 @@ impl<'a> CalendarClient<'a> {
         let Some(body) = self.event_detail_body(known, &day).await? else {
             return Ok(None);
         };
-        match event_of(&body) {
-            Some(found) => event_from(&found),
-            None => Ok(None),
-        }
+        let found: Vec<Event> = match body.get("Event") {
+            Some(Value::Array(all)) => all
+                .iter()
+                .filter_map(|e| event_from(e).ok().flatten())
+                .collect(),
+            Some(one @ Value::Object(_)) => event_from(one)?.into_iter().collect(),
+            _ => Vec::new(),
+        };
+        Ok(theirs_for(known, found))
     }
 
     /// A calendar's ctag as Apple holds it now, for a write retried after a refusal.
@@ -1895,6 +1924,229 @@ mod write_tests {
         let body: Value = serde_json::from_slice(&sent.body).unwrap();
         assert_eq!(body["Event"]["recurrenceException"], true);
         assert_eq!(body["Event"]["changeRecurring"], "this");
+    }
+
+    /// A conflict on one occurrence of a repeating event is settled, not refused: Apple's copy
+    /// of that day is read again — found through its series — this edit laid over it, and
+    /// saved once more on the occurrence's own path, its own day, against Apple's newest tags.
+    #[tokio::test]
+    async fn a_conflict_on_one_occurrence_is_read_again_and_merged() {
+        let server = MockServer::start().await;
+        let occurrence = "SERIES__20260914T040000Z";
+        // Apple reads the day back as its series, changed on a phone since: a new room.
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/eventdetail/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Event": [{
+                    "guid": "SERIES",
+                    "pGuid": "work",
+                    "title": "Dentist",
+                    "location": "Room 2",
+                    "tz": "Asia/Kolkata",
+                    "startDate": [20260901, 2026, 9, 1, 9, 30, 570],
+                    "endDate": [20260901, 2026, 9, 1, 10, 30, 630],
+                    "etag": "v2",
+                    "recurrenceMaster": true
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/collectiondetail/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Collection": [{ "guid": "work", "ctag": "ctag-2" }]
+            })))
+            .mount(&server)
+            .await;
+        // The first save is refused: the event moved on at Apple.
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(412))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Event": [{
+                    "guid": occurrence,
+                    "pGuid": "work",
+                    "title": "Dentist — bring forms",
+                    "location": "Room 2",
+                    "tz": "Asia/Kolkata",
+                    "startDate": [20260914, 2026, 9, 14, 9, 30, 570],
+                    "endDate": [20260914, 2026, 9, 14, 10, 30, 630],
+                    "etag": "v3"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let mut base = event();
+        base.guid = occurrence.into();
+        base.location = Some("Room 1".into());
+        base.etag = Some("v1".into());
+        let mut mine = base.clone();
+        mine.title = "Dentist — bring forms".into();
+        let http = reqwest::Client::new();
+        let kept = crate::sync::save_event_merging(
+            &http,
+            &server.uri(),
+            vec![],
+            Some("ctag-1"),
+            &mine,
+            Some(&base),
+            None,
+            None,
+            Some(Scope::This),
+            None,
+        )
+        .await
+        .expect("merged and saved, not refused");
+        assert_eq!(kept[0].etag.as_deref(), Some("v3"));
+
+        let writes: Vec<Request> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.method == reqwest::Method::POST)
+            .collect();
+        assert_eq!(writes.len(), 2, "sent once more, after the merge");
+        let again = &writes[1];
+        assert!(
+            again.url.path().ends_with(&format!("/{occurrence}/this")),
+            "{}",
+            again.url.path()
+        );
+        let body: Value = serde_json::from_slice(&again.body).unwrap();
+        assert_eq!(
+            body["Event"]["title"], "Dentist — bring forms",
+            "this edit's field is this edit's"
+        );
+        assert_eq!(
+            body["Event"]["location"], "Room 2",
+            "theirs kept where this edit left it"
+        );
+        assert_eq!(
+            body["Event"]["etag"], "v2",
+            "against Apple's newest version"
+        );
+        assert_eq!(
+            body["Event"]["startDate"],
+            serde_json::json!([20260914, 2026, 9, 14, 9, 30, 570]),
+            "on this occurrence's own day, not the series' first"
+        );
+        assert_eq!(body["ClientState"]["Collection"][0]["ctag"], "ctag-2");
+    }
+
+    /// A create sent again after Apple took the first — the answer lost, the app closed —
+    /// merges against itself: Apple's copy goes back as it is, one event, not two.
+    #[tokio::test]
+    async fn a_create_sent_twice_is_one_event() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/eventdetail/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Event": [{
+                    "guid": "E-1", "pGuid": "work", "title": "Dentist", "location": "Gachibowli",
+                    "tz": "Asia/Kolkata",
+                    "startDate": [20260914, 2026, 9, 14, 9, 30, 570],
+                    "endDate": [20260914, 2026, 9, 14, 10, 30, 630],
+                    "etag": "made"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r".*/ca/collectiondetail/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "Collection": [{ "guid": "work", "ctag": "c2" }] }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(412))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/ca/events/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Event": [{
+                    "guid": "E-1", "pGuid": "work", "title": "Dentist", "tz": "Asia/Kolkata",
+                    "startDate": [20260914, 2026, 9, 14, 9, 30, 570],
+                    "endDate": [20260914, 2026, 9, 14, 10, 30, 630],
+                    "etag": "same"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let made = event();
+        let http = reqwest::Client::new();
+        crate::sync::save_event_merging(
+            &http,
+            &server.uri(),
+            vec![],
+            None,
+            &made,
+            Some(&made),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let writes: Vec<Request> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.method == reqwest::Method::POST)
+            .collect();
+        assert_eq!(writes.len(), 2);
+        assert!(
+            writes.iter().all(|w| w.url.path() == "/ca/events/work/E-1"),
+            "one event, by its own id"
+        );
+        let body: Value = serde_json::from_slice(&writes[1].body).unwrap();
+        assert_eq!(
+            body["Event"]["etag"], "made",
+            "written over Apple's copy as an edit"
+        );
+        assert_eq!(body["Event"]["title"], "Dentist");
+    }
+
+    /// Read through its series, an occurrence keeps its own day; found as itself, it is itself.
+    #[test]
+    fn an_occurrence_is_found_as_itself_or_through_its_series() {
+        let mut known = event();
+        known.guid = "S__20260914T040000Z".into();
+        let mut series = event();
+        series.guid = "S".into();
+        series.starts_at -= 13 * 86_400;
+        series.ends_at -= 13 * 86_400;
+        series.title = "Theirs".into();
+        let via_series = theirs_for(&known, vec![series.clone()]).unwrap();
+        assert_eq!(via_series.guid, known.guid);
+        assert_eq!(via_series.starts_at, known.starts_at);
+        assert_eq!(via_series.title, "Theirs");
+        let mut itself = series.clone();
+        itself.guid.clone_from(&known.guid);
+        itself.starts_at = known.starts_at + 60;
+        assert_eq!(
+            theirs_for(&known, vec![series, itself.clone()]),
+            Some(itself)
+        );
+        let mut other = event();
+        other.guid = "OTHER".into();
+        assert_eq!(
+            theirs_for(&known, vec![other]),
+            None,
+            "another event is not it"
+        );
     }
 
     /// "All future events" goes to the occurrence's `/future` path with its own dates —

@@ -928,11 +928,24 @@ pub async fn create_cloudkit(
     body: &str,
     template: Option<&str>,
 ) -> Result<String> {
-    if body.trim().is_empty() {
-        return Err(Error::Protocol("a note needs something in it".into()));
-    }
+    let record_name = new_note_name();
+    create_cloudkit_named(
+        http,
+        ckdatabasews_root,
+        params,
+        &record_name,
+        folder_guid,
+        body,
+        template,
+    )
+    .await?;
+    Ok(record_name)
+}
 
-    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+/// A new note's record name, chosen here before anything is sent — so a note made offline is
+/// one note, under one name, however many times it is sent.
+#[must_use]
+pub fn new_note_name() -> String {
     // Apple names a note record with a bare uppercase UUID and nothing else. Every note on a
     // real account is shaped that way; the four that were not are the ones this app made.
     //
@@ -942,7 +955,30 @@ pub async fn create_cloudkit(
     // produced `Note_UserSpecific::_<account>/Note/<uuid>`, which Apple rejected outright: it
     // is why deleting a note written here used to need a forced delete, and why a note made
     // here was never quite the same kind of thing as a note made on the phone.
-    let record_name = uuid::Uuid::new_v4().to_string().to_uppercase();
+    uuid::Uuid::new_v4().to_string().to_uppercase()
+}
+
+/// [`create_cloudkit`] under a name chosen beforehand, exactly once: sent again — the answer
+/// lost, the app closed before it heard, a queue replayed — a note Apple already holds under
+/// that name is left as it is, not made twice.
+pub async fn create_cloudkit_named(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: Vec<(String, String)>,
+    record_name: &str,
+    folder_guid: Option<&str>,
+    body: &str,
+    template: Option<&str>,
+) -> Result<()> {
+    if body.trim().is_empty() {
+        return Err(Error::Protocol("a note needs something in it".into()));
+    }
+    let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
+    let held = client.lookup_record(ZONE, record_name).await?;
+    if held.is_some_and(|r| r.get("recordName").and_then(Value::as_str) == Some(record_name)) {
+        // Made already, by an earlier send of this same create.
+        return Ok(());
+    }
     let stamp = now_millis();
     let (title, snippet) = title_and_snippet(body);
 
@@ -986,9 +1022,9 @@ pub async fn create_cloudkit(
         }
     }
     client
-        .create_record(ZONE, &record_name, "Note", fields)
+        .create_record(ZONE, record_name, "Note", fields)
         .await?;
-    Ok(record_name)
+    Ok(())
 }
 
 /// A note's text in a document Apple's own reader will show.
@@ -2033,6 +2069,43 @@ mod write_tests {
             .as_deref(),
             Some("Packing")
         );
+    }
+
+    /// A create sent again under the same name — the first answer lost — makes nothing more.
+    #[tokio::test]
+    async fn a_named_create_sent_twice_makes_one_note() {
+        let server = server("Packing").await;
+        create_cloudkit_named(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "Note/1",
+            None,
+            "Packing",
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            operations(&server).await.is_empty(),
+            "Apple holds it already: nothing is written"
+        );
+        // Under a name Apple does not hold, it is made.
+        create_cloudkit_named(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "NEW-NAME",
+            None,
+            "Packing",
+            None,
+        )
+        .await
+        .unwrap();
+        let ops = operations(&server).await;
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0]["operationType"], "create");
+        assert_eq!(ops[0]["record"]["recordName"], "NEW-NAME");
     }
 
     /// The operations sent to Apple, every one.

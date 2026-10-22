@@ -1,146 +1,183 @@
-// Accessibility audit with axe-core — the same engine Lighthouse and Deque use.
-// Every auth screen, in both themes, at WCAG 2.1 AA.
-import { engine as chromium } from "./engine.mjs";
+// Accessibility audit with axe-core — the same engine Lighthouse and Deque use — at WCAG 2.2 AA.
+// Every screen and every sheet, in light, dark, Increase Contrast and Windows' High Contrast
+// (forced colours),
+// with the sample library the other suites draw from. Passes with no serious or critical
+// violation; moderate and minor ones are listed, not failed.
+//
+//   node .uiverify/a11y.mjs                 Chromium (WebView2's engine)
+//   ENGINE=webkit node .uiverify/a11y.mjs   WebKit (WebKitGTK's engine) — no forced colours:
+//                                           forced colours is a Windows mode, and Playwright
+//                                           emulates it in Chromium alone
+//   BASE=http://localhost:4232 ONLY=drive   another server, or only the scenarios matching
+import { engine as browserEngine, engineName } from "./engine.mjs";
+import { SERVICES, installStub, openScreen } from "./stub.mjs";
 import AxeBuilder from "@axe-core/playwright";
 
-const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdeviceservice",
-                  "cksharews","contacts","contactsweb","developerapi","docws","drivews",
-                  "findme","geows","iwmb","iworkexportws","iworkthumbnailws","keyvalue",
-                  "mail","mcc","mccgateway","mpp","notes","photos","photosupload",
-                  "premiummailsettings","push","reminders","settings","sharedlibrary",
-                  "sharedstreams","ubiquity","uploadimagews"];
-
-function installStub({ screen, services, twoFactor, driveItems = [] }) {
-  window.__TAURI_INTERNALS__ = {
-    transformCallback: (cb) => cb,
-    invoke: async (cmd) => {
-      switch (cmd) {
-        case "auth_status":
-          return { hasStoredSession: screen === "library", signedIn: screen === "library" };
-        case "auth_resume": return screen === "library" ? "library" : "signin";
-        case "auth_sign_in": return screen === "code" ? "needs_two_factor" : "complete";
-        case "auth_two_factor_options": return twoFactor;
-        case "account_services": return services;
-        case "calendar_events": return [];
-        case "calendar_list": return [];
-        case "calendar_last_synced": return Math.floor(Date.now() / 1000);
-        case "event_save": return "E-new";
-        case "event_delete": return null;
-        case "calendar_sync": return { calendars: 0, events: 0 };
-        case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
-        case "reminder_lists": return [];
-        case "reminders_in": return [];
-        case "reminders_due_between": return [];
-        case "reminder_create": return null;
-        case "reminder_delete": return null;
-        case "reminder_set_done": return null;
-        case "reminder_set_repeat": return null;
-        case "reminder_edit": return null;
-        case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
-          return null;
-        case "reminders_smart": return [];
-        case "note_folders": return [];
-        case "note_save": case "note_delete": case "note_move": return null;
-        case "note_create": return "Note/new";
-        case "notes_in": return [];
-        case "contact_save": return "C-new";
-        case "contact_delete": return null;
-        case "contacts_list": return [];
-        case "contacts_last_synced": return Math.floor(Date.now() / 1000);
-        case "contacts_sync": return 0;
-        case "drive_children": return driveItems;
-        case "drive_sync_folder": return 0;
-        case "drive_download": return "/home/user/Downloads/file.pdf";
-        case "drive_create_folder": case "drive_rename": case "drive_delete": case "drive_move": return null;
-        case "drive_item": return null;
-        // One refresh covers every service, so there is one command to stub rather than
-        // a pair per screen.
-        case "sync_all":
-        case "sync_status":
-          return {
-            services: [
-              { service: "calendar", label: "Calendar", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 120 },
-              { service: "reminders", label: "Reminders", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 60 },
-              { service: "notes", label: "Notes", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 90 },
-              { service: "contacts", label: "Contacts", outcome: "ok", detail: null, lastSyncedAt: Math.floor(Date.now() / 1000) - 300 },
-            ],
-            asOf: Math.floor(Date.now() / 1000) - 300,
-            tookMs: 40,
-          };
-        // The event plugin is how a finished refresh reaches the screens. Nothing emits in
-        // a plain browser, so listening is a no-op that hands back an unsubscribe id.
-        case "plugin:event|listen":
-          return 0;
-        case "plugin:event|unlisten":
-          return null;
-        default: return null;
-      }
-    },
-  };
-}
-
+const BASE = process.env.BASE ?? "http://localhost:4173";
+const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY, "i") : null;
 const TWO_FACTOR = { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+91 ••••• ••318" }], tooManyCodesSent: false };
+const FIXTURES = { calendarFixture: true, notesFixture: true, contactsFixture: true, driveFixture: true, remindersFixture: true };
 
-const screens = [
-  { name: "sign-in", screen: "signin" },
-  { name: "code",    screen: "code", act: async (p) => {
+const settle = (p, ms = 300) => p.waitForTimeout(ms);
+const open = (name) => async (p) => { await openScreen(p, name); await settle(p, 500); };
+const then = (...steps) => async (p) => { for (const s of steps) await s(p); };
+
+/** Each: what it is, where it starts, how to get there, and what must be on screen when it is. */
+const scenarios = [
+  { name: "sign-in", screen: "signin", ready: ".signin, form" },
+  { name: "code", screen: "code", ready: ".code", act: async (p) => {
       await p.fill('input[aria-label="Apple ID"]', "you@icloud.com");
       await p.fill('input[aria-label="Password"]', "secret");
       await p.click('button[type="submit"]');
-      await p.waitForSelector(".code");
     } },
-  { name: "library", screen: "library", act: async (p) => {
-      await p.waitForSelector(".sidebar .nav-item");
-    } },
-  { name: "drive-move", screen: "library", driveItems: [
-      { drivewsid: "FOLDER::a", parentId: null, name: "Downloads", extension: null,
-        kind: "FOLDER", size: null, childCount: 3, createdAt: 1785000000,
-        modifiedAt: 1788000000, etag: null },
-    ], act: async (p) => {
-      await p.click('.nav-item:has-text("Drive")');
-      await p.waitForSelector(".drive-row-hit");
-      await p.hover(".drive-row.is-folder");
-      await p.click('.drive-row.is-folder .drive-action[aria-label^="Actions for"]');
+  { name: "calendar month", act: open("Calendar"), ready: ".cx" },
+  { name: "calendar event", ready: ".cx-popover", act: then(open("Calendar"), async (p) => {
+      await p.keyboard.press("Control+2");
+      await settle(p, 400);
+      await p.locator(".cx-block", { hasText: "Dentist" }).first().click();
+    }) },
+  { name: "notes", act: open("Notes"), ready: ".notes" },
+  { name: "notes format", ready: ".format-panel", act: then(open("Notes"), async (p) => {
+      await p.locator(".note-row").first().click();
+      await settle(p);
+      await p.getByRole("button", { name: "Format", exact: true }).click();
+    }) },
+  { name: "reminders", act: open("Reminders"), ready: ".rx" },
+  { name: "reminders list info", ready: ".rx-info", act: then(open("Reminders"), async (p) => {
+      await p.locator(".rx-list", { hasText: "Daily" }).hover();
+      await p.getByRole("button", { name: "Actions for Daily" }).click();
+      await p.getByRole("menuitem", { name: "Show List Info" }).click();
+    }) },
+  { name: "contacts", act: open("Contacts"), ready: ".contacts" },
+  { name: "contacts menu", ready: '[role="menu"]', act: then(open("Contacts"), async (p) => {
+      await p.locator(".contact-row").first().click({ button: "right" });
+    }) },
+  { name: "drive", act: open("Drive"), ready: ".drive-row" },
+  { name: "drive info", ready: ".info-sheet", act: then(open("Drive"), async (p) => {
+      await p.locator(".drive-row", { hasText: "Semester Plan" }).hover();
+      await p.getByRole("button", { name: "Actions for Semester Plan.pdf" }).click();
+      await p.getByRole("menuitem", { name: "Get Info" }).click();
+    }) },
+  { name: "drive move", ready: ".modal-sheet", act: then(open("Drive"), async (p) => {
+      await p.locator(".drive-row", { hasText: "Semester Plan" }).hover();
+      await p.getByRole("button", { name: "Actions for Semester Plan.pdf" }).click();
       await p.getByRole("menuitem", { name: "Move to Folder" }).click();
-      await p.waitForSelector(".modal-sheet");
+    }) },
+  { name: "photos", act: open("Photos"), ready: ".px-tile" },
+  { name: "photos viewer", ready: ".px-viewer", act: then(open("Photos"), async (p) => {
+      await p.locator(".px-tile").nth(1).dblclick();
+    }) },
+  { name: "photos download", ready: '[role="dialog"]', act: then(open("Photos"), async (p) => {
+      await p.locator(".px-tile").nth(1).click({ button: "right" });
+      await p.locator(".row-menu").getByText("More Download Options").click();
+    }) },
+  { name: "photos jump", ready: ".px-jump", act: then(open("Photos"), async (p) => {
+      await p.locator('[aria-label="Go to a Month"]').click();
+    }) },
+  { name: "settings", ready: ".settings, [data-screen='settings']", act: async (p) => {
+      await p.locator(".sidebar-account").click();
+      await settle(p, 500);
+    } },
+  { name: "sign-out confirm", ready: '[role="alertdialog"]', act: async (p) => {
+      await p.locator(".sidebar-account").click();
+      await settle(p, 500);
+      await p.getByRole("button", { name: "Sign Out" }).click();
+    } },
+  { name: "search", ready: '[role="listbox"]', act: async (p) => {
+      await p.getByRole("combobox", { name: "Search everything" }).fill("a");
+      await settle(p, 500);
+    } },
+  { name: "sidebar rail", ready: ".is-rail", act: async (p) => {
+      await p.getByRole("button", { name: "Fold Sidebar to Icons" }).click();
+    } },
+  // The other calendar views, each a grid of its own.
+  { name: "calendar week", ready: ".cx", act: then(open("Calendar"), async (p) => { await p.keyboard.press("Control+2"); await settle(p, 400); }) },
+  { name: "calendar day", ready: ".cx", act: then(open("Calendar"), async (p) => { await p.keyboard.press("Control+1"); await settle(p, 400); }) },
+  { name: "calendar year", ready: ".cal-year", act: then(open("Calendar"), async (p) => { await p.keyboard.press("Control+4"); await settle(p, 400); }) },
+  // A list with the keys in it draws its selection in the accent: text on it must still read.
+  { name: "notes list focused", ready: ".note-rows:focus-within", act: then(open("Notes"), async (p) => {
+      await p.locator(".note-row").nth(1).click();
+      await p.locator(".note-row").nth(1).focus();
+    }) },
+  { name: "contacts list focused", ready: ".contact-rows.is-focused", act: then(open("Contacts"), async (p) => {
+      await p.locator(".contact-row").nth(1).click();
+      await p.locator(".contact-row").nth(1).focus();
+    }) },
+  { name: "drive selected", ready: ".drive-row.is-selected", act: then(open("Drive"), async (p) => {
+      await p.locator(".drive-row", { hasText: "Semester Plan" }).click();
+    }) },
+  { name: "photos selected", ready: '.px-tile[aria-selected="true"]', act: then(open("Photos"), async (p) => {
+      await p.locator(".px-tile").first().click();
+    }) },
+  // Search over Notes' gold, folded out of the rail, and in a narrow window.
+  { name: "search over notes", ready: '[role="listbox"]', act: then(open("Notes"), async (p) => {
+      await p.getByRole("combobox", { name: "Search everything" }).fill("a");
+      await settle(p, 500);
+    }) },
+  { name: "search folded", ready: ".gsearch-out", act: then(open("Notes"), async (p) => {
+      await p.getByRole("button", { name: "Fold Sidebar to Icons" }).click();
+      await p.keyboard.press("Control+k");
+      await p.keyboard.type("cur");
+      await settle(p, 500);
+    }) },
+  { name: "narrow sidebar", ready: ".is-sidebar-open", viewport: { width: 800, height: 700 }, act: async (p) => {
+      await p.getByRole("button", { name: "Show Sidebar" }).click();
+      await settle(p, 500);
     } },
 ];
 
-const browser = await chromium.launch();
-let total = 0;
+// "more" is Increase Contrast (prefers-contrast: more), where a11y.css firms the design up.
+const modes = engineName === "chromium" || engineName === "msedge"
+  ? ["light", "dark", "more-light", "more-dark", "forced-light", "forced-dark"]
+  : ["light", "dark", "more-light", "more-dark"];
 
-for (const theme of ["light", "dark"]) {
-  for (const { name, screen, act, driveItems } of screens) {
+const browser = await browserEngine.launch();
+let serious = 0;
+let minor = 0;
+let broken = 0;
+
+for (const mode of modes) {
+  for (const s of scenarios) {
+    if (ONLY && !ONLY.test(s.name)) continue;
+    const forced = mode.startsWith("forced");
     const ctx = await browser.newContext({
-      viewport: { width: 1040, height: 800 },
-      colorScheme: theme,
+      viewport: s.viewport ?? { width: 1280, height: 800 },
+      colorScheme: mode.endsWith("dark") ? "dark" : "light",
+      ...(forced ? { forcedColors: "active" } : {}),
+      ...(mode.startsWith("more") ? { contrast: "more" } : {}),
     });
-    await ctx.addInitScript(installStub, {
-      screen,
-      services: SERVICES,
-      twoFactor: TWO_FACTOR,
-      driveItems: driveItems ?? [],
-    });
+    await ctx.addInitScript(installStub, { screen: s.screen ?? "library", services: SERVICES, twoFactor: TWO_FACTOR, ...FIXTURES });
     const page = await ctx.newPage();
-    await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-    if (act) await act(page);
-    await page.waitForTimeout(400);
+    const label = `${s.name} (${mode})`.padEnd(32);
+    try {
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      if ((s.screen ?? "library") === "library") await page.waitForSelector(".sidebar .nav-item", { state: "attached" });
+      if (s.act) await s.act(page);
+      await page.locator(s.ready).first().waitFor({ state: "attached", timeout: 5000 });
+      await settle(page, 400);
+    } catch (e) {
+      broken++;
+      console.log(`${label} FAIL could not reach it: ${String(e.message).split("\n")[0]}`);
+      await ctx.close();
+      continue;
+    }
 
     const { violations } = await new AxeBuilder({ page })
-      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      // Under forced colours the system draws every colour, so the author's contrast is moot.
+      .disableRules(forced ? ["color-contrast"] : [])
       .analyze();
 
-    total += violations.length;
-    const label = `${name} (${theme})`.padEnd(18);
-    if (violations.length === 0) {
-      console.log(`${label} clean`);
-    } else {
-      console.log(`${label} ${violations.length} violation(s)`);
-      for (const v of violations) {
-        console.log(`   [${v.impact}] ${v.id} — ${v.help}`);
-        for (const node of v.nodes.slice(0, 3)) {
-          console.log(`      ${node.html.slice(0, 110)}`);
-        }
+    const bad = violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+    serious += bad.length;
+    minor += violations.length - bad.length;
+    console.log(violations.length === 0 ? `${label} clean`
+      : `${label} ${bad.length} serious/critical, ${violations.length - bad.length} other`);
+    for (const v of violations) {
+      console.log(`   [${v.impact}] ${v.id} — ${v.help}`);
+      for (const node of v.nodes.slice(0, 4)) {
+        console.log(`      ${node.target.join(" ")}  ${node.html.slice(0, 100)}`);
+        if (v.id === "color-contrast") console.log(`        ${node.any[0]?.message?.slice(0, 140)}`);
       }
     }
     await ctx.close();
@@ -148,5 +185,7 @@ for (const theme of ["light", "dark"]) {
 }
 
 await browser.close();
-console.log(total === 0 ? "\nPASS no WCAG 2.1 AA violations" : `\nFAIL ${total} violation(s)`);
-process.exitCode = total === 0 ? 0 : 1;
+console.log(serious + broken === 0
+  ? `\nPASS no serious or critical WCAG 2.2 AA violations (${engineName}; ${minor} lesser)`
+  : `\nFAIL ${serious} serious/critical violation(s), ${broken} scenario(s) unreachable (${engineName})`);
+process.exitCode = serious + broken === 0 ? 0 : 1;

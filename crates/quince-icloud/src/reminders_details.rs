@@ -60,7 +60,7 @@ fn gate(enabled: bool) -> Result<()> {
 }
 
 fn writes() -> Result<()> {
-    gate(REMINDER_DETAIL_WRITES || cfg!(test))
+    gate(REMINDER_DETAIL_WRITES || cfg!(test) || crate::supervised_live_test())
 }
 
 fn apple_now() -> f64 {

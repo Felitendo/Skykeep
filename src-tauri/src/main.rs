@@ -17,6 +17,7 @@ mod apps;
 mod contacts_cmds;
 mod cpu;
 mod export;
+mod grants;
 mod intake;
 mod login;
 mod migrate;
@@ -1110,19 +1111,109 @@ async fn auth_submit_sms_code(
     Ok(())
 }
 
+/// What one search found: the apps that found something, a few of each — or, for "Show All",
+/// the next rows of one — and the number the window gave the question, so an answer that
+/// arrives after a newer question's is known for stale and dropped.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Found {
+    seq: u64,
+    groups: Vec<quince_core::search::Group>,
+}
+
+/// The newest question asked: one still waiting for the reader when a newer one arrives is
+/// not run at all, so a burst of keystrokes costs one search, not one per key.
+static SEARCH_LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The library as search reads it: its own read-only connection, so searching never waits for
+/// the lock a sync pass holds over the one that writes. Opened on the first search and again
+/// whenever `library.db` is another file than it was (an account's library set aside for
+/// another's moves the files under it).
+static SEARCH_READER: std::sync::Mutex<Option<SearchReader>> = std::sync::Mutex::new(None);
+/// The reader's file, which file that was (see `file_identity`), and the reader.
+type SearchReader = (PathBuf, (u64, u64), Library);
+
+/// Runs `read` on the search reader; `None` when there is no reader to be had (the library
+/// is being moved, say), and the caller reads through the shared library instead.
+fn read_for_search<T>(
+    dir: &std::path::Path,
+    read: impl FnOnce(&Library) -> quince_core::Result<T>,
+) -> Option<Result<T, String>> {
+    let file = dir.join("library.db");
+    let id = std::fs::metadata(&file).ok().map(|m| file_identity(&m))?;
+    let mut reader = SEARCH_READER.lock().unwrap_or_else(|e| e.into_inner());
+    if !matches!(&*reader, Some((f, i, _)) if *f == file && *i == id) {
+        *reader = Library::open_reader(dir).ok().map(|l| (file, id, l));
+    }
+    let (_, _, library) = reader.as_ref()?;
+    let found = read(library).map_err(|e| e.to_string());
+    // Where an open file cannot be moved (Windows), it is not kept open between searches: an
+    // account's library set aside would otherwise fail to move.
+    #[cfg(not(unix))]
+    {
+        *reader = None;
+    }
+    Some(found)
+}
+
+/// Which file this is, so one moved into its place is told from it.
+fn file_identity(m: &std::fs::Metadata) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (m.dev(), m.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let born = m
+            .created()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+        (born, 0)
+    }
+}
+
 /// One search across every app's library — notes, reminders, events, contacts, files, photos —
-/// the first few of each and how many in all. Offline: read from the library alone.
+/// the best few of each and how many in all; or, with `only`, the next `each` of one app from
+/// its `skip`th. Offline: read from the library alone, on its own connection, off the async
+/// runtime. `None` when a newer question has been asked since.
 #[tauri::command]
 async fn search_everything(
     query: String,
+    seq: Option<u64>,
     each: Option<usize>,
+    only: Option<String>,
+    skip: Option<usize>,
+    app: tauri::AppHandle,
     data: State<'_, Data>,
-) -> UiResult<quince_core::search::Everything> {
-    let library = data.0.lock().await;
-    // A few of each kind, or more of one when its section is shown whole.
-    library
-        .search_everything(&query, each.unwrap_or(5).clamp(1, 200))
-        .map_err(|e| e.to_string())
+) -> UiResult<Option<Found>> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let seq = seq.unwrap_or(0);
+    SEARCH_LATEST.fetch_max(seq, SeqCst);
+    let each = each.unwrap_or(5).clamp(1, 500);
+    let skip = skip.unwrap_or(0);
+    let dir = state_dir(&app);
+    let (q, o) = (query.clone(), only.clone());
+    let read = tauri::async_runtime::spawn_blocking(move || {
+        if seq < SEARCH_LATEST.load(SeqCst) {
+            return Some(Ok(None));
+        }
+        read_for_search(&dir, |l| l.search(&q, each, o.as_deref(), skip)).map(|r| r.map(Some))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let groups = match read {
+        Some(found) => found?,
+        None => Some(
+            data.0
+                .lock()
+                .await
+                .search(&query, each, only.as_deref(), skip)
+                .map_err(|e| e.to_string())?,
+        ),
+    };
+    Ok(groups.map(|groups| Found { seq, groups }))
 }
 
 /// What of the signed-in account's has not reached Apple yet: asked before a sign-out, so a
@@ -1336,9 +1427,21 @@ async fn calendar_sync(
     let fetched = quince_icloud::sync::fetch_calendar(&http, &root, params, &from, &to, &timezone)
         .await
         .map_err(|e| e.to_string())?;
-    let mut library = data.0.lock().await;
-    still_owned(&library, account.as_deref())?;
-    quince_icloud::sync::apply_calendar(&mut library, fetched).map_err(|e| e.to_string())
+    let summary = {
+        let mut library = data.0.lock().await;
+        still_owned(&library, account.as_deref())?;
+        // Changes still on their way to Apple stay as made here — stored with the pass, as one.
+        library
+            .atomically(|library| {
+                let summary = quince_icloud::sync::apply_calendar(library, fetched)?;
+                outbox::replay(library, outbox::CALENDAR)?;
+                Ok::<_, quince_icloud::Error>(summary)
+            })
+            .map_err(|e| e.to_string())?
+    };
+    // Apple answered: whatever waits to be sent goes now.
+    outbox::kick();
+    Ok(summary)
 }
 
 /// What the interface sends to create or change an event.
@@ -1429,13 +1532,12 @@ async fn event_repeat(
         .map_err(|e| e.to_string())
 }
 
+/// Create an event, or save changes to one: in the library at once, and sent behind
+/// (outbox.rs) — where a change made on another device since is merged, as Calendar settles
+/// two edits, one occurrence of a repeating event included. Offline, it waits, across a
+/// restart. Answers the event's id, chosen here for a new one.
 #[tauri::command]
-async fn event_save(
-    draft: EventDraft,
-    auth: State<'_, Auth>,
-    data: State<'_, Data>,
-) -> UiResult<String> {
-    let _one = CALENDAR_PASS.lock().await;
+async fn event_save(draft: EventDraft, data: State<'_, Data>) -> UiResult<String> {
     let title = draft.title.trim();
     if title.is_empty() {
         return Err("An event needs a title.".into());
@@ -1443,172 +1545,74 @@ async fn event_save(
     if draft.ends_at < draft.starts_at {
         return Err("An event can't end before it starts.".into());
     }
-    let account = account_now(&auth).await;
-    let (http, root, params) = calendar_context(&auth).await?;
-
     // Apple's guids are uppercase UUIDs; a new event needs one before it can be addressed.
     let was_saved = draft.guid.is_some();
     let guid = draft
         .guid
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string().to_uppercase());
-    let existing = {
-        let library = data.0.lock().await;
-        library.event(&guid).map_err(|e| e.to_string())?
-    };
-    // An event opened as one already saved, and no longer here: deleted on another device
-    // since. Saved, it came back as new on every device, without its alerts or guests.
-    if was_saved && existing.is_none() && !quince_icloud::calendar::is_occurrence(&guid) {
-        return Err("This event was deleted on another device, so it wasn’t saved.".into());
-    }
-    // The calendar it is in now, when that is not the one it is saved to: a move.
-    let moved_from = existing
-        .as_ref()
-        .map(|e| e.calendar_guid.clone())
-        .filter(|old| *old != draft.calendar_guid);
-
-    let event = Event {
-        guid: guid.clone(),
-        calendar_guid: draft.calendar_guid,
-        title: title.to_string(),
-        location: draft.location.filter(|s| !s.trim().is_empty()),
-        starts_at: draft.starts_at,
-        ends_at: draft.ends_at,
-        all_day: draft.all_day,
-        timezone: draft.timezone,
-        url: draft.url.filter(|s| !s.trim().is_empty()),
-        notes: draft.notes.filter(|s| !s.trim().is_empty()),
-        // Apple rejects a write whose etag is not the version it holds, which is what stops
-        // this from landing on top of a change made on a phone.
-        etag: existing.as_ref().and_then(|e| e.etag.clone()),
-    };
-
-    let ctag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &event.calendar_guid);
-    // Moving to another calendar: where it is now, and that calendar's tag.
-    let from = match moved_from {
-        Some(old) => {
-            let tag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &old);
-            Some((old, tag))
+    {
+        let mut library = data.0.lock().await;
+        let existing = library.event(&guid).map_err(|e| e.to_string())?;
+        // An event opened as one already saved, and no longer here: deleted on another device
+        // since. Saved, it came back as new on every device, without its alerts or guests.
+        if was_saved && existing.is_none() && !quince_icloud::calendar::is_occurrence(&guid) {
+            return Err("This event was deleted on another device, so it wasn’t saved.".into());
         }
-        None => None,
-    };
-    let first = quince_icloud::sync::save_event_with_alerts(
-        &http,
-        &root,
-        params.clone(),
-        ctag.as_deref(),
-        &event,
-        draft.alerts.as_deref(),
-        draft.repeat_changed.then_some(draft.repeat.as_ref()),
-        draft.scope,
-        from.as_ref()
-            .map(|(old, tag)| (old.as_str(), tag.as_deref())),
-    )
-    .await;
-    // Refused because the event changed on another device since it was read: as Calendar
-    // settles it, Apple's copy is read again and this edit laid over it — their changes to
-    // other fields kept, this edit's own fields this edit's — and saved once more against
-    // Apple's newest version. One of a repeating series is not merged: which days a change
-    // there reaches is Apple's to settle, so it is refused as before.
-    let kept = match (first, existing.as_ref()) {
-        (Err(quince_icloud::Error::Conflict), Some(base))
-            if !quince_icloud::calendar::is_occurrence(&guid) =>
-        {
-            let client = quince_icloud::calendar::CalendarClient::new(&http, &root, params.clone());
-            // Gone from where it was: deleted (or moved away) elsewhere. Never written back.
-            let Some(theirs) = client
-                .current_event(base)
-                .await
-                .map_err(|e| e.to_string())?
-            else {
-                return Err("This event was deleted on another device, so it wasn’t saved.".into());
-            };
-            let merged = quince_icloud::calendar::merge_edit(base, &event, &theirs);
-            // Where it is at Apple now, and where it is going, with each calendar's tag read
-            // afresh: the refusal may have been for the calendar's tag as much as the event's.
-            let fresh_tag = |guid: String| {
-                let client = &client;
-                async move { client.current_ctag(&guid).await.ok().flatten() }
-            };
-            let ctag = fresh_tag(merged.calendar_guid.clone()).await;
-            let from = if theirs.calendar_guid != merged.calendar_guid {
-                Some((
-                    theirs.calendar_guid.clone(),
-                    fresh_tag(theirs.calendar_guid.clone()).await,
-                ))
-            } else {
-                None
-            };
-            quince_icloud::sync::save_event_with_alerts(
-                &http,
-                &root,
-                params,
-                ctag.as_deref(),
-                &merged,
-                draft.alerts.as_deref(),
-                draft.repeat_changed.then_some(draft.repeat.as_ref()),
-                draft.scope,
-                from.as_ref()
-                    .map(|(old, tag)| (old.as_str(), tag.as_deref())),
-            )
-            .await
-        }
-        (result, _) => result,
+        let event = Event {
+            guid: guid.clone(),
+            calendar_guid: draft.calendar_guid,
+            title: title.to_string(),
+            location: draft.location.filter(|s| !s.trim().is_empty()),
+            starts_at: draft.starts_at,
+            ends_at: draft.ends_at,
+            all_day: draft.all_day,
+            timezone: draft.timezone,
+            url: draft.url.filter(|s| !s.trim().is_empty()),
+            notes: draft.notes.filter(|s| !s.trim().is_empty()),
+            etag: existing.as_ref().and_then(|e| e.etag.clone()),
+        };
+        outbox::record_event_save(
+            &mut library,
+            outbox::EventSave {
+                event,
+                create: existing.is_none() && !was_saved,
+                base: existing,
+                alerts: draft.alerts,
+                repeat_changed: draft.repeat_changed,
+                repeat: draft.repeat,
+                scope: draft.scope,
+            },
+        )
+        .map_err(|e| e.to_string())?;
     }
-    .map_err(|e| e.to_string())?;
-    let mut library = data.0.lock().await;
-    still_owned(&library, account.as_deref())?;
-    quince_icloud::sync::store_events(&mut library, kept).map_err(|e| e.to_string())?;
+    outbox::kick();
     Ok(guid)
 }
 
+/// Delete an event — for one of a repeating series, with its scope said. Gone here at once
+/// (the whole series, or this day and those after, as asked), deleted at Apple behind.
 #[tauri::command]
 async fn event_delete(
     guid: String,
     scope: Option<quince_icloud::calendar::Scope>,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
-    let account = account_now(&auth).await;
-    let _one = CALENDAR_PASS.lock().await;
-    let (http, root, params) = calendar_context(&auth).await?;
-    let event = {
-        let library = data.0.lock().await;
-        library
+    if quince_icloud::calendar::is_occurrence(&guid) && scope.is_none() {
+        return Err(
+            "This is one occurrence of a repeating event. Say whether to delete this event alone."
+                .into(),
+        );
+    }
+    {
+        let mut library = data.0.lock().await;
+        let event = library
             .event(&guid)
             .map_err(|e| e.to_string())?
-            .ok_or("That event is no longer in the local library.")?
-    };
-    let ctag = quince_icloud::sync::calendar_ctag(&*data.0.lock().await, &event.calendar_guid);
-    quince_icloud::calendar::CalendarClient::new(&http, &root, params)
-        .delete_event_scoped(&event, ctag.as_deref(), scope)
-        .await
-        .map_err(|e| e.to_string())?;
-    // What went at Apple goes here: the whole series for all of it, this day and those after
-    // for this-and-future — not just the one day, which left the rest of a deleted series on
-    // screen until the next sync.
-    let mut library = data.0.lock().await;
-    still_owned(&library, account.as_deref())?;
-    let series = quince_icloud::calendar::series_of(&event.guid).to_string();
-    let gone: Vec<String> = match scope {
-        Some(quince_icloud::calendar::Scope::All)
-        | Some(quince_icloud::calendar::Scope::Future) => library
-            .events_starting_between(i64::MIN / 2, i64::MAX / 2)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|(g, _)| g)
-            .filter(|g| quince_icloud::calendar::series_of(g) == series)
-            .filter(|g| {
-                scope == Some(quince_icloud::calendar::Scope::All)
-                    || library
-                        .event(g)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|e| e.starts_at >= event.starts_at)
-            })
-            .collect(),
-        _ => vec![event.guid.clone()],
-    };
-    library.forget_events(&gone).map_err(|e| e.to_string())
+            .ok_or("That event is no longer in the local library.")?;
+        outbox::record_event_delete(&mut library, &event, scope).map_err(|e| e.to_string())?;
+    }
+    outbox::kick();
+    Ok(())
 }
 
 /// Events overlapping `[from, to]`, as unix seconds. Read straight from the library.
@@ -2119,9 +2123,27 @@ async fn reminder_counts(
 
 /// Reminders still to do holding every word of `query`, across every enabled list.
 #[tauri::command]
-async fn reminders_search(query: String, data: State<'_, Data>) -> UiResult<Vec<Reminder>> {
-    let library = data.0.lock().await;
-    library.search_reminders(&query).map_err(|e| e.to_string())
+async fn reminders_search(
+    query: String,
+    app: tauri::AppHandle,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Reminder>> {
+    // On the search reader, so a sync pass holding the library does not hold the list up.
+    let (dir, q) = (state_dir(&app), query.clone());
+    let read = tauri::async_runtime::spawn_blocking(move || {
+        read_for_search(&dir, |l| l.search_reminders(&q))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    match read {
+        Some(found) => found,
+        None => data
+            .0
+            .lock()
+            .await
+            .search_reminders(&query)
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// The headings inside one reminders list, in the order they were made.
@@ -2260,10 +2282,10 @@ mod reminder_write_tests {
 /// Tick a reminder off or put it back — from the window, or from an alert's button.
 ///
 /// In the library at once and queued for Apple (see outbox.rs): the window never waits on the
-/// network. A repeating one is the exception — ticking it, Apple rolls it on to its next date,
-/// which only Apple's answer can show — so that one is sent and answered here.
+/// network. A repeating one ticked moves on to its next date here at once; Apple, sent the
+/// tick behind, keeps the day's history and moves its own copy on — once.
 async fn set_done(
-    auth: &State<'_, Auth>,
+    _auth: &State<'_, Auth>,
     data: &State<'_, Data>,
     guid: &str,
     // Where the caller saw it; the record says where it is now (reminder_to_write).
@@ -2291,14 +2313,18 @@ async fn set_done(
         alerts::changed();
         return Ok(());
     }
-    let (http, root, params) = cloudkit_context(auth).await?;
-
-    quince_icloud::reminders::set_completed_cloudkit(&http, &root, params.clone(), &reminder, done)
-        .await
+    {
+        let mut library = data.0.lock().await;
+        outbox::record_reminder_advance(
+            &mut library,
+            &reminder,
+            jiff::Timestamp::now().as_second(),
+        )
         .map_err(|e| e.to_string())?;
-
-    // Made at Apple: a refresh failing now is not the tick failing (see `settle`).
-    settle(refresh_reminders(&http, &root, params, data, false).await)
+    }
+    outbox::kick();
+    alerts::changed();
+    Ok(())
 }
 
 /// Set or clear how often a reminder comes back.
@@ -2594,6 +2620,7 @@ async fn note_export_markdown(
     runs: Vec<quince_icloud::ckdocument::Run>,
     path: String,
 ) -> UiResult<()> {
+    grants::take_write(&path)?;
     let text = quince_icloud::markdown::note_to_markdown(&body, &runs);
     tokio::fs::write(&path, text)
         .await
@@ -2810,117 +2837,65 @@ async fn note_save(
     Ok(body)
 }
 
-/// Write a new note and return the record name Apple gave it.
+/// Write a new note and return the record name it has — chosen here, before Apple hears of
+/// it. In the library at once and sent behind (outbox.rs): offline, it waits there, and the
+/// first edits to it queue behind the create.
 #[tauri::command]
 async fn note_create(
     folder_guid: Option<String>,
     body: String,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<String> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-    // The shape of a document Apple wrote, noticed during a sync. A note built without it
-    // reads back here perfectly and shows on a phone as an empty note.
-    let template = {
-        let library = data.0.lock().await;
-        library
-            .state(quince_icloud::notes::TEMPLATE_KEY)
-            .map_err(|e| e.to_string())?
+    if body.trim().is_empty() {
+        return Err("A note needs something in it.".into());
+    }
+    let guid = {
+        let mut library = data.0.lock().await;
+        outbox::record_note_create(&mut library, folder_guid, &body).map_err(|e| e.to_string())?
     };
-    let guid = quince_icloud::notes::create_cloudkit(
-        &http,
-        &root,
-        params.clone(),
-        folder_guid.as_deref(),
-        &body,
-        template.as_deref(),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    // Apple has made it. A refresh failing now must not read as the create failing — the
-    // editor would try again, and the person would have the note twice.
-    if let Err(e) = resync_notes(&http, &root, params, &data).await {
-        quiet!("notes refresh after a create: {e}");
-    }
-
-    // Apple's change feed does not always carry a new record back on the very next pass.
-    // Without this the note just made was missing locally, and the first edit to it failed
-    // with "That note is no longer in the local library" — typing into a fresh note, then
-    // pasting, lost the paste's save. Saving reads the record from Apple, so a local stand-in
-    // with no tag is enough until the feed catches up.
-    let mut library = data.0.lock().await;
-    let known = library.note(&guid).map_err(|e| e.to_string())?.is_some();
-    if !known {
-        let (title, snippet) = quince_icloud::notes::title_and_snippet(&body);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-        library
-            .put_notes(&[Note {
-                guid: guid.clone(),
-                folder_guid,
-                title,
-                snippet: Some(snippet).filter(|s| !s.is_empty()),
-                body: Some(body),
-                locked: false,
-                pinned: false,
-                created_at: Some(now),
-                modified_at: Some(now),
-                editable: true,
-                etag: None,
-                runs: None,
-            }])
-            .map_err(|e| e.to_string())?;
-    }
+    outbox::kick();
     Ok(guid)
 }
 
+/// Delete a note: to Recently Deleted, or from there for good. At once here, sent behind.
 #[tauri::command]
-async fn note_delete(guid: String, auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
+async fn note_delete(guid: String, data: State<'_, Data>) -> UiResult<()> {
     let note = note_by_guid(&data, &guid).await?;
-    quince_icloud::notes::delete_cloudkit(&http, &root, params.clone(), &note)
-        .await
-        .map_err(|e| e.to_string())?;
-    settle(resync_notes(&http, &root, params, &data).await)
+    {
+        let mut library = data.0.lock().await;
+        outbox::record_note_delete(&mut library, &note).map_err(|e| e.to_string())?;
+    }
+    outbox::kick();
+    Ok(())
 }
 
-/// Move a note into a folder, or out of every folder when `folder_guid` is absent.
+/// Move a note into a folder, or out of every folder when `folder_guid` is absent. At once
+/// here, sent behind.
 #[tauri::command]
 async fn note_move(
     guid: String,
     folder_guid: Option<String>,
-    auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-    let note = note_by_guid(&data, &guid).await?;
-    quince_icloud::notes::move_cloudkit(
-        &http,
-        &root,
-        params.clone(),
-        &note,
-        folder_guid.as_deref(),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    settle(resync_notes(&http, &root, params, &data).await)
+    note_by_guid(&data, &guid).await?;
+    {
+        let mut library = data.0.lock().await;
+        outbox::record_note_move(&mut library, &guid, folder_guid).map_err(|e| e.to_string())?;
+    }
+    outbox::kick();
+    Ok(())
 }
 
-/// Pin a note to the top of its list, or unpin it.
+/// Pin a note to the top of its list, or unpin it. At once here, sent behind.
 #[tauri::command]
-async fn note_pin(
-    guid: String,
-    pinned: bool,
-    auth: State<'_, Auth>,
-    data: State<'_, Data>,
-) -> UiResult<()> {
-    let (http, root, params) = cloudkit_context(&auth).await?;
-    let note = note_by_guid(&data, &guid).await?;
-    quince_icloud::notes::pin_cloudkit(&http, &root, params.clone(), &note, pinned)
-        .await
-        .map_err(|e| e.to_string())?;
-    settle(resync_notes(&http, &root, params, &data).await)
+async fn note_pin(guid: String, pinned: bool, data: State<'_, Data>) -> UiResult<()> {
+    note_by_guid(&data, &guid).await?;
+    {
+        let mut library = data.0.lock().await;
+        outbox::record_note_pin(&mut library, &guid, pinned).map_err(|e| e.to_string())?;
+    }
+    outbox::kick();
+    Ok(())
 }
 
 /// A new Notes folder, inside another when `parent` is given.
@@ -2996,9 +2971,26 @@ async fn note_folders(data: State<'_, Data>) -> UiResult<Vec<NoteFolder>> {
 
 /// Notes holding every word of `query`, from every folder but Recently Deleted.
 #[tauri::command]
-async fn notes_search(query: String, data: State<'_, Data>) -> UiResult<Vec<Note>> {
-    let library = data.0.lock().await;
-    library.search_notes(&query).map_err(|e| e.to_string())
+async fn notes_search(
+    query: String,
+    app: tauri::AppHandle,
+    data: State<'_, Data>,
+) -> UiResult<Vec<Note>> {
+    // On the search reader, so a sync pass holding the library does not hold the list up.
+    let (dir, q) = (state_dir(&app), query.clone());
+    let read =
+        tauri::async_runtime::spawn_blocking(move || read_for_search(&dir, |l| l.search_notes(&q)))
+            .await
+            .map_err(|e| e.to_string())?;
+    match read {
+        Some(found) => found,
+        None => data
+            .0
+            .lock()
+            .await
+            .search_notes(&query)
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// How many notes each folder holds, and all of them but Recently Deleted.
@@ -3181,26 +3173,21 @@ async fn contact_save(
     Ok(guid)
 }
 
+/// Delete a card: gone here at once, deleted at Apple behind (outbox.rs).
 #[tauri::command]
-async fn contact_delete(
-    guid: String,
-    auth: State<'_, Auth>,
-    data: State<'_, Data>,
-) -> UiResult<()> {
-    let _one = CONTACTS_PASS.lock().await;
-    let (http, root, params) = contacts_context(&auth).await?;
-    let (people, tokens) = quince_icloud::contacts::fetch_with_tokens(&http, &root, params.clone())
-        .await
-        .map_err(|e| e.to_string())?;
-    let contact = people
-        .into_iter()
-        .find(|c| c.guid == guid)
-        .ok_or("Apple no longer has that contact.")?;
-
-    quince_icloud::contacts::delete(&http, &root, params.clone(), &tokens, &contact)
-        .await
-        .map_err(|e| e.to_string())?;
-    settle(resync_contacts(&http, &root, params, &data).await)
+async fn contact_delete(guid: String, data: State<'_, Data>) -> UiResult<()> {
+    {
+        let mut library = data.0.lock().await;
+        let contact = library
+            .contacts(None)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|c| c.guid == guid)
+            .ok_or("That contact is no longer in the local library.")?;
+        outbox::record_contact_delete(&mut library, &contact).map_err(|e| e.to_string())?;
+    }
+    outbox::kick();
+    Ok(())
 }
 
 /// A path in `dir` for `name` that holds nothing yet: a number goes on the end rather than
@@ -3266,6 +3253,9 @@ async fn contacts_import(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<(usize, usize, usize)> {
+    for path in &paths {
+        grants::take_read(path)?;
+    }
     let _one = CONTACTS_PASS.lock().await;
     // Every file chosen, vCard or CSV (Google Contacts, Outlook), read into cards first, so a
     // file that cannot be read stops the import before anything is sent.
@@ -3805,6 +3795,9 @@ async fn drive_upload(
 ) -> UiResult<Vec<String>> {
     use futures_util::StreamExt;
 
+    for path in &paths {
+        grants::take_read(path)?;
+    }
     let (http, root, params) = drive_context(&auth).await?;
     let docws = {
         let client = auth.client.lock().await;
@@ -4728,10 +4721,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
             }
         });
-    // The icon drawn for small sizes, not the window's: on Windows that is the .ico's first
-    // entry, 256px, which the tray shrank to 16px into a blur. The 32px one halves cleanly at
-    // 100% scaling and is shown as drawn at 200%.
-    match tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")) {
+    // The tray's own mark: the letters without their circle, outlined so they hold on any panel
+    // or wallpaper, and sized to sit inside a circle — some trays clip their icons round, which
+    // cut the k off. 64px, so every tray scales it down rather than up; the window's icon (on
+    // Windows the .ico's 256px entry) shrank into a blur here.
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
         Ok(icon) => tray = tray.icon(icon),
         Err(_) => {
             if let Some(icon) = app.default_window_icon() {
@@ -4825,7 +4819,17 @@ fn main() {
         // Closing the window hides it rather than quitting, so reminders still ring. Quit is
         // in the tray. Where no tray could be made there is nowhere to come back from, so
         // there closing quits as it always did.
+        // Files dropped on a window are the person's to hand over: granted to the commands
+        // that read them (grants.rs) here, before the page hears of the drop.
+        .on_webview_event(|_, event| {
+            if let tauri::WebviewEvent::DragDrop(drop) = event {
+                grants::dropped(drop);
+            }
+        })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(drop) = event {
+                grants::dropped(drop);
+            }
             // The whole-library window is put away, as the engine keeps running behind the
             // tray. An app's own window is put away too, so opening it again is instant rather
             // than a new web view built from nothing — and given back for good once it has
@@ -5069,12 +5073,15 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            grants::pick_open,
+            grants::pick_save,
             export::library_export_start,
             export::library_export_cancel,
             export::library_export_reveal,
             outbox::outbox_status,
             outbox::outbox_resend,
             outbox::outbox_discard,
+            outbox::outbox_wake,
             auth_status,
             auth_resume,
             auth_sign_in,

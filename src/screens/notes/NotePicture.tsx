@@ -4,7 +4,8 @@
  * name and a way to open it in another app. Escape, the close button or a click outside put
  * it away.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "../../lib/focus";
 import { X } from "lucide-react";
 import { Portal } from "../../components/Portal";
 import { api, messageOf } from "../../lib/ipc";
@@ -32,11 +33,14 @@ export function NotePicture() {
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
   }, [shown]);
+  const sheetRef = useRef<HTMLElement | null>(null);
+  useModalFocus(sheetRef, shown !== null);
   if (!shown) return null;
   return (
     <Portal>
       <div className="modal-veil nf-picture-veil" onClick={() => setShown(null)}>
         <figure
+          ref={sheetRef}
           className="nf-picture"
           role="dialog"
           aria-modal="true"

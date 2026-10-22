@@ -604,4 +604,214 @@ pub const MIGRATIONS: &[&str] = &[
     ) STRICT;
     UPDATE sync_state SET token = NULL WHERE service = 'reminders';
     "#,
+    // 45 — one index over the words of everything searchable: notes (title and text), reminders
+    // still to do (title and notes), events (title, place, notes), contacts (names, company,
+    // every phone, email and link — numbers digits-only too), Drive names and photos (title,
+    // file name, caption, keywords, and the year and month they were taken, as Photos finds
+    // them). Searching it reads only the rows that hold the words, where every search read
+    // every row and folded it.
+    //
+    // Words are found by how they begin ("spri" finds "Springfield"), case and accents aside
+    // (`remove_diacritics 2`), and the marks of Indic scripts stay inside their word (`M*`), so
+    // a Telugu or Hindi word is one word. The index holds no text of its own (`content=''`):
+    // titles and snippets are read from the records, which stay the one copy. `search_docs`
+    // numbers each indexed record and keeps what ranks it — `at`, the time it is ordered by,
+    // and `sort`, a contact's place in the address book.
+    //
+    // The triggers keep it current in the same transaction as every write — a sync pass, an
+    // edit, a sign-out — whoever makes it. A record first forgets its old words and then, if it
+    // is one search shows (a note outside Recently Deleted, a reminder still to do), is indexed
+    // again.
+    r#"
+    CREATE TABLE search_docs (
+        id   INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL,
+        key  TEXT NOT NULL,
+        at   INTEGER,
+        sort TEXT,
+        UNIQUE (kind, key)
+    ) STRICT;
+    CREATE VIRTUAL TABLE search_text USING fts5(
+        title, body,
+        content = '', contentless_delete = 1, prefix = '1 2 3',
+        tokenize = "unicode61 remove_diacritics 2 categories 'L* N* Co M*'"
+    );
+    CREATE TRIGGER search_notes_insert AFTER INSERT ON notes BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'note' AND key = new.guid);
+        DELETE FROM search_docs WHERE kind = 'note' AND key = new.guid;
+        INSERT INTO search_docs (kind, key, at) SELECT 'note', new.guid, new.modified_at WHERE (new.folder_guid IS NULL OR new.folder_guid != 'TrashFolder-CloudKit');
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, new.title, new.body FROM search_docs WHERE kind = 'note' AND key = new.guid;
+    END;
+    CREATE TRIGGER search_notes_update AFTER UPDATE OF folder_guid, title, body, modified_at ON notes BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'note' AND key = old.guid);
+        DELETE FROM search_docs WHERE kind = 'note' AND key = old.guid;
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'note' AND key = new.guid);
+        DELETE FROM search_docs WHERE kind = 'note' AND key = new.guid;
+        INSERT INTO search_docs (kind, key, at) SELECT 'note', new.guid, new.modified_at WHERE (new.folder_guid IS NULL OR new.folder_guid != 'TrashFolder-CloudKit');
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, new.title, new.body FROM search_docs WHERE kind = 'note' AND key = new.guid;
+    END;
+    CREATE TRIGGER search_notes_delete AFTER DELETE ON notes BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'note' AND key = old.guid);
+        DELETE FROM search_docs WHERE kind = 'note' AND key = old.guid;
+    END;
+    INSERT INTO search_docs (kind, key, at) SELECT 'note', guid, modified_at FROM notes WHERE (folder_guid IS NULL OR folder_guid != 'TrashFolder-CloudKit');
+    INSERT INTO search_text (rowid, title, body)
+        SELECT d.id, X.title, X.body FROM search_docs d JOIN notes X ON d.kind = 'note' AND d.key = X.guid;
+    CREATE TRIGGER search_reminders_insert AFTER INSERT ON reminders BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'reminder' AND key = new.guid);
+        DELETE FROM search_docs WHERE kind = 'reminder' AND key = new.guid;
+        INSERT INTO search_docs (kind, key, at) SELECT 'reminder', new.guid, new.due_at WHERE new.completed_at IS NULL;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, new.title, new.notes FROM search_docs WHERE kind = 'reminder' AND key = new.guid;
+    END;
+    CREATE TRIGGER search_reminders_update AFTER UPDATE OF list_guid, title, notes, due_at, completed_at ON reminders BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'reminder' AND key = old.guid);
+        DELETE FROM search_docs WHERE kind = 'reminder' AND key = old.guid;
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'reminder' AND key = new.guid);
+        DELETE FROM search_docs WHERE kind = 'reminder' AND key = new.guid;
+        INSERT INTO search_docs (kind, key, at) SELECT 'reminder', new.guid, new.due_at WHERE new.completed_at IS NULL;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, new.title, new.notes FROM search_docs WHERE kind = 'reminder' AND key = new.guid;
+    END;
+    CREATE TRIGGER search_reminders_delete AFTER DELETE ON reminders BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'reminder' AND key = old.guid);
+        DELETE FROM search_docs WHERE kind = 'reminder' AND key = old.guid;
+    END;
+    INSERT INTO search_docs (kind, key, at) SELECT 'reminder', guid, due_at FROM reminders WHERE completed_at IS NULL;
+    INSERT INTO search_text (rowid, title, body)
+        SELECT d.id, X.title, X.notes FROM search_docs d JOIN reminders X ON d.kind = 'reminder' AND d.key = X.guid;
+    CREATE TRIGGER search_events_insert AFTER INSERT ON events BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'event' AND key = new.guid);
+        DELETE FROM search_docs WHERE kind = 'event' AND key = new.guid;
+        INSERT INTO search_docs (kind, key, at) SELECT 'event', new.guid, new.starts_at WHERE 1;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, new.title, concat_ws(' ', new.location, new.notes) FROM search_docs WHERE kind = 'event' AND key = new.guid;
+    END;
+    CREATE TRIGGER search_events_update AFTER UPDATE OF title, location, notes, starts_at ON events BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'event' AND key = old.guid);
+        DELETE FROM search_docs WHERE kind = 'event' AND key = old.guid;
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'event' AND key = new.guid);
+        DELETE FROM search_docs WHERE kind = 'event' AND key = new.guid;
+        INSERT INTO search_docs (kind, key, at) SELECT 'event', new.guid, new.starts_at WHERE 1;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, new.title, concat_ws(' ', new.location, new.notes) FROM search_docs WHERE kind = 'event' AND key = new.guid;
+    END;
+    CREATE TRIGGER search_events_delete AFTER DELETE ON events BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'event' AND key = old.guid);
+        DELETE FROM search_docs WHERE kind = 'event' AND key = old.guid;
+    END;
+    INSERT INTO search_docs (kind, key, at) SELECT 'event', guid, starts_at FROM events WHERE 1;
+    INSERT INTO search_text (rowid, title, body)
+        SELECT d.id, X.title, concat_ws(' ', X.location, X.notes) FROM search_docs d JOIN events X ON d.kind = 'event' AND d.key = X.guid;
+    CREATE TRIGGER search_drive_items_insert AFTER INSERT ON drive_items BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'file' AND key = new.drivewsid);
+        DELETE FROM search_docs WHERE kind = 'file' AND key = new.drivewsid;
+        INSERT INTO search_docs (kind, key, at) SELECT 'file', new.drivewsid, new.modified_at WHERE 1;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, new.name, new.extension FROM search_docs WHERE kind = 'file' AND key = new.drivewsid;
+    END;
+    CREATE TRIGGER search_drive_items_update AFTER UPDATE OF name, extension, modified_at ON drive_items BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'file' AND key = old.drivewsid);
+        DELETE FROM search_docs WHERE kind = 'file' AND key = old.drivewsid;
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'file' AND key = new.drivewsid);
+        DELETE FROM search_docs WHERE kind = 'file' AND key = new.drivewsid;
+        INSERT INTO search_docs (kind, key, at) SELECT 'file', new.drivewsid, new.modified_at WHERE 1;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, new.name, new.extension FROM search_docs WHERE kind = 'file' AND key = new.drivewsid;
+    END;
+    CREATE TRIGGER search_drive_items_delete AFTER DELETE ON drive_items BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'file' AND key = old.drivewsid);
+        DELETE FROM search_docs WHERE kind = 'file' AND key = old.drivewsid;
+    END;
+    INSERT INTO search_docs (kind, key, at) SELECT 'file', drivewsid, modified_at FROM drive_items WHERE 1;
+    INSERT INTO search_text (rowid, title, body)
+        SELECT d.id, X.name, X.extension FROM search_docs d JOIN drive_items X ON d.kind = 'file' AND d.key = X.drivewsid;
+    CREATE TRIGGER search_photos_insert AFTER INSERT ON photos BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'photo' AND key = new.id);
+        DELETE FROM search_docs WHERE kind = 'photo' AND key = new.id;
+        INSERT INTO search_docs (kind, key, at) SELECT 'photo', new.id, new.taken_at WHERE new.deleted = 0 AND new.hidden = 0;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, coalesce(nullif(trim(new.title), ''), new.filename), concat_ws(' ', new.filename, new.caption, new.keywords, strftime('%Y', new.taken_at, 'unixepoch', 'localtime'), CASE strftime('%m', new.taken_at, 'unixepoch', 'localtime') WHEN '01' THEN 'January' WHEN '02' THEN 'February' WHEN '03' THEN 'March' WHEN '04' THEN 'April' WHEN '05' THEN 'May' WHEN '06' THEN 'June' WHEN '07' THEN 'July' WHEN '08' THEN 'August' WHEN '09' THEN 'September' WHEN '10' THEN 'October' WHEN '11' THEN 'November' ELSE 'December' END) FROM search_docs WHERE kind = 'photo' AND key = new.id;
+    END;
+    CREATE TRIGGER search_photos_update AFTER UPDATE OF title, filename, caption, keywords, taken_at, deleted, hidden ON photos BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'photo' AND key = old.id);
+        DELETE FROM search_docs WHERE kind = 'photo' AND key = old.id;
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'photo' AND key = new.id);
+        DELETE FROM search_docs WHERE kind = 'photo' AND key = new.id;
+        INSERT INTO search_docs (kind, key, at) SELECT 'photo', new.id, new.taken_at WHERE new.deleted = 0 AND new.hidden = 0;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT id, coalesce(nullif(trim(new.title), ''), new.filename), concat_ws(' ', new.filename, new.caption, new.keywords, strftime('%Y', new.taken_at, 'unixepoch', 'localtime'), CASE strftime('%m', new.taken_at, 'unixepoch', 'localtime') WHEN '01' THEN 'January' WHEN '02' THEN 'February' WHEN '03' THEN 'March' WHEN '04' THEN 'April' WHEN '05' THEN 'May' WHEN '06' THEN 'June' WHEN '07' THEN 'July' WHEN '08' THEN 'August' WHEN '09' THEN 'September' WHEN '10' THEN 'October' WHEN '11' THEN 'November' ELSE 'December' END) FROM search_docs WHERE kind = 'photo' AND key = new.id;
+    END;
+    CREATE TRIGGER search_photos_delete AFTER DELETE ON photos BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'photo' AND key = old.id);
+        DELETE FROM search_docs WHERE kind = 'photo' AND key = old.id;
+    END;
+    INSERT INTO search_docs (kind, key, at) SELECT 'photo', id, taken_at FROM photos WHERE deleted = 0 AND hidden = 0;
+    INSERT INTO search_text (rowid, title, body)
+        SELECT d.id, coalesce(nullif(trim(X.title), ''), X.filename), concat_ws(' ', X.filename, X.caption, X.keywords, strftime('%Y', X.taken_at, 'unixepoch', 'localtime'), CASE strftime('%m', X.taken_at, 'unixepoch', 'localtime') WHEN '01' THEN 'January' WHEN '02' THEN 'February' WHEN '03' THEN 'March' WHEN '04' THEN 'April' WHEN '05' THEN 'May' WHEN '06' THEN 'June' WHEN '07' THEN 'July' WHEN '08' THEN 'August' WHEN '09' THEN 'September' WHEN '10' THEN 'October' WHEN '11' THEN 'November' ELSE 'December' END) FROM search_docs d JOIN photos X ON d.kind = 'photo' AND d.key = X.id;
+    CREATE TRIGGER search_contacts_insert AFTER INSERT ON contacts BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'contact' AND key = new.guid);
+        DELETE FROM search_docs WHERE kind = 'contact' AND key = new.guid;
+        INSERT INTO search_docs (kind, key, sort) SELECT 'contact', guid, sort_name FROM contacts WHERE guid = new.guid;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT d.id, concat_ws(' ', c.first_name, c.middle_name, c.last_name), concat_ws(' ', c.company, (SELECT group_concat(m.value || CASE WHEN m.kind = 'phone' THEN ' ' || replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', '') || ' ' || substr(replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', ''), -10) ELSE '' END, ' ')
+                                            FROM contact_methods m WHERE m.contact_guid = c.guid)) FROM search_docs d JOIN contacts c ON c.guid = d.key
+            WHERE d.kind = 'contact' AND d.key = new.guid;
+    END;
+    CREATE TRIGGER search_contacts_update AFTER UPDATE ON contacts BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'contact' AND key = old.guid);
+        DELETE FROM search_docs WHERE kind = 'contact' AND key = old.guid;
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'contact' AND key = new.guid);
+        DELETE FROM search_docs WHERE kind = 'contact' AND key = new.guid;
+        INSERT INTO search_docs (kind, key, sort) SELECT 'contact', guid, sort_name FROM contacts WHERE guid = new.guid;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT d.id, concat_ws(' ', c.first_name, c.middle_name, c.last_name), concat_ws(' ', c.company, (SELECT group_concat(m.value || CASE WHEN m.kind = 'phone' THEN ' ' || replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', '') || ' ' || substr(replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', ''), -10) ELSE '' END, ' ')
+                                            FROM contact_methods m WHERE m.contact_guid = c.guid)) FROM search_docs d JOIN contacts c ON c.guid = d.key
+            WHERE d.kind = 'contact' AND d.key = new.guid;
+    END;
+    CREATE TRIGGER search_contacts_delete AFTER DELETE ON contacts BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'contact' AND key = old.guid);
+        DELETE FROM search_docs WHERE kind = 'contact' AND key = old.guid;
+    END;
+    CREATE TRIGGER search_contact_methods_insert AFTER INSERT ON contact_methods BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'contact' AND key = new.contact_guid);
+        DELETE FROM search_docs WHERE kind = 'contact' AND key = new.contact_guid;
+        INSERT INTO search_docs (kind, key, sort) SELECT 'contact', guid, sort_name FROM contacts WHERE guid = new.contact_guid;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT d.id, concat_ws(' ', c.first_name, c.middle_name, c.last_name), concat_ws(' ', c.company, (SELECT group_concat(m.value || CASE WHEN m.kind = 'phone' THEN ' ' || replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', '') || ' ' || substr(replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', ''), -10) ELSE '' END, ' ')
+                                            FROM contact_methods m WHERE m.contact_guid = c.guid)) FROM search_docs d JOIN contacts c ON c.guid = d.key
+            WHERE d.kind = 'contact' AND d.key = new.contact_guid;
+    END;
+    CREATE TRIGGER search_contact_methods_update AFTER UPDATE ON contact_methods BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'contact' AND key = old.contact_guid);
+        DELETE FROM search_docs WHERE kind = 'contact' AND key = old.contact_guid;
+        INSERT INTO search_docs (kind, key, sort) SELECT 'contact', guid, sort_name FROM contacts WHERE guid = old.contact_guid;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT d.id, concat_ws(' ', c.first_name, c.middle_name, c.last_name), concat_ws(' ', c.company, (SELECT group_concat(m.value || CASE WHEN m.kind = 'phone' THEN ' ' || replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', '') || ' ' || substr(replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', ''), -10) ELSE '' END, ' ')
+                                            FROM contact_methods m WHERE m.contact_guid = c.guid)) FROM search_docs d JOIN contacts c ON c.guid = d.key
+            WHERE d.kind = 'contact' AND d.key = old.contact_guid;
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'contact' AND key = new.contact_guid);
+        DELETE FROM search_docs WHERE kind = 'contact' AND key = new.contact_guid;
+        INSERT INTO search_docs (kind, key, sort) SELECT 'contact', guid, sort_name FROM contacts WHERE guid = new.contact_guid;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT d.id, concat_ws(' ', c.first_name, c.middle_name, c.last_name), concat_ws(' ', c.company, (SELECT group_concat(m.value || CASE WHEN m.kind = 'phone' THEN ' ' || replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', '') || ' ' || substr(replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', ''), -10) ELSE '' END, ' ')
+                                            FROM contact_methods m WHERE m.contact_guid = c.guid)) FROM search_docs d JOIN contacts c ON c.guid = d.key
+            WHERE d.kind = 'contact' AND d.key = new.contact_guid;
+    END;
+    CREATE TRIGGER search_contact_methods_delete AFTER DELETE ON contact_methods BEGIN
+        DELETE FROM search_text WHERE rowid = (SELECT id FROM search_docs WHERE kind = 'contact' AND key = old.contact_guid);
+        DELETE FROM search_docs WHERE kind = 'contact' AND key = old.contact_guid;
+        INSERT INTO search_docs (kind, key, sort) SELECT 'contact', guid, sort_name FROM contacts WHERE guid = old.contact_guid;
+        INSERT INTO search_text (rowid, title, body)
+            SELECT d.id, concat_ws(' ', c.first_name, c.middle_name, c.last_name), concat_ws(' ', c.company, (SELECT group_concat(m.value || CASE WHEN m.kind = 'phone' THEN ' ' || replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', '') || ' ' || substr(replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', ''), -10) ELSE '' END, ' ')
+                                            FROM contact_methods m WHERE m.contact_guid = c.guid)) FROM search_docs d JOIN contacts c ON c.guid = d.key
+            WHERE d.kind = 'contact' AND d.key = old.contact_guid;
+    END;
+    INSERT INTO search_docs (kind, key, sort) SELECT 'contact', guid, sort_name FROM contacts;
+    INSERT INTO search_text (rowid, title, body)
+        SELECT d.id, concat_ws(' ', c.first_name, c.middle_name, c.last_name), concat_ws(' ', c.company, (SELECT group_concat(m.value || CASE WHEN m.kind = 'phone' THEN ' ' || replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', '') || ' ' || substr(replace(replace(replace(replace(replace(replace(replace(m.value, ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), '/', ''), -10) ELSE '' END, ' ')
+                                            FROM contact_methods m WHERE m.contact_guid = c.guid)) FROM search_docs d JOIN contacts c ON d.kind = 'contact' AND d.key = c.guid;
+    "#,
 ];

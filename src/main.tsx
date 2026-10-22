@@ -9,6 +9,7 @@ import "./styles/reminders.css";
 import "./styles/calendar.css";
 import "./styles/notes.css";
 import "./styles/photos.css";
+import "./styles/a11y.css";
 import { applyTheme, storedTheme } from "./lib/theme";
 import { keepTinted } from "./lib/tint";
 import { fadeSheetsIn } from "./lib/fade";

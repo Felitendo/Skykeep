@@ -1,5 +1,6 @@
 import { TriangleAlert } from "lucide-react";
 import type { RefusedChange } from "../lib/ipc";
+import { changeWords } from "../lib/outbox";
 
 /** The small grey words beside something saved here that Apple does not have yet. */
 export const WAITING = "Waiting to sync";
@@ -26,7 +27,7 @@ export function Unsent({
   onDiscard,
 }: {
   refused: RefusedChange[];
-  /** What a change is, in this app's words: "an edit to a note". */
+  /** What a change is, in this app's words: "an edit to a note" — when its kind says nothing more. */
   what: string;
   onResend: (r: RefusedChange) => void;
   onDiscard: (r: RefusedChange) => void;
@@ -43,7 +44,7 @@ export function Unsent({
       <TriangleAlert className="toast-glyph" size={15} strokeWidth={2} aria-hidden="true" />
       <div className="unsent-body">
         {/* Apple's reason already says what was not saved; `what` names it for a reader. */}
-        <p aria-label={`iCloud didn’t take ${what}: ${r.reason}`}>
+        <p aria-label={`iCloud didn’t take ${changeWords(r) ?? what}: ${r.reason}`}>
           {r.reason}
           {more > 0 ? ` (and ${more} more)` : ""}
         </p>

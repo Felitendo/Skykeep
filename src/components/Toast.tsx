@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CircleCheck, TriangleAlert, X } from "lucide-react";
 import { fadeIn, fadeOut } from "../lib/fade";
 import { useScreenActive } from "../lib/screen";
@@ -104,12 +104,32 @@ export function useErrorToast(error: string | null, clear: () => void) {
 export function ToastHost() {
   const list = useSyncExternalStore(subscribe, () => shown);
   const lift = useSyncExternalStore(subscribe, clearance);
+  // A notice is said by a polite live region that is always on the page: one drawn together
+  // with its words (each card was one) is often never read, since a screen reader hears of a
+  // polite region only once it is there. What went wrong is a card with the alert role, which
+  // is said the moment it appears.
+  const [said, setSaid] = useState("");
+  const told = useRef(new Set<number>());
+  useEffect(() => {
+    const fresh = list.filter((t) => !told.current.has(t.id));
+    if (!fresh.length) return undefined;
+    for (const t of fresh) told.current.add(t.id);
+    const polite = fresh.filter((t) => t.tone !== "error").map((t) => (t.action ? `${t.message}. ${t.action.label} is in the notice.` : t.message)).pop();
+    if (!polite) return undefined;
+    // Emptied, then set a moment later, so the same words twice are said twice.
+    setSaid("");
+    const id = window.setTimeout(() => setSaid(polite), 60);
+    return () => window.clearTimeout(id);
+  }, [list]);
   return (
-    <div className="toast-host" style={lift ? ({ "--toast-clear": `${lift}px` } as React.CSSProperties) : undefined}>
-      {list.map((t) => (
-        <ToastCard key={t.id} toast={t} />
-      ))}
-    </div>
+    <>
+      <div className="toast-host" style={lift ? ({ "--toast-clear": `${lift}px` } as React.CSSProperties) : undefined}>
+        {list.map((t) => (
+          <ToastCard key={t.id} toast={t} />
+        ))}
+      </div>
+      <div className="visually-hidden" role="status" aria-live="polite">{said}</div>
+    </>
   );
 }
 
@@ -143,8 +163,8 @@ function ToastCard({ toast: t }: { toast: Toast }) {
     <div
       ref={card}
       className={`toast is-${t.tone ?? "info"}`}
-      role={t.tone === "error" ? "alert" : "status"}
-      aria-live={t.tone === "error" ? "assertive" : "polite"}
+      role={t.tone === "error" ? "alert" : "group"}
+      aria-label={t.tone === "error" ? undefined : "Notice"}
       onPointerEnter={hold(true)}
       onPointerLeave={hold(false)}
       onFocus={hold(true)}

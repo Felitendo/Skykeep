@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useActiveRef, useScreenActive } from "../lib/screen";
+import { useModalFocus } from "../lib/focus";
 import { useSync } from "../lib/sync";
 import { toastSaved, useErrorToast } from "../components/Toast";
 import { useConfirm } from "../components/Confirm";
@@ -7,7 +8,7 @@ import { EmptyState } from "../components/EmptyState";
 import { Spinner } from "../components/Spinner";
 import { PaneTitle } from "../components/PaneTitle";
 import { Portal } from "../components/Portal";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { pickOpen } from "../lib/pick";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   acceptsUploads,
@@ -340,6 +341,8 @@ function kindName(item: DriveItem) {
 /** File Info, as icloud.com shows it: the mark, the name, then what it is and where. */
 function InfoSheet({ item, where, thumb, onClose }: { item: DriveItem; where: string; thumb?: string; onClose: () => void }) {
   const done = useRef<HTMLButtonElement | null>(null);
+  const sheet = useRef<HTMLDivElement | null>(null);
+  useModalFocus(sheet);
   const live = useActiveRef();
   useEffect(() => {
     const id = window.setTimeout(() => done.current?.focus(), 0);
@@ -360,7 +363,7 @@ function InfoSheet({ item, where, thumb, onClose }: { item: DriveItem; where: st
   return (
     <Portal>
     <div className="modal-veil" onClick={onClose}>
-      <div className="modal-sheet info-sheet" role="dialog" aria-label="File Info" onClick={(e) => e.stopPropagation()}>
+      <div ref={sheet} className="modal-sheet info-sheet" role="dialog" aria-modal="true" aria-label={isContainer(item) ? "Folder Info" : "File Info"} onClick={(e) => e.stopPropagation()}>
         <header className="info-head">
           <h2>{isContainer(item) ? "Folder Info" : "File Info"}</h2>
           <button ref={done} className="link info-done" onClick={onClose}>Done</button>
@@ -1001,13 +1004,13 @@ export function DriveView() {
     async (folders: boolean) => {
       setUploadMenu(false);
       try {
-        const chosen = await openFileDialog({
+        const chosen = await pickOpen({
           multiple: true,
           directory: folders,
           title: folders ? "Upload folders to iCloud Drive" : "Upload to iCloud Drive",
         });
         if (!chosen) return;
-        await upload(Array.isArray(chosen) ? chosen : [chosen]);
+        await upload(chosen);
       } catch (e) {
         setError(messageOf(e));
       }
@@ -1200,7 +1203,9 @@ export function DriveView() {
     if (target?.closest?.("input, textarea, select, [contenteditable], .drive-bar, .upload-menu")) return;
     if (!peeking && document.querySelector('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]')) return;
     // Return and Space press a focused button of their own; on a row or nowhere, they are Drive's.
-    const onRows = !target || target === document.body || !!target.closest?.(".drive-rows, .drive-peek");
+    // A row's ⋯ is a button of its own inside the rows: Return there opens its menu, not the file.
+    const ownButton = !!target?.closest?.("button, a[href]") && !target?.closest?.(".drive-row-hit");
+    const onRows = !target || target === document.body || (!ownButton && !!target.closest?.(".drive-rows, .drive-peek"));
     const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
     const k = e.key;
     if (peeking && (k === "Escape" || k === " ")) {
@@ -1740,12 +1745,14 @@ function QuickLook({ item, thumb, busy, onOpen, onClose }: {
   onClose: () => void;
 }) {
   const container = isContainer(item);
+  const sheet = useRef<HTMLDivElement | null>(null);
+  useModalFocus(sheet);
   const facts = [kindName(item), sizeText(item)].filter(Boolean).join(", ");
   const when = modified(item.modifiedAt ?? item.createdAt);
   return (
     <Portal>
       <div className="modal-veil drive-peek-veil" onClick={onClose}>
-        <div className="modal-sheet drive-peek" role="dialog" aria-label={`Quick Look: ${driveName(item)}`} onClick={(e) => e.stopPropagation()}>
+        <div ref={sheet} className="modal-sheet drive-peek" role="dialog" aria-modal="true" aria-label={`Quick Look: ${driveName(item)}`} onClick={(e) => e.stopPropagation()}>
           <div className={`drive-peek-face${thumb ? " has-thumb" : ""}`} aria-hidden="true">
             {thumb ? <img src={thumb} alt="" draggable={false} /> : <FileGlyph kind={item.kind} extension={item.extension} />}
           </div>
@@ -1839,13 +1846,17 @@ function MoveDialog({
     const id = window.setTimeout(() => cancelRef.current?.focus(), 0);
     return () => window.clearTimeout(id);
   }, []);
+  const sheet = useRef<HTMLDivElement | null>(null);
+  useModalFocus(sheet);
 
   return (
     <Portal>
     <div className="modal-veil" onClick={onCancel}>
       <div
+        ref={sheet}
         className="modal-sheet move-sheet"
         role="dialog"
+        aria-modal="true"
         aria-label={items.length === 1 ? `Move ${driveName(items[0])}` : `Move ${items.length} Items`}
         onClick={(e) => e.stopPropagation()}
       >

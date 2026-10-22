@@ -1,9 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { api, type OutboxStatus, type RefusedChange } from "./ipc";
 
 const CHANGED = "quince://outbox-changed";
 const REFUSED = "quince://outbox-refused";
+
+export type OutboxService = "notes" | "reminders" | "contacts" | "calendar";
+
+/**
+ * The network came back (the webview's own `online` event): what waits is sent now, not on the
+ * sender's backoff. On Linux NetworkManager or connman says the same over D-Bus; this is the
+ * word on every platform. Once per window, however many views ask about the outbox.
+ */
+let woken = false;
+function wakeWhenOnline() {
+  if (woken || typeof window === "undefined") return;
+  woken = true;
+  window.addEventListener("online", () => {
+    invoke("outbox_wake").catch(() => {});
+  });
+}
+
+/** What a refused change was, in this app's words — for a reader of the notice. */
+export function changeWords(r: Pick<RefusedChange, "service" | "kind">): string | null {
+  const words: Record<string, Record<string, string>> = {
+    notes: { save: "an edit to a note", create: "a new note", move: "a note's move", delete: "a note's deletion", pin: "a note's pin" },
+    reminders: { create: "a new reminder", edit: "a change to a reminder", delete: "a reminder's deletion", done: "a tick", advance: "a tick" },
+    contacts: { save: "a change to a contact", delete: "a contact's deletion" },
+    calendar: { save: "a change to an event", delete: "an event's deletion" },
+  };
+  return words[r.service]?.[r.kind] ?? null;
+}
 
 /**
  * Changes made here that Apple does not have yet, for one service: which records are waiting
@@ -13,7 +41,8 @@ const REFUSED = "quince://outbox-refused";
  * The backend says when this moves (`quince://outbox-changed`): as it starts sending, as a
  * change lands, as one is refused. `tick` counts those, for a view to read its rows again.
  */
-export function useOutbox(service: "notes" | "reminders" | "contacts") {
+export function useOutbox(service: OutboxService) {
+  wakeWhenOnline();
   const [status, setStatus] = useState<OutboxStatus>({ waiting: [], refused: [] });
   const [tick, setTick] = useState(0);
 

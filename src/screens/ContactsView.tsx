@@ -26,7 +26,7 @@ import { useArriving, useSync } from "../lib/sync";
 import { useActiveRef, useScreenActive } from "../lib/screen";
 import { Picker } from "../components/Picker";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { pickOpen } from "../lib/pick";
 import { dateText } from "../lib/when";
 import { useReveal } from "../lib/reveal";
 
@@ -217,8 +217,12 @@ export function ContactsView() {
 
   /** Cards saved here and not yet at Apple, and any Apple turned down. */
   const outbox = useOutbox("contacts");
+  /** Each read is numbered: one overtaken by a later one (a key typed since) never draws. */
+  const reads = useRef(0);
   const read = useCallback(async (query: string) => {
+    const mine = ++reads.current;
     const found = await api.contactsList(query.trim() || null);
+    if (mine !== reads.current) return;
     setContacts(Array.isArray(found) ? found : []);
     setLoaded(true);
   }, []);
@@ -264,12 +268,12 @@ export function ContactsView() {
   const importCards = async () => {
     try {
       // Any number of files at once, vCard or a CSV exported from Google Contacts or Outlook.
-      const chosen = await openFileDialog({
-        multiple: true,
-        title: "Import Contacts",
-        filters: [{ name: "Contacts", extensions: ["vcf", "vcard", "csv"] }],
-      });
-      const paths = !chosen ? [] : Array.isArray(chosen) ? chosen : [chosen];
+      const paths =
+        (await pickOpen({
+          multiple: true,
+          title: "Import Contacts",
+          filters: [{ name: "Contacts", extensions: ["vcf", "vcard", "csv"] }],
+        })) ?? [];
       if (paths.length === 0) return;
       setBusy(true);
       const [added, failed, known] = await api.contactsImport(paths);

@@ -34,6 +34,17 @@ pub mod sync;
 pub mod table;
 pub mod topotext;
 
+/// Lets the gated writes (note attachments, reminder details) run for one supervised live
+/// test, from the probe that drives it (`probe/examples/skykeep_live.rs`) against the throwaway
+/// records the founder named. The app never sets it; the gating constants stay as they are.
+#[doc(hidden)]
+pub static SUPERVISED_LIVE_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn supervised_live_test() -> bool {
+    SUPERVISED_LIVE_TEST.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Said in words, never with the address: an address carries the account's id and this

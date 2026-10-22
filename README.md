@@ -3,9 +3,9 @@
 <picture>
   <!-- The mark sits on a transparent background and reads on light and dark alike.
        To use a dedicated dark variant later, point the first srcset at docs/media/logo-dark.png. -->
-  <source media="(prefers-color-scheme: dark)" srcset="packaging/icons/skykeep-mark-1024.png">
-  <source media="(prefers-color-scheme: light)" srcset="packaging/icons/skykeep-mark-1024.png">
-  <img src="packaging/icons/skykeep-mark-1024.png" alt="Skykeep: a blue tower rising from a cloud" width="140">
+  <source media="(prefers-color-scheme: dark)" srcset="packaging/icons/skykeep-1024.png">
+  <source media="(prefers-color-scheme: light)" srcset="packaging/icons/skykeep-1024.png">
+  <img src="packaging/icons/skykeep-1024.png" alt="Skykeep" width="140">
 </picture>
 
 # Skykeep

@@ -11,7 +11,7 @@ export const SERVICES = ["account","archivews","calendar","ckdatabasews","ckdevi
    value it needs must arrive through the single argument. */
 /* Fixture events, so the agenda's rendering is verified without inventing rows in anyone's
    real library. Times are unix seconds relative to now. */
-export function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture, remindersFixture }) {
+export function installStub({ screen, services, twoFactor, calendarFixture, notesFixture, contactsFixture, driveFixture, remindersFixture, demoFixture }) {
   const HOUR = 3600, DAY = 86400;
   // Today at 9 in the morning, on this machine's clock. Counted from UTC's midnight it was
   // yesterday for the first hours after local midnight in a zone east of UTC — and the
@@ -130,6 +130,16 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     { guid: "quince:holidays", title: "India Holidays", colour: "#34c759", ctag: null, sortOrder: 901,
       enabled: true, writable: false, isDefault: false },
   ];
+  // Opt-in: the README's demo library (readme-fixture.mjs, installed first as window.__demo)
+  // takes the place of the rows above, and answers the commands it knows before the switch.
+  const demo = demoFixture ? window.__demo : null;
+  if (demo) {
+    for (const [mine, theirs] of [[events, demo.events], [dueReminders, demo.dueReminders], [noteFolders, demo.noteFolders],
+      [noteList, demo.noteList], [contactList, demo.contactList], [driveItems, demo.driveItems], [reminderLists, demo.reminderLists],
+      [reminderItems, demo.reminderItems], [calendars, demo.calendars]]) mine.splice(0, mine.length, ...theirs);
+    // One store, so a write to either is seen by both.
+    demo.noteList = noteList; demo.reminderItems = reminderItems;
+  }
   window.__TAURI_INTERNALS__ = {
     transformCallback: (cb) => cb,
     // As Tauri builds it on Linux (tauri/scripts/core.js): the whole path escaped.
@@ -137,6 +147,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
     convertFileSrc: (path, protocol = "asset") =>
       window.__picBase ? `${window.__picBase}/${encodeURIComponent(path)}` : `${protocol}://localhost/${encodeURIComponent(path)}`,
     invoke: async (cmd, args) => {
+      if (demo) { const answer = demo.answer(cmd, args); if (answer !== undefined) return answer; }
       switch (cmd) {
         case "auth_status":
           return { hasStoredSession: screen === "library", signedIn: screen === "library" };
@@ -667,6 +678,9 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "contacts_import": (window.__imports ??= []).push(args); return window.__importAnswer ?? [2, 0, 0];
         case "plugin:dialog|open": return window.__pick ?? null;
         case "plugin:dialog|save": window.__saveAsked = args; return window.__savePath ?? null;
+        // The dialogs as the app shows them now, from its Rust side (grants.rs).
+        case "pick_open": { const p = window.__pick ?? null; return p == null ? null : Array.isArray(p) ? p : [p]; }
+        case "pick_save": window.__saveAsked = { ...args, options: { defaultPath: args?.defaultName, filters: args?.filters } }; return window.__savePath ?? null;
         case "note_export_markdown": (window.__exported ??= []).push(args); return null;
         case "contact_lists": return !contactsFixture ? [] : (window.__lists ??= [
           { guid: "L1", name: "Family", members: ["c2"], etag: "e1" },
@@ -755,16 +769,36 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_submit_sms_code": return null;
         case "auth_sign_out":    sessionStorage.setItem("__signedOut", JSON.stringify(args)); return null;
         case "search_everything": {
-          // A search across every app: what the fixtures hold that matches every word.
-          const q = String(args.query).toLowerCase().split(/\s+/).filter(Boolean);
-          const has = (t) => q.every((w) => String(t ?? "").toLowerCase().includes(w));
-          const notes = noteList.filter((n) => has(`${n.title} ${n.body ?? ""}`));
-          const contacts = contactList.concat(window.__moreContacts ?? []).filter((c) => has(`${c.firstName ?? ""} ${c.lastName ?? ""} ${c.company ?? ""}`));
-          const files = (driveFixture ? driveItems : []).filter((f) => has(`${f.name}.${f.extension ?? ""}`));
-          const found = events.filter((e) => has(`${e.title} ${e.location ?? ""}`));
-          const each = args.each ?? 5;
-          return { notes: notes.slice(0, each), reminders: [], events: found.slice(0, each), contacts: contacts.slice(0, each), files: files.slice(0, each), photos: [],
-            counts: [notes.length, 0, found.length, contacts.length, files.length, 0] };
+          // A search across every app, as search.rs answers it: every word has to begin a word
+          // of the record (case and accents aside); per app the count and a few hits with where
+          // the words fall; `only` + `skip` read one app further. `__searchDelay` holds an
+          // answer back (ms, or a function of the query) to play answers arriving out of order.
+          const fold = (t) => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+          const q = fold(args.query).split(/\s+/).filter(Boolean);
+          const words = (t) => [...String(t ?? "").matchAll(/[\p{L}\p{N}\p{M}]+/gu)];
+          const has = (t) => { const w = words(t).map((m) => fold(m[0])); return q.every((x) => w.some((y) => y.startsWith(x))); };
+          const marks = (t) => words(t).filter((m) => q.some((x) => fold(m[0]).startsWith(x)))
+            .map((m) => [m.index, m.index + Math.max(...q.filter((x) => fold(m[0]).startsWith(x)).map((x) => x.length))]);
+          const hit = (id, title, o = {}) => ({ id, within: null, title, titleMarks: marks(title), detail: null, detailMarks: [],
+            when: null, allDay: false, picture: false, locked: false, ...o, ...(o.detail ? { detailMarks: marks(o.detail) } : {}) });
+          const people = contactList.concat(window.__moreContacts ?? []);
+          const all = {
+            notes: noteList.filter((n) => has(`${n.title} ${n.body ?? ""}`))
+              .map((n) => hit(n.guid, n.title, { detail: (n.snippet ?? "").replace(/…$/, ""), when: n.modifiedAt ?? null })),
+            calendar: events.filter((e) => has(`${e.title} ${e.location ?? ""}`))
+              .map((e) => hit(e.guid, e.title, { within: e.calendarGuid, detail: e.location, when: e.startsAt, allDay: e.allDay })),
+            contacts: people.filter((c) => has(`${c.firstName ?? ""} ${c.lastName ?? ""} ${c.company ?? ""} ${(c.methods ?? []).map((m) => m.value).join(" ")}`))
+              .map((c) => hit(c.guid, [c.firstName, c.lastName].filter(Boolean).join(" ") || c.company || "No Name", { detail: c.methods?.[0]?.value ?? null })),
+            drivews: (driveFixture ? driveItems : []).filter((f) => has(`${f.name}.${f.extension ?? ""}`))
+              .map((f) => hit(f.drivewsid, f.extension ? `${f.name}.${f.extension}` : f.name, { within: f.parentId, when: f.modifiedAt, allDay: true })),
+          };
+          const each = args.each ?? 5, skip = args.only ? args.skip ?? 0 : 0;
+          const groups = Object.entries(all).filter(([app, h]) => h.length && (!args.only || app === args.only))
+            .map(([app, h]) => ({ app, count: h.length, hits: h.slice(skip, skip + each) }));
+          (window.__searches ??= []).push({ query: args.query, seq: args.seq, only: args.only ?? null, skip });
+          const delay = typeof window.__searchDelay === "function" ? window.__searchDelay(args.query) : window.__searchDelay ?? 0;
+          const answer = { seq: args.seq ?? 0, groups };
+          return delay ? new Promise((r) => setTimeout(() => r(answer), delay)) : answer;
         }
         case "drive_kept": return window.__driveFolder?.on ? [...(window.__kept ??= [])] : null;
         case "drive_keep":

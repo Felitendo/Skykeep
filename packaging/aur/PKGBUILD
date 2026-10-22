@@ -3,7 +3,7 @@
 # from a local checkout instead.
 
 pkgname=skykeep-git
-pkgver=0.1.0.r0.g0000000
+pkgver=0.1.0.r405.g054560f
 pkgrel=1
 pkgdesc="Your iCloud, on this computer — calendar, reminders, notes, contacts and Drive"
 arch=('x86_64')
@@ -14,15 +14,20 @@ license=('GPL-3.0-only')
 # kept — the app will start without the second but cannot stay signed in.
 # What the built binary asks for, read off it with ldd rather than guessed — webkit2gtk for
 # the window, gtk3 under it, libsecret for the keyring, libheif for HEIC photos (nothing
-# else pulls it in: without it the app does not start), GStreamer for videos — and the one it
-# loads at run time, which ldd cannot see: the tray icon is drawn through
-# libayatana-appindicator, opened when the tray is made. Without it the tray, and the
-# alerts' way back into the window, is gone.
+# else pulls it in: without it the app does not start; Arch's carries the libde265 decoder),
+# GStreamer for videos — and the one it loads at run time, which ldd cannot see: the tray icon
+# is drawn through libayatana-appindicator, opened when the tray is made. Without it the
+# tray, and the alerts' way back into the window, is gone.
+# The GStreamer plugins are loaded at run time too, so ldd can't see them either. The window's
+# player (playbin3) and the poster reader (poster.rs: decodebin, videoconvert, videoflip,
+# appsink) need gst-plugins-base for the elements, gst-plugins-good for qtdemux (an iPhone's
+# .mov/.mp4) and videoflip, and gst-libav for the H.264/HEVC decoders. Without them a video
+# shows a black frame and won't play.
 depends=('webkit2gtk-4.1' 'gtk3' 'libsecret' 'libheif' 'gstreamer' 'gst-plugins-base-libs'
-         'libayatana-appindicator')
+         'gst-plugins-base' 'gst-plugins-good' 'gst-libav' 'libayatana-appindicator')
 # The iCloud Drive and Photos folders are mounted through fusermount3.
 optdepends=('fuse3: iCloud Drive and Photos as folders in the file manager')
-makedepends=('rust' 'nodejs' 'npm' 'pkgconf')
+makedepends=('rust' 'nodejs' 'npm' 'pkgconf' 'git')
 
 # makepkg turns link-time optimisation on for everything, which compiles the C and assembly
 # inside ring and libsqlite3-sys to LLVM bitcode. Rust links its own way and cannot see into
@@ -33,20 +38,22 @@ options=('!lto')
 
 provides=('skykeep')
 conflicts=('skykeep')
-makedepends+=('git')
-source=("quince::git+https://github.com/YashwanthKamireddi/Skykeep.git")
+source=("skykeep::git+https://github.com/YashwanthKamireddi/Skykeep.git")
 sha256sums=('SKIP')
 
-_root="$srcdir/quince"
 
 pkgver() {
-  cd "$_root"
-  # The last tag, and how far past it this build is: 0.1.0.r12.gabc1234.
-  printf "%s" "$(git describe --long --tags 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' || printf "0.1.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)")"
+  cd "$srcdir/skykeep"
+  # The last tag, and how far past it this build is: 0.1.0.r12.gabc1234. Before the first
+  # tag, the commit count and hash. pipefail, or sed's success would hide git describe failing
+  # and the version would come out empty.
+  ( set -o pipefail
+    git describe --long --tags --abbrev=7 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' ||
+      printf "0.1.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)" )
 }
 
 build() {
-  cd "$_root"
+  cd "$srcdir/skykeep"
 
   # Its own build directory, not the one a developer is using. makepkg builds with its own
   # CFLAGS and LDFLAGS, and cargo reuses whatever C objects it finds — so sharing a target
@@ -71,12 +78,17 @@ build() {
 }
 
 package() {
-  cd "$_root"
+  cd "$srcdir/skykeep"
   # Cargo names the binary after its crate; `tauri build` renames it and this does not go
   # through that, so the rename happens here.
   install -Dm755 "$srcdir/target/release/quince-app" "$pkgdir/usr/bin/skykeep"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 packaging/io.github.yashwanthkamireddi.Skykeep.metainfo.xml \
+  # The metainfo names the .deb's launcher (Skykeep.desktop, Tauri's name for it); here the
+  # launcher is installed under the app ID, so the metainfo is pointed at that one.
+  sed 's|<launchable type="desktop-id">Skykeep.desktop</launchable>|<launchable type="desktop-id">io.github.yashwanthkamireddi.Skykeep.desktop</launchable>|' \
+      packaging/io.github.yashwanthkamireddi.Skykeep.metainfo.xml \
+    > "$srcdir/io.github.yashwanthkamireddi.Skykeep.metainfo.xml"
+  install -Dm644 "$srcdir/io.github.yashwanthkamireddi.Skykeep.metainfo.xml" \
     "$pkgdir/usr/share/metainfo/io.github.yashwanthkamireddi.Skykeep.metainfo.xml"
   # The same entry the .deb and .rpm get, with the names this package uses filled in.
   sed -e 's/{{name}}/Skykeep/' \

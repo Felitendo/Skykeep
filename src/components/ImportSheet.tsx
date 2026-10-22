@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { api, intakeApi, INTAKE, type Arrival, type Calendar, type ImportEvent } from "../lib/ipc";
 import { Picker } from "./Picker";
+import { useModalFocus } from "../lib/focus";
 import "../styles/intake.css";
 
 /**
@@ -56,8 +57,11 @@ export function ImportSheet() {
 }
 
 function Shell({ label, onCancel, children }: { label: string; onCancel: () => void; children: React.ReactNode }) {
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+  useModalFocus(sheetRef);
   return (
     <div
+      ref={sheetRef}
       className="modal-sheet ix-sheet"
       role="dialog"
       aria-modal="true"

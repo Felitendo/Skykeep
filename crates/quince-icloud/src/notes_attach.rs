@@ -425,7 +425,7 @@ pub async fn attach_file_cloudkit(
     base: Option<&str>,
     at: u64,
 ) -> Result<Attached> {
-    if !NOTE_ATTACH_WRITES {
+    if !NOTE_ATTACH_WRITES && !crate::supervised_live_test() {
         return Err(Error::Refused(
             "Adding files to notes isn’t switched on yet. Nothing was changed.".into(),
         ));

@@ -131,8 +131,10 @@ export const api = {
   photosFolderStatus: () => invoke<DriveFolder>("photos_folder_status"),
   /** What the iCloud Drive folder keeps on this computer; null while the folder is off. */
   driveKept: () => invoke<string[] | null>("drive_kept"),
-  /** One search across every app's library: the first few of each, and how many in all. */
-  searchEverything: (query: string, each?: number) => invoke<unknown>("search_everything", { query, each }),
+  /** One search across every app's library: the best few of each and how many in all, or
+   * (`only`) the next `each` of one app from its `skip`th. Null when a newer `seq` overtook it. */
+  searchEverything: (query: string, o: { seq: number; each?: number; only?: string; skip?: number }) =>
+    invoke<SearchFound | null>("search_everything", { query, ...o }),
   driveKeep: (drivewsid: string, on: boolean) => invoke<string[]>("drive_keep", { drivewsid, on }),
   photosFolderSet: (on: boolean) => invoke<DriveFolder>("photos_folder_set", { on }),
   /** Open at Login: whether it is on, the command it runs, and whether this desktop runs it. */
@@ -723,6 +725,23 @@ export function contactPhotoSrc(guid: string): string {
 export function photoSrc(c: Contact): string | null {
   return c.photoUrl ? contactPhotoSrc(c.guid) : null;
 }
+
+/** One thing the search across everything found (search.rs `Hit`): marks are [start, end)
+ * in UTF-16 units, where the typed words fall. */
+export type SearchHit = {
+  id: string;
+  within: string | null;
+  title: string;
+  titleMarks: [number, number][];
+  detail: string | null;
+  detailMarks: [number, number][];
+  when: number | null;
+  allDay: boolean;
+  picture: boolean;
+  locked: boolean;
+};
+export type SearchGroup = { app: string; count: number; hits: SearchHit[] };
+export type SearchFound = { seq: number; groups: SearchGroup[] };
 
 export function displayName(c: Contact): string {
   const full = [c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ").trim();

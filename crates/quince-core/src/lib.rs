@@ -35,11 +35,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 const COMPUTER_KEYS: &str = "key LIKE 'settings.%' OR key IN \
      ('drive_folder_on', 'drive_folder_path', 'photos_folder_on', 'photos_folder_path')";
 
-/// Every table holding what an account brought: all but `app_state`, which is sorted key by key.
+/// Every table holding what an account brought: all but `app_state`, which is sorted key by key,
+/// and the search index's, which are not rows to delete one by one (`forget_account` empties it).
 fn account_tables(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table'
-         AND name NOT LIKE 'sqlite_%' AND name != 'app_state'",
+         AND name NOT LIKE 'sqlite_%' AND name != 'app_state'
+         AND name NOT LIKE 'search\\_%' ESCAPE '\\'",
     )?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -75,6 +77,21 @@ impl Library {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         Self::from_connection(Connection::open(dir.join("library.db"))?)
+    }
+
+    /// A second, read-only handle on the library under `dir`, which must already be open (and
+    /// migrated) through [`Library::open`]: WAL lets it read while the one that writes holds its
+    /// lock through a sync pass, so a search never waits behind one. It sees what was
+    /// committed, never half a pass.
+    pub fn open_reader(dir: &Path) -> Result<Self> {
+        use rusqlite::OpenFlags;
+        let conn = Connection::open_with_flags(
+            dir.join("library.db"),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.pragma_update(None, "query_only", true)?;
+        conn.busy_timeout(std::time::Duration::from_millis(250))?;
+        Ok(Self { conn })
     }
 
     /// An in-memory library. Tests, and nothing else.
@@ -179,6 +196,11 @@ impl Library {
         for table in account_tables(&tx)? {
             tx.execute(&format!("DELETE FROM \"{table}\""), [])?;
         }
+        // The search index (migration 45) is not a table of records but words: its triggers
+        // emptied it with the records, and this makes sure of it without reading it row by row.
+        tx.execute_batch(
+            "INSERT INTO search_text (search_text) VALUES ('delete-all'); DELETE FROM search_docs;",
+        )?;
         tx.execute(
             &format!("DELETE FROM app_state WHERE NOT ({COMPUTER_KEYS})"),
             [],

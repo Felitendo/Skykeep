@@ -8,7 +8,7 @@ import { PaneTitle } from "../components/PaneTitle";
 import { Unsent, Waiting } from "../components/Unsent";
 import { useOutbox } from "../lib/outbox";
 import { ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, LockKeyhole, LockKeyholeOpen, Paperclip, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
-import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { pickOpen, pickSave } from "../lib/pick";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { editorDate, groupNotes, listDate, mergeEdits, splitTitle } from "./notes/model";
 import { api, messageOf, nestFolders, notesLockApi, type Note, type NoteFolder, type UnlockedNote } from "../lib/ipc";
@@ -156,7 +156,10 @@ export function NotesView() {
   const { hold, over } = usePending<Note>();
   /** Edits kept here and not yet at Apple, and any Apple turned down. */
   const outbox = useOutbox("notes");
+  /** Each read is numbered: one overtaken by a later one (a key typed since) never draws. */
+  const reads = useRef(0);
   const read = useCallback(async () => {
+    const mine = ++reads.current;
     api
       .noteCounts()
       .then(([all, per]) => setCounts({ all, per: new Map(per) }))
@@ -171,6 +174,7 @@ export function NotesView() {
             scoped && Array.isArray(found) ? found.filter((n) => n.folderGuid === folder) : found)
         : api.notesIn(folder === ALL ? null : folder),
     ]);
+    if (mine !== reads.current) return;
     setFolders(Array.isArray(found) ? found : []);
     setNotes(over(Array.isArray(list) ? list : []));
     setLoaded(true);
@@ -770,9 +774,9 @@ export function NotesView() {
   );
   const pickAttachment = async () => {
     try {
-      const chosen = await openFileDialog({ multiple: true, title: "Add to Note" });
+      const chosen = await pickOpen({ multiple: true, title: "Add to Note" });
       if (!chosen) return;
-      await attach(Array.isArray(chosen) ? chosen : [chosen]);
+      await attach(chosen);
     } catch (e) {
       setError(messageOf(e));
     }
@@ -956,7 +960,7 @@ export function NotesView() {
     const name = (text.split("\n")[0].trim() || "Note").replace(/[\\/:*?"<>|]/g, "-").slice(0, 80);
     let path: string | null;
     try {
-      path = await saveFileDialog({ defaultPath: `${name}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
+      path = await pickSave({ defaultName: `${name}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] });
     } catch (e) {
       setError(messageOf(e));
       return;
@@ -1183,10 +1187,12 @@ export function NotesView() {
 
         <Unsent refused={outbox.refused} what="an edit to a note" onResend={(r) => void outbox.resend(r)} onDiscard={(r) => void outbox.discard(r)} />
 
-        <div className="note-rows" role="list" ref={rowsRef}>
+        <div className="note-rows" ref={rowsRef}>
           {sections.map((section) => (
             <Fragment key={section.key}>
               <h2 className="notes-section">{section.heading}</h2>
+              {/* A list per heading: a list holds its items and nothing else. */}
+              <div role="list" aria-label={section.heading}>
               {section.notes.map((note) => (
                 <div role="listitem" key={note.guid}>
                   <button
@@ -1216,6 +1222,7 @@ export function NotesView() {
                   </button>
                 </div>
               ))}
+              </div>
             </Fragment>
           ))}
         </div>

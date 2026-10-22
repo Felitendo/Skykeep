@@ -112,6 +112,16 @@ impl Library {
         Ok(())
     }
 
+    /// File a stored note in a folder (`None`: no folder) — moved or deleted here, before
+    /// Apple has it. A note this library does not hold is left alone.
+    pub fn set_note_folder(&mut self, guid: &str, folder_guid: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notes SET folder_guid = ?2 WHERE guid = ?1",
+            params![guid, folder_guid],
+        )?;
+        Ok(())
+    }
+
     /// A note's text, title and snippet as just saved, touching nothing else — not its
     /// formatting, its folder or its version, which the next pass brings from Apple.
     pub fn set_note_text(
@@ -407,54 +417,41 @@ impl Library {
 
     /// Notes whose title or text holds every word of `query`, in the list's own order.
     ///
-    /// Matched here rather than in SQL, because SQLite folds case for ASCII alone: a search
-    /// for "café" would miss "CAFÉ", and so would anything written in a script with case of
-    /// its own. Accents are ignored as they are on the phone, so "cafe" finds it too. Every
-    /// word has to appear, in any order, which is how Apple's search behaves.
-    /// Recently Deleted is left out, as it is on the phone. Bodies are read to match against
-    /// and never returned — the results cross into the window like any other list.
+    /// Looked up in the search index (migration 45): every word has to begin a word of the
+    /// note, in any order, case and accents aside — "cafe" finds "CAFÉ", and a Telugu word
+    /// stays one word — as Apple's own search finds notes. Recently Deleted is left out, as it
+    /// is on the phone. Bodies are never read here, let alone returned.
     pub fn search_notes(&self, query: &str) -> Result<Vec<Note>> {
-        let words = crate::fold::words(query);
-        if words.is_empty() {
+        let Some(question) = crate::search::match_all(query) else {
             return Ok(Vec::new());
-        }
-        let mut stmt = self.conn.prepare(
+        };
+        let mut stmt = self.conn.prepare_cached(
             "SELECT guid, folder_guid, title,
                     coalesce(snippet, substr(body, 1, 200)), locked, pinned,
-                    created_at, modified_at, editable, etag, coalesce(body, '')
+                    created_at, modified_at, editable, etag
              FROM notes
-             WHERE folder_guid IS NULL OR folder_guid != ?1
+             WHERE guid IN (SELECT d.key FROM search_text
+                            JOIN search_docs d ON d.id = search_text.rowid
+                            WHERE search_text MATCH ?1 AND d.kind = 'note')
              ORDER BY pinned DESC, modified_at DESC, title",
         )?;
-        let rows = stmt.query_map(params![TRASH_FOLDER], |row| {
-            let body: String = row.get(10)?;
-            Ok((
-                Note {
-                    guid: row.get(0)?,
-                    folder_guid: row.get(1)?,
-                    title: row.get(2)?,
-                    snippet: row.get(3)?,
-                    body: None,
-                    locked: row.get::<_, i64>(4)? != 0,
-                    pinned: row.get::<_, i64>(5)? != 0,
-                    created_at: row.get(6)?,
-                    modified_at: row.get(7)?,
-                    editable: row.get::<_, i64>(8)? != 0,
-                    etag: row.get(9)?,
-                    runs: None,
-                },
-                body,
-            ))
+        let rows = stmt.query_map(params![question], |row| {
+            Ok(Note {
+                guid: row.get(0)?,
+                folder_guid: row.get(1)?,
+                title: row.get(2)?,
+                snippet: row.get(3)?,
+                body: None,
+                locked: row.get::<_, i64>(4)? != 0,
+                pinned: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+                modified_at: row.get(7)?,
+                editable: row.get::<_, i64>(8)? != 0,
+                etag: row.get(9)?,
+                runs: None,
+            })
         })?;
-        let mut found = Vec::new();
-        for row in rows {
-            let (note, body) = row?;
-            let haystack = format!("{}\n{}", note.title, body);
-            if crate::fold::holds_all(&crate::fold::fold(&haystack), &words) {
-                found.push(note);
-            }
-        }
-        Ok(found)
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
 

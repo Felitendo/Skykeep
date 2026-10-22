@@ -21,15 +21,21 @@
   --accent-deep: #0068d6;
   --accent-tint: color-mix(in srgb, var(--accent) 14%, transparent);
   --accent-ring: color-mix(in srgb, var(--accent) 34%, transparent);
+  /* A selection drawn in the accent, under --on-accent: the deep shade, which carries white
+     text at 4.5:1 — on the bright blue a selected row's name read at 3.5:1. */
+  --accent-fill: var(--accent-deep);
   /* Text on a filled accent — white, or on Notes' yellow the near-black Notes uses. */
   --on-accent: #fff;
-  --on-accent-2: rgba(255, 255, 255, 0.82);
+  /* Secondary text on a fill: 0.82 white read at 4.1:1 on the deep blue and red. */
+  --on-accent-2: rgba(255, 255, 255, 0.92);
 
   --bg: #f5f5f7;
   --sheet: #ffffff;
   --text: #1d1d1f;
-  --text-2: #6e6e73;
-  --text-3: #8e8e93;
+  /* Secondary and tertiary text at 4.5:1 or better on the window, a sheet and a selected
+     row (WCAG AA). Apple's own #6e6e73 and #8e8e93 fell to 4.0 and 3.0 there. */
+  --text-2: #5f5f64;
+  --text-3: #6a6a6f;
   --separator: rgba(0, 0, 0, 0.11);
   --field: #ffffff;
   --field-edge: rgba(0, 0, 0, 0.17);
@@ -42,13 +48,17 @@
   --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.04);
 
   /* macOS system text is 13px. Using the web's 16px default is the fastest way to look
-     like a website pretending to be an app. */
-  --t-11: 11px;
-  --t-13: 13px;
-  --t-15: 15px;
-  --t-17: 17px;
-  --t-22: 22px;
-  --t-28: 28px;
+     like a website pretending to be an app. In rem, so the sizes stay 11–28px at the engine's
+     default 16px but follow the system's text size: WebKitGTK derives its default font size
+     from GTK's font DPI (Xft.dpi — what GNOME's "Large Text" and text-scaling-factor change),
+     WebView2 from Windows' "Text size". Pixel sizes would ignore both. */
+  --t-11: 0.6875rem;
+  --t-12: 0.75rem;
+  --t-13: 0.8125rem;
+  --t-15: 0.9375rem;
+  --t-17: 1.0625rem;
+  --t-22: 1.375rem;
+  --t-28: 1.75rem;
 
 
   /* Liquid Glass, as macOS 26/27 builds it (docs/macos27-kit.md). Apple's rules: glass is
@@ -66,7 +76,7 @@
      blur that would hide them (measured on his machine: sharp text through a menu). */
   --glass-thick: rgba(248, 248, 250, 0.96);
   --glass-blur: blur(30px) saturate(190%);
-  --glass-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.9), inset 0 0 0 0.5px rgba(255, 255, 255, 0.45);
+  --glass-specular: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.9), inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.45);
   --glass-edge: rgba(0, 0, 0, 0.08);
   /* Floating glass casts a soft, wide shadow — it sits above the window, not on it. */
   --glass-lift: 0 8px 30px rgba(0, 0, 0, 0.13), 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -74,7 +84,7 @@
      take it without the live blur: a blurred layer is a compositing layer, and WebKitGTK
      building one on a menu's first frame is the flash that made menus open without
      animation in the first place. */
-  --glass-float: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--glass-lift);
+  --glass-float: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge), var(--glass-lift);
 
   /* Motion. Apple's interface moves on springs, not curves: these are SwiftUI's own,
      computed from the spring itself (response and bounce) rather than eyeballed, and each
@@ -104,8 +114,21 @@
   --motion-ease-out: cubic-bezier(0.2, 0, 0, 1);
   /* Leaving: gathering pace as it goes (accelerate), so the end is not watched. */
   --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
-  /* Keyboard focus, the same ring on everything in the shell. */
-  --focus-ring: 3px solid var(--accent-ring);
+  /* Keyboard focus, the same ring on everything in the shell: the accent itself, at 3:1 or
+     better against the window (WCAG 1.4.11). The translucent accent it was measured 1.5:1. */
+  --focus-ring: 2px solid var(--accent-strong);
+
+  /* One device pixel, whatever the scale: a separator, a rim, a grid line. A CSS 1px at
+     Hyprland's 1.25 is 1.25 device pixels — smeared over two rows — and a 0.5px edge at 1×
+     is a grey half-line. The ladder below sets it per resolution. */
+  --hairline: 1px;
+  /* Rings and discs as vectors: a CSS border on a 10–20px circle at a fractional scale is
+     drawn thick on one side and thin on the other. Laid as a mask over a colour fill, as
+     Notes' checklist circles are (notes.css .nf-circle). Each ring is drawn for its size. */
+  --mask-ring-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><circle cx='6' cy='6' r='5.375' fill='none' stroke='black' stroke-width='1.25'/></svg>");
+  --mask-ring-20: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><circle cx='10' cy='10' r='9.25' fill='none' stroke='black' stroke-width='1.5'/></svg>");
+  --mask-ring-20-dashed: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><circle cx='10' cy='10' r='9.25' fill='none' stroke='black' stroke-width='1.5' stroke-dasharray='2.9 2.9'/></svg>");
+  --mask-disc: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'><circle cx='1' cy='1' r='1'/></svg>");
 
   /* A press: in fast, so the control answers the finger; out on the snappy spring. */
   --press-scale: 0.96;
@@ -126,7 +149,8 @@
   --h-control: 28px;
   --h-tool: 32px;
   --h-row: 30px;
-  --h-mini: 22px;
+  /* 24, not Apple's 22: WCAG 2.2's smallest target (2.5.8). */
+  --h-mini: 24px;
 
   /* The neutral fills every control and row is drawn with, so a hover, a press and a
      selection read the same in every app. */
@@ -140,7 +164,7 @@
   /* A toolbar's capsules (kit.css .toolbar-group): nearly solid, a rim, a short lift. */
   --tool-bg: color-mix(in srgb, var(--sheet) 90%, transparent);
   --tool-drop: 0 2px 8px rgba(0, 0, 0, 0.08);
-  --tool-lift: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--tool-drop);
+  --tool-lift: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge), var(--tool-drop);
 
   /* Apple's system colours, as its built-in views draw them; the dark set shifts them. */
   --sys-blue: #0088ff;
@@ -148,6 +172,9 @@
   --sys-gray: #8e8e93;
   --sys-orange: #ff8d28;
   --sys-green: #34c759;
+  /* A menu's or list's highlighted row under white text, at 4.5:1 in either appearance
+     (the system blue itself carries white at 3.5:1). */
+  --sys-blue-deep: #0068d6;
 
   /* Apple's sheet-presentation curve. Decisive out, no bounce. */
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
@@ -160,6 +187,8 @@
 
 /* Notes: Apple's yellow; its text and filled controls a deep gold that reads on white. */
 :root[data-app="notes"] { --accent: #ffcc00; --accent-strong: #8a6800; --accent-deep: #8a6800; --on-accent: #1d1d1f; --on-accent-2: rgba(0, 0, 0, 0.62); }
+/* Notes fills a selection with its yellow, under near-black text. */
+:root[data-app="notes"] { --accent-fill: var(--accent); }
 /* Before any app is open — signing in — the brand's own gold. */
 :root:not([data-app]) { --accent: var(--gold); --accent-strong: var(--gold-deep); --accent-deep: var(--gold-deep); }
 /* Calendar: Apple's red. */
@@ -173,8 +202,8 @@
     --bg: #1c1c1e;
     --sheet: #2c2c2e;
     --text: #f5f5f7;
-    --text-2: #a1a1a6;
-    --text-3: #8e8e93;
+    --text-2: #aeaeb3;
+    --text-3: #9c9ca1;
     --separator: rgba(255, 255, 255, 0.13);
     --field: #1c1c1e;
     --field-edge: rgba(255, 255, 255, 0.16);
@@ -187,7 +216,7 @@
     --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
     --glass: rgba(40, 40, 44, 0.56);
     --glass-thick: rgba(38, 38, 42, 0.96);
-    --glass-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+    --glass-specular: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.2), inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.1);
     --glass-edge: rgba(0, 0, 0, 0.5);
     --glass-lift: 0 10px 36px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
   }
@@ -200,8 +229,8 @@
     --bg: #1c1c1e;
     --sheet: #2c2c2e;
     --text: #f5f5f7;
-    --text-2: #a1a1a6;
-    --text-3: #8e8e93;
+    --text-2: #aeaeb3;
+    --text-3: #9c9ca1;
     --separator: rgba(255, 255, 255, 0.13);
     --field: #1c1c1e;
     --field-edge: rgba(255, 255, 255, 0.16);
@@ -214,7 +243,7 @@
     --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
     --glass: rgba(40, 40, 44, 0.56);
     --glass-thick: rgba(38, 38, 42, 0.96);
-    --glass-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+    --glass-specular: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.2), inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.1);
     --glass-edge: rgba(0, 0, 0, 0.5);
     --glass-lift: 0 10px 36px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
   }
@@ -225,6 +254,15 @@
 :root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
+
+/* The ladder for --hairline: just over one device pixel's worth, never under (an edge the
+   engine rounds below one device pixel is not drawn at all). */
+@media (min-resolution: 1.2dppx) { :root { --hairline: 0.8px; } }
+@media (min-resolution: 1.45dppx) { :root { --hairline: 0.6667px; } }
+@media (min-resolution: 1.7dppx) { :root { --hairline: 0.5715px; } }
+@media (min-resolution: 1.95dppx) { :root { --hairline: 0.5px; } }
+@media (min-resolution: 2.45dppx) { :root { --hairline: 0.4px; } }
+@media (min-resolution: 2.95dppx) { :root { --hairline: 0.3334px; } }
 
 html, body, #root { height: 100%; }
 

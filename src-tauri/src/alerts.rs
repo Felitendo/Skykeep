@@ -28,11 +28,13 @@ const STILL_WORTH_SAYING: i64 = 6 * 60 * 60;
 /// Snooze, as the phone offers it.
 const SNOOZE: i64 = 60 * 60;
 
-/// The app's icon, carried in the binary so an alert shows it on any desktop. A notification
+/// The app's mark on its own sky-blue circle, the letters sized and set inside it —
+/// notification servers crop icons to a circle of their own, which cut the full icon's letters
+/// off — carried in the binary so an alert shows it on any desktop. A notification
 /// names its icon either from the icon theme — where nothing is installed for a copy run
 /// straight from a download or a build, so alerts came up blank — or by file path, which
 /// always resolves. So it is written once beside the library and named by path.
-const ICON: &[u8] = include_bytes!("../icons/128x128@2x.png");
+const ICON: &[u8] = include_bytes!("../icons/notify.png");
 static ICON_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 /// What a press on a reminder's alert does — Linux's notification actions and Windows' toast
@@ -135,14 +137,19 @@ fn chime(alert: &mut notify_rust::Notification) {
         alert.hint(notify_rust::Hint::SoundName(SOUND.into()));
         return;
     }
-    // Not waited on: an alert never stands behind its sound.
-    std::process::Command::new("canberra-gtk-play")
+    // The alert never stands behind its sound, and the sound is waited for on a thread of its own:
+    // left unwaited, every alert left a finished player behind as a zombie process.
+    if let Ok(mut player) = std::process::Command::new("canberra-gtk-play")
         .args(["--id", SOUND, "--description", "Skykeep alert"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .ok();
+    {
+        std::thread::spawn(move || {
+            let _ = player.wait();
+        });
+    }
 }
 
 fn icon_path(app: &AppHandle) -> Option<&'static str> {

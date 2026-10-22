@@ -189,6 +189,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
                     fetched,
                     |library, snapshot| {
                         let summary = quince_icloud::sync::apply_calendar(library, snapshot)?;
+                        crate::outbox::replay(library, crate::outbox::CALENDAR)?;
                         Ok(format!(
                             "{} event{} in {} calendar{}",
                             summary.events,
@@ -445,7 +446,7 @@ async fn run(client: &Arc<Mutex<Client>>, data: &Mutex<Library>, services: &[&st
     let (calendar, reminders, notes, contacts, drive, photos) =
         tokio::join!(calendar, reminders, notes, contacts, drive, photos);
     // Apple answered: whatever waits to be sent goes now, not on the outbox's own timer.
-    if [&reminders, &notes, &contacts]
+    if [&calendar, &reminders, &notes, &contacts]
         .iter()
         .any(|r| r.as_ref().is_some_and(|r| r.outcome == Outcome::Ok))
     {

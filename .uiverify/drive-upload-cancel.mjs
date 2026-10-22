@@ -21,6 +21,7 @@ await ctx.addInitScript(() => {
         return handlers[args.event].length;
       }
       if (cmd === "plugin:dialog|open") return ["/home/me/Holiday"];
+      if (cmd === "pick_open") return ["/home/me/Holiday"];
       if (cmd === "drive_children") return [];
       if (cmd === "drive_item") return null;
       if (cmd === "drive_sync_folder") return 0;

@@ -5,6 +5,7 @@ import { SearchField } from "../../components/SearchField";
 import { useActiveRef } from "../../lib/screen";
 import { usePending } from "../../lib/pending";
 import { inMenu, Portal } from "../../components/Portal";
+import { useReturnFocus } from "../../lib/focus";
 import { TimeField } from "../../components/TimeField";
 import { ChevronDown, ChevronLeft, ChevronRight, Ellipsis, MapPin, Plus, Repeat } from "lucide-react";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -21,6 +22,8 @@ import {
   SUBSCRIPTION_PREFIX } from "../../lib/ipc";
 import { parseQuick } from "./quick";
 import { useSync } from "../../lib/sync";
+import { useOutbox } from "../../lib/outbox";
+import { Unsent, Waiting } from "../../components/Unsent";
 import { Picker } from "../../components/Picker";
 import { RowMenu } from "../../components/RowMenu";
 import {
@@ -112,8 +115,11 @@ const NOTHING: never[] = [];
 
 /** One hour of the Day and Week grids. */
 const HOUR = 48;
-/** A bar in the all-day row, and the gap under it. */
-const LANE = 20;
+/** A bar in the all-day row, and the gap under it: 22px and 2px, so each bar is a target
+ * 24px from the next (WCAG 2.2). */
+const LANE = 24;
+/** A line in a month cell, on the same 24px pitch. */
+const LINE = 24;
 /** Narrower than this, a month cell draws its items as dots. */
 const DOT_CELL = 72;
 /** The most dots one row of a narrow cell holds; past that the day is simply busy. */
@@ -402,6 +408,9 @@ export function CalendarView() {
   /** The last event deleted, with its alerts, held so the deletion can be taken back. */
   const [undo, setUndo] = useState<(CalendarEvent & { alerts: number[] }) | null>(null);
   const { revision } = useSync();
+  // Changes kept here and not yet at Apple (the outbox): a saved event says so, and one Apple
+  // turned down is shown with what it held.
+  const outbox = useOutbox("calendar");
 
   // The current-time line moves once a minute, on the minute — not on a busy timer.
   useEffect(() => {
@@ -493,7 +502,8 @@ export function CalendarView() {
     return () => {
       cancelled = true;
     };
-  }, [read, revision]);
+    // `outbox.tick`: a change sent, or turned down, changes what the library holds.
+  }, [read, revision, outbox.tick]);
 
   // Beyond the months the shared refresh keeps warm, fetch what is being looked at — once,
   // and not for every month flicked past on the way.
@@ -1363,6 +1373,7 @@ export function CalendarView() {
             />
           </div>
         </header>
+        <Unsent refused={outbox.refused} what="a change to an event" onResend={(r) => void outbox.resend(r)} onDiscard={(r) => void outbox.discard(r)} />
 
         {query.trim() && (
           <div className="popover cx-found" role="listbox" aria-label="Events found" id="cx-found">
@@ -1587,6 +1598,7 @@ export function CalendarView() {
             if (e) void deleteAsking(e);
           } : undefined}
           onDismiss={dismiss}
+          waiting={Boolean(draft.guid && outbox.waiting.has(draft.guid))}
           onSave={() => void save(draft, true)}
           onDelete={draft.guid ? () => void remove(draft.guid as string) : undefined}
           onNudge={draft.guid ? (by) => {
@@ -1649,6 +1661,32 @@ const MiniMonth = memo(function MiniMonth({
     setShown(new Date(selected.getFullYear(), selected.getMonth(), 1));
   }, [selected]);
   const days = monthDays(shown);
+  // One stop for the Tab key, as a date picker has: the arrows move a day or a week, across
+  // into the next month as they go, and Return or Space picks. Forty-two stops had made the
+  // calendar beside it a long way off.
+  const [keyed, setKeyed] = useState<Date | null>(null);
+  const grid = useRef<HTMLDivElement | null>(null);
+  /** Set by an arrow: the day it moved to takes the focus once drawn — never otherwise. */
+  const follow = useRef(false);
+  const stop = keyed && days.some((d) => sameDay(d, keyed))
+    ? keyed
+    : days.some((d) => sameDay(d, selected)) ? selected : days.find((d) => d.getMonth() === shown.getMonth())!;
+  useLayoutEffect(() => {
+    if (!follow.current) return;
+    follow.current = false;
+    grid.current?.querySelector<HTMLElement>('[tabindex="0"]')?.focus({ preventScroll: true });
+  }, [keyed, shown]);
+  const onKey = (e: React.KeyboardEvent, d: Date) => {
+    const by = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
+    if (by === undefined) return;
+    e.preventDefault();
+    const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + by);
+    if (!monthDays(shown).some((x) => sameDay(x, next)) || next.getMonth() !== shown.getMonth()) {
+      setShown(new Date(next.getFullYear(), next.getMonth(), 1));
+    }
+    follow.current = true;
+    setKeyed(next);
+  };
   return (
     <div className="cx-minimonth">
       <div className="cx-minimonth-head">
@@ -1670,7 +1708,11 @@ const MiniMonth = memo(function MiniMonth({
           </button>
         </span>
       </div>
-      <div className={`cx-minimonth-grid${weekNumbers ? " has-weeks" : ""}`}>
+      <div
+        ref={grid}
+        className={`cx-minimonth-grid${weekNumbers ? " has-weeks" : ""}`}
+        onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setKeyed(null)}
+      >
         {weekNumbers && <span className="cx-minimonth-wd" aria-hidden="true" />}
         {days.slice(0, 7).map((d) => (
           <span className="cx-minimonth-wd" key={`wd${d.getDay()}`} aria-hidden="true">
@@ -1688,6 +1730,10 @@ const MiniMonth = memo(function MiniMonth({
               sameDay(d, today) ? " is-today" : ""
             }${sameDay(d, selected) ? " is-selected" : ""}${busy(d) ? " is-busy" : ""}`}
             aria-label={dateText(d, { dateStyle: "full" })}
+            aria-current={sameDay(d, today) ? "date" : undefined}
+            aria-pressed={sameDay(d, selected)}
+            tabIndex={sameDay(d, stop) ? 0 : -1}
+            onKeyDown={(e) => onKey(e, d)}
             onClick={() => onPick(d)}
           >
             {d.getDate()}
@@ -1849,7 +1895,8 @@ const MonthView = memo(function MonthView({
       const week = el.firstElementChild as HTMLElement | null;
       const height = week?.getBoundingClientRect().height ?? 0;
       const width = (week?.firstElementChild as HTMLElement | null)?.getBoundingClientRect().width ?? 0;
-      setRows(Math.max(1, Math.floor((height - 28) / 18)));
+      // Lines 24px apart (calendar.css: each a 24px target, WCAG 2.2).
+      setRows(Math.max(1, Math.floor((height - 28) / LINE)));
       setDots(width > 0 && width < DOT_CELL);
     };
     measure();
@@ -1904,6 +1951,7 @@ const MonthView = memo(function MonthView({
                       ref={isSelected ? cell : undefined}
                       className="cx-day-hit"
                       tabIndex={isSelected ? 0 : -1}
+                      aria-current={sameDay(day, today) ? "date" : undefined}
                       aria-label={`${dateText(day, { dateStyle: "full" })}${
                         list.length ? `, ${list.length} item${list.length === 1 ? "" : "s"}` : ""
                       }`}
@@ -1961,6 +2009,10 @@ const MonthView = memo(function MonthView({
                   </div>
                 );
               })}
+              {/* A row holds cells only (ARIA's grid): the week's bars are one more cell, which
+                  lays out as if it were not there, so they keep the week as their frame. */}
+              {spans.length > 0 && (
+              <div className="cx-week-bars" role="gridcell" aria-label="Across days">
               {spans.map((s) => (
                 <button
                   key={`${s.event.guid}-${dayKey(row[0])}`}
@@ -1982,6 +2034,8 @@ const MonthView = memo(function MonthView({
                   {s.event.title}
                 </button>
               ))}
+              </div>
+              )}
             </div>
           );
         })}
@@ -2295,7 +2349,7 @@ const TimeGrid = memo(function TimeGrid({
               )
             )}
             {todayColumn >= 0 && (
-              <span className="cx-now-label" style={{ top: `${(nowMinutes / 60) * HOUR}px` }}>
+              <span className="cx-now-label" style={{ top: `${Math.round((nowMinutes / 60) * HOUR)}px` }}>
                 {clock(seconds(today))}
               </span>
             )}
@@ -2404,7 +2458,7 @@ const TimeGrid = memo(function TimeGrid({
                       }}
                     >
                       <Ring reminder={r} />
-                      {r.title}
+                      <span className="cx-reminder-title">{r.title}</span>
                     </span>
                   );
                 })}
@@ -2439,7 +2493,8 @@ const TimeGrid = memo(function TimeGrid({
                 className="cx-now"
                 aria-hidden="true"
                 style={{
-                  top: `${(nowMinutes / 60) * HOUR}px`,
+                  // On a whole pixel, so the 2px line is two rows and not three half-lit ones.
+                  top: `${Math.round((nowMinutes / 60) * HOUR)}px`,
                   left: `${(todayColumn / days.length) * 100}%`,
                   width: `${100 / days.length}%`,
                 }}
@@ -2492,8 +2547,26 @@ const YearView = memo(function YearView({
   busy: (d: Date) => boolean;
   onPick: (d: Date) => void;
 }) {
+  // One Tab stop for the year's 365 days, the arrows moving a day or a week through it.
+  const [at, setAt] = useState<Date>(() => (today.getFullYear() === year ? today : new Date(year, 0, 1)));
+  const held = at.getFullYear() === year ? at : today.getFullYear() === year ? today : new Date(year, 0, 1);
+  const box = useRef<HTMLDivElement | null>(null);
+  const keyed = useRef(false);
+  useLayoutEffect(() => {
+    if (keyed.current) box.current?.querySelector<HTMLElement>('.cx-minimonth-day[tabindex="0"]')?.focus({ preventScroll: false });
+    keyed.current = false;
+  }, [at]);
+  const onKey = (e: React.KeyboardEvent, d: Date) => {
+    const by = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
+    if (by === undefined) return;
+    e.preventDefault();
+    const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + by);
+    if (next.getFullYear() !== year) return;
+    keyed.current = true;
+    setAt(next);
+  };
   return (
-    <div className="cal-year" role="grid" aria-label={`${year}`}>
+    <div className="cal-year" role="group" aria-label={`${year}`} ref={box}>
       {Array.from({ length: 12 }, (_, m) => {
         const first = new Date(year, m, 1);
         const days = monthDays(first);
@@ -2517,6 +2590,9 @@ const YearView = memo(function YearView({
                     key={i}
                     className={`cx-minimonth-day${sameDay(d, today) ? " is-today" : ""}${busy(d) ? " is-busy" : ""}`}
                     aria-label={dateText(d, { dateStyle: "full" })}
+                    aria-current={sameDay(d, today) ? "date" : undefined}
+                    tabIndex={sameDay(d, held) ? 0 : -1}
+                    onKeyDown={(e) => onKey(e, d)}
                     onClick={() => onPick(d)}
                   >
                     {d.getDate()}
@@ -2682,6 +2758,7 @@ function EventPopover({
   onDeleteKey,
   onNudge,
   view,
+  waiting = false,
 }: {
   draft: Draft;
   at: Anchor;
@@ -2696,8 +2773,15 @@ function EventPopover({
   onDeleteKey?: () => void;
   onNudge?: (by: { days: number } | { minutes: number }) => void;
   view?: string;
+  /** Saved here and not yet at Apple. */
+  waiting?: boolean;
 }) {
   const box = useRef<HTMLFormElement | null>(null);
+  // Put away, the focus goes back to the event it was open for, or the day it was made on.
+  useReturnFocus(() =>
+    (draft.guid ? document.querySelector<HTMLElement>(`[data-event="${CSS.escape(draft.guid)}"]`) : null) ??
+    document.querySelector<HTMLElement>('.cx-day-hit[tabindex="0"], .cal-col-head[tabindex="0"]'),
+  );
   const [pos, setPos] = useState<{ left: number; top: number }>({ left: at.x, top: at.y });
   const calendar = calendars.find((c) => c.guid === draft.calendarGuid);
   const editable = !draft.guid || (calendar?.writable ?? false);
@@ -2987,13 +3071,14 @@ function EventPopover({
         onChange={(e) => set({ notes: e.target.value })}
       />
       <div className="cx-pop-actions">
-        {onDelete && editable ? (
-          <button type="button" className="link danger cx-pop-delete" onClick={onDelete}>
-            Delete
-          </button>
-        ) : (
-          <span />
-        )}
+        <span>
+          {onDelete && editable && (
+            <button type="button" className="link danger cx-pop-delete" onClick={onDelete}>
+              Delete
+            </button>
+          )}
+          <Waiting shown={waiting} />
+        </span>
         <span>
           <button type="button" className="quiet" onClick={onClose}>
             {editable ? "Cancel" : "Close"}

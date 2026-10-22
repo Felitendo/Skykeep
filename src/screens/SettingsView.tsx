@@ -4,7 +4,7 @@ import { Progress } from "../components/Spinner";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { pickOpen } from "../lib/pick";
 import {
   api,
   EXPORT_CANCELLED,
@@ -228,8 +228,8 @@ function exportShare(p: ExportProgress | null): number | null {
 }
 
 async function runExport(photos: boolean, onError: (m: string) => void) {
-  const dest = await openFileDialog({ directory: true, multiple: false, title: "Choose where to export" });
-  if (typeof dest !== "string" || !dest) return;
+  const dest = (await pickOpen({ directory: true, multiple: false, title: "Choose where to export" }))?.[0];
+  if (!dest) return;
   setExportState({ phase: "running", progress: null, cancelling: false });
   const stop = listen<ExportProgress>(EXPORT_PROGRESS, (e) => {
     if (exportState.phase === "running") setExportState({ ...exportState, progress: e.payload });

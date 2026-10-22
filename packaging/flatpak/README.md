@@ -57,22 +57,30 @@ Left out on purpose:
 ## Regenerating the sources
 
 Regenerate whenever `Cargo.lock` or `package-lock.json` changes. Run from the repository root.
-`cargo-sources.json` was generated from the working tree's `Cargo.lock` on 2026-10-21, which has
-uncommitted changes (libheif-rs 3.0). Commit them before building, because the build uses `--locked`
-against the committed lockfile.
+The build uses `--locked`, so generate from the **committed** lockfiles.
+
+`cargo-sources.json` was regenerated from `Cargo.lock` at `054560f` on 2026-10-22 (1,267 entries;
+it now has aes-gcm, aes-kw, ctr, ghash, polyval and rustls 0.23.46).
+
+`node-sources.json` was checked against `package-lock.json` on 2026-10-22 by running the current
+generator: every one of its 310 entries is identical. The generator's only additions were ten
+Playwright browser archives (chromium, webkit, ffmpeg), which the build never uses because the
+interface suites don't run inside it. They were left out, so the file is unchanged.
 
 ```sh
 # Cargo: the generator is a single script with inline uv metadata.
 curl -LO https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
 uv run --script flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
 
-# npm: flatpak-node-generator is a Python package in the same repository.
+# npm: flatpak-node-generator is a Python package in the same repository. Current versions
+# add esbuild's binary by themselves (there is no --esbuild flag any more). Drop the
+# ms-playwright entries it adds; the build doesn't need them.
 uvx --from 'git+https://github.com/flatpak/flatpak-builder-tools.git#subdirectory=node' \
-    flatpak-node-generator npm package-lock.json --esbuild -o packaging/flatpak/node-sources.json
+    flatpak-node-generator npm package-lock.json -o packaging/flatpak/node-sources.json
 ```
 
-`--esbuild` (or an equivalent electron/esbuild option in your generator version) places the esbuild
-binary that `ESBUILD_BINARY_PATH` in the manifest points at. Without it, Vite can't run offline.
+The esbuild entries place the binary that `ESBUILD_BINARY_PATH` in the manifest points at.
+Without them, Vite can't run offline.
 
 ## Building locally
 
@@ -106,5 +114,7 @@ flatpak run --command=flatpak-builder-lint org.flatpak.Builder repo repo
 ## Before Flathub
 
 - Point the git source at the public repository at a release tag and commit.
-- Add `<screenshots>` and `<branding>` colours to the metainfo; Flathub's linter asks for both.
+- `<screenshots>` point at `docs/media/*-light.png` on `raw.githubusercontent.com/…/main`. They
+  only resolve once those files are committed **and** the repository is public. Flathub's
+  linter also asks for `<branding>` colours, which haven't been added yet.
 - Confirm HEIC decodes and the keyring session survives a restart inside the sandbox.

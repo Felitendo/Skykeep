@@ -1,6 +1,6 @@
 import "prosemirror-view/style/prosemirror.css";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { EditorState, TextSelection, type Command, type Transaction } from "prosemirror-state";
+import { EditorState, Plugin, TextSelection, type Command, type Transaction } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { history, undo, redo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
@@ -511,6 +511,29 @@ const tab: Command = (state, dispatch) => {
   return true;
 };
 
+/**
+ * Tab indents and types a tab here, so the keys alone could never leave a note: Escape, then
+ * Tab (or Shift-Tab), moves on to the next control instead, as a code editor lets the keys out.
+ * Any other key after Escape and Tab indents again.
+ */
+const released = new WeakSet<EditorView>();
+const letTabOut = new Plugin({
+  props: {
+    handleKeyDown(view, e) {
+      if (e.key === "Escape") released.add(view);
+      else if (e.key !== "Tab" && e.key !== "Shift") released.delete(view);
+      return false;
+    },
+  },
+});
+const unlessReleased = (cmd: Command): Command => (state, dispatch, view) => {
+  if (view && released.has(view)) {
+    released.delete(view);
+    return false;
+  }
+  return cmd(state, dispatch, view);
+};
+
 function statusOf(state: EditorState): EditorStatus {
   const p = parentOf(state);
   const marks = state.storedMarks ?? state.selection.$from.marks();
@@ -575,6 +598,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     const state = EditorState.create({
       doc: toDoc(text, runs),
       plugins: [
+        letTabOut,
         autolink,
         history(),
         keymap({
@@ -590,8 +614,8 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           "Mod-Alt-ArrowDown": moveLines(1),
           "Mod-]": shift(1, false),
           "Mod-[": shift(-1, false),
-          Tab: tab,
-          "Shift-Tab": shift(-1, false),
+          Tab: unlessReleased(tab),
+          "Shift-Tab": unlessReleased(shift(-1, false)),
           Enter: enter,
           "Shift-Enter": lineBreak,
           Backspace: backspace,
@@ -618,6 +642,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         role: "textbox",
         "aria-multiline": "true",
         "aria-label": label,
+        "aria-description": "Tab indents. Escape, then Tab, moves on.",
         spellcheck: "true",
         ...(placeholder ? { "data-placeholder": placeholder } : {}),
       },

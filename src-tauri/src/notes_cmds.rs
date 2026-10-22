@@ -117,6 +117,7 @@ pub async fn note_attach_file(
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Attached> {
+    crate::grants::take_read(&path)?;
     let (http, root, params) = crate::cloudkit_context(&auth).await?;
     let attached = quince_icloud::notes::attach::attach_file_cloudkit(
         &http,

@@ -1,6 +1,10 @@
 # A release, from one tag: `git tag v0.2.0 && git push origin v0.2.0`.
-#   linux   — .deb, .rpm and .AppImage, built on Ubuntu 24.04 (its libheif is new enough), and
-#             each one installed or started on a clean machine before it is kept;
+#   linux   — .deb, .rpm and .AppImage, built on Ubuntu 24.04 (its libheif is new enough). None
+#             is kept unless it runs: the .deb is installed on the build machine and started
+#             headless under Xvfb; the .rpm is installed with dnf in a clean Fedora 41 container
+#             and started the same way; the .AppImage is started with
+#             --appimage-extract-and-run (no FUSE needed) after the .deb is removed. "Started"
+#             means the program is still running 8 s later — not merely that it links;
 #   windows — the Windows pipeline (windows.yml): its tests, the .msi and .exe, the smoke test;
 #   publish — every file in one draft release with its checksums, for a person to read over
 #             and publish. Nothing is published by itself.
@@ -24,7 +28,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
-            libsecret-1-dev libheif-dev libfuse3-dev pkg-config patchelf rpm file
+            libsecret-1-dev libheif-dev libfuse3-dev pkg-config patchelf rpm file \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
+            xvfb xauth dbus
+          # The GStreamer plugins are here for two reasons: the AppImage carries the ones
+          # installed on this machine (bundleMediaFramework), and the launch checks below run
+          # the program as it will run for someone playing a video.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -37,13 +47,54 @@ jobs:
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
         run: npx tauri build
+      # One check for every package: the program is started headless with --background (no
+      # window is asked for unless sign-in needs one), on its own session bus, in an empty home,
+      # and must still be running 8 s later. `timeout` ending it (124) is the pass; any other
+      # exit means it died on start. Its output is printed either way.
+      - name: Write the launch check
+        run: |
+          cat > "$RUNNER_TEMP/stays-up.sh" <<'SH'
+          #!/bin/bash
+          # stays-up.sh <label> <command…>: the command must still be running after 8 s.
+          set -u
+          label=$1; shift
+          HOME=$(mktemp -d); XDG_RUNTIME_DIR=$(mktemp -d)
+          export HOME XDG_RUNTIME_DIR RUST_BACKTRACE=1
+          chmod 700 "$XDG_RUNTIME_DIR"
+          log=$(mktemp)
+          timeout --kill-after=5 8 dbus-run-session -- xvfb-run -a -s "-screen 0 1280x800x24" "$@" >"$log" 2>&1
+          rc=$?
+          cat "$log"
+          if [ "$rc" -ne 124 ]; then echo "::error::$label exited on start (code $rc)"; exit 1; fi
+          if grep -q "panicked at" "$log"; then echo "::error::$label panicked"; exit 1; fi
+          echo "$label: still running after 8 s"
+          SH
+          chmod +x "$RUNNER_TEMP/stays-up.sh"
       - name: The .deb installs and its program starts
         run: |
-          sudo apt-get install -y ./target/release/bundle/deb/*.deb
-          prog=$(dpkg -L $(dpkg-deb -f target/release/bundle/deb/*.deb Package) | grep -m1 '/usr/bin/')
+          deb=$(ls target/release/bundle/deb/*.deb)
+          dpkg-deb -f "$deb" Depends
+          sudo apt-get install -y "$deb"
+          prog=$(dpkg -L "$(dpkg-deb -f "$deb" Package)" | grep -m1 '^/usr/bin/')
           echo "installed: $prog"
-          # Started headless just long enough to show it loads every library it links.
-          ldd "$prog" | grep -q "not found" && { ldd "$prog" | grep "not found"; exit 1; } || true
+          if ldd "$prog" | grep "not found"; then exit 1; fi
+          "$RUNNER_TEMP/stays-up.sh" deb "$prog" --background
+      - name: The .rpm installs and its program starts, on Fedora
+        run: |
+          rpm -qpR target/release/bundle/rpm/*.rpm
+          docker run --rm -v "$PWD/target/release/bundle/rpm:/pkgs:ro" -v "$RUNNER_TEMP:/check:ro" fedora:41 bash -euc '
+            dnf -y -q install /pkgs/*.rpm xorg-x11-server-Xvfb xorg-x11-xauth dbus-daemon which
+            prog=$(rpm -ql "$(rpm -qp --qf "%{NAME}" /pkgs/*.rpm)" | grep -m1 "^/usr/bin/")
+            echo "installed: $prog"
+            if ldd "$prog" | grep "not found"; then exit 1; fi
+            /check/stays-up.sh rpm "$prog" --background
+          '
+      - name: The .AppImage starts, with the .deb removed
+        run: |
+          sudo apt-get remove -y "$(dpkg-deb -f target/release/bundle/deb/*.deb Package)"
+          app=$(ls target/release/bundle/appimage/*.AppImage)
+          chmod +x "$app"
+          "$RUNNER_TEMP/stays-up.sh" AppImage "$app" --appimage-extract-and-run --background
       - name: Checksums
         run: |
           cd target/release/bundle

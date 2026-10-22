@@ -3,6 +3,7 @@
 // list says, after a restart too — and the event's own popover open on it.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub } from "./stub.mjs";
+const BASE = process.env.BASE ?? "http://localhost:4173";
 const b = await engine.launch();
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
@@ -17,12 +18,12 @@ for (const scheme of ["light", "dark"]) {
   });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
-  await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await page.goto(BASE, { waitUntil: "networkidle" });
   const field = page.getByRole("combobox", { name: "Search everything" });
   await field.fill("sprint");
   await page.waitForTimeout(300);
   const panel = page.getByRole("listbox", { name: "Found" });
-  ok((await panel.getByRole("region", { name: "Calendar" }).count()) === 1, `${scheme}: the event is found`);
+  ok((await panel.getByRole("group", { name: "Calendar" }).count()) === 1, `${scheme}: the event is found`);
   await page.keyboard.press("Enter");
   await page.waitForTimeout(800);
   const pop = page.locator(".cx-popover");

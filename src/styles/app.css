@@ -143,7 +143,7 @@
 }
 
 .field-group input::placeholder { color: var(--text-3); opacity: 1; }
-.field-group input + input { border-top: 1px solid var(--separator); }
+.field-group input + input { border-top: var(--hairline) solid var(--separator); }
 /* Held while Apple answers: the fields stay put and simply quieten. */
 .field-group input:disabled { color: var(--text-2); }
 .sheet[aria-busy="true"] .field-group { opacity: 0.6; }
@@ -200,10 +200,10 @@
   margin: 0 auto;
   max-width: 40ch;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
-.sheet-status > .assurance { max-width: none; font-size: 12px; line-height: 1.6; }
+.sheet-status > .assurance { max-width: none; font-size: 0.75rem; line-height: 1.6; }
 
 .sheet-foot { margin-top: 28px; display: grid; justify-items: center; gap: 4px; }
 
@@ -221,7 +221,7 @@
   /* A step darker than secondary text: on the panel's tint, --text-2 falls just short of
      4.5:1. */
   color: color-mix(in srgb, var(--text) 74%, var(--bg));
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 .help strong { color: var(--text); font-weight: 600; }
@@ -239,7 +239,7 @@
 .help .help-tip {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid var(--separator);
+  border-top: var(--hairline) solid var(--separator);
 }
 
 /* ---- six-digit code ---------------------------------------------------------- */
@@ -258,7 +258,7 @@
   padding: 0;
   text-align: center;
   font: inherit;
-  font-size: 24px;
+  font-size: 1.5rem;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--text);
@@ -311,7 +311,7 @@
      has its blur worked out again on every frame of that — a stutter in WebKitGTK, which
      does not draw the blur on many machines in any case. Content still passes under it. */
   background: var(--glass-thick);
-  box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge);
+  box-shadow: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge);
   border-radius: var(--r-plateau);
   padding: 12px 9px;
   overflow-y: auto;
@@ -446,10 +446,12 @@
 }
 
 /* Each app's mark: one symbol in the app's colour (AppIcon), as a Mac sidebar draws its places.
-   The tints are the system's own hues, a shade deeper in light mode so they hold on white. */
+   The tints are the system's own hues, a shade deeper in light mode so they hold on white —
+   3:1 or better on the sidebar and on its selected row (WCAG 1.4.11), since folded to icons
+   the glyph is all that names the app. */
 .app-icon { display: inline-grid; place-items: center; flex: none; }
 :root {
-  --app-notes: #c98a00; --app-reminders: #e8590c; --app-calendar: #e0313f;
+  --app-notes: #a06c00; --app-reminders: #c94a08; --app-calendar: #e0313f;
   --app-contacts: #6e7480; --app-drive: #1f7ae0; --app-photos: #b34fd6;
 }
 @media (prefers-color-scheme: dark) {
@@ -522,7 +524,7 @@
     background: color-mix(in srgb, var(--bg) 94%, transparent);
     /* Room at the top for the button that opened it, which stays where it was. */
     padding-top: 52px;
-    box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge), var(--shadow-sheet);
+    box-shadow: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge), var(--shadow-sheet);
     transform: translateX(calc(-100% - 16px));
     visibility: hidden;
     transition: transform var(--spring-quick-d) var(--spring-quick), visibility 0s linear var(--spring-quick-d);
@@ -547,7 +549,7 @@
     background: var(--glass);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
-    box-shadow: var(--glass-specular), 0 0 0 0.5px var(--glass-edge);
+    box-shadow: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge);
     color: var(--text);
     cursor: default;
   }
@@ -582,7 +584,7 @@
     cursor: default;
   }
   .compact-back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .compact-back:focus-visible { outline: 3px solid var(--accent-ring); }
+  .compact-back:focus-visible { outline: var(--focus-ring); }
 }
 .content h1 { margin: 0 0 6px; font-size: var(--t-28); font-weight: 600; letter-spacing: -0.022em; }
 /*
@@ -629,7 +631,7 @@
   overflow-y: auto;
   padding: 2px 12px 12px 0;
   margin-right: 14px;
-  border-right: 1px solid var(--separator);
+  border-right: var(--hairline) solid var(--separator);
 }
 .contacts-list-glyph { flex: none; color: var(--text-2); }
 .contacts-head { margin-bottom: 8px; }
@@ -659,7 +661,7 @@
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  border-right: 1px solid var(--separator);
+  border-right: var(--hairline) solid var(--separator);
   padding: 0 14px 0 0;
 }
 
@@ -675,7 +677,7 @@
 }
 .contact-index button {
   flex: 0 1 18px; min-height: 0; padding: 0; border: 0; background: none;
-  color: var(--accent-strong); font: inherit; font-size: 10px; font-weight: 600; line-height: 1;
+  color: var(--accent-strong); font: inherit; font-size: 0.625rem; font-weight: 600; line-height: 1;
   cursor: pointer;
 }
 .contact-index button:hover { color: var(--text); }
@@ -699,9 +701,9 @@
 .contact-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 /* As macOS selects: the accent with white text while the list has focus, grey after. */
 .contact-row[aria-current="true"] { background: color-mix(in srgb, var(--text) 11%, transparent); }
-.contact-rows.is-focused .contact-row[aria-current="true"] { background: var(--accent); color: var(--on-accent); }
+.contact-rows.is-focused .contact-row[aria-current="true"] { background: var(--accent-fill); color: var(--on-accent); }
 .contact-rows.is-focused .contact-row[aria-current="true"] .avatar:not(:has(img)) { background: rgba(255, 255, 255, 0.28); color: #fff; }
-.contact-row:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
+.contact-row:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
 .contact-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Several picked: their faces fanned, the count, and what can be done to all of them. */
 .contact-many { display: flex; flex-direction: column; align-items: center; gap: 14px; padding-top: 48px; text-align: center; }
@@ -772,7 +774,7 @@
   grid-template-columns: 92px 1fr;
   gap: 12px;
   padding: 8px 0;
-  border-top: 1px solid var(--separator);
+  border-top: var(--hairline) solid var(--separator);
 }
 
 /* Labels right-aligned against their values, grey and small, as Contacts on the Mac sets a card. */
@@ -786,7 +788,7 @@
 .contact-copy > span.is-hidden { opacity: 0; }
 .contact-copy > span:last-child { color: var(--accent-strong); }
 .contact-copy:hover > span:first-child { color: var(--text); }
-.contact-copy:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: 2px; border-radius: 3px; }
+.contact-copy:focus-visible { outline: var(--focus-ring); outline-offset: 2px; border-radius: 3px; }
 .contact-methods dd { margin: 0; font-size: var(--t-15); overflow-wrap: anywhere; }
 
 /* A postal address is several lines and reads as several lines. */
@@ -850,7 +852,7 @@
 .drive-peek-face.has-thumb { width: auto; height: auto; max-width: 100%; background: none; }
 .drive-peek-face.has-thumb img {
   display: block; max-width: min(460px, 84vw); max-height: 52vh; min-width: 160px; object-fit: contain;
-  border-radius: 8px; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(0, 0, 0, 0.2);
+  border-radius: 8px; background: #fff; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), 0 0 0 var(--hairline) rgba(0, 0, 0, 0.2);
 }
 .drive-peek-name { margin: 0; font-size: var(--t-15); font-weight: 600; overflow-wrap: anywhere; }
 .drive-peek-facts { margin: 0; color: var(--text-2); font-size: var(--t-13); }
@@ -893,7 +895,7 @@
   align-items: center;
   gap: 6px;
   width: 100%;
-  border-bottom: 1px solid var(--separator);
+  border-bottom: var(--hairline) solid var(--separator);
   border-radius: var(--r-field);
 }
 
@@ -918,7 +920,7 @@
 }
 
 .drive-row-hit:disabled { cursor: default; }
-.drive-row-hit:focus-visible { outline: 3px solid var(--accent-ring); outline-offset: -1px; }
+.drive-row-hit:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
 
 /* One width for every row, whether it has three actions or four, so the columns before it
    line up down the list — a file's extra Download had pushed its size and date left. */
@@ -956,7 +958,7 @@
   align-items: center;
   gap: 12px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--separator);
+  border-bottom: var(--hairline) solid var(--separator);
 }
 
 /* The icon carries its own colour and needs no plate behind it. */
@@ -1137,7 +1139,7 @@
 }
 
 /* A menu's highlight is the system's, whichever app it is in — as every Mac menu's is. */
-.picker-menu li.is-active { background: var(--sys-blue); color: #fff; }
+.picker-menu li.is-active { background: var(--sys-blue-deep); color: #fff; }
 .picker-menu li.is-active .picker-check { color: #fff; }
 
 .picker-check {
@@ -1184,7 +1186,7 @@
   font-size: var(--t-13);
   color: var(--text);
   background: var(--field);
-  border: 0.5px solid var(--field-edge);
+  border: var(--hairline) solid var(--field-edge);
   border-radius: var(--r-field);
   box-shadow: var(--shadow-field);
   padding: 5px 7px;
@@ -1224,7 +1226,7 @@
 /* A postal address being written: its kind and label on the line of every other detail, the
    parts beneath under the label, as Contacts on the Mac sets them — street over as many lines
    as it takes, then town, region and postcode side by side, then the country. */
-.contact-address-rows { padding-top: 6px; border-top: 1px solid var(--separator); }
+.contact-address-rows { padding-top: 6px; border-top: var(--hairline) solid var(--separator); }
 .contact-method-rows li.contact-address-edit {
   grid-template-columns: 96px 112px minmax(0, 1fr) auto;
   row-gap: 6px;
@@ -1244,7 +1246,7 @@
   grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 0.9fr);
   gap: 6px;
 }
-.contact-address-rows li + li { padding-top: 10px; border-top: 1px solid var(--separator); }
+.contact-address-rows li + li { padding-top: 10px; border-top: var(--hairline) solid var(--separator); }
 .contact-form-adds { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 
 /* Under an address, the one way to see it on a map. */
@@ -1262,7 +1264,7 @@
   margin: 0;
   padding: 0;
   list-style: none;
-  border: 1px solid var(--separator);
+  border: var(--hairline) solid var(--separator);
   border-radius: var(--r-plateau);
 }
 
@@ -1345,8 +1347,8 @@
 .disclosure[open] > summary::after { transform: rotate(-135deg); margin-bottom: 0; }
 .disclosure > summary:hover { color: var(--text); }
 .disclosure > summary:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .disclosure-body {
@@ -1354,7 +1356,7 @@
   padding: 12px 14px;
   border-radius: 12px;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: 0.75rem;
   background: color-mix(in srgb, var(--text) 4%, transparent);
   max-height: min(210px, 34vh);
   overflow-y: auto;
@@ -1400,7 +1402,7 @@
   cursor: default;
 }
 .upload-menu button:hover,
-.upload-menu button:focus-visible { background: var(--accent); color: var(--on-accent); outline: none; }
+.upload-menu button:focus-visible { background: var(--accent-fill); color: var(--on-accent); outline: none; }
 
 /* The corner list of files going up, like a browser's downloads. */
 .upload-tray {
@@ -1470,14 +1472,14 @@
 
 /* File Info: a calm sheet, the mark large, the facts in two aligned columns. */
 .info-sheet { width: min(400px, calc(100vw - 32px)); padding: 0 0 8px; }
-.info-head { display: flex; align-items: center; justify-content: center; position: relative; padding: 14px 16px; border-bottom: 1px solid var(--separator); }
+.info-head { display: flex; align-items: center; justify-content: center; position: relative; padding: 14px 16px; border-bottom: var(--hairline) solid var(--separator); }
 .info-head h2 { margin: 0; font-size: var(--t-15); font-weight: 600; }
 .info-done { position: absolute; right: 10px; font-weight: 600; }
 .info-mark { display: grid; place-items: center; margin: 18px auto 10px; width: 96px; height: 96px; border-radius: 16px; background: color-mix(in srgb, var(--text) 6%, transparent); }
 .info-mark > * { transform: scale(2.6); }
 .info-name { margin: 0 20px 14px; text-align: center; font-weight: 600; word-break: break-word; }
 .info-rows { margin: 0 20px; }
-.info-rows > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 12px; padding: 7px 0; border-top: 1px solid var(--separator); font-size: var(--t-13); }
+.info-rows > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 12px; padding: 7px 0; border-top: var(--hairline) solid var(--separator); font-size: var(--t-13); }
 .info-rows dt { color: var(--text-2); }
 .info-rows dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 
@@ -1504,16 +1506,18 @@
 /* The check column: a Mac menu marks a choice that is on with a check before its name. */
 .row-menu-check { flex: none; width: 12px; margin: 0 -6px 0 -4px; font-size: 12px; font-weight: 600; text-align: center; }
 .row-menu-chevron { flex: none; margin-right: -4px; font-size: 15px; line-height: 1; color: var(--text-2); }
-.row-menu-item.is-active { background: var(--sys-blue, #0a84ff); color: #fff; }
+.row-menu-item.is-active { background: var(--sys-blue-deep, #0068d6); color: #fff; }
 .row-menu-item.is-active .row-menu-chevron { color: #fff; }
-.row-menu-item.is-danger { color: var(--sys-red, #ff453a); }
-.row-menu-item.is-danger.is-active { background: var(--sys-red, #ff453a); color: #fff; }
-.row-menu-sep { height: 1px; margin: 4px 8px; background: var(--separator); }
+/* The danger red that reads on a menu at 4.5:1; the system red read at 3.6:1. */
+.row-menu-item.is-danger { color: var(--danger); }
+.row-menu-item.is-danger.is-active { background: var(--danger-deep, #c1121f); color: #fff; }
+.row-menu-sep { height: var(--hairline); margin: 4px 8px; background: var(--separator); }
 .drive-more { font-size: 9px; letter-spacing: 1px; }
 .drive-row.is-menu { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .drive-row.is-menu .drive-row-actions { opacity: 1; }
 /* Selected, as Finder marks it: the accent behind the row, its text in white. */
-.drive-row.is-selected { background: var(--sys-blue, #0a84ff); }
+/* The deep accent: white names on the system blue read at 3.5:1. */
+.drive-row.is-selected { background: var(--accent-fill, #0068d6); }
 .drive-row.is-selected .drive-name, .drive-row.is-selected .drive-meta { color: #fff; }
 .drive-rows.is-grid .drive-row.is-selected { background: color-mix(in srgb, var(--sys-blue, #0a84ff) 28%, transparent); box-shadow: inset 0 0 0 2px var(--sys-blue, #0a84ff); }
 .drive-rows.is-grid .drive-row.is-selected .drive-name { color: var(--text); }
@@ -1527,9 +1531,9 @@
 .drive-rows:not(.is-grid):not(.is-focused) .drive-row.is-selected .drive-more { color: var(--text); }
 .drive-rows:not(.is-grid):not(.is-focused) .drive-row.is-selected .drive-badge > svg { filter: none; }
 /* Apple's own picture of a file: small in a list, the tile's face in Grid, as icloud.com. */
-.drive-thumb { width: 22px; height: 22px; object-fit: contain; border-radius: 3px; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.25); background: #fff; }
+.drive-thumb { width: 22px; height: 22px; object-fit: contain; border-radius: 3px; box-shadow: 0 0 0 var(--hairline) rgba(0,0,0,0.25); background: #fff; }
 .drive-rows.is-grid .drive-badge:has(.drive-thumb) { transform: none; height: 76px; }
-.drive-rows.is-grid .drive-thumb { width: 88px; height: 72px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(0,0,0,0.2); }
+.drive-rows.is-grid .drive-thumb { width: 88px; height: 72px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.35), 0 0 0 var(--hairline) rgba(0,0,0,0.2); }
 .info-mark.has-thumb { background: none; width: auto; height: auto; }
 .info-mark.has-thumb > * { transform: none; }
 .info-mark.has-thumb img { max-width: 160px; max-height: 140px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
@@ -1545,10 +1549,10 @@
   position: sticky; top: 0; z-index: 1; padding: 10px 10px 4px;
   background: var(--bg); color: var(--text-3);
   font-size: var(--t-13); font-weight: 600;
-  border-bottom: 1px solid var(--separator);
+  border-bottom: var(--hairline) solid var(--separator);
 }
 /* The column headings, in the rows' own grid, quiet until one is the order. */
-.drive-head { border-bottom: 1px solid var(--separator); border-radius: 0; }
+.drive-head { border-bottom: var(--hairline) solid var(--separator); border-radius: 0; }
 .drive-head:hover { background: none; }
 .drive-head .drive-row-hit { cursor: default; padding-block: 4px; }
 .drive-col { padding: 0; border: 0; background: none; box-shadow: none; color: var(--text-3); font: inherit; font-size: var(--t-13); text-align: left; cursor: pointer; }
@@ -1608,7 +1612,7 @@
   flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
   background: linear-gradient(180deg, #a5a5ab, #85858b); color: #fff;
   font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.35);
+  box-shadow: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.35);
 }
 .account-avatar.is-large { width: 56px; height: 56px; font-size: 21px; }
 .account-avatar { overflow: hidden; position: relative; }
@@ -1637,7 +1641,7 @@
   background: color-mix(in srgb, var(--text) 4%, transparent);
   /* Edges and hairlines as borders, not inset shadows: WebKit repainted every shadow on each
      frame of a scroll, and Settings stuttered (25ms frames, 16ms without). */
-  border: 0.5px solid color-mix(in srgb, var(--text) 8%, transparent);
+  border: var(--hairline) solid color-mix(in srgb, var(--text) 8%, transparent);
   overflow: hidden;
 }
 .settings-row {
@@ -1645,7 +1649,7 @@
   font-size: var(--t-13);
 }
 /* Separators inset past the icon, as Apple draws them between rows of a group. */
-.settings-row + .settings-row { border-top: 1px solid color-mix(in srgb, var(--text) 7%, transparent); }
+.settings-row + .settings-row { border-top: var(--hairline) solid color-mix(in srgb, var(--text) 7%, transparent); }
 .settings-row.is-stacked { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 14px; }
 .settings-row-line { display: flex; justify-content: space-between; gap: 10px; }
 .settings-label { flex: 1; min-width: 0; }
@@ -1704,41 +1708,75 @@
    A field at the head of the sidebar, as Finder's; what it finds over the window under it,
    grouped by app as Spotlight groups it. */
 .gsearch { margin: 0 0 8px; }
-.gsearch-results {
-  position: fixed; z-index: 70; width: min(420px, calc(100vw - 24px)); max-height: min(70vh, 560px);
-  overflow-y: auto; padding: 6px; border-radius: 12px;
+.gsearch-panel {
+  position: fixed; z-index: 70; width: min(440px, calc(100vw - 24px)); overflow: hidden; border-radius: 12px;
   /* Solid, as a menu of results must be: what lies under it must never read through. */
-  background: var(--sheet, var(--bg)); box-shadow: var(--glass-float), 0 0 0 0.5px var(--separator); color: var(--text);
+  background: var(--sheet, var(--bg)); color: var(--text);
+  /* One soft shadow and a drawn edge — not --glass-float's five layers with an inset
+     highlight: WebKit painted those again on every frame the list scrolled (16 ms a frame
+     here, 20–23 with them). */
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16), 0 0 0 1px var(--separator);
 }
-.gsearch-group + .gsearch-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--separator); }
+/* What scrolls is inside the shadow, never the surface that casts it. */
+.gsearch-results { max-height: min(70vh, 560px); overflow-y: auto; overscroll-behavior: contain; padding: 6px; }
+.gsearch-group + .gsearch-group { margin-top: 6px; padding-top: 6px; border-top: var(--hairline) solid var(--separator); }
 .gsearch-group h3 {
-  display: flex; align-items: center; gap: 6px; margin: 0; padding: 4px 6px; font-size: var(--t-11);
-  font-weight: 600; color: var(--text-2);
+  display: flex; align-items: center; gap: 6px; height: 28px; margin: 0 0 2px; padding: 0 6px 0 8px;
+  font-size: var(--t-11); font-weight: 600; color: var(--text-2);
+}
+/* Show All: the app's heading stays at the top of the list as it scrolls under it. */
+.gsearch-group h3.is-stuck {
+  position: sticky; top: -6px; z-index: 1; height: 34px; margin: -6px -6px 0; padding: 6px 12px 0 14px;
+  background: var(--sheet, var(--bg)); border-bottom: var(--hairline) solid var(--separator);
 }
 .gsearch-group h3 .app-icon { width: 16px; height: 16px; }
+.gsearch-count { color: var(--text-3); font-weight: 500; font-variant-numeric: tabular-nums; }
 .gsearch-more {
-  margin-left: auto; padding: 1px 6px; border: 0; border-radius: 5px; background: none;
-  font: inherit; font-weight: 500; color: var(--accent); cursor: default;
+  margin-left: auto; padding: 2px 7px; border: 0; border-radius: 5px; background: none;
+  font: inherit; font-weight: 500; color: var(--accent-strong, var(--accent)); cursor: default;
 }
 .gsearch-more:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .gsearch-more:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 .gsearch-row {
-  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 4px 8px; border: 0;
-  border-radius: 7px; background: none; color: inherit; font: inherit; text-align: start; cursor: default;
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 44px; padding: 0 10px; border: 0;
+  border-radius: 8px; background: none; color: inherit; font: inherit; text-align: start; cursor: default;
 }
-.gsearch-row.is-at { background: var(--accent); color: var(--on-accent, #fff); }
-.gsearch-row.is-at .gsearch-detail { color: inherit; opacity: 0.85; }
-.gsearch-pic { width: 28px; height: 28px; border-radius: 5px; object-fit: cover; flex: none; }
-.gsearch-text { display: flex; flex-direction: column; min-width: 0; }
-.gsearch-title { font-size: var(--t-13); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gsearch-detail { font-size: var(--t-11); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gsearch-none { margin: 0; padding: 10px; font-size: var(--t-13); color: var(--text-2); }
+/* White on the deep accent, as a filled control is drawn (tokens.css): --on-accent is the text
+   for the bright fill, and on Notes' gold-deep its near-black read at 3.3:1. */
+.gsearch-row.is-at { background: var(--accent-deep); color: #fff; }
+.gsearch-more.is-at { background: var(--accent-deep); color: #fff; }
+.gsearch-row.is-waiting { pointer-events: none; }
+.gsearch-pic { width: 30px; height: 30px; border-radius: 6px; object-fit: cover; flex: none; background: var(--fill, color-mix(in srgb, var(--text) 6%, transparent)); }
+.gsearch-pic.is-round { border-radius: 50%; }
+.gsearch-initials {
+  display: grid; place-items: center; font-size: var(--t-11); font-weight: 600; letter-spacing: 0.02em;
+  color: #fff; background: linear-gradient(180deg, #a5abb6, #858b96);
+}
+.gsearch-text { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+.gsearch-title { font-size: var(--t-13); line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gsearch-detail { font-size: var(--t-11); line-height: 1.3; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gsearch-when { flex: none; max-width: 40%; font-size: var(--t-11); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Where the typed words fall: bold, as Spotlight marks them, in the row's own colour. */
+.gsearch-row mark { background: none; color: inherit; font-weight: 650; }
+.gsearch-detail mark { color: var(--text); }
+.gsearch-row.is-at :is(.gsearch-detail, .gsearch-when) { color: rgba(255, 255, 255, 0.92); }
+.gsearch-row.is-at mark { color: #fff; }
+/* Folded to icons: a magnifier in the rail; the field comes out over the window beside it,
+   drawn in the top layer (the sidebar clips what leaves it). */
+.gsearch.is-folded { display: flex; justify-content: center; }
+.gsearch-out {
+  position: fixed; z-index: 70; width: 240px; border-radius: var(--r-field, 8px);
+  background: var(--sheet, var(--bg)); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16), 0 0 0 1px var(--separator);
+}
+.gsearch-none { margin: 0; padding: 14px 10px; font-size: var(--t-13); color: var(--text-2); text-align: center; }
 
 /* ---- a session Apple signed out -------------------------------------------- */
 
 /* One line across the top of the window, over the library — never in place of it: a toast
    (kit.css) that stays, at the top since it is about the whole window, not one app. */
-.lapsed { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50; max-width: calc(100vw - 32px); padding-right: 5px; }
+/* Centred by auto margins, not translate(-50%): half an odd width put every letter of it on a
+   half pixel. */
+.lapsed { position: fixed; top: 10px; left: 0; right: 0; width: fit-content; margin-inline: auto; z-index: 50; max-width: calc(100vw - 32px); padding-right: 5px; }
 .lapsed > button { min-height: 26px; padding-inline: 12px; }
 
 /* ---- the sidebar's foot: freshness, then the account ------------------------- */
@@ -1750,6 +1788,7 @@
   /* Lined up with the account below: the dot on the avatar's centre (8px in, 30px wide), the
      words on the name's edge (8 + 30 + 9). */
   position: relative; display: flex; align-items: center; gap: 21px; min-width: 0;
+  min-height: 24px; min-width: 24px;
   padding: 4px 8px 4px 20px; border: 0; border-radius: var(--r-field); background: none; text-align: left;
   color: var(--text-2); font: inherit; font-size: var(--t-11); cursor: default;
 }

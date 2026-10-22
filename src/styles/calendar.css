@@ -26,7 +26,7 @@
   justify-content: space-between;
   min-height: 0;
   padding: 4px 14px 10px;
-  border-right: 1px solid var(--separator);
+  border-right: var(--hairline) solid var(--separator);
   overflow-y: auto;
 }
 .cx-cals { display: flex; flex-direction: column; gap: 2px; }
@@ -40,21 +40,19 @@
   width: 14px;
   height: 14px;
   margin: 0;
-  border: 1.5px solid var(--cal);
+  border: 0;
   border-radius: 4px;
-  background: transparent;
+  /* Its edge a vector outline masked over the colour, its tick a vector stroke: the 1.5px
+     border and rotated border-tick they replace drew lopsided at a fractional scale. */
+  background: var(--cal);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><rect x='0.75' y='0.75' width='12.5' height='12.5' rx='3.25' fill='none' stroke='black' stroke-width='1.5'/></svg>") center/14px 14px no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><rect x='0.75' y='0.75' width='12.5' height='12.5' rx='3.25' fill='none' stroke='black' stroke-width='1.5'/></svg>") center/14px 14px no-repeat;
 }
-.cx-cal input:checked { background: var(--cal); }
-.cx-cal input:checked::after {
-  content: "";
-  width: 7px;
-  height: 4px;
-  margin-top: -2px;
-  border-left: 1.6px solid #fff;
-  border-bottom: 1.6px solid #fff;
-  transform: rotate(-45deg);
+.cx-cal input:checked {
+  -webkit-mask: none; mask: none;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><path d='M3.6 7.2l2.3 2.3 4.6-4.9' fill='none' stroke='white' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/></svg>") center/14px 14px no-repeat, var(--cal);
 }
-.cx-cal input:focus-visible { outline: 3px solid color-mix(in srgb, var(--cal) 40%, transparent); outline-offset: 1px; }
+.cx-cal input:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 
 .cx-minimonth { padding-top: 12px; }
 .cx-minimonth-head {
@@ -67,40 +65,40 @@
 }
 .cx-minimonth-head > span:last-child { display: inline-flex; gap: 2px; }
 .cx-minimonth-grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 1px; }
-.cx-minimonth-wd { color: var(--text-3); font-size: 10px; font-weight: 600; text-align: center; line-height: 20px; }
+.cx-minimonth-wd { color: var(--text-3); font-size: 0.625rem; font-weight: 600; text-align: center; line-height: 20px; }
 .cx-minimonth-day {
   position: relative;
   justify-self: center;
-  width: 23px;
-  height: 23px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   cursor: default;
 }
 .cx-minimonth-day:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .cx-minimonth-day.is-out { color: var(--text-3); }
 .cx-minimonth-day.is-selected { background: color-mix(in srgb, var(--text) 16%, transparent); font-weight: 600; }
-.cx-minimonth-day.is-today { background: var(--sys-red); color: #fff; font-weight: 700; }
+.cx-minimonth-day.is-today { background: var(--danger-deep); color: #fff; font-weight: 700; }
 .cx-minimonth-day.is-busy::after {
   content: "";
   position: absolute;
-  left: 50%;
+  left: calc(50% - 2px);
   bottom: 1px;
-  width: 3px;
-  height: 3px;
-  margin-left: -1.5px;
-  border-radius: 50%;
+  width: 4px;
+  height: 4px;
+  -webkit-mask: var(--mask-disc) center/100% no-repeat;
+  mask: var(--mask-disc) center/100% no-repeat;
   background: var(--text-3);
 }
 .cx-minimonth-day.is-today.is-busy::after { background: #fff; }
 .cx-minimonth-day.is-blank { visibility: hidden; }
-.cx-minimonth-day:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 1px; }
+.cx-minimonth-day:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 
 /* ---- toolbar -------------------------------------------------------------------- */
 
@@ -124,7 +122,7 @@
   flex: 1 1 100%;
   min-width: 0;
   margin: 2px 0 0;
-  font-size: 28px;
+  font-size: 1.75rem;
   font-weight: 400;
   letter-spacing: -0.02em;
   white-space: nowrap;
@@ -148,7 +146,7 @@
 }
 .cx-found-row {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) auto;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -175,7 +173,7 @@
 .cx-weekdays {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  border-bottom: 1px solid var(--separator);
+  border-bottom: var(--hairline) solid var(--separator);
 }
 /* Weekday names on the right of each column, over the day numbers, as Apple sets them. */
 .cx-weekdays span { padding: 0 10px 6px; color: var(--text-2); font-size: var(--t-13); text-align: right; }
@@ -185,17 +183,18 @@
   position: relative;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  border-bottom: 1px solid var(--separator);
+  border-bottom: var(--hairline) solid var(--separator);
   min-height: 0;
 }
 .cx-week:last-child { border-bottom: 0; }
+.cx-week-bars { display: contents; }
 .cx-day {
   container-type: inline-size;
   position: relative;
   min-width: 0;
   min-height: 0;
   padding: 26px 3px 2px;
-  border-right: 1px solid var(--separator);
+  border-right: var(--hairline) solid var(--separator);
   overflow: hidden;
 }
 /* The seventh day, not the last child: a week's bars come after its days, and with one in the
@@ -212,7 +211,7 @@
   background: none;
   cursor: default;
 }
-.cx-day-hit:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: -2px; }
+.cx-day-hit:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 
 .cx-daynum {
   position: absolute;
@@ -230,17 +229,19 @@
   pointer-events: none;
 }
 .cx-day.is-out .cx-daynum { color: var(--text-3); }
-.cx-daynum.is-today { background: var(--sys-red); color: #fff; font-weight: 700; }
+.cx-daynum.is-today { background: var(--danger-deep); color: #fff; font-weight: 700; }
 
 .cx-items { position: relative; z-index: 1; margin: 0; padding: 0; list-style: none; pointer-events: none; }
 .cx-items li { pointer-events: auto; }
+/* Each line 24px high: WCAG 2.2's smallest target, so a line in a cell can be hit without
+   catching the one beside it. CalendarView measures what fits on the same pitch. */
 .cx-item {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) auto;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
   width: 100%;
-  height: 18px;
+  height: 24px;
   padding: 0 4px;
   border: 0;
   border-radius: 4px;
@@ -252,35 +253,40 @@
   cursor: default;
 }
 .cx-item:hover { background: color-mix(in srgb, var(--cal, var(--text)) 14%, transparent); }
-.cx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cal); }
+.cx-dot { width: 8px; height: 8px; background: var(--cal); -webkit-mask: var(--mask-disc) center/100% no-repeat; mask: var(--mask-disc) center/100% no-repeat; }
 /* A reminder's ring and its words in its list's colour, as Calendar on the Mac draws them. */
+/* The ring is drawn 12px — a vector ring masked over the list's colour (::after), with its
+   fill a vector disc beneath (::before); the 1.3px CSS border it replaces drew thick on one
+   side and broken on the other at 1.25×. The button around it is 24px, WCAG 2.2's smallest
+   target, pulled in by its margin so the row lays out as if it were the ring alone. */
 .cx-ring {
-  position: relative; flex: none; width: 10px; height: 10px; padding: 0; margin: 0;
-  border: 1.3px solid var(--cal, var(--text-3)); border-radius: 50%; box-sizing: border-box;
-  background: none; box-shadow: none; cursor: pointer;
-  transition: background 140ms ease, border-color 140ms ease;
+  position: relative; flex: none; width: 24px; height: 24px; padding: 0; margin: -6px;
+  border: 0; border-radius: 50%; background: none; box-shadow: none; cursor: pointer;
 }
-/* A target a finger or a trackpad can find, larger than the ring it draws. */
-.cx-ring::before { content: ""; position: absolute; inset: -6px; }
-.cx-ring:hover { background: color-mix(in srgb, var(--cal, var(--text)) 22%, transparent); }
-.cx-ring:active { transform: scale(0.85); }
-.cx-ring.is-ticked { background: var(--cal, var(--sys-blue)); border-color: var(--cal, var(--sys-blue)); }
-.cx-ring:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 2px; }
+.cx-ring::before, .cx-ring::after { content: ""; position: absolute; inset: 6px; transition: background-color 140ms ease; }
+.cx-ring::after { background: var(--cal, var(--text-3)); -webkit-mask: var(--mask-ring-12) center/12px 12px no-repeat; mask: var(--mask-ring-12) center/12px 12px no-repeat; }
+.cx-ring::before { background: transparent; -webkit-mask: var(--mask-disc) center/12px 12px no-repeat; mask: var(--mask-disc) center/12px 12px no-repeat; }
+.cx-ring:hover::before { background: color-mix(in srgb, var(--cal, var(--text)) 22%, transparent); }
+.cx-ring:active::before, .cx-ring:active::after { transform: scale(0.85); }
+.cx-ring.is-ticked::before { background: var(--cal, var(--sys-blue)); }
+.cx-ring:focus-visible { outline: var(--focus-ring); outline-offset: -4px; }
 .cx-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cx-item-time { color: var(--text-3); font-variant-numeric: tabular-nums; }
 /* In a narrow cell the title matters more than the time, which Apple drops first. */
 @container (max-width: 130px) {
-  .cx-item { grid-template-columns: 10px minmax(0, 1fr); }
+  .cx-item { grid-template-columns: 12px minmax(0, 1fr); }
   .cx-item-time { display: none; }
 }
 /* Dots, for a cell with no room for words: each item still opens on a click. */
-.cx-items.is-dots { display: flex; flex-wrap: wrap; gap: 3px; padding: 0 4px; }
-.cx-items.is-dots .cx-item { display: grid; place-items: center; width: 10px; height: 10px; padding: 0; border-radius: 50%; }
+/* Each dot is drawn 8px in a 24px target, the targets side by side. */
+.cx-items.is-dots { display: flex; flex-wrap: wrap; gap: 0; padding: 0 2px; }
+.cx-items.is-dots .cx-item { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border-radius: 50%; }
 .cx-items.is-dots .cx-item-title,
 .cx-items.is-dots .cx-item-time,
 .cx-items.is-dots .cx-more { display: none; }
 .cx-item.is-reminder.is-done .cx-item-title { color: var(--text-3); text-decoration: line-through; }
 .cx-more {
+  height: 24px;
   padding: 0 6px;
   border: 0;
   background: none;
@@ -296,7 +302,7 @@
 .cx-bar-event {
   position: absolute;
   z-index: 2;
-  height: 18px;
+  height: 22px;
   padding: 0 7px;
   border: 0;
   border-radius: 4px;
@@ -322,7 +328,7 @@
 .cx-bar-event.from-before::before { display: none; }
 .cx-bar-event.to-after { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .cx-bar-event:hover { background: color-mix(in srgb, var(--cal) 34%, transparent); }
-.cx-bar-event:focus-visible, .cx-item:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 0; }
+.cx-bar-event:focus-visible, .cx-item:focus-visible { outline: var(--focus-ring); outline-offset: 0; }
 
 /* ---- week and day ------------------------------------------------------------------ */
 
@@ -330,7 +336,7 @@
 /* Wide enough for "10:18 PM" in the red of now, which was cut to "0:18 PM" at 56px. */
 .cx-gutter { width: 66px; flex: none; }
 .cx-grid-head,
-.cx-allday { display: flex; border-bottom: 1px solid var(--separator); }
+.cx-allday { display: flex; border-bottom: var(--hairline) solid var(--separator); }
 .cx-grid-head > .cal-col-head { flex: 1; }
 .cal-col-head {
   display: flex;
@@ -346,17 +352,17 @@
   font-size: var(--t-13);
   cursor: default;
 }
-.cx-col-num { font-size: 20px; font-weight: 400; color: var(--text); font-variant-numeric: tabular-nums; }
+.cx-col-num { font-size: 1.25rem; font-weight: 400; color: var(--text); font-variant-numeric: tabular-nums; }
 .cal-col-head.is-today .cx-col-num {
   min-width: 28px;
   padding: 0 6px;
   border-radius: 14px;
-  background: var(--sys-red);
+  background: var(--danger-deep);
   color: #fff;
   font-weight: 600;
 }
-.cal-col-head.is-today .cx-col-weekday { color: var(--sys-red); font-weight: 600; }
-.cal-col-head:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: -2px; }
+.cal-col-head.is-today .cx-col-weekday { color: var(--danger); font-weight: 600; }
+.cal-col-head:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 
 .cx-allday { position: relative; min-height: 28px; }
 .cx-allday-label {
@@ -369,18 +375,21 @@
 
 .cx-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 /* Room above midnight and below the last hour, so a label centred on its line — "12:01 AM" just after midnight — is not cut in half by the top of the scroller. */
-.cx-hours-body { position: relative; display: flex; padding-block: 10px; }
+.cx-hours-body { position: relative; display: flex; padding-block: 12px; }
 .cx-hour-labels { position: relative; }
 .cx-hour-labels span {
   position: absolute;
   right: 8px;
-  transform: translateY(-50%);
+  /* Centred on its line by a whole-pixel offset from a fixed line height — translateY(-50%)
+     of a 15.95px line set every hour's label on a fractional pixel. */
+  margin-top: -8px;
+  line-height: 16px;
   color: var(--text-3);
   font-size: var(--t-11);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.cx-hour-labels .cx-now-label { z-index: 2; padding: 0 2px; background: var(--bg); color: var(--sys-red); font-weight: 600; }
+.cx-hour-labels .cx-now-label { z-index: 2; padding: 0 2px; background: var(--bg); color: var(--danger); font-weight: 600; }
 
 .cx-columns {
   position: relative;
@@ -390,11 +399,11 @@
   flex: 1;
   display: grid;
   grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
-  background-image: linear-gradient(to bottom, var(--separator) 1px, transparent 1px);
+  background-image: linear-gradient(to bottom, var(--separator) var(--hairline), transparent var(--hairline));
   background-size: 100% 48px;
   touch-action: none;
 }
-.cx-column { position: relative; border-left: 1px solid var(--separator); }
+.cx-column { position: relative; border-left: var(--hairline) solid var(--separator); }
 .cx-column.is-weekend { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
 
 /* A timed event: a tinted block with a stripe of its calendar's colour down the left. */
@@ -426,7 +435,7 @@
   background: var(--cal);
 }
 .cx-block:hover { background: color-mix(in srgb, var(--cal) 32%, var(--bg)); }
-.cx-block:focus-visible { outline: 2px solid var(--sys-blue); outline-offset: 0; }
+.cx-block:focus-visible { outline: var(--focus-ring); outline-offset: 0; }
 .cx-block.is-moving { z-index: 3; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28); opacity: 0.94; }
 .cx-block.is-draft {
   --cal: var(--sys-blue);
@@ -439,9 +448,20 @@
 /* Under three quarters of an hour there is room for one line: the title, then the time. */
 .cx-block.is-short { flex-direction: row; align-items: center; gap: 6px; padding-top: 1px; padding-bottom: 1px; }
 .cx-block.is-short .cx-block-where { display: none; }
+/* Lines that do not fit a block's height leave whole: they wrap into a second column, past
+   the block's edge where its overflow hides them, rather than being squeezed — the title's
+   descenders were cut ("Desiqn critique") and the last line sliced through its middle. */
+.cx-block:not(.is-short) { flex-wrap: wrap; align-content: flex-start; column-gap: 24px; }
+.cx-block:not(.is-short) > :is(.cx-block-title, .cx-block-time, .cx-block-where) { flex-shrink: 0; width: 100%; }
+/* One line in a narrow column: the title keeps the room and the time gives way whole — never
+   both cut to "Team sta…  9 …". */
+.cx-block { container-type: inline-size; }
+.cx-block.is-short .cx-block-title { flex: 0 1 auto; min-width: 0; }
+.cx-block.is-short .cx-block-time { flex: none; }
+@container (max-width: 150px) { .cx-block.is-short .cx-block-time { display: none; } }
 .cx-block-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-11); font-weight: 600; }
 .cx-block-time,
-.cx-block-where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; opacity: 0.8; font-size: 10.5px; }
+.cx-block-where { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; font-size: 0.6562rem; }
 
 .cx-reminder {
   position: absolute;
@@ -455,33 +475,46 @@
   font-size: var(--t-11);
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
   pointer-events: none;
 }
+/* The title is its own box so it ends in an ellipsis — as bare text in the flex row it was
+   cut off mid-letter ("Book the train t"). */
+.cx-reminder-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The label lets a drag on the timeline through; its ring is the one thing that takes a click. */
 .cx-reminder .cx-ring { pointer-events: auto; }
 .cx-reminder.is-done { color: var(--text-3); text-decoration: line-through; }
 /* Above the line for now, on a backing of its own, so the line never runs through a title. */
-.cx-reminder { z-index: 3; right: auto; max-width: calc(100% - 8px); padding: 0 6px 0 2px; border-radius: 4px; background: var(--bg); }
+/* The backing runs the slot's whole width (its shadows fill the 4px either side): as wide as
+   its words only, it left a sliver of the red line poking out past the title — a stray
+   underline beside the dot. */
+.cx-reminder {
+  --backing: var(--bg);
+  z-index: 3; right: auto; width: calc(100% - 8px); max-width: calc(100% - 8px); padding: 0 6px 0 2px;
+  background: var(--backing); box-shadow: -4px 0 0 var(--backing), 4px 0 0 var(--backing);
+}
+.cx-column.is-weekend .cx-reminder { --backing: color-mix(in srgb, var(--text) 2.5%, var(--bg)); }
 
-/* Now: a red line across today with a dot at its start. */
+/* Now: a red line across today with a dot at its start — the dot a vector disc on whole
+   pixels, centred on the 2px line (its top set in whole pixels by the view). */
+/* The line under a reminder's backing, the dot over it: the two are separate layers. */
 .cx-now {
   position: absolute;
-  z-index: 2;
   height: 2px;
   margin-top: -1px;
-  background: var(--sys-red);
   pointer-events: none;
 }
+.cx-now::after { content: ""; position: absolute; z-index: 2; inset: 0; background: var(--sys-red); }
 .cx-now::before {
   content: "";
   position: absolute;
-  left: -4px;
-  top: -3px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  z-index: 4;
+  left: -5px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
   background: var(--sys-red);
+  -webkit-mask: var(--mask-disc) center/100% no-repeat;
+  mask: var(--mask-disc) center/100% no-repeat;
 }
 
 /* ---- year --------------------------------------------------------------------------- */
@@ -497,7 +530,7 @@
   overflow-y: auto;
 }
 .cx-year-month { margin: 0 0 6px; color: var(--text); font-size: var(--t-15); font-weight: 700; }
-.cx-year-month.is-current { color: var(--sys-red); }
+.cx-year-month.is-current { color: var(--danger); }
 
 @container cx-page (max-width: 900px) { .cal-year { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 /* Below this the calendars column leaves the grid too little room for its title and controls. */
@@ -505,7 +538,7 @@
   .cx { grid-template-columns: 1fr; }
   .cx-side { display: none; }
   .cal-year { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cx .cx-title { font-size: 22px; }
+  .cx .cx-title { font-size: 1.375rem; }
   .cx-title-full { display: none; }
   .cx-title-brief { display: inline; }
   .cx-bar { gap: 10px 12px; padding-inline: 0; }
@@ -545,8 +578,8 @@
 .cx-info-title { margin: 0 0 2px; font-size: var(--t-17); font-weight: 700; line-height: 1.25; }
 .cx-info-line { margin: 0; font-size: var(--t-13); color: var(--text-2); }
 .cx-info-cal { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; font-size: var(--t-13); color: var(--text-2); }
-.cx-info-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cal); }
-.cx-info-notes { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--separator); font-size: var(--t-13); white-space: pre-wrap; }
+.cx-info-dot { width: 8px; height: 8px; background: var(--cal); -webkit-mask: var(--mask-disc) center/100% no-repeat; mask: var(--mask-disc) center/100% no-repeat; }
+.cx-info-notes { margin: 8px 0 0; padding-top: 8px; border-top: var(--hairline) solid var(--separator); font-size: var(--t-13); white-space: pre-wrap; }
 .cx-popover input,
 .cx-popover textarea {
   border: 0;
@@ -560,7 +593,7 @@
 .cx-popover .cx-pop-title { padding: 0; font-size: var(--t-17); font-weight: 700; }
 .cx-pop-title::placeholder, .cx-pop-line::placeholder, .cx-pop-notes::placeholder { color: var(--text-3); }
 .cx-popover .cx-pop-line { padding: 0; font-size: var(--t-13); }
-.cx-pop-rows { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--separator); border-bottom: 1px solid var(--separator); }
+.cx-pop-rows { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: var(--hairline) solid var(--separator); border-bottom: var(--hairline) solid var(--separator); }
 .cx-pop-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; font-size: var(--t-13); }
 .cx-pop-row > span:first-child { color: var(--text-2); text-align: right; }
 .cx-when { display: flex; gap: 6px; min-width: 0; }
@@ -597,7 +630,7 @@
   background-color: var(--sys-blue);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 5.2 4.1 7.3 8 2.8' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
-.cx-pop-row input[type="checkbox"]:focus-visible { outline: 3px solid color-mix(in srgb, var(--sys-blue) 45%, transparent); outline-offset: 1px; }
+.cx-pop-row input[type="checkbox"]:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 /* Notes grow with what is written, as in Calendar; no grip in the corner. */
 .cx-popover .cx-pop-notes { min-height: 2.6em; max-height: 9em; padding: 0; font-size: var(--t-13); resize: none; field-sizing: content; }
 .cx-pop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -618,7 +651,7 @@
   min-height: 0;
   overflow-y: auto;
   padding: 6px 18px 18px;
-  border-left: 1px solid var(--separator);
+  border-left: var(--hairline) solid var(--separator);
 }
 .cx-pane-day { margin: 0; font-size: var(--t-22); font-weight: 700; letter-spacing: -0.02em; }
 .cx-pane-date { margin: 2px 0 16px; color: var(--text-2); font-size: var(--t-13); }
@@ -639,16 +672,16 @@
   cursor: default;
 }
 .cx-pane-event:hover { background: color-mix(in srgb, var(--cal) 24%, transparent); }
-.cx-pane-event:focus-visible { outline: 3px solid var(--accent-ring); }
+.cx-pane-event:focus-visible { outline: var(--focus-ring); }
 .cx-pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-13); font-weight: 600; }
 .cx-pane-when, .cx-pane-where { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
-.cx-pane-reminder { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 10px; font-size: var(--t-13); }
+.cx-pane-reminder { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 10px; font-size: var(--t-13); }
 .cx-pane-reminder .cx-pane-title { font-weight: 400; }
 /* Without room for both, the timeline keeps the window. */
 @container cx-page (max-width: 900px) { .cx-pane { display: none; } }
 
 .cx-info-url { margin-top: 6px; font-size: var(--t-13); color: var(--sys-blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cx-pane-month { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--separator); }
+.cx-pane-month { padding-bottom: 14px; margin-bottom: 14px; border-bottom: var(--hairline) solid var(--separator); }
 /* With the month in the Day pane, the sidebar's copy would be the same month twice. */
 .cx:has(.cx-pane-month) .cx-side .cx-minimonth { display: none; }
 
@@ -667,7 +700,7 @@
 :root[data-theme="dark"] .cx-block, :root[data-theme="dark"] .cx-bar-event { color: color-mix(in srgb, var(--cal) 45%, #fff); }
 
 /* Reminders' words take their list's colour, deepened to read in light and lifted in dark. */
-.cx-reminder, .cx-item.is-reminder .cx-item-title, .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 62%, #000); }
+.cx-reminder, .cx-item.is-reminder .cx-item-title, .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 56%, #000); }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .cx-reminder, :root:not([data-theme="light"]) .cx-item.is-reminder .cx-item-title, :root:not([data-theme="light"]) .cx-pane-reminder .cx-pane-title { color: color-mix(in srgb, var(--cal, var(--text)) 50%, #fff); }
 }
@@ -700,7 +733,7 @@
   color: var(--text); font: inherit; font-size: var(--t-13); text-align: start; cursor: default;
 }
 .cx-zone:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 10%, transparent); }
-.cx-zone:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); outline: none; }
+.cx-zone:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 .cx-zone:disabled { background: none; padding-inline: 0; }
 .cx-zone-offset { color: var(--text-3); font-variant-numeric: tabular-nums; }
 .cx-zone-find { position: relative; display: block; min-width: 0; }
@@ -711,7 +744,7 @@
 }
 .cx-zones {
   position: absolute; z-index: 5; inset-inline: 0; top: calc(100% + 4px); display: flex; flex-direction: column;
-  padding: 4px; border-radius: 10px; background: var(--sheet, var(--bg)); box-shadow: var(--glass-float), 0 0 0 0.5px var(--separator);
+  padding: 4px; border-radius: 10px; background: var(--sheet, var(--bg)); box-shadow: var(--glass-float), 0 0 0 var(--hairline) var(--separator);
 }
 .cx-zone-option {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline; gap: 8px;
@@ -719,7 +752,7 @@
 }
 .cx-zone-option > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cx-zone-region { color: var(--text-3); font-size: var(--t-11); }
-.cx-zone-option.is-lit { background: var(--accent); color: var(--on-accent, #fff); }
+.cx-zone-option.is-lit { background: var(--accent-fill); color: var(--on-accent, #fff); }
 .cx-zone-option.is-lit .cx-zone-region, .cx-zone-option.is-lit .cx-zone-offset { color: inherit; opacity: 0.8; }
 
 /* ---- sidebar groups: iCloud, Subscriptions, Other — each folds away -------------------- */
@@ -737,7 +770,7 @@
 .cx-side-heading[aria-expanded="false"] .cx-fold { transform: rotate(-90deg); }
 @media (prefers-reduced-motion: reduce) { .cx-fold { transition: none; } }
 .cx-cal-problem {
-  flex: none; display: grid; place-items: center; width: 15px; height: 15px; border-radius: 50%;
+  flex: none; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%;
   background: color-mix(in srgb, var(--sys-orange, #ff9500) 22%, transparent); color: var(--sys-orange, #c76b00);
   font-size: 10px; font-weight: 700;
 }
@@ -750,7 +783,7 @@
 .cx-subscribe-label { font-size: var(--t-13); font-weight: 600; }
 .cx-subscribe .field { width: 100%; min-width: 0; }
 .cx-subscribe-note { margin: 0; color: var(--text-3); font-size: var(--t-11); line-height: 1.35; }
-.cx-subscribe-note.is-problem { color: var(--sys-red); }
+.cx-subscribe-note.is-problem { color: var(--danger); }
 .cx-subscribe-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
 /* ---- Quick Event --------------------------------------------------------------------- */
@@ -785,7 +818,7 @@
 
 /* ---- search results: coming up, then earlier; the words found marked ------------------- */
 
-.cx-found-row { grid-template-columns: 10px minmax(0, 1fr) auto; }
+.cx-found-row { grid-template-columns: 12px minmax(0, 1fr) auto; }
 .cx-found-row.is-lit { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .cx-found-row:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .cx-found-text { display: flex; flex-direction: column; min-width: 0; }
@@ -800,7 +833,7 @@
   font-size: var(--t-11); font-variant-numeric: tabular-nums; pointer-events: none;
 }
 .cx-minimonth-grid.has-weeks { grid-template-columns: 16px repeat(7, 1fr); }
-.cx-minimonth-wk { align-self: center; color: var(--text-3); font-size: 9px; font-variant-numeric: tabular-nums; text-align: left; }
+.cx-minimonth-wk { align-self: center; color: var(--text-3); font-size: 0.5625rem; font-variant-numeric: tabular-nums; text-align: left; }
 .cx-head-week { display: flex; align-items: flex-end; justify-content: flex-end; padding: 0 8px 6px 0; color: var(--text-3); font-size: var(--t-11); font-variant-numeric: tabular-nums; }
 .cx-pane-week { margin-left: 8px; color: var(--text-3); }
 

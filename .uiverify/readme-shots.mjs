@@ -1,0 +1,302 @@
+// The README's screenshots and hero animation, made from the real interface with an invented
+// library (readme-fixture.mjs) and drawn pictures (readme-pictures.mjs).
+//
+//   node .uiverify/readme-shots.mjs             everything, into docs/media/
+//   node .uiverify/readme-shots.mjs notes hero  only those scenes
+//
+// It builds the interface and previews it on PORT (4220) unless something already answers
+// there. Needs ImageMagick (`magick`) and ffmpeg. Optional: the four Unsplash pictures named
+// in UNSPLASH below; without them, drawn pictures take their places.
+import { spawn, execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { chromium } from "playwright";
+import { SERVICES, installStub, openScreen } from "./stub.mjs";
+import { installDemo } from "./readme-fixture.mjs";
+import { drawPictures } from "./readme-pictures.mjs";
+
+const ROOT = path.resolve(import.meta.dirname, "..");
+const OUT = process.env.OUT ?? path.join(ROOT, "docs/media");
+const PORT = Number(process.env.PORT ?? 4220);
+const WORK = process.env.WORK ?? path.join(os.tmpdir(), "skykeep-readme-shots");
+const URL_ = `http://localhost:${PORT}`;
+const PICS = `${URL_}/__pics`;
+const ONLY = new Set(process.argv.slice(2));
+const want = (name) => ONLY.size === 0 || ONLY.has(name);
+// Wednesday, 9:41 in the morning, in a zone the fixture's events are written in.
+const TZ = "America/Los_Angeles";
+const NOW = new Date("2026-10-21T09:41:00-07:00");
+// Unsplash-licensed abstract pictures (free to use), resized and stripped before use.
+const UNSPLASH = ["kunal-patil-2hB-jhXLd3c-unsplash.jpg", "dirk-lach-fSgF4pEQEY8-unsplash.jpg",
+  "dileepa-nipun-5bakUnqvBo0-unsplash.jpg", "magicpattern-87PP9Zd7MNo-unsplash.jpg"]
+  .map((f) => path.join(process.env.UNSPLASH_DIR ?? path.join(os.homedir(), "Pictures/Wallpapers"), f));
+
+fs.mkdirSync(OUT, { recursive: true });
+fs.mkdirSync(WORK, { recursive: true });
+const sh = (cmd, args) => execFileSync(cmd, args, { stdio: ["ignore", "ignore", "inherit"] });
+
+// ---- The interface, served.
+let server = null;
+const up = async () => { try { return (await fetch(URL_)).ok; } catch { return false; } };
+if (!(await up())) {
+  const dist = path.join(WORK, "dist");
+  execFileSync("npx", ["vite", "build", "--outDir", dist, "--emptyOutDir"], { cwd: ROOT, stdio: "ignore" });
+  server = spawn("npx", ["vite", "preview", "--outDir", dist, "--port", String(PORT), "--strictPort"], { cwd: ROOT, stdio: "ignore", detached: true });
+  process.on("exit", () => { try { process.kill(-server.pid); } catch {} });
+  for (let i = 0; i < 100 && !(await up()); i++) await new Promise((r) => setTimeout(r, 200));
+}
+
+const browser = await chromium.launch();
+
+// ---- Pictures: drawn ones, and the Unsplash ones where present.
+const pictures = new Map();
+{
+  const page = await browser.newPage();
+  const scenes = ["lake", "landscape", "sea", "landscape", "dunes", "lake", "bloom", "landscape", "night", "sea"];
+  const shapes = [[1200, 900], [900, 1200], [1200, 900], [1280, 720], [1200, 900], [900, 1200]];
+  const specs = Array.from({ length: 54 }, (_, i) => ({ name: `g${i}`, w: shapes[i % 6][0], h: shapes[i % 6][1], scene: scenes[(i * 7) % scenes.length], seed: i + 3 }));
+  specs.push({ name: "drive/lake", w: 1200, h: 900, scene: "lake", seed: 5 }, { name: "drive/ridge", w: 1200, h: 900, scene: "landscape", seed: 2 },
+    { name: "drive/fire", w: 1200, h: 900, scene: "fire", seed: 1 }, { name: "drive/dunes", w: 1200, h: 900, scene: "landscape", seed: 3 },
+    { name: "drive/map", w: 900, h: 1200, scene: "map", seed: 4 }, { name: "drive/plan", w: 900, h: 1200, scene: "page", seed: 6 },
+    { name: "drive/stars", w: 1200, h: 900, scene: "night", seed: 8 }, { name: "drive/mist", w: 1200, h: 900, scene: "landscape", seed: 4 }, { name: "drive/shore", w: 1200, h: 900, scene: "sea", seed: 6 },
+    { name: "note/M1", w: 1600, h: 760, scene: "lake", seed: 13 });
+  for (const [k, v] of Object.entries(await page.evaluate(drawPictures, specs))) pictures.set(k, Buffer.from(v, "base64"));
+  await page.close();
+  // Four of the library's spots go to the Unsplash pictures, small and without metadata.
+  UNSPLASH.forEach((file, i) => {
+    if (!fs.existsSync(file)) return;
+    const small = path.join(WORK, `unsplash-${i}.jpg`);
+    if (!fs.existsSync(small)) sh("magick", [file, "-strip", "-resize", "1200x1200>", "-quality", "84", small]);
+    pictures.set(`g${[1, 6, 14, 23][i]}`, fs.readFileSync(small));
+  });
+}
+const pictureFor = (p) => {
+  // pic/<id>/<size>, note/<id>/<part>, drive/<name>
+  const parts = p.split("/");
+  if (parts[0] === "pic") return pictures.get(parts[1]);
+  if (parts[0] === "note") return pictures.get(`note/${parts[1]}`);
+  if (parts[0] === "drive") return pictures.get(p);
+  return null;
+};
+
+/** A window of the app on the demo library, at `scale`, in `scheme`. */
+async function open({ scheme = "light", scale = 2, width = 1280, height = 800, screen = "library", cursor = false, storage = {} } = {}) {
+  const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: scale, colorScheme: scheme,
+    timezoneId: TZ, locale: "en-US", reducedMotion: "no-preference" });
+  await ctx.clock.setFixedTime(NOW);
+  await ctx.route(`${PICS}/**`, (route) => {
+    const body = pictureFor(decodeURIComponent(route.request().url().slice(PICS.length + 1)));
+    return body ? route.fulfill({ body, contentType: "image/jpeg" }) : route.fulfill({ status: 404, body: "" });
+  });
+  await ctx.addInitScript(installDemo, { picBase: PICS, tz: TZ });
+  await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor: null, notesFixture: true, calendarFixture: true,
+    remindersFixture: true, contactsFixture: true, driveFixture: true, demoFixture: true });
+  await ctx.addInitScript((s) => { try { for (const [k, v] of Object.entries(s)) localStorage.setItem(k, v); } catch {} }, storage);
+  if (cursor) await ctx.addInitScript(fakeCursor);
+  const page = await ctx.newPage();
+  page.on("pageerror", (e) => console.log(`page error: ${e.message}`));
+  await page.goto(`${URL_}/`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  return { ctx, page };
+}
+
+/** A pointer drawn into the page, for the animation: a screencast shows no cursor of its own. */
+function fakeCursor() {
+  addEventListener("DOMContentLoaded", () => {
+    const c = document.createElement("div");
+    c.innerHTML = `<svg width="22" height="28" viewBox="0 0 22 28"><path d="M2 2v20l5.2-4.6 3.4 8 3.6-1.6-3.4-7.7H18z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+    Object.assign(c.style, { position: "fixed", left: "0", top: "0", zIndex: 2147483647, pointerEvents: "none", transform: "translate(-200px,-200px)", filter: "drop-shadow(0 1px 1.5px rgba(0,0,0,.35))" });
+    document.body.appendChild(c);
+    addEventListener("mousemove", (e) => { c.style.transform = `translate(${e.clientX - 2}px,${e.clientY - 2}px)`; }, true);
+  });
+}
+
+// ---- Scenes: each leaves the window as the screenshot should show it.
+const SCENES = {
+  notes: async (page) => {
+    await openScreen(page, "Notes");
+    await page.locator(".note-rows").getByText("Cabin weekend").first().click();
+    await page.waitForTimeout(900);
+  },
+  reminders: async (page) => {
+    await openScreen(page, "Reminders");
+    await page.waitForTimeout(700);
+  },
+  calendar: async (page) => {
+    await openScreen(page, "Calendar");
+    await page.getByRole("button", { name: "Week", exact: true }).click();
+    await page.waitForTimeout(500);
+    // The working day in view.
+    await page.evaluate(() => {
+      const s = [...document.querySelectorAll(".cx *")].find((e) => e.scrollHeight > e.clientHeight + 200 && getComputedStyle(e).overflowY !== "visible");
+      if (s) s.scrollTop = s.scrollHeight * (7.6 / 24);
+    });
+    await page.waitForTimeout(400);
+  },
+  contacts: async (page) => {
+    await openScreen(page, "Contacts");
+    await page.locator(".contacts").getByText("Maya Chen", { exact: true }).first().click();
+    await page.waitForTimeout(700);
+  },
+  drive: async (page) => {
+    await openScreen(page, "Drive");
+    await page.waitForTimeout(400);
+    await page.locator(".drive").getByText("Cabin Weekend", { exact: true }).first().dblclick();
+    await page.waitForTimeout(1200);
+    await page.mouse.click(5, 795);
+  },
+  photos: async (page) => {
+    await page.locator(".nav-item", { hasText: "Photos" }).click();
+    await page.waitForTimeout(1800);
+  },
+  settings: async (page) => {
+    await page.locator(".sidebar-account").click();
+    await page.waitForSelector(".settings");
+    await page.waitForTimeout(800);
+  },
+};
+
+/** The window, framed: rounded, shadowed, on a soft wash of Skykeep's blue. */
+async function frame(rawPng, scheme, { pad = [76, 64] } = {}) {
+  const meta = await sizeOf(rawPng);
+  const scale = 2;
+  const w = meta.w / scale, h = meta.h / scale;
+  const page = await browser.newPage({ viewport: { width: w + pad[0] * 2, height: h + pad[1] * 2 }, deviceScaleFactor: scale });
+  await page.setContent(frameHtml(scheme, w, h, pad, `data:image/png;base64,${fs.readFileSync(rawPng).toString("base64")}`));
+  await page.waitForLoadState("load");
+  const out = rawPng.replace(/\.raw\.png$/, ".framed.png");
+  await page.screenshot({ path: out, omitBackground: false });
+  await page.close();
+  return out;
+}
+
+function frameHtml(scheme, w, h, pad, src, { hole = false } = {}) {
+  const dark = scheme === "dark";
+  const bg = dark
+    ? `radial-gradient(70% 90% at 88% 100%, rgba(52,128,216,.42), transparent 70%),
+       radial-gradient(60% 70% at 8% 0%, rgba(94,185,242,.20), transparent 70%),
+       linear-gradient(160deg, #0f2350 0%, #0a1838 55%, #07112a 100%)`
+    : `radial-gradient(70% 90% at 90% 100%, rgba(52,128,216,.30), transparent 70%),
+       radial-gradient(60% 70% at 6% 0%, rgba(94,185,242,.28), transparent 70%),
+       linear-gradient(160deg, #f1f7fe 0%, #dcebfb 55%, #c3dcf7 100%)`;
+  const shadow = dark
+    ? "0 0 0 1px rgba(255,255,255,.10), 0 2px 6px rgba(0,0,0,.35), 0 24px 48px -12px rgba(0,0,0,.55), 0 60px 110px -40px rgba(0,10,40,.8)"
+    : "0 0 0 1px rgba(16,40,90,.10), 0 2px 6px rgba(16,40,90,.08), 0 24px 48px -14px rgba(18,62,157,.28), 0 60px 110px -40px rgba(18,62,157,.40)";
+  return `<!doctype html><html><head><style>
+    html,body{margin:0;width:${w + pad[0] * 2}px;height:${h + pad[1] * 2}px;background:${hole ? "transparent" : bg};overflow:hidden}
+    .win{position:absolute;left:${pad[0]}px;top:${pad[1]}px;width:${w}px;height:${h}px;border-radius:12px;overflow:hidden;
+      box-shadow:${shadow};background:${hole ? "#fff" : dark ? "#1c1c1e" : "#f5f5f7"}}
+    .win img{display:block;width:${w}px;height:${h}px}
+  </style></head><body><div class="win">${src ? `<img src="${src}">` : ""}</div></body></html>`;
+}
+
+async function sizeOf(png) {
+  const [w, h] = execFileSync("magick", ["identify", "-format", "%w %h", png]).toString().split(" ").map(Number);
+  return { w, h };
+}
+
+/** WebP for the README (2048 px wide) and a smaller PNG for anything that can't show WebP. */
+function publish(framed, name) {
+  const webp = path.join(OUT, `${name}.webp`), png = path.join(OUT, `${name}.png`);
+  sh("magick", [framed, "-strip", "-resize", "2048x", "-quality", "86", "-define", "webp:method=6", webp]);
+  sh("magick", [framed, "-strip", "-resize", "1280x", "-define", "png:compression-level=9", "-colors", "256", "-dither", "None", `PNG8:${png}`]);
+  for (const f of [webp, png]) console.log(`${path.relative(ROOT, f)}  ${Math.round(fs.statSync(f).size / 1024)} KB`);
+}
+
+// ---- Stills.
+const stills = { notes: ["light", "dark"], reminders: ["light", "dark"], calendar: ["light", "dark"], contacts: ["light", "dark"],
+  drive: ["light", "dark"], photos: ["light", "dark"], settings: ["light", "dark"] };
+for (const [scene, schemes] of Object.entries(stills)) {
+  if (!want(scene)) continue;
+  for (const scheme of schemes) {
+    const { ctx, page } = await open({ scheme, storage: { "quince.drive.view": "grid" } });
+    await SCENES[scene](page);
+    const raw = path.join(WORK, `${scene}-${scheme}.raw.png`);
+    await page.screenshot({ path: raw });
+    await ctx.close();
+    publish(await frame(raw, scheme), `${scene}-${scheme}`);
+  }
+}
+if (want("signin")) {
+  for (const scheme of ["light", "dark"]) {
+    const { ctx, page } = await open({ scheme, screen: "signin" });
+    await page.getByLabel("Apple ID").fill("jamie.rivera@example.com");
+    await page.getByLabel("Password").fill("demo-password");
+    await page.locator("body").click({ position: { x: 5, y: 5 } });
+    await page.waitForTimeout(400);
+    const raw = path.join(WORK, `signin-${scheme}.raw.png`);
+    await page.screenshot({ path: raw });
+    await ctx.close();
+    publish(await frame(raw, scheme), `signin-${scheme}`);
+  }
+}
+
+// ---- The hero: switch apps, tick a reminder, watch a note arrive from the phone.
+if (want("hero")) {
+  const W = 1120, H = 700, PAD = [40, 36];
+  const { ctx, page } = await open({ scheme: "light", scale: 1, width: W, height: H, cursor: true });
+  await openScreen(page, "Reminders");
+  await page.mouse.move(W - 40, H - 60);
+  await page.waitForTimeout(500);
+  const frames = [];
+  const cdp = await ctx.newCDPSession(page);
+  cdp.on("Page.screencastFrame", async (f) => {
+    frames.push({ t: f.metadata.timestamp, data: f.data });
+    await cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
+  });
+  await cdp.send("Page.startScreencast", { format: "png", everyNthFrame: 1, maxWidth: W, maxHeight: H });
+  const glide = async (loc, { click = "single", hold = 0, offset } = {}) => {
+    const box = await loc.boundingBox();
+    const x = box.x + (offset?.x ?? box.width / 2), y = box.y + (offset?.y ?? box.height / 2);
+    await page.mouse.move(x, y, { steps: 28 });
+    await page.waitForTimeout(160);
+    if (click === "single") await page.mouse.click(x, y);
+    if (click === "double") await page.mouse.dblclick(x, y);
+    if (hold) await page.waitForTimeout(hold);
+  };
+  await page.waitForTimeout(1100);
+  // Tick a reminder.
+  await glide(page.getByRole("checkbox", { name: "Send the Q4 slides to Jordan" }), { hold: 1400 });
+  // To Calendar, and its week.
+  await glide(page.locator(".nav-item", { hasText: "Calendar" }), { hold: 600 });
+  await glide(page.getByRole("button", { name: "Week", exact: true }), { hold: 1500 });
+  // To Notes; a note arrives from the phone.
+  await glide(page.locator(".nav-item", { hasText: "Notes" }), { hold: 900 });
+  await page.mouse.move(W * 0.62, H * 0.55, { steps: 16 });
+  await page.evaluate(() => { window.__demoArrive(); window.__emit?.("quince://synced", { services: [], asOf: Date.now() / 1000, tookMs: 5 }); });
+  await page.waitForTimeout(1200);
+  await glide(page.locator(".note-rows").getByText("Farmers market").first(), { hold: 2200 });
+  await cdp.send("Page.stopScreencast");
+  await ctx.close();
+
+  // Frames to a GIF, framed like the stills.
+  const dir = path.join(WORK, "hero");
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const end = frames[frames.length - 1].t + 1.2;
+  let list = "";
+  frames.forEach((f, i) => {
+    const file = path.join(dir, `f${String(i).padStart(4, "0")}.png`);
+    fs.writeFileSync(file, Buffer.from(f.data, "base64"));
+    list += `file '${file}'\nduration ${Math.max(0.004, (frames[i + 1]?.t ?? end) - f.t).toFixed(3)}\n`;
+  });
+  list += `file '${path.join(dir, `f${String(frames.length - 1).padStart(4, "0")}.png`)}'\n`;
+  fs.writeFileSync(path.join(dir, "list.txt"), list);
+  // The backdrop and the window's rounded shape, from the same frame as the stills.
+  const bgPage = await browser.newPage({ viewport: { width: W + PAD[0] * 2, height: H + PAD[1] * 2 }, deviceScaleFactor: 1 });
+  await bgPage.setContent(frameHtml("light", W, H, PAD, ""));
+  await bgPage.screenshot({ path: path.join(dir, "bg.png") });
+  await bgPage.close();
+  sh("magick", ["-size", `${W}x${H}`, "xc:black", "-fill", "white", "-draw", `roundrectangle 0,0 ${W - 1},${H - 1} 12,12`, path.join(dir, "mask.png")]);
+  const gif = path.join(OUT, "hero.gif");
+  sh("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", path.join(dir, "list.txt"), "-loop", "1", "-i", path.join(dir, "mask.png"), "-loop", "1", "-i", path.join(dir, "bg.png"),
+    "-filter_complex",
+    `[0:v]fps=15,scale=${W}:${H},format=rgba[v];[1:v]format=gray[m];[v][m]alphamerge[w];[2:v][w]overlay=${PAD[0]}:${PAD[1]}:shortest=1,split[a][b];` +
+    `[a]palettegen=max_colors=192:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`,
+    "-loop", "0", gif]);
+  console.log(`${path.relative(ROOT, gif)}  ${Math.round(fs.statSync(gif).size / 1024)} KB`);
+}
+
+await browser.close();
+process.exit(0);

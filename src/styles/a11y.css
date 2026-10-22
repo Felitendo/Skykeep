@@ -1,0 +1,159 @@
+/* Contrast settings, loaded last so they win over every app's own look.
+ *
+ * Increase Contrast (prefers-contrast: more) — macOS, iOS and Windows' "contrast themes" off
+ * but "more contrast" on. The design stays; edges, separators, secondary text and the focus
+ * ring firm up, and glass turns opaque (tokens.css already drops the blur).
+ *
+ * Forced colours (forced-colors: active) — Windows' High Contrast / contrast themes, in
+ * WebView2. The system replaces every colour with its own few; what it cannot know is which
+ * borders were drawn with a fill or a shadow (both are dropped), so every control, field and
+ * floating surface gets a real border here, selection takes Highlight, focus a Highlight
+ * outline, and the glyphs drawn in an app's colour take the text colour.
+ *
+ * On Linux neither query fires today: WebKitGTK does not map GTK's high-contrast theme or the
+ * Settings portal's org.freedesktop.appearance contrast key to prefers-contrast, and it has no
+ * forced-colours mode (docs/accessibility.md). The rules are written so the moment either is
+ * mapped — by WebKitGTK, or by the app reading the portal — they apply as they are.
+ */
+
+/* ---- Increase Contrast ---------------------------------------------------------------- */
+
+@media (prefers-contrast: more) {
+  :root:root:root {
+    --text-2: #3a3a3e;
+    --text-3: #4a4a4f;
+    --separator: rgba(0, 0, 0, 0.42);
+    --field-edge: rgba(0, 0, 0, 0.6);
+    --field-edge-hover: rgba(0, 0, 0, 0.75);
+    --glass-edge: rgba(0, 0, 0, 0.5);
+    --fill: color-mix(in srgb, var(--text) 12%, transparent);
+    --fill-selected: color-mix(in srgb, var(--text) 20%, transparent);
+    --accent-ring: var(--accent-strong);
+    --ring: 0 0 0 2px var(--accent-strong);
+    --focus-ring: 2px solid var(--text);
+  }
+}
+/* Dark under Increase Contrast: the same, lifted toward white. Chosen by the system or by
+   Settings, as tokens.css chooses the dark set. */
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root:root:root:not([data-theme="light"]) {
+    --text-2: #d1d1d6;
+    --text-3: #c2c2c7;
+    --separator: rgba(255, 255, 255, 0.45);
+    --field-edge: rgba(255, 255, 255, 0.6);
+    --field-edge-hover: rgba(255, 255, 255, 0.75);
+    --glass-edge: rgba(255, 255, 255, 0.45);
+    /* Opaque here, a sheet is #2c2c2e and a quiet button on it lighter still: the accent's
+       text and the danger red are lifted to 4.5:1 on both (they read at 4.3 and 3.5). */
+    --accent-strong: #40a9ff;
+    --danger: #ff9999;
+  }
+  :root:root:root:not([data-theme="light"])[data-app="calendar"] { --accent-strong: #ff7a7a; }
+  :root:root:root:not([data-theme="light"])[data-app="notes"] { --accent-strong: #ffd600; }
+}
+@media (prefers-contrast: more) {
+  :root:root:root[data-theme="dark"] {
+    --text-2: #d1d1d6;
+    --text-3: #c2c2c7;
+    --separator: rgba(255, 255, 255, 0.45);
+    --field-edge: rgba(255, 255, 255, 0.6);
+    --field-edge-hover: rgba(255, 255, 255, 0.75);
+    --glass-edge: rgba(255, 255, 255, 0.45);
+    --accent-strong: #40a9ff;
+    --danger: #ff9999;
+  }
+  :root:root:root[data-theme="dark"][data-app="calendar"] { --accent-strong: #ff7a7a; }
+  :root:root:root[data-theme="dark"][data-app="notes"] { --accent-strong: #ffd600; }
+  /* Floating surfaces and toolbar capsules: a drawn edge, not only a shadow. */
+  :is(.modal-sheet, .popover, .toast, .row-menu, .picker-menu, .cx-popover, .cx-zones,
+    .gsearch-panel, .gsearch-out, .format-panel, .upload-menu, .upload-tray, .px-info, .px-jump,
+    .toolbar-group, .sidebar) {
+    outline: 1px solid var(--glass-edge);
+    outline-offset: -1px;
+  }
+  /* A quiet button is a fill alone; here it has an edge too. */
+  :is(.quiet, .segment, .picker-button) { box-shadow: inset 0 0 0 1px var(--field-edge); }
+}
+
+/* ---- Forced colours (Windows High Contrast) -------------------------------------------- */
+
+@media (forced-colors: active) {
+  /* Every control with an edge of its own: the fill that marked it is gone. */
+  :is(.primary, .quiet, .icon-button, .tool, .segment, .picker-button, .toast-action,
+    .sidebar-toggle, .compact-back, .search-clear, .confirm-answer) {
+    border: 1px solid ButtonText;
+  }
+  .primary { background: ButtonText; color: ButtonFace; }
+  :is(.primary, .quiet, .icon-button, .tool):disabled { border-color: GrayText; color: GrayText; }
+  .primary:disabled { background: ButtonFace; }
+
+  /* Fields: a box to type in. */
+  :is(.field, .field-group, .search-field, .cx-pop-title, .cx-pop-line, .cx-pop-notes, .qc-field,
+    .rx-add input, .note-lock-field, input[type="text"], input[type="search"], input[type="email"],
+    input[type="password"], input:not([type]), textarea, select) {
+    border: 1px solid CanvasText;
+  }
+  .field-group input, .search-field input { border: 0; }
+
+  /* Floating surfaces, the sidebar and toolbar capsules: shadows are dropped, so an edge. */
+  :is(.modal-sheet, .popover, .toast, .row-menu, .picker-menu, .cx-popover, .cx-zones,
+    .gsearch-panel, .gsearch-out, .format-panel, .upload-menu, .upload-tray, .px-info, .px-jump,
+    .px-nav, .px-scrub-tip, .toolbar-group) {
+    border: 1px solid CanvasText;
+  }
+  .sidebar { border: 1px solid CanvasText; }
+
+  /* What is chosen: the system's highlight, as a native list draws it. */
+  :is(.nav-item, .source-row, .sidebar-account, .note-row, .contact-row, .rx-tile, .rx-tag-chip,
+    .gsearch-row, .segment, .px-source, .crumb):is([aria-current="true"], [aria-selected="true"], [aria-pressed="true"], .is-at),
+  :is(.row-menu-item, .picker-option, [role="option"], [role="menuitem"], [role="menuitemradio"]):is(.is-active, .is-at, [aria-selected="true"]),
+  :is(.drive-row, .cx-day).is-selected,
+  :is(.icon-button, .tool):is([aria-pressed="true"], .is-on) {
+    background: Highlight;
+    color: HighlightText;
+  }
+  /* A selected photo keeps its picture: the frame takes the highlight instead. */
+  .px-tile[aria-selected="true"] { outline: 3px solid Highlight; outline-offset: -3px; background: none; }
+
+  /* Ticks and rings: a ticked box fills with the highlight, an empty one keeps its edge. */
+  [role="checkbox"], [role="radio"], [role="switch"] { border-color: ButtonText; }
+  /* Calendar's rings and Reminders' ticks are masks over a fill, as Notes' circles are. */
+  .cx-ring::before, .cx-ring::after, .rx-tick::before, .rx-tick-fill, .qc-mark:not([data-kind="note"]), .cx-cal input { forced-color-adjust: none; }
+  .cx-ring::after, .rx-tick::before, .qc-mark:not([data-kind="note"]), .cx-cal input { background: ButtonText; }
+  .cx-ring.is-ticked::before, .rx-tick-fill, .cx-cal input:checked { background-color: Highlight; }
+  :is([role="checkbox"], [role="switch"])[aria-checked="true"] {
+    background: Highlight;
+    border-color: Highlight;
+  }
+  /* Notes' circles are masks over a fill, which the system would paint the window colour. */
+  .note-rich .nf-p[data-style="103"]::before, .nf-circle { forced-color-adjust: none; background: CanvasText; }
+  .note-rich .nf-p[data-style="103"][data-checked="true"]::before, .nf-check.is-done .nf-circle {
+    background: Highlight;
+  }
+
+  /* Keyboard focus: one ring, in the highlight, wherever it lands — the box shadows several
+     controls draw theirs with are dropped in this mode. */
+  :focus-visible { outline: 2px solid Highlight !important; outline-offset: 2px; }
+  .cx-day-hit:focus-visible, .nav-item:focus-visible { outline-offset: -2px; }
+
+  /* Glyphs drawn in an app's or a calendar's colour take the text colour. Colours that are
+     the content — a swatch to choose, a calendar's dot — keep theirs, with an edge. */
+  .app-icon svg { stroke: CanvasText; }
+  svg.lucide { stroke: currentColor; }
+  :is(.cx-dot, .rx-info-colours > *, .fp-colour, .cx-cal-swatch, .rx-tile-glyph, .rx-list-mark) {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+  .cx-bar-event, .cx-block { border: 1px solid CanvasText; }
+  .cx-bar-event::before, .cx-block::before { forced-color-adjust: none; background: CanvasText; }
+  .cx-daynum.is-today, .cx-minimonth-day.is-today, .cal-col-head.is-today .cx-col-num {
+    background: Highlight;
+    color: HighlightText;
+  }
+  .cx-now::after, .cx-now::before { background: Highlight; }
+
+  /* Separators drawn as a background line. */
+  hr { border-color: CanvasText; }
+  .scrim, .modal-veil, .sidebar-scrim { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: CanvasText padding-box; }
+}

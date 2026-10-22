@@ -16,13 +16,13 @@
   margin: 0;
   padding: 0;
   list-style: none;
-  border: 1px solid var(--separator);
+  border: var(--hairline) solid var(--separator);
   border-radius: var(--r-plateau);
 }
 .ix-list li { display: grid; gap: 1px; padding: 8px 12px; }
-.ix-list li + li { border-top: 1px solid var(--separator); }
+.ix-list li + li { border-top: var(--hairline) solid var(--separator); }
 .ix-title { font-size: var(--t-13); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ix-sub { font-size: 12px; color: var(--text-2); line-height: 1.35; }
+.ix-sub { font-size: 0.75rem; color: var(--text-2); line-height: 1.35; }
 .ix-list li.is-skipped .ix-title { color: var(--text-3); }
 .ix-list li.is-refused .ix-title { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--text-3); }
 .ix-list li.is-refused .ix-sub { color: var(--text-2); }
@@ -46,6 +46,13 @@ html:has(.qc), html:has(.qc) body, html:has(.qc) #root { height: 100%; margin: 0
 /* The app it goes into, in its own colour: a reminder's empty circle, a note's page corner. */
 .qc-mark { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--accent); }
 .qc-mark[data-kind="note"] { border-radius: 4px; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+/* A reminder's circle as a vector ring over the accent (a 1.5px border drew lopsided at a
+   fractional scale), the same ring as Notes' checklist circles. */
+.qc-mark:not([data-kind="note"]) {
+  border: 0; border-radius: 0; background: var(--accent);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='8.25' fill='none' stroke='black' stroke-width='1.5'/></svg>") center/18px 18px no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'><circle cx='9' cy='9' r='8.25' fill='none' stroke='black' stroke-width='1.5'/></svg>") center/18px 18px no-repeat;
+}
 .qc-field {
   flex: 1;
   min-width: 0;
@@ -67,9 +74,9 @@ html:has(.qc), html:has(.qc) body, html:has(.qc) #root { height: 100%; margin: 0
   justify-content: space-between;
   gap: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--separator);
+  border-top: var(--hairline) solid var(--separator);
   min-width: 0;
 }
-.qc-note { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-note { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qc-error { color: var(--danger); }
 .qc-link { padding: 0; font-size: inherit; }

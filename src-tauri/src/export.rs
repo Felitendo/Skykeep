@@ -1429,6 +1429,7 @@ pub async fn library_export_start(
         return Err("An export is already under way.".into());
     }
     let _running = Running;
+    crate::grants::take_write(&dest)?;
     CANCEL.store(false, Ordering::Release);
     let data_dir = crate::state_dir(&app);
     // Checked and read in one hold of the library, then let go of before a file is written.

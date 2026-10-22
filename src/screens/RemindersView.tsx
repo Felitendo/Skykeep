@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fadeIn, fadeOut } from "../lib/fade";
 import { useActiveRef } from "../lib/screen";
+import { useModalFocus } from "../lib/focus";
 import { listen } from "@tauri-apps/api/event";
 import { usePending } from "../lib/pending";
 import { Unsent, Waiting } from "../components/Unsent";
@@ -2156,6 +2157,8 @@ function ListInfo({ list, onClose, onDone }: {
   const current = LIST_COLOURS.find((c) => c.hex.toLowerCase() === (list.colour ?? "").toLowerCase())?.key ?? null;
   const [colour, setColour] = useState<string | null>(current);
   const shown = LIST_COLOURS.find((c) => c.key === colour)?.hex ?? list.colour ?? "#007AFF";
+  const sheet = useRef<HTMLDivElement | null>(null);
+  useModalFocus(sheet);
   const live = useActiveRef();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => live.current && e.key === "Escape" && onClose();
@@ -2166,7 +2169,7 @@ function ListInfo({ list, onClose, onDone }: {
   return (
     <Portal>
     <div className="modal-veil" onClick={onClose}>
-      <div className="modal-sheet rx-info" role="dialog" aria-label={`\u201c${list.title}\u201d Info`} onClick={(e) => e.stopPropagation()}>
+      <div ref={sheet} className="modal-sheet rx-info" role="dialog" aria-modal="true" aria-label={`\u201c${list.title}\u201d Info`} onClick={(e) => e.stopPropagation()}>
         <h2>“{list.title}” Info</h2>
         <span className="rx-info-mark" style={{ background: shown }} aria-hidden="true">
           <Glyph name="list" />
@@ -2175,7 +2178,8 @@ function ListInfo({ list, onClose, onDone }: {
           className="field rx-info-name"
           value={title}
           aria-label="List name"
-          style={{ color: shown }}
+          // The list's colour, deepened toward the text colour so the name reads at 4.5:1.
+          style={{ color: `color-mix(in srgb, ${shown} 55%, var(--text))` }}
           autoFocus
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && done()}

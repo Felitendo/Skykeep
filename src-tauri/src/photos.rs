@@ -1998,6 +1998,9 @@ pub async fn photos_upload(
     app: AppHandle,
     data: State<'_, Data>,
 ) -> UiResult<String> {
+    for p in &paths {
+        crate::grants::take_read(p)?;
+    }
     let batch = uuid::Uuid::new_v4().to_string();
     let mut files = Vec::new();
     for p in paths {

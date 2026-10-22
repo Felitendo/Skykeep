@@ -8,6 +8,7 @@
 import { EmptyState } from "../../components/EmptyState";
 import { PaneTitle } from "../../components/PaneTitle";
 import { useEffect, useRef, useState } from "react";
+import { useModalFocus } from "../../lib/focus";
 import { Plus, Users } from "lucide-react";
 import { api, type SharedAlbum } from "../../lib/ipc";
 import { Portal } from "../../components/Portal";
@@ -112,6 +113,8 @@ export function SharedAlbums({ ask, onError }: { ask: (q: Question) => Promise<b
 
 /** The name for a new shared album, asked in a sheet: Return makes it, Escape leaves it. */
 function NameSheet({ onCancel, onCreate }: { onCancel: () => void; onCreate: (name: string) => void }) {
+  const sheetRef = useRef<HTMLFormElement | null>(null);
+  useModalFocus(sheetRef);
   const [name, setName] = useState("");
   const field = useRef<HTMLInputElement | null>(null);
   useEffect(() => field.current?.focus(), []);
@@ -120,8 +123,10 @@ function NameSheet({ onCancel, onCreate }: { onCancel: () => void; onCreate: (na
     <Portal>
       <div className="modal-veil" onClick={onCancel}>
         <form
+          ref={sheetRef}
           className="modal-sheet confirm"
           role="dialog"
+          aria-modal="true"
           aria-label="New Shared Album"
           onClick={(e) => e.stopPropagation()}
           onSubmit={(e) => {

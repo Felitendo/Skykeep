@@ -109,6 +109,8 @@ pub fn arrived(app: &AppHandle, args: &[String], cwd: &Path) -> bool {
         return false;
     }
     for path in files {
+        // Opened with Skykeep by the person, from the system: its contacts may be imported.
+        crate::grants::grant_read(&path);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             let (window_key, arrival) = read(&app, &path).await;

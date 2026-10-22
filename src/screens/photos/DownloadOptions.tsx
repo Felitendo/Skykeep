@@ -4,13 +4,16 @@
  * row downloads at once; Escape or × closes.
  */
 import { useActiveRef } from "../../lib/screen";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useModalFocus } from "../../lib/focus";
 import { Download, X } from "lucide-react";
 import { pictureSrc, type Photo } from "../../lib/ipc";
 
 export type Want = "originals" | "highestQuality" | "mostCompatible";
 
 export function DownloadOptions({ photos, onPick, onClose }: { photos: Photo[]; onPick: (want: Want) => void; onClose: () => void }) {
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+  useModalFocus(sheetRef);
   const live = useActiveRef();
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -37,7 +40,7 @@ export function DownloadOptions({ photos, onPick, onClose }: { photos: Photo[]; 
   );
   return (
     <div className="modal-veil" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-sheet px-sheet" role="dialog" aria-modal="true" aria-label="Download Options">
+      <div ref={sheetRef} className="modal-sheet px-sheet" role="dialog" aria-modal="true" aria-label="Download Options">
         <button className="icon-button small round sheet-close" aria-label="Close" onClick={onClose}>
           <X size={16} strokeWidth={2.2} aria-hidden="true" />
         </button>

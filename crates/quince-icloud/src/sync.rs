@@ -219,6 +219,89 @@ pub async fn save_event_with_alerts(
     Ok(kept)
 }
 
+/// [`save_event_with_alerts`], and an edit refused because the event changed on another device
+/// since it was read settled as Calendar settles it: Apple's copy is read again and this edit
+/// laid over it — their changes to other fields kept, this edit's own fields this edit's — and
+/// saved once more against Apple's newest version, with each calendar's tag read afresh (the
+/// refusal may have been for the calendar's tag as much as the event's).
+///
+/// `base` is the event as the edit began from it; for a create sent again it is the event as
+/// made, so a create Apple already holds merges to no change. One occurrence of a repeating
+/// event is merged the same way: Apple's copy of that day ([`crate::calendar::theirs_for`]),
+/// saved with the scope it was asked with — which days it reaches stays Apple's to settle.
+/// Gone at Apple, it is refused: never written back.
+#[allow(clippy::too_many_arguments)]
+pub async fn save_event_merging(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    ctag: Option<&str>,
+    event: &quince_core::calendar::Event,
+    base: Option<&quince_core::calendar::Event>,
+    alerts: Option<&[i64]>,
+    repeat: Option<Option<&crate::calendar::EventRepeat>>,
+    scope: Option<crate::calendar::Scope>,
+    from: Option<(&str, Option<&str>)>,
+) -> Result<Vec<quince_core::calendar::Event>> {
+    let first = save_event_with_alerts(
+        http,
+        root,
+        params.clone(),
+        ctag,
+        event,
+        alerts,
+        repeat,
+        scope,
+        from,
+    )
+    .await;
+    let (Err(Error::Conflict), Some(base)) = (&first, base) else {
+        return first;
+    };
+    let client = CalendarClient::new(http, root, params.clone());
+    // Looked for where it was: a create's base is where it was made.
+    let mut known = base.clone();
+    if let Some((old, _)) = from {
+        old.clone_into(&mut known.calendar_guid);
+    }
+    let Some(theirs) = client.current_event(&known).await? else {
+        return Err(Error::Refused(
+            "This event was deleted on another device, so it wasn’t saved.".into(),
+        ));
+    };
+    let merged = crate::calendar::merge_edit(base, event, &theirs);
+    let ctag = client
+        .current_ctag(&merged.calendar_guid)
+        .await
+        .ok()
+        .flatten();
+    let from = if theirs.calendar_guid == merged.calendar_guid {
+        None
+    } else {
+        Some((
+            theirs.calendar_guid.clone(),
+            client
+                .current_ctag(&theirs.calendar_guid)
+                .await
+                .ok()
+                .flatten(),
+        ))
+    };
+    save_event_with_alerts(
+        http,
+        root,
+        params,
+        ctag.as_deref(),
+        &merged,
+        alerts,
+        repeat,
+        scope,
+        from.as_ref()
+            .map(|(old, tag)| (old.as_str(), tag.as_deref())),
+    )
+    .await
+}
+
 /// The library half of [`put_event`]: store what Apple kept, in calendars this library has.
 pub fn store_events(library: &mut Library, kept: Vec<quince_core::calendar::Event>) -> Result<()> {
     let known: std::collections::HashSet<String> =

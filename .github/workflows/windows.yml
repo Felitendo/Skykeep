@@ -1,9 +1,11 @@
 # Skykeep for Windows, proven on Windows before anyone downloads it:
-#   1. test  — the whole test suite on a Windows machine, the real Credential Manager included;
-#      ui    — every interface suite in Edge (WebView2's engine), each screen photographed;
-#   2. build — the .msi and the per-user .exe installer, only if every test passed;
-#   3. smoke — the .exe installed silently, Skykeep launched, its window seen on screen, and a
-#              screenshot kept, so an installer that cannot even start is never handed over.
+#   1. build — on one machine, in order: the Tauri versions checked (seconds), the whole test
+#              suite in release mode with the real Credential Manager, then the .msi and the
+#              per-user .exe installer from the same compiled crates. One compile, not two;
+#   2. smoke — the .exe installed silently, Skykeep launched, its window seen on screen, and a
+#              screenshot kept, so an installer that cannot even start is never handed over;
+#   ui       — every interface suite in Edge, only when asked for: Edge is the Chromium engine
+#              ci.yml already runs every suite in on each push.
 # Run by hand (Actions → Windows build → Run workflow) or by a release (release.yml); never on
 # every push.
 name: Windows build
@@ -15,29 +17,54 @@ on:
         description: "Run the whole test suite on Windows before building"
         type: boolean
         default: true
+      edge_ui:
+        description: "Also run every interface suite in Edge (about 30 minutes)"
+        type: boolean
+        default: false
   # A release (release.yml) builds Windows through this same, proven pipeline.
   workflow_call:
     inputs:
       test_first:
         type: boolean
         default: true
+      edge_ui:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
 jobs:
-  test:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_first }}
+  build:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - run: npm ci --no-audit --no-fund
+      # `tauri build` refuses a Tauri npm package and Rust crate on different minor versions —
+      # checked first, so a mismatch costs seconds, not a whole compile.
+      - name: Tauri versions match
+        shell: bash
+        run: |
+          node -e '
+            const lock = require("./package-lock.json").packages;
+            const npm = lock["node_modules/@tauri-apps/api"].version;
+            const rust = require("fs").readFileSync("Cargo.lock", "utf8").match(/name = "tauri"\r?\nversion = "([^"]+)"/)[1];
+            const mm = (v) => v.split(".").slice(0, 2).join(".");
+            console.log(`@tauri-apps/api ${npm}, tauri crate ${rust}`);
+            if (mm(npm) !== mm(rust)) { console.error("Tauri npm package and crate differ: align them"); process.exit(1); }'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-release
       # HEIC decoding: libheif with its default codecs (libde265 decodes), linked in statically.
       - uses: actions/cache@v4
         with:
@@ -49,18 +76,39 @@ jobs:
           & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif:x64-windows-static-md"
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
           "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
-      - run: npm ci
       # The window's files must exist for the app crate to compile.
       - run: npm run build
       - name: Tests, on Windows
-        # The real tests: libraries, the app and test files. The probe examples are live tools for
-        # Linux (one mounts a FUSE folder), not tests, and are not built here.
-        run: cargo test --workspace --lib --bins --tests --no-fail-fast
+        if: ${{ inputs.test_first }}
+        # In release mode, so the installer build below reuses what this compiled. The probe
+        # examples are live tools for Linux (one mounts a FUSE folder), not tests.
+        env:
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
+        run: cargo test --release --workspace --lib --bins --tests --locked --no-fail-fast
+      - name: Build the installers
+        # The build machine's paths are never written into the program.
+        env:
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
+        run: npx tauri build
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem target/release/bundle -Recurse -Include *.msi,*.exe
+          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content target/release/bundle/SHA256SUMS-windows.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skykeep-windows
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/SHA256SUMS-windows.txt
+          if-no-files-found: error
 
   # Every interface suite in Microsoft Edge — the engine WebView2 is — with Windows' own fonts,
   # and every screen photographed light and dark, to be looked at.
   ui:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_first }}
+    if: ${{ inputs.edge_ui }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -106,54 +154,6 @@ jobs:
           name: skykeep-ui-in-edge
           path: shots
           if-no-files-found: ignore
-
-  build:
-    needs: test
-    # After the tests pass — or straight away when a build was asked for without them.
-    if: ${{ !cancelled() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
-    runs-on: windows-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-      # HEIC decoding: libheif with its default codecs (libde265 decodes), linked in statically.
-      - uses: actions/cache@v4
-        with:
-          path: C:\vcpkg\installed
-          key: vcpkg-libheif-default-x64-windows-static-md-v1
-      - name: HEIC decoder
-        shell: pwsh
-        run: |
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif:x64-windows-static-md"
-          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-          "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
-      - run: npm ci
-      - name: Build the installers
-        # The build machine's paths are never written into the program.
-        env:
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
-        run: npx tauri build
-      - name: Checksums
-        shell: pwsh
-        run: |
-          $files = Get-ChildItem target/release/bundle -Recurse -Include *.msi,*.exe
-          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
-            Set-Content target/release/bundle/SHA256SUMS-windows.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: skykeep-windows
-          path: |
-            target/release/bundle/msi/*.msi
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/SHA256SUMS-windows.txt
-          if-no-files-found: error
 
   smoke:
     needs: build

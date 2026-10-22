@@ -21,6 +21,8 @@ await ctx.addInitScript(() => {
         (handlers[args.event] ??= []).push(args.handler);
         return handlers[args.event].length;
       }
+      if (cmd === "pick_open")
+        return args.directory ? ["/home/me/Holiday"] : ["/home/me/a.jpg", "/home/me/b.jpg"];
       if (cmd === "plugin:dialog|open")
         return args.options?.directory ? ["/home/me/Holiday"] : ["/home/me/a.jpg", "/home/me/b.jpg"];
       if (cmd === "drive_children") return [];

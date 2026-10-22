@@ -11,6 +11,7 @@
 import { useCallback, useRef, useState } from "react";
 import { EyeOff, Trash2 } from "lucide-react";
 import { Portal } from "./Portal";
+import { useModalFocus } from "../lib/focus";
 
 export type Choice<T> = {
   label: string;
@@ -44,6 +45,8 @@ export function ConfirmSheet<T>({
   onCancel: () => void;
   children?: React.ReactNode;
 }) {
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+  useModalFocus(sheetRef);
   const stacked = choices.length > 1;
   const focusCancel = !choices.some((c) => c.focus);
   const cancel = (
@@ -65,6 +68,7 @@ export function ConfirmSheet<T>({
     <Portal>
       <div className="modal-veil" onClick={onCancel}>
         <div
+          ref={sheetRef}
           className="modal-sheet confirm"
           role="alertdialog"
           aria-modal="true"

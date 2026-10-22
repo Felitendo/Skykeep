@@ -9,7 +9,7 @@ const ctx = await b.newContext({ viewport: { width: +w, height: +h }, colorSchem
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null,
   calendarFixture: true, notesFixture: true, contactsFixture: true, driveFixture: true, remindersFixture: true });
 const p = await ctx.newPage();
-await p.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await p.goto(process.env.BASE ?? "http://localhost:4173", { waitUntil: "networkidle" });
 await p.locator(".nav-item", { hasText: "Calendar" }).click();
 for (const v of ["Day", "Week", "Month", "Year"]) {
   await p.getByRole("button", { name: v, exact: true }).click();

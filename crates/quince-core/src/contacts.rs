@@ -319,6 +319,22 @@ impl Library {
         self.store_contacts(std::slice::from_ref(contact), false)
     }
 
+    /// One card gone — deleted here, before Apple has it — with its numbers and addresses.
+    pub fn forget_contact(&mut self, guid: &str) -> Result<()> {
+        let tx = self.conn.savepoint()?;
+        tx.execute(
+            "DELETE FROM contact_methods WHERE contact_guid = ?1",
+            params![guid],
+        )?;
+        tx.execute(
+            "DELETE FROM contact_addresses WHERE contact_guid = ?1",
+            params![guid],
+        )?;
+        tx.execute("DELETE FROM contacts WHERE guid = ?1", params![guid])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     fn store_contacts(&mut self, contacts: &[Contact], whole_book: bool) -> Result<()> {
         let tx = self.conn.savepoint()?;
         {

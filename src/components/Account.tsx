@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Face } from "./Face";
 import { api, contactPhotoSrc, type AccountInfo } from "../lib/ipc";
 import { freshness, useServiceState, useSync } from "../lib/sync";
@@ -80,9 +80,28 @@ export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen
   // Two quiet lines, each one thing, as Mail's sidebar ends: how fresh this app is — the line
   // itself the control that updates it, its dot turning while it does — and below it who is
   // signed in, the way into Settings.
-  const refresh = () => void (app ? refreshService(app.service) : refreshAll());
+  const asked = useRef(false);
+  const refresh = () => {
+    asked.current = true;
+    void (app ? refreshService(app.service) : refreshAll());
+  };
+  // Said aloud, politely: how an update someone asked for ended, and any update that newly
+  // failed. The routine updates in the background are left unsaid — a line every few minutes
+  // would talk over whatever is being read.
+  const [said, setSaid] = useState("");
+  const was = useRef({ working, failed });
+  useEffect(() => {
+    const before = was.current;
+    was.current = { working, failed };
+    if (working) return;
+    if ((before.working && asked.current) || (failed && !before.failed)) {
+      asked.current = false;
+      setSaid(full ?? status);
+    }
+  }, [working, failed]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="sidebar-foot-stack">
+      <span className="visually-hidden" role="status">{said}</span>
       <button
         className={`sidebar-sync${failed ? " is-trouble" : ""}${working ? " is-working" : ""}`}
         onClick={refresh}

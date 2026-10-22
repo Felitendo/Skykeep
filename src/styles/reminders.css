@@ -24,7 +24,7 @@
   /* The same inset on both sides, so the search field, tiles and lists sit centred in the
      column rather than hard against its left edge. */
   padding: 2px 12px 16px;
-  border-right: 1px solid var(--separator);
+  border-right: var(--hairline) solid var(--separator);
 }
 
 /* The tiles: glyph top left, count top right, name beneath. Chosen, a tile takes its own
@@ -55,7 +55,7 @@
   cursor: default;
 }
 .rx-tile:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
-.rx-tile:focus-visible { outline: 3px solid color-mix(in srgb, var(--tile) 45%, transparent); outline-offset: 1px; }
+.rx-tile:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 
 .rx-tile-glyph {
   display: grid;
@@ -66,14 +66,14 @@
   background: var(--tile);
   color: #fff;
 }
-.rx-tile-glyph svg { width: 15px; height: 15px; }
+.rx-tile-glyph svg { width: 16px; height: 16px; }
 
 .rx-tile-count {
   justify-self: end;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 21px;
+  font-size: 1.3125rem;
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -121,7 +121,7 @@
   height: 24px;
   color: var(--text-2);
 }
-.rx-group-glyph svg { width: 17px; height: 17px; }
+.rx-group-glyph svg { width: 18px; height: 18px; }
 
 .rx-group-row { width: 100%; }
 .rx-group-row .rx-list-name { font-weight: 600; }
@@ -130,7 +130,7 @@
 .rx-chevron svg { width: 12px; height: 12px; }
 .rx-group-row[aria-expanded="true"] .rx-chevron { transform: rotate(90deg); }
 
-.rx-smart-row .rx-badge svg { width: 13px; height: 13px; }
+.rx-smart-row .rx-badge svg { width: 14px; height: 14px; }
 
 /* Tags, as the Mac lists them under My Lists: every #name as a capsule, wrapping. The one open
    is filled, in the system blue. */
@@ -203,7 +203,7 @@
 .rx-section.is-list-section {
   margin: 22px 0 0 0;
   padding: 0 0 6px 30px;
-  border-bottom: 1px solid var(--separator);
+  border-bottom: var(--hairline) solid var(--separator);
   font-size: var(--t-15);
 }
 .rx-rows:empty + .rx-section.is-list-section { margin-top: 6px; }
@@ -228,7 +228,7 @@
   left: 30px;
   right: 0;
   bottom: 0;
-  height: 1px;
+  height: var(--hairline);
   background: var(--separator);
 }
 .rx-row:last-child::after { display: none; }
@@ -245,32 +245,40 @@
 }
 .rx-row.is-subtask { margin-left: 30px; }
 
+/* The circle is a vector ring (::before) masked over its colour, as Notes' checklist circles
+   are: the 1.5px CSS border it replaces drew lopsided — heavy on one side, faint on the
+   other — at a fractional scale. */
 .rx-tick {
+  --rim: color-mix(in srgb, var(--text) 32%, transparent);
   position: relative;
   width: 20px;
   height: 20px;
   margin-top: 1px;
   padding: 0;
-  border: 1.5px solid color-mix(in srgb, var(--text) 32%, transparent);
+  border: 0;
   border-radius: 50%;
   background: none;
   cursor: default;
 }
-.rx-tick:hover { border-color: var(--tick); }
-.rx-tick:focus-visible { outline: 3px solid color-mix(in srgb, var(--tick) 40%, transparent); outline-offset: 2px; }
+.rx-tick::before {
+  content: ""; position: absolute; inset: 0; background: var(--rim);
+  -webkit-mask: var(--mask-ring-20) center/20px 20px no-repeat; mask: var(--mask-ring-20) center/20px 20px no-repeat;
+}
+.rx-tick:hover { --rim: var(--tick); }
+.rx-tick:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .rx-tick:disabled { opacity: 0.5; }
-.rx-tick[aria-checked="true"] { border-color: var(--tick); }
+.rx-tick[aria-checked="true"] { --rim: var(--tick); }
 /* The fill: a real element, so a press can fade it in by opacity alone (lib/fade, from the
    click) — no keyframes, nothing handed to the compositor. */
-.rx-tick-fill { position: absolute; inset: 2.5px; border-radius: 50%; background: var(--tick); visibility: hidden; }
+.rx-tick-fill { position: absolute; inset: 3px; background: var(--tick); visibility: hidden; -webkit-mask: var(--mask-disc) center/100% no-repeat; mask: var(--mask-disc) center/100% no-repeat; }
 .rx-tick[aria-checked="true"] .rx-tick-fill { visibility: visible; }
 .rx-tick.ghost {
   display: grid;
   place-items: center;
-  border-style: dashed;
   color: var(--text-3);
 }
-.rx-tick.ghost svg { width: 11px; height: 11px; }
+.rx-tick.ghost::before { -webkit-mask-image: var(--mask-ring-20-dashed); mask-image: var(--mask-ring-20-dashed); }
+.rx-tick.ghost svg { width: 12px; height: 12px; }
 
 .rx-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rx-title-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
@@ -314,7 +322,7 @@
   font-size: var(--t-11);
   line-height: 1.4;
 }
-.rx-due.overdue { color: var(--sys-red); }
+.rx-due.overdue { color: var(--danger); }
 /* A tag on a row: #name in a quiet capsule. A press opens everything that carries it. */
 .rx-tag {
   display: inline-flex;
@@ -382,7 +390,7 @@ button.rx-tag:hover { background: color-mix(in srgb, var(--text) 12%, transparen
 .rx-url:hover { text-decoration: underline; text-underline-offset: 3px; }
 /* Between the panel's groups — what it says, when it is due, how it is filed — as Apple
    separates them in its info popover. */
-.rx-detail-rule { height: 1px; margin: 2px 0; background: var(--separator); }
+.rx-detail-rule { height: var(--hairline); margin: 2px 0; background: var(--separator); }
 .rx-hint { margin: -4px 0 0 86px; color: var(--text-3); font-size: var(--t-11); }
 .rx-tag-field { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
 .rx-tag.is-chip { padding: 0; height: 22px; background: color-mix(in srgb, var(--sys-blue) 12%, transparent); }
