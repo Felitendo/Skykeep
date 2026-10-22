@@ -6,15 +6,14 @@
 //
 // It builds the interface and previews it on PORT (4220) unless something already answers
 // there. Needs ImageMagick (`magick`) and ffmpeg. PNGs are optimised with pngquant and oxipng
-// when installed, or the same engines through `uv`. Optional: the four Unsplash pictures named
-// in UNSPLASH below; without them, drawn pictures take their places.
+// when installed, or the same engines through `uv`. Every picture is drawn; no photo file is read.
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
-import { installDemo } from "./readme-fixture.mjs";
+import { installDemo, photoLibrary } from "./readme-fixture.mjs";
 import { drawPictures } from "./readme-pictures.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -28,10 +27,12 @@ const want = (name) => ONLY.size === 0 || ONLY.has(name);
 // Wednesday, 9:41 in the morning, in a zone the fixture's events are written in.
 const TZ = "America/Los_Angeles";
 const NOW = new Date("2026-10-21T09:41:00-07:00");
-// Unsplash-licensed abstract pictures (free to use), resized and stripped before use.
-const UNSPLASH = ["kunal-patil-2hB-jhXLd3c-unsplash.jpg", "dirk-lach-fSgF4pEQEY8-unsplash.jpg",
-  "dileepa-nipun-5bakUnqvBo0-unsplash.jpg", "magicpattern-87PP9Zd7MNo-unsplash.jpg"]
-  .map((f) => path.join(process.env.UNSPLASH_DIR ?? path.join(os.homedir(), "Pictures/Wallpapers"), f));
+const LIBRARY = photoLibrary();
+// The window: small enough that its text reads at the README's 880 px, wide enough for every
+// app's columns. Drawn at 2x, then each still is scaled to WIDTH, twice the README's width.
+const WIN = { width: 1200, height: 760 };
+const PAD = [44, 40];
+const WIDTH = 1760;
 
 fs.mkdirSync(OUT, { recursive: true });
 fs.mkdirSync(WORK, { recursive: true });
@@ -50,39 +51,37 @@ if (!(await up())) {
 
 const browser = await chromium.launch();
 
-// ---- Pictures: drawn ones, and the Unsplash ones where present.
+// ---- Pictures, all drawn: the photo library, Drive's thumbnails, a note's picture, faces.
 const pictures = new Map();
 {
   const page = await browser.newPage();
-  const scenes = ["lake", "landscape", "sea", "landscape", "dunes", "lake", "bloom", "landscape", "night", "sea"];
-  const shapes = [[1200, 900], [900, 1200], [1200, 900], [1280, 720], [1200, 900], [900, 1200]];
-  const specs = Array.from({ length: 54 }, (_, i) => ({ name: `g${i}`, w: shapes[i % 6][0], h: shapes[i % 6][1], scene: scenes[(i * 7) % scenes.length], seed: i + 3 }));
-  specs.push({ name: "drive/lake", w: 1200, h: 900, scene: "lake", seed: 5 }, { name: "drive/ridge", w: 1200, h: 900, scene: "landscape", seed: 2 },
-    { name: "drive/fire", w: 1200, h: 900, scene: "fire", seed: 1 }, { name: "drive/dunes", w: 1200, h: 900, scene: "landscape", seed: 3 },
-    { name: "drive/map", w: 900, h: 1200, scene: "map", seed: 4 }, { name: "drive/plan", w: 900, h: 1200, scene: "page", seed: 6 },
-    { name: "drive/stars", w: 1200, h: 900, scene: "night", seed: 8 }, { name: "drive/mist", w: 1200, h: 900, scene: "landscape", seed: 4 }, { name: "drive/shore", w: 1200, h: 900, scene: "sea", seed: 6 },
-    { name: "note/M1", w: 1600, h: 760, scene: "lake", seed: 13 });
+  const specs = LIBRARY.map((p) => ({ name: p.id, w: p.w, h: p.h, scene: p.scene, seed: p.seed }));
+  const L = [1200, 900], P = [900, 1200];
+  for (const [name, [w, h], scene, seed] of [
+    ["lakedawn", L, "lake", 5], ["ridge", L, "landscape", 2], ["fire", L, "fire", 1], ["aurora", L, "aurora", 2],
+    ["stars", L, "night", 8], ["mist", L, "landscape", 4], ["pines", L, "forest", 3], ["porch", L, "coffee", 2], ["shore", L, "sea", 6],
+    ["map", P, "map", 4], ["plan", P, "page", 6], ["packing", P, "page", 9], ["costs", P, "sheet", 3], ["slides", [1280, 720], "slides", 1],
+    ["budget", P, "sheet", 5], ["portfolio", P, "page", 2],
+  ]) specs.push({ name: `drive/${name}`, w, h, scene, seed });
+  specs.push({ name: "note/M1", w: 1600, h: 560, scene: "lake", seed: 13 });
+  // Ruth (c10) is the one with grey hair.
+  for (let i = 1; i <= 25; i++) specs.push({ name: `face/${i}`, w: 400, h: 400, scene: "portrait", seed: i, grey: i === 10 });
   for (const [k, v] of Object.entries(await page.evaluate(drawPictures, specs))) pictures.set(k, Buffer.from(v, "base64"));
   await page.close();
-  // Four of the library's spots go to the Unsplash pictures, small and without metadata.
-  UNSPLASH.forEach((file, i) => {
-    if (!fs.existsSync(file)) return;
-    const small = path.join(WORK, `unsplash-${i}.jpg`);
-    if (!fs.existsSync(small)) sh("magick", [file, "-strip", "-resize", "1200x1200>", "-quality", "84", small]);
-    pictures.set(`g${[1, 6, 14, 23][i]}`, fs.readFileSync(small));
-  });
 }
+// pic/<id>/<size>, note/<id>/<part>, drive/<name>, photo/<contact>?v=…
 const pictureFor = (p) => {
-  // pic/<id>/<size>, note/<id>/<part>, drive/<name>
-  const parts = p.split("/");
+  const parts = p.replace(/\?.*$/, "").split("/");
   if (parts[0] === "pic") return pictures.get(parts[1]);
   if (parts[0] === "note") return pictures.get(`note/${parts[1]}`);
   if (parts[0] === "drive") return pictures.get(p);
+  // A contact's face: the portrait numbered as the card is (c13, face/13).
+  if (parts[0] === "photo") return pictures.get(`face/${parts[1].replace(/^c/, "")}`);
   return null;
 };
 
 /** A window of the app on the demo library, at `scale`, in `scheme`. */
-async function open({ scheme = "light", scale = 2, width = 1280, height = 800, screen = "library", cursor = false, storage = {} } = {}) {
+async function open({ scheme = "light", scale = 2, width = WIN.width, height = WIN.height, screen = "library", cursor = false, storage = {} } = {}) {
   const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: scale, colorScheme: scheme,
     timezoneId: TZ, locale: "en-US", reducedMotion: "no-preference" });
   await ctx.clock.setFixedTime(NOW);
@@ -90,7 +89,7 @@ async function open({ scheme = "light", scale = 2, width = 1280, height = 800, s
     const body = pictureFor(decodeURIComponent(route.request().url().slice(PICS.length + 1)));
     return body ? route.fulfill({ body, contentType: "image/jpeg" }) : route.fulfill({ status: 404, body: "" });
   });
-  await ctx.addInitScript(installDemo, { picBase: PICS, tz: TZ });
+  await ctx.addInitScript(installDemo, { picBase: PICS, tz: TZ, library: LIBRARY });
   await ctx.addInitScript(installStub, { screen, services: SERVICES, twoFactor: null, notesFixture: true, calendarFixture: true,
     remindersFixture: true, contactsFixture: true, driveFixture: true, demoFixture: true });
   await ctx.addInitScript((s) => { try { for (const [k, v] of Object.entries(s)) localStorage.setItem(k, v); } catch {} }, storage);
@@ -100,6 +99,16 @@ async function open({ scheme = "light", scale = 2, width = 1280, height = 800, s
   await page.goto(`${URL_}/`, { waitUntil: "networkidle" });
   await page.waitForTimeout(600);
   return { ctx, page };
+}
+
+/** Until every picture in view is drawn and the fonts are in: never a half-loaded still. */
+async function settled(page, ms = 400) {
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForFunction(() => [...document.querySelectorAll("img")].every((i) => {
+    const r = i.getBoundingClientRect();
+    return r.width === 0 || r.bottom < 0 || r.top > innerHeight || (i.complete && i.naturalWidth > 0);
+  }), null, { timeout: 15000 }).catch(() => console.log("some pictures still loading"));
+  await page.waitForTimeout(ms);
 }
 
 /** A pointer drawn into the page, for the animation: a screencast shows no cursor of its own. */
@@ -122,6 +131,8 @@ const SCENES = {
   },
   reminders: async (page) => {
     await openScreen(page, "Reminders");
+    await page.waitForTimeout(500);
+    await page.locator(".rx").getByText("Cabin Weekend", { exact: true }).first().click();
     await page.waitForTimeout(700);
   },
   calendar: async (page) => {
@@ -143,19 +154,14 @@ const SCENES = {
   drive: async (page) => {
     await openScreen(page, "Drive");
     await page.waitForTimeout(400);
-    await page.locator(".drive").getByText("Cabin Weekend", { exact: true }).first().dblclick();
+    await page.locator(".drive").getByText("Summer at the Lake", { exact: true }).first().dblclick();
     await page.waitForTimeout(1200);
-    await page.mouse.click(5, 795);
+    await page.mouse.click(5, WIN.height - 5);
   },
   photos: async (page) => {
     await page.locator(".nav-item", { hasText: "Photos" }).click();
     await page.waitForTimeout(1800);
-    // Every tile in view drawn, not a grey placeholder still waiting on its picture.
-    await page.waitForFunction(() => [...document.querySelectorAll("img")].every((i) => {
-      const r = i.getBoundingClientRect();
-      return r.bottom < 0 || r.top > innerHeight || (i.complete && i.naturalWidth > 0);
-    }), null, { timeout: 15000 }).catch(() => console.log("photos: some tiles still loading"));
-    await page.waitForTimeout(5000);
+    await settled(page, 3000);
   },
   settings: async (page) => {
     await page.locator(".sidebar-account").click();
@@ -165,7 +171,7 @@ const SCENES = {
 };
 
 /** The window, framed: rounded, shadowed, on a soft wash of Skykeep's blue. */
-async function frame(rawPng, scheme, { pad = [76, 64] } = {}) {
+async function frame(rawPng, scheme, { pad = PAD } = {}) {
   const meta = await sizeOf(rawPng);
   const scale = 2;
   const w = meta.w / scale, h = meta.h / scale;
@@ -203,10 +209,10 @@ async function sizeOf(png) {
   return { w, h };
 }
 
-/** A PNG for the README, 1600 px wide (sharp at the README's 880), stripped and optimised. */
+/** A PNG for the README, WIDTH px wide (sharp at the README's 880 on a 2x screen), stripped and optimised. */
 function publish(framed, name) {
   const png = path.join(OUT, `${name}.png`);
-  sh("magick", [framed, "-strip", "-resize", "1600x", "-define", "png:compression-level=9", `PNG24:${png}`]);
+  sh("magick", [framed, "-strip", "-filter", "Lanczos", "-resize", `${WIDTH}x`, "-define", "png:compression-level=9", `PNG24:${png}`]);
   optimise(png);
   console.log(`${path.relative(ROOT, png)}  ${Math.round(fs.statSync(png).size / 1024)} KB`);
 }
@@ -234,6 +240,7 @@ for (const [scene, schemes] of Object.entries(stills)) {
   for (const scheme of schemes) {
     const { ctx, page } = await open({ scheme, storage: { "quince.drive.view": "grid" } });
     await SCENES[scene](page);
+    await settled(page);
     const raw = path.join(WORK, `${scene}-${scheme}.raw.png`);
     await page.screenshot({ path: raw });
     await ctx.close();

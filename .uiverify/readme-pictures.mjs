@@ -1,9 +1,10 @@
-// Pictures for the README's demo library, drawn on a canvas: skies, ridges, lakes, dunes and
-// a campfire, each from a seed. Nobody's photos; nothing real. Runs in a browser page:
+// Pictures for the README's demo library, drawn on a canvas: skies, ridges, lakes, a city at
+// dusk, tulips, coffee, forests, beaches, illustrated contact portraits and document pages,
+// each from a seed. Nobody's photos; nothing real. Runs in a browser page:
 // `await page.evaluate(drawPictures, specs)` answers { name: base64 JPEG }.
 //
-// A spec is { name, w, h, scene, seed } with scene one of: landscape, lake, dunes, sea, night,
-// fire, bloom, map, page.
+// A spec is { name, w, h, scene, seed, grey? } with scene one of: landscape, lake, dunes, sea, night,
+// fire, bloom, city, tulips, coffee, forest, aurora, beach, portrait, map, page, sheet, slides.
 export function drawPictures(specs) {
   const rng = (seed) => () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -136,6 +137,155 @@ export function drawPictures(specs) {
       g.fillStyle = "#ffffff"; g.fillRect(0, 0, w, h);
       g.fillStyle = "#2f6fd6"; g.fillRect(w * 0.1, h * 0.08, w * 0.5, h * 0.035);
       for (let i = 0; i < 22; i++) { g.fillStyle = i % 6 === 0 ? "#44474f" : "#b9bdc6"; g.fillRect(w * 0.1, h * (0.17 + i * 0.034), w * (i % 6 === 0 ? 0.42 : 0.6 + r() * 0.2), h * 0.012); }
+    } else if (scene === "city") {
+      // A skyline at dusk over a river, its windows lit.
+      const horizon = h * 0.7;
+      sky(["#1d2a5c", "#2a2a6b", "#14204a"][spec.seed % 3], ["#b2557a", "#d0607a", "#8b5aa8"][spec.seed % 3], ["#f6b37a", "#ffcf8f", "#f59f7a"][spec.seed % 3], horizon);
+      glow(w * (0.3 + r() * 0.4), horizon, h * 0.5, "#ffd9a0", 0.35);
+      for (const [k, far] of [[0, true], [1, false]]) {
+        let x = -10;
+        while (x < w) {
+          const bw = w * (0.04 + r() * 0.07), bh = h * (far ? 0.12 + r() * 0.22 : 0.08 + r() * 0.36);
+          g.fillStyle = far ? "#3a3566" : "#16142c";
+          g.fillRect(x, horizon - bh, bw, bh);
+          if (!far && r() < 0.3) g.fillRect(x + bw * 0.45, horizon - bh - h * 0.05, bw * 0.1, h * 0.05);
+          if (!far) for (let wy = horizon - bh + 6; wy < horizon - 6; wy += h * 0.022)
+            for (let wx = x + 4; wx < x + bw - 6; wx += w * 0.012)
+              if (r() < 0.32) { g.fillStyle = `rgba(255,${200 + r() * 40 | 0},${120 + r() * 60 | 0},${0.55 + r() * 0.4})`; g.fillRect(wx, wy, w * 0.005, h * 0.008); }
+          x += bw + (far ? 0 : w * 0.004);
+        }
+      }
+      g.save(); g.translate(0, horizon * 2); g.scale(1, -1); g.globalAlpha = 0.45; g.drawImage(c, 0, 0, w, horizon, 0, 0, w, horizon); g.restore(); g.globalAlpha = 1;
+      const water = g.createLinearGradient(0, horizon, 0, h); water.addColorStop(0, "rgba(20,18,50,0.35)"); water.addColorStop(1, "rgba(8,8,24,0.85)");
+      g.fillStyle = water; g.fillRect(0, horizon, w, h - horizon);
+      grain(8);
+    } else if (scene === "tulips") {
+      // A field of tulips under a soft sky.
+      sky("#7fb5ea", "#c8e2f6", "#eef6e4", h * 0.45);
+      ridge(h * 0.42, h * 0.06, "#8fb07a");
+      const field = g.createLinearGradient(0, h * 0.42, 0, h); field.addColorStop(0, "#5f8f45"); field.addColorStop(1, "#2f5a26");
+      g.fillStyle = field; g.fillRect(0, h * 0.44, w, h);
+      const cols = [["#e8384f", "#b81f3a"], ["#ff9fb5", "#e0607f"], ["#ffd34d", "#e8a91c"], ["#f6f1ea", "#d9cfc4"]][spec.seed % 4];
+      for (let row = 0; row < 26; row++) {
+        const t = row / 25, y = h * (0.46 + Math.pow(t, 1.6) * 0.6), s = h * (0.008 + Math.pow(t, 2) * 0.06);
+        for (let x = -s; x < w + s; x += s * (2.2 + r())) {
+          const xx = x + (r() - 0.5) * s;
+          g.strokeStyle = "#3e6b2c"; g.lineWidth = Math.max(1, s * 0.18); g.beginPath(); g.moveTo(xx, y); g.lineTo(xx, y + s * 2.5); g.stroke();
+          const tg = g.createLinearGradient(xx, y - s, xx, y + s); tg.addColorStop(0, cols[0]); tg.addColorStop(1, cols[1]);
+          g.fillStyle = tg; g.beginPath(); g.ellipse(xx, y, s * 0.6, s * 0.85, 0, 0, 7); g.fill();
+          g.beginPath(); g.moveTo(xx - s * 0.6, y - s * 0.2); g.lineTo(xx - s * 0.3, y - s * 1.05); g.lineTo(xx, y - s * 0.4); g.lineTo(xx + s * 0.3, y - s * 1.05); g.lineTo(xx + s * 0.6, y - s * 0.2); g.fill();
+        }
+      }
+      grain(9);
+    } else if (scene === "coffee") {
+      // A flat white from above, on a wooden table.
+      const wood = ["#8a5a3b", "#a7744f", "#6e4630"][spec.seed % 3];
+      g.fillStyle = wood; g.fillRect(0, 0, w, h);
+      for (let i = 0; i < 70; i++) { g.strokeStyle = `rgba(${r() < 0.5 ? "40,20,10" : "255,220,180"},${0.05 + r() * 0.08})`; g.lineWidth = 1 + r() * 4; g.beginPath();
+        const y = r() * h; g.moveTo(0, y); g.bezierCurveTo(w * 0.3, y + (r() - 0.5) * 30, w * 0.6, y + (r() - 0.5) * 30, w, y + (r() - 0.5) * 20); g.stroke(); }
+      const cx = w * (0.42 + r() * 0.16), cy = h * 0.5, R = Math.min(w, h) * 0.3;
+      g.shadowColor = "rgba(0,0,0,0.35)"; g.shadowBlur = R * 0.25; g.shadowOffsetY = R * 0.06;
+      g.fillStyle = "#f4f1ec"; g.beginPath(); g.arc(cx, cy, R * 1.35, 0, 7); g.fill();
+      g.shadowBlur = R * 0.12; g.fillStyle = "#ffffff"; g.beginPath(); g.arc(cx, cy, R, 0, 7); g.fill();
+      g.shadowColor = "transparent";
+      g.beginPath(); g.ellipse(cx + R * 1.02, cy + R * 0.2, R * 0.32, R * 0.14, 0.4, 0, 7); g.fillStyle = "#f7f4ef"; g.fill();
+      const cof = g.createRadialGradient(cx, cy, 0, cx, cy, R * 0.82); cof.addColorStop(0, "#c08a5c"); cof.addColorStop(0.75, "#9a6337"); cof.addColorStop(1, "#5e3517");
+      g.fillStyle = cof; g.beginPath(); g.arc(cx, cy, R * 0.82, 0, 7); g.fill();
+      // A heart in the foam.
+      g.fillStyle = "rgba(250,240,225,0.95)"; g.beginPath();
+      const hs = R * 0.36; g.moveTo(cx, cy + hs * 0.9);
+      g.bezierCurveTo(cx - hs * 1.6, cy - hs * 0.1, cx - hs * 0.7, cy - hs * 1.2, cx, cy - hs * 0.45);
+      g.bezierCurveTo(cx + hs * 0.7, cy - hs * 1.2, cx + hs * 1.6, cy - hs * 0.1, cx, cy + hs * 0.9); g.fill();
+      grain(7);
+    } else if (scene === "forest") {
+      // Pines fading into morning fog.
+      sky("#c9d6dc", "#dfe6e6", "#eef0ea");
+      for (let k = 0; k < 5; k++) {
+        const t = k / 4, base = h * (0.45 + t * 0.14), col = mix("#a9bcbf", "#1d3a30", t), size = h * (0.12 + t * 0.16);
+        for (let x = -size; x < w + size; x += size * (0.32 + r() * 0.35)) {
+          const top = base - size * (0.7 + r() * 0.6);
+          g.fillStyle = col; g.beginPath(); g.moveTo(x, top);
+          for (let s = 1; s <= 4; s++) { const yy = top + (base - top) * (s / 4); g.lineTo(x + size * 0.14 * s, yy); g.lineTo(x + size * 0.07 * s, yy); }
+          for (let s = 4; s >= 1; s--) { const yy = top + (base - top) * (s / 4); g.lineTo(x - size * 0.07 * s, yy); g.lineTo(x - size * 0.14 * s, yy); }
+          g.closePath(); g.fill(); g.fillRect(x - size * 0.6, base - 1, size * 1.2, h);
+        }
+        const fog = g.createLinearGradient(0, base - size, 0, h); fog.addColorStop(0, "rgba(235,240,238,0)"); fog.addColorStop(1, "rgba(235,240,238,0.55)");
+        g.globalAlpha = 1 - t * 0.7; g.fillStyle = fog; g.fillRect(0, 0, w, h); g.globalAlpha = 1;
+      }
+      glow(w * 0.7, h * 0.15, h * 0.5, "#fffbea", 0.4);
+      grain(8);
+    } else if (scene === "aurora") {
+      sky("#020814", "#071a2c", "#0f2f3c", h * 0.8);
+      for (let i = 0; i < 300; i++) { g.fillStyle = `rgba(255,255,255,${r() * 0.8})`; g.fillRect(r() * w, r() * h * 0.6, 1.3, 1.3); }
+      g.globalCompositeOperation = "lighter";
+      for (let k = 0; k < 4; k++) {
+        const y0 = h * (0.25 + k * 0.07), amp = h * 0.1;
+        g.shadowColor = k % 2 ? "#5cffb0" : "#46e08c"; g.shadowBlur = h * 0.08;
+        g.strokeStyle = `rgba(${k === 3 ? "170,120,255" : "80,240,160"},0.22)`; g.lineWidth = h * (0.05 + r() * 0.05);
+        g.beginPath(); g.moveTo(-20, y0);
+        g.bezierCurveTo(w * 0.3, y0 - amp * (1 + r()), w * 0.6, y0 + amp * r(), w + 20, y0 - amp * 0.6); g.stroke();
+      }
+      g.shadowBlur = 0; g.globalCompositeOperation = "source-over";
+      ridge(h * 0.7, h * 0.12, "#04101a");
+      const water = g.createLinearGradient(0, h * 0.8, 0, h); water.addColorStop(0, "#0b2a30"); water.addColorStop(1, "#02070c");
+      g.fillStyle = water; g.fillRect(0, h * 0.82, w, h);
+      grain(8);
+    } else if (scene === "beach") {
+      // Turquoise water meeting the sand, waves foaming in.
+      const horizon = h * 0.38;
+      sky("#4aa3e8", "#9fd2f5", "#e8f6fd", horizon);
+      clouds(5, "rgba(255,255,255,0.95)", h * 0.06, horizon * 0.7);
+      const sea = g.createLinearGradient(0, horizon, 0, h * 0.7); sea.addColorStop(0, "#1f6fa8"); sea.addColorStop(0.6, "#2fb3c4"); sea.addColorStop(1, "#7fe0d6");
+      g.fillStyle = sea; g.fillRect(0, horizon, w, h);
+      const shore = (y, col, amp) => { g.beginPath(); g.moveTo(0, h); for (let x = 0; x <= w; x += 6) g.lineTo(x, y + Math.sin(x / w * 7 + spec.seed) * amp + Math.sin(x / w * 19) * amp * 0.3); g.lineTo(w, h); g.closePath(); g.fillStyle = col; g.fill(); };
+      shore(h * 0.66, "rgba(255,255,255,0.85)", h * 0.02);
+      shore(h * 0.69, "#f0dcb4", h * 0.02);
+      const sand = g.createLinearGradient(0, h * 0.7, 0, h); sand.addColorStop(0, "rgba(240,220,180,0)"); sand.addColorStop(1, "#d9b98a");
+      g.fillStyle = sand; g.fillRect(0, h * 0.7, w, h);
+      grain(10);
+    } else if (scene === "portrait") {
+      // A flat illustrated portrait, as people often choose for a contact: a figure on colour.
+      const bgs = [["#ffd8c2", "#ffb48f"], ["#cfe6ff", "#9cc8f5"], ["#d9f2d0", "#a8d99a"], ["#efe0ff", "#c9b0f0"], ["#fff1b8", "#f7d36b"], ["#ffd1dc", "#f7a1b6"], ["#cdeff0", "#8fd3d6"]];
+      const skins = ["#f6d2b8", "#e8b48f", "#c98b62", "#a86b45", "#7a4a2e", "#f1c6a4"];
+      const hairs = ["#2b1d16", "#5a3a22", "#a8643a", "#d9b26a", "#1a1a1a"];
+      const shirts = ["#2f6fd6", "#e8594a", "#2f9e6b", "#7b4fd6", "#f2a33a", "#283043", "#e5e1d8"];
+      const pick = (a, k) => a[(spec.seed * [1, 5, 3, 3][k] + k) % a.length];
+      const bg = pick(bgs, 0), skin = pick(skins, 1), hair = spec.grey ? "#a7a7a7" : pick(hairs, 2), shirt = pick(shirts, 3), style = spec.seed % 4;
+      const s = g.createLinearGradient(0, 0, w, h); s.addColorStop(0, bg[0]); s.addColorStop(1, bg[1]); g.fillStyle = s; g.fillRect(0, 0, w, h);
+      const cx = w / 2, hy = h * 0.43, rx = w * 0.17, ry = h * 0.2;
+      if (style === 1) { g.fillStyle = hair; g.beginPath(); g.roundRect(cx - rx * 1.25, hy - ry * 0.6, rx * 2.5, ry * 2.3, rx * 0.9); g.fill(); }
+      g.fillStyle = shirt; g.beginPath(); g.ellipse(cx, h * 1.02, w * 0.36, h * 0.28, 0, 0, 7); g.fill();
+      g.fillStyle = mix(skin, "#000000", 0.12); g.fillRect(cx - rx * 0.42, hy + ry * 0.6, rx * 0.84, h * 0.17);
+      g.fillStyle = skin; g.beginPath(); g.ellipse(cx, hy, rx, ry, 0, 0, 7); g.fill();
+      g.beginPath(); g.ellipse(cx - rx * 0.98, hy + ry * 0.1, rx * 0.16, ry * 0.18, 0, 0, 7); g.ellipse(cx + rx * 0.98, hy + ry * 0.1, rx * 0.16, ry * 0.18, 0, 0, 7); g.fill();
+      g.fillStyle = hair;
+      if (style === 2) { for (let i = 0; i < 16; i++) { const a = Math.PI * (1.02 + i / 15 * 0.96); g.beginPath(); g.arc(cx + Math.cos(a) * rx * 0.95, hy - ry * 0.12 + Math.sin(a) * ry * 0.95, rx * 0.34, 0, 7); g.fill(); } }
+      else { g.beginPath(); g.ellipse(cx, hy - ry * 0.28, rx * 1.06, ry * 0.8, 0, Math.PI * 1.02, Math.PI * 1.98); g.fill();
+        g.beginPath(); g.moveTo(cx - rx * 1.04, hy - ry * 0.3); g.quadraticCurveTo(cx - rx * 0.2, hy - ry * 0.15, cx + rx * 0.5, hy - ry * 0.62); g.lineTo(cx + rx * 1.04, hy - ry * 0.3); g.lineTo(cx, hy - ry * 1.08); g.closePath(); g.fill(); }
+      if (style === 3) { g.beginPath(); g.arc(cx, hy - ry * 1.12, rx * 0.42, 0, 7); g.fill(); }
+      // A face kept simple: eyes, a smile, a little warmth in the cheeks.
+      g.fillStyle = "#2a1c18"; for (const d of [-1, 1]) { g.beginPath(); g.ellipse(cx + d * rx * 0.36, hy + ry * 0.12, rx * 0.07, ry * 0.07, 0, 0, 7); g.fill(); }
+      g.fillStyle = "rgba(240,110,110,0.22)"; for (const d of [-1, 1]) { g.beginPath(); g.arc(cx + d * rx * 0.55, hy + ry * 0.38, rx * 0.16, 0, 7); g.fill(); }
+      g.strokeStyle = "#7a3b2e"; g.lineWidth = w * 0.012; g.lineCap = "round"; g.beginPath(); g.arc(cx, hy + ry * 0.36, rx * 0.26, Math.PI * 0.2, Math.PI * 0.8); g.stroke();
+    } else if (scene === "sheet") {
+      // A spreadsheet's first page: a title, a table and a small chart.
+      g.fillStyle = "#ffffff"; g.fillRect(0, 0, w, h);
+      g.fillStyle = "#1f2430"; g.fillRect(w * 0.08, h * 0.06, w * 0.45, h * 0.035);
+      const top = h * 0.14, rows = 12, rh = h * 0.032;
+      g.fillStyle = "#34a853"; g.fillRect(w * 0.08, top, w * 0.84, rh);
+      for (let i = 1; i <= rows; i++) { g.fillStyle = i % 2 ? "#f3f6f4" : "#ffffff"; g.fillRect(w * 0.08, top + i * rh, w * 0.84, rh);
+        g.fillStyle = "#9aa0a6"; g.fillRect(w * 0.1, top + i * rh + rh * 0.35, w * (0.18 + r() * 0.1), rh * 0.3);
+        g.fillStyle = "#5f6368"; g.fillRect(w * 0.62, top + i * rh + rh * 0.35, w * (0.08 + r() * 0.06), rh * 0.3); g.fillRect(w * 0.8, top + i * rh + rh * 0.35, w * 0.08, rh * 0.3); }
+      const cb = top + (rows + 2) * rh;
+      for (let i = 0; i < 6; i++) { const bh = h * (0.08 + r() * 0.2); g.fillStyle = ["#34a853", "#4285f4", "#fbbc04"][i % 3]; g.fillRect(w * (0.14 + i * 0.13), cb + h * 0.3 - bh, w * 0.08, bh); }
+      g.fillStyle = "#dadce0"; g.fillRect(w * 0.1, cb + h * 0.3, w * 0.8, 2);
+    } else if (scene === "slides") {
+      // A presentation's title slide.
+      const s = g.createLinearGradient(0, 0, w, h); s.addColorStop(0, "#1b2a6b"); s.addColorStop(1, "#4b2d84"); g.fillStyle = s; g.fillRect(0, 0, w, h);
+      glow(w * 0.8, h * 0.2, h * 0.7, "#ff8fb1", 0.35);
+      g.fillStyle = "#ffffff"; g.fillRect(w * 0.08, h * 0.38, w * 0.56, h * 0.09);
+      g.fillStyle = "rgba(255,255,255,0.6)"; g.fillRect(w * 0.08, h * 0.53, w * 0.36, h * 0.04);
+      g.fillStyle = "rgba(255,255,255,0.35)"; g.fillRect(w * 0.08, h * 0.82, w * 0.18, h * 0.03);
     }
     out[spec.name] = c.toDataURL("image/jpeg", 0.86).split(",")[1];
   }

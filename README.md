@@ -26,7 +26,7 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/notes-dark.png">
-  <img src="docs/media/notes-light.png" alt="Skykeep Notes showing a trip note with a picture, a checklist and a table" width="880">
+  <img src="docs/media/notes-light.png" alt="Skykeep Notes showing folders, pinned notes and a trip note with a tag, a link, a picture, a checklist and a table" width="880">
 </picture>
 
 </div>
@@ -38,14 +38,14 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/reminders-dark.png">
-        <img src="docs/media/reminders-light.png" alt="Skykeep Reminders showing Today with coloured lists, priorities and flags">
+        <img src="docs/media/reminders-light.png" alt="Skykeep Reminders showing a list with sections, subtasks, flags, tags, a link and a place, beside coloured lists and smart lists">
       </picture>
       <b>Reminders</b>
     </td>
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/calendar-dark.png">
-        <img src="docs/media/calendar-light.png" alt="Skykeep Calendar in week view with events from four calendars">
+        <img src="docs/media/calendar-light.png" alt="Skykeep Calendar in week view with events from four calendars, an all-day trip, a birthday and reminders">
       </picture>
       <b>Calendar</b>
     </td>
@@ -54,14 +54,14 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/contacts-dark.png">
-        <img src="docs/media/contacts-light.png" alt="Skykeep Contacts showing a contact card with phones, emails and an address">
+        <img src="docs/media/contacts-light.png" alt="Skykeep Contacts showing contacts with photos and a full card with phones, emails, related names, an address and a birthday">
       </picture>
       <b>Contacts</b>
     </td>
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/drive-dark.png">
-        <img src="docs/media/drive-light.png" alt="Skykeep Drive showing a folder of pictures in grid view">
+        <img src="docs/media/drive-light.png" alt="Skykeep Drive showing a folder of pictures and documents with thumbnails in grid view">
       </picture>
       <b>iCloud Drive</b>
     </td>
@@ -70,7 +70,7 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/media/photos-dark.png">
-        <img src="docs/media/photos-light.png" alt="Skykeep Photos showing the library by month">
+        <img src="docs/media/photos-light.png" alt="Skykeep Photos showing the library by month with favourites, videos and albums">
       </picture>
       <b>Photos</b>
     </td>
