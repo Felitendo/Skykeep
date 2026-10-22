@@ -1,9 +1,9 @@
 # Security
 
-Skykeep asks for your Apple Account password. That is a lot of trust to ask of an app made by
-one person, so this page says exactly what it does with it: what it talks to, what it keeps,
-and where. Every line here is true of the code in this repository; if one ever stops being
-true, that is a bug, and a serious one.
+Skykeep signs in to iCloud with your Apple Account. This page says exactly what it does with
+your password and your data: what it talks to, what it keeps, and where. Every line here is
+true of the code in this repository; if one ever stops being true, that is a bug, and a
+serious one.
 
 ## What Skykeep talks to
 
@@ -14,7 +14,7 @@ Apple, and to calendars you subscribe to — nothing else:
 - `*.icloud.com` service addresses Apple gives the session (CloudKit, Contacts, Calendar,
   iCloud Drive, Photos), `gateway.icloud.com` and `cvws.icloud-content.com` (downloads).
 - `calendars.icloud.com` — Apple's public holiday calendars.
-- The host of each calendar you subscribe to by address (Calendar ▸ + ▸ New Subscription…),
+- The host of each calendar you subscribe to by address (Calendar ▸ + ▸ New Subscription),
   and only once you have: a `webcal://` or `https://` address of a public calendar file.
 
 This is enforced, not only promised: every network client Skykeep makes is built by
@@ -45,13 +45,14 @@ place opens in this computer's own map app (a `geo:` link), never a website.
 
 ## What Skykeep keeps, and where
 
-Everything is in your user's data folder (`~/.local/share/io.github.yashwanthkamireddi.Skykeep` on Linux),
-which is readable by you alone (mode 700):
+Everything is in your user's data folder: `~/.local/share/io.github.yashwanthkamireddi.Skykeep`
+on Linux, readable by you alone (mode 700), and `%APPDATA%\io.github.yashwanthkamireddi.Skykeep`
+on Windows.
 
-- **Your password, Apple Account and session tokens:** in the system keyring (GNOME
-  Keyring, KWallet — the Secret Service), never in a file. The password is kept so a session
-  that lapses can sign itself back in without asking; Apple asks for a code only when it
-  stops trusting this computer.
+- **Your password, Apple Account and session tokens:** in the system keyring (the Secret
+  Service, such as GNOME Keyring or KWallet, on Linux; Credential Manager on Windows), never
+  in a file. The password is kept so a session that lapses can sign itself back in without
+  asking; Apple asks for a code only when it stops trusting this computer.
 - **Session cookies:** `cookies.json`, readable by you alone (mode 600).
 - **Your library:** `library.db` (SQLite) — notes, reminders, events, contacts, the Drive
   and Photos listings — and caches of pictures and files you opened. These are not encrypted

@@ -1,6 +1,6 @@
 # Media for the README
 
-Every image the top-level `README.md` shows lives here. They are made from the real interface by `.uiverify/readme-shots.mjs`, on an invented demo library (`.uiverify/readme-fixture.mjs`) with drawn pictures (`.uiverify/readme-pictures.mjs`).
+Every image the top-level `README.md` shows lives here. They're taken from the real interface by `.uiverify/readme-shots.mjs`, using the demo library in `.uiverify/readme-fixture.mjs` and the pictures drawn by `.uiverify/readme-pictures.mjs`.
 
 ```sh
 node .uiverify/readme-shots.mjs                  # every still, plus the hero animation

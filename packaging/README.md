@@ -1,48 +1,51 @@
-# Getting Quince onto a machine
+# Packaging Skykeep
 
-Quince is only software if somebody other than its author can install it. This directory is
-what turns a build directory into that.
+Everything that turns a build into something people install.
 
-## Arch, and anything built on it — CachyOS, EndeavourOS, Manjaro
+| Path | What it is |
+|---|---|
+| `arch/` | A PKGBUILD that builds the checkout it sits in. |
+| `aur/` | The AUR package, `skykeep-git`: the same steps, built from GitHub. |
+| `flatpak/` | The Flatpak manifest for Flathub, with its own [README](flatpak/README.md). |
+| `apps/` | The six per-app launcher entries (Notes, Reminders, Calendar, Contacts, Drive, Photos). |
+| `*.desktop.in`, `*.metainfo.xml` | The main launcher entry and the AppStream data software centres show. |
+| `*.search-provider.ini`, `*.SearchProvider.service`, `*.krunner.desktop` | Results in GNOME Shell and KRunner search. |
+| `icons/` | The app, tray and notification icons. |
+| `linux-compat/` | `check.sh`: installs a package in a clean distribution container and checks it runs. |
+
+## Arch, CachyOS, EndeavourOS, Manjaro
 
 ```sh
 cd packaging/arch
 makepkg -si
 ```
 
-That builds from the checkout this file sits in and installs Quince the way any other program
-on the machine is installed: `quince` on the path, an entry in the application menu, an icon,
-and the licence where a package manager expects to find it.
+This installs Skykeep like any other program: `skykeep` on the path, launcher entries for the
+main app and each of the six apps, the icon, search providers and the licence.
 
-For the AUR the same PKGBUILD gains a `source=("git+…")` and a `pkgver()`; the build and
-package steps are already the ones that version would use.
-
-## Debian, Ubuntu, Fedora, or anything at all
+## Debian, Ubuntu, Fedora, AppImage, Windows
 
 ```sh
-npx tauri build --bundles deb,rpm,appimage
+npx tauri build
 ```
 
-leaves them under `target/release/bundle/`. The AppImage needs no package manager and runs
-anywhere with WebKitGTK.
+builds every bundle for the platform you're on (`.deb`, `.rpm` and `.AppImage` on Linux;
+`.msi` and the `-setup.exe` on Windows) under `target/release/bundle/`. Releases are built
+the same way by `.github/workflows/release.yml`, which installs and starts each Linux package
+before keeping it.
 
 ## Flatpak
 
-Not written yet, and deliberately not guessed at. It is the channel that matters most —
-Flathub is the only place a non-technical person installs anything with one click on any
-distribution — but it is also the one with real work in it: the GNOME runtime with Rust and
-Node SDK extensions, every crate and npm package vendored ahead of time by
-`flatpak-cargo-generator` and `flatpak-node-generator` so the build runs offline, `/app`
-instead of `/usr` throughout, and `--talk-name=org.freedesktop.secrets` in `finish-args` or
-the session cannot be kept inside the sandbox.
+See [`flatpak/README.md`](flatpak/README.md): how to build it, the permissions it asks for,
+and what's left before Flathub.
 
-Writing a manifest on a machine with no `flatpak-builder` to try it on would produce something
-that looks finished and has never been run. It is next, on a machine that can build it.
+## What Skykeep needs to run
 
-## What Quince needs to run
-
-`webkit2gtk-4.1` for the window, `libsecret` for the keyring. The app starts without the
-second and cannot stay signed in, which is most of the point of it.
+- `webkit2gtk-4.1` for the window and `libsecret` for the keyring. Without a keyring the app
+  starts but can't stay signed in.
+- `libheif` for HEIC photos.
+- GStreamer with the base, good and libav plugins for videos.
+- Optional: `fuse3`, for iCloud Drive and Photos as folders in the file manager.
 
 ## Opening files and quick capture
 
@@ -60,8 +63,8 @@ Calendar (`.ics`) and contact (`.vcf`) files open in Skykeep's import sheet
 `Actions=` on the main entry and on the Reminders and Notes entries (right-click in a dock or
 launcher).
 
-**Windows jump-list tasks are not set up.** A jump list's tasks are written by the running app
-through the shell's `ICustomDestinationList` COM interface; neither Tauri nor its NSIS/MSI
-templates have a way to declare them. Adding them means a Windows-only call at startup
-(`windows` crate, `Win32_UI_Shell`) registering two `IShellLink` tasks with the arguments
-above. Until then, the same commands work from a shortcut's Target field.
+**Windows jump-list tasks are not set up yet.** A jump list's tasks are written by the running
+app through the shell's `ICustomDestinationList` COM interface; neither Tauri nor its NSIS/MSI
+templates can declare them. Adding them means a Windows-only call at startup (`windows` crate,
+`Win32_UI_Shell`) registering two `IShellLink` tasks with the arguments above. Until then, the
+same commands work from a shortcut's Target field.

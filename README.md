@@ -20,7 +20,7 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
 [![Flathub](https://img.shields.io/flathub/v/io.github.yashwanthkamireddi.Skykeep?logo=flathub)](https://flathub.org/apps/io.github.yashwanthkamireddi.Skykeep)
 -->
 
-[Install](#install) · [Features](#features) · [Privacy](#privacy) · [FAQ](#faq) · [Contributing](#contributing)
+[Install](#install) · [First run](#first-run) · [Features](#features) · [Privacy](#privacy) · [FAQ](#faq) · [Contributing](#contributing)
 
 <br>
 
@@ -98,104 +98,93 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
 
 ## Install
 
-Packages arrive with the first release on the [Releases page](https://github.com/YashwanthKamireddi/Skykeep/releases), each with SHA-256 checksums.
+Download Skykeep from the [Releases page](https://github.com/YashwanthKamireddi/Skykeep/releases). Each release comes with SHA-256 checksums.
 
-| Platform | Package |
-|---|---|
-| **Debian, Ubuntu, Mint** | `.deb` |
-| **Fedora, openSUSE** | `.rpm` |
-| **Any Linux** | `.AppImage` |
-| **Arch, CachyOS, EndeavourOS, Manjaro** | AUR `skykeep-git` <sub>coming to the AUR</sub> |
-| **Any Linux, sandboxed** | Flatpak <sub>coming to Flathub</sub> |
-| **Windows 10 and 11** | `.exe` or `.msi` |
+### Windows 10 and 11
 
-<details>
-<summary><b>Debian and Ubuntu</b></summary>
+Run `Skykeep_<version>_x64-setup.exe`. It installs just for you, with no administrator password.
+
+If Windows shows **Windows protected your PC**, choose **More info**, then **Run anyway**.
+
+### Linux
+
+Run the line for your system from the folder you downloaded to.
+
+**Ubuntu, Debian, Linux Mint**
 
 ```sh
 sudo apt install ./Skykeep_*_amd64.deb
 ```
-</details>
 
-<details>
-<summary><b>Fedora and openSUSE</b></summary>
+**Fedora**
 
 ```sh
-sudo dnf install ./Skykeep-*.x86_64.rpm       # Fedora
-sudo zypper install ./Skykeep-*.x86_64.rpm    # openSUSE
-```
-</details>
-
-<details>
-<summary><b>AppImage</b></summary>
-
-```sh
-chmod +x Skykeep_*_amd64.AppImage
-./Skykeep_*_amd64.AppImage
+sudo dnf install ./Skykeep-*.x86_64.rpm
 ```
 
-Uses the WebKitGTK 4.1 and libsecret already on most desktops.
-</details>
-
-<details>
-<summary><b>Arch and derivatives</b></summary>
-
-Once it's on the AUR:
+**Arch, CachyOS, EndeavourOS, Manjaro** <sub>coming to the AUR</sub>
 
 ```sh
 paru -S skykeep-git    # or: yay -S skykeep-git
 ```
 
-Today, build the same package from a checkout:
+**Any other distribution**
+
+```sh
+chmod +x Skykeep_*_amd64.AppImage && ./Skykeep_*_amd64.AppImage
+```
+
+<details>
+<summary><b>Other ways to install</b></summary>
+
+**Windows installer package.** The `.msi` on the Releases page installs the same app.
+
+**Flatpak** <sub>coming to Flathub</sub>. The manifest is in [`packaging/flatpak`](packaging/flatpak). In the Flatpak, iCloud Drive and Photos open inside the app.
+
+```sh
+flatpak install flathub io.github.yashwanthkamireddi.Skykeep
+```
+
+**Arch, from a checkout.** Builds and installs Skykeep from the source you cloned:
 
 ```sh
 git clone https://github.com/YashwanthKamireddi/Skykeep.git
 cd Skykeep/packaging/arch && makepkg -si
 ```
 
-Add `fuse3` to see iCloud Drive and Photos as folders in your file manager.
+**iCloud Drive and Photos as folders** in your file manager need `fuse3` (on Arch: `sudo pacman -S fuse3`).
+
+**From source:** see [Contributing](#contributing).
 </details>
 
-<details>
-<summary><b>Flatpak</b></summary>
+## First run
 
-The manifest lives in [`packaging/flatpak`](packaging/flatpak). Once it's on Flathub:
+1. **Sign in** with your Apple Account and password.
+2. **Approve** the sign-in on your iPhone or another Apple device, then type the six-digit code it shows. No prompt? Choose **Didn't get a code?** to get one by text message.
+3. **You're set.** Each app fills in as your library arrives. After that, everything opens instantly.
 
-```sh
-flatpak install flathub io.github.yashwanthkamireddi.Skykeep
-```
+Your password stays on this computer: Skykeep proves it to Apple without sending it, and keeps your sign-in in your system keyring. [How Skykeep handles your data](SECURITY.md).
 
-In the Flatpak, iCloud Drive and Photos open inside the app.
-</details>
-
-<details>
-<summary><b>Windows</b></summary>
-
-Run `Skykeep_*_x64-setup.exe` (installs for you alone, no admin needed) or the `.msi`. Skykeep opens `.ics` and `.vcf` files, and its alerts come with **Complete** and **Snooze**.
-</details>
-
-**First run:** open Skykeep, sign in with your Apple Account, and enter the code from your iPhone. Each app fills as your library arrives, then opens instantly from then on.
+On Linux, your desktop may ask you to unlock its keyring the first time. That's where Skykeep keeps your sign-in.
 
 ## Privacy
 
-- **Local-first.** Your library lives on your computer, so every app opens instantly and works offline. Changes you make offline are sent when you're back online.
-- **Credentials stay in your system keychain.** You sign in through Apple's own two-factor flow, and your password and account tokens are kept in the keychain, never in a file: Secret Service on Linux, Credential Manager on Windows.
-- **Talks only to Apple.** Skykeep's network layer reaches Apple's iCloud hosts, plus any calendars you subscribe to. No Skykeep account, no Skykeep server, no telemetry.
+- **Local-first.** Your library lives on your computer, so every app opens instantly, even offline.
+- **Your sign-in stays in your system keyring:** Secret Service (GNOME Keyring or KWallet) on Linux, Credential Manager on Windows. Two-factor sign-in is Apple's own.
+- **Talks only to Apple,** plus any calendars you subscribe to. No Skykeep account, no Skykeep server, no telemetry.
 - **Independent.** Skykeep is an open-source project, not affiliated with or endorsed by Apple.
 
 The details, with the code behind each one, are in [SECURITY.md](SECURITY.md).
 
-## Performance
-
-Measured on release builds. Numbers land with the first release.
-
+<!-- Performance: add this table once release builds are measured.
 | | Linux | Windows |
 |---|---|---|
-| Launch to a usable window | *to be measured* | *to be measured* |
-| Open a note from the list | *to be measured* | *to be measured* |
-| A change on iPhone shown here | *to be measured* | *to be measured* |
-| Memory with all six apps open | *to be measured* | *to be measured* |
-| Download size | *to be measured* | *to be measured* |
+| Launch to a usable window | | |
+| Open a note from the list | | |
+| A change on iPhone shown here | | |
+| Memory with all six apps open | | |
+| Download size | | |
+-->
 
 ## FAQ
 
@@ -203,6 +192,18 @@ Measured on release builds. Numbers land with the first release.
 <summary><b>Is Skykeep made by Apple?</b></summary>
 
 No. It's an independent, open-source app that works with iCloud. Apple, iCloud and iPhone are trademarks of Apple Inc.
+</details>
+
+<details>
+<summary><b>Why does it need my Apple Account password?</b></summary>
+
+Notes, Reminders, Drive and Photos open only to a full sign-in with two-factor, the same one icloud.com uses. An app-specific password reaches only mail, contacts and calendars. Skykeep never sends your password, not even to Apple: it proves it with Apple's own SRP sign-in.
+</details>
+
+<details>
+<summary><b>Which Apple Accounts work?</b></summary>
+
+Personal Apple Accounts. Managed Apple Accounts from a school or workplace aren't supported yet.
 </details>
 
 <details>
@@ -214,7 +215,7 @@ Yes. Everything you've synced is on your disk. Notes, reminders, events and cont
 <details>
 <summary><b>How fast do changes from my iPhone appear?</b></summary>
 
-Notes and Reminders arrive over Apple's push channel, usually in about a second. Calendar and Contacts are checked every few seconds while a window is open. Your own edits show the moment you make them.
+Notes and Reminders arrive over Apple's push channel, usually in about a second. Calendar and Contacts are checked every few seconds while you're using Skykeep. Your own edits show the moment you make them.
 </details>
 
 <details>
@@ -226,13 +227,13 @@ Yes, with **Access iCloud Data on the Web** turned on: on your iPhone, Settings 
 <details>
 <summary><b>Can I take my data with me?</b></summary>
 
-Any time. Settings → Export Everything saves your notes as Markdown, events as iCalendar, contacts as vCard and CSV, and your files as they are.
+Any time. Settings → Export Everything saves your notes as Markdown, events as iCalendar, contacts as vCard, and your files as they are.
 </details>
 
 <details>
-<summary><b>Which desktops does it run on?</b></summary>
+<summary><b>Which systems does it run on?</b></summary>
 
-Any Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Keyring or KWallet), on Wayland or X11, and Windows 10 and 11.
+Windows 10 and 11, and any Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Keyring or KWallet), on Wayland or X11. The `.deb` is built on Ubuntu 24.04 and the `.rpm` is tested on Fedora 41.
 </details>
 
 ## Contributing

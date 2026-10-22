@@ -23,16 +23,16 @@ You need **Rust 1.85+** ([rustup](https://rustup.rs)), **Node.js 22** and the sy
 
 ```sh
 # Debian / Ubuntu
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-  librsvg2-dev libsecret-1-dev libheif-dev libfuse3-dev pkg-config
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsecret-1-dev \
+  libheif-dev libfuse3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev pkg-config
 
 # Arch
-sudo pacman -S --needed webkit2gtk-4.1 gtk3 libsecret libheif libayatana-appindicator \
-  gstreamer gst-plugins-base-libs fuse3 rust nodejs npm pkgconf
+sudo pacman -S --needed webkit2gtk-4.1 gtk3 libsecret libheif gstreamer \
+  gst-plugins-base-libs fuse3 rust nodejs npm pkgconf
 
 # Fedora
-sudo dnf install webkit2gtk4.1-devel gtk3-devel libayatana-appindicator-gtk3-devel \
-  librsvg2-devel libsecret-devel libheif-devel fuse3-devel pkgconf-pkg-config
+sudo dnf install webkit2gtk4.1-devel gtk3-devel librsvg2-devel libsecret-devel \
+  libheif-devel fuse3-devel gstreamer1-devel gstreamer1-plugins-base-devel pkgconf-pkg-config
 ```
 
 Then:

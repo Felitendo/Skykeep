@@ -19,21 +19,20 @@
 
   <description>
     <p>
-      Skykeep keeps your iCloud calendar, reminders, notes, contacts and Drive on your own
-      machine. Everything opens straight away and works without a connection, and what you
-      change here reaches your other devices.
+      Skykeep brings your iCloud notes, reminders, calendar, contacts, Drive and photos to
+      your computer as fast desktop apps. Your library is kept on this machine, so everything
+      opens straight away, even offline, and what you change here reaches your iPhone and
+      your other devices.
     </p>
     <p>
-      You sign in once with your Apple ID and stay signed in. Nothing is stored on anybody
-      else's server: there is no Skykeep account and no Skykeep service, and your credentials
-      never leave this computer.
+      Sign in once with your Apple Account. Your password stays on this computer, in your
+      system keyring. Skykeep talks only to Apple and to calendars you subscribe to: there is
+      no Skykeep account, no Skykeep server and no telemetry.
     </p>
     <p>
-      Skykeep is an independent project. It is not made by, endorsed by, or affiliated with
-      Apple, and it reaches iCloud through interfaces Apple has not published, which means
-      they can change without warning. Services that Apple encrypts end to end — Health,
-      Messages, Keychain and others — cannot be read by any client and are shown as
-      unavailable rather than quietly left out.
+      Skykeep is an independent, open-source project. It is not made by, endorsed by, or
+      affiliated with Apple, and it reaches iCloud through interfaces Apple has not
+      published, so Apple may change them at any time.
     </p>
   </description>
 
