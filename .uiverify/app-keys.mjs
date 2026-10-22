@@ -47,7 +47,7 @@ for (const scheme of ["light", "dark"]) {
   // ── What Skykeep talks to, from the network lock ──
   const reach = page.getByRole("region", { name: "What Skykeep Talks To" }).or(page.locator(".settings-reach"));
   const text = await reach.first().innerText();
-  ok(/apple\.com/.test(text) && /icloud-content\.com/.test(text) && !/\.cn\b/.test(text) && /mainland China/.test(text), `${scheme}: Apple's domains are listed  ${JSON.stringify(text.slice(0, 160))}`);
+  ok(/apple\.com/.test(text) && /icloud-content\.com/.test(text) && !/\.cn\b/.test(text) && !/China/.test(text), `${scheme}: Apple's domains are listed  ${JSON.stringify(text.slice(0, 160))}`);
   ok(text.includes("calendar.example.org"), `${scheme}: and each subscribed calendar's host`);
 
   // ── First Day of Week ──

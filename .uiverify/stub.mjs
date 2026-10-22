@@ -1010,7 +1010,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "system_contrast":  return window.__contrast ?? false;
         // LC_TIME, LANG (appearance.rs): null leaves the engine's own language.
         case "system_time_locale": return window.__timeLocale ?? null;
-        case "network_reach": return { apple: ["apple.com", "icloud.com", "icloud-content.com", "apple.com.cn", "icloud.com.cn", "icloud-content.com.cn"], subscribed: window.__reachSubscribed ?? [] };
+        case "network_reach": return { apple: ["apple.com", "icloud.com", "icloud-content.com"], subscribed: window.__reachSubscribed ?? [] };
         case "outbox_resend": case "outbox_discard": {
           (window.__outboxCalls ??= []).push([cmd, args.id]);
           if (window.__outbox) window.__outbox = { ...window.__outbox, refused: window.__outbox.refused.filter((r) => r.id !== args.id) };

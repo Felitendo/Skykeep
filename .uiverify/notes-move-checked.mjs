@@ -1,4 +1,4 @@
-// Move Checked Items to the Bottom: off, a tick only ticks; on, a ticked item goes to the end
+// Sort Checked Items Automatically: off, a tick only ticks; on, a ticked item goes to the end
 // of its own checklist and an unticked one back above the ticked — one edit, the text saved
 // whole, nothing else in the note touched.
 //

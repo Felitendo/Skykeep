@@ -121,10 +121,9 @@ body:
     id: account
     attributes:
       label: Apple Account
-      description: Accounts in mainland China and Managed Apple Accounts (from a school or workplace) aren't supported yet, so this tells us where to start.
+      description: Managed Apple Accounts (from a school or workplace) aren't supported yet, so this tells us where to start.
       options:
-        - "Personal, outside mainland China"
-        - "Personal, in mainland China"
+        - "Personal"
         - "Managed (school or workplace)"
         - "Not sure"
 

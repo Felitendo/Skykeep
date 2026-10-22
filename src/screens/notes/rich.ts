@@ -341,8 +341,8 @@ export function sameFormatting(text: string, a: Run[] | null, b: Run[] | null): 
 }
 
 /**
- * Where a checklist item goes when it is ticked or unticked with "Move Checked Items to the
- * Bottom" on, as Notes sorts them: ticked, the item — with the items nested under it — goes
+ * Where a checklist item goes when it is ticked or unticked with "Sort Checked Items
+ * Automatically" on, as Notes sorts them: ticked, the item — with the items nested under it — goes
  * to the end of its own checklist; unticked, back up to just above the ticked items. Only
  * within the run of checklist lines it sits in, and only for a top-level item (a nested one
  * moves with its parent). `index` is the item's place among the document's lines; `checked`

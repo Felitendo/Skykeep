@@ -850,7 +850,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           event.preventDefault();
           const checked = !node.attrs.checked;
           const tr = vw.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked });
-          // With "Move Checked Items to the Bottom" on, the item goes where Notes sorts it, in
+          // With "Sort Checked Items Automatically" on, the item goes where Notes sorts it, in
           // the same edit, so one undo puts both back.
           if (moveCheckedOn()) {
             const starts: number[] = [];

@@ -11,7 +11,7 @@ const daysBetween = (from: Date, to: Date) =>
 /** One run of the note list under a heading. */
 export type Section = { key: string; heading: string; notes: Note[] };
 
-/** Settings ▸ Move Checked Items to the Bottom: off unless turned on, kept on this computer. */
+/** Settings ▸ Sort Checked Items Automatically: off unless turned on, kept on this computer. */
 export const MOVE_CHECKED_KEY = "notes.moveChecked";
 
 /** How the list is ordered, as Notes' View menu offers it. */

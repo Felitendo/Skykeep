@@ -10,7 +10,6 @@ fn only_apples_hosts_count_as_apples() {
         "p177-ckdatabasews.icloud.com",
         "cvws.icloud-content.com",
         "p34-webcourier.push.apple.com",
-        "setup.icloud.com.cn",
         "www.icloud.com.",
         "localhost",
     ] {
@@ -23,6 +22,7 @@ fn only_apples_hosts_count_as_apples() {
         "apple.com.evil.example",
         "evilicloud.com",
         "tile.openstreetmap.org",
+        "setup.icloud.com.cn",
     ] {
         assert!(!is_apple_host(no), "{no}");
     }

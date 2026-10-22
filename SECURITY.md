@@ -14,14 +14,12 @@ Apple, and to calendars you subscribe to — nothing else:
 - `*.icloud.com` service addresses Apple gives the session (CloudKit, Contacts, Calendar,
   iCloud Drive, Photos), `gateway.icloud.com` and `cvws.icloud-content.com` (downloads).
 - `calendars.icloud.com` — Apple's public holiday calendars.
-- The `.com.cn` equivalents of the above are on the allow-list too, kept for accounts in
-  mainland China. Signing in with one isn't supported yet, so today they go unused.
 - The host of each calendar you subscribe to by address (Calendar ▸ + ▸ New Subscription…),
   and only once you have: a `webcal://` or `https://` address of a public calendar file.
 
 This is enforced, not only promised: every network client Skykeep makes is built by
 `quince_auth::apple_only()`, whose resolver refuses to look up any host outside `apple.com`,
-`icloud.com` and `icloud-content.com` (and their `.com.cn` twins) — a request anywhere else
+`icloud.com` and `icloud-content.com` — a request anywhere else
 fails before a connection exists. A URL that names an address instead of a host
 (`https://1.2.3.4/`) is never looked up, so each request's URL is checked too, a redirect's
 included: anything that is not Apple's by name (or this computer, `127.0.0.1`) is refused the

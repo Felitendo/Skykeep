@@ -36,8 +36,7 @@ use std::sync::Arc;
 
 /// Base URLs for Apple's auth and setup services.
 ///
-/// Injectable so the sign-in flow can be exercised against a mock server, and so Apple's
-/// China domains are a constructor rather than a fork.
+/// Injectable so the sign-in flow can be exercised against a mock server.
 #[derive(Clone, Debug)]
 pub struct Endpoints {
     /// Origin for the SRP sign-in calls.
@@ -62,16 +61,6 @@ impl Default for Endpoints {
 }
 
 impl Endpoints {
-    /// Accounts hosted in mainland China.
-    pub fn china() -> Self {
-        Self {
-            auth_root: "https://idmsa.apple.com.cn".into(),
-            auth: "https://idmsa.apple.com.cn/appleauth/auth".into(),
-            setup: "https://setup.icloud.com.cn/setup/ws/1".into(),
-            home: "https://www.icloud.com.cn".into(),
-        }
-    }
-
     /// Point every service at one base URL. Test seam.
     pub fn at(base: &str) -> Self {
         let base = base.trim_end_matches('/');
@@ -1126,16 +1115,9 @@ impl Client {
 }
 
 /// The domains Apple's client can reach, each with every host under it: Apple's sign-in,
-/// iCloud's services and their files, push, and their China-mainland twins. What Settings
+/// iCloud's services and their files, and push. What Settings
 /// lists as what Skykeep talks to, read from here so the list is the lock itself.
-pub const APPLE_DOMAINS: [&str; 6] = [
-    "apple.com",
-    "icloud.com",
-    "icloud-content.com",
-    "apple.com.cn",
-    "icloud.com.cn",
-    "icloud-content.com.cn",
-];
+pub const APPLE_DOMAINS: [&str; 3] = ["apple.com", "icloud.com", "icloud-content.com"];
 
 /// Whether `host` is Apple's: under one of [`APPLE_DOMAINS`] — every host Skykeep has any
 /// reason to reach. Loopback too, which is this computer.

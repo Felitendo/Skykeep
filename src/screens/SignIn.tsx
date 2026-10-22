@@ -166,8 +166,8 @@ export function SignIn({
             open to a full sign-in with your two-factor code, the same one icloud.com uses.
           </p>
           <p>
-            <strong>Personal Apple Accounts.</strong> Accounts in mainland China and Managed
-            Apple Accounts from a school or workplace aren&rsquo;t supported yet.
+            <strong>Personal Apple Accounts.</strong> Managed Apple Accounts from a school or
+            workplace aren&rsquo;t supported yet.
           </p>
           <p>
             <strong>Your iCloud, right here.</strong> Your calendar, reminders, notes, contacts

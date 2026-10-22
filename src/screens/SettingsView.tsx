@@ -886,7 +886,7 @@ function ReachGroup() {
                 <code>{d}</code>
               </span>
             ))}{" "}
-            and their mainland China versions. Any other address is refused before a connection opens.
+            and every address under them. Any other address is refused before a connection opens.
           </span>
         </div>
         <div className="settings-row is-stacked">
@@ -907,7 +907,7 @@ function ReachGroup() {
   );
 }
 
-/** Notes' Move Checked Items to the Bottom: on this computer, as each iPhone keeps its own. */
+/** Notes' Sort Checked Items, Automatically: on this computer, as each iPhone keeps its own. */
 function MoveCheckedRow() {
   const [on, setOn] = useState(() => {
     try {
@@ -919,14 +919,14 @@ function MoveCheckedRow() {
   return (
     <div className="settings-row">
       <span className="settings-label settings-stack">
-        Move Checked Items to the Bottom
-        <span className="settings-hint">In Notes checklists, ticked items sort below the rest</span>
+        Sort Checked Items Automatically
+        <span className="settings-hint">Ticked checklist items move below the rest</span>
       </span>
       <button
         className="switch"
         role="switch"
         aria-checked={on}
-        aria-label="Move Checked Items to the Bottom"
+        aria-label="Sort Checked Items Automatically"
         onClick={() => {
           const next = !on;
           setOn(next);
