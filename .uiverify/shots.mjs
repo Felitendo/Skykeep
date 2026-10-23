@@ -1,6 +1,9 @@
+// Screenshots of the calendar for looking at by eye: `node .uiverify/shots.mjs <tag> [scheme]`,
+// written to $SHOTS (a temporary folder by default). A tool, not a suite.
+import os from "node:os";
 import { engine, engineName } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
-const S = "/tmp/claude-1000/-home-yash-Projects/2540edda-3efd-42b2-8acc-a7662fcef7d7/scratchpad";
+const S = process.env.SHOTS ?? os.tmpdir();
 const tag = process.argv[2] || "before";
 const b = await engine.launch();
 const ctx = await b.newContext({ viewport: { width: 1300, height: 850 }, colorScheme: process.argv[3] || "light" });
