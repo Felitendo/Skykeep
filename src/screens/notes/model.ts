@@ -109,19 +109,6 @@ export function splitTitle(text: string): { title: string; rest: string } {
   return at < 0 ? { title: text, rest: "" } : { title: text.slice(0, at), rest: text.slice(at + 1) };
 }
 
-/**
- * A note's title and snippet as the backend lists them (notes.rs `title_and_snippet`): the
- * first line with words on it, then the next — without the marks where attachments sit. For a
- * row to show a save at once, before the library is read again.
- */
-export function titleAndSnippet(body: string): { title: string; snippet: string } {
-  const lines = body
-    .split("\n")
-    .map((l) => l.replace(/\r$/, "").replace(/[\uFFFC\u2028]/g, " ").split(/\s+/).filter(Boolean).join(" "))
-    .filter((l) => /[\p{L}\p{N}]/u.test(l));
-  return { title: lines[0] ?? "", snippet: lines[1] ?? "" };
-}
-
 export function joinTitle(title: string, rest: string, hadBreak: boolean): string {
   return rest.length > 0 || hadBreak ? `${title}\n${rest}` : title;
 }

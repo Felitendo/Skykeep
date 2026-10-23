@@ -10,7 +10,7 @@ import { useOutbox } from "../lib/outbox";
 import { ArrowDownUp, ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, LockKeyhole, LockKeyholeOpen, Paperclip, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
 import { pickOpen, pickSave } from "../lib/pick";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { DEFAULT_ORDER, editorDate, groupNotes, listDate, mergeEdits, splitTitle, titleAndSnippet, type NoteOrder, type Section } from "./notes/model";
+import { DEFAULT_ORDER, editorDate, groupNotes, listDate, mergeEdits, splitTitle, type NoteOrder, type Section } from "./notes/model";
 import { api, messageOf, nestFolders, notesLockApi, type Note, type NoteFolder, type UnlockedNote } from "../lib/ipc";
 import { LockScreen } from "./notes/LockedNote";
 import { fileName, useAttachEnabled } from "./notes/attach";
@@ -184,6 +184,10 @@ export function NotesView() {
   const [folder, setFolder] = useState<string>(ALL);
   const [notes, setNotes] = useState<Note[]>([]);
   const [openGuid, setOpenGuid] = useState<string | null>(null);
+  /** `openGuid` as last drawn, for work that finishes later — a save landing — to tell whether
+   *  the note it was for is still the one on screen. */
+  const openGuidRef = useRef(openGuid);
+  openGuidRef.current = openGuid;
   /**
    * In a narrow window only one column shows, as on iPhone: the list, or — once a note is
    * picked or begun — that note, with a way back. A wide window shows both and ignores this.
@@ -203,8 +207,14 @@ export function NotesView() {
   useEffect(() => {
     if (revision) refreshTables();
   }, [revision]);
-  /** The body being typed, held apart from the note until it is saved. */
-  const [draft, setDraft] = useState<string | null>(null);
+  /**
+   * The body being typed, held apart from the note until it is saved — with the note it was
+   * typed in. Only that note's editor ever shows it: held bare, the text typed in one note was
+   * still the draft for the first frame of the next, and a note read ahead opened in that very
+   * frame — its editor made with the other note's words, which the next key then saved over it.
+   */
+  const [drafted, setDrafted] = useState<{ guid: string; text: string } | null>(null);
+  const draft = drafted !== null && drafted.guid === openGuid ? drafted.text : null;
   /** `draft`, for effects that read it without re-running on every keystroke. */
   const draftRef = useRef<string | null>(null);
   draftRef.current = draft;
@@ -372,7 +382,7 @@ export function NotesView() {
       adopting.current = null;
       return;
     }
-    setDraft(null);
+    setDrafted((d) => (d !== null && d.guid === openGuid ? d : null));
     setSaved(false);
   }, [openGuid]);
 
@@ -446,10 +456,11 @@ export function NotesView() {
         // answer under someone's cursor is how a half-saved note replaced a whole one. Typing
         // already kept, with nothing new since, is not being typed: what Apple made of it —
         // merged with another device's edit, once sent — is taken in.
-        setDraft((typing) => {
+        setDrafted((d) => {
+          const typing = d !== null && d.guid === openGuid ? d.text : null;
           const settled = typing !== null && !pending.current && base.current?.guid === openGuid && typing === base.current.text;
           if (typing === null || settled) setLoadedBody({ guid: openGuid, text });
-          return typing;
+          return d;
         });
       })
       .catch((e) => {
@@ -524,24 +535,33 @@ export function NotesView() {
       // Read ahead before this save, it is not what the note says now.
       ahead.current.delete(next.guid);
       aheadAt.current += 1;
-      // Its row says what it now says, at the top of a list by Date Edited, as the library
-      // does once it is read again.
-      const { title, snippet } = titleAndSnippet(kept);
-      const now = Math.floor(Date.now() / 1000);
-      setNotes((rows) => {
-        const row = rows.find((n) => n.guid === next.guid);
-        if (!row) return rows;
-        const was = { title: row.title, snippet: row.snippet, modifiedAt: row.modifiedAt };
-        const is = { title, snippet: snippet || null, modifiedAt: Math.max(row.modifiedAt ?? 0, now) };
-        if (was.title === is.title && was.snippet === is.snippet && was.modifiedAt === is.modifiedAt) return rows;
-        return rows.map((n) => (n === row ? { ...n, ...is } : n));
-      });
-      const keptRunsForBase = next.runs ? (kept === next.body ? next.runs : carryRuns(next.body, next.runs, kept)) : null;
-      base.current = { guid: next.guid, text: kept, runs: keptRunsForBase };
+      // Its row says what the library now says of it — title, preview, time edited — read
+      // back rather than worked out here: the library keeps the title Apple holds while the
+      // title line is untouched, and moves the time on only when something really changed. A
+      // copy of those rules here had drifted from them, retitling notes and moving them.
+      const row = await api.noteRow(next.guid).catch(() => null);
+      if (row) {
+        setNotes((rows) => {
+          const at = rows.findIndex((n) => n.guid === row.guid);
+          if (at < 0) return rows;
+          const was = rows[at];
+          if (was.title === row.title && was.snippet === row.snippet && was.modifiedAt === row.modifiedAt) return rows;
+          const out = rows.slice();
+          out[at] = { ...was, title: row.title, snippet: row.snippet, modifiedAt: row.modifiedAt };
+          return out;
+        });
+      }
+      const keptRuns = next.runs ? (kept === next.body ? next.runs : carryRuns(next.body, next.runs, kept)) : null;
+      // Left since: the library has it, and the note now open is another's — nothing on screen
+      // is this note's to update. Laid over the open note, its text became that note's.
+      if (openGuidRef.current !== next.guid) {
+        if (base.current?.guid === next.guid) base.current = null;
+        return;
+      }
+      base.current = { guid: next.guid, text: kept, runs: keptRuns };
       setSaved(true);
       // What Apple now holds becomes what this note reads, text and formatting together, so
       // what is on screen and what was saved agree without a refresh.
-      const keptRuns = next.runs ? (kept === next.body ? next.runs : carryRuns(next.body, next.runs, kept)) : null;
       adopted.current = `${next.guid}\u0000${kept}\u0000${JSON.stringify(keptRuns ?? (loadedRunsRef.current?.guid === next.guid ? loadedRunsRef.current.runs : null))}`;
       setLoadedBody({ guid: next.guid, text: kept });
       if (keptRuns) setLoadedRuns({ guid: next.guid, runs: keptRuns });
@@ -550,8 +570,8 @@ export function NotesView() {
       // The draft is never handed back to the library's copy, which can lag a save, and was
       // how a five-line note once became a single letter.
       if (kept !== next.body) {
-        setDraft((typing) => {
-          const now = typing ?? next.body;
+        setDrafted((d) => {
+          const now = d !== null && d.guid === next.guid ? d.text : next.body;
           const merged = now === next.body ? kept : (mergeEdits(next.body, now, kept) ?? now);
           if (merged !== now) {
             // Another device's words, taken into the editor with the formatting moved along.
@@ -560,7 +580,7 @@ export function NotesView() {
             editorRef.current?.replace(merged, laid);
             if (merged !== kept) pending.current = { guid: next.guid, body: merged, runs: next.runs ? laid : null };
           }
-          return merged;
+          return { guid: next.guid, text: merged };
         });
       }
     });
@@ -582,7 +602,7 @@ export function NotesView() {
       if (base.current?.guid !== open.guid) base.current = { guid: open.guid, text: body, runs: formatSafe ? runs : null };
       draftRuns.current = typedRuns;
       ahead.current.delete(open.guid);
-      setDraft(typed);
+      setDrafted({ guid: open.guid, text: typed });
       setEdits((n) => n + 1);
       setSaved(false);
       // Compared only when the text is back to what Apple holds — never on an ordinary key,
@@ -688,7 +708,7 @@ export function NotesView() {
       // The note is made from its text; its formatting follows straight after — the first
       // line a title, as Notes makes it, and whatever was set while composing.
       const typedRuns = draftRuns.current && runsFit(latest, draftRuns.current) ? titled(latest, draftRuns.current) : null;
-      setDraft(latest);
+      setDrafted({ guid, text: latest });
       setEdits((n) => n + 1);
       pending.current = { guid, body: latest, runs: typedRuns };
       // Its formatting known from the start — what was set while composing, or the title line
@@ -1107,12 +1127,14 @@ export function NotesView() {
     const key = `${open.guid}\u0000${body}\u0000${JSON.stringify(runs)}`;
     if (adopted.current === key) return;
     adopted.current = key;
-    // Only over nothing new: no typing at all, or none since what Apple last confirmed.
-    if (pending.current || (draftRef.current !== null && draftRef.current !== base.current?.text)) return;
+    // Only over nothing new in this note: no typing at all, or none since what Apple last
+    // confirmed. Another note's edit still on its way is no reason to keep this one's editor
+    // from what it holds.
+    if (pending.current?.guid === open.guid || (draftRef.current !== null && draftRef.current !== base.current?.text)) return;
     editorRef.current?.replace(body, formatSafe ? runs : null);
     draftRuns.current = formatSafe ? runs : null;
     if (draftRef.current !== null && draftRef.current !== body) {
-      setDraft(null);
+      setDrafted(null);
       base.current = null;
     }
   }, [open, body, runs, formatSafe]);

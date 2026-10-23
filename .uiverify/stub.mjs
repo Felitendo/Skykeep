@@ -490,8 +490,25 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           (window.__noteSaves ??= []).push(args);
           // A test can play the other device: what Apple answers is what it now holds.
           const kept = window.__phoneEdit ? window.__phoneEdit(args) : args.body;
-          // Kept, as Apple keeps it: the next read of the note gives what was saved.
+          // Kept, as Apple keeps it: the next read of the note gives what was saved. Its row as
+          // the library keeps it (outbox.rs lay_note): the title Apple holds while the title line
+          // is untouched, else the first line with words; the time edited moved on by a change.
           const n = noteList.find((x) => x.guid === args.guid);
+          if (n && kept !== n.body) {
+            const words = (l) => l.replace(/[\uFFFC\u2028]/g, " ").split(/\s+/).filter(Boolean).join(" ");
+            const lines = (t) => t.split("\n").map(words).filter((l) => /[\p{L}\p{N}]/u.test(l));
+            const head = (t) => {
+              let from = 0;
+              for (const l of t.split("\n")) {
+                if (/[\p{L}\p{N}]/u.test(words(l))) return t.slice(0, from + l.length);
+                from += l.length + 1;
+              }
+              return t;
+            };
+            if (n.body == null || head(n.body) !== head(kept)) n.title = lines(kept)[0] ?? "";
+            n.snippet = lines(kept)[1] ?? null;
+            n.modifiedAt = Math.max(n.modifiedAt ?? 0, Math.floor(Date.now() / 1000));
+          }
           if (n) n.body = kept;
           if (args.runs && kept === args.body) (window.__savedRuns ??= {})[args.guid] = args.runs;
           return kept;
@@ -798,6 +815,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return window.__table.map((r) => r.slice());
         }
         case "note_body": return (noteList.find((n) => n.guid === args?.guid) ?? {}).body ?? null;
+        case "note_row": {
+          const n = noteList.find((x) => x.guid === args?.guid);
+          return n ? { ...n, body: null } : null;
+        }
         case "note_counts": {
           const per = new Map();
           for (const n of noteList) per.set(n.folderGuid, (per.get(n.folderGuid) ?? 0) + 1);

@@ -496,6 +496,32 @@ pub fn title_and_snippet(body: &str) -> (String, String) {
     (title, snippet)
 }
 
+/// Whether an edit from `before` to `after` leaves the note's title line — and every line
+/// above it — exactly as it was.
+///
+/// While it does, the title Apple holds stays: it is the one the phone set, by the phone's own
+/// rule, and the phone and this list show it. Worked out again here on every save, a note the
+/// phone titled by a line this rule passes over (a row of emoji, say) was retitled by an edit
+/// to its last line — a different title here than on the phone, for a line nobody touched.
+#[must_use]
+pub fn title_line_unchanged(before: &str, after: &str) -> bool {
+    title_head(before) == title_head(after)
+}
+
+/// A note's text up to the end of its title line: the first line with words on it, as
+/// [`title_and_snippet`] finds it — or the whole text, when no line has words.
+fn title_head(body: &str) -> &str {
+    let mut from = 0;
+    for line in body.split('\n') {
+        let end = from + line.len();
+        if words_only(line).chars().any(char::is_alphanumeric) {
+            return &body[..end];
+        }
+        from = end + 1;
+    }
+    body
+}
+
 /// A line of a note as words: without the marks Apple puts in the text where an attachment
 /// sits (U+FFFC) or a line breaks inside a paragraph (U+2028). A table placed after a note's
 /// first words made the title "frfge￼", drawn as a box in every list.
@@ -599,6 +625,16 @@ pub async fn edit_rich_cloudkit_from(
             return Ok(theirs);
         };
         let (title, snippet) = title_and_snippet(&target);
+        // Apple's title, exactly as it holds it, while the edit leaves the title line alone
+        // (`title_line_unchanged`); the new first line's when the edit reached it.
+        let held_title = current
+            .pointer("/fields/TitleEncrypted")
+            .filter(|_| title_line_unchanged(&theirs, &target))
+            .filter(|_| {
+                field::document_text(&current, "TitleEncrypted")
+                    .is_some_and(|t| !words_only(&t).is_empty())
+            })
+            .cloned();
         let Some(tag) = current.get("recordChangeTag").and_then(Value::as_str) else {
             return Err(Error::Refused(
                 "Apple did not say which version of the note it holds.".into(),
@@ -612,10 +648,10 @@ pub async fn edit_rich_cloudkit_from(
                 tag,
                 serde_json::json!({
                     "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": rewritten },
-                    "TitleEncrypted": {
+                    "TitleEncrypted": held_title.unwrap_or_else(|| serde_json::json!({
                         "type": "ENCRYPTED_BYTES",
                         "value": crate::ckdocument::bare_text_to_base64(&title),
-                    },
+                    })),
                     "SnippetEncrypted": {
                         "type": "ENCRYPTED_BYTES",
                         "value": crate::ckdocument::bare_text_to_base64(&snippet),
@@ -1734,6 +1770,26 @@ mod tests {
         assert_eq!(words_only("one\u{2028}two"), "one two");
     }
 
+    /// An edit below the title line leaves the title Apple holds; one that reaches the title
+    /// line, or a line above it, does not.
+    #[test]
+    fn an_edit_below_the_title_line_keeps_the_title() {
+        let tent = "\u{1F3D5}\u{1F3D5}\n\nTent\nStove";
+        assert!(title_line_unchanged(tent, "\u{1F3D5}\u{1F3D5}\n\nTent\nStove and lamp"));
+        assert!(title_line_unchanged("Groceries\nMilk", "Groceries\nMilk\nEggs"));
+        assert!(title_line_unchanged("Groceries", "Groceries\nMilk"));
+        // The title line itself, or anything above it.
+        assert!(!title_line_unchanged(tent, "\u{1F3D5}\u{1F3D5}\n\nTents\nStove"));
+        assert!(!title_line_unchanged(tent, "\u{1F3D5}\n\nTent\nStove"));
+        assert!(!title_line_unchanged("Groceries\nMilk", "Shopping\nMilk"));
+        assert!(!title_line_unchanged("Groceries\nMilk", "\nGroceries\nMilk"));
+        // A pasted block above the old title is a new title line.
+        assert!(!title_line_unchanged("Cedar list\nplanks", "Pasted\nCedar list\nplanks"));
+        // No line with words: only the same text is the same title.
+        assert!(title_line_unchanged("\u{FFFC}", "\u{FFFC}"));
+        assert!(!title_line_unchanged("\u{FFFC}", "\u{FFFC}\nhello"));
+    }
+
     #[test]
     fn a_title_is_the_first_line_with_words_on_it() {
         let pasted = "━━━━━━━━━━━━━━━━\n\n𝗨𝗡𝗜𝗧 𝟭: 𝗜𝗡𝗧𝗥𝗢\n•  ──\nQuantum states";
@@ -2238,6 +2294,74 @@ mod write_tests {
             .find(|r| r.url.path().ends_with("/records/modify"))
             .expect("a modify was sent");
         serde_json::from_slice::<Value>(&modify.body).unwrap()["operations"][0]["record"].clone()
+    }
+
+    /// A note as the phone titled it, by a line this app's rule would pass over.
+    async fn titled_server(existing: &str, title: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/lookup$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "records": [{
+                    "recordName": "Note/1",
+                    "recordType": "Note",
+                    "recordChangeTag": "fresh",
+                    "fields": {
+                        "TextDataEncrypted": { "type": "ENCRYPTED_BYTES", "value": document(existing) },
+                        "TitleEncrypted": { "type": "ENCRYPTED_BYTES", "value": crate::ckdocument::bare_text_to_base64(title) }
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/records/modify$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "records": [{ "recordName": "Note/1" }] })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// An edit below the title line writes back the title Apple holds — the phone's — not one
+    /// worked out here; an edit of the title line writes the new one.
+    #[tokio::test]
+    async fn an_edit_keeps_apples_title_until_the_title_line_changes() {
+        let camp = "\u{1F3D5}\u{1F3D5}";
+        let text = format!("{camp}\nTent\nStove");
+        let server = titled_server(&text, camp).await;
+        edit_cloudkit_from(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            Some(&text),
+            &format!("{text} and lamp"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sent(&server).await["fields"]["TitleEncrypted"]["value"],
+            crate::ckdocument::bare_text_to_base64(camp)
+        );
+
+        let server = titled_server(&text, camp).await;
+        edit_cloudkit_from(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &note("Note/1"),
+            Some(&text),
+            "Camping\nTent\nStove",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sent(&server).await["fields"]["TitleEncrypted"]["value"],
+            crate::ckdocument::bare_text_to_base64("Camping")
+        );
     }
 
     /// The phone added to the very line being edited here: both additions are written, as

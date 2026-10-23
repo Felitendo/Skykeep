@@ -290,6 +290,9 @@ export const api = {
    * of thousands slow.
    */
   noteBody: (guid: string) => invoke<string | null>("note_body", { guid }),
+  /** One note's row as the library lists it now — title, preview, time edited — with no body.
+   *  Null when there is no such note any more. */
+  noteRow: (guid: string) => invoke<Note | null>("note_row", { guid }),
   noteExportMarkdown: (body: string, runs: unknown[], path: string) =>
     invoke<void>("note_export_markdown", { body, runs, path }),
   /**

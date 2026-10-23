@@ -2974,6 +2974,16 @@ async fn note_body(guid: String, data: State<'_, Data>) -> UiResult<Option<Strin
         .map_err(|e| e.to_string())
 }
 
+/// One note's row as the library lists it — title, preview, time edited — without its text:
+/// what a save just made of it, for the list to show at once without reading every row again.
+#[tauri::command]
+async fn note_row(guid: String, data: State<'_, Data>) -> UiResult<Option<Note>> {
+    data.0
+        .read(|library| library.note(&guid))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// A note written out as Markdown at `path` (chosen in the save dialog): its text as it is on
 /// screen, typing not yet sent included, set as it is in Notes — headings, lists,
 /// checklists, code, quotes, bold, italic, links.
@@ -6092,6 +6102,7 @@ fn main() {
             note_folder_rename,
             note_folder_delete,
             note_body,
+            note_row,
             note_export_markdown,
             note_runs,
             note_table,

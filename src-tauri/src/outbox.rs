@@ -212,6 +212,11 @@ pub struct NoteSave {
     pub base: Option<String>,
     pub runs: Option<Vec<Run>>,
     pub base_runs: Option<Vec<Run>>,
+    /// When it was typed, unix seconds: the note's time edited while it waits. A pass before it
+    /// is sent brings Apple's older time, and laid back without it the note dropped down the
+    /// list until the send, then jumped back up. Absent in a save queued before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
 }
 
 /// A card saved here: as the form left it, and as it opened (`None` for a new card).
@@ -373,11 +378,13 @@ pub fn record_note_save(
             .into_iter()
             .next_back()
             .and_then(|p| serde_json::from_str(&p.payload).ok().map(|s| (p, s)));
+        let at = chrono_now();
         let save = |base, base_runs| NoteSave {
             body: body.to_string(),
             base,
             runs: runs.clone(),
             base_runs,
+            at: Some(at),
         };
         match waiting {
             Some((p, before)) if p.tries == 0 => {
@@ -424,7 +431,7 @@ pub fn record_note_save(
             }
         }
         lay_note(l, guid, body, runs.as_deref())?;
-        l.touch_note(guid, chrono_now())
+        l.touch_note(guid, at)
     })
 }
 
@@ -460,7 +467,19 @@ fn lay_note(
     body: &str,
     runs: Option<&[Run]>,
 ) -> quince_core::Result<()> {
-    let (title, snippet) = quince_icloud::notes::title_and_snippet(body);
+    let (derived, snippet) = quince_icloud::notes::title_and_snippet(body);
+    // The title the library holds — Apple's, as the phone set it — while the edit leaves the
+    // title line alone; the new first line's once it reaches it (notes.rs
+    // `title_line_unchanged`, the rule the send follows too, so here and the phone agree).
+    let held = l.note(guid)?.map(|n| n.title).filter(|t| !t.trim().is_empty());
+    let title = match (held, l.note_body(guid)?) {
+        (Some(held), Some(before))
+            if quince_icloud::notes::title_line_unchanged(&before, body) =>
+        {
+            held
+        }
+        _ => derived,
+    };
     l.set_note_text(
         guid,
         body,
@@ -995,6 +1014,9 @@ fn lay(l: &mut Library, p: &Pending) -> quince_core::Result<()> {
             if let Ok(s) = serde_json::from_str::<NoteSave>(&p.payload) {
                 if l.note(&p.record)?.is_some() {
                     lay_note(l, &p.record, &s.body, s.runs.as_deref())?;
+                    if let Some(at) = s.at {
+                        l.touch_note(&p.record, at)?;
+                    }
                 }
             }
         }
@@ -2502,6 +2524,63 @@ mod tests {
             lib.note_body("N").unwrap().as_deref(),
             Some("Apple's text, mine more and more")
         );
+    }
+
+    /// A note as a pass stores it: Apple's title and time edited.
+    fn titled(lib: &mut Library, guid: &str, title: &str, body: &str, modified: i64) {
+        lib.put_notes(&[quince_core::notes::Note {
+            guid: guid.into(),
+            folder_guid: None,
+            title: title.into(),
+            snippet: None,
+            body: Some(body.into()),
+            locked: false,
+            pinned: false,
+            created_at: None,
+            modified_at: Some(modified),
+            editable: true,
+            etag: None,
+            runs: None,
+        }])
+        .unwrap();
+    }
+
+    /// A save keeps the title Apple holds — the phone's — while the title line is untouched,
+    /// before it is sent and across a pass; an edit of the title line takes the new one.
+    #[test]
+    fn a_save_keeps_apples_title_until_the_title_line_changes() {
+        let mut lib = Library::in_memory().unwrap();
+        let camp = "\u{1F3D5}\u{1F3D5}";
+        let text = format!("{camp}\nTent\nStove");
+        titled(&mut lib, "N", camp, &text, 100);
+        record_note_save(&mut lib, "N", &format!("{text} and lamp"), None, None, None).unwrap();
+        assert_eq!(lib.note("N").unwrap().unwrap().title, camp);
+        titled(&mut lib, "N", camp, &text, 100);
+        replay(&mut lib, NOTES).unwrap();
+        assert_eq!(lib.note("N").unwrap().unwrap().title, camp, "laid back over a pass");
+        record_note_save(&mut lib, "N", "Camping\nTent\nStove", None, None, None).unwrap();
+        assert_eq!(lib.note("N").unwrap().unwrap().title, "Camping");
+    }
+
+    /// A note edited here keeps its time edited while the save waits: a pass bringing Apple's
+    /// older time does not drop it back down the list until the save is sent. A save that
+    /// changes nothing moves nothing.
+    #[test]
+    fn a_waiting_save_keeps_its_time_edited_across_a_pass() {
+        let mut lib = Library::in_memory().unwrap();
+        titled(&mut lib, "N", "Groceries", "Groceries\nMilk", 100);
+        titled(&mut lib, "M", "Errands", "Errands\nBank", 200);
+        record_note_save(&mut lib, "M", "Errands\nBank", None, None, None).unwrap();
+        assert_eq!(lib.note("M").unwrap().unwrap().modified_at, Some(200), "nothing changed, nothing moved");
+        record_note_save(&mut lib, "N", "Groceries\nMilk\nEggs", None, None, None).unwrap();
+        let edited = lib.note("N").unwrap().unwrap().modified_at.unwrap();
+        assert!(edited > 200);
+        // A pass before the send: Apple still has the old text and the old time.
+        titled(&mut lib, "N", "Groceries", "Groceries\nMilk", 100);
+        replay(&mut lib, NOTES).unwrap();
+        let n = lib.note("N").unwrap().unwrap();
+        assert_eq!(n.modified_at, Some(edited));
+        assert_eq!(lib.note_body("N").unwrap().as_deref(), Some("Groceries\nMilk\nEggs"));
     }
 
     /// Contacts: a new card gets its id here, shows at once, and edits before it is sent stay
