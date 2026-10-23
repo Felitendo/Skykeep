@@ -10,6 +10,7 @@ import {
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, messageOf, SYNCED, type Refresh } from "./ipc";
+import { useScreenActive } from "./screen";
 
 /**
  * One refresh for the whole account, shared by every screen.
@@ -201,6 +202,19 @@ export function useSync(): Sync {
 export function useRevision(...services: string[]): number {
   const { revisions } = useSync();
   return services.reduce((n, s) => n + (revisions[s] ?? 0), revisions.all ?? 0);
+}
+
+/**
+ * `useRevision`, for a screen kept out of sight: it holds still while another screen is in
+ * front, and catches up once when this one comes back. Each pass that landed used to have every
+ * kept screen read its whole list again behind the one being looked at (lib/screen).
+ */
+export function useShownRevision(...services: string[]): number {
+  const revision = useRevision(...services);
+  const active = useScreenActive();
+  const seen = useRef(revision);
+  if (active) seen.current = revision;
+  return seen.current;
 }
 
 /** "just now", "4 min ago", "yesterday" — how old the library is, in words. */

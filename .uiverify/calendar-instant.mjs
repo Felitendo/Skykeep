@@ -80,12 +80,14 @@ await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).clic
 await page.waitForTimeout(150);
 ok(await page.locator(".cx-block", { hasText: "Design review" }).count() === 0, "a deleted event leaves at once");
 // A reminder on the calendar ticks there, at once, as in Calendar.
-const ring = page.getByRole("checkbox", { name: /^Complete / }).first();
+// In the grid the ring is for the mouse; the line itself is the control (its card has the
+// ring for the keyboard), so it is found by its class, not as a checkbox.
+const ring = page.locator(".cx-item.is-reminder:not(.is-done) .cx-ring, .cx-reminder:not(.is-done) .cx-ring").first();
 const had = await ring.count();
 if (had) {
   await ring.click();
   await page.waitForTimeout(150);
-  ok((await ring.getAttribute("aria-checked")) === "true", "a reminder's ring on the calendar ticks it at once");
+  ok(await ring.evaluate((el) => el.classList.contains("is-ticked")), "a reminder's ring on the calendar ticks it at once");
 } else ok(false, "no reminder on the calendar to tick");
 await b.close();
 process.exitCode = failures ? 1 : 0;

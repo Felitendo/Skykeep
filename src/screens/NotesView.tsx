@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePending } from "../lib/pending";
 import { useErrorToast } from "../components/Toast";
 import { useConfirm } from "../components/Confirm";
@@ -10,7 +10,7 @@ import { useOutbox } from "../lib/outbox";
 import { ArrowDownUp, ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, LockKeyhole, LockKeyholeOpen, Paperclip, Pin, PinOff, Share, SquarePen, Trash2 } from "lucide-react";
 import { pickOpen, pickSave } from "../lib/pick";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { DEFAULT_ORDER, editorDate, groupNotes, listDate, mergeEdits, splitTitle, type NoteOrder } from "./notes/model";
+import { DEFAULT_ORDER, editorDate, groupNotes, listDate, mergeEdits, splitTitle, titleAndSnippet, type NoteOrder, type Section } from "./notes/model";
 import { api, messageOf, nestFolders, notesLockApi, type Note, type NoteFolder, type UnlockedNote } from "../lib/ipc";
 import { LockScreen } from "./notes/LockedNote";
 import { fileName, useAttachEnabled } from "./notes/attach";
@@ -26,7 +26,7 @@ import { NotePicture } from "./notes/NotePicture";
 import { OPEN_NOTE_EVENT } from "./notes/links";
 import { useReveal } from "../lib/reveal";
 import { Arriving } from "../components/EmptyState";
-import { useArriving, useRevision } from "../lib/sync";
+import { useArriving, useRevision, useShownRevision } from "../lib/sync";
 import { Picker } from "../components/Picker";
 
 const ALL = "__all__";
@@ -91,6 +91,59 @@ function fitFolders(aside: HTMLElement | null): number | null {
   return clampFolders(widest + pad + 2);
 }
 
+/**
+ * The list of notes, drawn again only when the notes or the open one change. Inline in the
+ * screen, every key typed in a note — and every move of the cursor — drew every row again,
+ * which in an account of thousands was felt in the typing.
+ */
+const NoteRows = memo(function NoteRows({
+  sections,
+  openGuid,
+  rowsRef,
+  onPick,
+}: {
+  sections: Section[];
+  openGuid: string | null;
+  rowsRef: React.MutableRefObject<HTMLDivElement | null>;
+  onPick: (note: Note, e: React.MouseEvent) => void;
+}) {
+  return (
+    <div className="note-rows" ref={rowsRef} role="listbox" aria-label="Notes" data-rows="">
+      {sections.map((section) => (
+        <Fragment key={section.key}>
+          <div className="notes-section" aria-hidden="true">{section.heading}</div>
+          <div role="group" aria-label={section.heading}>
+          {section.notes.map((note) => (
+            <div role="presentation" className="note-item" key={note.guid}>
+              <button
+                className="note-row"
+                role="option"
+                data-guid={note.guid}
+                aria-selected={openGuid === note.guid}
+                onClick={(e) => onPick(note, e)}
+              >
+                <span className="note-row-title">
+                  {note.locked && (
+                    <LockKeyhole className="note-row-lock" size={12} strokeWidth={2.4} aria-label="Locked" />
+                  )}
+                  <span className="note-row-name">{wordsOnly(note.title) || "New Note"}</span>
+                </span>
+                <span className="note-row-meta">
+                  <span className="note-row-when">{listDate(note.modifiedAt)}</span>
+                  <span className="note-row-snippet">
+                    {note.locked ? "Locked" : wordsOnly(note.snippet ?? "").slice(0, 80) || "No additional text"}
+                  </span>
+                </span>
+              </button>
+            </div>
+          ))}
+          </div>
+        </Fragment>
+      ))}
+    </div>
+  );
+});
+
 export function NotesView() {
   // The folders' column: as wide as it was left, or — the first time — as wide as the longest
   // folder name needs, within reason.
@@ -140,7 +193,11 @@ export function NotesView() {
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
   const [confirm, confirmSheet] = useConfirm();
-  const revision = useRevision("notes");
+  /** Moves with every pass that changed notes, shown or not: an edit waiting goes then. */
+  const synced = useRevision("notes");
+  // What the screen reads by: held while another screen is in front, and read once on coming
+  // back (lib/sync).
+  const revision = useShownRevision("notes");
   const arriving = useArriving("notes");
   // Tables on screen keep up with a phone's edits, as the note's text does.
   useEffect(() => {
@@ -332,14 +389,59 @@ export function NotesView() {
    */
   const [loadedBody, setLoadedBody] = useState<{ guid: string; text: string } | null>(null);
 
+  /** How the open note is set, from Apple's attribute runs, read with its body. */
+  const [loadedRuns, setLoadedRuns] = useState<{ guid: string; runs: Run[] } | null>(null);
+  const loadedRunsRef = useRef(loadedRuns);
+  loadedRunsRef.current = loadedRuns;
+  /** The line the cursor is in and its marks, for the toolbar to show as on. */
+  const [status, setStatus] = useState<EditorStatus | null>(null);
+  const [formatAt, setFormatAt] = useState<{ x: number; y: number } | null>(null)
+
+  /**
+   * Saving is not something anyone should have to remember.
+   *
+   * Apple's Notes has no save button because a note is not a document you commit — it is
+   * just there, and what you typed is what it says. Typing schedules a save; leaving the
+   * note or the field takes it immediately, so nothing is ever waiting on a timer when you
+   * walk away.
+   */
+  const pending = useRef<{ guid: string; body: string; runs: Run[] | null } | null>(null);
+
+  /**
+   * The notes beside the open one, read ahead — text and formatting — so stepping to one with
+   * the arrow keys draws it in the same frame, rather than a frame of "Opening…" and then the
+   * note. Only ever what the library holds after every save so far (read behind them), let go
+   * of whenever the library changes, and a note typed into is never taken from here.
+   */
+  const ahead = useRef(new Map<string, { text: string; runs: Run[] }>());
+  /** Moves each time the library changes, so a read ahead begun before it is not kept. */
+  const aheadAt = useRef(0);
   useEffect(() => {
-    if (!openGuid) return setLoadedBody(null);
+    ahead.current.clear();
+    aheadAt.current += 1;
+  }, [revision, outbox.tick]);
+
+  // The words and their formatting are read together and arrive together: read one after the
+  // other, the note was drawn plain and then again formatted — a flash on every note opened.
+  useEffect(() => {
+    setFormatAt(null);
+    if (!openGuid) {
+      setLoadedBody(null);
+      setLoadedRuns(null);
+      return undefined;
+    }
     let cancelled = false;
     setLoadedBody((current) => (current?.guid === openGuid ? current : null));
-    api
-      .noteBody(openGuid)
-      .then((text) => {
-        if (cancelled || text === null) return;
+    Promise.all([
+      api.noteBody(openGuid),
+      // Unreadable formatting still opens the note — as text only (formatSafe stays false),
+      // which saves the words and leaves Apple's formatting as it is.
+      api.noteRuns(openGuid).then((runs) => (Array.isArray(runs) ? runs : []), () => null),
+    ])
+      .then(([text, runs]) => {
+        if (cancelled) return;
+        setLoadedRuns((cur) => (runs !== null ? { guid: openGuid, runs } : cur?.guid === openGuid ? cur : { guid: openGuid, runs: [] }));
+        if (text === null) return;
         // Never over what is being typed. A refresh follows every save, and adopting its
         // answer under someone's cursor is how a half-saved note replaced a whole one. Typing
         // already kept, with nothing new since, is not being typed: what Apple made of it —
@@ -358,29 +460,14 @@ export function NotesView() {
     };
   }, [openGuid, revision, outbox.tick]);
 
-  /** How the open note is set, from Apple's attribute runs, read with its body. */
-  const [loadedRuns, setLoadedRuns] = useState<{ guid: string; runs: Run[] } | null>(null);
-  const loadedRunsRef = useRef(loadedRuns);
-  loadedRunsRef.current = loadedRuns;
-  /** The line the cursor is in and its marks, for the toolbar to show as on. */
-  const [status, setStatus] = useState<EditorStatus | null>(null);
-  const [formatAt, setFormatAt] = useState<{ x: number; y: number } | null>(null)
-  useEffect(() => {
-    setFormatAt(null);
-    if (!openGuid) return setLoadedRuns(null);
-    let cancelled = false;
-    api.noteRuns(openGuid).then(
-      (runs) => { if (!cancelled) setLoadedRuns({ guid: openGuid, runs: Array.isArray(runs) ? runs : [] }); },
-      // Unreadable formatting still opens the note — as text only (formatSafe stays false),
-      // which saves the words and leaves Apple's formatting as it is.
-      () => { if (!cancelled) setLoadedRuns((cur) => (cur?.guid === openGuid ? cur : { guid: openGuid, runs: [] })); },
-    );
-    return () => { cancelled = true; };
-  }, [openGuid, revision, outbox.tick]);
 
-  /** What the open note says, or null while that is still unknown. */
-  const body = open && loadedBody?.guid === open.guid ? loadedBody.text : null;
-  const runs = open && loadedRuns?.guid === open.guid ? loadedRuns.runs : null;
+  /** What the open note says, or null while that is still unknown. Read ahead, it is known at
+   *  once (`ahead`) — until its own read lands. */
+  const bodyIn = open !== null && loadedBody?.guid === open.guid;
+  // Never for a note with an edit still waiting to go: only its own read says what it holds.
+  const early = open && !bodyIn && pending.current?.guid !== open.guid ? ahead.current.get(open.guid) : undefined;
+  const body = bodyIn ? loadedBody!.text : (early?.text ?? null);
+  const runs = bodyIn ? (loadedRuns?.guid === open!.guid ? loadedRuns.runs : null) : (early?.runs ?? null);
   /**
    * Whether this note's formatting can be written from the editor: only when the runs read
    * describe the text exactly. Otherwise the editor shows it plain and saves the text alone,
@@ -400,15 +487,6 @@ export function NotesView() {
   const dirty = draft !== null && body !== null && draft !== body;
 
   /**
-   * Saving is not something anyone should have to remember.
-   *
-   * Apple's Notes has no save button because a note is not a document you commit — it is
-   * just there, and what you typed is what it says. Typing schedules a save; leaving the
-   * note or the field takes it immediately, so nothing is ever waiting on a timer when you
-   * walk away.
-   */
-  const pending = useRef<{ guid: string; body: string; runs: Run[] | null } | null>(null);
-  /**
    * The text Apple last confirmed for the open note: what an edit began from. Sent with each
    * save, so the save can tell an edit made on another device since and keep both.
    */
@@ -424,17 +502,40 @@ export function NotesView() {
       pending.current = null;
       const from = base.current?.guid === next.guid ? base.current.text : null;
       const fromRuns = base.current?.guid === next.guid ? (base.current.runs ?? null) : null;
+      // Straight to the library, which keeps it and sends it behind (the outbox): no controls
+      // made busy and no list read again for it — every pause in typing did both, and the next
+      // save waited behind that read. The outbox's own word, when it has sent it, reads again.
       let saved: string | null = null;
-      const ok = await write(async () => {
+      setError(null);
+      // A read ahead begun before this save lands is not what the note will say: let go.
+      aheadAt.current += 1;
+      try {
         saved = await api.noteSave(next.guid, next.body, from, next.runs, next.runs ? fromRuns : null);
-      });
-      if (!ok || saved === null) {
+      } catch (e) {
+        setError(messageOf(e));
+      }
+      if (saved === null) {
         // Not sent: the edit goes back in line (unless newer typing already replaced it), to
         // go with the next pause, the next sync or leaving the note — never dropped.
         if (!pending.current) pending.current = next;
         return;
       }
       const kept: string = saved;
+      // Read ahead before this save, it is not what the note says now.
+      ahead.current.delete(next.guid);
+      aheadAt.current += 1;
+      // Its row says what it now says, at the top of a list by Date Edited, as the library
+      // does once it is read again.
+      const { title, snippet } = titleAndSnippet(kept);
+      const now = Math.floor(Date.now() / 1000);
+      setNotes((rows) => {
+        const row = rows.find((n) => n.guid === next.guid);
+        if (!row) return rows;
+        const was = { title: row.title, snippet: row.snippet, modifiedAt: row.modifiedAt };
+        const is = { title, snippet: snippet || null, modifiedAt: Math.max(row.modifiedAt ?? 0, now) };
+        if (was.title === is.title && was.snippet === is.snippet && was.modifiedAt === is.modifiedAt) return rows;
+        return rows.map((n) => (n === row ? { ...n, ...is } : n));
+      });
       const keptRunsForBase = next.runs ? (kept === next.body ? next.runs : carryRuns(next.body, next.runs, kept)) : null;
       base.current = { guid: next.guid, text: kept, runs: keptRunsForBase };
       setSaved(true);
@@ -465,13 +566,13 @@ export function NotesView() {
     });
     inFlight.current = run.catch(() => {});
     return run;
-  }, [write]);
+  }, []);
 
   // An edit that could not be sent goes again when a sync has just succeeded — Apple is
   // reachable — rather than waiting for more typing.
   useEffect(() => {
     if (pending.current) void flush();
-  }, [revision, flush]);
+  }, [synced, flush]);
 
   const type = useCallback(
     (typed: string, typedRuns: Run[]) => {
@@ -480,6 +581,7 @@ export function NotesView() {
       // The first keystroke in a note marks what it read as the base of the edit.
       if (base.current?.guid !== open.guid) base.current = { guid: open.guid, text: body, runs: formatSafe ? runs : null };
       draftRuns.current = typedRuns;
+      ahead.current.delete(open.guid);
       setDraft(typed);
       setEdits((n) => n + 1);
       setSaved(false);
@@ -633,6 +735,8 @@ export function NotesView() {
   );
 
   const create = useCallback(async () => {
+    // What was typed a moment ago is handed over first, to the note it was typed in.
+    editorRef.current?.flushChange();
     if (composingRef.current) await commitComposing();
     await flush();
     composeSeq.current += 1;
@@ -812,7 +916,8 @@ export function NotesView() {
           at = added.offset + 1;
           toast({ message: `Added “${fileName(path)}”`, tone: "done" });
         }
-        // The note as Apple now holds it, file in place.
+        // The note as Apple now holds it, file in place — kept here as it answered (any typing
+        // still on its way laid over it), so read from the library rather than asked again.
         const [nextBody, nextRuns] = await Promise.all([api.noteBody(guid), api.noteRuns(guid)]);
         if (nextBody !== null) setLoadedBody({ guid, text: nextBody });
         setLoadedRuns({ guid, runs: Array.isArray(nextRuns) ? nextRuns : [] });
@@ -982,9 +1087,13 @@ export function NotesView() {
 
   /** Every change in the editor: to the note being composed, or to the open one. */
   const apply = (next: string, nextRuns: Run[]) => {
-    if (composingRef.current) {
+    const c = composingRef.current;
+    if (c) {
       draftRuns.current = nextRuns;
-      setComposing((c) => (c ? { ...c, body: next } : c));
+      // Known at once, not when React gets to it: New Note pressed in the same moment hands
+      // this text over first (`create`), and must not find the note still empty.
+      composingRef.current = { ...c, body: next };
+      setComposing((was) => (was ? { ...was, body: next } : was));
     } else type(next, nextRuns);
   };
 
@@ -1040,6 +1149,61 @@ export function NotesView() {
   useEffect(() => setDetail(false), [folder]);
 
   const sections = useMemo(() => groupNotes(notes, new Date(), listOrder), [notes, listOrder]);
+  /** The folders as nested, worked out when they change rather than on every key typed. */
+  const nested = useMemo(() => nestFolders(folders), [folders]);
+
+  /** A row clicked: the one function for every row, so the list is not drawn again for it. */
+  const pick = (note: Note, e: React.MouseEvent) => {
+    pickedBy.current = e.detail > 0 ? "pointer" : "keys";
+    // A locked note clicked again, already open: on into its password field.
+    if (e.detail > 0 && note.locked && note.guid === openGuid)
+      document.querySelector<HTMLInputElement>(".notes .note-lock-field")?.focus();
+    void selectNote(note.guid);
+  };
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
+  const pickRow = useCallback((note: Note, e: React.MouseEvent) => pickRef.current(note, e), []);
+
+  // The notes either side of the open one, read ahead once it has opened (see `ahead`): behind
+  // every save already on its way, and dropped if the library changed meanwhile.
+  const bodyShown = body !== null;
+  useEffect(() => {
+    if (!openGuid || !bodyShown) return undefined;
+    const order = sections.flatMap((g) => g.notes);
+    const at = order.findIndex((n) => n.guid === openGuid);
+    if (at < 0) return undefined;
+    const near = [order[at + 1], order[at - 1]].filter(
+      (n): n is Note =>
+        Boolean(n && !n.locked && n.editable && !ahead.current.has(n.guid) && pending.current?.guid !== n.guid),
+    );
+    if (!near.length) return undefined;
+    const when = aheadAt.current;
+    let live = true;
+    void inFlight.current.then(() =>
+      Promise.all(
+        near.map(async (n) => {
+          const [text, runs] = await Promise.all([api.noteBody(n.guid), api.noteRuns(n.guid)]);
+          if (!live || when !== aheadAt.current || text === null || !Array.isArray(runs)) return;
+          if (ahead.current.size > 16) ahead.current.clear();
+          ahead.current.set(n.guid, { text, runs });
+        }),
+      ).catch(() => {}),
+    );
+    return () => {
+      live = false;
+    };
+  }, [openGuid, bodyShown, sections]);
+
+  // "Opening…" only for a note slow to arrive: one read in a moment draws straight away, and
+  // the spinner it used to show first was a flash on every note opened.
+  const waiting = Boolean(open && !open.locked && (body === null || (open.editable && runs === null)));
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (!waiting) return undefined;
+    const t = window.setTimeout(() => setSlow(true), 300);
+    return () => window.clearTimeout(t);
+  }, [waiting, openGuid]);
   const heading = searching
     ? "Search"
     : folder === ALL
@@ -1093,7 +1257,7 @@ export function NotesView() {
           <span className="source-name notes-folder-name">All iCloud</span>
           <span className="count notes-folder-count">{counts.all || ""}</span>
         </button>
-        {nestFolders(folders)
+        {nested
           .filter(({ folder: f }) => f.guid !== TRASH_FOLDER)
           .map(({ folder: f, depth }) => {
             const own = f.guid !== DEFAULT_FOLDER;
@@ -1274,45 +1438,7 @@ export function NotesView() {
 
         {/* One list box of notes, a group per heading: the open note is its selected option.
             The heading is drawn for the eye; the group's name says it to a screen reader. */}
-        <div className="note-rows" ref={rowsRef} role="listbox" aria-label="Notes" data-rows="">
-          {sections.map((section) => (
-            <Fragment key={section.key}>
-              <div className="notes-section" aria-hidden="true">{section.heading}</div>
-              <div role="group" aria-label={section.heading}>
-              {section.notes.map((note) => (
-                <div role="presentation" className="note-item" key={note.guid}>
-                  <button
-                    className="note-row"
-                    role="option"
-                    data-guid={note.guid}
-                    aria-selected={openGuid === note.guid}
-                    onClick={(e) => {
-                      pickedBy.current = e.detail > 0 ? "pointer" : "keys";
-                      // A locked note clicked again, already open: on into its password field.
-                      if (e.detail > 0 && note.locked && note.guid === openGuid)
-                        document.querySelector<HTMLInputElement>(".notes .note-lock-field")?.focus();
-                      void selectNote(note.guid);
-                    }}
-                  >
-                    <span className="note-row-title">
-                      {note.locked && (
-                        <LockKeyhole className="note-row-lock" size={12} strokeWidth={2.4} aria-label="Locked" />
-                      )}
-                      <span className="note-row-name">{wordsOnly(note.title) || "New Note"}</span>
-                    </span>
-                    <span className="note-row-meta">
-                      <span className="note-row-when">{listDate(note.modifiedAt)}</span>
-                      <span className="note-row-snippet">
-                        {note.locked ? "Locked" : wordsOnly(note.snippet ?? "").slice(0, 80) || "No additional text"}
-                      </span>
-                    </span>
-                  </button>
-                </div>
-              ))}
-              </div>
-            </Fragment>
-          ))}
-        </div>
+        <NoteRows sections={sections} openGuid={openGuid} rowsRef={rowsRef} onPick={pickRow} />
 
         {loaded && notes.length === 0 && !error && !(arriving && !searching) && (
           searching ? (
@@ -1573,10 +1699,11 @@ export function NotesView() {
             autoFocus={pickedBy.current === "pointer"}
             onOpen={(note) => setUnlocked((all) => ({ ...all, [open.guid]: note }))}
           />
-        ) : open && body === null ? (
+        ) : waiting ? (
           /* Nothing to type into until the note's own text has arrived: an empty box over a
-             note whose body had not loaded would write that emptiness back. */
-          <EmptyState busy className="note-loading">Opening…</EmptyState>
+             note whose body had not loaded would write that emptiness back. Said only once it
+             is slow in coming. */
+          slow && <EmptyState busy className="note-loading">Opening…</EmptyState>
         ) : open ? (
           <div className="note-editor is-readonly">
             <h1 className="note-title">{splitTitle(body ?? "").title}</h1>

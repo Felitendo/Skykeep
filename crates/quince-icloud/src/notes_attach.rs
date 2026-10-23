@@ -57,6 +57,9 @@ pub struct Attached {
     pub offset: u64,
     /// The note's text as written, with the attachment's character in it.
     pub body: String,
+    /// How that text is set, as written — Apple's runs, the attachment's among them — so the
+    /// note can be kept as Apple now holds it without reading it back.
+    pub runs: Vec<crate::ckdocument::Run>,
 }
 
 /// The type identifier Notes records for a file, from its name.
@@ -478,13 +481,19 @@ async fn attach_file_unguarded(
     };
 
     let client = ZoneClient::new(http, root, CONTAINER, params.clone());
-    // The note first: there is no point uploading into a note that is not there.
-    if client.lookup_record(ZONE, guid).await?.is_none() {
-        return Err(Error::Refused("Apple no longer has that note.".into()));
-    }
     let attachment = uuid::Uuid::new_v4().to_string().to_uppercase();
     let media = uuid::Uuid::new_v4().to_string().to_uppercase();
-    let asset = upload_asset(http, root, &params, &media, bytes).await?;
+    // The note asked after while the file goes up, not before it: one round trip fewer on
+    // every file added. A note that is gone still adds nothing — the upload alone is never
+    // part of any note, and the loop below looks the note up again before writing.
+    let (there, asset) = tokio::join!(
+        client.lookup_record(ZONE, guid),
+        upload_asset(http, root, &params, &media, bytes)
+    );
+    if there?.is_none() {
+        return Err(Error::Refused("Apple no longer has that note.".into()));
+    }
+    let asset = asset?;
 
     for _ in 0..4 {
         let note = client
@@ -553,12 +562,14 @@ async fn attach_file_unguarded(
             Ok(()) => {
                 let body =
                     crate::ckdocument::stored_text_from_base64(&document).unwrap_or_default();
+                let runs = crate::ckdocument::runs_from_base64(&document);
                 return Ok(Attached {
                     attachment,
                     media,
                     uti: uti.to_string(),
                     offset,
                     body,
+                    runs,
                 });
             }
             // The note moved (or the zone was busy): nothing was written; place it again.

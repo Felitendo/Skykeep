@@ -1,7 +1,7 @@
 // The rules Notes' list and editor follow, checked directly.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupNotes, listDate, splitTitle, joinTitle } from "../src/screens/notes/model.ts";
+import { groupNotes, listDate, splitTitle, joinTitle, titleAndSnippet } from "../src/screens/notes/model.ts";
 
 const now = new Date(2026, 8, 30, 12, 0);
 const at = (y, m, d, h = 9) => Math.floor(new Date(y, m, d, h).getTime() / 1000);
@@ -71,4 +71,10 @@ test("every note appears exactly once, in every order", () => {
     const seen = groupNotes(all, now, { by, groupByDate }).flatMap((s) => s.notes.map((n) => n.guid)).sort();
     assert.deepEqual(seen, ["a", "b", "c", "d"], `${by} ${groupByDate}`);
   }
+});
+
+test("a saved note's row reads as the backend lists it: the first lines with words", () => {
+  assert.deepEqual(titleAndSnippet("Groceries\nMilk, eggs\nBread"), { title: "Groceries", snippet: "Milk, eggs" });
+  assert.deepEqual(titleAndSnippet("\u2501\u2501\u2501\n  Trip  \uFFFC plan \n\n\uFFFC\nend"), { title: "Trip plan", snippet: "end" });
+  assert.deepEqual(titleAndSnippet(""), { title: "", snippet: "" });
 });

@@ -144,6 +144,7 @@ pub async fn note_attach_file(
     path: String,
     at_offset: u64,
     base: Option<String>,
+    app: tauri::AppHandle,
     auth: State<'_, Auth>,
     data: State<'_, Data>,
 ) -> UiResult<Attached> {
@@ -160,9 +161,148 @@ pub async fn note_attach_file(
     )
     .await
     .map_err(|e| e.to_string())?;
-    // Apple has it. A refresh failing now must not read as the attach failing.
-    if let Err(e) = crate::resync_notes(&http, &root, params, &data).await {
-        quiet!("notes refresh after an attachment: {e}");
+    // Apple has it, and said what the note now is: kept here as that at once. Waiting for a
+    // whole notes pass first held every file added — each one — on "Adding" for its length.
+    // The pass still runs, behind, for the note's new tag and anything else that moved; one
+    // failing must not read as the attach failing.
+    {
+        let mut library = data.0.lock().await;
+        if let Err(e) = lay_attached(&mut library, &guid, &attached) {
+            quiet!("keeping a note's new attachment: {e}");
+        }
     }
+    tauri::async_runtime::spawn(async move {
+        use tauri::Manager;
+        let data = app.state::<Data>();
+        if let Err(e) = crate::resync_notes(&http, &root, params, &data).await {
+            quiet!("notes refresh after an attachment: {e}");
+        }
+    });
     Ok(attached)
+}
+
+/// A note with a file just added, kept as Apple now holds it: its text and formatting as
+/// written, its time edited moved on — and any edit still on its way to Apple laid back over
+/// it, as a pass lays them, so nothing typed is shown lost meanwhile.
+fn lay_attached(
+    library: &mut quince_core::Library,
+    guid: &str,
+    attached: &Attached,
+) -> quince_core::Result<()> {
+    let (title, snippet) = quince_icloud::notes::title_and_snippet(&attached.body);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    library.atomically(|l| {
+        l.set_note_text(
+            guid,
+            &attached.body,
+            &title,
+            Some(snippet.as_str()).filter(|s| !s.is_empty()),
+        )?;
+        if !attached.runs.is_empty() {
+            let runs = serde_json::to_string(&attached.runs)
+                .map_err(|e| quince_core::Error::Io(std::io::Error::other(e.to_string())))?;
+            l.set_note_runs(guid, &runs)?;
+        }
+        l.touch_note(guid, now)?;
+        crate::outbox::replay(l, crate::outbox::NOTES)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lay_attached;
+    use quince_core::Library;
+    use quince_icloud::ckdocument::Run;
+    use quince_icloud::notes::attach::Attached;
+
+    fn note(lib: &mut Library, guid: &str, body: &str) {
+        lib.put_notes(&[quince_core::notes::Note {
+            guid: guid.into(),
+            folder_guid: None,
+            title: body.into(),
+            snippet: None,
+            body: Some(body.into()),
+            locked: false,
+            pinned: false,
+            created_at: None,
+            modified_at: Some(1),
+            editable: true,
+            etag: None,
+            runs: None,
+        }])
+        .unwrap();
+    }
+
+    fn attached(body: &str, runs: Vec<Run>) -> Attached {
+        Attached {
+            attachment: "A".into(),
+            media: "M".into(),
+            uti: "public.jpeg".into(),
+            offset: 5,
+            body: body.into(),
+            runs,
+        }
+    }
+
+    /// A file added is kept as Apple answered at once — text, formatting with the file's run,
+    /// a new time edited — with no pass waited for.
+    #[test]
+    fn an_added_file_is_kept_without_a_pass() {
+        let mut lib = Library::in_memory().unwrap();
+        note(&mut lib, "N", "Trip\nend");
+        let runs = vec![
+            Run {
+                length: 5,
+                style: Some(0),
+                ..Run::default()
+            },
+            Run {
+                length: 1,
+                attachment: Some("A".into()),
+                ..Run::default()
+            },
+            Run {
+                length: 4,
+                ..Run::default()
+            },
+        ];
+        lay_attached(
+            &mut lib,
+            "N",
+            &attached("Trip\n\u{FFFC}\nend", runs.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            lib.note_body("N").unwrap().as_deref(),
+            Some("Trip\n\u{FFFC}\nend")
+        );
+        let kept: Vec<Run> = serde_json::from_str(&lib.note_runs("N").unwrap().unwrap()).unwrap();
+        assert_eq!(kept, runs);
+        let n = lib.note("N").unwrap().unwrap();
+        assert_eq!(n.title, "Trip");
+        assert!(n.modified_at.unwrap() > 1);
+    }
+
+    /// Typing still on its way to Apple stays on screen over the note as Apple answered it.
+    #[test]
+    fn typing_not_yet_sent_stays_over_an_added_file() {
+        let mut lib = Library::in_memory().unwrap();
+        note(&mut lib, "N", "Trip\nend");
+        crate::outbox::record_note_save(
+            &mut lib,
+            "N",
+            "Trip\nend and more",
+            Some("Trip\nend".into()),
+            None,
+            None,
+        )
+        .unwrap();
+        lay_attached(&mut lib, "N", &attached("Trip\n\u{FFFC}\nend", Vec::new())).unwrap();
+        assert_eq!(
+            lib.note_body("N").unwrap().as_deref(),
+            Some("Trip\nend and more")
+        );
+    }
 }

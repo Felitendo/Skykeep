@@ -65,7 +65,13 @@ await img.click();
 await page.waitForTimeout(150);
 const viewer = page.getByRole("dialog", { name: "beach.jpeg" });
 ok(await viewer.isVisible(), "a click shows it large, in the window");
-ok((await viewer.locator("img").getAttribute("src")) === (await img.getAttribute("src")), "from the picture already drawn: nothing fetched again");
+ok(/note%2FM1%2Finline$/.test(await img.getAttribute("src")), "the note draws the picture at the size it needs, not the whole photo");
+// At once from the picture already drawn, then whole once that is decoded — never a blank.
+const shownSrc = await viewer.locator("img").getAttribute("src");
+ok(shownSrc === (await img.getAttribute("src")) || /note%2FM1%2Ffile$/.test(shownSrc), `shown from the picture already drawn, or already whole  ${shownSrc}`);
+await page.waitForTimeout(400);
+ok(/note%2FM1%2Ffile$/.test(await viewer.locator("img").getAttribute("src")) && (await viewer.locator("img").evaluate((i) => i.complete && i.naturalWidth > 0)),
+  "and then the whole picture, drawn");
 ok((await page.evaluate(() => window.__opened ?? [])).length === 0, "and nothing handed to another app");
 await viewer.getByRole("button", { name: "Open in Default App" }).click();
 await page.waitForTimeout(100);

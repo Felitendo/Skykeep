@@ -694,7 +694,7 @@ export type NoteAttachment = {
 };
 
 /** A note attachment's picture — the file itself, or Apple's rendering of it. */
-export function noteMediaSrc(id: string, part: "file" | "preview" | "drawing" | "drawing-dark"): string {
+export function noteMediaSrc(id: string, part: "file" | "inline" | "preview" | "drawing" | "drawing-dark"): string {
   return convertFileSrc(`note/${id}/${part}`, "quince");
 }
 

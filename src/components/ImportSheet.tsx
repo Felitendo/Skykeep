@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { api, intakeApi, INTAKE, type Arrival, type Calendar, type ImportEvent } from "../lib/ipc";
 import { Picker } from "./Picker";
 import { useModalFocus } from "../lib/focus";
+import { fadeIn } from "../lib/fade";
 import "../styles/intake.css";
 
 /**
@@ -65,6 +66,9 @@ export function ImportSheet() {
 function Shell({ label, onCancel, children }: { label: string; onCancel: () => void; children: React.ReactNode }) {
   const sheetRef = useRef<HTMLDivElement | null>(null);
   useModalFocus(sheetRef);
+  // The next file's sheet takes the last one's place on the same dim, where the page-wide
+  // fade (lib/fade fadeSheetsIn) does not look: it fades itself in, before it is painted.
+  useLayoutEffect(() => fadeIn(sheetRef.current, { duration: 140 }), []);
   return (
     <div
       ref={sheetRef}

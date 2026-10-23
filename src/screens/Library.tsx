@@ -1,7 +1,7 @@
 import { ToastHost, toast } from "../components/Toast";
 import { EmptyState } from "../components/EmptyState";
 import { StatusLine } from "../components/StatusLine";
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelLeft } from "lucide-react";
@@ -23,7 +23,16 @@ import { reveal, type Reveal } from "../lib/reveal";
  */
 function screen<P extends object>(load: () => Promise<React.ComponentType<P>>) {
   let mod: { default: React.ComponentType<P> } | null = null;
-  const fetch = () => load().then((c) => (mod = { default: c }));
+  let loading: Promise<{ default: React.ComponentType<P> }> | null = null;
+  const fetch = () =>
+    (loading ??= load().then(
+      (c) => (mod = { default: c }),
+      (e) => {
+        // Asked again next time: a chunk that failed to arrive once is not gone for good.
+        loading = null;
+        throw e;
+      },
+    ));
   const Screen = lazy(() =>
     mod
       ? // A thenable that answers straight away: `lazy` takes it as already resolved.
@@ -169,7 +178,29 @@ const RAIL_KEY = "quince.library.rail";
  * as in any window: an app's window is where that app is, not a place cut off from the rest. */
 const ONLY = new URLSearchParams(window.location.search).get("app");
 
-export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<void> }) {
+/**
+ * The code for the screen this window will most likely open on, asked for as this file loads —
+ * beside the session check, rather than after the sidebar's list has come back.
+ */
+const LIKELY = (() => {
+  if (ONLY && ONLY in apps) return ONLY as keyof typeof apps;
+  try {
+    const last = window.localStorage.getItem(LAST_KEY);
+    return last && last in apps ? (last as keyof typeof apps) : null;
+  } catch {
+    return null;
+  }
+})();
+if (LIKELY) void apps[LIKELY].fetch().catch(() => {});
+
+/** Mounted beside a screen under its Suspense, so it mounts in the commit that draws the
+ *  screen itself — once its code is in, never while the pane is still blank. */
+function Drawn({ then }: { then: () => void }) {
+  useEffect(() => then(), [then]);
+  return null;
+}
+
+export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => Promise<void>; onShown?: () => void }) {
   const [services, setServices] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -282,6 +313,23 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
       // Not in a Tauri window.
     }
   }, [selected]);
+
+  // The window is shown once there is something in it: the sidebar's apps, and the screen in
+  // front drawn with its code in (`Drawn`, beside it under its Suspense) — so it maps on the
+  // app, not on a blank pane that fills a moment later. With no screen to draw it is said as
+  // soon as that is known. (The backend shows the window anyway after three seconds.)
+  const told = useRef(false);
+  const onShownRef = useRef(onShown);
+  onShownRef.current = onShown;
+  const drawn = useCallback(() => {
+    if (told.current) return;
+    told.current = true;
+    onShownRef.current?.();
+  }, []);
+  const noScreen = Boolean(error) || (ready && (!selected || webAccess === false));
+  useEffect(() => {
+    if (noScreen) drawn();
+  }, [noScreen, drawn]);
 
   // The other apps' code, fetched while nothing else is happening.
   useEffect(() => {
@@ -480,6 +528,7 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
                 <ScreenBoundary key="settings" name="Settings">
                   <Suspense fallback={null}>
                     <SettingsView onSignOut={onSignOut} />
+                    <Drawn then={drawn} />
                   </Suspense>
                 </ScreenBoundary>
               )}
@@ -493,7 +542,10 @@ export function Library({ onSignOut }: { onSignOut: (keep: boolean) => Promise<v
                   <div key={key} className="screen-slot" hidden={!on} {...(on ? {} : { inert: "" })}>
                     <ScreenActive.Provider value={on}>
                       <ScreenBoundary name={SCREENS.find((s) => s.key === key)?.name ?? "This screen"}>
-                        <Suspense fallback={null}>{screenFor(key)}</Suspense>
+                        <Suspense fallback={null}>
+                          {screenFor(key)}
+                          {on && <Drawn then={drawn} />}
+                        </Suspense>
                       </ScreenBoundary>
                     </ScreenActive.Provider>
                   </div>

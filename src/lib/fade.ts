@@ -66,9 +66,14 @@ export function fadeOut(el: HTMLElement | null, done: () => void, duration = 120
 }
 
 /**
- * Every sheet, as it is added anywhere in the app, fades in this way — set before the first frame
- * is painted (a mutation observer runs before painting), so none shows whole for a frame first.
- * The full-window dims behind them simply appear: a large surface is never animated.
+ * Every sheet, as it is added, fades in this way — set before the first frame is painted (a
+ * mutation observer runs before painting), so none shows whole for a frame first. The
+ * full-window dims behind them simply appear: a large surface is never animated.
+ *
+ * Every sheet is drawn at the top of the page (components/Portal), so only what is added to
+ * the page's body is looked at. Watching the whole page looked through every row, tile and line
+ * of text added anywhere — a photo grid scrolling, a note typed in — for a sheet. A sheet that
+ * takes another's place on a dim already there fades itself in (`fadeIn`, ImportSheet).
  */
 export function fadeSheetsIn() {
   const sheets = ".modal-sheet";
@@ -80,7 +85,7 @@ export function fadeSheetsIn() {
         node.querySelectorAll<HTMLElement>(sheets).forEach((el) => fadeIn(el, { duration: 140 }));
       }
     }
-  }).observe(document.body, { childList: true, subtree: true });
+  }).observe(document.body, { childList: true });
 }
 
 /**

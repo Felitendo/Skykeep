@@ -392,7 +392,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (args.guid === "nG") {
             // "Pasta\n", "Dinner for ", a #tag, " tonight": the tag one inline attachment in its line.
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
-            return [{ ...plain(6), style: 0 }, plain(11), { ...plain(1), attachment: "T1" }, plain(8)];
+            return [{ ...plain(6), style: 0 }, plain(11), { ...plain(1), attachment: "H1" }, plain(8)];
           }
           if (args.guid === "nD") {
             const plain = (length) => ({ length, style: null, indent: 0, checked: null, bold: false, italic: false, underline: false, strike: false, link: null });
@@ -561,7 +561,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             const info = { id: args.id, title: null, width: null, height: null, size: null, hasPreview: false, filename: null, ...A };
             return window.__slowInfo ? new Promise((r) => setTimeout(() => r(info), window.__slowInfo)) : info;
           }
-          if (args.id === "T1") return { id: "T1", uti: "com.apple.notes.inlinetextattachment.hashtag", kind: "inline", filename: null, title: "#Recipes", width: null, height: null, size: null, hasPreview: false };
+          if (args.id === "H1") return { id: "H1", uti: "com.apple.notes.inlinetextattachment.hashtag", kind: "inline", filename: null, title: "#Recipes", width: null, height: null, size: null, hasPreview: false };
           if (args.id === "D1") return { id: "D1", uti: "com.apple.paper", kind: "drawing", filename: null, title: null, width: 768, height: 621, size: null, hasPreview: true };
           if (args.id === "U1") return { id: "U1", uti: "com.apple.notes.table", kind: "table", filename: null, title: null, width: null, height: null, size: 1116, hasPreview: false };
           // Any other id a table is drawn for (note_table answers it): a table, as the backend

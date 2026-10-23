@@ -82,15 +82,60 @@ struct SessionFacts {
     signed_in: bool,
     /// The account it is (`account_tag`).
     account: Option<String>,
+    /// The services Apple offers it, for the sidebar (`account_services`).
+    services: Vec<String>,
+    /// Who it is, as Apple names them (`account_info`).
+    name: Option<String>,
+    email: Option<String>,
+    web_access_allowed: Option<bool>,
+    data_protection: Option<bool>,
 }
 
 impl SessionFacts {
     fn of(client: &Client) -> Self {
+        let s = client.session();
         SessionFacts {
             has_stored_session: client.has_stored_session(),
-            signed_in: client.session().webservices.is_some(),
-            account: client.session().dsid.as_deref().map(account_tag),
+            signed_in: s.webservices.is_some(),
+            account: s.dsid.as_deref().map(account_tag),
+            services: s
+                .webservices
+                .as_ref()
+                .and_then(|w| w.as_object())
+                .map(|o| {
+                    let mut keys: Vec<String> = o.keys().cloned().collect();
+                    keys.sort();
+                    keys
+                })
+                .unwrap_or_default(),
+            name: s.account_name.clone(),
+            email: s.account_email.clone().or_else(|| s.apple_id.clone()),
+            web_access_allowed: s.web_access_allowed,
+            data_protection: s.data_protection,
         }
+    }
+}
+
+/// The session's facts now: read from the client when nothing holds it, and kept; what was
+/// last kept when something does — a resume, a sign-in, the heartbeat at the start of every
+/// sync — rather than a wait behind a round trip to Apple. The sidebar and the account card
+/// ask as the window opens, and waiting here left a launch on "Loading…" until Apple answered.
+fn session_facts(auth: &Auth) -> SessionFacts {
+    let fresh = auth
+        .client
+        .try_lock()
+        .ok()
+        .map(|client| SessionFacts::of(&client));
+    let mut kept = auth
+        .known
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match fresh {
+        Some(facts) => {
+            *kept = facts.clone();
+            facts
+        }
+        None => kept.clone(),
     }
 }
 
@@ -285,7 +330,7 @@ fn note_part(path: &str) -> Option<(String, quince_icloud::note_media::Part)> {
     let (id, part) = rest.rsplit_once('/')?;
     let part = match part {
         "preview" => quince_icloud::note_media::Part::Preview,
-        "file" => quince_icloud::note_media::Part::File,
+        "file" | "inline" => quince_icloud::note_media::Part::File,
         "drawing" | "drawing-dark" => quince_icloud::note_media::Part::Drawing,
         _ => return None,
     };
@@ -437,6 +482,46 @@ async fn note_media_shown(
         let _ = tokio::fs::rename(&part_path, &shown).await;
     }
     Ok(jpeg)
+}
+
+/// The longest side a note's picture is drawn at in the note. A photo from a phone is 12 to 48
+/// megapixels; drawn in the note at its full size, a long note of them was a decode of each
+/// whole picture while scrolling, and the memory to hold them. The viewer and Open still have
+/// the whole picture.
+const INLINE_LONG: u32 = 1600;
+
+/// A picture made the size a note draws it, or `None` when it already is (or is one that must
+/// not be redrawn: a GIF would lose its motion).
+fn inline_picture(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.starts_with(b"GIF8") {
+        return None;
+    }
+    quince_media::fit(bytes, INLINE_LONG).ok().flatten()
+}
+
+/// A note's picture as drawn in the note: `note_media_shown`'s picture made no larger than
+/// `INLINE_LONG`, made once and kept beside it. One small enough already is served as it is.
+async fn note_media_inline(app: &tauri::AppHandle, id: &str) -> Result<Vec<u8>, String> {
+    let made = state_dir(app)
+        .join("note-media")
+        .join(format!("{}-inline", media_file_id(id)));
+    if let Ok(bytes) = tokio::fs::read(&made).await {
+        return Ok(bytes);
+    }
+    let shown = note_media_shown(app, id, quince_icloud::note_media::Part::File, false).await?;
+    let (shown, small) = crate::cpu::run(move || {
+        let small = inline_picture(&shown);
+        (shown, small)
+    })
+    .await?;
+    let Some(small) = small else {
+        return Ok(shown);
+    };
+    let part = made.with_extension("part");
+    if tokio::fs::write(&part, &small).await.is_ok() {
+        let _ = tokio::fs::rename(&part, &made).await;
+    }
+    Ok(small)
 }
 
 /// Show a file the app saved in its folder, in the file manager, chosen: a "Saved to
@@ -887,24 +972,8 @@ fn state_dir(app: &tauri::AppHandle) -> PathBuf {
 #[tauri::command]
 async fn auth_status(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<Status> {
     timing::mark("auth_status asked");
-    let known = |facts: Option<SessionFacts>| {
-        let mut kept = auth
-            .known
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match facts {
-            Some(facts) => {
-                *kept = facts.clone();
-                facts
-            }
-            None => kept.clone(),
-        }
-    };
     // Busy (a resume, a sign-in, the timer's check): what was last known, rather than a wait.
-    let facts = match auth.client.try_lock() {
-        Ok(client) => known(Some(SessionFacts::of(&client))),
-        Err(_) => known(None),
-    };
+    let facts = session_facts(&auth);
     let owner = data.0.lock().await.state(ACCOUNT_KEY).ok().flatten();
     timing::mark("auth_status answered");
     Ok(Status {
@@ -1537,11 +1606,11 @@ async fn account_info(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<
             .filter(|guid| !guid.is_empty())
             .filter(|guid| library.contact_photo_source(guid).ok().flatten().is_some())
     };
-    let client = auth.client.lock().await;
-    let s = client.session();
+    // Never behind the session's lock: see `session_facts`.
+    let s = session_facts(&auth);
     Ok(AccountInfo {
-        name: s.account_name.clone(),
-        email: s.account_email.clone().or_else(|| s.apple_id.clone()),
+        name: s.name,
+        email: s.email,
         web_access_allowed: s.web_access_allowed,
         data_protection: s.data_protection,
         photo_contact,
@@ -1581,18 +1650,9 @@ async fn settings_set(key: String, on: bool, data: State<'_, Data>) -> UiResult<
 
 #[tauri::command]
 async fn account_services(auth: State<'_, Auth>) -> UiResult<Vec<String>> {
-    let client = auth.client.lock().await;
-    Ok(client
-        .session()
-        .webservices
-        .as_ref()
-        .and_then(|w| w.as_object())
-        .map(|o| {
-            let mut keys: Vec<String> = o.keys().cloned().collect();
-            keys.sort();
-            keys
-        })
-        .unwrap_or_default())
+    // Apple's list is kept with the session, so it is known before the session is taken up
+    // again: never a wait behind the lock a resume or a sync's heartbeat holds.
+    Ok(session_facts(&auth).services)
 }
 
 /// Keep the session warm.
@@ -5041,7 +5101,9 @@ fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: 
     // Started at login, with nothing for the person to do: everything runs, the window waits
     // in the tray.
     // Never without the tray to come back from.
-    if tray_reachable(&app) && login::stay_hidden(needs_you.unwrap_or(true)) {
+    // Asked in this order: started any other way the answer is no, and the tray's question —
+    // a call on the session bus — was asked on the main thread just before every launch's show.
+    if login::stay_hidden(needs_you.unwrap_or(true)) && tray_reachable(&app) {
         // Its page has done what a launch needs of it (the session taken up again): it waits,
         // drawn and hidden, so the tray opens it at once.
         return;
@@ -5228,7 +5290,67 @@ fn app_cache(_webview: &tauri::Webview) {}
 /// register after Skykeep. A bus that cannot be asked is taken as a tray that is there.
 #[cfg(target_os = "linux")]
 fn tray_reachable(_app: &tauri::AppHandle) -> bool {
-    linux_tray::made() && status_notifier_host().unwrap_or(true)
+    linux_tray::made() && TRAY_HOST.reachable(|| status_notifier_host().unwrap_or(true))
+}
+
+/// Whether a tray host is there, as last asked. It is asked where a window shows or closes —
+/// on the main thread, where a call on the session bus froze every window for as long as it
+/// took (up to a second) — so the answer kept is used there, and asked again behind it for the
+/// next time. A panel coming or going is heard of from ksni too (`watcher_online`/`_offline`).
+/// Only the very first question, with nothing kept yet, waits for its answer.
+#[cfg(target_os = "linux")]
+static TRAY_HOST: HostSeen = HostSeen::new();
+
+#[cfg(target_os = "linux")]
+struct HostSeen {
+    /// 0 not asked yet, 1 no host, 2 a host.
+    seen: std::sync::atomic::AtomicU8,
+    asking: AtomicBool,
+}
+
+#[cfg(target_os = "linux")]
+impl HostSeen {
+    const fn new() -> Self {
+        Self {
+            seen: std::sync::atomic::AtomicU8::new(0),
+            asking: AtomicBool::new(false),
+        }
+    }
+
+    fn keep(&self, host: bool) {
+        self.seen.store(if host { 2 } else { 1 }, Ordering::SeqCst);
+    }
+
+    /// The answer kept, asked again in the background; asked now only when none is kept.
+    fn reachable(&'static self, ask: fn() -> bool) -> bool {
+        match self.seen.load(Ordering::SeqCst) {
+            0 => {
+                let host = ask();
+                self.keep(host);
+                host
+            }
+            seen => {
+                self.ask_again(ask);
+                seen == 2
+            }
+        }
+    }
+
+    /// Asked off the main thread, one question at a time.
+    fn ask_again(&'static self, ask: fn() -> bool) {
+        if self.asking.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("tray-host".into())
+            .spawn(move || {
+                self.keep(ask());
+                self.asking.store(false, Ordering::SeqCst);
+            });
+        if spawned.is_err() {
+            self.asking.store(false, Ordering::SeqCst);
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -5349,9 +5471,14 @@ mod linux_tray {
                 item("Quit Skykeep", |app| shutdown(app, 0)),
             ]
         }
-        // A panel restarting, or not there yet: the icon comes back when it does.
+        // A panel restarting, or not there yet: the icon comes back when it does. Either way
+        // whether a host is there is asked again, so closing the window knows (TRAY_HOST).
         fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
+            super::TRAY_HOST.ask_again(|| super::status_notifier_host().unwrap_or(true));
             true
+        }
+        fn watcher_online(&self) {
+            super::TRAY_HOST.ask_again(|| super::status_notifier_host().unwrap_or(true));
         }
     }
 
@@ -5409,6 +5536,8 @@ mod linux_tray {
 #[cfg(target_os = "linux")]
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     linux_tray::spawn(app.handle().clone());
+    // Asked now, off the main thread, so the first window shown or closed has its answer kept.
+    TRAY_HOST.ask_again(|| status_notifier_host().unwrap_or(true));
     Ok(())
 }
 
@@ -5613,6 +5742,8 @@ fn main() {
             let drive_thumb = drive_thumb_part(uri.path());
             // A drawing's ink for a dark page, rather than a light one.
             let ink_dark = uri.path().ends_with("drawing-dark");
+            // A note's picture as the note draws it, rather than whole.
+            let inline = uri.path().ends_with("/inline");
             let picture = photos::requested(uri.path());
             let fit = photos::requested_fit(uri.path());
             let queued = photos::requested_upload(uri.path());
@@ -5693,7 +5824,12 @@ fn main() {
                 }
                 // A note's picture, or the rendering of a document or film in it.
                 if let Some((id, part)) = attachment {
-                    let response = match note_media_shown(&app, &id, part, ink_dark).await {
+                    let shown = if inline {
+                        note_media_inline(&app, &id).await
+                    } else {
+                        note_media_shown(&app, &id, part, ink_dark).await
+                    };
+                    let response = match shown {
                         Ok(bytes) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", image_type(&bytes))
@@ -6103,6 +6239,79 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+
+    /// The sidebar's services and the account's name are answered while the session is busy —
+    /// taken up again, or checked at the start of a sync — from what was kept, never a wait.
+    #[test]
+    fn account_facts_answer_while_the_session_is_busy() {
+        use super::{session_facts, Auth, SessionFacts};
+        let dir = tempfile::tempdir().unwrap();
+        let client = quince_auth::Client::new(dir.path()).unwrap();
+        let auth = Auth {
+            client: std::sync::Arc::new(tokio::sync::Mutex::new(client)),
+            signing_in: std::sync::atomic::AtomicBool::new(false),
+            known: std::sync::Mutex::new(SessionFacts {
+                services: vec!["notes".into(), "reminders".into()],
+                name: Some("Kept Name".into()),
+                ..SessionFacts::default()
+            }),
+        };
+        let busy = auth.client.try_lock().unwrap();
+        let facts = session_facts(&auth);
+        assert_eq!(facts.services, ["notes", "reminders"]);
+        assert_eq!(facts.name.as_deref(), Some("Kept Name"));
+        drop(busy);
+        // Free, it is read from the session itself (signed out here: nothing) and kept.
+        assert!(session_facts(&auth).services.is_empty());
+        assert!(auth.known.lock().unwrap().services.is_empty());
+    }
+
+    /// Whether a tray host is there is asked once, then answered from what was kept while it
+    /// is asked again behind — never a wait on the session bus after the first.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_tray_host_is_asked_off_the_main_thread_after_the_first_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static HOST: super::HostSeen = super::HostSeen::new();
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+        fn ask() -> bool {
+            ASKED.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            false
+        }
+        let first = std::time::Instant::now();
+        assert!(!HOST.reachable(ask));
+        assert!(first.elapsed() >= std::time::Duration::from_millis(50));
+        HOST.keep(true);
+        let again = std::time::Instant::now();
+        assert!(HOST.reachable(ask), "the kept answer");
+        assert!(again.elapsed() < std::time::Duration::from_millis(40));
+        // The question asked again behind lands, and is what the next answer says.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ASKED.load(Ordering::SeqCst) < 2 || HOST.asking.load(Ordering::SeqCst) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!HOST.reachable(ask));
+    }
+
+    /// A phone's photo is drawn in its note no larger than the note needs; a small one, and a
+    /// GIF (which would lose its motion), as they are.
+    #[test]
+    fn a_note_picture_is_drawn_at_the_size_the_note_needs() {
+        let jpeg = |w: u32, h: u32| {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbImage::from_pixel(w, h, image::Rgb([200, 120, 40]))
+                .write_to(&mut out, image::ImageFormat::Jpeg)
+                .unwrap();
+            out.into_inner()
+        };
+        let small = super::inline_picture(&jpeg(4032, 3024)).expect("made smaller");
+        let drawn = image::load_from_memory(&small).unwrap();
+        assert_eq!((drawn.width(), drawn.height()), (super::INLINE_LONG, 1200));
+        assert!(super::inline_picture(&jpeg(1200, 800)).is_none());
+        assert!(super::inline_picture(b"GIF89a....").is_none());
+    }
 
     /// A shared note's attachment is saved under a plain name in its own folder, whatever its
     /// sender called it, and a program in one is shown in its folder, never run.

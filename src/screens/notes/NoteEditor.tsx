@@ -103,7 +103,7 @@ function size(bytes: number | null): string {
  */
 /** A note's picture asked to be shown large: the viewer (NotePicture) listens for it. */
 export const PICTURE_EVENT = "quince:note-picture";
-export type PictureShown = { id: string; name: string; src: string; srcDark?: string; drawing?: boolean };
+export type PictureShown = { id: string; name: string; src: string; srcDark?: string; drawing?: boolean; whole?: string };
 
 export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   const name = info.filename ?? info.title ?? (info.kind === "audio" ? "Recording" : "Attachment");
@@ -163,7 +163,7 @@ export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     c.addEventListener("click", open);
     return c;
   };
-  const picture = (part: "file" | "preview" | "drawing" | "drawing-dark", cls: string) => {
+  const picture = (part: "file" | "inline" | "preview" | "drawing" | "drawing-dark", cls: string) => {
     const img = document.createElement("img");
     img.className = cls;
     img.alt = name;
@@ -198,10 +198,15 @@ export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   }
   dom.title = `Open ${name}`;
   if (info.kind === "image") {
-    const img = picture("file", "nf-image");
-    // Shown here at once, from the picture already drawn — never a wait on another app.
+    // Drawn in the note no larger than the note needs (a phone's photo is 12 to 48 megapixels,
+    // and a note of them decoded each whole while scrolling); the viewer shows it whole.
+    const img = picture("inline", "nf-image");
+    // Shown here at once, from the picture already drawn — never a wait on another app — and
+    // whole once that is ready (NotePicture).
     img.addEventListener("click", () =>
-      window.dispatchEvent(new CustomEvent<PictureShown>(PICTURE_EVENT, { detail: { id: info.id, name, src: img.src } })),
+      window.dispatchEvent(
+        new CustomEvent<PictureShown>(PICTURE_EVENT, { detail: { id: info.id, name, src: img.src, whole: noteMediaSrc(info.id, "file") } }),
+      ),
     );
     dom.className = "nf-attachment is-image";
     dom.replaceChildren(img);
@@ -423,6 +428,10 @@ function attachmentView(node: PMNode) {
     stopEvent: (e: Event) => Boolean((e.target as HTMLElement | null)?.closest?.(".nf-cell-edit, .nf-image, .nf-doc, .nf-file")),
   };
 }
+
+/** How often, at most, a note being typed in is read back for saving (see `report`). The save
+ *  itself waits for a pause in typing far longer than this. */
+const REPORT_MS = 150;
 
 /** What the toolbar shows as on: the style of the line the cursor is in, and its marks. */
 export type EditorStatus = {
@@ -676,11 +685,22 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
   const view = useRef<EditorView | null>(null);
   const callbacks = useRef({ onChange, onStatus, onBlur });
   callbacks.current = { onChange, onStatus, onBlur };
+  /** The toolbar's state as last told: told again only when something in it changed. Every
+   *  move of the cursor told it anew, and the whole screen was drawn again for each. */
+  const told = useRef<EditorStatus | null>(null);
+  const tell = (state: EditorState) => {
+    const next = statusOf(state);
+    const was = told.current;
+    if (was && (Object.keys(next) as (keyof EditorStatus)[]).every((k) => was[k] === next[k])) return;
+    told.current = next;
+    callbacks.current.onStatus?.(next);
+  };
 
   /**
    * The note read back as Apple's text and runs — a walk of the whole note — done just after
-   * the key is drawn rather than before, so a long note types as fast as a short one. Done at
-   * once whenever the note is left, so nothing typed can be missed.
+   * the key is drawn rather than before, so a long note types as fast as a short one: at most
+   * once in REPORT_MS while keys keep coming, rather than once a key. Done at once whenever
+   * the note is left, so nothing typed can be missed.
    */
   const later = useRef<number | null>(null);
   const report = () => {
@@ -698,7 +718,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     later.current = window.setTimeout(() => {
       later.current = null;
       report();
-    }, 0);
+    }, REPORT_MS);
   };
 
   useEffect(() => {
@@ -762,7 +782,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         // it was — text dragged and dropped where it lay, a mark set where it already is —
         // is not, and must never become a save.
         if (tr.docChanged && !next.doc.eq(before.doc)) reportSoon();
-        callbacks.current.onStatus?.(statusOf(next));
+        tell(next);
       },
       // A paste never brings an attachment's reference: Apple keeps each table or picture in
       // one place in one note, and a pasted copy referred to the same one twice, which made
@@ -875,7 +895,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       },
     });
     view.current = v;
-    callbacks.current.onStatus?.(statusOf(v.state));
+    tell(v.state);
     if (autoFocus) {
       v.focus();
       v.dispatch(v.state.tr.setSelection(TextSelection.atEnd(v.state.doc)));
@@ -957,7 +977,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       // Taken in quietly: what Apple holds is not an edit to send back.
       const next = v.state.apply(tr);
       v.updateState(next);
-      callbacks.current.onStatus?.(statusOf(next));
+      tell(next);
     },
     focus: () => view.current?.focus(),
     flushChange: () => {

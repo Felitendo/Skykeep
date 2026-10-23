@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { SignIn } from "./screens/SignIn";
 import { CodeEntry } from "./screens/CodeEntry";
 import { Library } from "./screens/Library";
 import { ImportSheet } from "./components/ImportSheet";
 import { StatusLine } from "./components/StatusLine";
+import { dismissToast, toast } from "./components/Toast";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { api, NEEDS_CODE, NEEDS_SIGNIN } from "./lib/ipc";
@@ -17,13 +18,24 @@ export default function App() {
   // put it there, not after an animation frame: the window is hidden until then, and a hidden
   // WebKitGTK window draws no frames, so waiting on one left every launch to the three-second
   // fallback. The page is laid out by now and the window paints it as it maps.
+  //
+  // The library says so itself (`onShown`), once its first screen is drawn with its code in:
+  // said as the phase changed, the window mapped onto an empty sidebar and a blank pane.
   const [shown, setShown] = useState(false);
+  const show = useCallback(
+    (needsYou: boolean) => {
+      if (shown) return;
+      setShown(true);
+      // Started at login, the window stays in the tray unless the person is needed here.
+      invoke("window_ready", { needsYou }).catch(() => {});
+    },
+    [shown],
+  );
   useEffect(() => {
-    if (shown || phase === "checking") return;
-    setShown(true);
-    // Started at login, the window stays in the tray unless the person is needed here.
-    invoke("window_ready", { needsYou: phase !== "library" }).catch(() => {});
-  }, [phase, shown]);
+    if (phase === "checking" || phase === "library") return;
+    show(true);
+  }, [phase, show]);
+  const libraryShown = useCallback(() => show(false), [show]);
 
   // On launch, try the stored session before showing anything. This is the whole promise:
   // a returning user should never see the sign-in screen.
@@ -82,6 +94,19 @@ export default function App() {
       void stop.then((unlisten) => unlisten()).catch(() => {});
     };
   }, []);
+  // Said where everything passing is said, over the foot of the content: drawn above the
+  // library, it pushed the whole window down and cut off the sidebar's foot. It stays until
+  // put away; Sign In is on it.
+  useEffect(() => {
+    if (!lapsed || phase !== "library") return undefined;
+    const id = toast({
+      message: "Apple signed you out. Your copy on this computer is still here.",
+      tone: "error",
+      duration: null,
+      action: { label: "Sign In", run: () => setPhase("signin") },
+    });
+    return () => dismissToast(id);
+  }, [lapsed, phase]);
 
   // Signed out, the window starts over: nothing of the account is left in its memory either —
   // no picture, no list, no cached answer — for whoever signs in next.
@@ -97,18 +122,7 @@ export default function App() {
     return (
       <>
         <div className="app-ground" aria-hidden="true" />
-        {lapsed && (
-          <div className="toast lapsed" role="alert">
-            <p>Apple signed you out. Your copy on this computer is still here.</p>
-            <button className="primary" onClick={() => setPhase("signin")}>
-              Sign In
-            </button>
-            <button className="quiet" onClick={() => setLapsed(false)}>
-              Not Now
-            </button>
-          </div>
-        )}
-        <Library onSignOut={signOut} />
+        <Library onSignOut={signOut} onShown={libraryShown} />
         <ImportSheet />
       </>
     );

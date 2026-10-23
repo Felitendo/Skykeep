@@ -36,6 +36,24 @@ export function NotePicture() {
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
   }, [shown]);
+  // The picture as the note drew it, at once; then the whole picture in its place once it is
+  // read and decoded — never a blank frame waiting for it.
+  const [whole, setWhole] = useState<string | null>(null);
+  useEffect(() => {
+    setWhole(null);
+    const src = shown?.whole;
+    if (!src) return undefined;
+    let live = true;
+    const img = new Image();
+    img.src = src;
+    img.decode().then(
+      () => live && setWhole(src),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [shown]);
   const sheetRef = useRef<HTMLElement | null>(null);
   useModalFocus(sheetRef, shown !== null);
   if (!shown) return null;
@@ -56,7 +74,7 @@ export function NotePicture() {
               <img src={shown.srcDark} alt={shown.name} draggable={false} className="nf-drawing nf-ink-dark" />
             </>
           ) : (
-            <img src={shown.src} alt={shown.name} draggable={false} />
+            <img src={whole ?? shown.src} alt={shown.name} draggable={false} />
           )}
           <figcaption>
             <span className="nf-picture-name">{problem ?? shown.name}</span>

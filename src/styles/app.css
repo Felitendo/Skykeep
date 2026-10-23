@@ -525,14 +525,12 @@
     /* Room at the top for the button that opened it, which stays where it was. */
     padding-top: 52px;
     box-shadow: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge), var(--shadow-sheet);
-    transform: translateX(calc(-100% - 16px));
+    /* Out and back at once, as the scrim is: a full-height, shadowed layer sliding over the
+       content is the large-layer motion that flickered on his WebKitGTK (tokens.css). */
     visibility: hidden;
-    transition: transform var(--spring-quick-d) var(--spring-quick), visibility 0s linear var(--spring-quick-d);
   }
   .is-sidebar-open .sidebar {
-    transform: none;
     visibility: visible;
-    transition: transform var(--spring-quick-d) var(--spring-quick), visibility 0s;
   }
   .sidebar-toggle {
     position: absolute;

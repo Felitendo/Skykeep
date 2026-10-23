@@ -36,7 +36,7 @@ import {
   type UrgentRead,
 } from "../lib/ipc";
 import { Arriving } from "../components/EmptyState";
-import { useArriving, useRevision } from "../lib/sync";
+import { useArriving, useShownRevision } from "../lib/sync";
 import { Picker } from "../components/Picker";
 import { RowMenu } from "../components/RowMenu";
 import { Glyph, emblemGlyph, type GlyphName } from "../components/Glyph";
@@ -395,7 +395,8 @@ export function RemindersView() {
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
   const [confirm, confirmSheet] = useConfirm();
-  const revision = useRevision("reminders");
+  // Held while another screen is in front, and read once on coming back (lib/sync).
+  const revision = useShownRevision("reminders");
   const arriving = useArriving("reminders");
   /** What each sidebar entry is holding. Apple puts a number on every one. */
   const [counts, setCounts] = useState<ReminderCounts | null>(null);
