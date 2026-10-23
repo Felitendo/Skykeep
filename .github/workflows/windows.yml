@@ -177,25 +177,66 @@ jobs:
           if (-not $exe) { $exe = Get-ChildItem "$env:LOCALAPPDATA" -Recurse -Filter skykeep.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
           if (-not $exe) { throw "Skykeep was not installed" }
           "installed at $($exe.FullName)"
+          # An app ID as the shell reads it: a window's, or a shortcut file's.
+          Add-Type -TypeDefinition '
+            using System; using System.Runtime.InteropServices;
+            namespace WinShell {
+              [StructLayout(LayoutKind.Sequential)] public struct PropKey { public Guid fmtid; public uint pid; }
+              [StructLayout(LayoutKind.Sequential)] public struct PropVar { public ushort vt, r1, r2, r3; public IntPtr p, p2; }
+              [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+              public interface IPropertyStore {
+                void GetCount(out uint count); void GetAt(uint i, out PropKey key); void GetValue(ref PropKey key, out PropVar v);
+                void SetValue(ref PropKey key, ref PropVar v); void Commit();
+              }
+              public static class Aumid {
+                [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+                [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHGetPropertyStoreFromParsingName(string path, IntPtr bc, int flags, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+                public static string Of(IntPtr hwnd) {
+                  Guid iid = typeof(IPropertyStore).GUID; IPropertyStore store;
+                  if (SHGetPropertyStoreForWindow(hwnd, ref iid, out store) != 0) return null;
+                  return Read(store);
+                }
+                public static string OfFile(string path) {
+                  Guid iid = typeof(IPropertyStore).GUID; IPropertyStore store;
+                  if (SHGetPropertyStoreFromParsingName(path, IntPtr.Zero, 0, ref iid, out store) != 0) return null;
+                  return Read(store);
+                }
+                static string Read(IPropertyStore store) {
+                  PropKey key = new PropKey { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
+                  PropVar v; store.GetValue(ref key, out v); Marshal.ReleaseComObject(store);
+                  return (v.vt == 31 || v.vt == 8) ? Marshal.PtrToStringUni(v.p) : null;
+                }
+              }
+            }'
           # Alerts are sent as the app the Start menu knows; without that ID on its entry they
-          # came from "Windows PowerShell".
-          $entry = Get-StartApps | Where-Object { $_.Name -eq "Skykeep" } | Select-Object -First 1
-          if (-not $entry -or $entry.AppID -ne "io.github.yashwanthkamireddi.Skykeep") { throw "Start menu entry has app ID '$($entry.AppID)', not io.github.yashwanthkamireddi.Skykeep" }
-          "start menu app ID: $($entry.AppID)"
-          # Each app its own Start-menu entry beside it (packaging/windows/installer-hooks.nsh):
-          # "Skykeep Notes" opens Notes on its own, under that app's own ID — the one its window
-          # says (taskbar.rs), so Windows gives it a taskbar button of its own.
+          # came from "Windows PowerShell". Beside "Skykeep", each app's own entry
+          # (packaging/windows/installer-hooks.nsh): "Skykeep Notes" opens Notes on its own, under
+          # that app's own ID — the one its window says (taskbar.rs), so it gets a taskbar button
+          # of its own. Each shortcut file first, as written; then the Start menu's list.
           $apps = [ordered]@{ Notes = "notes"; Reminders = "reminders"; Calendar = "calendar"; Contacts = "contacts"; Drive = "drive"; Photos = "photos" }
+          $entries = [ordered]@{ "Skykeep" = @("io.github.yashwanthkamireddi.Skykeep", "") }
+          foreach ($name in $apps.Keys) { $entries["Skykeep $name"] = @("io.github.yashwanthkamireddi.Skykeep.$name", "--app $($apps[$name])") }
           $shell = New-Object -ComObject WScript.Shell
           $programs = [Environment]::GetFolderPath("Programs")
-          foreach ($name in $apps.Keys) {
-            $want = "io.github.yashwanthkamireddi.Skykeep.$name"
-            $app = Get-StartApps | Where-Object { $_.Name -eq "Skykeep $name" } | Select-Object -First 1
-            if (-not $app -or $app.AppID -ne $want) { throw "Start menu entry 'Skykeep $name' has app ID '$($app.AppID)', not $want" }
-            $lnk = $shell.CreateShortcut("$programs\Skykeep $name.lnk")
-            if ($lnk.TargetPath -ne $exe.FullName -or $lnk.Arguments -ne "--app $($apps[$name])") { throw "'Skykeep $name' runs '$($lnk.TargetPath) $($lnk.Arguments)'" }
-            "start menu: Skykeep $name, $($lnk.Arguments), $($app.AppID)"
+          foreach ($name in $entries.Keys) {
+            $path = "$programs\$name.lnk"
+            if (-not (Test-Path $path)) { throw "no '$name' shortcut; the Start menu folder has: $((Get-ChildItem $programs -Filter *.lnk).Name -join ', ')" }
+            $lnk = $shell.CreateShortcut($path)
+            $id = [WinShell.Aumid]::OfFile($path)
+            "shortcut: $name -> $($lnk.TargetPath) $($lnk.Arguments) [$id]"
+            if ($lnk.TargetPath -ne $exe.FullName -or $lnk.Arguments -ne $entries[$name][1]) { throw "'$name' runs '$($lnk.TargetPath) $($lnk.Arguments)'" }
+            if ($id -ne $entries[$name][0]) { throw "the '$name' shortcut has app ID '$id', not $($entries[$name][0])" }
           }
+          # The Start menu takes a moment to list shortcuts just written.
+          $wrong = @()
+          for ($i = 0; $i -lt 30; $i++) {
+            $listed = @(Get-StartApps | Where-Object { $_.Name -like "Skykeep*" })
+            $wrong = @($entries.Keys | Where-Object { $n = $_; -not ($listed | Where-Object { $_.Name -eq $n -and $_.AppID -eq $entries[$n][0] }) })
+            if (-not $wrong) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($wrong) { $listed | Format-Table -AutoSize | Out-String | Write-Host; throw "the Start menu does not list, with its own app ID: $($wrong -join ', ')" }
+          "start menu: $($listed.Count) entries, each with its own app ID"
           # Every visible top-level window the process owns, by title. MainWindowTitle names only
           # one of them, and that may be the hidden single-instance window ("…-siw").
           Add-Type -Namespace Win -Name U -MemberDefinition '
@@ -215,28 +256,6 @@ jobs:
               $true }, [System.IntPtr]::Zero) | Out-Null
             $found
           }
-          # A window's own app ID, as the taskbar reads it.
-          Add-Type -TypeDefinition '
-            using System; using System.Runtime.InteropServices;
-            namespace WinShell {
-              [StructLayout(LayoutKind.Sequential)] public struct PropKey { public Guid fmtid; public uint pid; }
-              [StructLayout(LayoutKind.Sequential)] public struct PropVar { public ushort vt, r1, r2, r3; public IntPtr p, p2; }
-              [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-              public interface IPropertyStore {
-                void GetCount(out uint count); void GetAt(uint i, out PropKey key); void GetValue(ref PropKey key, out PropVar v);
-                void SetValue(ref PropKey key, ref PropVar v); void Commit();
-              }
-              public static class Aumid {
-                [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
-                public static string Of(IntPtr hwnd) {
-                  Guid iid = typeof(IPropertyStore).GUID; IPropertyStore store;
-                  if (SHGetPropertyStoreForWindow(hwnd, ref iid, out store) != 0) return null;
-                  PropKey key = new PropKey { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
-                  PropVar v; store.GetValue(ref key, out v); Marshal.ReleaseComObject(store);
-                  return (v.vt == 31 || v.vt == 8) ? Marshal.PtrToStringUni(v.p) : null;
-                }
-              }
-            }'
           function Find-Window([int]$procId, [string]$title) {
             $found = New-Object System.Collections.Generic.List[System.IntPtr]
             [Win.U]::EnumWindows({ param($h, $l)

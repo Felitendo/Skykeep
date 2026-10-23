@@ -79,6 +79,11 @@
     ${OrIf} $WixMode = 1
       !insertmacro SKYKEEP_MENU
       CreateDirectory "$R9"
+      ; "Skykeep" itself stamped with the identifier too, as the process says it (taskbar.rs):
+      ; toasts and the main window are attributed to that entry, whatever Tauri's template did.
+      ${If} ${FileExists} "$R9\${PRODUCTNAME}.lnk"
+        !insertmacro SKYKEEP_LNK_APP_ID "$R9\${PRODUCTNAME}.lnk" "${BUNDLEID}"
+      ${EndIf}
       !insertmacro SKYKEEP_APP_SHORTCUT "Notes" "notes" "Notes from iCloud, on this computer"
       !insertmacro SKYKEEP_APP_SHORTCUT "Reminders" "reminders" "Reminders from iCloud, on this computer"
       !insertmacro SKYKEEP_APP_SHORTCUT "Calendar" "calendar" "Your iCloud calendars, on this computer"
