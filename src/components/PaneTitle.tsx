@@ -28,14 +28,25 @@ export function PaneTitle({
   useLayoutEffect(() => {
     const el = title.current;
     if (!el) return undefined;
-    // Measured, not guessed from its length: the column's width is what decides it.
+    // Measured, not guessed from its length: the column's width is what decides it. Only a
+    // width decides it, and only a cut-off line counts: a "y" or a tall Windows font pokes a
+    // few pixels past one line of "Today", which read as overflow and shrank it a frame after
+    // it drew — and the head's own height changing then measured it again, flipping it back
+    // and forth, so every app's content shook up and down. A hidden screen, measured at no
+    // width, waits until it has one.
+    const column = el.parentElement ?? el;
+    let width = -1;
     const fit = () => {
+      const now = column.clientWidth;
+      if (now === 0 || now === width) return;
+      width = now;
       el.classList.remove("is-small");
-      if (el.scrollHeight > el.clientHeight + 1) el.classList.add("is-small");
+      const line = parseFloat(getComputedStyle(el).lineHeight) || 24;
+      if (el.scrollHeight - el.clientHeight > line / 2) el.classList.add("is-small");
     };
     fit();
     const watch = new ResizeObserver(fit);
-    watch.observe(el.parentElement ?? el);
+    watch.observe(column);
     return () => watch.disconnect();
   }, [children]);
   return (
