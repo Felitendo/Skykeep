@@ -408,9 +408,17 @@ fn start(app: &AppHandle, which: Which, at: &std::path::Path) -> Result<(), Stri
     if mounted(which).is_some() {
         return Ok(());
     }
+    if in_flatpak() {
+        return Err("The folders aren’t part of the Flatpak version of Skykeep.".into());
+    }
     if !std::path::Path::new("/dev/fuse").exists() {
         return Err("This computer has no FUSE, which the folder needs. Install your system's fuse3 package.".into());
     }
+    // Left mounted by a Skykeep that was killed (an out-of-memory kill, SIGKILL, a crash
+    // the panic hook never saw): nothing answers there, every look at the folder fails with
+    // "Transport endpoint is not connected", and mounting over it failed the same way on
+    // every launch after, until someone ran fusermount by hand. Let go of here first.
+    unstick(at, |p| std::fs::metadata(p).map(|_| ()), lazy_unmount);
     if let Ok(mut entries) = std::fs::read_dir(at) {
         if entries.next().is_some() {
             return Err(format!(
@@ -529,8 +537,40 @@ fn status(app: &AppHandle, which: Which, problem: Option<String>) -> FolderStatu
         path: at.to_string_lossy().into_owned(),
         problem,
         waiting,
-        available: cfg!(target_os = "linux"),
+        available: cfg!(target_os = "linux") && !in_flatpak(),
     }
+}
+
+/// Running inside a Flatpak, where the folders are left out: the sandbox has no `/dev/fuse`,
+/// and installing fuse3 on the host — what the error said — could not change that.
+fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some()
+}
+
+/// A mount left behind by a run that ended without letting go of it: let go of now, lazily
+/// (`-z`, as at quit). Answers whether there was one.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn unstick(
+    at: &std::path::Path,
+    look: impl Fn(&std::path::Path) -> std::io::Result<()>,
+    mut unmount: impl FnMut(&std::path::Path) -> bool,
+) -> bool {
+    let stale = matches!(look(at), Err(e) if e.raw_os_error() == Some(ENOTCONN));
+    stale && unmount(at)
+}
+
+/// "Transport endpoint is not connected": what a FUSE mount whose process is gone answers.
+const ENOTCONN: i32 = 107;
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn lazy_unmount(at: &std::path::Path) -> bool {
+    ["fusermount3", "fusermount"].iter().any(|tool| {
+        std::process::Command::new(tool)
+            .arg("-uz")
+            .arg(at)
+            .status()
+            .is_ok_and(|s| s.success())
+    })
 }
 
 /// At start: each brought up if it was on.
@@ -731,5 +771,33 @@ pub fn drive_keep(drivewsid: String, on: bool) -> Result<Vec<String>, String> {
     {
         let _ = (drivewsid, on);
         Err("Keeping files on this computer needs the iCloud Drive folder.".into())
+    }
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::*;
+
+    /// A dead mount is let go of before a new one is made over it; a folder that answers, or
+    /// is not there, is left as it is.
+    #[test]
+    fn a_mount_left_by_a_killed_run_is_let_go_of() {
+        let at = std::path::Path::new("/somewhere/iCloud Drive");
+        let dead = |_: &std::path::Path| Err(std::io::Error::from_raw_os_error(ENOTCONN));
+        let mut asked = Vec::new();
+        assert!(unstick(at, dead, |p| {
+            asked.push(p.to_path_buf());
+            true
+        }));
+        assert_eq!(asked, [at]);
+
+        let fine = |_: &std::path::Path| Ok(());
+        let missing = |_: &std::path::Path| Err(std::io::ErrorKind::NotFound.into());
+        for look in [
+            &fine as &dyn Fn(&std::path::Path) -> std::io::Result<()>,
+            &missing,
+        ] {
+            assert!(!unstick(at, look, |_| panic!("nothing to let go of")));
+        }
     }
 }
