@@ -48,11 +48,16 @@ pub const NOTES: &str = "notes";
 pub const CONTACTS: &str = "contacts";
 pub const CALENDAR: &str = "calendar";
 
-/// What a waiting change does to a reminder: ticked (`at` the moment) or not.
+/// What a waiting change does to a reminder: ticked (`at` the moment) or not, over the copy of
+/// Apple's record it was made from (`base`: what tells a change made elsewhere since from one
+/// sent from here). A tick queued before there was a base has none, and is sent unless Apple
+/// already has it as wanted.
 #[derive(Serialize, Deserialize)]
 pub struct Done {
     pub done: bool,
     pub at: i64,
+    #[serde(default)]
+    pub base: quince_icloud::reminders::TickBase,
 }
 
 /// A reminder made here, under the name it was given here.
@@ -1339,7 +1344,7 @@ async fn send_reminder(
             };
             // A change made on another device after this one was queued wins; the pass after
             // sending reads Apple's version back.
-            if r::tick_overtaken(http, root, params.clone(), &reminder, d.done, d.at).await? {
+            if r::tick_overtaken(http, root, params.clone(), &reminder, d.done, &d.base).await? {
                 return Ok(());
             }
             r::set_completed_cloudkit(http, root, params, &reminder, d.done).await
@@ -1384,7 +1389,7 @@ async fn send_reminder(
             };
             // Moved on at Apple already — by an earlier send of this tick, or on another
             // device since — it is not moved on again.
-            r::advance_cloudkit_once(http, root, params, &reminder, a.from_due, a.at).await
+            r::advance_cloudkit_once(http, root, params, &reminder, a.from_due).await
         }
         "edit" => {
             let e: Edit = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
@@ -2117,7 +2122,12 @@ mod tests {
     }
     fn queue(lib: &mut Library, g: &str, done: bool) {
         lib.set_reminder_completed(g, done.then_some(1)).unwrap();
-        let payload = serde_json::to_string(&Done { done, at: 1 }).unwrap();
+        let payload = serde_json::to_string(&Done {
+            done,
+            at: 1,
+            base: Default::default(),
+        })
+        .unwrap();
         lib.outbox_push(REMINDERS, g, "done", &payload).unwrap();
     }
     fn note(lib: &mut Library, guid: &str, body: &str) {

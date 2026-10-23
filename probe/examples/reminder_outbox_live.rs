@@ -80,13 +80,13 @@ async fn main() -> Result<()> {
             when.map_or(-1, |w| now - w / 1000)
         );
         anyhow::ensure!(when.is_some_and(|w| (now - w / 1000).abs() < 120));
-        // A queued tick Apple already holds steps aside; an old untick, overtaken by the tick
-        // made since, steps aside; an untick made after Apple's last change goes.
-        let held = r::tick_overtaken(&http, &root, p.clone(), &reminder, true, now).await?;
-        let old = r::tick_overtaken(&http, &root, p.clone(), &reminder, false, 1).await?;
-        let fresh = r::tick_overtaken(&http, &root, p.clone(), &reminder, false, now + 60).await?;
-        println!("overtaken: already held {held}, older than Apple's {old}, newer {fresh}");
-        anyhow::ensure!(held && old && !fresh);
+        // A queued tick Apple already holds steps aside; an untick queued behind this run's own
+        // tick goes — its own send never overtakes a change made after it.
+        let base = r::TickBase::of(&reminder);
+        let held = r::tick_overtaken(&http, &root, p.clone(), &reminder, true, &base).await?;
+        let after = r::tick_overtaken(&http, &root, p.clone(), &reminder, false, &base).await?;
+        println!("overtaken: already held {held}, behind our own tick {after}");
+        anyhow::ensure!(held && !after);
         // Untick then, sent on the change tag the library held before the tick — stale, as the
         // worker's would be until the next pass.
         lib.outbox_push("reminders", &guid, "done", "{\"done\":false,\"at\":1}")?;

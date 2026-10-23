@@ -2656,15 +2656,21 @@ async fn set_done(
     };
     if last || !(done && reminder.repeats()) {
         let now = jiff::Timestamp::now().as_second();
-        let payload =
-            serde_json::to_string(&outbox::Done { done, at: now }).map_err(|e| e.to_string())?;
+        let payload = serde_json::to_string(&outbox::Done {
+            done,
+            at: now,
+            base: quince_icloud::reminders::TickBase::of(&reminder),
+        })
+        .map_err(|e| e.to_string())?;
         {
+            // Shown and queued together, or neither: a tick shown with nothing queued would
+            // be put back by the next pass.
             let mut library = data.0.lock().await;
             library
-                .set_reminder_completed(guid, done.then_some(now))
-                .map_err(|e| e.to_string())?;
-            library
-                .outbox_push("reminders", guid, "done", &payload)
+                .atomically(|l| {
+                    l.set_reminder_completed(guid, done.then_some(now))?;
+                    l.outbox_push("reminders", guid, "done", &payload)
+                })
                 .map_err(|e| e.to_string())?;
         }
         outbox::kick();
