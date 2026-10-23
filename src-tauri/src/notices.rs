@@ -29,9 +29,22 @@ pub struct Notice<'a> {
     pub actions: &'a [(&'a str, &'a str)],
     pub category: Option<&'a str>,
     pub desktop_entry: Option<String>,
-    pub sound: Option<&'a str>,
+    pub sound: Sound,
     /// Kept in the server's list after a press, and never timed out (a reminder).
     pub resident: bool,
+}
+
+/// What an alert sounds like, and who plays it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sound {
+    /// The server's own choice, or none.
+    Default,
+    /// The server plays this sound from the desktop's sound theme.
+    Named(&'static str),
+    /// Played here already: the server is asked to add none of its own. A server that says
+    /// it plays no sounds may still play one for every notification (Quickshell's does), and
+    /// the alert sounded twice.
+    PlayedHere,
 }
 
 /// How long an answer is waited for: a notification still unanswered after this was dismissed
@@ -133,8 +146,14 @@ pub fn show(notice: &Notice<'_>, answer: impl FnOnce(&str) + Send + 'static) {
     if let Some(entry) = &notice.desktop_entry {
         hints.insert("desktop-entry", Value::from(entry.as_str()));
     }
-    if let Some(sound) = notice.sound {
-        hints.insert("sound-name", Value::from(sound));
+    match notice.sound {
+        Sound::Default => {}
+        Sound::Named(name) => {
+            hints.insert("sound-name", Value::from(name));
+        }
+        Sound::PlayedHere => {
+            hints.insert("suppress-sound", Value::from(true));
+        }
     }
     if notice.resident {
         hints.insert("resident", Value::from(true));

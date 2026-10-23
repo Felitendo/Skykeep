@@ -113,7 +113,7 @@ pub fn tell(app: &AppHandle, title: &str, body: &str) {
                 actions: &[("default", "Open")],
                 category: None,
                 desktop_entry: Some(app.config().identifier.clone()),
-                sound: None,
+                sound: crate::notices::Sound::Default,
                 resident: false,
             };
             let app = app.clone();
@@ -128,35 +128,42 @@ pub fn tell(app: &AppHandle, title: &str, body: &str) {
     });
 }
 
-/// An alert's sound, as the desktop's own sound theme has it ("alarm-clock-elapsed"). A
-/// notification server that plays sounds is asked to play it; one that does not — Quickshell,
+/// An alert's sound: the desktop's own notification sound ("message-new-instant" in its sound
+/// theme), as Reminders and Calendar on a Mac use the system's alert sound rather than an alarm.
+/// The theme's "alarm-clock-elapsed" rang like an alarm clock, unlike anything else on the desktop.
+/// A notification server that plays sounds is asked for it; one that does not — Quickshell,
 /// mako, dunst and others say no "sound" capability — leaves it to the app, as the spec says,
 /// and it is played here through libcanberra, which keeps to the sound theme and to the
-/// desktop's "event sounds" switch. Without this every alert on such a desktop was silent.
+/// desktop's "event sounds" switch, and the server is asked to add none (Quickshell plays one
+/// anyway, and the alert sounded twice). Without this every alert on such a desktop was silent.
 #[cfg(all(unix, not(target_os = "macos")))]
-fn chime() -> Option<&'static str> {
-    const SOUND: &str = "alarm-clock-elapsed";
+fn chime() -> crate::notices::Sound {
+    const SOUND: &str = "message-new-instant";
     static SERVER_PLAYS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let server_plays = *SERVER_PLAYS.get_or_init(|| {
         notify_rust::get_capabilities().is_ok_and(|c| c.iter().any(|x| x == "sound"))
     });
     if server_plays {
-        return Some(SOUND);
+        return crate::notices::Sound::Named(SOUND);
     }
     // The alert never stands behind its sound, and the sound is waited for on a thread of its own:
     // left unwaited, every alert left a finished player behind as a zombie process.
-    if let Ok(mut player) = std::process::Command::new("canberra-gtk-play")
+    match std::process::Command::new("canberra-gtk-play")
         .args(["--id", SOUND, "--description", "Skykeep alert"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
     {
-        std::thread::spawn(move || {
-            let _ = player.wait();
-        });
+        Ok(mut player) => {
+            std::thread::spawn(move || {
+                let _ = player.wait();
+            });
+            crate::notices::Sound::PlayedHere
+        }
+        // No player here: the server is left to sound it, if it does.
+        Err(_) => crate::notices::Sound::Default,
     }
-    None
 }
 
 fn icon_path(app: &AppHandle) -> Option<&'static str> {
