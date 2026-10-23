@@ -277,6 +277,7 @@ pub fn show(window: &tauri::WebviewWindow) {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .retain(|(l, _)| l != window.label());
     crate::timing::mark(format_args!("{} shown", window.label()));
+    crate::login::shown();
     window.show().ok();
     window.set_focus().ok();
     #[cfg(target_os = "linux")]

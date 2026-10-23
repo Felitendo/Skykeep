@@ -9,7 +9,8 @@
 //!   `packaging/<id>.krunner.desktop` in `/usr/share/krunner/dbusplugins/`.
 //!
 //! Neither desktop needs Skykeep already running: `packaging/<id>.SearchProvider.service` lets
-//! the bus start it, hidden (`--background`), on the first search.
+//! the bus start it with no window (`--search-provider`) on the first search; started so, it
+//! ends after a few idle minutes unless a window is opened.
 //!
 //! The answer has to be quick — the shell waits on every provider as the person types — so a
 //! search reads the library only if its lock comes free within [`LOCK_WAIT`] (a sync pass may be
@@ -343,6 +344,7 @@ impl Core {
 
     /// What the library holds for `query`, remembered so the desktop can ask after it by id.
     fn find(&self, query: &str) -> Vec<Hit> {
+        asked();
         let found = (self.search)(query).map_or_else(Vec::new, |f| hits(f, EACH));
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         if seen.len() + found.len() > REMEMBERED {
@@ -552,6 +554,38 @@ fn open_app(app: &AppHandle, reveal: Reveal) {
 fn search_in_window(app: &AppHandle, query: String) {
     crate::show_window_then(app, move |app| {
         app.emit_to("main", SEARCH, query).ok();
+    });
+}
+
+/// When a search was last asked, in seconds since the epoch.
+static LAST_ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn asked() {
+    LAST_ASKED.store(now_seconds(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Started for a search (`--search-provider`): ends once [`crate::login::SEARCH_IDLE`] passes
+/// with no window shown and no search asked. The changes waiting for Apple are in the library,
+/// and go with the next start.
+pub fn end_when_idle(app: AppHandle) {
+    asked();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(30));
+        let idle = Duration::from_secs(
+            now_seconds().saturating_sub(LAST_ASKED.load(std::sync::atomic::Ordering::Relaxed)),
+        );
+        if crate::login::was_shown() {
+            return;
+        }
+        if crate::login::search_done(false, idle) {
+            crate::shutdown(&app, 0);
+        }
     });
 }
 

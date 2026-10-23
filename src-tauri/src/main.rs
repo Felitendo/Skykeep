@@ -5184,7 +5184,7 @@ fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: 
     // Never without the tray to come back from.
     // Asked in this order: started any other way the answer is no, and the tray's question —
     // a call on the session bus — was asked on the main thread just before every launch's show.
-    if login::stay_hidden(needs_you.unwrap_or(true)) && tray_reachable(&app) {
+    if login::stay_hidden(needs_you.unwrap_or(true), || tray_reachable(&app)) {
         // Its page has done what a launch needs of it (the session taken up again): it waits,
         // drawn and hidden, so the tray opens it at once.
         return;
@@ -5232,7 +5232,7 @@ fn window_state_kept() -> tauri_plugin_window_state::StateFlags {
 fn show_when_ready(app: &tauri::AppHandle) {
     // Started at login: the window is the first window_ready's to show, or not. Started as one
     // app: that app's window shows instead.
-    if login::background() || LAUNCHED_AS_APP.load(Ordering::SeqCst) {
+    if login::background() || login::search_only() || LAUNCHED_AS_APP.load(Ordering::SeqCst) {
         return;
     }
     let app = app.clone();
@@ -5286,6 +5286,7 @@ fn make_main(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 /// Bring the window back, wherever it went; made first if this launch had not made it. Answers
 /// whether it had to be made — its page is then still loading, not yet listening.
 fn show_window(app: &tauri::AppHandle) -> bool {
+    login::shown();
     if let Some(window) = app.get_webview_window("main") {
         timing::mark("main shown");
         window.show().ok();
@@ -6090,6 +6091,9 @@ fn main() {
             // In the desktop's own search (GNOME Shell, KRunner) for as long as it runs.
             #[cfg(target_os = "linux")]
             search_provider::serve(app.handle().clone());
+            if login::search_only() {
+                search_provider::end_when_idle(app.handle().clone());
+            }
             alerts::spawn(app.handle().clone());
             alerts::spawn_events(app.handle().clone());
             if let Err(e) = build_tray(app) {
