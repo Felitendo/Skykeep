@@ -55,9 +55,7 @@ pub(crate) fn parse_apple_date(raw: &Value, timezone: Option<&str>) -> Result<i6
     })?;
 
     // An unknown zone is not worth failing a sync over; UTC keeps the event visible.
-    let zone = timezone
-        .and_then(|name| TimeZone::get(name).ok())
-        .unwrap_or(TimeZone::UTC);
+    let zone = zone_named(timezone);
 
     let zoned = civil_dt
         .to_zoned(zone)
@@ -70,9 +68,7 @@ pub(crate) fn parse_apple_date(raw: &Value, timezone: Option<&str>) -> Result<i6
 /// Writes must speak the same dialect they read, so this is what a completion timestamp or a
 /// due date looks like going back.
 pub(crate) fn format_apple_date(seconds: i64, timezone: Option<&str>) -> Value {
-    let zone = timezone
-        .and_then(|name| TimeZone::get(name).ok())
-        .unwrap_or(TimeZone::UTC);
+    let zone = zone_named(timezone);
     let zoned = jiff::Timestamp::from_second(seconds)
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
         .to_zoned(zone);
@@ -132,11 +128,37 @@ fn collection_from(v: &Value) -> Option<Calendar> {
 /// A timed event with no zone floats, as Calendar calls it: 9:00 wherever it is looked at.
 /// Read as UTC it was drawn hours off, and an edit wrote that wrong instant back, moving the
 /// meeting on every device. So it too is this machine's clock.
+///
+/// A computer whose zone has no IANA name (TZ set to a POSIX rule, a copied `/etc/localtime`)
+/// is still in a zone: its own, named [`SYSTEM_ZONE`] here. Read as UTC instead, every
+/// all-day event west of Greenwich fell a day early, for good.
 fn dates_zone(all_day: bool, timezone: Option<&str>) -> Option<String> {
     match timezone {
         Some(zone) if !all_day => Some(zone.to_string()),
-        _ => TimeZone::system().iana_name().map(ToString::to_string),
+        _ => Some(
+            TimeZone::system()
+                .iana_name()
+                .unwrap_or(SYSTEM_ZONE)
+                .to_string(),
+        ),
     }
+}
+
+/// This computer's own zone, where it has no name to give.
+pub(crate) const SYSTEM_ZONE: &str = "<system>";
+
+/// The zone a name names: [`SYSTEM_ZONE`] this computer's, an unknown one UTC.
+fn zone_named(name: Option<&str>) -> TimeZone {
+    match name {
+        Some(SYSTEM_ZONE) => TimeZone::system(),
+        Some(name) => TimeZone::get(name).unwrap_or(TimeZone::UTC),
+        None => TimeZone::UTC,
+    }
+}
+
+/// A zone as Apple is told it (`usertz`): by name, or UTC where it has none.
+fn apple_tz(name: Option<&str>) -> &str {
+    name.filter(|n| *n != SYSTEM_ZONE).unwrap_or("UTC")
 }
 
 /// The zone to speak to Apple in about this event — the day it is asked about, the day its
@@ -191,9 +213,7 @@ fn event_from(v: &Value) -> Result<Option<Event>> {
 
 /// `YYYY-MM-DD` for the day an instant falls on, in the event's own timezone.
 pub(crate) fn day_of(seconds: i64, timezone: Option<&str>) -> String {
-    let zone = timezone
-        .and_then(|name| TimeZone::get(name).ok())
-        .unwrap_or(TimeZone::UTC);
+    let zone = zone_named(timezone);
     jiff::Timestamp::from_second(seconds)
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
         .to_zoned(zone)
@@ -989,7 +1009,7 @@ impl<'a> CalendarClient<'a> {
         query.push(("lang".into(), "en-us".into()));
         query.push((
             "usertz".into(),
-            event_zone(event).unwrap_or_else(|| "UTC".into()),
+            apple_tz(event_zone(event).as_deref()).to_string(),
         ));
         query.push(("startDate".into(), day.to_string()));
         query.push(("endDate".into(), day.to_string()));
@@ -1367,7 +1387,7 @@ impl<'a> CalendarClient<'a> {
         query.push(("startDate".into(), from.into()));
         query.push(("endDate".into(), to.into()));
         query.push(("lang".into(), "en-us".into()));
-        query.push(("usertz".into(), tz.unwrap_or("UTC").into()));
+        query.push(("usertz".into(), apple_tz(tz).into()));
         if let Some(method) = method_override {
             query.push(("methodOverride".into(), method.into()));
         }

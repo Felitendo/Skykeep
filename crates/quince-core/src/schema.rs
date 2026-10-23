@@ -848,4 +848,47 @@ pub const MIGRATIONS: &[&str] = &[
     r#"
     CREATE INDEX IF NOT EXISTS reminder_alarms_by_reminder ON reminder_alarms (reminder_guid);
     "#,
+    // 49 — all-day and floating events kept as the day and the time on the clock, not as an
+    // instant. Each was turned into an instant in this computer's zone as it was stored, and
+    // nothing turned it back when the zone changed: flown from London to New York, every
+    // birthday and holiday drew on the day before until the next full pass, and an edit made
+    // meanwhile wrote that wrong day back to Apple. `floating` rows hold their wall-clock
+    // time counted as if in UTC, read in whatever zone the computer is in when shown; the
+    // rows already stored are turned over by `float_events`, in the same transaction.
+    r#"
+    ALTER TABLE events ADD COLUMN floating INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
+
+/// Migrations that need more than SQL, run in the same transaction as the one numbered.
+pub const FIXUPS: &[crate::Fixup] = &[(49, float_events)];
+
+/// The all-day and floating events already stored, from instants to wall-clock time: read in
+/// the zone they were stored in — this computer's, by name, or UTC where it had none, as the
+/// sync did — so nothing moves by being turned over.
+fn float_events(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
+    let system = jiff::tz::TimeZone::system();
+    let zone = if system.iana_name().is_some() {
+        system
+    } else {
+        jiff::tz::TimeZone::UTC
+    };
+    let rows: Vec<(String, i64, i64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT guid, starts_at, ends_at FROM events
+              WHERE floating = 0 AND (all_day != 0 OR timezone IS NULL)",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut update =
+        tx.prepare("UPDATE events SET starts_at = ?2, ends_at = ?3, floating = 1 WHERE guid = ?1")?;
+    for (guid, starts, ends) in rows {
+        update.execute(rusqlite::params![
+            guid,
+            crate::calendar::wall_clock(starts, &zone),
+            crate::calendar::wall_clock(ends, &zone),
+        ])?;
+    }
+    Ok(())
+}

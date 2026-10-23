@@ -463,16 +463,22 @@ impl Library {
                 }),
             2 => conn
                 .prepare_cached(
-                    "SELECT calendar_guid, title, location, notes, starts_at, all_day
+                    "SELECT calendar_guid, title, location, notes, starts_at, all_day, floating
                      FROM events WHERE guid = ?1",
                 )?
                 .query_row(params![key], |r| {
+                    let at = r.get::<_, i64>(4)?;
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, Option<String>>(2)?,
                         r.get::<_, Option<String>>(3)?,
-                        r.get::<_, i64>(4)?,
+                        // A floating event's stored time is its wall clock: read in this zone.
+                        if r.get::<_, i64>(6)? != 0 {
+                            crate::calendar::instant_of(at, &self.local_zone())
+                        } else {
+                            at
+                        },
                         r.get::<_, i64>(5)? != 0,
                     ))
                 })
