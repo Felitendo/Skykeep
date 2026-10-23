@@ -1,5 +1,6 @@
 //! What comes into Skykeep from outside its own windows: a calendar or contact file opened
-//! with it (`.ics`, `.vcf`) and the quick-capture launcher actions (`skykeep --new reminder`).
+//! with it (`.ics`, `.vcf`) and the launcher actions that start something new (`skykeep --new
+//! reminder`).
 //!
 //! A file is read here, on this computer, and nothing is sent anywhere until the person says
 //! so in the import sheet: what it holds is shown first — the events with their days and
@@ -101,7 +102,13 @@ pub struct ImportContact {
 /// it would have opened anyway.
 pub fn arrived(app: &AppHandle, args: &[String], cwd: &Path) -> bool {
     if let Some(kind) = crate::apps::new_asked(args) {
-        capture(app, kind);
+        // An event is made in Calendar's own window, with its days and times; the others in
+        // the one-field capture.
+        if kind == "event" {
+            crate::apps::new_event(app);
+        } else {
+            capture(app, kind);
+        }
         return true;
     }
     let files = crate::apps::files_asked(args, cwd);

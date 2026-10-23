@@ -44,6 +44,18 @@ tauri = { version = "2", features = ["tray-icon"] }
 # Toasts with buttons on Windows (notify-rust sends none there): the same crate notify-rust uses.
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"
+# Each app its own taskbar button and the jump list's tasks (taskbar.rs): the shell's own calls,
+# from the same build of the crate Tauri and the toasts already compile.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Storage_EnhancedStorage",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.18", default-features = false }

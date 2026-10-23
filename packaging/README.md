@@ -59,12 +59,29 @@ Calendar (`.ics`) and contact (`.vcf`) files open in Skykeep's import sheet
   `.vcf`/`.vcard` in both the NSIS and MSI installers; Explorer passes the path on the command
   line, and a second launch hands it to the running Skykeep (single instance).
 
-`skykeep --new reminder` and `skykeep --new note` open the quick-capture window. They are
-`Actions=` on the main entry and on the Reminders and Notes entries (right-click in a dock or
-launcher).
+`skykeep --new reminder` and `skykeep --new note` open the quick-capture window;
+`skykeep --new event` opens Calendar with a new event started. The first two are `Actions=` on
+the main entry and on the Reminders and Notes entries (right-click in a dock or launcher).
 
-**Windows jump-list tasks are not set up yet.** A jump list's tasks are written by the running
-app through the shell's `ICustomDestinationList` COM interface; neither Tauri nor its NSIS/MSI
-templates can declare them. Adding them means a Windows-only call at startup (`windows` crate,
-`Win32_UI_Shell`) registering two `IShellLink` tasks with the arguments above. Until then, the
-same commands work from a shortcut's Target field.
+## The six apps on Windows
+
+What the per-app `.desktop` files and `Actions=` are on Linux:
+
+- **Start menu:** beside "Skykeep", "Skykeep Notes", "Skykeep Reminders" and so on, each running
+  `skykeep.exe --app notes` (and so on). The `.exe` installer makes them in
+  `windows/installer-hooks.nsh` (`bundle.windows.nsis.installerHooks`), and removes them, unpinned,
+  on uninstall; the MSI makes the same six from `windows/app-shortcuts.wxs`
+  (`bundle.windows.wix.fragmentPaths`), in one component that its uninstall removes.
+- **Taskbar buttons:** each shortcut carries its app's AppUserModelID,
+  `io.github.yashwanthkamireddi.Skykeep.Notes` and so on, and each app's window says the same ID
+  at runtime (`src-tauri/src/taskbar.rs`), so Notes and Calendar get their own taskbar buttons
+  and pin as their own shortcuts. The process says Skykeep's own ID, the one Tauri stamps on
+  "Skykeep", so the main window, toasts and the jump list are Skykeep's.
+- **Jump list:** Skykeep writes it as it starts (`ICustomDestinationList`; no installer can
+  declare one): New Note, New Reminder, New Event, then the six apps. Notes', Reminders' and
+  Calendar's own buttons offer their own new item. Each task is one of the command lines above,
+  handed to the Skykeep already running.
+
+`.github/workflows/windows.yml` checks all of this after a silent install: each entry's app ID
+and command line, each app window's app ID, every jump-list task, and that uninstalling leaves no
+entry behind.

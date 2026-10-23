@@ -982,6 +982,9 @@ export const photoCacheApi = {
 export const INTAKE = "quince://intake";
 /** Told to the quick-capture window when it is asked for again, with the kind now wanted. */
 export const CAPTURE = "quince://capture";
+/** Told to Calendar's window to start a new event (`skykeep --new event`, the jump list;
+ *  Library.tsx). A window made for it is asked in its address instead: `?new=event`. */
+export const NEW_EVENT = "quince://new-event";
 
 /** An event read from a calendar file: what `eventSave` takes, less the calendar. */
 export type ImportEvent = {

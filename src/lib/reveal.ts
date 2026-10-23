@@ -7,8 +7,9 @@
 import { useEffect, useRef } from "react";
 
 /** `within`: where it lives, when the screen needs it to get there — a reminder's list, a
- * file's folder. */
-export type Reveal = { screen: string; id: string; within?: string | null; query?: string; at?: number };
+ * file's folder. `startNew`: not a thing to show but a new one to start there, with no `id` —
+ * Calendar's New Event from the taskbar's jump list. */
+export type Reveal = { screen: string; id: string; within?: string | null; query?: string; at?: number; startNew?: boolean };
 
 const EVENT = "quince:reveal";
 const waiting = new Map<string, Reveal>();

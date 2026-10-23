@@ -67,7 +67,12 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "installerHooks": "../packaging/windows/installer-hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["../packaging/windows/app-shortcuts.wxs"],
+        "componentRefs": ["SkykeepAppShortcuts"]
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper",

@@ -4,6 +4,8 @@
 #              per-user .exe installer from the same compiled crates. One compile, not two;
 #   2. smoke — the .exe installed silently, Skykeep launched, its window seen on screen, and a
 #              screenshot kept, so an installer that cannot even start is never handed over;
+#              then each app's Start-menu entry and window checked for its own app ID, the jump
+#              list's tasks found, and the uninstaller seen to take every entry away;
 #   ui       — every interface suite in Edge, only when asked for: Edge is the Chromium engine
 #              ci.yml already runs every suite in on each push.
 # Run by hand (Actions → Windows build → Run workflow) or by a release (release.yml); never on
@@ -166,7 +168,7 @@ jobs:
         with:
           name: skykeep-windows
           path: dist
-      - name: Install, launch, and see the window
+      - name: Install, launch, see the window, the six apps, the jump list, uninstall
         shell: pwsh
         run: |
           $setup = Get-ChildItem dist -Recurse -Filter *-setup.exe | Select-Object -First 1
@@ -180,6 +182,20 @@ jobs:
           $entry = Get-StartApps | Where-Object { $_.Name -eq "Skykeep" } | Select-Object -First 1
           if (-not $entry -or $entry.AppID -ne "io.github.yashwanthkamireddi.Skykeep") { throw "Start menu entry has app ID '$($entry.AppID)', not io.github.yashwanthkamireddi.Skykeep" }
           "start menu app ID: $($entry.AppID)"
+          # Each app its own Start-menu entry beside it (packaging/windows/installer-hooks.nsh):
+          # "Skykeep Notes" opens Notes on its own, under that app's own ID — the one its window
+          # says (taskbar.rs), so Windows gives it a taskbar button of its own.
+          $apps = [ordered]@{ Notes = "notes"; Reminders = "reminders"; Calendar = "calendar"; Contacts = "contacts"; Drive = "drive"; Photos = "photos" }
+          $shell = New-Object -ComObject WScript.Shell
+          $programs = [Environment]::GetFolderPath("Programs")
+          foreach ($name in $apps.Keys) {
+            $want = "io.github.yashwanthkamireddi.Skykeep.$name"
+            $app = Get-StartApps | Where-Object { $_.Name -eq "Skykeep $name" } | Select-Object -First 1
+            if (-not $app -or $app.AppID -ne $want) { throw "Start menu entry 'Skykeep $name' has app ID '$($app.AppID)', not $want" }
+            $lnk = $shell.CreateShortcut("$programs\Skykeep $name.lnk")
+            if ($lnk.TargetPath -ne $exe.FullName -or $lnk.Arguments -ne "--app $($apps[$name])") { throw "'Skykeep $name' runs '$($lnk.TargetPath) $($lnk.Arguments)'" }
+            "start menu: Skykeep $name, $($lnk.Arguments), $($app.AppID)"
+          }
           # Every visible top-level window the process owns, by title. MainWindowTitle names only
           # one of them, and that may be the hidden single-instance window ("…-siw").
           Add-Type -Namespace Win -Name U -MemberDefinition '
@@ -199,6 +215,39 @@ jobs:
               $true }, [System.IntPtr]::Zero) | Out-Null
             $found
           }
+          # A window's own app ID, as the taskbar reads it.
+          Add-Type -TypeDefinition '
+            using System; using System.Runtime.InteropServices;
+            namespace WinShell {
+              [StructLayout(LayoutKind.Sequential)] public struct PropKey { public Guid fmtid; public uint pid; }
+              [StructLayout(LayoutKind.Sequential)] public struct PropVar { public ushort vt, r1, r2, r3; public IntPtr p, p2; }
+              [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+              public interface IPropertyStore {
+                void GetCount(out uint count); void GetAt(uint i, out PropKey key); void GetValue(ref PropKey key, out PropVar v);
+                void SetValue(ref PropKey key, ref PropVar v); void Commit();
+              }
+              public static class Aumid {
+                [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+                public static string Of(IntPtr hwnd) {
+                  Guid iid = typeof(IPropertyStore).GUID; IPropertyStore store;
+                  if (SHGetPropertyStoreForWindow(hwnd, ref iid, out store) != 0) return null;
+                  PropKey key = new PropKey { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
+                  PropVar v; store.GetValue(ref key, out v); Marshal.ReleaseComObject(store);
+                  return (v.vt == 31 || v.vt == 8) ? Marshal.PtrToStringUni(v.p) : null;
+                }
+              }
+            }'
+          function Find-Window([int]$procId, [string]$title) {
+            $found = New-Object System.Collections.Generic.List[System.IntPtr]
+            [Win.U]::EnumWindows({ param($h, $l)
+              $owner = 0; [void][Win.U]::GetWindowThreadProcessId($h, [ref]$owner)
+              if ($owner -eq $procId -and [Win.U]::IsWindowVisible($h)) {
+                $sb = New-Object System.Text.StringBuilder 256; [void][Win.U]::GetWindowText($h, $sb, 256)
+                if ($sb.ToString() -eq $title) { $found.Add($h) }
+              }
+              $true }, [System.IntPtr]::Zero) | Out-Null
+            $found | Select-Object -First 1
+          }
           $p = Start-Process $exe.FullName -PassThru
           $titles = @()
           for ($i = 0; $i -lt 30 -and -not ($titles -contains "Skykeep"); $i++) {
@@ -215,7 +264,45 @@ jobs:
           [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
           $bmp.Save("$PWD\skykeep-on-windows.png")
           if ($p.HasExited) { throw "Skykeep closed by itself" }
+          # Launched as its Start-menu entry and its jump-list task launch it — a second Skykeep,
+          # handing its command line to the one running — each app's window is its own, under
+          # its own app ID. `--new event` is Calendar's window with an event started.
+          foreach ($launch in @(@("--app notes", "Notes"), @("--new event", "Calendar"))) {
+            Start-Process $exe.FullName -ArgumentList $launch[0]
+            $h = $null
+            for ($i = 0; $i -lt 15 -and -not $h; $i++) { Start-Sleep -Seconds 2; $h = Find-Window $p.Id $launch[1] }
+            if (-not $h) { throw "skykeep $($launch[0]): no $($launch[1]) window after 30 s (visible: '$((Get-Titles $p.Id) -join "', '")')" }
+            $id = [WinShell.Aumid]::Of($h)
+            $want = "io.github.yashwanthkamireddi.Skykeep.$($launch[1])"
+            if ($id -ne $want) { throw "the $($launch[1]) window has app ID '$id', not $want" }
+            "skykeep $($launch[0]): $($launch[1]) window, app ID $id"
+          }
+          # The jump list, written by Skykeep as it starts: every task's command line is in one of
+          # the lists the shell keeps (UTF-16 inside a binary file, so matched byte for byte).
+          $latin = [System.Text.Encoding]::GetEncoding(28591)
+          $lists = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Recent\CustomDestinations" -Filter *.customDestinations-ms -ErrorAction SilentlyContinue |
+            ForEach-Object { $latin.GetString([System.IO.File]::ReadAllBytes($_.FullName)) }
+          if (-not $lists) { throw "no jump list was written" }
+          $tasks = @("--new note", "--new reminder", "--new event") + ($apps.Values | ForEach-Object { "--app $_" })
+          foreach ($task in $tasks) {
+            $needle = $latin.GetString([System.Text.Encoding]::Unicode.GetBytes($task))
+            if (-not ($lists | Where-Object { $_.Contains($needle) })) { throw "the jump list has no '$task' task" }
+          }
+          "jump list: $($tasks -join ', ')"
           Stop-Process -Id $p.Id
+          Start-Sleep -Seconds 2
+          # Uninstalled, every entry goes with it. The uninstaller hands itself to a copy and
+          # returns at once, so the Start menu is watched rather than the process waited on.
+          Start-Process (Join-Path $exe.DirectoryName "uninstall.exe") -ArgumentList "/S" -Wait
+          $left = @()
+          for ($i = 0; $i -lt 30; $i++) {
+            $left = @(Get-ChildItem $programs -Filter "Skykeep*.lnk" -ErrorAction SilentlyContinue)
+            if (-not $left -and -not (Test-Path $exe.FullName)) { break }
+            Start-Sleep -Seconds 1
+          }
+          if ($left) { throw "uninstalled, but the Start menu still has: $($left.Name -join ', ')" }
+          if (Test-Path $exe.FullName) { throw "uninstalled, but skykeep.exe is still there" }
+          "uninstalled: no Skykeep entries left in the Start menu"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

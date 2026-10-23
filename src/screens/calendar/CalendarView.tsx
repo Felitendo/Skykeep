@@ -496,7 +496,13 @@ export function CalendarView() {
   // was hidden (and kept shown, as its tick in the list says) — never a found event that
   // cannot be seen — and the event itself opened, as Calendar opens one found.
   const [finding, setFinding] = useState<string | null>(null);
+  // "New Event" from the taskbar's jump list (`skykeep --new event`, Library.tsx).
+  const [newAsked, setNewAsked] = useState(false);
   useReveal("calendar", (r) => {
+    if (r.startNew) {
+      setNewAsked(true);
+      return;
+    }
     if (r.at) setSelected(midnight(new Date(r.at * 1000)));
     if (view === "year") setView("day");
     const cal = r.within;
@@ -1131,6 +1137,13 @@ export function CalendarView() {
     setFollowDraft(true);
   };
   const [followDraft, setFollowDraft] = useState(false);
+  // "New Event" asked from outside the window (useReveal above), held until there is a
+  // calendar to put it in, so a window still loading starts it once it can.
+  useEffect(() => {
+    if (!newAsked || !targetGuid) return;
+    setNewAsked(false);
+    newEvent();
+  });
   useLayoutEffect(() => {
     if (!followDraft) return;
     setFollowDraft(false);

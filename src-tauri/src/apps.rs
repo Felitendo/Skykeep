@@ -8,7 +8,7 @@
 //! launcher entry — not six windows under one Skykeep icon. (Measured: GTK 3.24's
 //! `gdk_wayland_window_set_application_id` sets it per window, within one process.)
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// The apps: the key the window and the engine use, and the name a person sees.
 pub const APPS: [(&str, &str); 6] = [
@@ -38,7 +38,27 @@ pub fn asked(args: &[String]) -> Option<&'static str> {
         .map(|(key, _)| *key)
 }
 
-/// What a quick-capture launcher action asks for: `--new reminder` or `--new note` (or
+/// What a command line names an app by: its key, but "drive" for Drive, as its launcher entry
+/// says it. `asked` takes either.
+#[cfg(any(windows, test))]
+pub fn launch_name(key: &str) -> &str {
+    if key == "drivews" {
+        "drive"
+    } else {
+        key
+    }
+}
+
+/// What can be started new from outside a window — a launcher action, the taskbar's jump list:
+/// the word after `--new`, what it is called, and the app it belongs to. A note and a reminder
+/// are the quick capture's (intake.rs); an event is Calendar's own, made in its window.
+pub const NEW: [(&str, &str, &str); 3] = [
+    ("note", "New Note", "notes"),
+    ("reminder", "New Reminder", "reminders"),
+    ("event", "New Event", "calendar"),
+];
+
+/// What a launcher action asks for: `--new reminder`, `--new note` or `--new event` (or
 /// `--new=note`).
 pub fn new_asked(args: &[String]) -> Option<&'static str> {
     let named = args.iter().enumerate().find_map(|(i, a)| {
@@ -46,11 +66,9 @@ pub fn new_asked(args: &[String]) -> Option<&'static str> {
             .map(ToString::to_string)
             .or_else(|| (a == "--new").then(|| args.get(i + 1).cloned()).flatten())
     })?;
-    match named.as_str() {
-        "reminder" => Some("reminder"),
-        "note" => Some("note"),
-        _ => None,
-    }
+    NEW.iter()
+        .find(|(kind, _, _)| *kind == named)
+        .map(|(kind, _, _)| *kind)
 }
 
 /// The calendar and contact files a command line hands over — opened from a file manager,
@@ -126,6 +144,21 @@ fn label(key: &str) -> String {
     format!("app-{key}")
 }
 
+/// Told to Calendar's window to start a new event, as its own + button does.
+const NEW_EVENT: &str = "quince://new-event";
+
+/// "New Event" from outside the window (`skykeep --new event`, the taskbar's jump list):
+/// Calendar's window, with a new event started in it. A window being made is asked in its
+/// address; one already there is told.
+pub fn new_event(app: &AppHandle) {
+    if app.get_webview_window(&label("calendar")).is_some() {
+        open(app, "calendar");
+        app.emit_to(label("calendar").as_str(), NEW_EVENT, ()).ok();
+    } else {
+        make(app, "calendar", "&new=event");
+    }
+}
+
 /// The app ID a window of `key` is known by: the app's own launcher entry's name, as the
 /// desktop matches them (`<identifier>.Notes.desktop`).
 pub fn app_id(app: &AppHandle, key: &str) -> String {
@@ -138,19 +171,25 @@ pub fn app_id(app: &AppHandle, key: &str) -> String {
 
 /// The app's window, brought to the front, or made: its own window, showing that app alone.
 pub fn open(app: &AppHandle, key: &str) {
-    let Some((key, name)) = APPS.iter().find(|(k, _)| *k == key).copied() else {
-        return;
-    };
-    crate::timing::mark(format_args!("app {key} asked"));
     if let Some(w) = app.get_webview_window(&label(key)) {
+        crate::timing::mark(format_args!("app {key} asked"));
         w.unminimize().ok();
         show(&w);
         return;
     }
+    make(app, key, "");
+}
+
+/// The app's window made, hidden until drawn; `asking` is added to its address.
+fn make(app: &AppHandle, key: &str, asking: &str) {
+    let Some((key, name)) = APPS.iter().find(|(k, _)| *k == key).copied() else {
+        return;
+    };
+    crate::timing::mark(format_args!("app {key} asked"));
     let made = WebviewWindowBuilder::new(
         app,
         label(key),
-        WebviewUrl::App(format!("index.html?app={key}").into()),
+        WebviewUrl::App(format!("index.html?app={key}{asking}").into()),
     )
     .title(name)
     .inner_size(1040.0, 720.0)
@@ -169,6 +208,9 @@ pub fn open(app: &AppHandle, key: &str) {
     if crate::tiling_compositor() {
         window.set_decorations(false).ok();
     }
+    // On Windows, its own taskbar button, before it is ever shown (taskbar.rs).
+    #[cfg(windows)]
+    crate::taskbar::name_window(&window, key);
     // Shown by its window_ready once drawn; if that never comes (a page slow to load, a
     // keyring that does not answer), shown anyway — never a launch that opens nothing.
     let w = window.clone();
@@ -217,6 +259,8 @@ pub fn put_away(window: &tauri::Window) {
                 .retain(|(l, _)| *l != label);
             if let Some(w) = app.get_webview_window(&label) {
                 if !w.is_visible().unwrap_or(true) {
+                    #[cfg(windows)]
+                    crate::taskbar::unname_window(&w);
                     w.destroy().ok();
                 }
             }
@@ -313,9 +357,29 @@ mod tests {
             Some("reminder")
         );
         assert_eq!(new_asked(&args(&["skykeep", "--new=note"])), Some("note"));
-        assert_eq!(new_asked(&args(&["skykeep", "--new", "event"])), None);
+        assert_eq!(
+            new_asked(&args(&["skykeep", "--new", "event"])),
+            Some("event")
+        );
+        assert_eq!(new_asked(&args(&["skykeep", "--new", "contact"])), None);
         assert_eq!(new_asked(&args(&["skykeep", "--new"])), None);
         assert_eq!(new_asked(&args(&["skykeep", "--app", "notes"])), None);
+    }
+
+    /// What a Start-menu shortcut or a jump-list task says on its command line (taskbar.rs,
+    /// packaging/windows) is what the parsers take: every app, and every new thing in its app.
+    #[test]
+    fn each_launch_line_reaches_what_it_names() {
+        for (key, _) in APPS {
+            assert_eq!(
+                asked(&args(&["skykeep", "--app", launch_name(key)])),
+                Some(key)
+            );
+        }
+        for (kind, _, key) in NEW {
+            assert_eq!(new_asked(&args(&["skykeep", "--new", kind])), Some(kind));
+            assert!(APPS.iter().any(|(k, _)| *k == key));
+        }
     }
 
     /// Windows paths and links, as Explorer and a browser hand them over.

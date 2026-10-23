@@ -5,7 +5,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PanelLeft } from "lucide-react";
-import { api, messageOf, OPEN_REMINDER } from "../lib/ipc";
+import { api, messageOf, NEW_EVENT, OPEN_REMINDER } from "../lib/ipc";
 import { SyncProvider, useSync } from "../lib/sync";
 import { AccountCard } from "../components/Account";
 import { reveal, type Reveal } from "../lib/reveal";
@@ -168,6 +168,19 @@ void listen<Reveal>(REVEAL, (e) => {
   reveal(e.payload);
   window.dispatchEvent(new CustomEvent("quince:revealed"));
 }).catch(() => {});
+
+/*
+ * "New Event" from the taskbar's jump list (`skykeep --new event`, src-tauri/src/apps.rs):
+ * Calendar brought to the front with a new event started, as its + button does. A Calendar
+ * window made for it is asked in its address; one already open is told.
+ */
+const startNewEvent = () => {
+  revealedScreen = "calendar";
+  reveal({ screen: "calendar", id: "", startNew: true });
+  window.dispatchEvent(new CustomEvent("quince:revealed"));
+};
+if (new URLSearchParams(window.location.search).get("new") === "event") startNewEvent();
+void listen(NEW_EVENT, startNewEvent).catch(() => {});
 
 /** The screen open last time, so the app reopens where it was left. */
 const LAST_KEY = "quince.library.screen";

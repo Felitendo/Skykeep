@@ -47,6 +47,9 @@ mod reminders_cmds;
 #[cfg(target_os = "linux")]
 mod search_provider;
 mod settings;
+// Each app its own taskbar button on Windows, and the jump list's tasks.
+#[cfg(windows)]
+mod taskbar;
 mod timing;
 mod video;
 
@@ -5630,6 +5633,10 @@ fn main() {
     if identifier != current {
         context.config_mut().identifier = identifier;
     }
+    // On Windows, before any window: everything from here on is Skykeep's on the taskbar, as
+    // its Start-menu shortcut is, and the jump list is written (taskbar.rs).
+    #[cfg(windows)]
+    taskbar::claim(&current);
     // The name the desktop knows the main window by: on Wayland GTK sends the program name as
     // the window's app ID, which was the binary's ("quince-app") — so a taskbar or dock could
     // not match it to Skykeep's launcher entry, its name or its icon. Named for the identifier,
