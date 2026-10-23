@@ -579,10 +579,9 @@ impl Library {
             } else if keep.is_empty() {
                 tx.execute("DELETE FROM contacts", [])?;
             } else {
-                let placeholders = vec!["?"; keep.len()].join(",");
                 tx.execute(
-                    &format!("DELETE FROM contacts WHERE guid NOT IN ({placeholders})"),
-                    rusqlite::params_from_iter(keep),
+                    "DELETE FROM contacts WHERE guid NOT IN (SELECT value FROM json_each(?1))",
+                    params![crate::id_list(&keep)],
                 )?;
             }
         }

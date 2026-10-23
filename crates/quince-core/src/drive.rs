@@ -95,14 +95,10 @@ impl Library {
                     params![parent_id],
                 )?;
             } else {
-                let placeholders = vec!["?"; keep.len()].join(",");
-                let mut args: Vec<&str> = vec![parent_id];
-                args.extend(keep);
                 tx.execute(
-                    &format!(
-                        "DELETE FROM drive_items WHERE parent_id = ? AND drivewsid NOT IN ({placeholders})"
-                    ),
-                    rusqlite::params_from_iter(args),
+                    "DELETE FROM drive_items WHERE parent_id = ?1
+                       AND drivewsid NOT IN (SELECT value FROM json_each(?2))",
+                    params![parent_id, crate::id_list(&keep)],
                 )?;
             }
         }
@@ -371,5 +367,36 @@ mod tests {
         assert_eq!(found.name, "Downloads");
         assert_eq!(found.parent_id.as_deref(), Some(ROOT));
         assert!(lib.drive_item("nope").unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod many_tests {
+    use super::*;
+
+    /// A folder past SQLite's 32,766 parameters (a camera's dump): stored, and pruned, in one
+    /// statement. One parameter per kept item failed its store on every pass.
+    #[test]
+    fn a_folder_of_forty_thousand_files_is_stored_and_pruned() {
+        let mut lib = Library::in_memory().unwrap();
+        let item = |i: usize| DriveItem {
+            drivewsid: format!("FILE::{i}"),
+            parent_id: Some("root".into()),
+            name: format!("IMG_{i}.jpg"),
+            extension: Some("jpg".into()),
+            kind: "FILE".into(),
+            size: Some(1),
+            child_count: None,
+            created_at: None,
+            modified_at: None,
+            etag: None,
+        };
+        let mut items: Vec<DriveItem> = (0..40_000).map(item).collect();
+        lib.put_drive_children("root", &items).unwrap();
+        items.truncate(39_999);
+        lib.put_drive_children("root", &items).unwrap();
+        let kept = lib.drive_children("root").unwrap();
+        assert_eq!(kept.len(), 39_999);
+        assert!(kept.iter().all(|i| i.drivewsid != "FILE::39999"));
     }
 }

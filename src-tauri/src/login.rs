@@ -21,12 +21,23 @@ static BACKGROUND: AtomicBool = AtomicBool::new(false);
 /// Whether the first window_ready has been answered: only that one may keep it hidden.
 static ASKED: AtomicBool = AtomicBool::new(false);
 
+/// Started by the session bus for the desktop's search (`--search-provider`): it answers
+/// searches and shows nothing until it is asked to.
+static SEARCH_ONLY: AtomicBool = AtomicBool::new(false);
+/// A window has been shown this run — asked for by the person, never by a launch.
+static SHOWN: AtomicBool = AtomicBool::new(false);
+
 /// What the login entry passes to start hidden.
 const FLAG: &str = "--background";
+/// What the search provider's bus activation passes. Not `--background`: on GNOME there is no
+/// tray, and a background launch with nowhere to wait shows its window — so every search in
+/// the overview after the person had quit Skykeep brought its window up, or the sign-in screen.
+pub const SEARCH_FLAG: &str = "--search-provider";
 
 /// Read once at launch, from the command line.
 pub fn note_launch() {
     BACKGROUND.store(std::env::args().any(|a| a == FLAG), Ordering::SeqCst);
+    SEARCH_ONLY.store(std::env::args().any(|a| a == SEARCH_FLAG), Ordering::SeqCst);
 }
 
 /// Whether this run was started at login, hidden.
@@ -34,11 +45,46 @@ pub fn background() -> bool {
     BACKGROUND.load(Ordering::SeqCst)
 }
 
-/// Whether the window should stay hidden now: started at login, and nothing needs the person
-/// (a code to enter, a sign-in). Only the first answer can be yes; after that the window
-/// shows as usual.
-pub fn stay_hidden(needs_you: bool) -> bool {
-    background() && !ASKED.swap(true, Ordering::SeqCst) && !needs_you
+/// Whether this run was started by a search in the desktop's overview.
+pub fn search_only() -> bool {
+    SEARCH_ONLY.load(Ordering::SeqCst)
+}
+
+/// A window was shown.
+pub fn shown() {
+    SHOWN.store(true, Ordering::SeqCst);
+}
+
+/// Whether any window has been shown this run.
+pub fn was_shown() -> bool {
+    SHOWN.load(Ordering::SeqCst)
+}
+
+/// Whether the window should stay hidden now: started at login and nothing needs the person
+/// (a code to enter, a sign-in), with a tray to come back from; or started for a search,
+/// whatever it needs — nobody asked for a window. Only the first answer can be yes; after
+/// that the window shows as usual.
+pub fn stay_hidden(needs_you: bool, tray: impl FnOnce() -> bool) -> bool {
+    if !(background() || search_only()) || ASKED.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    hides(search_only(), needs_you, tray)
+}
+
+/// [`stay_hidden`]'s answer for a first launch started hidden. The tray is asked last, and
+/// only when it matters: it is a call on the session bus.
+fn hides(search_only: bool, needs_you: bool, tray: impl FnOnce() -> bool) -> bool {
+    search_only || (!needs_you && tray())
+}
+
+/// How long a Skykeep started for a search goes on with no window shown and no search asked
+/// before it ends: the person quit it, and a search does not change that.
+pub const SEARCH_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether a run started for a search is done: no window shown, nothing asked for a while.
+#[must_use]
+pub fn search_done(shown: bool, idle: std::time::Duration) -> bool {
+    !shown && idle >= SEARCH_IDLE
 }
 
 #[derive(Serialize)]
@@ -50,6 +96,15 @@ pub struct LoginItem {
     /// Whether this desktop runs autostart entries at login. `false`: the entry alone does
     /// nothing here, and `command` has to go in the compositor's own startup.
     pub honoured: bool,
+    /// Whether Skykeep can keep the entry itself. Not in a Flatpak: the entry was written in the
+    /// sandbox's own config folder, which the desktop never reads, and the switch said "on"
+    /// over nothing at all. There Settings says how to add it instead.
+    pub available: bool,
+}
+
+/// Running inside a Flatpak.
+fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some()
 }
 
 #[cfg(not(windows))]
@@ -66,13 +121,21 @@ fn entry(app: &AppHandle) -> Option<PathBuf> {
 fn command() -> String {
     let program = std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
+        .or_else(|| std::env::current_exe().ok().map(|p| still_installed(&p)))
         .unwrap_or_else(|| PathBuf::from("quince-app"));
     // Windows reads the Run value as a command line: the path in plain quotes.
     if cfg!(windows) {
         return format!("\"{}\" {FLAG}", program.to_string_lossy());
     }
     format!("{} {FLAG}", quoted(&program.to_string_lossy()))
+}
+
+/// The program as installed: replaced by a package upgrade while running, Linux names the
+/// running one `/usr/bin/skykeep (deleted)`, and an entry written then pointed at nothing.
+fn still_installed(path: &std::path::Path) -> PathBuf {
+    path.to_str()
+        .and_then(|p| p.strip_suffix(" (deleted)"))
+        .map_or_else(|| path.to_path_buf(), PathBuf::from)
 }
 
 /// A program path as the Desktop Entry spec wants it in Exec: in double quotes, with `"`,
@@ -168,6 +231,7 @@ pub async fn login_item_status(_app: AppHandle) -> Result<LoginItem, String> {
         on,
         command: command(),
         honoured: true,
+        available: true,
     })
 }
 
@@ -197,6 +261,14 @@ pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, Strin
 #[cfg(not(windows))]
 #[tauri::command]
 pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
+    if in_flatpak() {
+        return Ok(LoginItem {
+            on: false,
+            command: format!("flatpak run {}", app.config().identifier),
+            honoured: true,
+            available: false,
+        });
+    }
     let on = entry(&app).is_some_and(|p| p.exists());
     let honoured = tauri::async_runtime::spawn_blocking(honoured)
         .await
@@ -205,12 +277,16 @@ pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
         on,
         command: command(),
         honoured,
+        available: true,
     })
 }
 
 #[cfg(not(windows))]
 #[tauri::command]
 pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, String> {
+    if in_flatpak() {
+        return Err("Add Skykeep to your desktop’s startup apps to open it at login.".into());
+    }
     let path = entry(&app).ok_or("There is no configuration folder to keep it in.")?;
     if on {
         if let Some(dir) = path.parent() {
@@ -241,5 +317,55 @@ mod tests {
         let file = desktop_file("\"/usr/bin/quince-app\" --background", "org.example.App");
         assert!(file.contains("Exec=\"/usr/bin/quince-app\" --background\n"));
         assert!(file.starts_with("[Desktop Entry]\nType=Application\n"));
+    }
+}
+
+#[cfg(test)]
+mod search_launch_tests {
+    use super::*;
+
+    /// Started by a search on GNOME (no tray): no window, signed in or not. It used to show
+    /// the main window — or the sign-in screen — on every search after a quit.
+    #[test]
+    fn a_launch_for_a_search_shows_nothing() {
+        assert!(hides(true, true, || false));
+        assert!(hides(true, false, || false));
+        // At login: hidden only with a tray to come back from, and nothing needing the person.
+        assert!(hides(false, false, || true));
+        assert!(!hides(false, false, || false));
+        assert!(!hides(false, true, || true));
+    }
+
+    #[test]
+    fn a_search_launch_ends_once_idle_unless_a_window_was_asked_for() {
+        assert!(!search_done(false, SEARCH_IDLE / 2));
+        assert!(search_done(false, SEARCH_IDLE));
+        assert!(!search_done(true, SEARCH_IDLE * 10));
+    }
+
+    #[test]
+    fn a_program_upgraded_while_running_is_named_as_installed() {
+        assert_eq!(
+            still_installed(std::path::Path::new("/usr/bin/skykeep (deleted)")),
+            PathBuf::from("/usr/bin/skykeep")
+        );
+        assert_eq!(
+            still_installed(std::path::Path::new("/opt/Sky keep/skykeep")),
+            PathBuf::from("/opt/Sky keep/skykeep")
+        );
+    }
+
+    /// The bus starts it with the search flag, never the login one.
+    #[test]
+    fn the_bus_activation_starts_it_for_search() {
+        let service = include_str!(
+            "../../packaging/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service"
+        );
+        let exec = service
+            .lines()
+            .find_map(|l| l.strip_prefix("Exec="))
+            .unwrap();
+        assert!(exec.ends_with(SEARCH_FLAG), "{exec}");
+        assert!(!exec.contains(FLAG), "{exec}");
     }
 }

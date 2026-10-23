@@ -2041,84 +2041,132 @@ fn in_list(r: &Value, list_guid: &str) -> bool {
             == Some(list_guid)
 }
 
-/// Whether a tick made here at `made_at` (seconds) has been overtaken at Apple: the reminder
-/// is gone, already ticked as wanted (a one-off), or changed on another device after it was
-/// made — a later change there wins, as it would had both been made online. A few seconds'
-/// grace for the two clocks.
+/// Where a tick made here started from, kept with it while it waits: how many times the
+/// `Completed` field had been written (its counter in Apple's `ResolutionTokenMap`) on the copy
+/// of the record the tick was made over, and — for a repeating reminder — the date it was due.
+///
+/// Whether a change elsewhere overtook the tick is read from these, never from Apple's
+/// timestamps against this computer's clock: Skykeep's own sends stamp `LastModifiedDate`, so a
+/// rename or a new reminder sent just ahead of the tick looked like a later change on another
+/// device, and the tick was dropped.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TickBase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_writes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_due: Option<i64>,
+}
+
+impl TickBase {
+    /// The base of a tick made now over `reminder` as the library holds it.
+    #[must_use]
+    pub fn of(reminder: &Reminder) -> Self {
+        Self {
+            completed_writes: reminder
+                .raw
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .and_then(|record| completed_token(&record))
+                .map(|(writes, _)| writes),
+            from_due: reminder.due_at,
+        }
+    }
+}
+
+/// The `Completed` field's token in a record's `ResolutionTokenMap`: how many times it has
+/// been written, and by which installation.
+fn completed_token(record: &Value) -> Option<(u64, String)> {
+    let map: Value = record
+        .pointer("/fields/ResolutionTokenMap/value")
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str(s).ok())?;
+    let token = map.pointer("/map/completed")?;
+    Some((
+        token.get("counter").and_then(Value::as_u64)?,
+        token
+            .get("replicaID")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    ))
+}
+
+/// Whether a tick made here has been overtaken at Apple: the reminder is gone, already as the
+/// tick wants it, or its `Completed` field written by another device since the tick was made
+/// — a later change there wins, as it would had both been made online. Skykeep's own sends
+/// (an edit or a create queued ahead of the tick, an earlier tick) never count: they are
+/// written as this installation.
 pub async fn tick_overtaken(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
     reminder: &Reminder,
     done: bool,
-    made_at: i64,
+    base: &TickBase,
 ) -> Result<bool> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
     let Some(current) = client.lookup_record(ZONE, &reminder.guid).await? else {
         return Ok(true);
     };
-    let completed = current
-        .pointer("/fields/Completed/value")
-        .and_then(Value::as_i64)
-        .is_some_and(|v| v != 0);
-    if !reminder.repeats() && completed == done {
-        return Ok(true);
+    Ok(tick_settled(
+        &current,
+        reminder.repeats(),
+        done,
+        base,
+        &crate::topotext::writer_id(),
+    ))
+}
+
+/// [`tick_overtaken`] over the record as Apple holds it, `us` this installation's writer id.
+fn tick_settled(current: &Value, repeats: bool, done: bool, base: &TickBase, us: &str) -> bool {
+    if field::flag(current, "Deleted") {
+        return true;
     }
-    let changed = [
-        current.pointer("/fields/LastModifiedDate/value"),
-        current.pointer("/modified/timestamp"),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(Value::as_i64)
-    .max()
-    .unwrap_or(0);
-    Ok(changed > (made_at + 5) * 1000)
+    let completed = field::flag(current, "Completed");
+    if completed == done {
+        return true;
+    }
+    // A repeating reminder's last tick, sent before with its answer lost (or the day ticked on
+    // another device), has moved it on from the date it was ticked at: not sent twice.
+    if repeats && done && field::timestamp_seconds(current, "DueDate") != base.from_due {
+        return true;
+    }
+    match (completed_token(current), base.completed_writes) {
+        (Some((writes, by)), Some(before)) => writes > before && by != us,
+        _ => false,
+    }
 }
 
 /// Tick a repeating reminder on to its next date — once, however many times it is sent.
 ///
-/// `from_due` is when it was due as it was ticked here (seconds) and `made_at` when. Apple's
-/// reminder no longer due then — moved on by an earlier send of this same tick whose answer
-/// was lost, or by another device — or changed after the tick was made, has been advanced
-/// already: nothing is sent, so a daily reminder never skips a day. Gone at Apple, there is
-/// nothing to tick.
+/// `from_due` is when it was due as it was ticked here (seconds). Apple's reminder no longer
+/// due then — moved on by an earlier send of this same tick whose answer was lost, or by
+/// another device — or its series finished, has been advanced already: nothing is sent, so a
+/// daily reminder never skips a day. Gone at Apple, there is nothing to tick. Any other change
+/// since (a rename sent from here just ahead of it, a note added on the phone) leaves the day
+/// still to tick, and it is ticked.
 pub async fn advance_cloudkit_once(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
     reminder: &Reminder,
     from_due: Option<i64>,
-    made_at: i64,
 ) -> Result<()> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params.clone());
     let Some(current) = client.lookup_record(ZONE, &reminder.guid).await? else {
         return Ok(());
     };
-    if advanced_already(&current, from_due, made_at) {
+    if advanced_already(&current, from_due) {
         return Ok(());
     }
     set_completed_cloudkit(http, ckdatabasews_root, params, reminder, true).await
 }
 
-/// Whether Apple's record shows a tick made here at `made_at`, from `from_due`, as done.
-fn advanced_already(current: &Value, from_due: Option<i64>, made_at: i64) -> bool {
-    if field::flag(current, "Deleted") {
-        return true;
-    }
-    if field::timestamp_seconds(current, "DueDate") != from_due {
-        return true;
-    }
-    let changed = [
-        current.pointer("/fields/LastModifiedDate/value"),
-        current.pointer("/modified/timestamp"),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(Value::as_i64)
-    .max()
-    .unwrap_or(0);
-    changed > (made_at + 5) * 1000
+/// Whether Apple's record shows a tick made here from `from_due` as done.
+fn advanced_already(current: &Value, from_due: Option<i64>) -> bool {
+    field::flag(current, "Deleted")
+        || field::flag(current, "Completed")
+        || field::timestamp_seconds(current, "DueDate") != from_due
 }
 
 /// Tick a CloudKit reminder off, or put it back.
@@ -2236,6 +2284,145 @@ async fn complete_once(
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tick_tests {
+    use super::*;
+    use serde_json::json;
+
+    const US: &str = "AAAAAAAA-0000-0000-0000-000000000001";
+    const PHONE: &str = "BBBBBBBB-0000-0000-0000-000000000002";
+
+    fn record(completed: bool, due_ms: Option<i64>, completed_by: Option<(u64, &str)>) -> Value {
+        let mut map = json!({ "map": {
+            "lastModifiedDate": { "counter": 7, "modificationTime": 1.0, "replicaID": US },
+        }});
+        if let Some((counter, by)) = completed_by {
+            map["map"]["completed"] =
+                json!({ "counter": counter, "modificationTime": 1.0, "replicaID": by });
+        }
+        json!({
+            "recordName": "Reminder/R",
+            "recordChangeTag": "after-our-own-send",
+            "modified": { "timestamp": 4_102_444_800_000_i64 },
+            "fields": {
+                "Completed": { "value": i64::from(completed) },
+                "Deleted": { "value": 0 },
+                "DueDate": { "value": due_ms },
+                // Stamped by a rename sent from here just ahead of the tick: far "after" it.
+                "LastModifiedDate": { "value": 4_102_444_800_000_i64 },
+                "ResolutionTokenMap": { "value": map.to_string() },
+            }
+        })
+    }
+
+    /// The bug: an edit or a create sent just ahead of an offline tick stamped
+    /// `LastModifiedDate` with the time of sending, and the tick read that as a later change
+    /// on another device and was dropped.
+    #[test]
+    fn a_tick_behind_our_own_edit_is_still_sent() {
+        let base = TickBase {
+            completed_writes: Some(2),
+            from_due: None,
+        };
+        let current = record(false, None, Some((2, PHONE)));
+        assert!(!tick_settled(&current, false, true, &base, US));
+        // A reminder made here and ticked before Apple ever answered: no base, still sent.
+        let made_here = record(false, None, None);
+        assert!(!tick_settled(
+            &made_here,
+            false,
+            true,
+            &TickBase::default(),
+            US
+        ));
+    }
+
+    #[test]
+    fn our_own_earlier_tick_never_overtakes_a_later_one() {
+        // Ticked, then put back, both offline: the first landed as us.
+        let base = TickBase {
+            completed_writes: Some(2),
+            from_due: None,
+        };
+        let current = record(true, None, Some((3, US)));
+        assert!(!tick_settled(&current, false, false, &base, US));
+    }
+
+    #[test]
+    fn a_tick_written_on_another_device_since_wins() {
+        let base = TickBase {
+            completed_writes: Some(2),
+            from_due: None,
+        };
+        // Ticked and put back on the phone after this tick was made.
+        let current = record(false, None, Some((4, PHONE)));
+        assert!(tick_settled(&current, false, true, &base, US));
+        // Already as wanted, or gone: nothing to send.
+        assert!(tick_settled(
+            &record(true, None, None),
+            false,
+            true,
+            &base,
+            US
+        ));
+        let mut gone = record(false, None, None);
+        gone["fields"]["Deleted"]["value"] = json!(1);
+        assert!(tick_settled(&gone, false, true, &base, US));
+    }
+
+    #[test]
+    fn a_last_repeat_tick_moved_on_already_is_not_sent_twice() {
+        let base = TickBase {
+            completed_writes: None,
+            from_due: Some(1_000),
+        };
+        assert!(!tick_settled(
+            &record(false, Some(1_000_000), None),
+            true,
+            true,
+            &base,
+            US
+        ));
+        assert!(tick_settled(
+            &record(false, Some(2_000_000), None),
+            true,
+            true,
+            &base,
+            US
+        ));
+    }
+
+    #[test]
+    fn the_base_is_read_from_apples_copy_as_kept() {
+        let reminder = Reminder {
+            guid: "Reminder/R".into(),
+            due_at: Some(5),
+            raw: Some(record(false, None, Some((9, PHONE))).to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            TickBase::of(&reminder),
+            TickBase {
+                completed_writes: Some(9),
+                from_due: Some(5),
+            }
+        );
+    }
+
+    /// The same bug for a repeating reminder: a change sent ahead of the tick stamped the
+    /// record, and the day was never moved on.
+    #[test]
+    fn an_advance_behind_our_own_edit_still_moves_the_day_on() {
+        let current = record(false, Some(1_000_000), None);
+        assert!(!advanced_already(&current, Some(1_000)));
+        assert!(advanced_already(&current, Some(2_000)));
+        assert!(advanced_already(
+            &record(true, Some(1_000_000), None),
+            Some(1_000)
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -3533,27 +3720,27 @@ mod recurring_tick_tests {
                 .count()
         }
         // Due when ticked: Apple is asked to move it on.
-        advance_cloudkit_once(&http, &server.uri(), vec![], &daily, Some(FUTURE), 2_000)
+        advance_cloudkit_once(&http, &server.uri(), vec![], &daily, Some(FUTURE))
             .await
             .unwrap();
         assert_eq!(queries(&server).await, 1);
         // Sent again, from a date Apple has moved past: nothing more.
-        advance_cloudkit_once(
-            &http,
-            &server.uri(),
-            vec![],
-            &daily,
-            Some(FUTURE - 86_400),
-            2_000,
-        )
-        .await
-        .unwrap();
-        assert_eq!(queries(&server).await, 1, "never advanced twice");
-        // Changed at Apple after the tick was made (another device): theirs stands.
-        advance_cloudkit_once(&http, &server.uri(), vec![], &daily, Some(FUTURE), 100)
+        advance_cloudkit_once(&http, &server.uri(), vec![], &daily, Some(FUTURE - 86_400))
             .await
             .unwrap();
-        assert_eq!(queries(&server).await, 1, "a later change elsewhere wins");
+        assert_eq!(queries(&server).await, 1, "never advanced twice");
+        // Apple's `LastModifiedDate` is long after the tick's moment — stamped by a rename sent
+        // from here just ahead of it — but the day is still the one ticked: it is moved on.
+        // Read against the clock, that rename passed for a later change elsewhere and the day
+        // was never ticked.
+        advance_cloudkit_once(&http, &server.uri(), vec![], &daily, Some(FUTURE))
+            .await
+            .unwrap();
+        assert_eq!(
+            queries(&server).await,
+            2,
+            "a change that kept the day still ticks"
+        );
     }
 
     /// Unticking, or ticking a reminder that does not repeat, is the ordinary field write.

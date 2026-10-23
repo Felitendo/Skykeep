@@ -1687,6 +1687,7 @@
 .settings-account-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .settings-account-text strong { font-size: var(--t-17); font-weight: 600; }
 .settings-account-text span { color: var(--text-2); font-size: var(--t-13); overflow: hidden; text-overflow: ellipsis; }
+.settings-account-text .settings-account-note { font-size: var(--t-12); overflow: visible; text-overflow: clip; text-wrap: pretty; }
 .storage-bar { height: 8px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--text) 10%, transparent); overflow: hidden; }
 .storage-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
 
@@ -1826,6 +1827,13 @@
 .is-rail .sidebar-sync { justify-content: center; padding-inline: 0; }
 .is-rail .sidebar-sync-text, .is-rail .sidebar-sync-now { display: none; }
 .is-rail .sidebar-foot-stack .sidebar-account-name { display: none; }
+/* A session no keyring would keep: one quiet line under who is signed in, the whole sentence
+   in Settings. */
+.sidebar-not-kept {
+  margin: 0; padding: 0 8px 0 47px; color: var(--text-2); font-size: var(--t-11);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.is-rail .sidebar-not-kept { display: none; }
 .sidebar .status-line { padding: 4px 8px; font-size: var(--t-11); }
 .drive-bar .drive-title { flex: 1 1 14ch; }
 

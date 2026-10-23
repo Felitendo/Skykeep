@@ -82,8 +82,9 @@
     "linux": {
       "deb": {
         "depends": [
+          "libc6 (>= 2.39)",
           "libsecret-1-0",
-          "libheif1",
+          "libheif1 (>= 1.17)",
           "libheif-plugin-libde265",
           "libgstreamer1.0-0",
           "libgstreamer-plugins-base1.0-0",
@@ -115,8 +116,10 @@
       },
       "rpm": {
         "depends": [
+          "glibc >= 2.39",
           "libsecret-1.so.0()(64bit)",
           "libheif.so.1()(64bit)",
+          "(libheif >= 1.17 or libheif1 >= 1.17)",
           "libgstreamer-1.0.so.0()(64bit)",
           "(gstreamer1-plugins-base or gstreamer-plugins-base)",
           "(gstreamer1-plugins-good or gstreamer-plugins-good)",

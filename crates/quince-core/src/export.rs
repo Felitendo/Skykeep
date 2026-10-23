@@ -79,26 +79,12 @@ impl Library {
 
     /// Every event the library holds, in every calendar, shown or hidden, by start.
     pub fn export_events(&self) -> Result<Vec<Event>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT guid, calendar_guid, title, location, starts_at, ends_at, all_day,
-                    timezone, url, notes, etag
-             FROM events ORDER BY calendar_guid, starts_at, guid",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Event {
-                guid: row.get(0)?,
-                calendar_guid: row.get(1)?,
-                title: row.get(2)?,
-                location: row.get(3)?,
-                starts_at: row.get(4)?,
-                ends_at: row.get(5)?,
-                all_day: row.get::<_, i64>(6)? != 0,
-                timezone: row.get(7)?,
-                url: row.get(8)?,
-                notes: row.get(9)?,
-                etag: row.get(10)?,
-            })
-        })?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM events ORDER BY calendar_guid, starts_at, guid",
+            crate::calendar::EVENT_COLUMNS
+        ))?;
+        let zone = self.local_zone();
+        let rows = stmt.query_map([], |row| Self::event_from_row(row, &zone))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 

@@ -105,18 +105,23 @@ pub fn tell(app: &AppHandle, title: &str, body: &str) {
             .icon(icon_path(&app).unwrap_or("quince"));
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            notice
-                .hint(notify_rust::Hint::DesktopEntry(
-                    app.config().identifier.clone(),
-                ))
-                .action("default", "Open");
-            if let Ok(handle) = notice.show() {
-                handle.wait_for_action(|action| {
-                    if action == "default" {
-                        crate::show_window(&app);
-                    }
-                });
-            }
+            let _ = notice;
+            let notice = crate::notices::Notice {
+                summary: &title,
+                body: &body,
+                icon: icon_path(&app).unwrap_or("quince"),
+                actions: &[("default", "Open")],
+                category: None,
+                desktop_entry: Some(app.config().identifier.clone()),
+                sound: None,
+                resident: false,
+            };
+            let app = app.clone();
+            crate::notices::show(&notice, move |action| {
+                if action == "default" {
+                    crate::show_window(&app);
+                }
+            });
         }
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         notice.show().ok();
@@ -129,15 +134,14 @@ pub fn tell(app: &AppHandle, title: &str, body: &str) {
 /// and it is played here through libcanberra, which keeps to the sound theme and to the
 /// desktop's "event sounds" switch. Without this every alert on such a desktop was silent.
 #[cfg(all(unix, not(target_os = "macos")))]
-fn chime(alert: &mut notify_rust::Notification) {
+fn chime() -> Option<&'static str> {
     const SOUND: &str = "alarm-clock-elapsed";
     static SERVER_PLAYS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let server_plays = *SERVER_PLAYS.get_or_init(|| {
         notify_rust::get_capabilities().is_ok_and(|c| c.iter().any(|x| x == "sound"))
     });
     if server_plays {
-        alert.hint(notify_rust::Hint::SoundName(SOUND.into()));
-        return;
+        return Some(SOUND);
     }
     // The alert never stands behind its sound, and the sound is waited for on a thread of its own:
     // left unwaited, every alert left a finished player behind as a zombie process.
@@ -152,6 +156,7 @@ fn chime(alert: &mut notify_rust::Notification) {
             let _ = player.wait();
         });
     }
+    None
 }
 
 fn icon_path(app: &AppHandle) -> Option<&'static str> {
@@ -331,30 +336,35 @@ fn show(app: AppHandle, due: DueAlarm) {
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            let mut alert = notify_rust::Notification::new();
-            chime(&mut alert);
-            let shown = alert
-                .appname("Skykeep")
-                .summary(&due.title)
-                .body(&body)
-                .icon(icon_path(&app).unwrap_or("quince"))
-                .hint(notify_rust::Hint::Category("reminder".into()))
-                .hint(notify_rust::Hint::DesktopEntry(format!(
-                    "{}.Reminders",
-                    app.config().identifier
-                )))
-                .hint(notify_rust::Hint::Resident(true))
-                .action("default", "Open")
-                .action("complete", "Mark as Completed")
-                .action("snooze", "Remind Me in 1 Hour")
-                .timeout(notify_rust::Timeout::Never)
-                .show();
-            let Ok(handle) = shown else {
-                return;
+            let notice = crate::notices::Notice {
+                summary: &due.title,
+                body: &body,
+                icon: icon_path(&app).unwrap_or("quince"),
+                actions: &[
+                    ("default", "Open"),
+                    ("complete", "Mark as Completed"),
+                    ("snooze", "Remind Me in 1 Hour"),
+                ],
+                category: Some("reminder"),
+                desktop_entry: Some(format!("{}.Reminders", app.config().identifier)),
+                sound: chime(),
+                resident: true,
             };
-            handle.wait_for_action(|action| answer(&app, &due, due_then, action));
+            let (answering, due_answered) = (app.clone(), due.clone());
+            crate::notices::show(&notice, move |action| {
+                answer(&answering, &due_answered, due_then, action);
+            });
         }
     });
+}
+
+/// Alerts read for events no longer coming let go of.
+fn forget_gone<T>(
+    known: &mut std::collections::HashMap<String, T>,
+    coming: &[quince_core::calendar::Event],
+) {
+    let still: std::collections::HashSet<&str> = coming.iter().map(|e| e.guid.as_str()).collect();
+    known.retain(|guid, _| still.contains(guid.as_str()));
 }
 
 /// Calendar alerts on the desktop, rung as the phone rings them.
@@ -384,6 +394,9 @@ pub fn spawn_events(app: AppHandle) {
                     .filter_map(|(guid, _)| library.event(&guid).ok().flatten())
                     .collect()
             };
+            // What is no longer coming is forgotten: kept, the map grew by every event that
+            // ever came near, for as long as the app ran.
+            forget_gone(&mut known, &coming);
             // Ask for the alerts of any event not yet read, or changed since.
             let stale: Vec<_> = coming
                 .iter()
@@ -490,33 +503,40 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            let mut alert = notify_rust::Notification::new();
-            chime(&mut alert);
-            let shown = alert
-                .appname("Skykeep")
-                .summary(&event.title)
-                .body(&body)
-                .icon(icon_path(&app).unwrap_or("quince"))
-                .hint(notify_rust::Hint::Category("calendar".into()))
-                .hint(notify_rust::Hint::DesktopEntry(format!(
-                    "{}.Calendar",
-                    app.config().identifier
-                )))
-                .action("default", "Open")
-                .show();
-            if let Ok(handle) = shown {
-                handle.wait_for_action(|action| {
-                    if action == "default" {
-                        crate::show_window(&app);
-                    }
-                });
-            }
+            let notice = crate::notices::Notice {
+                summary: &event.title,
+                body: &body,
+                icon: icon_path(&app).unwrap_or("quince"),
+                actions: &[("default", "Open")],
+                category: Some("calendar"),
+                desktop_entry: Some(format!("{}.Calendar", app.config().identifier)),
+                sound: chime(),
+                resident: false,
+            };
+            let app = app.clone();
+            crate::notices::show(&notice, move |action| {
+                if action == "default" {
+                    crate::show_window(&app);
+                }
+            });
         }
     });
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn alerts_of_events_no_longer_coming_are_let_go_of() {
+        let mut known: std::collections::HashMap<String, ()> =
+            [("past".to_string(), ()), ("soon".to_string(), ())].into();
+        let soon = quince_core::calendar::Event {
+            guid: "soon".into(),
+            ..Default::default()
+        };
+        super::forget_gone(&mut known, &[soon]);
+        assert_eq!(known.keys().collect::<Vec<_>>(), ["soon"]);
+    }
 
     #[test]
     fn an_alert_rings_unless_settings_turned_it_off() {

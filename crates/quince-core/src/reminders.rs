@@ -244,14 +244,22 @@ impl Reminder {
         // values are how a span constructor is made to fail.
         let interval = self.recur_interval.unwrap_or(1).clamp(1, 1_000);
 
-        let span = match frequency {
-            0 => jiff::Span::new().days(interval),
-            1 => jiff::Span::new().weeks(interval),
-            2 => jiff::Span::new().months(interval),
-            3 => jiff::Span::new().years(interval),
-            4 => jiff::Span::new().hours(interval),
-            _ => return None,
+        // One step of the rule, `k` steps on: counted from where the series is anchored, not
+        // added to the last date. Added to the last date, every month clamped where the one
+        // before had been — the 31st became the 28th in February and stayed the 28th for
+        // ever after, and a yearly 29 February became the 28th and never came back.
+        let step = |k: i64| -> Option<jiff::Span> {
+            let n = interval.checked_mul(k)?;
+            Some(match frequency {
+                0 => jiff::Span::new().try_days(n).ok()?,
+                1 => jiff::Span::new().try_weeks(n).ok()?,
+                2 => jiff::Span::new().try_months(n).ok()?,
+                3 => jiff::Span::new().try_years(n).ok()?,
+                4 => jiff::Span::new().try_hours(n).ok()?,
+                _ => return None,
+            })
         };
+        step(1)?;
         // Stepped in the reminder's own zone, not in UTC. A day in UTC is always exactly
         // twenty-four hours, so on the two days a year a clock moves, stepping there carried a
         // nine o'clock reminder to ten and six months later back to nine. In a real zone a day
@@ -261,17 +269,46 @@ impl Reminder {
             .as_deref()
             .and_then(|name| jiff::tz::TimeZone::get(name).ok())
             .unwrap_or_else(jiff::tz::TimeZone::system);
-        let mut zoned = jiff::Timestamp::from_second(due).ok()?.to_zoned(zone);
+        let anchor = jiff::Timestamp::from_second(self.series_anchor(due))
+            .ok()?
+            .to_zoned(zone);
 
-        // The cap stops a daily reminder abandoned a decade ago from spinning; eleven
-        // years of daily steps is far past any real backlog.
-        for _ in 0..MAX_RECURRENCE_STEPS {
-            zoned = zoned.checked_add(span).ok()?;
-            if zoned.timestamp().as_second() > after {
+        // Each date clamped for its own month only: the 31st is the last day of a shorter
+        // month and the 31st again after it; 29 February is the 28th in a common year and the
+        // 29th again in a leap year. The cap stops a daily reminder abandoned a decade ago
+        // from spinning; eleven years of daily steps is far past any real backlog.
+        let mut next = None;
+        for k in 1..=MAX_RECURRENCE_STEPS as i64 {
+            let Some(at) = step(k).and_then(|span| anchor.checked_add(span).ok()) else {
+                break;
+            };
+            let at = at.timestamp().as_second();
+            next = Some(at);
+            if at > after && at > due {
                 break;
             }
         }
-        Some(zoned.timestamp().as_second())
+        next
+    }
+
+    /// Where a monthly or yearly series counts its dates from: the date Apple's own copy of
+    /// the record is due (`raw`), when that is on the way to the date shown here — a tick
+    /// laid here offline moves the date shown, clamped, and Apple's still carries the day the
+    /// series falls on. Otherwise, and for every other rule, the date due.
+    fn series_anchor(&self, due: i64) -> i64 {
+        if !matches!(self.recur_frequency, Some(2 | 3)) {
+            return due;
+        }
+        self.raw
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|r| {
+                r.pointer("/fields/DueDate/value")
+                    .and_then(serde_json::Value::as_i64)
+            })
+            .map(|ms| ms.div_euclid(1000))
+            .filter(|&apple| apple <= due)
+            .unwrap_or(due)
     }
 }
 
@@ -771,10 +808,9 @@ impl Library {
             if keep.is_empty() {
                 tx.execute("DELETE FROM reminder_lists", [])?;
             } else {
-                let placeholders = vec!["?"; keep.len()].join(",");
                 tx.execute(
-                    &format!("DELETE FROM reminder_lists WHERE guid NOT IN ({placeholders})"),
-                    rusqlite::params_from_iter(keep),
+                    "DELETE FROM reminder_lists WHERE guid NOT IN (SELECT value FROM json_each(?1))",
+                    params![crate::id_list(&keep)],
                 )?;
             }
         }
@@ -1884,6 +1920,82 @@ mod recurrence_daylight_tests {
             .next_occurrence_after(before)
             .expect("a daily reminder has a next occurrence");
         assert_eq!(wall(zone, next), "2026-03-08 09:00");
+    }
+
+    fn repeating(zone: &str, frequency: i64, due: i64) -> Reminder {
+        Reminder {
+            recur_frequency: Some(frequency),
+            ..daily(zone, due)
+        }
+    }
+
+    /// Ticks one after another, each from the date the last one left — as ticks laid here
+    /// offline are — with Apple's copy (`raw`) still due where the series began.
+    fn ticks(r: &Reminder, apple_due: i64, n: usize) -> Vec<String> {
+        let zone = r.timezone.clone().unwrap();
+        let mut r = r.clone();
+        r.raw = Some(format!(
+            r#"{{"fields":{{"DueDate":{{"value":{}}}}}}}"#,
+            apple_due * 1000
+        ));
+        (0..n)
+            .map(|_| {
+                let due = r.due_at.unwrap();
+                let next = r.next_occurrence_after(due).unwrap();
+                r.due_at = Some(next);
+                wall(&zone, next)
+            })
+            .collect()
+    }
+
+    /// The 31st stays the end of the month: clamped in a shorter one, and back on the 31st
+    /// after it. Added to the last date, it became the 28th in February and stayed there.
+    #[test]
+    fn a_monthly_reminder_on_the_31st_never_drifts() {
+        let zone = "Europe/London";
+        let jan31 = at(zone, 2026, 1, 31, 9, 0);
+        assert_eq!(
+            ticks(&repeating(zone, 2, jan31), jan31, 4),
+            [
+                "2026-02-28 09:00",
+                "2026-03-31 09:00",
+                "2026-04-30 09:00",
+                "2026-05-31 09:00"
+            ]
+        );
+        // Caught up over several months at once, from a long way behind: the same days.
+        let r = repeating(zone, 2, jan31);
+        let next = r.next_occurrence_after(at(zone, 2026, 4, 1, 0, 0)).unwrap();
+        assert_eq!(wall(zone, next), "2026-04-30 09:00");
+        let next = r.next_occurrence_after(at(zone, 2026, 5, 1, 0, 0)).unwrap();
+        assert_eq!(wall(zone, next), "2026-05-31 09:00");
+    }
+
+    /// 29 February: the 28th in a common year, the 29th again in a leap one.
+    #[test]
+    fn a_yearly_reminder_on_the_29th_of_february_comes_back_in_leap_years() {
+        let zone = "America/New_York";
+        let leap = at(zone, 2028, 2, 29, 8, 30);
+        assert_eq!(
+            ticks(&repeating(zone, 3, leap), leap, 4),
+            [
+                "2029-02-28 08:30",
+                "2030-02-28 08:30",
+                "2031-02-28 08:30",
+                "2032-02-29 08:30"
+            ]
+        );
+    }
+
+    /// The month steps keep the hour across a change of the clocks, as the days do.
+    #[test]
+    fn a_monthly_reminder_keeps_its_hour_across_the_clocks_changing() {
+        let zone = "America/New_York";
+        let feb = at(zone, 2026, 2, 15, 9, 0);
+        assert_eq!(
+            ticks(&repeating(zone, 2, feb), feb, 2),
+            ["2026-03-15 09:00", "2026-04-15 09:00"]
+        );
     }
 
     /// And on the day they go back.

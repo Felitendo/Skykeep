@@ -41,6 +41,13 @@ and what's left before Flathub.
 
 ## What Skykeep needs to run
 
+The floor is glibc 2.39 (the bundles are built on Ubuntu 24.04) and libheif 1.17
+(`libheif-rs` with `v1_17`): Ubuntu 24.04, Mint 22, Debian 13, Fedora 41, Tumbleweed, or later.
+The `.deb` and `.rpm` declare both as versioned dependencies in `src-tauri/tauri.conf.json`, so
+an older system is refused by its package manager with a clear message instead of a loader
+error at launch. The AppImage needs FUSE 2 to mount itself; without `libfuse2` it runs with
+`--appimage-extract-and-run`.
+
 - `webkit2gtk-4.1` for the window and `libsecret` for the keyring. Without a keyring the app
   starts but can't stay signed in.
 - `libheif` for HEIC photos.

@@ -1,6 +1,12 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
-export type Status = { hasStoredSession: boolean; signedIn: boolean; libraryReady: boolean };
+export type Status = {
+  hasStoredSession: boolean;
+  signedIn: boolean;
+  libraryReady: boolean;
+  /** Signed in only while Skykeep runs: no system keyring would keep the session. */
+  notKept: boolean;
+};
 
 /** A change made here waiting for Apple. */
 export type WaitingChange = { service: string; record: string; kind: string };
@@ -956,7 +962,13 @@ export function turnStyle(turn: Turn | null | undefined, w: number, h: number, z
 }
 
 /** The iCloud Drive folder on this computer (see src-tauri/src/mount.rs). */
-export type LoginItem = { on: boolean; command: string; honoured: boolean };
+export type LoginItem = {
+  on: boolean;
+  command: string;
+  honoured: boolean;
+  /** Whether Skykeep keeps the login entry itself (not in the Flatpak). */
+  available?: boolean;
+};
 
 export type DriveFolder = {
   on: boolean;

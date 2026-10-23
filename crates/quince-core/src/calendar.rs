@@ -53,7 +53,88 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// The columns every event is read with, `floating` last; see [`Library::event_from_row`].
+pub(crate) const EVENT_COLUMNS: &str =
+    "guid, calendar_guid, title, location, starts_at, ends_at, all_day,
+                    timezone, url, notes, etag, floating";
+
+/// Whether an event is a day on the calendar or a time on the clock rather than an instant:
+/// all-day, or timed with no zone (Calendar's "floating"). Kept as the wall-clock time, it is
+/// read in whatever zone the computer is in when it is shown.
+#[must_use]
+pub fn floats(e: &Event) -> bool {
+    e.all_day || e.timezone.is_none()
+}
+
+/// An instant as the wall-clock time it is in `zone`, counted as if that time were UTC.
+#[must_use]
+pub fn wall_clock(seconds: i64, zone: &jiff::tz::TimeZone) -> i64 {
+    jiff::Timestamp::from_second(seconds).map_or(seconds, |t| {
+        t.to_zoned(zone.clone())
+            .datetime()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .map_or(seconds, |z| z.timestamp().as_second())
+    })
+}
+
+/// [`wall_clock`] turned back: the instant that wall-clock time is in `zone`. A time the
+/// clocks skip is read as the hour after, as Calendar reads it.
+#[must_use]
+pub fn instant_of(wall: i64, zone: &jiff::tz::TimeZone) -> i64 {
+    jiff::Timestamp::from_second(wall).map_or(wall, |t| {
+        t.to_zoned(jiff::tz::TimeZone::UTC)
+            .datetime()
+            .to_zoned(zone.clone())
+            .map_or(wall, |z| z.timestamp().as_second())
+    })
+}
+
+/// [`EVENT_COLUMNS`], each as `table.column`.
+fn prefixed(table: &str) -> String {
+    EVENT_COLUMNS
+        .split(',')
+        .map(|c| format!("{table}{}", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Furthest any zone's clock is from UTC, and then some: the margin a window over stored
+/// wall-clock times is widened by before each is read in the zone and judged exactly.
+const WIDEST_OFFSET: i64 = 86_400;
+
 impl Library {
+    /// The zone floating events are read and stored in now.
+    pub(crate) fn local_zone(&self) -> jiff::tz::TimeZone {
+        self.zone.clone().unwrap_or_else(jiff::tz::TimeZone::system)
+    }
+
+    /// Read floating events as if this computer were in `zone`. Tests only, and a check.
+    pub fn set_zone(&mut self, zone: Option<jiff::tz::TimeZone>) {
+        self.zone = zone;
+    }
+
+    /// An event as stored, with a floating one's wall-clock times read in this zone now.
+    pub(crate) fn event_from_row(
+        row: &rusqlite::Row<'_>,
+        zone: &jiff::tz::TimeZone,
+    ) -> rusqlite::Result<Event> {
+        let floating = row.get::<_, i64>(11)? != 0;
+        let read = |at: i64| if floating { instant_of(at, zone) } else { at };
+        Ok(Event {
+            guid: row.get(0)?,
+            calendar_guid: row.get(1)?,
+            title: row.get(2)?,
+            location: row.get(3)?,
+            starts_at: read(row.get(4)?),
+            ends_at: read(row.get(5)?),
+            all_day: row.get::<_, i64>(6)? != 0,
+            timezone: row.get(7)?,
+            url: row.get(8)?,
+            notes: row.get(9)?,
+            etag: row.get(10)?,
+        })
+    }
+
     /// Replace the set of calendars, dropping any Apple no longer reports.
     ///
     /// Removal cascades to their events, which is what should happen when a calendar is
@@ -95,10 +176,9 @@ impl Library {
             if keep.is_empty() {
                 tx.execute("DELETE FROM calendars", [])?;
             } else {
-                let placeholders = vec!["?"; keep.len()].join(",");
                 tx.execute(
-                    &format!("DELETE FROM calendars WHERE guid NOT IN ({placeholders})"),
-                    rusqlite::params_from_iter(keep),
+                    "DELETE FROM calendars WHERE guid NOT IN (SELECT value FROM json_each(?1))",
+                    params![crate::id_list(&keep)],
                 )?;
             }
         }
@@ -108,12 +188,13 @@ impl Library {
 
     /// Upsert events. Existing rows for the same guid are updated in place.
     pub fn put_events(&mut self, events: &[Event]) -> Result<()> {
+        let zone = self.local_zone();
         let tx = self.conn.savepoint()?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO events (guid, calendar_guid, title, location, starts_at, ends_at,
-                                     all_day, timezone, url, notes, etag, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                                     all_day, timezone, url, notes, etag, updated_at, floating)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(guid) DO UPDATE SET
                    calendar_guid = excluded.calendar_guid,
                    title = excluded.title,
@@ -125,23 +206,27 @@ impl Library {
                    url = excluded.url,
                    notes = excluded.notes,
                    etag = excluded.etag,
-                   updated_at = excluded.updated_at",
+                   updated_at = excluded.updated_at,
+                   floating = excluded.floating",
             )?;
             let stamp = now();
             for e in events {
+                let floating = floats(e);
+                let keep = |at: i64| if floating { wall_clock(at, &zone) } else { at };
                 stmt.execute(params![
                     e.guid,
                     e.calendar_guid,
                     e.title,
                     e.location,
-                    e.starts_at,
-                    e.ends_at,
+                    keep(e.starts_at),
+                    keep(e.ends_at),
                     i64::from(e.all_day),
                     e.timezone,
                     e.url,
                     e.notes,
                     e.etag,
-                    stamp
+                    stamp,
+                    i64::from(floating)
                 ])?;
             }
         }
@@ -174,30 +259,29 @@ impl Library {
     /// Overlap rather than containment: a meeting that started before the window but is
     /// still running belongs in today's view.
     pub fn events_between(&self, from: i64, to: i64) -> Result<Vec<Event>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT e.guid, e.calendar_guid, e.title, e.location, e.starts_at, e.ends_at,
-                    e.all_day, e.timezone, e.url, e.notes, e.etag
-             FROM events e
+        // A floating event's stored times are its wall clock: the window is widened by the
+        // furthest a zone is from UTC to find it, and each judged exactly once read.
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM events e
              JOIN calendars c ON c.guid = e.calendar_guid
-             WHERE c.enabled = 1 AND e.starts_at < ?2 AND e.ends_at > ?1
-             ORDER BY e.starts_at, e.title",
-        )?;
-        let rows = stmt.query_map(params![from, to], |row| {
-            Ok(Event {
-                guid: row.get(0)?,
-                calendar_guid: row.get(1)?,
-                title: row.get(2)?,
-                location: row.get(3)?,
-                starts_at: row.get(4)?,
-                ends_at: row.get(5)?,
-                all_day: row.get::<_, i64>(6)? != 0,
-                timezone: row.get(7)?,
-                url: row.get(8)?,
-                notes: row.get(9)?,
-                etag: row.get(10)?,
-            })
+             WHERE c.enabled = 1
+               AND ((e.floating = 0 AND e.starts_at < ?2 AND e.ends_at > ?1)
+                 OR (e.floating = 1 AND e.starts_at < ?2 + ?3 AND e.ends_at > ?1 - ?3))",
+            prefixed("e.")
+        ))?;
+        let zone = self.local_zone();
+        let rows = stmt.query_map(params![from, to, WIDEST_OFFSET], |row| {
+            Self::event_from_row(row, &zone)
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let mut found = Vec::new();
+        for e in rows {
+            let e = e?;
+            if e.starts_at < to && e.ends_at > from {
+                found.push(e);
+            }
+        }
+        found.sort_by(|a, b| (a.starts_at, &a.title).cmp(&(b.starts_at, &b.title)));
+        Ok(found)
     }
 
     /// Events whose title, place or notes hold every word of `query`, accent- and
@@ -215,26 +299,11 @@ impl Library {
         if words.is_empty() {
             return Ok(Vec::new());
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT guid, calendar_guid, title, location, starts_at, ends_at, all_day,
-                    timezone, url, notes, etag
-             FROM events",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Event {
-                guid: row.get(0)?,
-                calendar_guid: row.get(1)?,
-                title: row.get(2)?,
-                location: row.get(3)?,
-                starts_at: row.get(4)?,
-                ends_at: row.get(5)?,
-                all_day: row.get::<_, i64>(6)? != 0,
-                timezone: row.get(7)?,
-                url: row.get(8)?,
-                notes: row.get(9)?,
-                etag: row.get(10)?,
-            })
-        })?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {EVENT_COLUMNS} FROM events"))?;
+        let zone = self.local_zone();
+        let rows = stmt.query_map([], |row| Self::event_from_row(row, &zone))?;
         let mut found = Vec::new();
         for e in rows {
             let e = e?;
@@ -261,37 +330,43 @@ impl Library {
 
     /// One event by its guid, if the library still holds it.
     pub fn event(&self, guid: &str) -> Result<Option<Event>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT guid, calendar_guid, title, location, starts_at, ends_at, all_day,
-                    timezone, url, notes, etag
-             FROM events WHERE guid = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![guid], |row| {
-            Ok(Event {
-                guid: row.get(0)?,
-                calendar_guid: row.get(1)?,
-                title: row.get(2)?,
-                location: row.get(3)?,
-                starts_at: row.get(4)?,
-                ends_at: row.get(5)?,
-                all_day: row.get::<_, i64>(6)? != 0,
-                timezone: row.get(7)?,
-                url: row.get(8)?,
-                notes: row.get(9)?,
-                etag: row.get(10)?,
-            })
-        })?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {EVENT_COLUMNS} FROM events WHERE guid = ?1"
+        ))?;
+        let zone = self.local_zone();
+        let mut rows = stmt.query_map(params![guid], |row| Self::event_from_row(row, &zone))?;
         rows.next().transpose().map_err(Into::into)
     }
 
     /// Every stored event starting in `[from, to)`, as (guid, calendar), whatever its
     /// calendar's switch — what a pass over that window has to account for.
     pub fn events_starting_between(&self, from: i64, to: i64) -> Result<Vec<(String, String)>> {
+        // Widened for floating events, then judged on each one's start as read in this zone
+        // now: a pass that prunes what Apple did not return over a window must not reach
+        // past it.
         let mut stmt = self.conn.prepare(
-            "SELECT guid, calendar_guid FROM events WHERE starts_at >= ?1 AND starts_at < ?2",
+            "SELECT guid, calendar_guid, starts_at, floating FROM events
+              WHERE (floating = 0 AND starts_at >= ?1 AND starts_at < ?2)
+                 OR (floating = 1 AND starts_at >= ?1 - ?3 AND starts_at < ?2 + ?3)",
         )?;
-        let rows = stmt.query_map(params![from, to], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let zone = self.local_zone();
+        let rows = stmt.query_map(params![from, to, WIDEST_OFFSET], |row| {
+            let at: i64 = row.get(2)?;
+            let at = if row.get::<_, i64>(3)? != 0 {
+                instant_of(at, &zone)
+            } else {
+                at
+            };
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, at))
+        })?;
+        let mut found = Vec::new();
+        for row in rows {
+            let (guid, calendar, at) = row?;
+            if (from..to).contains(&at) {
+                found.push((guid, calendar));
+            }
+        }
+        Ok(found)
     }
 
     /// Drop events Apple no longer has.
@@ -374,6 +449,179 @@ mod tests {
         lib.put_calendars(&[calendar("cal-1", "Work"), calendar("cal-2", "Home")])
             .unwrap();
         lib
+    }
+
+    fn zone(name: &str) -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get(name).unwrap()
+    }
+
+    /// `y-m-d h:m` in `zone`, as an instant.
+    fn at(name: &str, y: i16, m: i8, d: i8, h: i8, min: i8) -> i64 {
+        jiff::civil::DateTime::new(y, m, d, h, min, 0, 0)
+            .unwrap()
+            .to_zoned(zone(name))
+            .unwrap()
+            .timestamp()
+            .as_second()
+    }
+
+    fn wall(name: &str, seconds: i64) -> String {
+        jiff::Timestamp::from_second(seconds)
+            .unwrap()
+            .to_zoned(zone(name))
+            .strftime("%Y-%m-%d %H:%M")
+            .to_string()
+    }
+
+    fn all_day(guid: &str, starts_at: i64, ends_at: i64) -> Event {
+        Event {
+            all_day: true,
+            timezone: None,
+            ..event(guid, "cal-1", starts_at, ends_at)
+        }
+    }
+
+    /// Flown from London to New York: a birthday stays on its day, and a floating 9:00 at
+    /// 9:00, read in the zone the computer is in now. Kept as instants, both drew on the day
+    /// before until the next full pass, and an edit wrote that day back to Apple.
+    #[test]
+    fn all_day_and_floating_events_stay_put_when_the_zone_changes() {
+        let mut lib = seeded();
+        lib.set_zone(Some(zone("Europe/London")));
+        let birthday = all_day(
+            "B",
+            at("Europe/London", 2026, 11, 2, 0, 0),
+            at("Europe/London", 2026, 11, 3, 0, 0),
+        );
+        let floating = Event {
+            timezone: None,
+            ..event(
+                "F",
+                "cal-1",
+                at("Europe/London", 2026, 11, 2, 9, 0),
+                at("Europe/London", 2026, 11, 2, 10, 0),
+            )
+        };
+        let timed = Event {
+            timezone: Some("Europe/London".into()),
+            ..event(
+                "T",
+                "cal-1",
+                at("Europe/London", 2026, 11, 2, 9, 0),
+                at("Europe/London", 2026, 11, 2, 10, 0),
+            )
+        };
+        lib.put_events(&[birthday, floating, timed.clone()])
+            .unwrap();
+
+        lib.set_zone(Some(zone("America/New_York")));
+        let b = lib.event("B").unwrap().unwrap();
+        assert_eq!(wall("America/New_York", b.starts_at), "2026-11-02 00:00");
+        assert_eq!(wall("America/New_York", b.ends_at), "2026-11-03 00:00");
+        let f = lib.event("F").unwrap().unwrap();
+        assert_eq!(wall("America/New_York", f.starts_at), "2026-11-02 09:00");
+        // A timed event with a zone is the instant it always was: 4 AM in New York.
+        assert_eq!(lib.event("T").unwrap().unwrap().starts_at, timed.starts_at);
+
+        // The day's window in New York finds the birthday, the day before's does not.
+        let day = |d: i8| {
+            lib.events_between(
+                at("America/New_York", 2026, 11, d, 0, 0),
+                at("America/New_York", 2026, 11, d + 1, 0, 0),
+            )
+            .unwrap()
+            .into_iter()
+            .map(|e| e.guid)
+            .filter(|g| g == "B")
+            .count()
+        };
+        assert_eq!(day(2), 1);
+        assert_eq!(day(1), 0, "never on the day before");
+        // A pass over a window prunes only what starts in it, read in this zone.
+        let starting = lib
+            .events_starting_between(
+                at("America/New_York", 2026, 11, 1, 0, 0),
+                at("America/New_York", 2026, 11, 2, 0, 0),
+            )
+            .unwrap();
+        assert!(starting.iter().all(|(g, _)| g != "B" && g != "F"));
+
+        // Edited there, it is stored as the day it shows: back home it is still that day.
+        let mut edited = lib.event("B").unwrap().unwrap();
+        edited.title = "Birthday".into();
+        lib.put_events(&[edited]).unwrap();
+        lib.set_zone(Some(zone("Europe/London")));
+        let b = lib.event("B").unwrap().unwrap();
+        assert_eq!(wall("Europe/London", b.starts_at), "2026-11-02 00:00");
+    }
+
+    /// A floating 9:00 stays 9:00 across a change of the clocks, and on the day itself.
+    #[test]
+    fn a_floating_time_holds_across_the_clocks_changing() {
+        let mut lib = seeded();
+        lib.set_zone(Some(zone("America/New_York")));
+        let before = at("America/New_York", 2026, 3, 7, 9, 0);
+        let on_the_day = at("America/New_York", 2026, 3, 8, 9, 0);
+        let mk = |g: &str, t: i64| Event {
+            timezone: None,
+            ..event(g, "cal-1", t, t + 3600)
+        };
+        lib.put_events(&[mk("A", before), mk("B", on_the_day)])
+            .unwrap();
+        lib.set_zone(Some(zone("Europe/Berlin")));
+        for g in ["A", "B"] {
+            let e = lib.event(g).unwrap().unwrap();
+            assert!(wall("Europe/Berlin", e.starts_at).ends_with("09:00"), "{g}");
+        }
+        assert_eq!(
+            wall("Europe/Berlin", lib.event("B").unwrap().unwrap().starts_at),
+            "2026-03-08 09:00"
+        );
+    }
+
+    /// Events stored before the change are turned over in place, in the zone they were
+    /// stored in, so nothing moves by being migrated.
+    #[test]
+    fn events_stored_before_are_kept_as_they_were() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        let system = jiff::tz::TimeZone::system();
+        let zone_then = if system.iana_name().is_some() {
+            system
+        } else {
+            jiff::tz::TimeZone::UTC
+        };
+        let midnight = jiff::civil::date(2026, 12, 25)
+            .to_zoned(zone_then.clone())
+            .unwrap()
+            .timestamp()
+            .as_second();
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            let before = &crate::schema::MIGRATIONS[..48];
+            crate::migrate_with(&mut conn, before, &[]).unwrap();
+            conn.execute_batch(
+                "INSERT INTO calendars (guid, title, sort_order, enabled, updated_at) VALUES ('cal-1', 'Home', 0, 1, 0);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events (guid, calendar_guid, title, starts_at, ends_at, all_day,
+                                     timezone, updated_at)
+                 VALUES ('X', 'cal-1', 'Christmas', ?1, ?2, 1, NULL, 0),
+                        ('T', 'cal-1', 'Call', 1000, 2000, 0, 'Asia/Kolkata', 0)",
+                rusqlite::params![midnight, midnight + 86_400],
+            )
+            .unwrap();
+        }
+        let mut lib = Library::open(dir.path()).unwrap();
+        lib.set_zone(Some(zone_then));
+        let x = lib.event("X").unwrap().unwrap();
+        assert_eq!((x.starts_at, x.ends_at), (midnight, midnight + 86_400));
+        assert_eq!(lib.event("T").unwrap().unwrap().starts_at, 1000);
+        // And from then on it is the day, wherever the computer goes.
+        lib.set_zone(Some(zone("Pacific/Auckland")));
+        let x = lib.event("X").unwrap().unwrap();
+        assert_eq!(wall("Pacific/Auckland", x.starts_at), "2026-12-25 00:00");
     }
 
     #[test]

@@ -28,6 +28,8 @@ mod migrate;
 mod mount;
 mod mount_photos;
 mod notes_cmds;
+#[cfg(target_os = "linux")]
+mod notices;
 mod outbox;
 mod photo_cache;
 mod photos;
@@ -95,6 +97,8 @@ struct SessionFacts {
     email: Option<String>,
     web_access_allowed: Option<bool>,
     data_protection: Option<bool>,
+    /// Signed in, but no keyring would keep the session: it lasts as long as Skykeep runs.
+    unsaved: bool,
 }
 
 impl SessionFacts {
@@ -118,6 +122,7 @@ impl SessionFacts {
             email: s.account_email.clone().or_else(|| s.apple_id.clone()),
             web_access_allowed: s.web_access_allowed,
             data_protection: s.data_protection,
+            unsaved: client.unsaved().is_some(),
         }
     }
 }
@@ -164,6 +169,8 @@ struct Status {
     /// The stored session's account is the one the library already belongs to: the library
     /// can open on what it holds at once, while the session is taken up again behind it.
     library_ready: bool,
+    /// Signed in for as long as Skykeep runs only: no keyring would keep the session.
+    not_kept: bool,
 }
 
 struct Data(library_lock::LibraryLock);
@@ -1082,10 +1089,66 @@ fn keep_private(dir: &std::path::Path) {
     }
 }
 
+/// The library could not be opened: said in a window of its own, with where it is, and the app
+/// ends — never a panic. A release build on Windows has no console, so a launch that failed
+/// here showed nothing at all, every time.
+fn cannot_start(dir: &std::path::Path, why: &str) -> ! {
+    let text = format!(
+        "{why}\n\nNothing in it has been changed or removed. Your library is in:\n{}",
+        dir.display()
+    );
+    eprintln!("Skykeep couldn’t start: {text}");
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Skykeep couldn’t open your library")
+        .set_description(&text)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+    std::process::exit(1)
+}
+
+/// Why the library would not open, as a person can act on it.
+fn library_problem(e: &quince_core::Error) -> String {
+    e.trouble().map_or_else(|| e.to_string(), trouble_words)
+}
+
+/// [`library_problem`] for the folder itself.
+fn folder_problem(e: &std::io::Error) -> String {
+    quince_core::io_trouble(e).map_or_else(
+        || format!("Skykeep’s folder couldn’t be used: {e}"),
+        trouble_words,
+    )
+}
+
+fn trouble_words(t: quince_core::Trouble) -> String {
+    match t {
+        quince_core::Trouble::Full => "The disk is full. Free some space, then open Skykeep again.",
+        quince_core::Trouble::ReadOnly => {
+            "Skykeep can’t write to its folder. Check that the folder below, and the disk it is \
+             on, can be written to, then open Skykeep again."
+        }
+        quince_core::Trouble::Busy => {
+            "Another program is holding the library — most likely another Skykeep still \
+             closing. Wait a moment, then open Skykeep again."
+        }
+    }
+    .to_string()
+}
+
 fn state_dir(app: &tauri::AppHandle) -> PathBuf {
-    app.path()
+    let roaming = app
+        .path()
         .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from(".").join("quince"))
+        .unwrap_or_else(|_| PathBuf::from(".").join("quince"));
+    // Windows: Local app data, once the library has moved there (migrate::to_local); still
+    // Roaming while a move could not be made.
+    #[cfg(windows)]
+    if let Ok(local) = app.path().app_local_data_dir() {
+        if local.join("library.db").exists() || !roaming.join("library.db").exists() {
+            return local;
+        }
+    }
+    roaming
 }
 
 #[tauri::command]
@@ -1101,6 +1164,7 @@ async fn auth_status(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<S
         library_ready: facts.has_stored_session
             && facts.account.is_some()
             && owner == facts.account,
+        not_kept: facts.signed_in && facts.unsaved,
     })
 }
 
@@ -1211,7 +1275,7 @@ pub const ACCOUNT_KEY: &str = "account";
 
 /// What of an account lives in the data folder beside the session: its library, and every
 /// cache and queue made from it. Moved as one when another account signs in.
-const ACCOUNT_FILES: [&str; 12] = [
+const ACCOUNT_FILES: [&str; 13] = [
     "library.db",
     "library.db-wal",
     "library.db-shm",
@@ -1224,6 +1288,8 @@ const ACCOUNT_FILES: [&str; 12] = [
     "note-files",
     "note-media",
     "faces",
+    // A reminder's pictures: one account's, set aside and removed with the rest of it.
+    "reminder-media",
 ];
 
 /// Where the accounts not signed in are kept, each under its own tag.
@@ -1782,21 +1848,34 @@ async fn account_services(auth: State<'_, Auth>) -> UiResult<Vec<String>> {
 fn spawn_heartbeat(client: Arc<Mutex<Client>>) {
     tauri::async_runtime::spawn(async move {
         const INTERVAL: Duration = Duration::from_secs(45 * 60);
+        // The session that lapsed, by its token: not pinged again — but a new one, signed in
+        // since, is. Ended at the first lapse instead, a tray left running for weeks never kept
+        // the next sign-in warm.
+        let mut lapsed: Option<Option<String>> = None;
         loop {
             tokio::time::sleep(INTERVAL).await;
             let mut guard = client.lock().await;
-            // Only meaningful once signed in; before that there is nothing to keep warm.
-            if guard.session().webservices.is_none() {
+            let session = guard.session();
+            let token = session.session_token.clone();
+            if !worth_a_ping(session.webservices.is_some(), &token, lapsed.as_ref()) {
                 continue;
             }
             // A lapsed session is expected roughly every two months. The UI discovers it on
             // next use and asks for a code; nothing to do here but stop pinging a dead one.
-            // A transient error is not proof of that, so only a clean `false` ends the loop.
-            if matches!(guard.heartbeat().await, Ok(false)) {
-                break;
+            // A transient error is not proof of that, so only a clean `false` counts. Each
+            // ping also writes the session again if a keyring would not take it before.
+            match guard.heartbeat().await {
+                Ok(false) => lapsed = Some(token),
+                Ok(true) => lapsed = None,
+                Err(_) => {}
             }
         }
     });
+}
+
+/// Whether the heartbeat pings the session now: signed in, and not the one that lapsed.
+fn worth_a_ping(signed_in: bool, token: &Option<String>, lapsed: Option<&Option<String>>) -> bool {
+    signed_in && lapsed != Some(token)
 }
 
 /// Refresh the calendar window `[from, to]` (both `YYYY-MM-DD`) from Apple.
@@ -2823,15 +2902,21 @@ async fn set_done(
     };
     if last || !(done && reminder.repeats()) {
         let now = jiff::Timestamp::now().as_second();
-        let payload =
-            serde_json::to_string(&outbox::Done { done, at: now }).map_err(|e| e.to_string())?;
+        let payload = serde_json::to_string(&outbox::Done {
+            done,
+            at: now,
+            base: quince_icloud::reminders::TickBase::of(&reminder),
+        })
+        .map_err(|e| e.to_string())?;
         {
+            // Shown and queued together, or neither: a tick shown with nothing queued would
+            // be put back by the next pass.
             let mut library = data.0.lock().await;
             library
-                .set_reminder_completed(guid, done.then_some(now))
-                .map_err(|e| e.to_string())?;
-            library
-                .outbox_push("reminders", guid, "done", &payload)
+                .atomically(|l| {
+                    l.set_reminder_completed(guid, done.then_some(now))?;
+                    l.outbox_push("reminders", guid, "done", &payload)
+                })
                 .map_err(|e| e.to_string())?;
         }
         outbox::kick();
@@ -4764,7 +4849,7 @@ async fn folder_thumbnail_files(
                 .map(|(_, b)| b.clone());
             let at = thumbnail_file(&cache, f);
             // An empty file records "Apple has no picture for this version", so it is not asked again.
-            let written = tokio::fs::write(&at, bytes.as_deref().unwrap_or(&[])).await;
+            let written = write_whole(&at, bytes.as_deref().unwrap_or(&[])).await;
             if bytes.is_some() && written.is_ok() {
                 out.insert(f.drivewsid.clone(), at);
             }
@@ -5046,6 +5131,58 @@ fn photo_path(dir: &std::path::Path, guid: &str, signature: &str) -> PathBuf {
     dir.join("faces").join(format!("{guid_safe}-{safe}"))
 }
 
+/// Write `bytes` to `path` whole or not at all: to a file of its own beside it, then renamed
+/// over it. Written in place, a crash or a full disk part way left a cut-off picture that was
+/// served from then on — the read side only asks whether the file is there.
+async fn write_whole(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let part = path.with_file_name(format!(
+        ".{}.{}.part",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let written = async {
+        tokio::fs::write(&part, bytes).await?;
+        tokio::fs::rename(&part, path).await
+    }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&part).await;
+    }
+    written
+}
+
+/// A contact's earlier pictures, once a new one is kept: one file per signature, and every
+/// changed picture used to leave the last one behind for good.
+fn forget_older_faces(kept: &std::path::Path) {
+    let (Some(dir), Some(name)) = (kept.parent(), kept.file_name().and_then(|n| n.to_str())) else {
+        return;
+    };
+    // `<guid>-<signature>`, and the signature can hold dashes of its own: the guid is told by
+    // its length. A name not of that shape is left alone.
+    let Some(guid) = guid_of_face(name) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let other = e.file_name();
+        let Some(other) = other.to_str() else {
+            continue;
+        };
+        if other != name && guid_of_face(other) == Some(guid) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// The contact part of a face file's name (see [`photo_path`]): a contact's guid is a UUID,
+/// 36 characters.
+fn guid_of_face(name: &str) -> Option<&str> {
+    const UUID: usize = 36;
+    (name.len() > UUID + 1 && name.as_bytes()[UUID] == b'-').then(|| &name[..UUID])
+}
+
 /// Serve a contact's picture to the interface.
 ///
 /// Through a scheme of our own rather than over IPC: the webview loads it the way it loads
@@ -5116,7 +5253,9 @@ async fn contact_photo(
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
-        tokio::fs::write(path, &drawn).await.ok();
+        if write_whole(path, &drawn).await.is_ok() {
+            forget_older_faces(path);
+        }
     }
     Ok(Photo {
         bytes: drawn,
@@ -5274,7 +5413,7 @@ fn window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow, needs_you: 
     // Never without the tray to come back from.
     // Asked in this order: started any other way the answer is no, and the tray's question —
     // a call on the session bus — was asked on the main thread just before every launch's show.
-    if login::stay_hidden(needs_you.unwrap_or(true)) && tray_reachable(&app) {
+    if login::stay_hidden(needs_you.unwrap_or(true), || tray_reachable(&app)) {
         // Its page has done what a launch needs of it (the session taken up again): it waits,
         // drawn and hidden, so the tray opens it at once.
         return;
@@ -5328,7 +5467,7 @@ fn window_state_kept() -> tauri_plugin_window_state::StateFlags {
 fn show_when_ready(app: &tauri::AppHandle) {
     // Started at login: the window is the first window_ready's to show, or not. Started as one
     // app: that app's window shows instead.
-    if login::background() || LAUNCHED_AS_APP.load(Ordering::SeqCst) {
+    if login::background() || login::search_only() || LAUNCHED_AS_APP.load(Ordering::SeqCst) {
         return;
     }
     let app = app.clone();
@@ -5382,6 +5521,7 @@ fn make_main(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 /// Bring the window back, wherever it went; made first if this launch had not made it. Answers
 /// whether it had to be made — its page is then still loading, not yet listening.
 fn show_window(app: &tauri::AppHandle) -> bool {
+    login::shown();
     if let Some(window) = app.get_webview_window("main") {
         timing::mark("main shown");
         window.show().ok();
@@ -6083,7 +6223,25 @@ fn main() {
             video::serve(app.handle().clone());
             let dir = state_dir(app.handle());
             keep_private(&dir);
-            let client = Client::new(&dir)?;
+            // A second Skykeep the session bus could not stop (there is none): it ends here,
+            // before it touches the library, sends anything or mounts a folder.
+            static HELD: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+            match library_lock::hold(&dir) {
+                Ok(Some(lock)) => {
+                    let _ = HELD.set(lock);
+                }
+                Ok(None) => {
+                    eprintln!("Skykeep is already running.");
+                    std::process::exit(0);
+                }
+                // Somewhere a lock can't be taken (a share that refuses them): run as before.
+                Err(e) => quiet!("the library's lock could not be taken: {e}"),
+            }
+            let client = match Client::new(&dir) {
+                Ok(client) => client,
+                Err(quince_auth::Error::Io(e)) => cannot_start(&dir, &folder_problem(&e)),
+                Err(e) => cannot_start(&dir, &e.to_string()),
+            };
             let known = std::sync::Mutex::new(SessionFacts::of(&client));
             let client = Arc::new(Mutex::new(client));
             app.manage(Auth {
@@ -6093,7 +6251,18 @@ fn main() {
             });
             // The local library. Opened once at startup so every command shares one
             // connection and the WAL behaves.
-            let mut library = Library::open(&dir)?;
+            let opened = match Library::open_or_recover(&dir) {
+                Ok(opened) => opened,
+                Err(e) => cannot_start(&dir, &library_problem(&e)),
+            };
+            if let Some(aside) = &opened.set_aside {
+                quiet!(
+                    "the library was damaged: set aside at {} and made again ({} rows kept)",
+                    aside.display(),
+                    opened.salvaged
+                );
+            }
+            let mut library = opened.library;
             keep_private(&dir);
             timing::mark("library open");
             adopt_writer(&mut library);
@@ -6116,6 +6285,8 @@ fn main() {
             // is brought back under its budget first thing.
             let trim = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || photos::trim_cache(&trim));
+            // And the caches beside it, each to a size of its own (photo_cache::SIDE).
+            photo_cache::keep_side_caches(app.handle());
             // Logging out or shutting down ends the app with a signal, not through its own
             // quit, and a crash ends it with neither: either way the iCloud Drive folder is
             // let go of first, never left behind answering "Transport endpoint is not
@@ -6182,6 +6353,9 @@ fn main() {
             // In the desktop's own search (GNOME Shell, KRunner) for as long as it runs.
             #[cfg(target_os = "linux")]
             search_provider::serve(app.handle().clone());
+            if login::search_only() {
+                search_provider::end_when_idle(app.handle().clone());
+            }
             alerts::spawn(app.handle().clone());
             alerts::spawn_events(app.handle().clone());
             if let Err(e) = build_tray(app) {
@@ -6863,5 +7037,93 @@ mod tests {
         );
         drop(held);
         assert!(again.try_lock().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+
+    #[test]
+    fn a_library_that_will_not_open_is_explained() {
+        let io = std::io::Error::from(std::io::ErrorKind::ReadOnlyFilesystem);
+        assert!(folder_problem(&io).contains("can’t write to its folder"));
+        let full = quince_core::Error::Io(std::io::ErrorKind::StorageFull.into());
+        assert!(library_problem(&full).starts_with("The disk is full"));
+        let newer = quince_core::Error::Newer {
+            found: 99,
+            known: 48,
+        };
+        assert!(library_problem(&newer).contains("newer version of Skykeep"));
+    }
+
+    /// A picture is written whole or not at all, and a contact keeps only its newest.
+    #[tokio::test]
+    async fn pictures_are_written_whole_and_one_face_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let guid = "0D8D2C3B-6C1E-4C9B-9E57-3A1B2C3D4E5F";
+        let other = "1D8D2C3B-6C1E-4C9B-9E57-3A1B2C3D4E5F";
+        let old = photo_path(dir.path(), guid, "first");
+        let theirs = photo_path(dir.path(), other, "x");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        write_whole(&old, b"before").await.unwrap();
+        write_whole(&theirs, b"someone else").await.unwrap();
+        let new = photo_path(dir.path(), guid, "second");
+        write_whole(&new, b"after").await.unwrap();
+        forget_older_faces(&new);
+        assert!(!old.exists(), "the older picture goes");
+        assert_eq!(std::fs::read(&new).unwrap(), b"after");
+        assert!(theirs.exists(), "another contact's stays");
+        let left: Vec<_> = std::fs::read_dir(new.parent().unwrap()).unwrap().collect();
+        assert_eq!(left.len(), 2, "no part files left behind");
+        // A write that cannot land leaves nothing, not a cut-off file.
+        let nowhere = dir.path().join("missing").join("x");
+        assert!(write_whole(&nowhere, b"z").await.is_err());
+        assert!(!nowhere.exists());
+    }
+
+    /// After a lapse the heartbeat waits for a new sign-in, and keeps that one warm.
+    #[test]
+    fn the_heartbeat_comes_back_for_the_next_sign_in() {
+        let old = Some("old".to_string());
+        assert!(worth_a_ping(true, &old, None));
+        assert!(
+            !worth_a_ping(true, &old, Some(&old)),
+            "the lapsed one rests"
+        );
+        assert!(
+            worth_a_ping(true, &Some("new".into()), Some(&old)),
+            "a new one is kept warm"
+        );
+        assert!(!worth_a_ping(false, &None, None));
+    }
+
+    /// Every folder of one account's pictures goes with the account: a reminder's too, which
+    /// stayed behind for the next person to sign in on this computer.
+    #[test]
+    fn an_accounts_reminder_pictures_go_with_it() {
+        assert!(ACCOUNT_FILES.contains(&"reminder-media"));
+    }
+
+    /// The packages say what the binary needs, so an older system is refused at install with
+    /// the package manager's message, not at launch with `GLIBC_2.39 not found`.
+    #[test]
+    fn the_packages_declare_the_floor_they_are_built_for() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let depends = |kind: &str| -> Vec<String> {
+            conf["bundle"]["linux"][kind]["depends"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d.as_str().unwrap().to_string())
+                .collect()
+        };
+        let deb = depends("deb");
+        assert!(deb.contains(&"libc6 (>= 2.39)".to_string()), "{deb:?}");
+        assert!(deb.contains(&"libheif1 (>= 1.17)".to_string()), "{deb:?}");
+        let rpm = depends("rpm");
+        assert!(rpm.contains(&"glibc >= 2.39".to_string()), "{rpm:?}");
+        assert!(rpm.iter().any(|d| d.contains("libheif >= 1.17")), "{rpm:?}");
     }
 }

@@ -346,3 +346,64 @@ mod tests {
 
     use std::time::Duration;
 }
+
+/// The one Skykeep that has this library, as long as it runs: an exclusive lock on
+/// `skykeep.lock` beside it (`flock` on Linux, a file opened shared with nobody on Windows), let
+/// go of by the system however the process ends.
+///
+/// The single-instance plugin finds a running Skykeep on the session bus, and with no session
+/// bus (over SSH, after `su`, some kiosks) it found none and a second one ran: both sending
+/// what waits for Apple — the same change twice — both mounting the folders, and each one's
+/// writes failing on the other's lock. `None`: another Skykeep holds it.
+pub fn hold(dir: &Path) -> std::io::Result<Option<std::fs::File>> {
+    std::fs::create_dir_all(dir)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    // Windows: opened shared with nobody, which is the lock — a second open is refused with a
+    // sharing violation until this handle closes.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    let file = match options.open(dir.join("skykeep.lock")) {
+        Ok(file) => file,
+        #[cfg(windows)]
+        Err(e) if e.raw_os_error() == Some(32) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: flock on a descriptor this function owns; nothing else is touched.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let e = std::io::Error::last_os_error();
+            return if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+                Ok(None)
+            } else {
+                Err(e)
+            };
+        }
+    }
+    Ok(Some(file))
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    #[test]
+    fn only_one_holds_the_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = hold(dir.path()).unwrap().expect("the first holds it");
+        assert!(
+            hold(dir.path()).unwrap().is_none(),
+            "a second is turned away"
+        );
+        drop(first);
+        assert!(
+            hold(dir.path()).unwrap().is_some(),
+            "free again once the first is gone"
+        );
+    }
+}

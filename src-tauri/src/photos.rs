@@ -36,9 +36,19 @@ pub fn remember(links: HashMap<String, Links>) {
     let map = kept.get_or_insert_with(HashMap::new);
     // Links past their life are of no use (each is asked of Apple again), so they go: kept,
     // every photo's six signed links stayed in memory for as long as the app ran.
-    map.retain(|_, (_, at)| at.elapsed() < LINK_LIFE);
+    keep_fresh(map);
     for (master, l) in links {
         map.insert(master, (l, now));
+    }
+}
+
+/// Links past their life let go of, and the room they took given back: a first pass over a
+/// library of 100,000 photos brought links for every one — a few hundred megabytes — and a map
+/// only pruned kept that size for as long as the app ran, long after the links had gone.
+fn keep_fresh<T>(map: &mut HashMap<String, (T, Instant)>) {
+    map.retain(|_, (_, at)| at.elapsed() < LINK_LIFE);
+    if map.capacity() > 1024 && map.capacity() > map.len().saturating_mul(4) {
+        map.shrink_to_fit();
     }
 }
 
@@ -2753,6 +2763,31 @@ async fn refresh_photos(app: &AppHandle) {
     crate::refresh::some(&auth.client, &data.0, &["photos"]).await;
     app.emit(crate::SYNCED, crate::refresh::status(&data.0).await)
         .ok();
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn links_past_their_life_give_their_room_back() {
+        let mut map: HashMap<String, ((), Instant)> = HashMap::new();
+        let Some(old) = Instant::now().checked_sub(LINK_LIFE * 2) else {
+            return;
+        };
+        for i in 0..100_000 {
+            map.insert(format!("master-{i}"), ((), old));
+        }
+        map.insert("fresh".into(), ((), Instant::now()));
+        let before = map.capacity();
+        keep_fresh(&mut map);
+        assert_eq!(map.len(), 1);
+        assert!(
+            map.capacity() < before / 100,
+            "{} of {before}",
+            map.capacity()
+        );
+    }
 }
 
 #[cfg(test)]

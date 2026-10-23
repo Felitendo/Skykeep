@@ -145,6 +145,8 @@ chmod +x Skykeep_*_amd64.AppImage && ./Skykeep_*_amd64.AppImage
 
 **Staying up to date.** The Windows installer and the AppImage keep Skykeep current themselves: a new version appears as a notice, with **Update and Restart**, and installs only after it passes its signature check, once your changes have reached iCloud. The `.deb`, `.rpm`, AUR and Flatpak update through your package manager. **Settings ▸ Software Update** has **Check for Updates** and the daily automatic check.
 
+On a system without FUSE 2 (`libfuse2`, left out of Ubuntu 24.04 by default), the AppImage runs as `./Skykeep_*_amd64.AppImage --appimage-extract-and-run`.
+
 <details>
 <summary><b>Other ways to install</b></summary>
 
@@ -244,7 +246,7 @@ Any time. Settings → Export Everything saves your notes as Markdown, events as
 <details>
 <summary><b>Which systems does it run on?</b></summary>
 
-Windows 10 and 11, and any Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Keyring or KWallet), on Wayland or X11. The `.deb` is built on Ubuntu 24.04 and the `.rpm` is tested on Fedora 41.
+Windows 10 and 11, and any Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Keyring or KWallet), on Wayland or X11. On Linux it needs glibc 2.39 and libheif 1.17 or newer: Ubuntu 24.04, Linux Mint 22, Debian 13, Fedora 41, openSUSE Tumbleweed, or later. The `.deb` and `.rpm` say so, so an older system is told at install rather than at launch. The `.deb` is built on Ubuntu 24.04 and the `.rpm` is tested on Fedora 41.
 </details>
 
 ## Contributing

@@ -236,6 +236,141 @@ fn thumbnails(root: &Path) -> u64 {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The other caches.
+
+/// The caches beside Photos' own, each held to a size of its own, the longest unseen let go of
+/// first: Drive's file thumbnails, contacts' faces, the pictures and files of notes and
+/// reminders. Each is a picture or a file Apple still has, made again when next wanted — the
+/// same ones "Clear Cached Pictures" lets go of. Before, nothing ever left them: every changed
+/// face and every attachment opened stayed for good.
+pub const SIDE: [(&str, u64); 5] = [
+    ("thumbnails", 256 * MB),
+    ("faces", 64 * MB),
+    ("note-media", 512 * MB),
+    ("note-files", 512 * MB),
+    ("reminder-media", 256 * MB),
+];
+
+/// A grid picture of a photo the library no longer holds (deleted from iCloud), unseen this
+/// long, is let go of: the grid's pictures are otherwise kept for good.
+pub const GRID_ORPHAN: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// When a file was last seen: read (where the disk keeps that) or written.
+fn last_seen(meta: &std::fs::Metadata) -> SystemTime {
+    let written = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+    meta.accessed().map_or(written, |read| read.max(written))
+}
+
+/// `dir` held to `cap` bytes, the longest unseen first; nothing seen in the last
+/// [`RECENT`] (on screen, being opened), and a download's `.part` only once abandoned. Answers
+/// how many files were let go of.
+pub fn trim_lru(dir: &Path, cap: u64, now: SystemTime) -> usize {
+    let mut files = Vec::new();
+    walk(dir, 2, &mut files);
+    let mut removed = 0;
+    let mut kept: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
+    for (path, meta) in files {
+        let seen = last_seen(&meta);
+        let age = now.duration_since(seen).unwrap_or_default();
+        if is_part(&path) {
+            if age > STALE_PART && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        kept.push((seen, on_disk(&meta), path));
+    }
+    let mut used: u64 = kept.iter().map(|(_, b, _)| b).sum();
+    kept.sort_by_key(|(seen, ..)| *seen);
+    for (seen, bytes, path) in kept {
+        if used <= cap {
+            break;
+        }
+        if now.duration_since(seen).unwrap_or_default() < RECENT {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            used = used.saturating_sub(bytes);
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Every cache in [`SIDE`] under the data folder `dir`, held to its size.
+pub fn trim_side(dir: &Path, now: SystemTime) -> usize {
+    SIDE.iter()
+        .map(|(name, cap)| trim_lru(&dir.join(name), *cap, now))
+        .sum()
+}
+
+/// Grid pictures (`thumb/`, small `fit/` steps) of photos not in `known`, unseen for
+/// [`GRID_ORPHAN`]: a photo deleted from iCloud keeps no picture here for good.
+pub fn prune_grid(
+    root: &Path,
+    known: &std::collections::HashSet<String>,
+    now: SystemTime,
+) -> usize {
+    let mut dirs = vec![root.join("thumb")];
+    for e in std::fs::read_dir(root.join("fit"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        if !fit_is_preview(&e.file_name()) {
+            dirs.push(e.path());
+        }
+    }
+    let mut removed = 0;
+    for dir in dirs {
+        let mut files = Vec::new();
+        walk(&dir, 0, &mut files);
+        for (path, meta) in files {
+            let Some(id) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if is_part(&path) || known.contains(id) {
+                continue;
+            }
+            if now.duration_since(last_seen(&meta)).unwrap_or_default() > GRID_ORPHAN
+                && std::fs::remove_file(&path).is_ok()
+            {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
+/// The other caches held to their sizes and the grid's orphans let go of: at start, then every
+/// few hours for as long as Skykeep runs (a tray app can run for weeks). Off the window's
+/// threads.
+pub fn keep_side_caches(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        let dir = crate::state_dir(&app);
+        let now = SystemTime::now();
+        let side = trim_side(&dir, now);
+        let known = {
+            let data = app.state::<crate::Data>();
+            let library = data.0.blocking_lock();
+            library.photo_ids().ok()
+        };
+        // Only against a library that answered and holds photos: an empty one (signed out, a
+        // first pass not in) says nothing about which pictures are gone.
+        let grid = known
+            .filter(|k| !k.is_empty())
+            .map_or(0, |k| prune_grid(&root(&app), &k, now));
+        if side + grid > 0 {
+            quiet!(
+                "caches: {side} files over their sizes and {grid} orphaned grid pictures let go of"
+            );
+        }
+        std::thread::sleep(Duration::from_secs(6 * 3600));
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
 // Letting go.
 
 /// What a trim may not let go of, besides what readers hold.
@@ -644,6 +779,62 @@ pub async fn photos_cache_clear(app: AppHandle) -> Result<Status, String> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod side_tests {
+    use super::*;
+
+    fn put(dir: &Path, name: &str, bytes: usize, age: Duration) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![7u8; bytes]).unwrap();
+        let at = SystemTime::now() - age;
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_accessed(at).set_modified(at))
+            .unwrap();
+        path
+    }
+
+    /// Over its size, a cache lets go of the longest unseen first, never one just seen, and
+    /// sweeps an abandoned download.
+    #[test]
+    fn a_cache_over_its_size_lets_the_longest_unseen_go_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let hour = Duration::from_secs(3600);
+        let oldest = put(dir.path(), "a/old", 40_000, hour * 30);
+        let older = put(dir.path(), "b", 40_000, hour * 20);
+        let newer = put(dir.path(), "c", 40_000, hour * 2);
+        let on_screen = put(dir.path(), "d", 40_000, Duration::from_secs(10));
+        let dead = put(dir.path(), ".e.1234.part", 10, hour * 2);
+        let landing = put(dir.path(), ".f.5678.part", 10, Duration::from_secs(5));
+        let used: u64 = [&oldest, &older, &newer, &on_screen]
+            .iter()
+            .map(|p| on_disk(&std::fs::metadata(p).unwrap()))
+            .sum();
+        // Room for two of the four.
+        let removed = trim_lru(dir.path(), used / 2, SystemTime::now());
+        assert_eq!(removed, 3, "two pictures and the dead download");
+        assert!(!oldest.exists() && !older.exists() && !dead.exists());
+        assert!(newer.exists() && on_screen.exists() && landing.exists());
+    }
+
+    /// Grid pictures of photos the library no longer holds go once long unseen; every other
+    /// grid picture stays, as the grid is drawn from them.
+    #[test]
+    fn a_deleted_photos_grid_pictures_go_and_the_rest_stay() {
+        let root = tempfile::tempdir().unwrap();
+        let day = Duration::from_secs(24 * 3600);
+        let kept = put(root.path(), "thumb/KEPT", 100, day * 90);
+        let gone = put(root.path(), "thumb/GONE", 100, day * 90);
+        let gone_fit = put(root.path(), "fit/256/GONE", 100, day * 90);
+        let just_seen = put(root.path(), "thumb/NEW", 100, day);
+        let preview = put(root.path(), "fit/2048/GONE", 100, day * 90);
+        let known: std::collections::HashSet<String> = ["KEPT".to_string()].into();
+        assert_eq!(prune_grid(root.path(), &known, SystemTime::now()), 2);
+        assert!(kept.exists() && just_seen.exists() && preview.exists());
+        assert!(!gone.exists() && !gone_fit.exists());
+    }
 }
 
 #[cfg(test)]

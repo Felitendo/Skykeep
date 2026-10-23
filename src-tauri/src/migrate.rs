@@ -198,7 +198,74 @@ pub fn at_launch(current: &str) -> String {
             return outcome.identifier(ids).to_string();
         }
     }
+    #[cfg(windows)]
+    if let (Some(roaming), Some(local)) = (
+        std::env::var_os("APPDATA").map(PathBuf::from),
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+    ) {
+        let moved = to_local(&roaming.join(current), &local.join(current), |db| {
+            quince_core::checkpoint(db)
+        });
+        quiet!("quince: the library to local app data: {moved:?}");
+    }
     current.to_string()
+}
+
+/// Windows: the library and everything beside it — the photo cache of gigabytes among it —
+/// from Roaming app data (`from`) to Local (`to`), where a machine's own data belongs. Roaming
+/// is copied to the server at every sign-in and sign-out on a domain or school PC, and swept by
+/// backup and OneDrive folder tools. Answers whether the library is in `to` afterwards (the
+/// folder to run from).
+///
+/// Never half in both: the library's log is folded into it first (`checkpoint`), so the one
+/// file holds every commit; each other entry moves with one rename; anything already in the
+/// way, or a rename that fails (another volume, a file held open), puts back what moved and
+/// leaves it all in Roaming for this launch, to try again the next. `library.db` moves last,
+/// so its place says whether the move is done.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn to_local(from: &Path, to: &Path, checkpoint: impl Fn(&Path) -> bool) -> io::Result<bool> {
+    let db = "library.db";
+    if to.join(db).exists() || !from.join(db).exists() {
+        return Ok(to.join(db).exists() || !from.join(db).exists());
+    }
+    if !checkpoint(&from.join(db)) {
+        return Ok(false);
+    }
+    // What a checkpoint leaves can be an empty log; one with anything in it is not moved over.
+    if fs::metadata(from.join(format!("{db}-wal"))).is_ok_and(|m| m.len() > 0) {
+        return Ok(false);
+    }
+    let mut entries: Vec<std::ffi::OsString> = fs::read_dir(from)?
+        .filter_map(Result::ok)
+        .map(|e| e.file_name())
+        .filter(|n| n != db)
+        .collect();
+    entries.sort();
+    if entries.iter().any(|n| to.join(n).exists()) {
+        return Ok(false);
+    }
+    fs::create_dir_all(to)?;
+    let mut moved: Vec<&std::ffi::OsString> = Vec::new();
+    let put_back = |moved: &[&std::ffi::OsString]| {
+        for n in moved.iter().rev() {
+            let _ = fs::rename(to.join(n), from.join(n));
+        }
+    };
+    for name in entries
+        .iter()
+        .chain(std::iter::once(&std::ffi::OsString::from(db)))
+    {
+        if let Err(e) = fs::rename(from.join(name), to.join(name)) {
+            put_back(&moved);
+            quiet!("quince: stays in roaming app data for now: {e}");
+            return Ok(false);
+        }
+        // The last one (`library.db`) is not borrowed past the loop: it is the end.
+        if name != db {
+            moved.push(name);
+        }
+    }
+    Ok(true)
 }
 
 /// Everything that moves, in order: the library's folder before the other folders, since it
@@ -1373,5 +1440,56 @@ mod tests {
             assert_eq!(fs::read_link(h.current()).unwrap(), elsewhere.path());
             assert_eq!(fs::read(h.current().join("library.db")).unwrap(), b"db");
         }
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    fn write(p: &Path, text: &str) {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    }
+
+    #[test]
+    fn the_library_and_its_caches_move_to_local_whole() {
+        let root = tempfile::tempdir().unwrap();
+        let (from, to) = (root.path().join("Roaming/id"), root.path().join("Local/id"));
+        write(&from.join("library.db"), "db");
+        write(&from.join("library.db-wal"), "");
+        write(&from.join("photos/thumb/a.jpg"), "a");
+        write(&from.join("drive-writes/f"), "waiting");
+        // WebView2 already keeps its folder in Local: left alone.
+        write(&to.join("EBWebView/x"), "w");
+        assert!(to_local(&from, &to, |_| true).unwrap());
+        assert_eq!(fs::read_to_string(to.join("library.db")).unwrap(), "db");
+        assert_eq!(
+            fs::read_to_string(to.join("drive-writes/f")).unwrap(),
+            "waiting"
+        );
+        assert!(to.join("photos/thumb/a.jpg").exists() && to.join("EBWebView/x").exists());
+        assert!(!from.join("library.db").exists());
+        // Done: asked again, it says so and moves nothing.
+        assert!(to_local(&from, &to, |_| panic!("not asked")).unwrap());
+    }
+
+    #[test]
+    fn anything_in_the_way_leaves_it_all_where_it_was() {
+        let root = tempfile::tempdir().unwrap();
+        let (from, to) = (root.path().join("Roaming/id"), root.path().join("Local/id"));
+        write(&from.join("library.db"), "db");
+        write(&from.join("photos/a"), "a");
+        write(&to.join("photos/b"), "b");
+        assert!(!to_local(&from, &to, |_| true).unwrap());
+        assert!(from.join("library.db").exists() && from.join("photos/a").exists());
+        // A log the checkpoint could not fold in: not moved either.
+        let other = tempfile::tempdir().unwrap();
+        let (from, to) = (other.path().join("R"), other.path().join("L"));
+        write(&from.join("library.db"), "db");
+        write(&from.join("library.db-wal"), "commits");
+        assert!(!to_local(&from, &to, |_| true).unwrap());
+        assert!(!to_local(&from, &to, |_| false).unwrap());
+        assert!(from.join("library.db").exists());
     }
 }

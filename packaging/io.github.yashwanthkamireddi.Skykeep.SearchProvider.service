@@ -1,6 +1,7 @@
-# Lets the session bus start Skykeep, hidden in the tray (--background), when GNOME Shell or
-# KRunner searches and it is not already running. Installed to /usr/share/dbus-1/services/.
+# Lets the session bus start Skykeep, with no window (--search-provider), when GNOME Shell or
+# KRunner searches and it is not already running. It answers from the library and ends after a
+# few idle minutes unless a window is opened. Installed to /usr/share/dbus-1/services/.
 # The Flatpak manifest installs it with Exec pointing into /app instead.
 [D-BUS Service]
 Name=io.github.yashwanthkamireddi.Skykeep.SearchProvider
-Exec=/usr/bin/skykeep --background
+Exec=/usr/bin/skykeep --search-provider

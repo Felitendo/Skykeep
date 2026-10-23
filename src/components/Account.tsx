@@ -1,6 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { Face } from "./Face";
 import { api, contactPhotoSrc, type AccountInfo } from "../lib/ipc";
+
+/** Said where the session is held in memory only: what it means, and what fixes it. */
+export const NOT_KEPT =
+  "Signed in until Skykeep closes: start a system keyring (GNOME Keyring or KWallet) to stay signed in.";
+
+/**
+ * Whether the session lasts only as long as Skykeep runs — no keyring would keep it. Asked
+ * again after every update, which is when the session is written again.
+ */
+export function useNotKept(): boolean {
+  const { report } = useSync();
+  const [notKept, setNotKept] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api.status().then((s) => live && setNotKept(!!s.notKept), () => {});
+    return () => {
+      live = false;
+    };
+  }, [report]);
+  return notKept;
+}
 import { freshness, useServiceState, useSync } from "../lib/sync";
 
 /** "Asha Rao" → "AR"; an address → its first letter. */
@@ -38,6 +59,7 @@ export type FooterApp = { service: string; name: string };
 export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen: () => void; app?: FooterApp | null }) {
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const { report, syncing, error, refreshService, refresh: refreshAll } = useSync();
+  const notKept = useNotKept();
   const own = useServiceState(app?.service ?? "");
   // "Updated just now" has to become "2 min ago" without anything else happening.
   const [, tick] = useState(0);
@@ -118,6 +140,11 @@ export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen
         <AccountAvatar account={account} />
         <span className="sidebar-account-name">{name}</span>
       </button>
+      {notKept && (
+        <p className="sidebar-not-kept" title={NOT_KEPT}>
+          Sign-in not saved
+        </p>
+      )}
     </div>
   );
 }

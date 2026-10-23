@@ -258,6 +258,10 @@ pub struct Client {
     /// The keyring would not answer when this started — locked, or not up yet. Not the same
     /// as nothing stored: it is asked again before anything else happens.
     keyring_error: Option<String>,
+    /// The session signed in, or taken up, but the keyring would not keep it (none running:
+    /// a window manager without one, a session over SSH): held in memory for as long as
+    /// Skykeep runs, and written again at every heartbeat until a keyring takes it.
+    unsaved: Option<String>,
     /// What was last written, as a hash of the session and one of the cookies: a heartbeat that
     /// changed neither writes neither (see [`Client::persist`]).
     persisted: std::sync::Mutex<Persisted>,
@@ -341,6 +345,7 @@ impl Client {
             pending: None,
             awaiting_code: false,
             keyring_error,
+            unsaved: None,
             persisted: std::sync::Mutex::new(Persisted::default()),
         })
     }
@@ -387,7 +392,10 @@ impl Client {
             .map_err(|e| Error::Protocol(format!("couldn't save the session: {e}")))?;
         let mut cookies = Vec::new();
         {
-            let jar = self.jar.lock().expect("cookie jar mutex poisoned");
+            let jar = self
+                .jar
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             cookie_store::serde::json::save(&jar, &mut cookies)
                 .map_err(|e| Error::Protocol(format!("couldn't save cookies: {e}")))?;
         }
@@ -407,29 +415,42 @@ impl Client {
         Ok(())
     }
 
+    /// [`Self::persist`] once Apple has accepted the session: a keyring that will not take it
+    /// never undoes that.
+    ///
+    /// With no Secret Service at all, the password went through, then the write failed and
+    /// the sign-in failed with it — before the code was even asked for — so a machine without
+    /// a keyring could never sign in, not just never stay signed in. The session is kept in
+    /// memory instead, said so ([`Self::unsaved`]), and written again on the next heartbeat.
+    /// A live session in memory is newer than anything the keyring holds, so a keyring that
+    /// would not answer at the start is not asked to replace it either.
+    fn keep(&mut self) {
+        self.keyring_error = None;
+        match self.persist() {
+            Ok(()) => self.unsaved = None,
+            Err(e) => {
+                quiet!("quince: the session is kept in memory only: {e}");
+                self.unsaved = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Why the session is held in memory only, when a keyring would not keep it: Skykeep
+    /// stays signed in while it runs, but not after it closes.
+    #[must_use]
+    pub fn unsaved(&self) -> Option<&str> {
+        self.unsaved.as_deref()
+    }
+
     /// The cookie jar, as `cookie_store` wrote it, to its file.
     fn write_cookies(&self, cookies: &[u8]) -> Result<()> {
-        use std::io::Write;
         // The session's cookies are a credential: readable by this user alone, whatever folder
         // they end up in (a backup, a copy), not only by the private data folder around them.
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(self.store.cookie_path())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // A file made before this kept its old mode: set it, too.
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        let mut w = std::io::BufWriter::new(file);
-        w.write_all(cookies)?;
-        w.flush()?;
-        Ok(())
+        Ok(session::write_whole(
+            self.store.cookie_path(),
+            cookies,
+            true,
+        )?)
     }
 
     /// Forget this account entirely.
@@ -513,7 +534,7 @@ impl Client {
         let validated = match self.validate().await {
             Ok(data) => {
                 self.absorb(&data);
-                self.persist()?;
+                self.keep();
                 return Ok(true);
             }
             Err(e) => e,
@@ -528,7 +549,7 @@ impl Client {
         let logged_in = match self.account_login().await {
             Ok(data) => {
                 self.absorb(&data);
-                self.persist()?;
+                self.keep();
                 return Ok(true);
             }
             Err(e) => e,
@@ -567,7 +588,7 @@ impl Client {
                 // The password was changed elsewhere: the kept one is worthless now.
                 Err(Error::BadCredentials) => {
                     self.session.password = None;
-                    self.persist()?;
+                    self.keep();
                 }
                 Err(_) => {}
             }
@@ -605,7 +626,7 @@ impl Client {
     pub async fn heartbeat(&mut self) -> Result<bool> {
         match self.validate().await {
             Ok(_) => {
-                self.persist()?;
+                self.keep();
                 Ok(true)
             }
             // Cookies lapse after an idle spell long before the session does. Giving up here
@@ -785,7 +806,7 @@ impl Client {
 
         match status {
             StatusCode::CONFLICT => {
-                self.persist()?;
+                self.keep();
                 // Ask for the code. Apple used to push it to trusted devices on this 409 by
                 // itself; since iOS 26.4 it waits to be asked (PUT verify/trusteddevice/
                 // securitycode), and until asked no "Allow sign-in?" ever reaches a phone —
@@ -800,7 +821,7 @@ impl Client {
             s if s.is_success() => {
                 let data = self.account_login().await?;
                 self.absorb(&data);
-                self.persist()?;
+                self.keep();
                 Ok(SignInOutcome::Complete)
             }
             StatusCode::UNAUTHORIZED => Err(Error::BadCredentials),
@@ -928,7 +949,7 @@ impl Client {
             if self.trust().await.is_ok() {
                 let data = self.account_login().await?;
                 self.absorb(&data);
-                self.persist()?;
+                self.keep();
                 return Ok(());
             }
             return Err(err);
@@ -936,7 +957,7 @@ impl Client {
         self.trust().await?;
         let data = self.account_login().await?;
         self.absorb(&data);
-        self.persist()?;
+        self.keep();
         Ok(())
     }
 
@@ -975,7 +996,7 @@ impl Client {
             if self.trust().await.is_ok() {
                 let data = self.account_login().await?;
                 self.absorb(&data);
-                self.persist()?;
+                self.keep();
                 return Ok(());
             }
             return Err(err);
@@ -984,7 +1005,7 @@ impl Client {
         self.trust().await?;
         let data = self.account_login().await?;
         self.absorb(&data);
-        self.persist()?;
+        self.keep();
         Ok(())
     }
 

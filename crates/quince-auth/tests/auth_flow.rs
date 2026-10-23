@@ -885,3 +885,49 @@ async fn a_heartbeat_writes_the_session_only_when_it_changed() {
     let kept = std::fs::read_to_string(&stored).expect("a changed session is written");
     assert!(kept.contains("scnt-renewed"));
 }
+
+/// No Secret Service (a window manager without a keyring, a session over SSH): the store
+/// refuses every write. The password went through and then the sign-in failed on that write,
+/// before the code was even asked for, so such a machine could never sign in at all. Now it
+/// signs in, holds the session in memory, says so, and writes it once the store takes it.
+#[tokio::test]
+async fn a_store_that_will_not_keep_the_session_never_fails_the_sign_in() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    // Where the session would be written is a folder: every save fails.
+    let blocked = dir.path().join("session.json");
+    std::fs::create_dir(&blocked).unwrap();
+    let mut client = client_for(&server, dir.path());
+
+    let outcome = client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .expect("the password was accepted: the code is asked for");
+    assert_eq!(outcome, SignInOutcome::NeedsTwoFactor);
+    client
+        .submit_two_factor("123456")
+        .await
+        .expect("signed in, if only for as long as it runs");
+    assert!(client.session().webservices.is_some());
+    assert!(client.unsaved().is_some(), "said that it is not kept");
+
+    // A keyring comes up: the next heartbeat writes it, and nothing is said any more.
+    std::fs::remove_dir(&blocked).unwrap();
+    assert!(client.heartbeat().await.unwrap());
+    assert!(client.unsaved().is_none());
+    assert!(client_for(&server, dir.path()).has_stored_session());
+}
