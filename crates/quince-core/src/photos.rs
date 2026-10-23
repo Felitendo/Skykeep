@@ -330,6 +330,14 @@ impl Library {
         self.put_photos(photos)
     }
 
+    /// Every photo id the library holds, in any view: what a grid picture on disk may still
+    /// be drawn for.
+    pub fn photo_ids(&self) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM photos")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// A view's photos, newest first.
     pub fn photos(&self, view: View) -> Result<Vec<Photo>> {
         let (filter, order) = Self::view_query(view);

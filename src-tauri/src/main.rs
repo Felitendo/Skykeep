@@ -4674,7 +4674,7 @@ async fn folder_thumbnail_files(
                 .map(|(_, b)| b.clone());
             let at = thumbnail_file(&cache, f);
             // An empty file records "Apple has no picture for this version", so it is not asked again.
-            let written = tokio::fs::write(&at, bytes.as_deref().unwrap_or(&[])).await;
+            let written = write_whole(&at, bytes.as_deref().unwrap_or(&[])).await;
             if bytes.is_some() && written.is_ok() {
                 out.insert(f.drivewsid.clone(), at);
             }
@@ -4956,6 +4956,58 @@ fn photo_path(dir: &std::path::Path, guid: &str, signature: &str) -> PathBuf {
     dir.join("faces").join(format!("{guid_safe}-{safe}"))
 }
 
+/// Write `bytes` to `path` whole or not at all: to a file of its own beside it, then renamed
+/// over it. Written in place, a crash or a full disk part way left a cut-off picture that was
+/// served from then on — the read side only asks whether the file is there.
+async fn write_whole(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let part = path.with_file_name(format!(
+        ".{}.{}.part",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let written = async {
+        tokio::fs::write(&part, bytes).await?;
+        tokio::fs::rename(&part, path).await
+    }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&part).await;
+    }
+    written
+}
+
+/// A contact's earlier pictures, once a new one is kept: one file per signature, and every
+/// changed picture used to leave the last one behind for good.
+fn forget_older_faces(kept: &std::path::Path) {
+    let (Some(dir), Some(name)) = (kept.parent(), kept.file_name().and_then(|n| n.to_str())) else {
+        return;
+    };
+    // `<guid>-<signature>`, and the signature can hold dashes of its own: the guid is told by
+    // its length. A name not of that shape is left alone.
+    let Some(guid) = guid_of_face(name) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let other = e.file_name();
+        let Some(other) = other.to_str() else {
+            continue;
+        };
+        if other != name && guid_of_face(other) == Some(guid) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// The contact part of a face file's name (see [`photo_path`]): a contact's guid is a UUID,
+/// 36 characters.
+fn guid_of_face(name: &str) -> Option<&str> {
+    const UUID: usize = 36;
+    (name.len() > UUID + 1 && name.as_bytes()[UUID] == b'-').then(|| &name[..UUID])
+}
+
 /// Serve a contact's picture to the interface.
 ///
 /// Through a scheme of our own rather than over IPC: the webview loads it the way it loads
@@ -5026,7 +5078,9 @@ async fn contact_photo(
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
-        tokio::fs::write(path, &drawn).await.ok();
+        if write_whole(path, &drawn).await.is_ok() {
+            forget_older_faces(path);
+        }
     }
     Ok(Photo {
         bytes: drawn,
@@ -6025,6 +6079,8 @@ fn main() {
             // is brought back under its budget first thing.
             let trim = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || photos::trim_cache(&trim));
+            // And the caches beside it, each to a size of its own (photo_cache::SIDE).
+            photo_cache::keep_side_caches(app.handle());
             // Logging out or shutting down ends the app with a signal, not through its own
             // quit, and a crash ends it with neither: either way the iCloud Drive folder is
             // let go of first, never left behind answering "Transport endpoint is not
