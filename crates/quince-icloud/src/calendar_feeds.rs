@@ -139,13 +139,11 @@ pub async fn fetch(http: &reqwest::Client, url: &str) -> Result<String> {
         bytes.extend_from_slice(&chunk);
     }
     let text = if bytes.starts_with(&[0x1f, 0x8b]) {
-        use std::io::Read;
-        let mut out = String::new();
-        flate2::read::GzDecoder::new(&bytes[..])
-            .take(MOST_BYTES as u64)
-            .read_to_string(&mut out)
-            .map_err(|_| Error::Refused("That calendar file couldn’t be opened.".into()))?;
-        out
+        // Within the same ceiling as the file itself (crate::bounded): too large is refused,
+        // never read cut short as if whole.
+        let out = crate::bounded::gunzip(&bytes, MOST_BYTES as u64)
+            .ok_or_else(|| Error::Refused("That calendar file couldn’t be opened.".into()))?;
+        String::from_utf8_lossy(&out).into_owned()
     } else {
         String::from_utf8_lossy(&bytes).into_owned()
     };
@@ -397,7 +395,7 @@ fn duration(s: &str) -> Option<i64> {
                 let n: i64 = number.parse().ok()?;
                 number.clear();
                 any = true;
-                total += n * match (unit, in_time) {
+                let unit: i64 = match (unit, in_time) {
                     ('W', _) => 7 * 86_400,
                     ('D', _) => 86_400,
                     ('H', true) => 3_600,
@@ -405,6 +403,8 @@ fn duration(s: &str) -> Option<i64> {
                     ('S', true) => 1,
                     _ => return None,
                 };
+                // A feed's number can be anything: one too large is no duration, not a crash.
+                total = total.checked_add(n.checked_mul(unit)?)?;
             }
         }
     }
@@ -488,8 +488,12 @@ fn rule_of(p: &Property, here: &TimeZone) -> Option<Rule> {
             }
             "BYDAY" => {
                 for d in list() {
+                    // The day is the last two letters; anything else there (`é1`) is no day,
+                    // and never a cut through the middle of a character.
                     let split = d.len().saturating_sub(2);
-                    let (n, code) = d.split_at(split);
+                    let (Some(n), Some(code)) = (d.get(..split), d.get(split..)) else {
+                        return None;
+                    };
                     let n: i8 = if n.is_empty() || n == "+" {
                         0
                     } else {
@@ -726,13 +730,20 @@ fn month_day(year: i16, month: i8, day: i8) -> Option<Date> {
         .flatten()
 }
 
-/// The dates one period of a rule holds, in order.
+/// A span of `n` days, months or years, or none where the calendar has no such span: a
+/// feed's `INTERVAL` is anyone's number, and jiff's own `.days()` panics past its range.
+fn days(n: i64) -> Option<Span> {
+    Span::new().try_days(n).ok()
+}
+
+/// The dates one period of a rule holds, in order. None at all past the calendar's range.
 fn period_dates(rule: &Rule, first: Date, k: i64) -> Vec<Date> {
-    let step = k * rule.interval;
+    let Some(step) = k.checked_mul(rule.interval) else {
+        return Vec::new();
+    };
     let mut out: Vec<Date> = match rule.freq {
-        Freq::Daily => first
-            .checked_add(step.days())
-            .ok()
+        Freq::Daily => days(step)
+            .and_then(|span| first.checked_add(span).ok())
             .into_iter()
             .filter(|d| {
                 rule.by_day.is_empty() || rule.by_day.iter().any(|(_, w)| *w == d.weekday())
@@ -743,7 +754,12 @@ fn period_dates(rule: &Rule, first: Date, k: i64) -> Vec<Date> {
                 (first.weekday().to_monday_zero_offset() - rule.week_start.to_monday_zero_offset())
                     .rem_euclid(7),
             );
-            let Ok(week) = first.checked_add((step * 7 - back).days()) else {
+            let Some(Ok(week)) = step
+                .checked_mul(7)
+                .and_then(|d| d.checked_sub(back))
+                .and_then(days)
+                .map(|span| first.checked_add(span))
+            else {
                 return Vec::new();
             };
             if rule.by_day.is_empty() {
@@ -756,14 +772,21 @@ fn period_dates(rule: &Rule, first: Date, k: i64) -> Vec<Date> {
             }
         }
         Freq::Monthly => {
-            let Ok(m) = first.first_of_month().checked_add(step.months()) else {
+            let Some(Ok(m)) = Span::new()
+                .try_months(step)
+                .ok()
+                .map(|span| first.first_of_month().checked_add(span))
+            else {
                 return Vec::new();
             };
             month_set(rule, m.year(), m.month(), first.day())
         }
         Freq::Yearly => {
-            let Ok(y) = Date::new(first.year(), 1, 1).and_then(|d| d.checked_add(step.years()))
-            else {
+            let Ok(y) = Date::new(first.year(), 1, 1).and_then(|d| {
+                Span::new()
+                    .try_years(step)
+                    .and_then(|span| d.checked_add(span))
+            }) else {
                 return Vec::new();
             };
             let year = y.year();
@@ -965,7 +988,7 @@ fn event_of(item: &Item, w: &When, calendar_guid: &str, key: i64) -> Option<Even
             let zone = TimeZone::system();
             let start = d.to_zoned(zone.clone()).ok()?;
             let end = d
-                .checked_add(Span::new().days(item.length.max(1)))
+                .checked_add(days(item.length.max(1))?)
                 .ok()?
                 .to_zoned(zone)
                 .ok()?;
@@ -980,7 +1003,7 @@ fn event_of(item: &Item, w: &When, calendar_guid: &str, key: i64) -> Option<Even
             let start = dt.to_zoned(tz.clone()).ok()?.timestamp().as_second();
             (
                 start,
-                start + item.length,
+                start.checked_add(item.length)?,
                 false,
                 tz.iana_name().map(ToString::to_string),
             )
@@ -1225,5 +1248,60 @@ mod tests {
         assert!(!s.due(i64::MAX / 2));
         assert_eq!(s.calendar(0).guid, "quince:sub:a");
         assert!(!s.calendar(0).writable);
+    }
+    /// A public feed is anyone's file: no rule, date or length in it stops the calendar. A rule
+    /// that names no real date walks to its end and gives nothing; one too large for the
+    /// calendar stops; a date that does not exist is left out.
+    #[test]
+    fn a_hostile_feed_never_panics() {
+        let rules = [
+            "FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30",
+            "FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=31;BYDAY=MO",
+            "FREQ=DAILY;INTERVAL=1000000",
+            "FREQ=WEEKLY;INTERVAL=9223372036854775807",
+            "FREQ=MONTHLY;INTERVAL=9223372036854775807",
+            "FREQ=YEARLY;INTERVAL=9223372036854775807",
+            "FREQ=YEARLY;INTERVAL=20000",
+            "FREQ=MONTHLY;INTERVAL=300000",
+            "FREQ=WEEKLY;INTERVAL=3000000;BYDAY=MO,TU",
+            "FREQ=MONTHLY;BYDAY=\u{e9}1",
+            "FREQ=WEEKLY;BYDAY=\u{20ac}",
+            "FREQ=WEEKLY;BYDAY=1",
+            "FREQ=WEEKLY;BYDAY=\u{1F600}MO",
+            "FREQ=MONTHLY;BYDAY=127MO,-128FR",
+            "FREQ=MONTHLY;BYSETPOS=-2147483648,2147483647;BYDAY=MO",
+            "FREQ=YEARLY;BYDAY=-53SU;COUNT=9223372036854775807",
+            "FREQ=DAILY;UNTIL=99999999T999999Z",
+        ];
+        let starts = [
+            "DTSTART;VALUE=DATE:20240229",
+            "DTSTART:99991231T235959Z",
+            "DTSTART;VALUE=DATE:00010101",
+            "DTSTART;TZID=Europe/Berlin:20260329T023000",
+        ];
+        let (from, _) = year(2026);
+        let (_, to) = year(9998);
+        for rule in rules {
+            for start in starts {
+                let text = wrap(&format!(
+                    "BEGIN:VEVENT\r\nUID:x\r\nSUMMARY:x\r\n{start}\r\nDURATION:P9999999999999999W\r\nRRULE:{rule}\r\nEND:VEVENT\r\n"
+                ));
+                if let Ok(feed) = parse(&text, &kolkata()) {
+                    let _ = events(&feed, "c", from, to);
+                    let _ = events(&feed, "c", i64::MIN / 2, i64::MAX / 2);
+                }
+            }
+        }
+        // A date that does not exist is skipped, and the rest of the feed still reads.
+        let text = wrap(
+            "BEGIN:VEVENT\r\nUID:long\r\nSUMMARY:Long\r\nDTSTART;VALUE=DATE:20260301\r\nDTEND;VALUE=DATE:99991231\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:bad\r\nSUMMARY:Bad\r\nDTSTART;VALUE=DATE:20260230\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:ok\r\nSUMMARY:Ok\r\nDTSTART;VALUE=DATE:20260301\r\nEND:VEVENT\r\n",
+        );
+        let feed = parse(&text, &kolkata()).unwrap();
+        let got = events(&feed, "c", from, to);
+        assert!(got.iter().any(|e| e.title == "Ok"));
+        assert!(!got.iter().any(|e| e.title == "Bad"));
+        // A length too large to be one is none, not a wrapped-around number.
+        assert_eq!(duration("P9999999999999999W"), None);
+        assert_eq!(duration("PT1H30M"), Some(5_400));
     }
 }

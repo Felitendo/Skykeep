@@ -30,6 +30,7 @@ import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { pickOpen } from "../lib/pick";
 import { useReveal } from "../lib/reveal";
 import { FIRST_LABEL, OFFERED, labelText, offeredMatch, profileHref } from "../lib/contactLabels";
+import { REFUSED_LINK, outsideHref } from "../lib/links";
 import { DateField, dateWords } from "./contacts/DateField";
 import { PhotoSheet } from "./contacts/PhotoSheet";
 import { DuplicatesBanner, DuplicatesView } from "./contacts/Duplicates";
@@ -1526,7 +1527,7 @@ export function ContactsView() {
                     ) : m.kind === "phone" ? (
                       <a href={`tel:${m.value.replace(/[^\d+#*,;]/g, "")}`}>{m.value}</a>
                     ) : m.kind === "url" ? (
-                      <a href={webHref(m.value)}>{m.value}</a>
+                      webHref(m.value) ? <a href={webHref(m.value)!}>{m.value}</a> : <span title={REFUSED_LINK}>{m.value}</span>
                     ) : m.kind === "date" ? (
                       dateWords(m.value)
                     ) : m.kind === "profile" && profileHref(m.label, m.value) ? (
@@ -1693,8 +1694,12 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** A link a person typed without its scheme still opens: "example.com" is the web. */
-const webHref = (value: string) => (/^[a-z][a-z0-9+.-]*:/i.test(value.trim()) ? value.trim() : `https://${value.trim()}`);
+/** A link a person typed without its scheme still opens: "example.com" is the web. One of a
+ * kind Skykeep does not open (lib/links.ts) is no link: null, and it shows as its text. */
+const webHref = (value: string) => {
+  const href = /^[a-z][a-z0-9+.-]*:/i.test(value.trim()) ? value.trim() : `https://${value.trim()}`;
+  return outsideHref(href) ? href : null;
+};
 
 /** A row in the lists column: All Contacts, or one list, with its count and ⋯. */
 function ListRow({

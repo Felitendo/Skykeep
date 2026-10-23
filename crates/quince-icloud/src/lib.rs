@@ -14,6 +14,7 @@ macro_rules! quiet {
     };
 }
 
+pub mod bounded;
 pub mod calendar;
 pub mod calendar_feeds;
 pub mod ckdocument;

@@ -1,4 +1,6 @@
 import { toast, dismissToast, useErrorToast } from "../../components/Toast";
+import { REFUSED_LINK, outsideHref } from "../../lib/links";
+import { follow } from "../../lib/follow";
 import { ConfirmSheet, useConfirm } from "../../components/Confirm";
 import { EmptyState } from "../../components/EmptyState";
 import { SearchField } from "../../components/SearchField";
@@ -1657,7 +1659,7 @@ export function CalendarView() {
                     run: () => { if (c.guid !== e.calendarGuid) void save({ ...draftOf(e), calendarGuid: c.guid }); },
                   })),
                 }] : []),
-                ...(e.location ? [{ label: "Open in Maps", run: () => { window.location.href = mapsHref(e.location ?? ""); } }] : []),
+                ...(e.location ? [{ label: "Open in Maps", run: () => void follow(mapsHref(e.location ?? "")) }] : []),
                 ...(mine ? [null, { label: "Delete", danger: true, run: () => void deleteAsking(e) }] : []),
               ]}
             />
@@ -3147,9 +3149,13 @@ function EventPopover({
         )}
         <p className="cx-info-line">{when}</p>
         <p className="cx-info-cal"><span className="cx-info-dot" aria-hidden="true" />{calendar?.title}</p>
-        {draft.url && (
-          <a className="cx-info-url" href={draft.url} target="_blank" rel="noreferrer">{draft.url}</a>
-        )}
+        {/* An invitation's link is the sender's to choose: only a kind Skykeep opens is a link
+            (lib/links.ts); any other is its text. */}
+        {draft.url && (outsideHref(draft.url) ? (
+          <a className="cx-info-url" href={outsideHref(draft.url)!} target="_blank" rel="noreferrer">{draft.url}</a>
+        ) : (
+          <p className="cx-info-url" title={REFUSED_LINK}>{draft.url}</p>
+        ))}
         <Guests guid={draft.guid} />
         {draft.notes && <p className="cx-info-notes">{draft.notes}</p>}
       </form>
@@ -3323,8 +3329,8 @@ function EventPopover({
           readOnly={!editable}
           onChange={(e) => set({ url: e.target.value || null })}
         />
-        {draft.url && /^(https?:\/\/|mailto:)/i.test(draft.url.trim()) && (
-          <a className="cx-pop-link is-text" href={draft.url.trim()} target="_blank" rel="noreferrer">Open</a>
+        {draft.url && /^(https?:\/\/|mailto:)/i.test(draft.url.trim()) && outsideHref(draft.url) && (
+          <a className="cx-pop-link is-text" href={outsideHref(draft.url)!} target="_blank" rel="noreferrer">Open</a>
         )}
       </span>
       <Guests guid={draft.guid} />

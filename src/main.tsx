@@ -13,6 +13,7 @@ import "./styles/a11y.css";
 import { applyTheme, followContrast, storedTheme } from "./lib/theme";
 import { keepTinted } from "./lib/tint";
 import { fadeSheetsIn } from "./lib/fade";
+import { followClick } from "./lib/follow";
 
 // Before the first paint, so the window opens in the appearance chosen.
 applyTheme(storedTheme());
@@ -21,17 +22,16 @@ keepTinted();
 fadeSheetsIn();
 
 /*
- * Every link goes the one way out: as a navigation, which the window refuses and hands to
- * the app this computer uses for it (see the "links" plugin in main.rs). A link meant for a
- * new window would otherwise slip past that — WebKitGTK asks for a window instead — so it
- * is followed in place, where the refusal catches it.
+ * Every link goes the one way out: through `followClick` (lib/follow.ts), which checks what
+ * kind of address it is before anything happens — the engine never follows a link by itself.
+ * A permitted one leaves as a navigation, which the window refuses and hands to the app this
+ * computer uses for it (see the "links" plugin in main.rs). Capturing, so a link whose own
+ * handler stops the click from spreading is covered too; a middle click, which would ask for
+ * a new window, is refused the same way.
  */
-document.addEventListener("click", (e) => {
-  const a = (e.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
-  if (!a || e.defaultPrevented || a.target !== "_blank") return;
-  e.preventDefault();
-  window.location.assign(a.href);
-  // Capturing, so a link whose own handler stops the click from spreading is covered too.
+document.addEventListener("click", (e) => void followClick(e), true);
+document.addEventListener("auxclick", (e) => {
+  if ((e.target as Element | null)?.closest?.("a[href]")) e.preventDefault();
 }, true);
 
 /*

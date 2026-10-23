@@ -23,7 +23,13 @@ thiserror = "2"
 # Looking up Apple's hosts for the client's own resolver (AppleOnly).
 tokio = { workspace = true, features = ["net"] }
 
+[features]
+# This computer counts as Apple's — for tests, whose mock servers run here. Never in the app.
+loopback = []
+
 [dev-dependencies]
+# The crate's own tests (tests/*.rs) reach mock servers on this computer.
+quince-auth = { path = ".", features = ["loopback"] }
 tokio = { workspace = true }
 wiremock = "0.6"
 tempfile = "3"

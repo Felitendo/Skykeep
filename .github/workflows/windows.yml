@@ -45,8 +45,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -63,12 +63,12 @@ jobs:
             const mm = (v) => v.split(".").slice(0, 2).join(".");
             console.log(`@tauri-apps/api ${npm}, tauri crate ${rust}`);
             if (mm(npm) !== mm(rust)) { console.error("Tauri npm package and crate differ: align them"); process.exit(1); }'
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: windows-release
       # HEIC decoding: libheif with its default codecs (libde265 decodes), linked in statically.
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: C:\vcpkg\installed
           key: vcpkg-libheif-default-x64-windows-static-md-v1
@@ -98,7 +98,7 @@ jobs:
           $files = Get-ChildItem target/release/bundle -Recurse -Include *.msi,*.exe
           $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
             Set-Content target/release/bundle/SHA256SUMS-windows.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: skykeep-windows
           path: |
@@ -114,8 +114,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -150,7 +150,7 @@ jobs:
           Stop-Process -Id $preview.Id -ErrorAction SilentlyContinue
           "$($suites.Count - $failed.Count) of $($suites.Count) suites passed in Edge"
           if ($failed.Count) { $failed | Set-Content "$shots\FAILED.txt"; exit 1 }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: skykeep-ui-in-edge
@@ -164,7 +164,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: skykeep-windows
           path: dist
@@ -303,7 +303,7 @@ jobs:
           if ($left) { throw "uninstalled, but the Start menu still has: $($left.Name -join ', ')" }
           if (Test-Path $exe.FullName) { throw "uninstalled, but skykeep.exe is still there" }
           "uninstalled: no Skykeep entries left in the Start menu"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: skykeep-on-windows

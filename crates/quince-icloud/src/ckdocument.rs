@@ -11,7 +11,6 @@
 //! from an attacker-controlled length.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use std::io::Read;
 
 /// Where the readable text lives inside the document protobuf.
 const TEXT_PATH: &[u64] = &[2, 3, 2];
@@ -111,26 +110,16 @@ fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
         return Some(compressed.to_vec());
     }
 
-    let read_all = |mut reader: Box<dyn Read>| -> Option<Vec<u8>> {
-        let mut out = Vec::new();
-        reader.read_to_end(&mut out).ok()?;
-        Some(out)
-    };
-
     // gzip
     if compressed[0] == 0x1f && compressed[1] == 0x8b {
-        return read_all(Box::new(
-            flate2::read::GzDecoder::new(compressed).take(MAX_DECOMPRESSED),
-        ));
+        return crate::bounded::gunzip(compressed, MAX_DECOMPRESSED);
     }
 
     // zlib: low nibble of the first byte is the method (8 = deflate), and the two-byte
     // header is a multiple of 31.
     let header = u16::from(compressed[0]) << 8 | u16::from(compressed[1]);
     if compressed[0] & 0x0f == 8 && header % 31 == 0 {
-        if let Some(out) = read_all(Box::new(
-            flate2::read::ZlibDecoder::new(compressed).take(MAX_DECOMPRESSED),
-        )) {
+        if let Some(out) = crate::bounded::unzlib(compressed, MAX_DECOMPRESSED) {
             return Some(out);
         }
     }

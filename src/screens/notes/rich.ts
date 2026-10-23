@@ -13,6 +13,7 @@
  */
 import { Schema, type DOMOutputSpec, type Node as PMNode, type Mark } from "prosemirror-model";
 import type { Run } from "./Formatted";
+import { REFUSED_LINK, linkedNote, outsideHref } from "../../lib/links.ts";
 
 /** Apple's paragraph styles. */
 export const STYLE = {
@@ -131,7 +132,12 @@ export const schema = new Schema({
       parseDOM: [{ tag: "a[href]", getAttrs: (d) => ({ href: (d as HTMLElement).getAttribute("href") }) }],
       // No target: a click is the editor's to follow (notes/links), never a new window — one
       // opened by WebKitGTK for a link to a note went to the browser.
-      toDOM: (m) => ["a", { href: m.attrs.href, rel: "noreferrer" }, 0],
+      // A link Skykeep will not open keeps its address (the note is left as Apple has it), but
+      // says so where it stands; a click on it is refused (lib/follow.ts).
+      toDOM: (m) =>
+        outsideHref(m.attrs.href) || linkedNote(m.attrs.href)
+          ? ["a", { href: m.attrs.href, rel: "noreferrer" }, 0]
+          : ["a", { href: m.attrs.href, rel: "noreferrer", class: "nf-link-refused", title: REFUSED_LINK }, 0],
     },
   },
 });

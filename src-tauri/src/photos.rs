@@ -196,7 +196,7 @@ pub async fn fitted(app: &AppHandle, id: &str, long: u32) -> Result<Vec<u8>, Str
         .join("photos")
         .join("fit")
         .join(long.to_string())
-        .join(id);
+        .join(&*cache_name(id));
     let preview = long > crate::photo_cache::THUMB_STEP;
     if let Ok(bytes) = tokio::fs::read(&path).await {
         // The viewer's sizes are previews, let go of longest unseen first: seen now.
@@ -262,7 +262,26 @@ pub(crate) fn cache_path(app: &AppHandle, id: &str, size: Size) -> PathBuf {
     crate::state_dir(app)
         .join("photos")
         .join(size.name())
-        .join(id)
+        .join(&*cache_name(id))
+}
+
+/// A record id as one name in a folder. Ids come from CloudKit and the window, and are checked
+/// where a request comes in (`requested`) — and here too, where one becomes a path, so no other
+/// way in can make one reach elsewhere. A record name is letters, digits, `-` and `_`, kept as
+/// it is; anything else is spelled out in hex behind a `~` no record name has.
+pub(crate) fn cache_name(id: &str) -> std::borrow::Cow<'_, str> {
+    if !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return id.into();
+    }
+    let mut out = String::from("~");
+    for b in id.bytes() {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out.into()
 }
 
 /// One picture of a photo: from the disk cache, or fetched from Apple once and kept.
@@ -407,7 +426,10 @@ async fn from_apple(
 /// read once from the film and kept (`photos/poster/<id>`). An empty file there says the film
 /// is dark all through, so it is not read again. `None` when there is none to be had.
 async fn seen_frame(app: &AppHandle, id: &str) -> Option<Vec<u8>> {
-    let kept = crate::state_dir(app).join("photos").join("poster").join(id);
+    let kept = crate::state_dir(app)
+        .join("photos")
+        .join("poster")
+        .join(&*cache_name(id));
     if let Ok(bytes) = tokio::fs::read(&kept).await {
         return (!bytes.is_empty()).then_some(bytes);
     }
@@ -491,7 +513,7 @@ pub async fn repair_poster(app: &AppHandle, id: &str) -> bool {
                     .join("photos")
                     .join("fit")
                     .join(step.to_string())
-                    .join(id),
+                    .join(&*cache_name(id)),
             )
             .await;
         }
@@ -733,7 +755,12 @@ pub fn prepare(app: AppHandle) {
                         .take(600)
                         .map(|p| (p.id.clone(), steps_of(p, shown).1)),
                 )
-                .filter(|(id, step)| !fit_dir.join(step.to_string()).join(id).exists())
+                .filter(|(id, step)| {
+                    !fit_dir
+                        .join(step.to_string())
+                        .join(&*cache_name(id))
+                        .exists()
+                })
                 .collect()
         })
         .await
@@ -1801,7 +1828,10 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
         Some(given) => crate::attachment_name(Some(given), &id),
         None => format!("{id}.mp4"),
     };
-    let dir = crate::state_dir(&app).join("photos").join("open").join(&id);
+    let dir = crate::state_dir(&app)
+        .join("photos")
+        .join("open")
+        .join(&*cache_name(&id));
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| e.to_string())?;
@@ -1827,6 +1857,7 @@ pub async fn photo_play(id: String, app: AppHandle, data: State<'_, Data>) -> Ui
         head.truncate(n);
         head
     };
+    crate::saving::mark_from_internet(&path);
     if crate::runs_code(&name, &head) {
         return app
             .opener()
@@ -2022,12 +2053,12 @@ pub async fn photo_download(
         .path()
         .download_dir()
         .map_err(|_| "There is no Downloads folder to save to.")?;
-    let name = if name.contains('/') || name.starts_with('.') {
-        format!("Photo {}", &id[..id.len().min(8)])
-    } else {
-        name
-    };
-    let path = crate::free_path(&dir, &name);
+    // A shared album's file names are other people's: one plain name in Downloads, or none.
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let fallback = format!("Photo {}", id.chars().take(8).collect::<String>());
+    let path = crate::saving::save_path(&dir, &name, &fallback)?;
     let part = path.with_extension(format!(
         "{}.part",
         path.extension()
@@ -2040,7 +2071,11 @@ pub async fn photo_download(
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("iCloud did not send the file: {e}"))?;
-    let mut out = tokio::fs::File::create(&part)
+    // A file of its own, never one already there (nor a link left in its place).
+    let mut out = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&part)
         .await
         .map_err(|e| e.to_string())?;
     let mut body = response.bytes_stream();
@@ -2061,6 +2096,7 @@ pub async fn photo_download(
     tokio::fs::rename(&part, &path)
         .await
         .map_err(|e| e.to_string())?;
+    crate::saving::mark_from_internet(&path);
     Ok(path.display().to_string())
 }
 
@@ -2722,6 +2758,29 @@ async fn refresh_photos(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A record id becomes one name in the cache's folder, whatever it holds.
+    #[test]
+    fn a_record_id_is_one_name_in_its_folder() {
+        assert_eq!(cache_name("AbC-12_x"), "AbC-12_x");
+        let dir = std::path::Path::new("/data/photos/original");
+        for id in [
+            "../../cookies.json",
+            "..",
+            "a/b",
+            "a\\b",
+            "C:x",
+            "",
+            "x\0y",
+            "AW+/=",
+        ] {
+            let name = cache_name(id);
+            assert!(name.starts_with('~'), "{id:?}");
+            assert!(name[1..].chars().all(|c| c.is_ascii_hexdigit()), "{id:?}");
+            assert_eq!(dir.join(&*name).parent(), Some(dir), "{id:?}");
+        }
+        assert_ne!(cache_name("a/b"), cache_name("a\\b"));
+    }
 
     #[test]
     fn ranges_as_a_player_asks_for_them() {

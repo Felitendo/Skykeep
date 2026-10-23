@@ -3901,6 +3901,7 @@ dependencies = [
  "keyring",
  "num-bigint",
  "pbkdf2",
+ "quince-auth",
  "rand 0.9.5",
  "reqwest 0.12.28",
  "reqwest_cookie_store",

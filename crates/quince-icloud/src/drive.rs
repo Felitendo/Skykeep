@@ -249,8 +249,12 @@ pub async fn download_to(
         )));
     }
 
-    if let Some(parent) = destination.parent() {
-        tokio::fs::create_dir_all(parent).await.ok();
+    // Into a folder that is already there, never one made on the way: the caller chose the
+    // folder (Downloads), and a name that reached for others would have them made for it.
+    if !destination.parent().is_some_and(std::path::Path::is_dir) {
+        return Err(Error::Protocol(
+            "the folder to save into is not there".into(),
+        ));
     }
     // Into a file of its own beside the destination, moved into place only once it is all
     // there and only if nothing has taken the name meanwhile. Written straight to the name,
@@ -2026,6 +2030,37 @@ mod write_tests {
         .unwrap();
 
         assert_eq!(std::fs::read(&destination).unwrap(), b"hello drive");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_download_never_makes_folders_on_its_way() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data_token": { "url": format!("{}/bytes", server.uri()) }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bytes"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"x".to_vec()))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir();
+        let destination = dir.join("Startup").join("update.bat");
+        let saved = download_to(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            &destination,
+        )
+        .await;
+        assert!(saved.is_err());
+        assert!(!dir.join("Startup").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -344,6 +344,9 @@ fn copy(from: &Path, to: &Path, cancel: &AtomicBool) -> Done<u64> {
         total += n as u64;
     }
     dst.flush()?;
+    drop(dst);
+    // Every file copied out is iCloud's, much of it other people's (Windows: Mark of the Web).
+    crate::saving::mark_from_internet(to);
     Ok(total)
 }
 
@@ -1347,7 +1350,7 @@ fn photos(
         };
         let found = order
             .iter()
-            .map(|s| src.photos.join(s).join(&p.id))
+            .map(|s| src.photos.join(s).join(&*crate::photos::cache_name(&p.id)))
             .find(|f| f.is_file());
         let when = Timestamp::from_second(p.taken_at)
             .unwrap_or(Timestamp::UNIX_EPOCH)
@@ -1383,7 +1386,10 @@ fn photos(
         copy(&from, &to, t.cancel)?;
         date(&to, Some(p.taken_at));
         // A Live Photo's moving part, beside it under the same name.
-        let live = src.photos.join("live").join(&p.id);
+        let live = src
+            .photos
+            .join("live")
+            .join(&*crate::photos::cache_name(&p.id));
         if p.kind == "live" && live.is_file() {
             let movie = names.unique(&dir, split_ext(&name).0, "MOV");
             copy(&live, &dir.join(&movie), t.cancel)?;

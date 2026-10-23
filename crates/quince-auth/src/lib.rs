@@ -1119,12 +1119,22 @@ impl Client {
 /// lists as what Skykeep talks to, read from here so the list is the lock itself.
 pub const APPLE_DOMAINS: [&str; 3] = ["apple.com", "icloud.com", "icloud-content.com"];
 
+/// Whether this computer counts as Apple's: in this crate's tests, and in a build made with the
+/// `loopback` feature (the other crates' tests, whose mock servers run here) — never in the
+/// app. A shipped client that reached `localhost` could be pointed, by an address in Apple's
+/// data (a contact's photo), at whatever else runs on the person's computer.
+const LOOPBACK: bool = cfg!(any(test, feature = "loopback"));
+
 /// Whether `host` is Apple's: under one of [`APPLE_DOMAINS`] — every host Skykeep has any
-/// reason to reach. Loopback too, which is this computer.
+/// reason to reach. Loopback too, which is this computer, only in tests (see `LOOPBACK`).
 #[must_use]
 pub fn is_apple_host(host: &str) -> bool {
+    apple_host(host, LOOPBACK)
+}
+
+fn apple_host(host: &str, loopback: bool) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    host == "localhost"
+    (loopback && host == "localhost")
         || APPLE_DOMAINS
             .iter()
             .any(|d| host == *d || host.ends_with(&format!(".{d}")))
@@ -1199,10 +1209,60 @@ fn normal_host(host: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Whether a request's URL names one of the listed hosts exactly.
+/// Whether a request's URL names one of the listed hosts exactly — and, where it names an
+/// address, one out on the internet.
 fn url_is_listed(url: &reqwest::Url, listed: &[String]) -> bool {
-    url.host_str()
-        .is_some_and(|h| listed.iter().any(|l| *l == normal_host(h)))
+    url.host_str().is_some_and(|h| {
+        let h = normal_host(h);
+        listed.contains(&h) && h.parse::<std::net::IpAddr>().ok().is_none_or(is_public_ip)
+    })
+}
+
+/// Whether an address is out on the internet: not this computer, not the local network (a
+/// router's page, a printer, `192.168.…`, `10.…`, `fd…`), not link-local (where cloud machines
+/// keep their secrets, `169.254.169.254`), nor any other range no public calendar is on. A
+/// subscription is an address anyone can hand the person — and its name can be pointed at any
+/// address its owner likes — so one that leads inside is never fetched.
+#[must_use]
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || a >= 240
+                // Shared address space (carrier NAT, tailnets) and benchmarking.
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 198 && (18..20).contains(&b))
+                // IETF protocol assignments.
+                || (a == 192 && b == 0 && v4.octets()[2] == 0))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            // NAT64 (`64:ff9b::/96`) carries an IPv4 address inside.
+            if v6.segments()[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                let [.., a, b, c, d] = v6.octets();
+                return is_public_ip(IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d)));
+            }
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || (first & 0xffc0) == 0xfec0
+                || first == 0x2001 && v6.segments()[1] == 0x0db8)
+        }
+    }
 }
 
 /// The subscribed-calendar client's resolver: a listed host is looked up as the system looks
@@ -1219,8 +1279,18 @@ impl reqwest::dns::Resolve for ListedOnly {
                     format!("{host} is not a calendar you subscribed to").into();
                 return Err(refused);
             }
-            let found = tokio::net::lookup_host((host.as_str(), 0)).await?;
-            let addrs: reqwest::dns::Addrs = Box::new(found.collect::<Vec<_>>().into_iter());
+            // Whatever the name says, only addresses out on the internet are dialled: a feed
+            // whose name leads to this computer or the local network reaches neither.
+            let found: Vec<_> = tokio::net::lookup_host((host.as_str(), 0))
+                .await?
+                .filter(|a| is_public_ip(a.ip()))
+                .collect();
+            if found.is_empty() {
+                let refused: Box<dyn std::error::Error + Send + Sync> =
+                    format!("{host} is not on the internet").into();
+                return Err(refused);
+            }
+            let addrs: reqwest::dns::Addrs = Box::new(found.into_iter());
             Ok(addrs)
         })
     }
@@ -1229,8 +1299,12 @@ impl reqwest::dns::Resolve for ListedOnly {
 /// Where a request that is not Apple's is pointed: a name the resolver refuses.
 const REFUSED: &str = "http://refused.skykeep.invalid";
 
-/// Whether a request's URL may be sent: an Apple host by name, or this computer.
+/// Whether a request's URL may be sent: an Apple host by name, or this computer in tests.
 fn url_is_apples(url: &reqwest::Url) -> bool {
+    url_apples(url, LOOPBACK)
+}
+
+fn url_apples(url: &reqwest::Url, loopback: bool) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
@@ -1239,8 +1313,8 @@ fn url_is_apples(url: &reqwest::Url) -> bool {
         .trim_end_matches(']')
         .parse::<std::net::IpAddr>()
     {
-        Ok(ip) => ip.is_loopback(),
-        Err(_) => is_apple_host(host),
+        Ok(ip) => loopback && ip.is_loopback(),
+        Err(_) => apple_host(host, loopback),
     }
 }
 
@@ -1262,6 +1336,35 @@ impl reqwest::dns::Resolve for AppleOnly {
             let addrs: reqwest::dns::Addrs = Box::new(found.collect::<Vec<_>>().into_iter());
             Ok(addrs)
         })
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    /// What the shipped client allows: Apple's hosts, and never this computer — by name or
+    /// by address.
+    #[test]
+    fn a_release_client_never_reaches_this_computer() {
+        for host in ["localhost", "LOCALHOST.", "127.0.0.1", "[::1]"] {
+            assert!(!apple_host(host, false), "{host}");
+        }
+        for url in [
+            "http://localhost:8080/",
+            "http://127.0.0.1:631/",
+            "http://127.1.2.3/",
+            "http://[::1]:9/",
+            "https://localhost./",
+        ] {
+            let u = reqwest::Url::parse(url).unwrap();
+            assert!(!url_apples(&u, false), "{url}");
+            assert!(url_apples(&u, true), "{url}");
+        }
+        assert!(url_apples(
+            &reqwest::Url::parse("https://p01-contacts.icloud.com/x").unwrap(),
+            false
+        ));
     }
 }
 
@@ -1299,6 +1402,53 @@ mod listed_tests {
         assert!(!ok("https://evil.calendar.example.org/a.ics"));
         assert!(!ok("https://example.org/a.ics"));
         assert!(!ok("https://calendar.example.org.evil.net/a.ics"));
+    }
+
+    /// A subscription never reaches this computer or the local network: not by an address in
+    /// it, not by a name that leads there.
+    #[tokio::test]
+    async fn a_subscription_never_reaches_inside() {
+        use std::net::IpAddr;
+        for inside in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.5.4",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.100.100.100",
+            "0.0.0.0",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fe80::1",
+            "fd00::1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.168.0.1",
+            "64:ff9b::a9fe:a9fe",
+        ] {
+            assert!(!is_public_ip(inside.parse::<IpAddr>().unwrap()), "{inside}");
+        }
+        for out in ["93.184.215.14", "1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(is_public_ip(out.parse::<IpAddr>().unwrap()), "{out}");
+        }
+        // Listed, and still refused: an address inside, or a name that leads inside.
+        let by_address = vec![normal_host("192.168.1.1"), normal_host("[::1]")];
+        for u in ["http://192.168.1.1/a.ics", "http://[::1]:8080/a.ics"] {
+            assert!(
+                !url_is_listed(&reqwest::Url::parse(u).unwrap(), &by_address),
+                "{u}"
+            );
+        }
+        let http = listed_only(&["localhost".into()]).build().unwrap();
+        let err = http
+            .get("http://localhost:9/feed.ics")
+            .send()
+            .await
+            .expect_err("a name that leads to this computer");
+        assert!(
+            format!("{err:?}").contains("not on the internet"),
+            "{err:?}"
+        );
     }
 }
 
