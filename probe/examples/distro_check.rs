@@ -6,16 +6,24 @@
 //!   then forgotten. Its directory is a fresh temporary one, so its keyring entry is never the
 //!   app's own;
 //! - `distro_check heic <file>`: the file decoded to a JPEG by `quince_media::heic_to_jpeg`
-//!   through the system's libheif, as a HEIC photo is shown.
+//!   through the system's libheif, as a HEIC photo is shown — or, run from inside an AppImage's
+//!   AppDir (APPDIR set), through the libheif and HEVC decoder it carries, as the app finds them;
+//! - `distro_check video <file>`: the file's poster read by `quince_media::poster` (decodebin,
+//!   videoconvert, videoflip, appsink), then played to its end through playbin3 — the window's
+//!   player — with every frame decoded. Through whichever GStreamer the loader finds: the
+//!   system's, or the AppImage's own with its environment (its AppRun hook) set.
 use anyhow::{anyhow, bail, Result};
 use quince_auth::session::Session;
 
 fn main() -> Result<()> {
+    // As the app's main does, before any thread starts.
+    quince_media::appimage::use_bundled_heif_plugins();
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("keyring") => keyring(),
         Some("heic") => heic(args.get(2).ok_or_else(|| anyhow!("heic <file>"))?),
-        _ => bail!("usage: distro_check keyring | heic <file>"),
+        Some("video") => video(args.get(2).ok_or_else(|| anyhow!("video <file>"))?),
+        _ => bail!("usage: distro_check keyring | heic <file> | video <file>"),
     }
 }
 
@@ -56,6 +64,65 @@ fn heic(path: &str) -> Result<()> {
         picture.width(),
         picture.height(),
         jpeg.len()
+    );
+    Ok(())
+}
+
+fn video(path: &str) -> Result<()> {
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
+    let file = std::path::Path::new(path).canonicalize()?;
+    let poster = quince_media::poster::first_seen_frame(&file)
+        .map_err(|e| anyhow!("poster: {e}"))?
+        .ok_or_else(|| anyhow!("poster: no frame that shows something"))?;
+    let picture = image::load_from_memory_with_format(&poster, image::ImageFormat::Jpeg)?;
+
+    // playbin3 to the end, every frame decoded and handed to a sink that only counts them.
+    let uri = gst::glib::filename_to_uri(&file, None).map_err(|e| anyhow!("uri: {e}"))?;
+    let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let sink = gst::ElementFactory::make("fakesink")
+        .property("sync", false)
+        .property("signal-handoffs", true)
+        .build()
+        .map_err(|e| anyhow!("fakesink: {e}"))?;
+    let counted = frames.clone();
+    sink.connect("handoff", false, move |_| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        None
+    });
+    let player = gst::ElementFactory::make("playbin3")
+        .property("uri", uri.as_str())
+        .property("video-sink", &sink)
+        .property(
+            "audio-sink",
+            gst::ElementFactory::make("fakesink")
+                .build()
+                .map_err(|e| anyhow!("fakesink: {e}"))?,
+        )
+        .build()
+        .map_err(|e| anyhow!("playbin3: {e}"))?;
+    player
+        .set_state(gst::State::Playing)
+        .map_err(|e| anyhow!("play: {e}"))?;
+    let bus = player.bus().ok_or_else(|| anyhow!("no bus"))?;
+    let ended = bus.timed_pop_filtered(
+        gst::ClockTime::from_seconds(20),
+        &[gst::MessageType::Eos, gst::MessageType::Error],
+    );
+    let _ = player.set_state(gst::State::Null);
+    match ended.as_ref().map(|m| m.view()) {
+        Some(gst::MessageView::Eos(_)) => {}
+        Some(gst::MessageView::Error(e)) => bail!("playbin3: {} ({:?})", e.error(), e.debug()),
+        _ => bail!("playbin3: not finished in 20 s"),
+    }
+    let frames = frames.load(std::sync::atomic::Ordering::Relaxed);
+    if frames == 0 {
+        bail!("playbin3: reached the end without a frame");
+    }
+    println!(
+        "video: poster {}x{}, played to the end through playbin3 ({frames} frames)",
+        picture.width(),
+        picture.height()
     );
     Ok(())
 }

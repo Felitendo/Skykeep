@@ -39,7 +39,9 @@ jobs:
             libsecret-1-dev libheif-dev libfuse3-dev pkg-config patchelf rpm file \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
-            libheif-examples libheif-plugin-x265
+            libheif-plugin-libde265 libheif-examples libheif-plugin-x265
+          # libheif-plugin-libde265 is the HEVC decoder the AppImage carries for HEIC photos
+          # (tauri.conf.json, bundle.linux.appimage.files); x265 only encodes the test's HEIC.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -68,7 +70,9 @@ jobs:
           mkdir compat
           cp target/release/bundle/deb/*.deb target/release/bundle/rpm/*.rpm \
              target/release/bundle/appimage/*.AppImage \
-             target/release/examples/distro_check test.heic packaging/linux-compat/check.sh compat/
+             target/release/examples/distro_check test.heic packaging/linux-compat/check.sh \
+             crates/quince-media/tests/fixtures/black-start.mp4 \
+             crates/quince-media/tests/fixtures/hevc.mov compat/
           ls -l compat
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -109,7 +113,8 @@ jobs:
         run: |
           chmod +x /compat/check.sh /compat/distro_check
           # shellcheck disable=SC2086
-          bash /compat/check.sh /compat/$PKG /compat/distro_check /compat/test.heic
+          bash /compat/check.sh /compat/$PKG /compat/distro_check /compat/test.heic \
+            /compat/black-start.mp4 /compat/hevc.mov
 
   # The packages built on each distribution itself, from the build dependencies CONTRIBUTING
   # lists for it — so a missing or renamed -devel package, a compiler that disagrees or a
@@ -127,6 +132,12 @@ jobs:
           - { name: "openSUSE Tumbleweed", key: tumbleweed, image: "opensuse/tumbleweed", bundle: rpm }
     container:
       image: ${{ matrix.image }}
+      # openSUSE's image declares no PATH. The runner builds each step's PATH from the image's
+      # own plus what steps add (GITHUB_PATH, the rustup line below) — with none declared, a
+      # step after one adds a directory got only that directory and no /usr/bin: "exec: sh:
+      # executable file not found". Every other image here declares exactly this.
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - name: Build dependencies, as CONTRIBUTING lists them
         run: |
@@ -181,6 +192,9 @@ jobs:
           - { name: "openSUSE Tumbleweed", key: tumbleweed, image: "opensuse/tumbleweed", bundle: rpm }
     container:
       image: ${{ matrix.image }}
+      # As in `native`: openSUSE's image declares no PATH of its own.
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - name: Tools the artifact actions need
         if: matrix.key == 'tumbleweed'
@@ -196,7 +210,8 @@ jobs:
       - name: Install and run
         run: |
           chmod +x /compat/check.sh /compat/distro_check
-          bash /compat/check.sh "$(ls /native/*.${{ matrix.bundle }})" /compat/distro_check /compat/test.heic
+          bash /compat/check.sh "$(ls /native/*.${{ matrix.bundle }})" /compat/distro_check /compat/test.heic \
+            /compat/black-start.mp4 /compat/hevc.mov
 
   arch:
     needs: build
@@ -210,6 +225,12 @@ jobs:
       # the keyring check then fails for the container, not for Skykeep. With every capability
       # it starts (checked under podman).
       options: --cap-add=ALL
+    # bash, not the container's sh: Arch's sh is bash in POSIX mode, whose `source` looks for a
+    # bare file name only on PATH — never in the current directory — so `source PKGBUILD`
+    # failed with "file not found" from inside packaging/arch.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Build tools
         run: pacman -Syu --noconfirm --needed base-devel git rust nodejs npm
@@ -224,10 +245,10 @@ jobs:
           chown -R builder "$GITHUB_WORKSPACE"
           # The package's own dependencies, from its PKGBUILD, as makepkg -s would install them.
           # shellcheck disable=SC1091
-          (cd packaging/arch && source PKGBUILD && pacman -S --noconfirm --needed --asdeps "${depends[@]}" "${makedepends[@]}")
+          (cd packaging/arch && source ./PKGBUILD && pacman -S --noconfirm --needed --asdeps "${depends[@]}" "${makedepends[@]}")
           su builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && CARGO_BUILD_JOBS=4 makepkg -f --noconfirm"
       - name: Install and run
         run: |
           chmod +x /compat/check.sh /compat/distro_check
           bash /compat/check.sh "$(ls "$GITHUB_WORKSPACE"/packaging/arch/skykeep-*.pkg.tar.zst)" \
-            /compat/distro_check /compat/test.heic
+            /compat/distro_check /compat/test.heic /compat/black-start.mp4 /compat/hevc.mov

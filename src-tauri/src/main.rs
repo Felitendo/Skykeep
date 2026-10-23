@@ -36,7 +36,7 @@ mod outbox;
 mod photo_cache;
 mod photos;
 #[cfg(target_os = "linux")]
-mod poster;
+use quince_media::poster;
 mod power;
 #[cfg(not(target_os = "linux"))]
 mod poster {
@@ -6208,7 +6208,11 @@ fn main() {
     login::note_launch();
     steady_drawing();
     smooth_video();
-    // After the two above (they set the environment, which only a single thread may) and
+    // From an AppImage: HEIC photos through the HEVC decoder it carries (quince-media's
+    // appimage.rs), set before libheif is first used and before any thread starts.
+    #[cfg(target_os = "linux")]
+    quince_media::appimage::use_bundled_heif_plugins();
+    // After those above (they set the environment, which only a single thread may) and
     // before anything opens the library, the webview its storage, or the window-state plugin
     // its file: the folders moved from the old identifier, or — if they could not be — this
     // launch run under the old one, from them as they are (migrate.rs).
