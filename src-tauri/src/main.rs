@@ -27,6 +27,8 @@ mod migrate;
 mod mount;
 mod mount_photos;
 mod notes_cmds;
+#[cfg(target_os = "linux")]
+mod notices;
 mod outbox;
 mod photo_cache;
 mod photos;
