@@ -120,21 +120,25 @@ fn object_index(id: &[u8]) -> Option<usize> {
     usize::try_from(int(&fields(id)?, 6)?).ok()
 }
 
+/// A table's data, inflated — within a ceiling: a shared note's table is whoever shared it's
+/// to write, and a bomb is refused rather than read into memory (crate::bounded).
 fn inflate(data: &[u8]) -> Option<Vec<u8>> {
+    use crate::bounded::{gunzip, MOST_INFLATED};
     use std::io::Read;
-    let mut out = Vec::new();
     if data.starts_with(&[0x1f, 0x8b]) {
-        flate2::read::GzDecoder::new(data)
-            .read_to_end(&mut out)
-            .ok()?;
-    } else if flate2::read::ZlibDecoder::new(data)
-        .read_to_end(&mut out)
-        .is_ok()
-    {
-    } else {
-        return Some(data.to_vec());
+        return gunzip(data, MOST_INFLATED);
     }
-    Some(out)
+    // Zlib, or (when it is not) bare bytes. One that is zlib but too large is refused, not
+    // taken for bare bytes.
+    let mut out = Vec::new();
+    match flate2::read::ZlibDecoder::new(data)
+        .take(MOST_INFLATED + 1)
+        .read_to_end(&mut out)
+    {
+        Ok(_) if out.len() as u64 > MOST_INFLATED => None,
+        Ok(_) => Some(out),
+        Err(_) => Some(data.to_vec()),
+    }
 }
 
 struct Doc<'a> {
@@ -1727,6 +1731,24 @@ pub fn cells(document: &[u8]) -> Option<Vec<Vec<String>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shared note's table that inflates past the ceiling is refused, never read whole.
+    #[test]
+    fn a_table_bomb_is_refused() {
+        use std::io::Write;
+        let zeros = vec![0u8; 1024 * 1024];
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        for _ in 0..=(crate::bounded::MOST_INFLATED / (1024 * 1024)) {
+            gz.write_all(&zeros).unwrap();
+            z.write_all(&zeros).unwrap();
+        }
+        let (gz, z) = (gz.finish().unwrap(), z.finish().unwrap());
+        assert!(gz.len() < 1024 * 1024 && z.len() < 1024 * 1024);
+        assert_eq!(inflate(&gz), None);
+        assert_eq!(inflate(&z), None);
+        assert_eq!(inflate(b"plain"), Some(b"plain".to_vec()));
+    }
 
     /// A 2×2 table a phone made and nobody typed in (iOS, 2026-10-21), gzip + base64.
     const PHONE_BLANK: &[&str] = &[

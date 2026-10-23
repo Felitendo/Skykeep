@@ -27,7 +27,13 @@ tokio = { workspace = true, features = ["net"] }
 reqwest_releases = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
+[features]
+# This computer counts as Apple's — for tests, whose mock servers run here. Never in the app.
+loopback = []
+
 [dev-dependencies]
+# The crate's own tests (tests/*.rs) reach mock servers on this computer.
+quince-auth = { path = ".", features = ["loopback"] }
 tokio = { workspace = true }
 wiremock = "0.6"
 tempfile = "3"

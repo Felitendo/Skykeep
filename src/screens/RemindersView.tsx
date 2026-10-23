@@ -1,4 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { REFUSED_LINK, outsideHref } from "../lib/links";
 import { fadeIn, fadeOut } from "../lib/fade";
 import { overlayOpen, useActiveRef } from "../lib/screen";
 import { useModalFocus } from "../lib/focus";
@@ -2385,8 +2386,8 @@ const ReminderRow = memo(function ReminderRow({
                 {chips.messaging}
               </span>
             )}
-            {chips.url && (
-              <a className="rx-chip rx-chip-link" href={chips.url} target="_blank" rel="noreferrer" tabIndex={-1} title={chips.url}>
+            {chips.url && outsideHref(chips.url) && (
+              <a className="rx-chip rx-chip-link" href={outsideHref(chips.url)!} target="_blank" rel="noreferrer" tabIndex={-1} title={chips.url}>
                 <Link2 aria-hidden="true" size={12} strokeWidth={2.2} />
                 {hostOf(chips.url)}
               </a>
@@ -2699,12 +2700,18 @@ function DueField({ reminder, onChange }: { reminder: Reminder; onChange: (day: 
 function UrlField({ reminder, url, onSave }: { reminder: Reminder; url: string | null; onSave: (url: string | null) => void }) {
   if (!REMINDER_DETAIL_WRITES) {
     if (!url) return null;
+    // A link of a kind Skykeep does not open (lib/links.ts) is shown, never followed.
+    const out = outsideHref(url);
     return (
       <div className="rx-field">
         <span>URL</span>
-        <a className="rx-url" href={url} target="_blank" rel="noreferrer" title={url}>
-          {url.replace(/^https?:\/\//, "").replace(/\/$/, "")}
-        </a>
+        {out ? (
+          <a className="rx-url" href={out} target="_blank" rel="noreferrer" title={url}>
+            {url.replace(/^https?:\/\//, "").replace(/\/$/, "")}
+          </a>
+        ) : (
+          <span className="rx-url" title={REFUSED_LINK}>{url}</span>
+        )}
       </div>
     );
   }
@@ -2730,8 +2737,8 @@ function UrlField({ reminder, url, onSave }: { reminder: Reminder; url: string |
           }
         }}
       />
-      {url && /^(https?:|mailto:)/i.test(url) && (
-        <a className="rx-url rx-url-open" href={url} target="_blank" rel="noreferrer" title={url}>
+      {url && /^(https?:|mailto:)/i.test(url) && outsideHref(url) && (
+        <a className="rx-url rx-url-open" href={outsideHref(url)!} target="_blank" rel="noreferrer" title={url}>
           Open
         </a>
       )}

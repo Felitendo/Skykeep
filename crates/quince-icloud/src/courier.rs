@@ -368,6 +368,35 @@ const EXPIRED_PUSH_TOKEN: u64 = 6;
 /// How long the server is given to answer the connect, and a JWT request.
 const ANSWER: Duration = Duration::from_secs(15);
 
+/// The socket's address for `server` (a host, as [`SERVER`], or a full `wss://` address), or
+/// `None` when it is not Apple's push service. The host is read as the socket library reads
+/// it — a parsed URL, not the text — so `evil.example?.apple.com` or `evil.example#.apple.com`
+/// is the host it really is. Only `wss://`; a plain `ws://` socket, or this computer, only in
+/// tests (`loopback`).
+fn push_base(server: &str, loopback: bool) -> Option<String> {
+    let full = if server.contains("://") {
+        server.to_string()
+    } else {
+        format!("wss://{server}")
+    };
+    let url = reqwest::Url::parse(&full).ok()?;
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    let bare = url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path(), "" | "/");
+    let apple = url.scheme() == "wss" && host.ends_with(".apple.com");
+    let here = loopback
+        && matches!(url.scheme(), "ws" | "wss")
+        && (host == "localhost"
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback()));
+    (bare && (apple || here)).then(|| url.as_str().trim_end_matches('/').to_string())
+}
+
 impl Courier {
     /// Connect to `server` (normally [`SERVER`]), get or keep a token, and filter the socket
     /// to the containers' topics. Not yet registered: see [`Courier::register`].
@@ -377,26 +406,16 @@ impl Courier {
         containers: &[&str],
     ) -> std::result::Result<Self, Failure> {
         // Only Apple's push server, ever: the socket does not ride the HTTP client's locks.
-        let host = server
-            .split("://")
-            .last()
-            .unwrap_or(server)
-            .split(['/', ':'])
-            .next()
-            .unwrap_or_default();
-        if !(host.ends_with(".apple.com") || host == "localhost" || host == "127.0.0.1") {
-            return Err(Failure::Refused(format!("{host} is not Apple's")));
-        }
-        let scheme = if server.starts_with("ws://") {
-            ""
-        } else {
-            "wss://"
+        let Some(base) = push_base(server, cfg!(test)) else {
+            return Err(Failure::Refused(format!(
+                "{server} is not Apple's push server"
+            )));
         };
         let topics: Vec<String> = containers.iter().map(|c| topic_of(c)).collect();
         let mut clock: Option<u64> = None;
         for _ in 0..3 {
             let url = format!(
-                "{scheme}{server}/v2/{}",
+                "{base}/v2/{}",
                 identity.connect_message(clock.unwrap_or_else(now_ms))
             );
             let mut request = url
@@ -959,6 +978,32 @@ mod tests {
         let mut id = Identity::new();
         let got = Courier::connect("example.com", &mut id, &["com.apple.notes"]).await;
         assert!(matches!(got, Err(Failure::Refused(_))));
+    }
+
+    /// The host is the one the socket would dial, not text that ends the right way; and a
+    /// release build dials Apple over `wss://` alone, never this computer.
+    #[test]
+    fn the_push_host_is_read_as_a_url() {
+        assert_eq!(
+            push_base(SERVER, false).as_deref(),
+            Some("wss://websocket.push.apple.com")
+        );
+        for bad in [
+            "evil.example?.apple.com",
+            "evil.example#.apple.com",
+            "evil.example/.apple.com",
+            "user@evil.example:443/.apple.com",
+            "apple.com.evil.example",
+            "ws://websocket.push.apple.com",
+            "https://websocket.push.apple.com",
+            "wss://evil.example?x=.apple.com",
+            "localhost",
+            "ws://127.0.0.1:9",
+            "ws://localhost:9",
+        ] {
+            assert_eq!(push_base(bad, false), None, "{bad}");
+        }
+        assert!(push_base("ws://127.0.0.1:9", true).is_some());
     }
 
     #[test]

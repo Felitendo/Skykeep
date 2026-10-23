@@ -371,14 +371,10 @@ pub async fn fetch_feed(http: &reqwest::Client, region: &str, lang: &str) -> Res
         }
         let bytes = response.bytes().await?;
         let text = if bytes.starts_with(&[0x1f, 0x8b]) {
-            use std::io::Read;
-            let mut out = String::new();
-            flate2::read::GzDecoder::new(&bytes[..])
-                .read_to_string(&mut out)
-                .map_err(|e| {
-                    Error::Protocol(format!("the holiday calendar would not open: {e}"))
-                })?;
-            out
+            let out = crate::bounded::gunzip(&bytes, crate::bounded::MOST_INFLATED)
+                .ok_or_else(|| Error::Protocol("the holiday calendar would not open".into()))?;
+            String::from_utf8(out)
+                .map_err(|e| Error::Protocol(format!("the holiday calendar would not open: {e}")))?
         } else {
             String::from_utf8_lossy(&bytes).into_owned()
         };

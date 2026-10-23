@@ -22,6 +22,7 @@ mod export;
 mod grants;
 mod intake;
 mod library_lock;
+mod links;
 mod login;
 mod migrate;
 mod mount;
@@ -43,6 +44,7 @@ mod poster {
 mod push;
 mod refresh;
 mod reminders_cmds;
+mod saving;
 // Skykeep's results in GNOME's and KDE's own search, on the session bus.
 #[cfg(target_os = "linux")]
 mod search_provider;
@@ -716,6 +718,7 @@ async fn note_attachment_open(
     tokio::fs::rename(&partial, &path)
         .await
         .map_err(|e| e.to_string())?;
+    saving::mark_from_internet(&path);
     hand_over_attachment(&app, &path).await
 }
 
@@ -797,17 +800,37 @@ pub(crate) fn attachment_name(given: Option<&str>, id: &str) -> String {
     let trimmed = cleaned
         .trim_start_matches(['.', ' '])
         .trim_end_matches(['.', ' ']);
-    // Long enough for any real name, short enough for every file system.
-    let mut name: String = trimmed.chars().take(120).collect();
+    // Long enough for any real name, short enough for every file system — and, cut short, it
+    // still ends in neither a dot nor a space, which Windows drops (turning `a.pdf.` into
+    // another file than the one checked).
+    let mut name: String = trimmed
+        .chars()
+        .take(120)
+        .collect::<String>()
+        .trim_end_matches(['.', ' '])
+        .to_string();
+    // Windows reads a device in the stem whatever follows it (`CON.txt`, `CON .txt`), and
+    // counts superscript digits as digits (`COM¹`).
     let stem = name
         .split('.')
         .next()
         .unwrap_or_default()
-        .to_ascii_uppercase();
-    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.as_bytes()[3].is_ascii_digit());
+        .trim_end_matches(' ')
+        .to_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|n| {
+            let mut n = n.chars();
+            matches!(
+                (n.next(), n.next()),
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
+    };
+    let device = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+    ) || numbered("COM")
+        || numbered("LPT");
     if device {
         name.insert(0, '_');
     }
@@ -895,6 +918,71 @@ pub(crate) fn runs_code(name: &str, bytes: &[u8]) -> bool {
         "img",
         "vhd",
         "vhdx",
+        "appxbundle",
+        "msixbundle",
+        "appinstaller",
+        "search-ms",
+        "searchconnector-ms",
+        "diagcab",
+        "rdp",
+        "website",
+        "wsc",
+        "sct",
+        "msh",
+        "msh1",
+        "msh2",
+        "mshxml",
+        "msh1xml",
+        "msh2xml",
+        "ps1xml",
+        "ps2",
+        "ps2xml",
+        "psc1",
+        "psc2",
+        "vb",
+        "grp",
+        "hlp",
+        "ins",
+        "isp",
+        "theme",
+        "themepack",
+        "deskthemepack",
+        "cab",
+        "xbap",
+        "jsx",
+        // Office documents that carry macros or add-ins, and OneNote's (a favourite carrier)
+        "docm",
+        "dotm",
+        "xlsm",
+        "xltm",
+        "xlam",
+        "xla",
+        "xll",
+        "pptm",
+        "potm",
+        "ppsm",
+        "ppam",
+        "sldm",
+        "one",
+        "onepkg",
+        "onetoc2",
+        "mdb",
+        "mde",
+        "accde",
+        "ade",
+        "adp",
+        "mam",
+        "mda",
+        // Pages a browser runs from the disk, with their scripts
+        "html",
+        "htm",
+        "xhtml",
+        "xht",
+        "shtml",
+        "mht",
+        "mhtml",
+        "svg",
+        "svgz",
         // macOS
         "app",
         "command",
@@ -958,12 +1046,39 @@ fn percent_decode(text: &str) -> String {
 /// its owner can open. Made with the system's usual permissions it was readable by every user
 /// of the computer, and the cookies are a signed-in iCloud session. Everything inside is covered
 /// at once: nothing in a folder can be reached without opening the folder.
+///
+/// What is directly inside is made the owner's alone too — the library and its journal, each
+/// folder of photos, notes' files, faces — so a copy or a restore that loses the outer folder's
+/// mode does not leave them open to everyone. Called again once the library is open, for the
+/// files the database makes as it opens.
 fn keep_private(dir: &std::path::Path) {
     let _ = std::fs::create_dir_all(dir);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            // Never through a link: its target is not this folder's to change.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let mode = if kind.is_dir() {
+                0o700
+            } else if kind.is_file() {
+                0o600
+            } else {
+                continue;
+            };
+            let path = entry.path();
+            if std::fs::symlink_metadata(&path)
+                .is_ok_and(|m| m.permissions().mode() & 0o777 != mode)
+            {
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
+            }
+        }
     }
 }
 
@@ -2108,6 +2223,21 @@ async fn network_reach(app: tauri::AppHandle, feeds: State<'_, Feeds>) -> UiResu
     })
 }
 
+/// The `https://` form of a plain `http://` feed address, to be tried first; `None` for one
+/// already secure.
+fn secure_feed_url(url: &str) -> Option<String> {
+    let mut u = reqwest::Url::parse(url).ok()?;
+    if u.scheme() != "http" {
+        return None;
+    }
+    // A port written for http is http's; the secure one is the scheme's own.
+    if u.port().is_some() {
+        u.set_port(None).ok()?;
+    }
+    u.set_scheme("https").ok()?;
+    Some(u.to_string())
+}
+
 /// Fetch one subscription's file with the client that reaches its host and nothing else.
 async fn fetch_subscription(url: &str) -> UiResult<(String, feeds::Feed)> {
     let host = feeds::host_of(url).ok_or("That address has no server in it.")?;
@@ -2230,19 +2360,47 @@ async fn calendar_subscribe(
     app: tauri::AppHandle,
     feeds_state: State<'_, Feeds>,
 ) -> UiResult<Subscription> {
-    let url = feeds::normalise_url(&url)
-        .map_err(|e| e.to_string())?
-        .to_string();
+    let url = feeds::normalise_url(&url).map_err(|e| e.to_string())?;
+    // A public calendar is out on the internet; an address on this computer or the local
+    // network is refused here, said plainly (the client refuses it besides, and a name that
+    // leads there: quince_auth::listed_only).
+    if let Ok(ip) = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+    {
+        if !quince_auth::is_public_ip(ip) {
+            return Err(
+                "That address is on this computer or your local network, not a public calendar."
+                    .into(),
+            );
+        }
+    }
+    let url = url.to_string();
+    // Over https where the server offers it: a plain http feed can be changed on its way by
+    // anyone on the network, events and their links with it.
+    let secure = secure_feed_url(&url);
     if feeds_state
         .subs
         .lock()
         .await
         .iter()
-        .any(|(s, _)| s.url == url)
+        .any(|(s, _)| s.url == url || secure.as_ref() == Some(&s.url))
     {
         return Err("You’re already subscribed to that calendar.".into());
     }
-    let (text, feed) = fetch_subscription(&url).await?;
+    let secured = match &secure {
+        Some(s) => fetch_subscription(s).await.ok().map(|got| (s.clone(), got)),
+        None => None,
+    };
+    let (url, (text, feed)) = match secured {
+        Some(got) => got,
+        None => {
+            let got = fetch_subscription(&url).await?;
+            (url, got)
+        }
+    };
     let mut subs = feeds_state.subs.lock().await;
     let taken: Vec<String> = subs.iter().map(|(s, _)| s.colour.clone()).collect();
     let colour = feed.colour.clone().unwrap_or_else(|| {
@@ -3599,7 +3757,9 @@ fn free_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let (stem, ext) = name.rsplit_once('.').map_or((name, ""), |(s, e)| (s, e));
     let mut path = dir.join(name);
     let mut suffix = 1;
-    while path.exists() {
+    // Anything at all under the name counts as taken — a link too, even one that leads
+    // nowhere: written through, it would put the file wherever the link points.
+    while path.symlink_metadata().is_ok() {
         path = dir.join(if ext.is_empty() {
             format!("{stem} {suffix}")
         } else {
@@ -3633,17 +3793,13 @@ async fn contacts_export(
         .path()
         .download_dir()
         .map_err(|_| "Couldn't find your Downloads folder.".to_string())?;
-    // A name fit for a file: no folders smuggled in, never empty.
-    let clean: String = file_name
-        .chars()
-        .filter(|c| !matches!(c, '/' | '\\' | '\0'))
-        .collect();
-    let clean = if clean.trim().trim_end_matches(".vcf").is_empty() {
-        "iCloud vCards.vcf".into()
+    // A name fit for a file: no folders, streams or devices smuggled in, never empty.
+    let clean = if file_name.trim().trim_end_matches(".vcf").is_empty() {
+        "iCloud vCards.vcf"
     } else {
-        clean
+        file_name.as_str()
     };
-    let path = free_path(&downloads, &clean);
+    let path = saving::save_path(&downloads, clean, "iCloud vCards.vcf")?;
     std::fs::write(&path, vcard).map_err(|e| format!("Couldn't save the vCard: {e}"))?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -3873,24 +4029,17 @@ async fn drive_download(
         .path()
         .download_dir()
         .map_err(|_| "Couldn't find your Downloads folder.".to_string())?;
-    let name = item.display_name();
-    let (stem, ext) = name
-        .rsplit_once('.')
-        .map_or((name.as_str(), ""), |(s, e)| (s, e));
-    let mut destination = downloads.join(&name);
-    let mut suffix = 1;
-    while destination.exists() {
-        destination = downloads.join(if ext.is_empty() {
-            format!("{stem} {suffix}")
-        } else {
-            format!("{stem} {suffix}.{ext}")
-        });
-        suffix += 1;
-    }
+    // The name is whoever shared the folder's to choose (a `..\\` or a `C:` in it would reach
+    // out of Downloads on Windows): saved as one plain name in Downloads, or not at all.
+    tokio::fs::create_dir_all(&downloads)
+        .await
+        .map_err(|e| e.to_string())?;
+    let destination = saving::save_path(&downloads, &item.display_name(), "Download")?;
 
     quince_icloud::drive::download_to(&http, &root, params, &item, &destination)
         .await
         .map_err(|e| e.to_string())?;
+    saving::mark_from_internet(&destination);
     Ok(destination.to_string_lossy().into_owned())
 }
 
@@ -5698,7 +5847,9 @@ fn main() {
         // The window shows Quince and nothing else. A link to anywhere outside it — a phone
         // number, an address, a web page in a note or an event — goes to the app this
         // computer uses for it. Followed in place, a `tel:` link replaced the whole window
-        // with "URL can't be shown", and there was no way back.
+        // with "URL can't be shown", and there was no way back. Only the kinds a person means
+        // by "a link" go out (links.rs): a `file:` or `search-ms:` link in a shared note is
+        // someone else's choice, and the opener would run it.
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("links")
                 .on_navigation(|webview, url| {
@@ -5706,23 +5857,24 @@ fn main() {
                     // address on this computer (a server some other program runs on localhost)
                     // is somewhere else, opened outside; only a development build, whose page
                     // comes from the dev server, counts localhost as its own.
-                    let inside =
-                        matches!(url.scheme(), "tauri" | "quince" | "about" | "data" | "blob")
-                            || url.host_str().is_some_and(|h| {
-                                h == "tauri.localhost"
-                                    || (cfg!(debug_assertions) && h == "localhost")
-                            });
-                    if !inside {
-                        use tauri_plugin_opener::OpenerExt;
-                        if let Err(e) = webview
-                            .app_handle()
-                            .opener()
-                            .open_url(url.as_str(), None::<&str>)
-                        {
-                            quiet!("a link could not be opened: {e}");
+                    match links::navigation(url, cfg!(debug_assertions)) {
+                        links::Navigation::Inside => true,
+                        links::Navigation::Outside => {
+                            use tauri_plugin_opener::OpenerExt;
+                            if let Err(e) = webview
+                                .app_handle()
+                                .opener()
+                                .open_url(url.as_str(), None::<&str>)
+                            {
+                                quiet!("a link could not be opened: {e}");
+                            }
+                            false
+                        }
+                        links::Navigation::Refused => {
+                            quiet!("a link of a kind Skykeep does not open: {}", url.scheme());
+                            false
                         }
                     }
-                    inside
                 })
                 .on_webview_ready(|webview| app_cache(&webview))
                 .build(),
@@ -5776,6 +5928,9 @@ fn main() {
         // webview itself, which is what keeps a scrolling list cheap.
         .register_asynchronous_uri_scheme_protocol("quince", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
+            // Every answer carries the same guard (links.rs): its bytes are never sniffed into
+            // something active, and never run as a page of their own.
+            let responder = links::Guarded(responder);
             // WebKitGTK reads `quince://photo/<id>` with "photo" as the host, while Tauri's
             // own helper produces `quince://localhost/photo/<id>`. Accept either, rather than
             // depending on which one the caller happened to build.
@@ -5939,6 +6094,7 @@ fn main() {
             // The local library. Opened once at startup so every command shares one
             // connection and the WAL behaves.
             let mut library = Library::open(&dir)?;
+            keep_private(&dir);
             timing::mark("library open");
             adopt_writer(&mut library);
             app.manage(Data(library_lock::LibraryLock::new(
@@ -6297,6 +6453,52 @@ fn main() {
 #[cfg(test)]
 mod tests {
 
+    /// Everything directly in the data folder is its owner's alone, whatever it was made with.
+    #[cfg(unix)]
+    #[test]
+    fn the_library_and_its_folders_are_the_owners_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(data.join("photos").join("thumb")).unwrap();
+        std::fs::create_dir_all(data.join("note-media")).unwrap();
+        for f in ["library.db", "library.db-wal", "library.db-shm"] {
+            std::fs::write(data.join(f), b"x").unwrap();
+            std::fs::set_permissions(data.join(f), std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        std::fs::set_permissions(data.join("photos"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        // A link inside is left alone, and so is what it leads to.
+        let outside = dir.path().join("outside.txt");
+        std::fs::write(&outside, b"y").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&outside, data.join("link")).unwrap();
+        super::keep_private(&data);
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&data), 0o700);
+        for f in ["library.db", "library.db-wal", "library.db-shm"] {
+            assert_eq!(mode(&data.join(f)), 0o600, "{f}");
+        }
+        assert_eq!(mode(&data.join("photos")), 0o700);
+        assert_eq!(mode(&data.join("note-media")), 0o700);
+        assert_eq!(mode(&outside), 0o644);
+    }
+
+    /// A plain http feed is tried over https first; a secure one is left as it is.
+    #[test]
+    fn a_plain_feed_is_tried_secure_first() {
+        use super::secure_feed_url;
+        assert_eq!(
+            secure_feed_url("http://calendar.example.org/team.ics?k=1").as_deref(),
+            Some("https://calendar.example.org/team.ics?k=1")
+        );
+        assert_eq!(
+            secure_feed_url("http://calendar.example.org:8080/a.ics").as_deref(),
+            Some("https://calendar.example.org/a.ics")
+        );
+        assert_eq!(secure_feed_url("https://calendar.example.org/a.ics"), None);
+    }
+
     /// The sidebar's services and the account's name are answered while the session is busy —
     /// taken up again, or checked at the start of a sync — from what was kept, never a wait.
     #[test]
@@ -6403,6 +6605,25 @@ mod tests {
             "a.pdf.jar",
             "Run.AppImage",
             "s.lnk",
+            "invoice.one",
+            "budget.xlsm",
+            "letter.docm",
+            "deck.pptm",
+            "addin.xll",
+            "q.search-ms",
+            "q.searchConnector-ms",
+            "fix.diagcab",
+            "office.rdp",
+            "app.appinstaller",
+            "app.msix",
+            "app.appx",
+            "lib.library-ms",
+            "go.url",
+            "go.website",
+            "s.settingcontent-ms",
+            "page.hta",
+            "page.html",
+            "image.svg",
         ] {
             assert!(runs_code(runs, b"%PDF-"), "{runs}");
         }

@@ -11,6 +11,7 @@
 import { useEffect, useRef } from "react";
 import { describe, drawMedia } from "./NoteEditor";
 import { addressesIn, openLinkAt } from "./links";
+import { REFUSED_LINK, linkedNote, outsideHref } from "../../lib/links";
 export type Run = {
   length: number;
   style: number | null;
@@ -154,12 +155,16 @@ function Inline({ span }: { span: Span }) {
   if (run.underline) node = <u>{node}</u>;
   if (run.strike) node = <s>{node}</s>;
   if (run.emphasis) node = <span className={`nf-em-${run.emphasis}`}>{node}</span>;
-  if (run.link) {
+  if (run.link && (outsideHref(run.link) || linkedNote(run.link))) {
     node = (
       <a href={run.link} rel="noreferrer" onClick={(e) => { e.stopPropagation(); openLinkAt(e.nativeEvent); }}>
         {node}
       </a>
     );
+  } else if (run.link) {
+    // A link to something Skykeep does not open (a file on a share, a program's own scheme)
+    // is its text, saying why it is not a link.
+    node = <span className="nf-link-refused" title={REFUSED_LINK}>{node}</span>;
   }
   return <>{node}</>;
 }
