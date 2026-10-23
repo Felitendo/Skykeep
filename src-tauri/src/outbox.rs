@@ -471,11 +471,12 @@ fn lay_note(
     // The title the library holds — Apple's, as the phone set it — while the edit leaves the
     // title line alone; the new first line's once it reaches it (notes.rs
     // `title_line_unchanged`, the rule the send follows too, so here and the phone agree).
-    let held = l.note(guid)?.map(|n| n.title).filter(|t| !t.trim().is_empty());
+    let held = l
+        .note(guid)?
+        .map(|n| n.title)
+        .filter(|t| !t.trim().is_empty());
     let title = match (held, l.note_body(guid)?) {
-        (Some(held), Some(before))
-            if quince_icloud::notes::title_line_unchanged(&before, body) =>
-        {
+        (Some(held), Some(before)) if quince_icloud::notes::title_line_unchanged(&before, body) => {
             held
         }
         _ => derived,
@@ -2557,7 +2558,11 @@ mod tests {
         assert_eq!(lib.note("N").unwrap().unwrap().title, camp);
         titled(&mut lib, "N", camp, &text, 100);
         replay(&mut lib, NOTES).unwrap();
-        assert_eq!(lib.note("N").unwrap().unwrap().title, camp, "laid back over a pass");
+        assert_eq!(
+            lib.note("N").unwrap().unwrap().title,
+            camp,
+            "laid back over a pass"
+        );
         record_note_save(&mut lib, "N", "Camping\nTent\nStove", None, None, None).unwrap();
         assert_eq!(lib.note("N").unwrap().unwrap().title, "Camping");
     }
@@ -2571,7 +2576,11 @@ mod tests {
         titled(&mut lib, "N", "Groceries", "Groceries\nMilk", 100);
         titled(&mut lib, "M", "Errands", "Errands\nBank", 200);
         record_note_save(&mut lib, "M", "Errands\nBank", None, None, None).unwrap();
-        assert_eq!(lib.note("M").unwrap().unwrap().modified_at, Some(200), "nothing changed, nothing moved");
+        assert_eq!(
+            lib.note("M").unwrap().unwrap().modified_at,
+            Some(200),
+            "nothing changed, nothing moved"
+        );
         record_note_save(&mut lib, "N", "Groceries\nMilk\nEggs", None, None, None).unwrap();
         let edited = lib.note("N").unwrap().unwrap().modified_at.unwrap();
         assert!(edited > 200);
@@ -2580,7 +2589,10 @@ mod tests {
         replay(&mut lib, NOTES).unwrap();
         let n = lib.note("N").unwrap().unwrap();
         assert_eq!(n.modified_at, Some(edited));
-        assert_eq!(lib.note_body("N").unwrap().as_deref(), Some("Groceries\nMilk\nEggs"));
+        assert_eq!(
+            lib.note_body("N").unwrap().as_deref(),
+            Some("Groceries\nMilk\nEggs")
+        );
     }
 
     /// Contacts: a new card gets its id here, shows at once, and edits before it is sent stay

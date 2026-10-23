@@ -82,6 +82,10 @@ ok(s.at(-1)?.guid === "e1" && s.at(-1)?.calendarGuid === "personal", "Calendar â
 // Month day shows as many lines as fit, and today has grown by the copies made above.
 await page.keyboard.press("Control+2");
 await page.waitForTimeout(300);
+// Back to today's week: the paste above picked a day two on, which late in the week is
+// next week, where today's Dentist isn't drawn.
+await page.getByRole("button", { name: "Today", exact: true }).click();
+await page.waitForTimeout(300);
 await page.locator(".cx-block", { hasText: "Dentist" }).first().click();
 await page.waitForTimeout(200);
 await page.keyboard.press("Escape");

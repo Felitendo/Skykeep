@@ -1775,16 +1775,31 @@ mod tests {
     #[test]
     fn an_edit_below_the_title_line_keeps_the_title() {
         let tent = "\u{1F3D5}\u{1F3D5}\n\nTent\nStove";
-        assert!(title_line_unchanged(tent, "\u{1F3D5}\u{1F3D5}\n\nTent\nStove and lamp"));
-        assert!(title_line_unchanged("Groceries\nMilk", "Groceries\nMilk\nEggs"));
+        assert!(title_line_unchanged(
+            tent,
+            "\u{1F3D5}\u{1F3D5}\n\nTent\nStove and lamp"
+        ));
+        assert!(title_line_unchanged(
+            "Groceries\nMilk",
+            "Groceries\nMilk\nEggs"
+        ));
         assert!(title_line_unchanged("Groceries", "Groceries\nMilk"));
         // The title line itself, or anything above it.
-        assert!(!title_line_unchanged(tent, "\u{1F3D5}\u{1F3D5}\n\nTents\nStove"));
+        assert!(!title_line_unchanged(
+            tent,
+            "\u{1F3D5}\u{1F3D5}\n\nTents\nStove"
+        ));
         assert!(!title_line_unchanged(tent, "\u{1F3D5}\n\nTent\nStove"));
         assert!(!title_line_unchanged("Groceries\nMilk", "Shopping\nMilk"));
-        assert!(!title_line_unchanged("Groceries\nMilk", "\nGroceries\nMilk"));
+        assert!(!title_line_unchanged(
+            "Groceries\nMilk",
+            "\nGroceries\nMilk"
+        ));
         // A pasted block above the old title is a new title line.
-        assert!(!title_line_unchanged("Cedar list\nplanks", "Pasted\nCedar list\nplanks"));
+        assert!(!title_line_unchanged(
+            "Cedar list\nplanks",
+            "Pasted\nCedar list\nplanks"
+        ));
         // No line with words: only the same text is the same title.
         assert!(title_line_unchanged("\u{FFFC}", "\u{FFFC}"));
         assert!(!title_line_unchanged("\u{FFFC}", "\u{FFFC}\nhello"));
