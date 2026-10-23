@@ -3957,8 +3957,6 @@ dependencies = [
  "gdk",
  "glib 0.18.5",
  "gstreamer",
- "gstreamer-app",
- "gstreamer-video",
  "gtk",
  "image",
  "jiff",
@@ -4068,9 +4066,13 @@ name = "quince-media"
 version = "0.1.0"
 dependencies = [
  "fast_image_resize",
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-video",
  "image",
  "libheif-rs",
  "png 0.17.16",
+ "tempfile",
 ]
 
 [[package]]
@@ -4081,6 +4083,7 @@ dependencies = [
  "base64 0.22.1",
  "flate2",
  "futures-util",
+ "gstreamer",
  "image",
  "jiff",
  "keyring",

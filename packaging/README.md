@@ -43,6 +43,38 @@ appindicator library" without it. For the same reason the `.deb` depends on
 AppImage carries `libayatana-appindicator3.so.1`, although the Linux tray is ksni's and never
 loads it (`ldd` on the binary doesn't list it).
 
+### What the AppImage carries for photos and videos
+
+The AppImage is built on Ubuntu 24.04 and carries that system's media stack, so HEIC photos
+and H.264/HEVC videos work on a computer that has none of it:
+
+- **GStreamer 1.24** (`bundle.linux.appimage.bundleMediaFramework`): Tauri's linuxdeploy
+  GStreamer plugin copies every plugin installed on the build machine, with the libraries they
+  link — the release builds install `gstreamer1.0-plugins-base` (playbin3, decodebin,
+  videoconvert, appsink), `gstreamer1.0-plugins-good` (qtdemux for `.mov`/`.mp4`, videoflip)
+  and `gstreamer1.0-libav` (avdec_h264, avdec_h265 — FFmpeg's libavcodec 6.1 from Ubuntu's
+  universe), and its AppRun hook points GStreamer at them. Not `-bad` or `-ugly`, and no
+  openh264.
+- **libheif 1.17 with libde265's HEVC decoder** (`libheif-plugin-libde265`, listed in
+  `bundle.linux.appimage.files` with `libde265.so.0`): libheif looks for its decoder plugins
+  in the directory it was built with, which on another system is that system's (empty on a
+  clean Debian or Fedora). At start-up, before libheif is used, Skykeep sets
+  `LIBHEIF_PLUGIN_PATH` to the AppImage's own `usr/lib/libheif/plugins` — only when `APPDIR`
+  is set, is absolute, contains the running program, and the directory really is inside it
+  (`crates/quince-media/src/appimage.rs`); a `LIBHEIF_PLUGIN_PATH` you set yourself wins.
+
+Licences: GStreamer, gst-libav and libde265 are LGPL; Ubuntu's libavcodec is built with
+`--enable-gpl` (GPL-2.0-or-later), which Skykeep's GPL-3.0 allows. H.264 and HEVC are
+patent-encumbered formats in some countries; the AppImage carries exactly what Ubuntu's
+`gstreamer1.0-libav` installs — libavcodec with the libraries it links, x264 and x265 among
+them, although Skykeep only decodes. The `.deb`, `.rpm` and
+Arch package carry none of this — they use the system's own packages (Fedora and openSUSE
+users add RPM Fusion or Packman for HEVC, as the README says).
+
+The files map uses Ubuntu's multiarch paths, so `npx tauri build --bundles appimage` is meant
+for an Ubuntu/Debian machine with `libheif-plugin-libde265` installed, as the release builds
+are; elsewhere build the `.rpm` or the Arch package.
+
 `linux-compat.yml` (Actions → Linux compatibility) builds the packages on Ubuntu 24.04,
 Debian 13, Fedora 42, openSUSE Tumbleweed and Arch from these instructions and installs each in a
 clean container of its distribution; `linux-compat/check.sh` is what it runs there.

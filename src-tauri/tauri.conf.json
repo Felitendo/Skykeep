@@ -149,7 +149,11 @@
         }
       },
       "appimage": {
-        "bundleMediaFramework": true
+        "bundleMediaFramework": true,
+        "files": {
+          "/usr/lib/libheif/plugins/libheif-libde265.so": "/usr/lib/x86_64-linux-gnu/libheif/plugins/libheif-libde265.so",
+          "/usr/lib/libde265.so.0": "/usr/lib/x86_64-linux-gnu/libde265.so.0"
+        }
       }
     }
   },
