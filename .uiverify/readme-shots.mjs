@@ -285,7 +285,7 @@ if (want("hero")) {
   const glide = async (loc, { click = "single", hold = 0, offset } = {}) => {
     const box = await loc.boundingBox();
     const x = box.x + (offset?.x ?? box.width / 2), y = box.y + (offset?.y ?? box.height / 2);
-    await page.mouse.move(x, y, { steps: 28 });
+    await page.mouse.move(x, y, { steps: 18 });
     await page.waitForTimeout(160);
     if (click === "single") await page.mouse.click(x, y);
     if (click === "double") await page.mouse.dblclick(x, y);
@@ -303,10 +303,17 @@ if (want("hero")) {
   await page.evaluate(() => { window.__demoArrive(); const now = Math.floor(Date.now() / 1000);
     // As a real pass reports it: Notes synced now and changed — with no services named, the
     // footer read "Not synced yet" as the note arrived.
-    window.__emit?.("quince://synced", { services: [{ service: "notes", label: "Notes", outcome: "ok", detail: null, lastSyncedAt: now }],
+    const apps = [["notes", "Notes"], ["reminders", "Reminders"], ["calendar", "Calendar"], ["contacts", "Contacts"], ["drive", "iCloud Drive"], ["photos", "Photos"]];
+    window.__emit?.("quince://synced", { services: apps.map(([service, label]) => ({ service, label, outcome: "ok", detail: null, lastSyncedAt: now })),
       asOf: now, tookMs: 5, changed: ["notes"] }); });
   await page.waitForTimeout(1200);
-  await glide(page.locator(".note-rows").getByText("Farmers market").first(), { hold: 2200 });
+  await glide(page.locator(".note-rows").getByText("Farmers market").first(), { hold: 1800 });
+  // The other three apps: a contact's card, a Drive folder, the photo library.
+  await glide(page.locator(".nav-item", { hasText: "Contacts" }), { hold: 500 });
+  await glide(page.locator(".contacts").getByText("Maya Chen", { exact: true }).first(), { hold: 1500 });
+  await glide(page.locator(".nav-item", { hasText: "Drive" }), { hold: 500 });
+  await glide(page.locator(".drive").getByText("Summer at the Lake", { exact: true }).first(), { click: "double", hold: 1600 });
+  await glide(page.locator(".nav-item", { hasText: "Photos" }), { hold: 2400 });
   await cdp.send("Page.stopScreencast");
   await ctx.close();
 
@@ -314,7 +321,9 @@ if (want("hero")) {
   const end = frames[frames.length - 1].t + 1.2;
   let list = "";
   frames.forEach((f, i) => {
-    list += `file '${frameFile(i)}'\nduration ${Math.max(0.004, (frames[i + 1]?.t ?? end) - f.t).toFixed(3)}\n`;
+    // A still stretch plays for at most 0.9 s: the screencast sends no frame while nothing
+    // moves, and those gaps made the loop twice as long as anyone watches.
+    list += `file '${frameFile(i)}'\nduration ${Math.min(0.9, Math.max(0.004, (frames[i + 1]?.t ?? end) - f.t)).toFixed(3)}\n`;
   });
   list += `file '${frameFile(frames.length - 1)}'\n`;
   fs.writeFileSync(path.join(dir, "list.txt"), list);
@@ -328,7 +337,7 @@ if (want("hero")) {
   // Two passes, each bounded to the clip's length: the palette first, then the frames through
   // it. In one pass the palette waited on every frame held in memory, and the looped backdrop
   // and mask never ended.
-  const dur = (end - frames[0].t).toFixed(2);
+  const dur = frames.reduce((n, f, i) => n + Math.min(0.9, Math.max(0.004, (frames[i + 1]?.t ?? end) - f.t)), 0).toFixed(2);
   const inputs = ["-f", "concat", "-safe", "0", "-i", path.join(dir, "list.txt"), "-loop", "1", "-t", dur, "-i", path.join(dir, "mask.png"), "-loop", "1", "-t", dur, "-i", path.join(dir, "bg.png")];
   const comp = `[0:v]fps=15,scale=${W}:${H},format=rgba[v];[1:v]format=gray[m];[v][m]alphamerge[w];[2:v][w]overlay=${PAD[0]}:${PAD[1]}:shortest=1`;
   const palette = path.join(dir, "palette.png");

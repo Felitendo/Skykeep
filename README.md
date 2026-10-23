@@ -24,7 +24,7 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
 
 <br>
 
-<img src="docs/media/hero.gif" alt="Skykeep ticking off a reminder, switching to the week in Calendar, then opening a note that has just arrived from an iPhone" width="880">
+<img src="docs/media/hero.gif" alt="Skykeep ticking off a reminder, switching to the week in Calendar, opening a note that has just arrived from an iPhone, then a contact card, an iCloud Drive folder and the photo library" width="880">
 
 </div>
 
