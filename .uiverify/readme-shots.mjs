@@ -5,8 +5,8 @@
 //   node .uiverify/readme-shots.mjs notes hero  only those scenes
 //
 // It builds the interface and previews it on PORT (4220) unless something already answers
-// there. Needs ImageMagick (`magick`) and ffmpeg. PNGs are optimised with pngquant and oxipng
-// when installed, or the same engines through `uv`. Every picture is drawn; no photo file is read.
+// there. Needs ImageMagick (`magick`) and ffmpeg (with libwebp). Stills and the loop are written
+// as WebP. Every picture is drawn; no photo file is read.
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -209,28 +209,16 @@ async function sizeOf(png) {
   return { w, h };
 }
 
-/** A PNG for the README, WIDTH px wide (sharp at the README's 880 on a 2x screen), stripped and optimised. */
+/** A WebP for the README, WIDTH px wide (sharp at the README's 880 on a 2x screen), stripped.
+ *  At quality 90 the interface's text is indistinguishable from the PNG at half the bytes,
+ *  and the README loads that much sooner. */
 function publish(framed, name) {
-  const png = path.join(OUT, `${name}.png`);
-  sh("magick", [framed, "-strip", "-filter", "Lanczos", "-resize", `${WIDTH}x`, "-define", "png:compression-level=9", `PNG24:${png}`]);
-  optimise(png);
-  console.log(`${path.relative(ROOT, png)}  ${Math.round(fs.statSync(png).size / 1024)} KB`);
+  const webp = path.join(OUT, `${name}.webp`);
+  sh("magick", [framed, "-strip", "-filter", "Lanczos", "-resize", `${WIDTH}x`, "-quality", "90", "-define", "webp:method=6", webp]);
+  console.log(`${path.relative(ROOT, webp)}  ${Math.round(fs.statSync(webp).size / 1024)} KB`);
 }
 
 const has = (cmd) => { try { execFileSync("sh", ["-c", `command -v ${cmd}`], { stdio: "ignore" }); return true; } catch { return false; } };
-/** pngquant then oxipng when installed; otherwise the same two engines (libimagequant and
- *  oxipng) through `uv`, in a throwaway environment; otherwise the PNG stays as written. */
-function optimise(png) {
-  if (has("pngquant")) { sh("pngquant", ["--force", "--skip-if-larger", "--quality", "80-95", "--strip", "--output", png, png]); if (has("oxipng")) sh("oxipng", ["-o", "4", "--strip", "all", png]); return; }
-  if (!has("uv")) return;
-  const py = `import sys, imagequant, oxipng
-from PIL import Image
-p = sys.argv[1]
-q = imagequant.quantize_pil_image(Image.open(p).convert("RGBA"), dithering_level=1.0, max_colors=256, min_quality=80, max_quality=95)
-q.save(p, optimize=True)
-oxipng.optimize(p, level=4, strip=oxipng.StripChunks.all())`;
-  sh("uv", ["run", "--quiet", "--python", "3.12", "--no-project", "--with", "imagequant", "--with", "pillow", "--with", "pyoxipng", "python", "-I", "-c", py, png]);
-}
 
 // ---- Stills.
 const stills = { notes: ["light", "dark"], reminders: ["light", "dark"], calendar: ["light", "dark"], contacts: ["light", "dark"],
@@ -344,7 +332,11 @@ if (want("hero")) {
   sh("ffmpeg", ["-y", "-loglevel", "error", ...inputs, "-filter_complex", `${comp},palettegen=max_colors=192:stats_mode=diff`, "-update", "1", "-frames:v", "1", palette]);
   sh("ffmpeg", ["-y", "-loglevel", "error", ...inputs, "-i", palette, "-filter_complex",
     `${comp}[c];[c][3:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`, "-t", dur, "-loop", "0", gif]);
-  console.log(`${path.relative(ROOT, gif)}  ${Math.round(fs.statSync(gif).size / 1024)} KB`);
+  // The README shows it as animated WebP: the same frames at about half the GIF's size.
+  const webp = path.join(OUT, "hero.webp");
+  sh("ffmpeg", ["-y", "-loglevel", "error", "-i", gif, "-c:v", "libwebp_anim", "-lossless", "0", "-q:v", "80", "-compression_level", "6", "-loop", "0", webp]);
+  fs.rmSync(gif);
+  console.log(`${path.relative(ROOT, webp)}  ${Math.round(fs.statSync(webp).size / 1024)} KB`);
 }
 
 await browser.close();

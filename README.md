@@ -24,7 +24,7 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
 
 <br>
 
-<img src="docs/media/hero.gif" alt="Skykeep ticking off a reminder, switching to the week in Calendar, opening a note that has just arrived from an iPhone, then a contact card, an iCloud Drive folder and the photo library" width="880">
+<img src="docs/media/hero.webp" alt="Skykeep ticking off a reminder, switching to the week in Calendar, opening a note that has just arrived from an iPhone, then a contact card, an iCloud Drive folder and the photo library" width="880">
 
 </div>
 
@@ -34,15 +34,15 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
   <tr>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/media/reminders-dark.png">
-        <img src="docs/media/reminders-light.png" alt="Skykeep Reminders showing a list with sections, subtasks, flags, tags, a link and a place, beside coloured lists and smart lists">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/reminders-dark.webp">
+        <img src="docs/media/reminders-light.webp" alt="Skykeep Reminders showing a list with sections, subtasks, flags, tags, a link and a place, beside coloured lists and smart lists">
       </picture>
       <b>Reminders</b>
     </td>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/media/calendar-dark.png">
-        <img src="docs/media/calendar-light.png" alt="Skykeep Calendar in week view with events from four calendars, an all-day trip, a birthday and reminders">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/calendar-dark.webp">
+        <img src="docs/media/calendar-light.webp" alt="Skykeep Calendar in week view with events from four calendars, an all-day trip, a birthday and reminders">
       </picture>
       <b>Calendar</b>
     </td>
@@ -50,15 +50,15 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
   <tr>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/media/contacts-dark.png">
-        <img src="docs/media/contacts-light.png" alt="Skykeep Contacts showing contacts with photos and a full card with phones, emails, related names, an address and a birthday">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/contacts-dark.webp">
+        <img src="docs/media/contacts-light.webp" alt="Skykeep Contacts showing contacts with photos and a full card with phones, emails, related names, an address and a birthday">
       </picture>
       <b>Contacts</b>
     </td>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/media/drive-dark.png">
-        <img src="docs/media/drive-light.png" alt="Skykeep Drive showing a folder of pictures and documents with thumbnails in grid view">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/drive-dark.webp">
+        <img src="docs/media/drive-light.webp" alt="Skykeep Drive showing a folder of pictures and documents with thumbnails in grid view">
       </picture>
       <b>iCloud Drive</b>
     </td>
@@ -66,15 +66,15 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
   <tr>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/media/photos-dark.png">
-        <img src="docs/media/photos-light.png" alt="Skykeep Photos showing the library by month with favourites, videos and albums">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/photos-dark.webp">
+        <img src="docs/media/photos-light.webp" alt="Skykeep Photos showing the library by month with favourites, videos and albums">
       </picture>
       <b>Photos</b>
     </td>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/media/notes-dark.png">
-        <img src="docs/media/notes-light.png" alt="Skykeep Notes showing folders, pinned notes and a trip note with a tag, a link, a picture, a checklist and a table">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/notes-dark.webp">
+        <img src="docs/media/notes-light.webp" alt="Skykeep Notes showing folders, pinned notes and a trip note with a tag, a link, a picture, a checklist and a table">
       </picture>
       <b>Notes</b>
     </td>
