@@ -1,0 +1,10 @@
+# The default rules, with one known-public value allowed: the updater's public key in
+# tauri.conf.json. Every installed copy checks updates against it, so it is published by
+# design; the private key never leaves the maintainer's machine and GitHub's secrets.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The updater's public signing key"
+paths = ['''src-tauri/tauri\.conf\.json''']
+regexes = ['''"pubkey":\s*"[A-Za-z0-9+/=]+"''']
