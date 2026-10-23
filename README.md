@@ -24,10 +24,7 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
 
 <br>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/notes-dark.png">
-  <img src="docs/media/notes-light.png" alt="Skykeep Notes showing folders, pinned notes and a trip note with a tag, a link, a picture, a checklist and a table" width="880">
-</picture>
+<img src="docs/media/hero.gif" alt="Skykeep ticking off a reminder, switching to the week in Calendar, then opening a note that has just arrived from an iPhone" width="880">
 
 </div>
 
@@ -76,10 +73,10 @@ Notes, Reminders, Calendar, Contacts, Drive and Photos as fast desktop apps that
     </td>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/media/settings-dark.png">
-        <img src="docs/media/settings-light.png" alt="Skykeep Settings showing the account, storage and when each app last synced">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/media/notes-dark.png">
+        <img src="docs/media/notes-light.png" alt="Skykeep Notes showing folders, pinned notes and a trip note with a tag, a link, a picture, a checklist and a table">
       </picture>
-      <b>Settings</b>
+      <b>Notes</b>
     </td>
   </tr>
 </table>

@@ -268,10 +268,17 @@ if (want("hero")) {
   await openScreen(page, "Reminders");
   await page.mouse.move(W - 40, H - 60);
   await page.waitForTimeout(500);
+  // Each frame goes to disk as it arrives and only its time is kept: held in memory, a dozen
+  // seconds of frames (and their copies on the way to files) filled a 16 GB machine.
+  const dir = path.join(WORK, "hero");
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
   const frames = [];
+  const frameFile = (i) => path.join(dir, `f${String(i).padStart(4, "0")}.png`);
   const cdp = await ctx.newCDPSession(page);
   cdp.on("Page.screencastFrame", async (f) => {
-    frames.push({ t: f.metadata.timestamp, data: f.data });
+    fs.writeFileSync(frameFile(frames.length), Buffer.from(f.data, "base64"));
+    frames.push({ t: f.metadata.timestamp });
     await cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
   });
   await cdp.send("Page.startScreencast", { format: "png", everyNthFrame: 1, maxWidth: W, maxHeight: H });
@@ -293,24 +300,23 @@ if (want("hero")) {
   // To Notes; a note arrives from the phone.
   await glide(page.locator(".nav-item", { hasText: "Notes" }), { hold: 900 });
   await page.mouse.move(W * 0.62, H * 0.55, { steps: 16 });
-  await page.evaluate(() => { window.__demoArrive(); window.__emit?.("quince://synced", { services: [], asOf: Date.now() / 1000, tookMs: 5 }); });
+  await page.evaluate(() => { window.__demoArrive(); const now = Math.floor(Date.now() / 1000);
+    // As a real pass reports it: Notes synced now and changed — with no services named, the
+    // footer read "Not synced yet" as the note arrived.
+    window.__emit?.("quince://synced", { services: [{ service: "notes", label: "Notes", outcome: "ok", detail: null, lastSyncedAt: now }],
+      asOf: now, tookMs: 5, changed: ["notes"] }); });
   await page.waitForTimeout(1200);
   await glide(page.locator(".note-rows").getByText("Farmers market").first(), { hold: 2200 });
   await cdp.send("Page.stopScreencast");
   await ctx.close();
 
   // Frames to a GIF, framed like the stills.
-  const dir = path.join(WORK, "hero");
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.mkdirSync(dir, { recursive: true });
   const end = frames[frames.length - 1].t + 1.2;
   let list = "";
   frames.forEach((f, i) => {
-    const file = path.join(dir, `f${String(i).padStart(4, "0")}.png`);
-    fs.writeFileSync(file, Buffer.from(f.data, "base64"));
-    list += `file '${file}'\nduration ${Math.max(0.004, (frames[i + 1]?.t ?? end) - f.t).toFixed(3)}\n`;
+    list += `file '${frameFile(i)}'\nduration ${Math.max(0.004, (frames[i + 1]?.t ?? end) - f.t).toFixed(3)}\n`;
   });
-  list += `file '${path.join(dir, `f${String(frames.length - 1).padStart(4, "0")}.png`)}'\n`;
+  list += `file '${frameFile(frames.length - 1)}'\n`;
   fs.writeFileSync(path.join(dir, "list.txt"), list);
   // The backdrop and the window's rounded shape, from the same frame as the stills.
   const bgPage = await browser.newPage({ viewport: { width: W + PAD[0] * 2, height: H + PAD[1] * 2 }, deviceScaleFactor: 1 });
@@ -319,11 +325,16 @@ if (want("hero")) {
   await bgPage.close();
   sh("magick", ["-size", `${W}x${H}`, "xc:black", "-fill", "white", "-draw", `roundrectangle 0,0 ${W - 1},${H - 1} 12,12`, path.join(dir, "mask.png")]);
   const gif = path.join(OUT, "hero.gif");
-  sh("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", path.join(dir, "list.txt"), "-loop", "1", "-i", path.join(dir, "mask.png"), "-loop", "1", "-i", path.join(dir, "bg.png"),
-    "-filter_complex",
-    `[0:v]fps=15,scale=${W}:${H},format=rgba[v];[1:v]format=gray[m];[v][m]alphamerge[w];[2:v][w]overlay=${PAD[0]}:${PAD[1]}:shortest=1,split[a][b];` +
-    `[a]palettegen=max_colors=192:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`,
-    "-loop", "0", gif]);
+  // Two passes, each bounded to the clip's length: the palette first, then the frames through
+  // it. In one pass the palette waited on every frame held in memory, and the looped backdrop
+  // and mask never ended.
+  const dur = (end - frames[0].t).toFixed(2);
+  const inputs = ["-f", "concat", "-safe", "0", "-i", path.join(dir, "list.txt"), "-loop", "1", "-t", dur, "-i", path.join(dir, "mask.png"), "-loop", "1", "-t", dur, "-i", path.join(dir, "bg.png")];
+  const comp = `[0:v]fps=15,scale=${W}:${H},format=rgba[v];[1:v]format=gray[m];[v][m]alphamerge[w];[2:v][w]overlay=${PAD[0]}:${PAD[1]}:shortest=1`;
+  const palette = path.join(dir, "palette.png");
+  sh("ffmpeg", ["-y", "-loglevel", "error", ...inputs, "-filter_complex", `${comp},palettegen=max_colors=192:stats_mode=diff`, "-update", "1", "-frames:v", "1", palette]);
+  sh("ffmpeg", ["-y", "-loglevel", "error", ...inputs, "-i", palette, "-filter_complex",
+    `${comp}[c];[c][3:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`, "-t", dur, "-loop", "0", gif]);
   console.log(`${path.relative(ROOT, gif)}  ${Math.round(fs.statSync(gif).size / 1024)} KB`);
 }
 
