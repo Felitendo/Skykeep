@@ -1159,7 +1159,7 @@ pub const ACCOUNT_KEY: &str = "account";
 
 /// What of an account lives in the data folder beside the session: its library, and every
 /// cache and queue made from it. Moved as one when another account signs in.
-const ACCOUNT_FILES: [&str; 12] = [
+const ACCOUNT_FILES: [&str; 13] = [
     "library.db",
     "library.db-wal",
     "library.db-shm",
@@ -1172,6 +1172,8 @@ const ACCOUNT_FILES: [&str; 12] = [
     "note-files",
     "note-media",
     "faces",
+    // A reminder's pictures: one account's, set aside and removed with the rest of it.
+    "reminder-media",
 ];
 
 /// Where the accounts not signed in are kept, each under its own tag.
@@ -1730,21 +1732,34 @@ async fn account_services(auth: State<'_, Auth>) -> UiResult<Vec<String>> {
 fn spawn_heartbeat(client: Arc<Mutex<Client>>) {
     tauri::async_runtime::spawn(async move {
         const INTERVAL: Duration = Duration::from_secs(45 * 60);
+        // The session that lapsed, by its token: not pinged again — but a new one, signed in
+        // since, is. Ended at the first lapse instead, a tray left running for weeks never kept
+        // the next sign-in warm.
+        let mut lapsed: Option<Option<String>> = None;
         loop {
             tokio::time::sleep(INTERVAL).await;
             let mut guard = client.lock().await;
-            // Only meaningful once signed in; before that there is nothing to keep warm.
-            if guard.session().webservices.is_none() {
+            let session = guard.session();
+            let token = session.session_token.clone();
+            if !worth_a_ping(session.webservices.is_some(), &token, lapsed.as_ref()) {
                 continue;
             }
             // A lapsed session is expected roughly every two months. The UI discovers it on
             // next use and asks for a code; nothing to do here but stop pinging a dead one.
-            // A transient error is not proof of that, so only a clean `false` ends the loop.
-            if matches!(guard.heartbeat().await, Ok(false)) {
-                break;
+            // A transient error is not proof of that, so only a clean `false` counts. Each
+            // ping also writes the session again if a keyring would not take it before.
+            match guard.heartbeat().await {
+                Ok(false) => lapsed = Some(token),
+                Ok(true) => lapsed = None,
+                Err(_) => {}
             }
         }
     });
+}
+
+/// Whether the heartbeat pings the session now: signed in, and not the one that lapsed.
+fn worth_a_ping(signed_in: bool, token: &Option<String>, lapsed: Option<&Option<String>>) -> bool {
+    signed_in && lapsed != Some(token)
 }
 
 /// Refresh the calendar window `[from, to]` (both `YYYY-MM-DD`) from Apple.

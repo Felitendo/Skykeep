@@ -735,39 +735,50 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         </div>
         <WeekStartRow />
         <MoveCheckedRow />
-        <div className="settings-row">
-          <span className="settings-label settings-stack">
-            Open at Login
-            <span className="settings-hint">
-              {login?.on && !login.honoured
-                ? "This desktop doesn't open apps at login by itself. Add this to its startup:"
-                : "Starts in the background, so alerts ring and changes sync"}
+        {login?.available === false ? (
+          <div className="settings-row">
+            <span className="settings-label settings-stack">
+              Open at Login
+              <span className="settings-hint">
+                Add Skykeep to your desktop’s startup apps, so alerts ring and changes sync from the moment you log in
+              </span>
             </span>
-            {login?.on && !login.honoured && <code className="settings-command">{login.command}</code>}
-          </span>
-          <button
-            className="switch"
-            role="switch"
-            aria-checked={login?.on ?? false}
-            aria-label="Open at Login"
-            disabled={!login || loginBusy}
-            onClick={() => {
-              if (!login) return;
-              const was = login;
-              setLogin({ ...login, on: !login.on });
-              setLoginBusy(true);
-              api
-                .loginItemSet(!was.on)
-                .then(setLogin, (e) => {
-                  setLogin(was);
-                  setError(messageOf(e));
-                })
-                .finally(() => setLoginBusy(false));
-            }}
-          >
-            <span className="switch-knob" />
-          </button>
-        </div>
+          </div>
+        ) : (
+          <div className="settings-row">
+            <span className="settings-label settings-stack">
+              Open at Login
+              <span className="settings-hint">
+                {login?.on && !login.honoured
+                  ? "This desktop doesn't open apps at login by itself. Add this to its startup:"
+                  : "Starts in the background, so alerts ring and changes sync"}
+              </span>
+              {login?.on && !login.honoured && <code className="settings-command">{login.command}</code>}
+            </span>
+            <button
+              className="switch"
+              role="switch"
+              aria-checked={login?.on ?? false}
+              aria-label="Open at Login"
+              disabled={!login || loginBusy}
+              onClick={() => {
+                if (!login) return;
+                const was = login;
+                setLogin({ ...login, on: !login.on });
+                setLoginBusy(true);
+                api
+                  .loginItemSet(!was.on)
+                  .then(setLogin, (e) => {
+                    setLogin(was);
+                    setError(messageOf(e));
+                  })
+                  .finally(() => setLoginBusy(false));
+              }}
+            >
+              <span className="switch-knob" />
+            </button>
+          </div>
+        )}
       </section>
 
       <h2 className="settings-heading">Notifications</h2>

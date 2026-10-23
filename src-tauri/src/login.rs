@@ -96,6 +96,15 @@ pub struct LoginItem {
     /// Whether this desktop runs autostart entries at login. `false`: the entry alone does
     /// nothing here, and `command` has to go in the compositor's own startup.
     pub honoured: bool,
+    /// Whether Skykeep can keep the entry itself. Not in a Flatpak: the entry was written in the
+    /// sandbox's own config folder, which the desktop never reads, and the switch said "on"
+    /// over nothing at all. There Settings says how to add it instead.
+    pub available: bool,
+}
+
+/// Running inside a Flatpak.
+fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some()
 }
 
 #[cfg(not(windows))]
@@ -112,13 +121,21 @@ fn entry(app: &AppHandle) -> Option<PathBuf> {
 fn command() -> String {
     let program = std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
+        .or_else(|| std::env::current_exe().ok().map(|p| still_installed(&p)))
         .unwrap_or_else(|| PathBuf::from("quince-app"));
     // Windows reads the Run value as a command line: the path in plain quotes.
     if cfg!(windows) {
         return format!("\"{}\" {FLAG}", program.to_string_lossy());
     }
     format!("{} {FLAG}", quoted(&program.to_string_lossy()))
+}
+
+/// The program as installed: replaced by a package upgrade while running, Linux names the
+/// running one `/usr/bin/skykeep (deleted)`, and an entry written then pointed at nothing.
+fn still_installed(path: &std::path::Path) -> PathBuf {
+    path.to_str()
+        .and_then(|p| p.strip_suffix(" (deleted)"))
+        .map_or_else(|| path.to_path_buf(), PathBuf::from)
 }
 
 /// A program path as the Desktop Entry spec wants it in Exec: in double quotes, with `"`,
@@ -214,6 +231,7 @@ pub async fn login_item_status(_app: AppHandle) -> Result<LoginItem, String> {
         on,
         command: command(),
         honoured: true,
+        available: true,
     })
 }
 
@@ -243,6 +261,14 @@ pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, Strin
 #[cfg(not(windows))]
 #[tauri::command]
 pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
+    if in_flatpak() {
+        return Ok(LoginItem {
+            on: false,
+            command: format!("flatpak run {}", app.config().identifier),
+            honoured: true,
+            available: false,
+        });
+    }
     let on = entry(&app).is_some_and(|p| p.exists());
     let honoured = tauri::async_runtime::spawn_blocking(honoured)
         .await
@@ -251,12 +277,16 @@ pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
         on,
         command: command(),
         honoured,
+        available: true,
     })
 }
 
 #[cfg(not(windows))]
 #[tauri::command]
 pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, String> {
+    if in_flatpak() {
+        return Err("Add Skykeep to your desktop’s startup apps to open it at login.".into());
+    }
     let path = entry(&app).ok_or("There is no configuration folder to keep it in.")?;
     if on {
         if let Some(dir) = path.parent() {

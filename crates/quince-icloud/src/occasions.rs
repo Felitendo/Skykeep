@@ -287,7 +287,11 @@ pub fn parse_feed(ics: &str) -> (Option<String>, Vec<Holiday>) {
             "DTSTART" => {
                 if let Some(c) = current.as_mut() {
                     c.2 = value(line).and_then(|v| {
-                        let d = v.get(..8)?;
+                        // Digits only: sliced by byte, a feed's stray accented character there
+                        // panicked rather than being skipped.
+                        let d = v
+                            .get(..8)
+                            .filter(|d| d.bytes().all(|b| b.is_ascii_digit()))?;
                         format!("{}-{}-{}", &d[..4], &d[4..6], &d[6..8])
                             .parse()
                             .ok()
@@ -391,6 +395,15 @@ pub async fn fetch_feed(http: &reqwest::Client, region: &str, lang: &str) -> Res
 
 #[cfg(test)]
 mod tests {
+
+    /// A start date with an accented character where the digits go is skipped, not a panic.
+    #[test]
+    fn a_damaged_start_date_is_skipped_not_a_panic() {
+        let ics = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Odd\nDTSTART;VALUE=DATE:202\u{e9}0101\nEND:VEVENT\nEND:VCALENDAR\n";
+        let (_, found) = parse_feed(ics);
+        assert!(found.is_empty() || found.iter().all(|h| h.title != "Odd"));
+    }
+
     use super::*;
 
     fn contact(guid: &str, first: &str, birthday: &str) -> Contact {

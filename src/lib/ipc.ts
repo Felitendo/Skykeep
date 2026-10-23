@@ -928,7 +928,13 @@ export function turnStyle(turn: Turn | null | undefined, w: number, h: number, z
 }
 
 /** The iCloud Drive folder on this computer (see src-tauri/src/mount.rs). */
-export type LoginItem = { on: boolean; command: string; honoured: boolean };
+export type LoginItem = {
+  on: boolean;
+  command: string;
+  honoured: boolean;
+  /** Whether Skykeep keeps the login entry itself (not in the Flatpak). */
+  available?: boolean;
+};
 
 export type DriveFolder = {
   on: boolean;
