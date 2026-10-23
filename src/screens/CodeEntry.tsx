@@ -190,7 +190,7 @@ export function CodeEntry({
       )}
 
       <div className="sheet-foot">
-        <p className="assurance">You'll stay signed in for about two months.</p>
+        <p className="assurance">You'll stay signed in on this computer.</p>
         <button className="link" type="button" onClick={onCancel} disabled={verifying}>
           Use a different Apple ID
         </button>
