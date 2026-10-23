@@ -90,7 +90,7 @@ const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("That Apple ID or password wasn't accepted.")]
+    #[error("That Apple Account or password wasn't accepted.")]
     BadCredentials,
     #[error("That code didn't match. Check your iPhone and try again.")]
     BadCode,

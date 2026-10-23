@@ -26,7 +26,7 @@ const then = (...steps) => async (p) => { for (const s of steps) await s(p); };
 const scenarios = [
   { name: "sign-in", screen: "signin", ready: ".signin, form" },
   { name: "code", screen: "code", ready: ".code", act: async (p) => {
-      await p.fill('input[aria-label="Apple ID"]', "you@icloud.com");
+      await p.fill('input[aria-label="Apple Account"]', "you@icloud.com");
       await p.fill('input[aria-label="Password"]', "secret");
       await p.click('button[type="submit"]');
     } },

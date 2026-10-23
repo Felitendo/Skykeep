@@ -445,7 +445,8 @@ let failures = 0;
   await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
   await page.getByRole("button", { name: "Calendar", exact: true }).click();
   await page.waitForTimeout(300);
-  await page.getByRole("button", { name: "New event" }).click();
+  // The + button opens Quick Event, as Calendar's does; Ctrl+N opens the whole new event.
+  await page.keyboard.press("Control+n");
   await page.waitForTimeout(250);
 
   const chosen = await page.locator(".cal-field .picker-button").first().innerText();
@@ -677,7 +678,7 @@ let failures = 0;
       };
     }, twoFactor);
     await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
-    await page.fill('input[aria-label="Apple ID"]', "you@icloud.com");
+    await page.fill('input[aria-label="Apple Account"]', "you@icloud.com");
     await page.fill('input[aria-label="Password"]', "hunter2hunter2");
     await page.click('button[type="submit"]');
     await page.waitForSelector(".code", { timeout: 5000 });

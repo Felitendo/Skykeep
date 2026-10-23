@@ -65,8 +65,8 @@ export function SignIn({
       } else {
         // Apple's refusal names no field, so neither can this; it can say what to do.
         setError(
-          /Apple ID or password/.test(message)
-            ? "Apple ID or password is incorrect. Check both and try again."
+          /Apple (ID|Account) or password/.test(message)
+            ? "Apple Account or password is incorrect. Check both and try again."
             : sentence(message),
         );
       }
@@ -86,7 +86,7 @@ export function SignIn({
   return (
     <form className="sheet enter-sheet" onSubmit={submit} aria-busy={busy} noValidate>
       <Mark className="mark" />
-      <h1>Sign in with your Apple ID</h1>
+      <h1>Sign in with your Apple Account</h1>
       <p className="lede">Your iCloud, kept on this computer.</p>
 
       <div className={`field-group${error ? " is-invalid" : ""}`}>
@@ -105,8 +105,8 @@ export function SignIn({
           autoComplete="username"
           autoCapitalize="off"
           spellCheck={false}
-          placeholder="Apple ID"
-          aria-label="Apple ID"
+          placeholder="Apple Account"
+          aria-label="Apple Account"
           aria-invalid={!!error}
           autoFocus
           disabled={busy}

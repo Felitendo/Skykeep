@@ -125,12 +125,12 @@ const focused = (page) =>
     await page.keyboard.press("Tab");
     seen.push(await focused(page));
   }
-  check("sign-in reaches Apple ID, Password, Sign in by Tab",
-    seen.includes("Apple ID") && seen.includes("Password") && seen.some((s) => /Sign in/.test(s)),
+  check("sign-in reaches Apple Account, Password, Sign in by Tab",
+    seen.includes("Apple Account") && seen.includes("Password") && seen.some((s) => /Sign in/.test(s)),
     seen.join(" → "));
 
   // A visible focus ring is the whole point of keyboard focus.
-  await page.focus('input[aria-label="Apple ID"]');
+  await page.focus('input[aria-label="Apple Account"]');
   const ring = await page.evaluate(() => {
     const g = document.querySelector(".field-group");
     return g ? getComputedStyle(g).boxShadow : "";
@@ -142,7 +142,7 @@ const focused = (page) =>
 // --- code: one tab stop, not six ---
 {
   const { ctx, page } = await open("code");
-  await page.fill('input[aria-label="Apple ID"]', "you@icloud.com");
+  await page.fill('input[aria-label="Apple Account"]', "you@icloud.com");
   await page.fill('input[aria-label="Password"]', "secret");
   await page.click('button[type="submit"]');
   await page.waitForSelector(".code");

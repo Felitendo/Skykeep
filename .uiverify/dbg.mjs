@@ -44,7 +44,7 @@ console.log("stub reached?", await p.evaluate(() => window.__calls ?? "STUB NEVE
 console.log("visible root:", (await p.innerText("#root")).slice(0,120).replace(/\n/g," "));
 const btn = await p.$('button[type="submit"]');
 console.log("submit button present:", !!btn, "disabled:", btn && await btn.isDisabled());
-await p.fill('input[aria-label="Apple ID"]', "you@icloud.com");
+await p.fill('input[aria-label="Apple Account"]', "you@icloud.com");
 await p.fill('input[aria-label="Password"]', "secret123");
 console.log("after fill, disabled:", await (await p.$('button[type="submit"]')).isDisabled());
 await p.click('button[type="submit"]');

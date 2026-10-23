@@ -40,7 +40,7 @@ lives under `~/.var/app/<id>/`), so a Flatpak starts with an empty library and f
 | `--share=network` | iCloud. |
 | `--socket=wayland`, `--socket=fallback-x11`, `--share=ipc` | The window; X11 only without Wayland. |
 | `--device=dri` | GPU rendering for WebKitGTK. |
-| `--talk-name=org.freedesktop.secrets` | The Apple ID session lives in the Secret Service keyring. |
+| `--talk-name=org.freedesktop.secrets` | The Apple Account session lives in the Secret Service keyring. |
 | `--talk-name=org.freedesktop.Notifications` | Reminder alerts. |
 | `--talk-name=org.kde.StatusNotifierWatcher` | The tray icon. |
 | `--filesystem=xdg-download` | Drive and Photos save straight to `~/Downloads`, not through the portal. |

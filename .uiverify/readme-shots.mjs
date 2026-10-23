@@ -250,7 +250,7 @@ for (const [scene, schemes] of Object.entries(stills)) {
 if (want("signin")) {
   for (const scheme of ["light", "dark"]) {
     const { ctx, page } = await open({ scheme, screen: "signin" });
-    await page.getByLabel("Apple ID").fill("jamie.rivera@example.com");
+    await page.getByLabel("Apple Account").fill("jamie.rivera@example.com");
     await page.getByLabel("Password").fill("demo-password");
     await page.locator("body").click({ position: { x: 5, y: 5 } });
     await page.waitForTimeout(400);
