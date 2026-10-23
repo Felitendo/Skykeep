@@ -17,6 +17,8 @@ sha2 = "0.10"
 pbkdf2 = { version = "0.12", default-features = false }
 hmac = "0.12"
 rand = "0.9"
+# Sealing the cookie jar on disk (sealed.rs): the same AES-GCM locked notes already build.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 reqwest_cookie_store = "0.8"
 cookie_store = { version = "0.21", features = ["serde_json"] }
 thiserror = "2"

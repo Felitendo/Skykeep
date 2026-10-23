@@ -183,7 +183,7 @@ On Linux, your desktop may ask you to unlock its keyring the first time. That's 
 ## Privacy
 
 - **Local-first.** Your library lives on your computer, so every app opens instantly, even offline.
-- **Your sign-in stays in your system keyring:** Secret Service (GNOME Keyring or KWallet) on Linux, Credential Manager on Windows. Two-factor sign-in is Apple's own.
+- **Your sign-in stays in your system keyring:** your password and session live in the Secret Service (GNOME Keyring or KWallet) on Linux and Credential Manager on Windows, so Skykeep can sign back in by itself. Session cookies are encrypted with a key kept there too. Any program running as you can read keyring entries; [SECURITY.md](SECURITY.md) has the details. Two-factor sign-in is Apple's own.
 - **Clear about what it connects to:** Apple for your iCloud, the calendars you subscribe to, and GitHub's release servers to check for new versions of Skykeep. Each has a connection of its own that can reach nothing else. No Skykeep account, no analytics.
 - **Independent.** Skykeep is an open-source project, not affiliated with or endorsed by Apple.
 

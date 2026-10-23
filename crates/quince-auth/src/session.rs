@@ -5,10 +5,13 @@
 //! trust token from `/2sv/trust`. We capture it and hand it to the OS keyring, so a restart
 //! resumes instead of re-prompting.
 
+use crate::sealed::{self, Key};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const KEYRING_ENTRY: &str = "session";
+/// The cookie key's entry: the session's name with this after it (`session:cookie-key`).
+const COOKIE_KEY: &str = ":cookie-key";
 
 /// Identifiers the app was published under before, newest first: the keyring services its
 /// session may still be under, and the folders `src-tauri/src/migrate.rs` moves. The current
@@ -494,6 +497,52 @@ fn read_moving(
     Ok(Some(old))
 }
 
+/// The key `cookies.json` is sealed with, under `name` in `k`; made and kept there first when
+/// `make` and there is none.
+///
+/// One small entry: 44 characters, inside even Windows' limit, so it is never split into parts.
+/// A new key is read back before it is used, as the trust token is — a keyring that said yes
+/// and kept nothing would otherwise leave a file sealed under a key that is gone. An entry that
+/// is not a key is no key: replaced when one is being made, and otherwise nothing to open with.
+fn cookie_key_in(k: &dyn Secrets, name: &str, make: bool) -> Result<Option<Key>, String> {
+    if let Some(key) = k.get(name)?.as_deref().and_then(sealed::decode_key) {
+        return Ok(Some(key));
+    }
+    if !make {
+        return Ok(None);
+    }
+    let key = sealed::new_key().map_err(|e| e.to_string())?;
+    let text = sealed::encode_key(&key);
+    k.set(name, &text)?;
+    if k.get(name)?.as_deref() != Some(text.as_str()) {
+        return Err("the system keyring accepted the cookie key but did not keep it".into());
+    }
+    Ok(Some(key))
+}
+
+/// Tests only: the cookie key in a file of its own beside `session.json`, as the session is.
+struct KeyFile(PathBuf);
+
+impl Secrets for KeyFile {
+    fn get(&self, _: &str) -> Result<Option<String>, String> {
+        match std::fs::read_to_string(&self.0) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+    fn set(&self, _: &str, value: &str) -> Result<(), String> {
+        write_whole(&self.0, value.as_bytes(), true).map_err(|e| e.to_string())
+    }
+    fn delete(&self, _: &str) -> Result<(), String> {
+        match std::fs::remove_file(&self.0) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
 /// Write `bytes` to `path` whole or not at all: to a file beside it, made sure of on disk, then
 /// renamed over it. Truncated in place, a crash or a full disk part way left an empty or cut-off
 /// cookie jar, read as no cookies at all: the session checked again from the start, and maybe
@@ -590,6 +639,42 @@ impl Store {
         }
     }
 
+    /// The cookie key's entry, beside the session's: one per data folder, as the session is.
+    fn key_name(&self) -> String {
+        format!("{}{COOKIE_KEY}", self.name())
+    }
+
+    /// Where the cookie key is kept, asked of `f`.
+    fn with_key_store<T>(
+        &self,
+        f: impl FnOnce(&dyn Secrets, &str) -> Result<T, String>,
+    ) -> Result<T, crate::Error> {
+        let name = self.key_name();
+        match &self.backend {
+            Backend::Keyring(_) => {
+                let now = current().map_err(crate::Error::Keyring)?;
+                f(&now, &name)
+            }
+            Backend::File(path) => f(&KeyFile(path.with_file_name("cookie-key")), &name),
+        }
+        .map_err(crate::Error::Keyring)
+    }
+
+    /// The key the cookies on disk are sealed with. `Ok(None)`: none is kept — never made, or
+    /// the keyring was reset — so a sealed file here can no longer be opened. An error: the
+    /// keyring would not answer, which says nothing about whether one is kept.
+    pub(crate) fn cookie_key(&self) -> Result<Option<Key>, crate::Error> {
+        self.with_key_store(|k, name| cookie_key_in(k, name, false))
+    }
+
+    /// [`Self::cookie_key`], made and kept the first time cookies are written. An error is a
+    /// keyring that cannot keep one, and then the cookies are not written at all.
+    pub(crate) fn cookie_key_or_new(&self) -> Result<Key, crate::Error> {
+        self.with_key_store(|k, name| {
+            cookie_key_in(k, name, true)?.ok_or_else(|| "no cookie key was made".to_string())
+        })
+    }
+
     /// Load the stored session. A missing entry is normal (first run), not an error.
     pub fn load(&self) -> Session {
         self.try_load().unwrap_or_default()
@@ -667,6 +752,8 @@ impl Store {
                 }
             }
         }
+        // The cookies' key goes with them: the next sign-in seals under a new one.
+        self.with_key_store(|k, name| k.delete(name))?;
         if self.cookie_path.exists() {
             std::fs::remove_file(&self.cookie_path)?;
         }
@@ -1260,5 +1347,96 @@ mod move_tests {
         assert_eq!(now.get(&entry).unwrap().as_deref(), Some("{}"));
         now.delete(&entry).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The cookie key in the keyring: made once, read back before it is trusted, never in parts.
+#[cfg(test)]
+mod cookie_key_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    /// `forget`: says yes and keeps nothing. `refuse`: no keyring at all.
+    #[derive(Default)]
+    struct Mock {
+        held: RefCell<BTreeMap<String, String>>,
+        forget: bool,
+        refuse: bool,
+    }
+    impl Secrets for Mock {
+        fn get(&self, name: &str) -> Result<Option<String>, String> {
+            if self.refuse {
+                return Err("no keyring".into());
+            }
+            Ok(self.held.borrow().get(name).cloned())
+        }
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            if self.refuse {
+                return Err("no keyring".into());
+            }
+            if !self.forget {
+                self.held.borrow_mut().insert(name.into(), value.into());
+            }
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.held.borrow_mut().remove(name);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_key_is_made_once_and_then_read() {
+        let k = Mock::default();
+        assert_eq!(
+            cookie_key_in(&k, "session:cookie-key", false).unwrap(),
+            None
+        );
+        let made = cookie_key_in(&k, "session:cookie-key", true).unwrap();
+        assert!(made.is_some());
+        assert_eq!(k.held.borrow().len(), 1, "one small entry");
+        assert_eq!(
+            k.held.borrow()["session:cookie-key"].chars().count(),
+            44,
+            "inside Windows' limit: never in parts"
+        );
+        assert_eq!(cookie_key_in(&k, "session:cookie-key", true).unwrap(), made);
+        assert_eq!(
+            cookie_key_in(&k, "session:cookie-key", false).unwrap(),
+            made
+        );
+    }
+
+    #[test]
+    fn a_keyring_that_keeps_nothing_gives_no_key() {
+        let forgetting = Mock {
+            forget: true,
+            ..Mock::default()
+        };
+        assert!(cookie_key_in(&forgetting, "k", true).is_err());
+        let none = Mock {
+            refuse: true,
+            ..Mock::default()
+        };
+        assert!(cookie_key_in(&none, "k", true).is_err());
+        assert!(cookie_key_in(&none, "k", false).is_err(), "not \"no key\"");
+    }
+
+    #[test]
+    fn an_entry_that_is_not_a_key_is_none_and_replaced() {
+        let k = Mock::default();
+        k.set("k", "rubbish").unwrap();
+        assert_eq!(cookie_key_in(&k, "k", false).unwrap(), None);
+        let made = cookie_key_in(&k, "k", true).unwrap().unwrap();
+        assert_eq!(sealed::decode_key(&k.held.borrow()["k"]), Some(made));
+    }
+
+    #[test]
+    fn each_data_folder_has_a_key_of_its_own() {
+        let a = Store::keyring(Path::new("/tmp/quince-key-a")).unwrap();
+        let b = Store::keyring(Path::new("/tmp/quince-key-b")).unwrap();
+        assert_ne!(a.key_name(), b.key_name());
+        assert!(a.key_name().ends_with(COOKIE_KEY));
     }
 }

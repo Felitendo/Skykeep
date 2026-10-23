@@ -22,6 +22,7 @@ macro_rules! quiet {
 }
 
 pub mod releases;
+mod sealed;
 pub mod session;
 pub mod srp;
 
@@ -265,6 +266,83 @@ pub struct Client {
     /// What was last written, as a hash of the session and one of the cookies: a heartbeat that
     /// changed neither writes neither (see [`Client::persist`]).
     persisted: std::sync::Mutex<Persisted>,
+    /// The cookies on disk, as this start found them (see [`read_jar`]).
+    cookies: Cookies,
+}
+
+/// What became of the cookies kept on disk when the client started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cookies {
+    /// Read, or there were none.
+    Read,
+    /// Sealed, and the keyring would not answer for their key — locked, or not up yet. The file
+    /// is left as it is and read again once the keyring answers.
+    Unread,
+    /// Sealed, and could not be opened: the keyring no longer holds their key (it was reset),
+    /// or the file was changed. Set aside; the session carries on from its tokens.
+    SetAside,
+}
+
+/// The cookie jar kept on disk, opened, and what became of the file.
+///
+/// A sealed file is opened with its key from the keyring. One that cannot be — no key, a key
+/// that does not fit, a version this build does not know, a changed byte — is deleted, never
+/// a reason to fail: the cookies only save a round trip, and the tokens the keyring holds open
+/// a new set (see [`Client::resume`]).
+///
+/// A jar from before sealing (plain JSON) is read once and sealed in its place, or, with no
+/// keyring to keep a key, deleted — its cookies held in memory for as long as Skykeep runs and
+/// sealed by the first write a keyring takes. Either way no plaintext is left behind: the sealed
+/// file is renamed over it, so the plain one is never there beside it.
+fn read_jar(store: &Store) -> (cookie_store::CookieStore, Cookies) {
+    let path = store.cookie_path();
+    let parse = |json: &[u8]| cookie_store::serde::json::load(json).ok();
+    let Ok(bytes) = std::fs::read(path) else {
+        return (cookie_store::CookieStore::default(), Cookies::Read);
+    };
+    let set_aside = |why: &str| {
+        quiet!("quince: the saved cookies were set aside: {why}");
+        let _ = std::fs::remove_file(path);
+        (cookie_store::CookieStore::default(), Cookies::SetAside)
+    };
+    if sealed::is_sealed(&bytes) {
+        return match store.cookie_key() {
+            Ok(Some(key)) => match sealed::open(&key, &bytes) {
+                Ok(json) => match parse(&json) {
+                    Some(jar) => (jar, Cookies::Read),
+                    None => set_aside("they were not a cookie jar"),
+                },
+                Err(sealed::Unopened::Version(v)) => set_aside(&format!("unknown version {v}")),
+                Err(sealed::Unopened::Damaged) => set_aside("they did not open with their key"),
+            },
+            Ok(None) => set_aside("the keyring no longer holds their key"),
+            Err(e) => {
+                quiet!("quince: the saved cookies wait for the keyring: {e}");
+                (cookie_store::CookieStore::default(), Cookies::Unread)
+            }
+        };
+    }
+    // From before sealing: read once, then sealed in place or gone.
+    let Some(jar) = parse(&bytes) else {
+        let _ = std::fs::remove_file(path);
+        return (cookie_store::CookieStore::default(), Cookies::Read);
+    };
+    let sealed_in_place = (|| -> Result<()> {
+        let key = store.cookie_key_or_new()?;
+        let mut json = Vec::new();
+        cookie_store::serde::json::save(&jar, &mut json)
+            .map_err(|e| Error::Protocol(format!("couldn't save cookies: {e}")))?;
+        Ok(session::write_whole(
+            path,
+            &sealed::seal(&key, &json)?,
+            true,
+        )?)
+    })();
+    if let Err(e) = sealed_in_place {
+        quiet!("quince: the cookies are kept in memory only: {e}");
+        let _ = std::fs::remove_file(path);
+    }
+    (jar, Cookies::Read)
 }
 
 /// Hashes of the session and the cookie jar as last written; `None` for not written yet.
@@ -294,17 +372,8 @@ impl Client {
             Err(e) => (session::Session::default(), Some(e.to_string())),
         };
 
-        let jar = {
-            let path = store.cookie_path();
-            let inner = if path.exists() {
-                let reader = std::io::BufReader::new(std::fs::File::open(path)?);
-                cookie_store::serde::json::load(reader)
-                    .unwrap_or_else(|_| cookie_store::CookieStore::default())
-            } else {
-                cookie_store::CookieStore::default()
-            };
-            Arc::new(CookieStoreMutex::new(inner))
-        };
+        let (jar, cookies) = read_jar(&store);
+        let jar = Arc::new(CookieStoreMutex::new(jar));
 
         // Default origin is icloud.com — what setup.icloud.com and the service endpoints
         // expect. The idmsa SRP endpoints want their own origin and override it per request.
@@ -347,7 +416,39 @@ impl Client {
             keyring_error,
             unsaved: None,
             persisted: std::sync::Mutex::new(Persisted::default()),
+            cookies,
         })
+    }
+
+    /// Said when the cookies kept on disk could not be opened and were set aside — the keyring
+    /// was reset, or the file changed. Nothing else is lost: Skykeep carries on from the
+    /// session the keyring holds, and asks for a sign-in only if that is gone too.
+    #[must_use]
+    pub fn cookies_set_aside(&self) -> Option<&'static str> {
+        (self.cookies == Cookies::SetAside).then_some(
+            "Skykeep couldn't open its saved connection to iCloud, so it set it aside. \
+             If you're asked to sign in again, that's all it takes — your library is untouched.",
+        )
+    }
+
+    /// Cookies left unread at the start because the keyring would not answer, read now that it
+    /// may — into a jar nothing has filled since, never over cookies newer than the file.
+    fn read_cookies_again(&mut self) {
+        if self.cookies != Cookies::Unread {
+            return;
+        }
+        let (jar, cookies) = read_jar(&self.store);
+        if cookies == Cookies::Unread {
+            return;
+        }
+        self.cookies = cookies;
+        let mut held = self
+            .jar
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.iter_any().next().is_none() {
+            *held = jar;
+        }
     }
 
     /// A lapsed session tried to sign itself back in, and Apple wants a code before it will
@@ -426,6 +527,8 @@ impl Client {
     /// would not answer at the start is not asked to replace it either.
     fn keep(&mut self) {
         self.keyring_error = None;
+        // Never an empty jar written over cookies the keyring could not open at the start.
+        self.read_cookies_again();
         match self.persist() {
             Ok(()) => self.unsaved = None,
             Err(e) => {
@@ -442,13 +545,17 @@ impl Client {
         self.unsaved.as_deref()
     }
 
-    /// The cookie jar, as `cookie_store` wrote it, to its file.
+    /// The cookie jar, as `cookie_store` wrote it, sealed to its file (see [`sealed`]).
+    ///
+    /// With no keyring to keep the key nothing is written: the cookies stay in memory, as the
+    /// session does, and are sealed by the first write a keyring takes. Never in the clear.
     fn write_cookies(&self, cookies: &[u8]) -> Result<()> {
-        // The session's cookies are a credential: readable by this user alone, whatever folder
-        // they end up in (a backup, a copy), not only by the private data folder around them.
+        let key = self.store.cookie_key_or_new()?;
+        // The session's cookies are a credential: readable by this user alone as well, whatever
+        // folder they end up in (a backup, a copy), not only by the private data folder.
         Ok(session::write_whole(
             self.store.cookie_path(),
-            cookies,
+            &sealed::seal(&key, cookies)?,
             true,
         )?)
     }
@@ -527,6 +634,7 @@ impl Client {
                 Err(e) => return Err(e),
             }
         }
+        self.read_cookies_again();
         if !self.session.is_resumable() {
             return Ok(false);
         }
@@ -1588,5 +1696,230 @@ mod tests {
             }
             e => panic!("expected Protocol, got {e:?}"),
         }
+    }
+}
+
+/// The cookie jar on disk: sealed with a key the keyring keeps, and never in the clear.
+#[cfg(test)]
+mod sealed_jar_tests {
+    use super::*;
+
+    const VALUE: &str = "cookie-value-that-must-not-show";
+
+    fn client(dir: &Path) -> Client {
+        Client::with(dir, Endpoints::default(), Store::file(dir).unwrap()).unwrap()
+    }
+
+    fn holding_a_cookie(dir: &Path) -> Client {
+        let c = client(dir);
+        let url = reqwest::Url::parse("https://www.icloud.com/").unwrap();
+        let cookie = cookie_store::RawCookie::parse(format!(
+            "X-APPLE-WEBAUTH-USER={VALUE}; Domain=icloud.com; Path=/; Max-Age=3600; Secure"
+        ))
+        .unwrap();
+        c.jar.lock().unwrap().insert_raw(&cookie, &url).unwrap();
+        c
+    }
+
+    fn has_the_cookie(c: &Client) -> bool {
+        c.jar.lock().unwrap().iter_any().any(|k| k.value() == VALUE)
+    }
+
+    fn cookies_file(dir: &Path) -> std::path::PathBuf {
+        dir.join("cookies.json")
+    }
+
+    /// The jar as it was written before sealing: plain JSON.
+    fn plain_jar(dir: &Path) -> Vec<u8> {
+        let c = holding_a_cookie(dir);
+        let mut json = Vec::new();
+        cookie_store::serde::json::save(&c.jar.lock().unwrap(), &mut json).unwrap();
+        assert!(String::from_utf8_lossy(&json).contains(VALUE));
+        json
+    }
+
+    /// No keyring to keep a key: where the key would be is a folder, so nothing can be kept.
+    fn no_keyring(dir: &Path) {
+        std::fs::create_dir(dir.join("cookie-key")).unwrap();
+    }
+
+    fn nothing_but(dir: &Path, names: &[&str]) {
+        let mut found: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        let mut want: Vec<String> = names.iter().map(|n| (*n).to_string()).collect();
+        want.sort();
+        assert_eq!(found, want);
+    }
+
+    #[test]
+    fn cookies_are_sealed_on_disk_and_read_back_by_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        holding_a_cookie(dir.path()).persist().unwrap();
+
+        let on_disk = std::fs::read(cookies_file(dir.path())).unwrap();
+        assert!(
+            on_disk.starts_with(sealed::MAGIC),
+            "sealed, with its header"
+        );
+        assert!(
+            !String::from_utf8_lossy(&on_disk).contains(VALUE),
+            "the cookie is not in the file"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(cookies_file(dir.path()))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        let next = client(dir.path());
+        assert!(has_the_cookie(&next));
+        assert!(next.cookies_set_aside().is_none());
+    }
+
+    /// A changed byte: set aside cleanly, the file gone, said calmly — never a crash.
+    #[test]
+    fn a_changed_file_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        holding_a_cookie(dir.path()).persist().unwrap();
+        let path = cookies_file(dir.path());
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x40;
+        std::fs::write(&path, bytes).unwrap();
+
+        let next = client(dir.path());
+        assert!(!has_the_cookie(&next));
+        assert!(!path.exists(), "nothing left that cannot be opened");
+        assert!(next.cookies_set_aside().is_some(), "and it says so");
+        // The next write seals afresh, and that opens.
+        holding_a_cookie(dir.path()).persist().unwrap();
+        assert!(has_the_cookie(&client(dir.path())));
+    }
+
+    #[test]
+    fn a_version_this_build_does_not_know_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        holding_a_cookie(dir.path()).persist().unwrap();
+        let path = cookies_file(dir.path());
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[sealed::MAGIC.len()] = sealed::VERSION + 1;
+        std::fs::write(&path, bytes).unwrap();
+
+        let next = client(dir.path());
+        assert!(!has_the_cookie(&next));
+        assert!(!path.exists());
+        assert!(next.cookies_set_aside().is_some());
+    }
+
+    /// The keyring was reset: the file is there and its key is not.
+    #[test]
+    fn a_file_whose_key_is_gone_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        holding_a_cookie(dir.path()).persist().unwrap();
+        std::fs::remove_file(dir.path().join("cookie-key")).unwrap();
+
+        let next = client(dir.path());
+        assert!(!has_the_cookie(&next));
+        assert!(!cookies_file(dir.path()).exists());
+        assert!(next.cookies_set_aside().is_some());
+    }
+
+    /// A jar from before sealing is read once and sealed in its place; the plain one is gone,
+    /// with nothing beside it.
+    #[test]
+    fn a_plain_jar_from_before_is_sealed_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = plain_jar(dir.path());
+        std::fs::write(cookies_file(dir.path()), &json).unwrap();
+
+        let c = client(dir.path());
+        assert!(has_the_cookie(&c), "nothing lost on the way");
+        let on_disk = std::fs::read(cookies_file(dir.path())).unwrap();
+        assert!(on_disk.starts_with(sealed::MAGIC));
+        assert!(!String::from_utf8_lossy(&on_disk).contains(VALUE));
+        nothing_but(dir.path(), &["cookies.json", "cookie-key"]);
+        assert!(
+            has_the_cookie(&client(dir.path())),
+            "and it opens next time"
+        );
+    }
+
+    /// No keyring, and a plain jar from before: read into memory, and the plain file deleted —
+    /// it is not left there, and nothing is written in its place.
+    #[test]
+    fn a_plain_jar_with_no_keyring_is_kept_in_memory_and_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = plain_jar(dir.path());
+        no_keyring(dir.path());
+        std::fs::write(cookies_file(dir.path()), &json).unwrap();
+
+        let c = client(dir.path());
+        assert!(has_the_cookie(&c), "held for as long as Skykeep runs");
+        assert!(
+            !cookies_file(dir.path()).exists(),
+            "no plaintext left behind"
+        );
+        nothing_but(dir.path(), &["cookie-key"]);
+    }
+
+    /// No keyring: the cookies are not written at all — never in the clear — and saying so is
+    /// what `keep` does with the error.
+    #[test]
+    fn with_no_keyring_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        no_keyring(dir.path());
+        let mut c = holding_a_cookie(dir.path());
+        assert!(matches!(c.persist(), Err(Error::Keyring(_))));
+        assert!(!cookies_file(dir.path()).exists());
+        nothing_but(dir.path(), &["cookie-key", "session.json"]);
+        c.keep();
+        assert!(c.unsaved().is_some(), "said: kept in memory only");
+        assert!(has_the_cookie(&c));
+
+        // A keyring comes up: the next write seals them.
+        std::fs::remove_dir(dir.path().join("cookie-key")).unwrap();
+        c.keep();
+        assert!(c.unsaved().is_none());
+        assert!(has_the_cookie(&client(dir.path())));
+    }
+
+    /// A keyring that will not answer yet is not a reset one: the sealed file is left as it is,
+    /// and read once it answers.
+    #[test]
+    fn a_keyring_that_does_not_answer_leaves_the_file_for_later() {
+        let dir = tempfile::tempdir().unwrap();
+        holding_a_cookie(dir.path()).persist().unwrap();
+        let key = dir.path().join("cookie-key");
+        let kept = std::fs::read(&key).unwrap();
+        std::fs::remove_file(&key).unwrap();
+        no_keyring(dir.path());
+
+        let mut c = client(dir.path());
+        assert!(!has_the_cookie(&c));
+        assert!(cookies_file(dir.path()).exists(), "untouched");
+        assert!(c.cookies_set_aside().is_none());
+
+        std::fs::remove_dir(&key).unwrap();
+        std::fs::write(&key, kept).unwrap();
+        c.read_cookies_again();
+        assert!(has_the_cookie(&c));
+    }
+
+    /// Signing out takes the key with the cookies.
+    #[test]
+    fn signing_out_forgets_the_key_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = holding_a_cookie(dir.path());
+        c.persist().unwrap();
+        c.sign_out().unwrap();
+        assert!(!cookies_file(dir.path()).exists());
+        assert!(!dir.path().join("cookie-key").exists());
     }
 }

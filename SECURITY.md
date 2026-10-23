@@ -67,11 +67,23 @@ Everything is in your user's data folder: `~/.local/share/io.github.yashwanthkam
 on Linux, readable by you alone (mode 700), and `%APPDATA%\io.github.yashwanthkamireddi.Skykeep`
 on Windows.
 
-- **Your password, Apple Account and session tokens:** in the system keyring (the Secret
-  Service, such as GNOME Keyring or KWallet, on Linux; Credential Manager on Windows), never
-  in a file. The password is kept so a session that lapses can sign itself back in without
-  asking; Apple asks for a code only when it stops trusting this computer.
-- **Session cookies:** `cookies.json`, readable by you alone (mode 600).
+- **Your password, Apple Account and session:** in the system keyring — the Secret Service
+  (GNOME Keyring or KWallet) on Linux, Credential Manager on Windows — never in a file. The
+  password is kept there so Skykeep can sign back in by itself when a session lapses, and you
+  sign in once; Apple asks for a code only when it stops trusting this computer. Signing out
+  erases it.
+- **Session cookies:** `cookies.json`, encrypted (AES-256-GCM) with a random 256-bit key
+  kept in the same keyring, one key per data folder, and readable by you alone (mode 600) as
+  well. The file on its own opens nothing: copied into a backup or another folder, it is of no
+  use without the keyring entry. With no keyring running, the cookies are kept in memory only
+  and never written. If the key is gone (the keyring was reset), the file is deleted and
+  Skykeep signs in afresh from what the keyring still holds, or asks you to.
+- **What that protects, and what it does not.** The keyring is locked when you are logged out
+  and encrypted on disk, but while you are logged in **any program running as you can read
+  Skykeep's keyring entries**, the password included — the keyring does not tell one of your
+  programs from another. A program that runs as you can already read your files too; the
+  keyring is the system's own place for a secret like this, which is why it is kept there
+  rather than in a file of Skykeep's own.
 - **Your library:** `library.db` (SQLite) — notes, reminders, events, contacts, the Drive
   and Photos listings — and caches of pictures and files you opened. These are not encrypted
   by Skykeep; use full-disk encryption, as you would for the same data on a Mac.
