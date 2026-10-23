@@ -129,7 +129,7 @@ sudo zypper install --allow-unsigned-rpm ./Skykeep-*.x86_64.rpm
 HEIC photos and HEVC videos need it from [RPM Fusion](https://rpmfusion.org/Howto/Multimedia)
 (Fedora: `ffmpeg` in place of `ffmpeg-free`, and `libheif-freeworld`) or
 [Packman](https://en.opensuse.org/Additional_package_repositories#Packman) (openSUSE:
-`libavcodec`, `libheif1` and `libde265` from Packman). Everything else works without it.</sub>
+`libavcodec`, `libheif1`, `libde265` and `libheif-HEIF` from Packman). Everything else works without it.</sub>
 
 **Arch, CachyOS, EndeavourOS, Manjaro** <sub>coming to the AUR</sub>
 

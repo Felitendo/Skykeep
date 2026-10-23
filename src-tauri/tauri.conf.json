@@ -116,7 +116,7 @@
       },
       "rpm": {
         "depends": [
-          "glibc >= 2.39",
+          "(glibc >= 2.39)",
           "libsecret-1.so.0()(64bit)",
           "libheif.so.1()(64bit)",
           "(libheif >= 1.17 or libheif1 >= 1.17)",

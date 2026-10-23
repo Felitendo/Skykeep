@@ -8,6 +8,9 @@
 # Not on every push: by hand (Actions → Linux compatibility → Run workflow), and for a release
 # tag. The packages are built the way release.yml builds them, on Ubuntu 24.04 — the oldest
 # base whose libheif (1.17) the app accepts; Debian 12 (libheif 1.15, glibc 2.36) cannot run it.
+# `native` also builds from source on Debian 13, Fedora 42 and openSUSE Tumbleweed (and `arch`
+# on Arch) with the build dependencies CONTRIBUTING lists, and installs each of those packages
+# in a clean container of the distribution it was built on.
 name: Linux compatibility
 
 on:
@@ -108,6 +111,93 @@ jobs:
           # shellcheck disable=SC2086
           bash /compat/check.sh /compat/$PKG /compat/distro_check /compat/test.heic
 
+  # The packages built on each distribution itself, from the build dependencies CONTRIBUTING
+  # lists for it — so a missing or renamed -devel package, a compiler that disagrees or a
+  # Node too old shows up here, not in an issue from someone building from source.
+  native:
+    name: Build on ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Debian 13", key: debian13, image: "debian:trixie", bundle: deb }
+          - { name: "Fedora 42", key: fedora42, image: "fedora:42", bundle: rpm }
+          - { name: "openSUSE Tumbleweed", key: tumbleweed, image: "opensuse/tumbleweed", bundle: rpm }
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Build dependencies, as CONTRIBUTING lists them
+        run: |
+          case "${{ matrix.key }}" in
+            debian13)
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                build-essential curl ca-certificates git nodejs npm \
+                libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsecret-1-dev \
+                libheif-dev libfuse3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+                pkg-config libayatana-appindicator3-dev ;;
+            fedora42)
+              dnf -y install gcc gcc-c++ make curl git nodejs npm \
+                webkit2gtk4.1-devel gtk3-devel librsvg2-devel libsecret-devel \
+                libheif-devel fuse3-devel gstreamer1-devel gstreamer1-plugins-base-devel \
+                pkgconf-pkg-config libayatana-appindicator-gtk3-devel ;;
+            tumbleweed)
+              zypper -n install --no-recommends gcc gcc-c++ make curl git tar gzip \
+                nodejs-default npm-default \
+                webkitgtk3-devel gtk3-devel librsvg-devel libsecret-devel \
+                libheif-devel fuse3-devel gstreamer-devel gstreamer-plugins-base-devel \
+                pkgconf-pkg-config libayatana-appindicator3-devel ;;
+          esac
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Rust, the version rust-toolchain.toml pins
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: npm ci --no-audit --no-fund
+      - name: Build the package
+        env:
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
+        run: npx tauri build --bundles ${{ matrix.bundle }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-${{ matrix.key }}
+          path: target/release/bundle/${{ matrix.bundle }}/*.${{ matrix.bundle }}
+          if-no-files-found: error
+          retention-days: 7
+
+  native-install:
+    needs: [build, native]
+    name: ${{ matrix.name }} (built there)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Debian 13", key: debian13, image: "debian:trixie", bundle: deb }
+          - { name: "Fedora 42", key: fedora42, image: "fedora:42", bundle: rpm }
+          - { name: "openSUSE Tumbleweed", key: tumbleweed, image: "opensuse/tumbleweed", bundle: rpm }
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Tools the artifact actions need
+        if: matrix.key == 'tumbleweed'
+        run: zypper -n install --no-recommends tar gzip
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-compat
+          path: /compat
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: native-${{ matrix.key }}
+          path: /native
+      - name: Install and run
+        run: |
+          chmod +x /compat/check.sh /compat/distro_check
+          bash /compat/check.sh "$(ls /native/*.${{ matrix.bundle }})" /compat/distro_check /compat/test.heic
+
   arch:
     needs: build
     name: Arch Linux (PKGBUILD)
@@ -115,6 +205,11 @@ jobs:
     timeout-minutes: 60
     container:
       image: archlinux:latest
+      # Arch's gnome-keyring-daemon, started as root, drops its capabilities and aborts
+      # ("error dropping process capabilities") when the container's bounding set lacks some;
+      # the keyring check then fails for the container, not for Skykeep. With every capability
+      # it starts (checked under podman).
+      options: --cap-add=ALL
     steps:
       - name: Build tools
         run: pacman -Syu --noconfirm --needed base-devel git rust nodejs npm

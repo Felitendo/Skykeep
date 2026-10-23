@@ -30,9 +30,22 @@ npx tauri build
 ```
 
 builds every bundle for the platform you're on (`.deb`, `.rpm` and `.AppImage` on Linux;
-`.msi` and the `-setup.exe` on Windows) under `target/release/bundle/`. Releases are built
-the same way by `.github/workflows/release.yml`, which installs and starts each Linux package
-before keeping it.
+`.msi` and the `-setup.exe` on Windows) under `target/release/bundle/`; `--bundles deb` (or
+`rpm`, `appimage`) builds one. Releases are built the same way by
+`.github/workflows/release.yml`, which installs and starts each Linux package before keeping
+it.
+
+The build dependencies are the ones in [CONTRIBUTING](../.github/CONTRIBUTING.md#set-up),
+**including the libayatana-appindicator development package**: tauri-cli adds up the `tauri`
+features of every target, sees the Windows/macOS `tray-icon`, and stops with "Can't detect any
+appindicator library" without it. For the same reason the `.deb` depends on
+`libayatana-appindicator3-1`, the `.rpm` on `libayatana-appindicator3.so.1()(64bit)` and the
+AppImage carries `libayatana-appindicator3.so.1`, although the Linux tray is ksni's and never
+loads it (`ldd` on the binary doesn't list it).
+
+`linux-compat.yml` (Actions → Linux compatibility) builds the packages on Ubuntu 24.04,
+Debian 13, Fedora 42, openSUSE Tumbleweed and Arch from these instructions and installs each in a
+clean container of its distribution; `linux-compat/check.sh` is what it runs there.
 
 ## Flatpak
 

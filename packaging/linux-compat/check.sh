@@ -11,7 +11,8 @@
 #
 # Checked, each on its own line, PASS or FAIL:
 #   ldd       the program finds every library it links;
-#   gst       the GStreamer elements the player and poster reader load at run time are there;
+#   gst       the GStreamer elements the player and poster reader load at run time are there
+#             (SKIP for an AppImage on a system whose gst-inspect is newer than its GStreamer);
 #   heic      a HEIC decodes through the system's libheif, the app's own way;
 #   keyring   a made-up session goes into a Secret Service (gnome-keyring) and back out
 #             through the app's sign-in storage;
@@ -37,8 +38,12 @@ case "$like" in
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     tools="xvfb xauth dbus gnome-keyring gstreamer1.0-tools desktop-file-utils appstream"
-    # An AppImage carries its libraries but not the ones every desktop has (excludelist).
-    [[ $pkg == *.AppImage ]] && tools+=" libgl1 libegl1 libfontconfig1 fonts-dejavu-core"
+    # An AppImage carries its libraries but not the ones every desktop has (linuxdeploy's
+    # excludelist): GL, X11, fonts and text shaping, ALSA, DRM. Without them in this bare
+    # container gst-libav (libavcodec links them) does not load and avdec_* looks missing.
+    [[ $pkg == *.AppImage ]] && tools+=" libgl1 libegl1 libgles2 libfontconfig1 fonts-dejavu-core \
+      libx11-6 libx11-xcb1 libxcb1 libxcb-dri3-0 libdrm2 libharfbuzz0b libfribidi0 libfreetype6 \
+      libasound2t64"
     # shellcheck disable=SC2086
     apt-get install -y -qq --no-install-recommends $tools >/dev/null
     [[ $pkg == *.deb ]] && { apt-get install -y -q --no-install-recommends "$pkg" || exit 1; }
@@ -46,13 +51,17 @@ case "$like" in
   *" fedora "*)
     tools="xorg-x11-server-Xvfb xorg-x11-xauth dbus-daemon gnome-keyring gstreamer1 \
            desktop-file-utils appstream which"
-    [[ $pkg == *.AppImage ]] && tools+=" mesa-libGL mesa-libEGL fontconfig dejavu-sans-fonts"
+    # As above; libGLESv2 (libglvnd-gles) too, which WebKit opens and every Fedora desktop has.
+    [[ $pkg == *.AppImage ]] && tools+=" mesa-libGL mesa-libEGL libglvnd-gles fontconfig \
+      dejavu-sans-fonts libX11 libX11-xcb libxcb libdrm harfbuzz fribidi freetype alsa-lib"
     # shellcheck disable=SC2086
     dnf -y -q install --setopt=install_weak_deps=False $tools
     [[ $pkg == *.rpm ]] && { dnf -y install --setopt=install_weak_deps=False "$pkg" || exit 1; }
     ;;
   *" suse "* | *" opensuse "*)
-    tools="xvfb-run dbus-1 gnome-keyring gstreamer-utils desktop-file-utils AppStream which"
+    # dbus-run-session is in dbus-1-daemon, not dbus-1.
+    tools="xvfb-run dbus-1 dbus-1-daemon gnome-keyring gstreamer-utils desktop-file-utils \
+      AppStream which"
     [[ $pkg == *.AppImage ]] && tools+=" Mesa-libGL1 Mesa-libEGL1 fontconfig dejavu-fonts"
     # shellcheck disable=SC2086
     zypper -q --non-interactive install --no-recommends $tools
@@ -102,19 +111,27 @@ if [[ $pkg == *.AppImage ]]; then
 fi
 media() {
   local absent= e
-  for e in playbin3 decodebin videoconvert videoflip appsink qtdemux "avdec_h264|openh264dec" \
-           avdec_h265; do
-    LD_LIBRARY_PATH=$libs gst-inspect-1.0 "${e%%|*}" >/dev/null 2>&1 || { [[ $e == *"|"* ]] &&
-      LD_LIBRARY_PATH=$libs gst-inspect-1.0 "${e##*|}" >/dev/null 2>&1; } || absent+=" $e"
-  done
-  [[ -z $absent ]] && pass gst || $1 gst "missing:$absent"
+  # The AppImage's elements are looked at with this system's gst-inspect-1.0 on the AppImage's
+  # own libgstreamer. A system GStreamer newer than the bundled one (Fedora 42's 1.26 against
+  # Ubuntu 24.04's 1.24) cannot do that ("undefined symbol"), which says nothing about the
+  # AppImage; then the elements are not checked here (Ubuntu and Debian check them).
+  if [[ $pkg == *.AppImage ]] && ! LD_LIBRARY_PATH=$libs gst-inspect-1.0 --version >/dev/null 2>&1; then
+    echo "SKIP gst — this system's gst-inspect-1.0 cannot load the AppImage's GStreamer"
+  else
+    for e in playbin3 decodebin videoconvert videoflip appsink qtdemux \
+             "avdec_h264|openh264dec" avdec_h265; do
+      LD_LIBRARY_PATH=$libs gst-inspect-1.0 "${e%%|*}" >/dev/null 2>&1 || { [[ $e == *"|"* ]] &&
+        LD_LIBRARY_PATH=$libs gst-inspect-1.0 "${e##*|}" >/dev/null 2>&1; } || absent+=" $e"
+    done
+    [[ -z $absent ]] && pass gst || $1 gst "missing:$absent"
+  fi
   if out=$(LD_LIBRARY_PATH=$libs "$probe" heic "$heic" 2>&1); then pass heic "$out"
   else $1 heic "$out"; fi
 }
 # Fedora leaves HEVC out of its own repositories — libheif without its libde265 decoder, FFmpeg
-# without H.265 — so an iPhone's HEIC photos and HEVC videos need RPM Fusion there (the
-# README's Fedora and openSUSE note). Without it, those two are noted, not failed; then RPM
-# Fusion is added exactly as the README says, and with it both must pass.
+# without H.265 — so an iPhone's HEIC photos and HEVC videos need RPM Fusion there (the note
+# under the README's Linux install lines). Without it, those two are noted, not failed; then
+# RPM Fusion is added exactly as the README says, and with it both must pass.
 # openSUSE is the same: no libde265 and an FFmpeg without HEVC in its own repositories; H.264
 # comes from the openh264 repository it has enabled out of the box, HEVC from Packman.
 known() { echo "KNOWN $1 — ${2} (no HEVC decoder in $NAME's own repositories)"; }
@@ -138,7 +155,7 @@ elif [[ $like == *" suse "* && $pkg != *.AppImage ]]; then
       "https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/" packman &&
     zypper -q --non-interactive --gpg-auto-import-keys refresh packman &&
     zypper -q --non-interactive install --no-recommends --allow-vendor-change --from packman \
-      libavcodec62 libheif1 libde265-0 $(zypper -q se -r packman -x libheif-de265 >/dev/null 2>&1 && echo libheif-de265) ||
+      libavcodec62 libheif1 libde265-0 libheif-HEIF ||
     fail packman "could not be added"
   echo "-- with Packman:"
   rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/gstreamer-1.0"

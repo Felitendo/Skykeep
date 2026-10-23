@@ -48,7 +48,8 @@ sudo zypper install gcc gcc-c++ make nodejs-default npm-default \
 The appindicator package is only for `npx tauri build`, the installable packages: it is not
 linked (the Linux tray is ksni's), but tauri-cli sees the `tray-icon` feature the Windows and
 macOS builds ask for and stops with "Can't detect any appindicator library" without it.
-`./run.sh`, `cargo build` and `./check.sh` don't need it.
+`./run.sh`, `cargo build`, `./check.sh` and the Arch `makepkg` don't need it (on Arch, `npx tauri
+build` needs `libayatana-appindicator`).
 
 Then:
 
