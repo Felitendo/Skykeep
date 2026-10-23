@@ -34,6 +34,11 @@ notify-rust = "4"
 tauri-plugin-single-instance = "2"
 libc = "0.2"
 tauri-plugin-window-state = "2"
+# Skykeep's own updates (updates.rs), from GitHub Releases. Held to one minor version: its HTTP
+# client is handed to quince_auth::releases to be locked, and the plugin may move to another
+# reqwest in a minor release.
+tauri-plugin-updater = "~2.14"
+semver = "1"
 # A merged card's picture made small enough for Apple (contacts_merge.rs): the same build of
 # the crate quince-media already uses, so nothing new is compiled.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

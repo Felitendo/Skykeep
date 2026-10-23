@@ -158,7 +158,7 @@ export function SignIn({
           <p>
             <strong>Private by design.</strong> Your password never leaves this computer.
             Skykeep proves you know it without sending it, and keeps your session in your
-            system keyring. No Skykeep account, no Skykeep servers: it talks only to Apple, and to calendars you subscribe to.
+            system keyring. No Skykeep account and no analytics: your iCloud travels only between this computer and Apple.
           </p>
           <p>
             <strong>Your full Apple Account password.</strong> An app-specific password opens

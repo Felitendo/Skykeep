@@ -8,6 +8,13 @@
 #   windows — the Windows pipeline (windows.yml): its tests, the .msi and .exe, the smoke test;
 #   publish — every file in one draft release with its checksums, for a person to read over
 #             and publish. Nothing is published by itself.
+#
+# The in-app updater (src-tauri/src/updates.rs) reads `latest.json` from the latest published
+# release. Each build signs what it can update — the AppImage, the .exe and the .msi — with
+# the TAURI_SIGNING_PRIVATE_KEY secret (createUpdaterArtifacts: a .sig beside each, with the
+# version signed into it); publish writes latest.json from those signatures. The .deb and .rpm
+# are updated by package managers, so they are not in it. A draft is invisible to the updater
+# until it is published.
 name: Release
 
 on:
@@ -23,6 +30,15 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      # The updater binds each signature to the version the program was built as, and
+      # latest.json names the tag's: they must be the same, or every update would be refused.
+      - name: The tag is the version built
+        run: |
+          built=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          if [ "v$built" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but tauri.conf.json says $built"
+            exit 1
+          fi
       - name: Build dependencies
         run: |
           sudo apt-get update
@@ -43,10 +59,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
       - name: Build the packages
-        # The build machine's paths are never written into the program.
+        # The build machine's paths are never written into the program. The AppImage is signed
+        # for the updater; the key is the release's own secret.
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
-        run: npx tauri build
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::a release needs the TAURI_SIGNING_PRIVATE_KEY secret to sign its updates"
+            exit 1
+          fi
+          npx tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          ls target/release/bundle/appimage/*.AppImage.sig
       # One check for every package: the program is started headless with --background (no
       # window is asked for unless sign-in needs one), on its own session bus, in an empty home,
       # and must still be running 8 s later. `timeout` ending it (124) is the pass; any other
@@ -107,6 +132,7 @@ jobs:
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
             target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
             target/release/bundle/SHA256SUMS-linux.txt
           if-no-files-found: error
 
@@ -114,6 +140,10 @@ jobs:
     uses: ./.github/workflows/windows.yml
     with:
       test_first: true
+      updater: true
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
   publish:
     needs: [linux, windows]
@@ -121,13 +151,47 @@ jobs:
     permissions:
       contents: write
     steps:
+      # For the tag's own message, which becomes the update's notes.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          path: source
       - uses: actions/download-artifact@v4
         with:
           path: dist
+      # What the in-app updater reads: the version, the tag's message as its notes, and for each
+      # kind of install that updates itself, where its file will be and its signature. The
+      # updater looks for `<os>-<arch>-<installer>`; with no plain `linux-x86_64`, a .deb or .rpm
+      # can never be handed the AppImage.
+      - name: The updater's latest.json
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          git -C source fetch --depth=1 origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          notes=$(git -C source tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$GITHUB_REF_NAME" | sed -e '/-----BEGIN PGP SIGNATURE-----/,$d')
+          one() { find dist -type f -name "$1" | head -n1; }
+          appimage=$(one '*.AppImage'); nsis=$(one '*-setup.exe'); msi=$(one '*.msi')
+          for f in "$appimage" "$nsis" "$msi"; do
+            if [ -z "$f" ] || [ ! -s "$f.sig" ]; then echo "::error::no signed updater file for '$f'"; exit 1; fi
+          done
+          base="https://github.com/$REPO/releases/download/$GITHUB_REF_NAME"
+          entry() { jq -n --arg url "$base/$(basename "$1")" --rawfile sig "$1.sig" '{url: $url, signature: ($sig | rtrimstr("\n"))}'; }
+          jq -n \
+            --arg version "${GITHUB_REF_NAME#v}" \
+            --arg notes "$notes" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson appimage "$(entry "$appimage")" \
+            --argjson nsis "$(entry "$nsis")" \
+            --argjson msi "$(entry "$msi")" \
+            '{version: $version, notes: ($notes | gsub("^\\s+|\\s+$"; "")), pub_date: $date,
+              platforms: {"linux-x86_64-appimage": $appimage, "windows-x86_64-nsis": $nsis, "windows-x86_64-msi": $msi}}' \
+            > dist/latest.json
+          cat dist/latest.json
       - name: A draft release with every file
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' -o -name 'SHA256SUMS*' \) -print0 \
+          find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' -o -name 'SHA256SUMS*' \
+              -o -name '*.AppImage.sig' -o -name '*.msi.sig' -o -name '*-setup.exe.sig' -o -name 'latest.json' \) -print0 \
             | xargs -0 gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
                 --draft --verify-tag --title "Skykeep ${GITHUB_REF_NAME#v}" --generate-notes

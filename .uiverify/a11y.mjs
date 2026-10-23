@@ -120,6 +120,13 @@ const scenarios = [
       await p.keyboard.type("cur");
       await settle(p, 500);
     }) },
+  // A new version offered (components/UpdateNotice), with its notes open.
+  { name: "update notice", ready: ".update-notice .update-notes[open]",
+    init: () => { window.__update = { version: "0.2.0", notes: "Faster Photos.\nCalendar fixes." }; },
+    act: async (p) => {
+      await p.locator(".update-notice summary").click();
+      await settle(p, 300);
+    } },
   { name: "narrow sidebar", ready: ".is-sidebar-open", viewport: { width: 800, height: 700 }, act: async (p) => {
       await p.getByRole("button", { name: "Show Sidebar" }).click();
       await settle(p, 500);
@@ -147,6 +154,7 @@ for (const mode of modes) {
       ...(mode.startsWith("more") ? { contrast: "more" } : {}),
     });
     await ctx.addInitScript(installStub, { screen: s.screen ?? "library", services: SERVICES, twoFactor: TWO_FACTOR, ...FIXTURES });
+    if (s.init) await ctx.addInitScript(s.init);
     const page = await ctx.newPage();
     const label = `${s.name} (${mode})`.padEnd(32);
     try {

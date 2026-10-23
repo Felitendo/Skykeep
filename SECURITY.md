@@ -7,7 +7,8 @@ serious one.
 
 ## What Skykeep talks to
 
-Apple, and to calendars you subscribe to — nothing else:
+Apple for your iCloud, the calendars you subscribe to, and GitHub's release servers for
+Skykeep's own updates:
 
 - `idmsa.apple.com` — signing in (Apple's own SRP sign-in and two-factor codes).
 - `setup.icloud.com`, `www.icloud.com` — opening the session and finding your services.
@@ -16,29 +17,46 @@ Apple, and to calendars you subscribe to — nothing else:
 - `calendars.icloud.com` — Apple's public holiday calendars.
 - The host of each calendar you subscribe to by address (Calendar ▸ + ▸ New Subscription),
   and only once you have: a `webcal://` or `https://` address of a public calendar file.
+- `github.com`, then `release-assets.githubusercontent.com` (or
+  `objects.githubusercontent.com`), where GitHub serves release files — only in a copy
+  installed from the AppImage, the Windows installer or the `.msi`, to check for a new version
+  of Skykeep and, when you choose **Update and Restart**, to download it. A `.deb`, `.rpm`,
+  AUR or Flatpak copy never contacts GitHub: its package manager updates it.
 
-This is enforced, not only promised: every network client Skykeep makes is built by
-`quince_auth::apple_only()`, whose resolver refuses to look up any host outside `apple.com`,
-`icloud.com` and `icloud-content.com` — a request anywhere else
-fails before a connection exists. A URL that names an address instead of a host
-(`https://1.2.3.4/`) is never looked up, so each request's URL is checked too, a redirect's
-included: anything that is not Apple's by name (or this computer, `127.0.0.1`) is refused the
-same way. The test `crates/quince-auth/tests/apple_only.rs` holds it to that.
+Each of these is reached by a connection that can reach its own hosts and nothing else,
+enforced in code rather than promised:
 
-A subscribed calendar is fetched by a separate client, `quince_auth::listed_only()`, built for
-each fetch with exactly the hosts of the addresses you subscribed to — the same two locks, a
-resolver that looks up no other name and a check of every request's URL and redirect, so it
-can reach those hosts and nothing else (`listed_tests` in `crates/quince-auth/src/lib.rs`).
-Apple's client is not widened by it. A new install subscribes to nothing, so until you add a
-subscription Skykeep contacts no host but Apple's. A subscription is read-only: nothing is
-ever sent to it but the request for its file, and no Apple data goes with that request.
+- **Apple.** Every iCloud client is built by `quince_auth::apple_only()`, whose resolver
+  refuses to look up any host outside `apple.com`, `icloud.com` and `icloud-content.com` — a
+  request anywhere else fails before a connection exists. A URL that names an address instead
+  of a host (`https://1.2.3.4/`) is never looked up, so each request's URL is checked too, a
+  redirect's included: anything that is not Apple's by name (or this computer, `127.0.0.1`)
+  is refused the same way. It cannot reach GitHub. `crates/quince-auth/tests/apple_only.rs`
+  holds it to that.
+- **Calendar subscriptions.** A subscribed calendar is fetched by `quince_auth::listed_only()`,
+  built for each fetch with exactly the hosts of the addresses you subscribed to — the same two
+  locks — so it can reach those hosts and nothing else (`listed_tests` in
+  `crates/quince-auth/src/lib.rs`). A subscription is read-only: nothing is sent to it but the
+  request for its file, and no Apple data goes with that request.
+- **Updates.** The updater's client is locked by `quince_auth::releases::releases_only()` to
+  the three GitHub hosts above, exactly (not `api.github.com`, not any other host under
+  them), over HTTPS only, by the same two locks (`crates/quince-auth/src/releases.rs`). It
+  cannot reach Apple. It asks for one file, `latest.json` from the latest release, and sends
+  nothing about you: no account, no identifier, nothing from your library. GitHub, like any
+  website, sees the request come from your network address, and counts downloads of release
+  files.
 
-There are no Skykeep servers. There is no telemetry, analytics, crash reporting or update
-check. Nothing is sent anywhere but Apple (and the requests for the calendars you subscribe
-to), and only what is needed to show and change your
-own data. The window itself cannot reach the network at all: its content security policy
-(`src-tauri/tauri.conf.json`) lets it talk only to the app's own Rust side, which does all
-talking to Apple.
+An update is installed only if it passes its signature check: the updater verifies the
+download against Skykeep's public key (in `src-tauri/tauri.conf.json`) with minisign, and the
+version is signed into the signature, so an older release cannot be passed off as a newer
+one. Skykeep never installs an older version or a prerelease, and never restarts to install
+while a change is still on its way to iCloud or while you are typing. Checking automatically
+can be turned off in **Settings ▸ Software Update**.
+
+There are no Skykeep servers and no Skykeep account. There is no telemetry, analytics or crash
+reporting. The window itself cannot reach the network at all: its content security policy
+(`src-tauri/tauri.conf.json`) lets it talk only to the app's own Rust side, which does all the
+talking, and it is granted none of the updater plugin's commands.
 
 Links you click in a note or an event open in your own browser, mail or map app; a photo's
 place opens in this computer's own map app (a `geo:` link), never a website.

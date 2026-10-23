@@ -1,5 +1,5 @@
-//! Skykeep talks only to Apple, by construction: the client cannot resolve, so cannot reach,
-//! any host that is not Apple's.
+//! Apple's client reaches only Apple, by construction: it cannot resolve, so cannot reach, any
+//! host that is not Apple's — GitHub's release servers, which the updater uses, included.
 
 #[test]
 fn only_apples_hosts_count_as_apples() {
@@ -23,6 +23,9 @@ fn only_apples_hosts_count_as_apples() {
         "evilicloud.com",
         "tile.openstreetmap.org",
         "setup.icloud.com.cn",
+        "github.com",
+        "release-assets.githubusercontent.com",
+        "objects.githubusercontent.com",
     ] {
         assert!(!is_apple_host(no), "{no}");
     }
@@ -31,16 +34,46 @@ fn only_apples_hosts_count_as_apples() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_refuses_anything_but_apple_before_connecting() {
     let client = quince_auth::apple_only().build().unwrap();
-    let err = client
-        .get("https://example.com/")
-        .send()
-        .await
-        .expect_err("a request to a host that is not Apple's");
-    let said = format!("{err:?}");
-    assert!(
-        said.contains("Skykeep talks only to Apple"),
-        "refused by the resolver, not the network: {said}"
-    );
+    // GitHub's release servers are the updater's own client's, never Apple's.
+    for url in [
+        "https://example.com/",
+        "https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/latest.json",
+        "https://release-assets.githubusercontent.com/github-production-release-asset/1/2",
+        "https://objects.githubusercontent.com/x",
+    ] {
+        let err = client
+            .get(url)
+            .send()
+            .await
+            .expect_err("a request to a host that is not Apple's");
+        let said = format!("{err:?}");
+        assert!(
+            said.contains("Apple's client reaches only Apple"),
+            "{url}: refused by the resolver, not the network: {said}"
+        );
+    }
+}
+
+/// And the other way round: the updater's client cannot reach Apple.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_updater_client_cannot_reach_apple() {
+    use quince_auth::releases::{is_release_host, releases_only};
+    for host in quince_auth::APPLE_DOMAINS {
+        assert!(!is_release_host(host), "{host}");
+    }
+    let client = releases_only(reqwest_releases::Client::builder())
+        .build()
+        .unwrap();
+    for url in [
+        "https://www.icloud.com/",
+        "https://idmsa.apple.com/appleauth",
+    ] {
+        let err = client.get(url).send().await.expect_err(url);
+        assert!(
+            format!("{err:?}").contains("not one of GitHub's release servers"),
+            "{url}: {err:?}"
+        );
+    }
 }
 
 /// An address in the URL is never looked up, so the resolver alone let it through: the URL
@@ -57,7 +90,7 @@ async fn an_address_is_refused_as_a_name_is() {
     ] {
         let err = client.get(url).send().await.expect_err(url);
         assert!(
-            format!("{err:?}").contains("Skykeep talks only to Apple"),
+            format!("{err:?}").contains("Apple's client reaches only Apple"),
             "{url}: {err:?}"
         );
     }
@@ -74,7 +107,6 @@ async fn an_address_is_refused_as_a_name_is() {
     let ok = client.get(format!("{}/ok", server.uri())).send().await;
     assert_eq!(ok.unwrap().status(), 200);
     let away = client.get(format!("{}/away", server.uri())).send().await;
-    assert!(
-        format!("{:?}", away.expect_err("redirected away")).contains("Skykeep talks only to Apple")
-    );
+    assert!(format!("{:?}", away.expect_err("redirected away"))
+        .contains("Apple's client reaches only Apple"));
 }

@@ -19,21 +19,36 @@ For anything bigger than a small fix, please open an issue or a [Discussion](htt
 
 ## Set up
 
-You need **Rust 1.85+** ([rustup](https://rustup.rs)), **Node.js 22** and the system libraries Tauri uses.
+You need **Rust** ([rustup](https://rustup.rs) installs the version `rust-toolchain.toml` pins), **Node.js 22** (20 or newer runs everything; Ubuntu 24.04's own Node 18 builds the app, but the Playwright suites need 20+), a C compiler and the system libraries Tauri uses.
 
 ```sh
-# Debian / Ubuntu
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsecret-1-dev \
-  libheif-dev libfuse3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev pkg-config
+# Debian 13 / Ubuntu 24.04
+sudo apt install build-essential curl nodejs npm \
+  libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsecret-1-dev \
+  libheif-dev libfuse3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev pkg-config \
+  libayatana-appindicator3-dev
 
 # Arch
-sudo pacman -S --needed webkit2gtk-4.1 gtk3 libsecret libheif gstreamer \
+sudo pacman -S --needed base-devel webkit2gtk-4.1 gtk3 libsecret libheif gstreamer \
   gst-plugins-base-libs fuse3 rust nodejs npm pkgconf
 
 # Fedora
-sudo dnf install webkit2gtk4.1-devel gtk3-devel librsvg2-devel libsecret-devel \
-  libheif-devel fuse3-devel gstreamer1-devel gstreamer1-plugins-base-devel pkgconf-pkg-config
+sudo dnf install gcc gcc-c++ make nodejs npm \
+  webkit2gtk4.1-devel gtk3-devel librsvg2-devel libsecret-devel \
+  libheif-devel fuse3-devel gstreamer1-devel gstreamer1-plugins-base-devel pkgconf-pkg-config \
+  libayatana-appindicator-gtk3-devel
+
+# openSUSE Tumbleweed
+sudo zypper install gcc gcc-c++ make nodejs-default npm-default \
+  webkitgtk3-devel gtk3-devel librsvg-devel libsecret-devel \
+  libheif-devel fuse3-devel gstreamer-devel gstreamer-plugins-base-devel pkgconf-pkg-config \
+  libayatana-appindicator3-devel
 ```
+
+The appindicator package is only for `npx tauri build`, the installable packages: it is not
+linked (the Linux tray is ksni's), but tauri-cli sees the `tray-icon` feature the Windows and
+macOS builds ask for and stops with "Can't detect any appindicator library" without it.
+`./run.sh`, `cargo build` and `./check.sh` don't need it.
 
 Then:
 
@@ -92,7 +107,7 @@ The Windows pipeline (the full test suite, every interface suite in Edge, the in
 ## Code map
 
 ```text
-crates/quince-auth/    Sign-in (Apple's SRP + two-factor), session, keyring, apple_only() allow-list
+crates/quince-auth/    Sign-in (Apple's SRP + two-factor), session, keyring, the network locks (apple_only, listed_only, releases_only)
 crates/quince-icloud/  Each iCloud service: CloudKit, Notes (topotext CRDT, tables), Reminders,
                        Calendar, Contacts, Drive, Photos, push channel
 crates/quince-core/    Local library (SQLite), sync, outbox, search, export
@@ -127,7 +142,7 @@ The crates keep the `quince-` prefix from the project's working name.
 
 ## Ground rules
 
-- **Privacy is the product.** Never add a network host, telemetry, analytics, crash reporting or an update check. Every client is built by `apple_only()` (or `listed_only()` for calendar subscriptions), and `crates/quince-auth/tests/apple_only.rs` must keep passing.
+- **Privacy is the product.** Never add a network host, telemetry, analytics or crash reporting. Every client is built by one of three locks in `quince-auth`: `apple_only()` for iCloud, `listed_only()` for calendar subscriptions, and `releases::releases_only()` for Skykeep's own updates (GitHub's release servers only). `crates/quince-auth/tests/apple_only.rs` must keep passing.
 - **No personal data** in code, tests, fixtures, logs or screenshots: no real names, emails, phone numbers, note contents, account IDs or tokens. A pre-commit secret scan is a good idea; CI-safe test vectors use `example.invalid`.
 - **Instant everywhere.** Every write shows immediately and rolls back with a reason on failure. Never block a redraw on the network.
 - **Never lose data.** Merges keep both sides; deletes go to Recently Deleted where Apple has one.

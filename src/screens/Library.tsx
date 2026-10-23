@@ -1,4 +1,5 @@
 import { ToastHost, toast } from "../components/Toast";
+import { UpdateNotice } from "../components/UpdateNotice";
 import { EmptyState } from "../components/EmptyState";
 import { StatusLine } from "../components/StatusLine";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -573,7 +574,9 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
             </EmptyState>
           )}
         </main>
-        <ToastHost />
+        <ToastHost>
+          <UpdateNotice />
+        </ToastHost>
       </div>
     </SyncProvider>
   );

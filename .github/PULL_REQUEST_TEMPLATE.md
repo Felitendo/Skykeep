@@ -24,6 +24,6 @@
 ## Checklist
 
 - [ ] No personal data (real names, emails, notes, account IDs) in code, tests, fixtures or screenshots
-- [ ] No new network host: everything still goes through `apple_only()` (or `listed_only()` for subscriptions)
+- [ ] No new network host: everything still goes through `apple_only()` (or `listed_only()` for subscriptions, `releases_only()` for updates)
 - [ ] User-facing text is short, positive and true, and never implies Apple affiliation
 - [ ] Commit messages follow the style in [CONTRIBUTING.md](CONTRIBUTING.md#commit-style)

@@ -51,6 +51,7 @@ mod settings;
 #[cfg(windows)]
 mod taskbar;
 mod timing;
+mod updates;
 mod video;
 
 use quince_auth::{Client, SignInOutcome, TwoFactorOptions};
@@ -2074,16 +2075,19 @@ fn save_subscriptions(
 }
 
 /// What Skykeep can reach, for Settings: Apple's domains as the network lock holds them
-/// (`quince_auth::APPLE_DOMAINS`, the list the resolver checks), and the host of each calendar
-/// subscribed to, which only its own client can reach.
+/// (`quince_auth::APPLE_DOMAINS`, the list the resolver checks), the host of each calendar
+/// subscribed to, which only its own client can reach, and GitHub's release servers, which
+/// only the updater's client can reach (`quince_auth::releases::RELEASE_HOSTS`) — listed only
+/// for a copy that updates itself, since no other ever contacts them.
 #[derive(serde::Serialize)]
 struct Reach {
     apple: Vec<&'static str>,
     subscribed: Vec<String>,
+    updates: Vec<&'static str>,
 }
 
 #[tauri::command]
-async fn network_reach(feeds: State<'_, Feeds>) -> UiResult<Reach> {
+async fn network_reach(app: tauri::AppHandle, feeds: State<'_, Feeds>) -> UiResult<Reach> {
     let mut subscribed: Vec<String> = feeds
         .subs
         .lock()
@@ -2096,6 +2100,11 @@ async fn network_reach(feeds: State<'_, Feeds>) -> UiResult<Reach> {
     Ok(Reach {
         apple: quince_auth::APPLE_DOMAINS.to_vec(),
         subscribed,
+        updates: if updates::this_install(&app) == updates::Install::Here {
+            quince_auth::releases::RELEASE_HOSTS.to_vec()
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -5137,6 +5146,14 @@ static LAUNCHED_AS_APP: AtomicBool = AtomicBool::new(false);
 /// library the moment it is made (SQLite commits as it goes), and what waits to be sent is
 /// written down as it waits.
 fn shutdown(app: &tauri::AppHandle, code: i32) -> ! {
+    wind_down(app);
+    // SAFETY: ends the process at once; nothing after it runs.
+    unsafe { libc::_exit(code) }
+}
+
+/// What ending Skykeep does first, however it ends — Quit, a signal, or an update restarting
+/// it: once, however many of them arrive.
+fn wind_down(app: &tauri::AppHandle) {
     static ENDING: AtomicBool = AtomicBool::new(false);
     if !ENDING.swap(true, Ordering::SeqCst) {
         // Where each window was, kept before the quick exit below skips the usual teardown.
@@ -5150,8 +5167,6 @@ fn shutdown(app: &tauri::AppHandle, code: i32) -> ! {
         cpu::stop();
         mount::release_within(Duration::from_secs(3));
     }
-    // SAFETY: ends the process at once; nothing after it runs.
-    unsafe { libc::_exit(code) }
 }
 
 /// What is kept of a window between runs: its size, place and maximised state — never whether
@@ -5618,6 +5633,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn main() {
+    // Started by an update: the version it replaced finishes exiting first, so this launch is
+    // not handed to it as a second one (single instance, below).
+    updates::after_update();
     timing::start();
     login::note_launch();
     steady_drawing();
@@ -5674,6 +5692,9 @@ fn main() {
         )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Skykeep's own updates (updates.rs). Driven from Rust only: the window is granted none
+        // of the plugin's commands (capabilities/default.json).
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // The window shows Quince and nothing else. A link to anywhere outside it — a phone
         // number, an address, a web page in a note or an event — goes to the app this
         // computer uses for it. Followed in place, a `tel:` link replaced the whole window
@@ -5720,6 +5741,10 @@ fn main() {
             if let tauri::WindowEvent::DragDrop(drop) = event {
                 grants::dropped(drop);
             }
+            // A window gone for good: the update notice, if it showed it, moves to another.
+            if let tauri::WindowEvent::Destroyed = event {
+                updates::put_away(window.app_handle(), window.label());
+            }
             // Coming back to a window is when a change made elsewhere is looked for at once.
             if let tauri::WindowEvent::Focused(true) = event {
                 push::wake();
@@ -5738,10 +5763,12 @@ fn main() {
                     // drawn. Remade on demand it took about half a second, which the founder
                     // asked to be gone; keeping its web view costs about 190 MB in the tray.
                     window.hide().ok();
+                    updates::put_away(window.app_handle(), window.label());
                 } else if window.label().starts_with("app-") {
                     api.prevent_close();
                     window.hide().ok();
                     apps::put_away(window);
+                    updates::put_away(window.app_handle(), window.label());
                 }
             }
         })
@@ -5923,6 +5950,12 @@ fn main() {
             // its task died, and nothing waiting was sent all session.
             outbox::start(app.handle().clone());
             appearance::watch(app.handle().clone());
+            // Skykeep's own updates: how it was installed decides whether it updates itself.
+            app.manage(updates::Updates::new(
+                updates::this_install(app.handle()),
+                &updates::load_prefs(app.handle()),
+            ));
+            updates::spawn(app.handle().clone());
             // A photo cache past what this computer can spare now — the disk filled since —
             // is brought back under its budget first thing.
             let trim = app.handle().clone();
@@ -6042,6 +6075,12 @@ fn main() {
             appearance::system_contrast,
             appearance::system_time_locale,
             network_reach,
+            updates::update_status,
+            updates::update_check,
+            updates::update_apply,
+            updates::update_later,
+            updates::update_auto_set,
+            updates::update_typing,
             auth_status,
             auth_resume,
             auth_sign_in,

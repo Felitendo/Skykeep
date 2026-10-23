@@ -21,6 +21,7 @@ macro_rules! quiet {
     };
 }
 
+pub mod releases;
 pub mod session;
 pub mod srp;
 
@@ -1130,8 +1131,9 @@ pub fn is_apple_host(host: &str) -> bool {
             .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
-/// Every HTTP client Skykeep makes starts here: Apple's servers, and nothing else, can be
-/// reached at all (see [`AppleOnly`]).
+/// Every HTTP client Skykeep makes for iCloud starts here: Apple's servers, and nothing else,
+/// can be reached at all (see [`AppleOnly`]). The two other clients are just as narrow:
+/// [`listed_only`] for subscribed calendars and [`releases::releases_only`] for updates.
 pub fn apple_only() -> reqwest::ClientBuilder {
     let builder = HttpClient::builder()
         .dns_resolver(Arc::new(AppleOnly))
@@ -1148,23 +1150,24 @@ pub fn apple_only() -> reqwest::ClientBuilder {
     with_system_proxies(builder)
 }
 
+/// The proxy the system names for `scheme` ("https" or "http"), from `HTTPS_PROXY` and the
+/// rest, if any.
+pub(crate) fn env_proxy(scheme: &str) -> Option<String> {
+    let names = if scheme == "https" {
+        ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+    } else {
+        ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+    };
+    names
+        .iter()
+        .find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
+}
+
 /// The system's own proxies (`HTTPS_PROXY` and the rest), put back after a refusing proxy has
 /// turned them off.
 fn with_system_proxies(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    for (scheme, names) in [
-        (
-            "https",
-            ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"],
-        ),
-        (
-            "http",
-            ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"],
-        ),
-    ] {
-        let Some(via) = names
-            .iter()
-            .find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
-        else {
+    for scheme in ["https", "http"] {
+        let Some(via) = env_proxy(scheme) else {
             continue;
         };
         let proxy =
@@ -1244,9 +1247,9 @@ fn url_is_apples(url: &reqwest::Url) -> bool {
     }
 }
 
-/// The one way Skykeep's client finds a server: a host that is not Apple's is never looked
-/// up, so no request can reach one — "talks only to Apple" is how the code works, not a promise
-/// about it. Apple's are looked up as the system looks up any name.
+/// The one way Apple's client finds a server: a host that is not Apple's is never looked up,
+/// so no request of Apple's client can reach one — how the code works, not a promise about it.
+/// Apple's are looked up as the system looks up any name.
 struct AppleOnly;
 
 impl reqwest::dns::Resolve for AppleOnly {
@@ -1255,7 +1258,7 @@ impl reqwest::dns::Resolve for AppleOnly {
         Box::pin(async move {
             if !is_apple_host(&host) {
                 let refused: Box<dyn std::error::Error + Send + Sync> =
-                    format!("{host} is not Apple's, and Skykeep talks only to Apple").into();
+                    format!("{host} is not Apple's, and Apple's client reaches only Apple").into();
                 return Err(refused);
             }
             let found = tokio::net::lookup_host((host.as_str(), 0)).await?;

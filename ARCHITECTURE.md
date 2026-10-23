@@ -18,7 +18,9 @@ Five crates sit under the app:
 
 - **quince-auth** signs in (Apple's SRP and two-factor), keeps the session in the system keyring,
   and builds every HTTP client. `apple_only()` refuses any host outside Apple's domains before a
-  connection exists; `listed_only()` reaches only the calendars you subscribed to.
+  connection exists; `listed_only()` reaches only the calendars you subscribed to;
+  `releases::releases_only()` reaches only GitHub's release servers, for Skykeep's own updates
+  (`src-tauri/src/updates.rs`).
 - **quince-icloud** speaks each service: CloudKit records for Notes, Reminders and Photos,
   Apple's web APIs for Calendar, Contacts and Drive, and the push channel. It parses and writes;
   it stores nothing.

@@ -1,6 +1,7 @@
 // Keys that work from any app: Ctrl+, opens Settings, Ctrl+/ the Keyboard Shortcuts sheet
 // (the app in front listed first; Escape or Done closes it, and the keys go back where they
-// were). Settings sets Calendar's first day of the week and lists what Skykeep talks to.
+// were). Settings sets Calendar's first day of the week and lists what Skykeep talks to: Apple,
+// subscribed calendars, and GitHub's release servers for updates.
 //
 //   BASE=http://localhost:4320 ENGINE=webkit node .uiverify/app-keys.mjs
 import { engine, engineName } from "./engine.mjs";
@@ -49,6 +50,8 @@ for (const scheme of ["light", "dark"]) {
   const text = await reach.first().innerText();
   ok(/apple\.com/.test(text) && /icloud-content\.com/.test(text) && !/\.cn\b/.test(text) && !/China/.test(text), `${scheme}: Apple's domains are listed  ${JSON.stringify(text.slice(0, 160))}`);
   ok(text.includes("calendar.example.org"), `${scheme}: and each subscribed calendar's host`);
+  ok(/Updates/.test(text) && text.includes("github.com") && text.includes("release-assets.githubusercontent.com") && !text.includes("api.github.com"),
+    `${scheme}: and GitHub's release servers, for updates`);
 
   // ── First Day of Week ──
   const picker = page.getByRole("button", { name: /First Day of Week/ });

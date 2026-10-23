@@ -119,6 +119,18 @@ sudo apt install ./Skykeep_*_amd64.deb
 sudo dnf install ./Skykeep-*.x86_64.rpm
 ```
 
+**openSUSE Tumbleweed**
+
+```sh
+sudo zypper install --allow-unsigned-rpm ./Skykeep-*.x86_64.rpm
+```
+
+<sub>Fedora and openSUSE leave the HEVC decoder out of their own repositories, so iPhone
+HEIC photos and HEVC videos need it from [RPM Fusion](https://rpmfusion.org/Howto/Multimedia)
+(Fedora: `ffmpeg` in place of `ffmpeg-free`, and `libheif-freeworld`) or
+[Packman](https://en.opensuse.org/Additional_package_repositories#Packman) (openSUSE:
+`libavcodec`, `libheif1` and `libde265` from Packman). Everything else works without it.</sub>
+
 **Arch, CachyOS, EndeavourOS, Manjaro** <sub>coming to the AUR</sub>
 
 ```sh
@@ -130,6 +142,8 @@ paru -S skykeep-git    # or: yay -S skykeep-git
 ```sh
 chmod +x Skykeep_*_amd64.AppImage && ./Skykeep_*_amd64.AppImage
 ```
+
+**Staying up to date.** The Windows installer and the AppImage keep Skykeep current themselves: a new version appears as a notice, with **Update and Restart**, and installs only after it passes its signature check, once your changes have reached iCloud. The `.deb`, `.rpm`, AUR and Flatpak update through your package manager. **Settings ▸ Software Update** has **Check for Updates** and the daily automatic check.
 
 <details>
 <summary><b>Other ways to install</b></summary>
@@ -168,7 +182,7 @@ On Linux, your desktop may ask you to unlock its keyring the first time. That's 
 
 - **Local-first.** Your library lives on your computer, so every app opens instantly, even offline.
 - **Your sign-in stays in your system keyring:** Secret Service (GNOME Keyring or KWallet) on Linux, Credential Manager on Windows. Two-factor sign-in is Apple's own.
-- **Talks only to Apple,** plus any calendars you subscribe to. No Skykeep account, no Skykeep server, no telemetry.
+- **Clear about what it connects to:** Apple for your iCloud, the calendars you subscribe to, and GitHub's release servers to check for new versions of Skykeep. Each has a connection of its own that can reach nothing else. No Skykeep account, no analytics.
 - **Independent.** Skykeep is an open-source project, not affiliated with or endorsed by Apple.
 
 The details, with the code behind each one, are in [SECURITY.md](SECURITY.md).

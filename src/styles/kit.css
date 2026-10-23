@@ -414,6 +414,21 @@ textarea.field { padding-block: 5px; resize: vertical; }
 .toast-action:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 .toast-close { color: var(--text-3); }
 
+/* A new version of Skykeep (components/UpdateNotice): a toast's card, with room for a line,
+   its progress or notes, and its two answers at the foot. Stays until answered. */
+.update-notice { align-items: flex-start; width: min(420px, 100%); padding: 10px 12px 10px 14px; }
+.update-notice .toast-glyph { margin-top: 2px; }
+.update-glyph { color: var(--accent); }
+.update-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.update-line { margin: 0; padding: 0; font-weight: 600; text-wrap: pretty; }
+.update-notice.is-error .update-line { font-weight: 400; }
+.update-progress { display: flex; align-items: center; gap: 8px; }
+.update-progress .progress { flex: 1; }
+.update-percent { color: var(--text-2); font-size: var(--t-11); font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+.update-notes summary { color: var(--text-2); cursor: default; }
+.update-notes-text { margin-top: 6px; max-height: 160px; overflow: auto; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.update-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
 /* A change Apple turned down for good (components/Unsent): in the flow, until decided. */
 .unsent {
   display: flex;

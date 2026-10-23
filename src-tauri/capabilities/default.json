@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the window's own page may ask of Tauri itself, and no more: hearing the engine's events (and the webview's dropped files), the app's version for Settings, and a window's title. Open and save dialogs are shown by Skykeep's own commands (grants.rs), so only a file the person chose can reach a command that reads or writes one. Skykeep's own commands are separate. These windows only ever load the app's bundled page (no remote URL is granted anything).",
+  "description": "What the window's own page may ask of Tauri itself, and no more: hearing the engine's events (and the webview's dropped files), the app's version for Settings, and a window's title. Open and save dialogs are shown by Skykeep's own commands (grants.rs), so only a file the person chose can reach a command that reads or writes one. Skykeep's own commands are separate. None of the updater plugin's commands are granted: updates are driven from Rust (updates.rs). These windows only ever load the app's bundled page (no remote URL is granted anything).",
   "windows": [
     "main",
     "app-*",

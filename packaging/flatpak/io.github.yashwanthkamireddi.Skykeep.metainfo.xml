@@ -26,8 +26,9 @@
     </p>
     <p>
       Sign in once with your Apple Account. Your password stays on this computer, in your
-      system keyring. Skykeep talks only to Apple and to calendars you subscribe to: there is
-      no Skykeep account, no Skykeep server and no telemetry.
+      system keyring. Skykeep connects to Apple for your iCloud and to the calendars you
+      subscribe to, and Flatpak keeps it up to date. There is no Skykeep account and no
+      analytics.
     </p>
     <p>
       Skykeep is an independent, open-source project. It is not made by, endorsed by, or

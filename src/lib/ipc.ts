@@ -70,6 +70,29 @@ export type UploadEvent = {
   error: string | null;
 };
 
+/** Told whenever Skykeep's own update moves on; each window asks for its status again. */
+export const UPDATE = "quince://update";
+
+/** Who updates this copy of Skykeep: itself, or the package manager it came from. */
+export type UpdateInstall = "here" | "packageManager" | "flatpak" | "development" | "manual";
+export type UpdateStatus = {
+  install: UpdateInstall;
+  /** Check for Updates Automatically. */
+  auto: boolean;
+  current: string;
+  phase: "idle" | "checking" | "current" | "available" | "downloading" | "ready" | "waiting" | "installing" | "failed";
+  version: string | null;
+  notes: string | null;
+  received: number;
+  total: number | null;
+  /** What a downloaded update waits for before Skykeep restarts. */
+  waitingFor: "changes" | "typing" | null;
+  problem: string | null;
+  checkedAt: number | null;
+  /** This window is the one that shows the update notice. */
+  prompt: boolean;
+};
+
 export const SYNCED = "quince://synced";
 /** An alert was clicked: open Reminders, where that reminder is. */
 export const OPEN_REMINDER = "quince://open-reminder";
@@ -103,7 +126,18 @@ export const api = {
   /** What waits to reach Apple, and what Apple turned down. */
   outboxStatus: () => invoke<OutboxStatus>("outbox_status"),
   /** What the network lock lets Skykeep reach: Apple's domains, and each subscribed calendar's host. */
-  networkReach: () => invoke<{ apple: string[]; subscribed: string[] }>("network_reach"),
+  networkReach: () => invoke<{ apple: string[]; subscribed: string[]; updates: string[] }>("network_reach"),
+  /** Skykeep's own updates, as this window shows them (updates.rs). */
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
+  /** Check for Updates, from Settings: a failure is said. */
+  updateCheck: () => invoke<UpdateStatus>("update_check"),
+  /** Update and Restart: download, wait until nothing would be lost, install, restart. */
+  updateApply: () => invoke<void>("update_apply"),
+  /** Later: the notice goes from every window; a download is kept. */
+  updateLater: () => invoke<void>("update_later"),
+  updateAutoSet: (on: boolean) => invoke<void>("update_auto_set", { on }),
+  /** This window is being typed in, or no longer is: a restart to update waits for it. */
+  updateTyping: (typing: boolean) => invoke<void>("update_typing", { typing }),
   /** A refused change, sent again. */
   outboxResend: (id: number) => invoke<void>("outbox_resend", { id }),
   /** A refused change let go of: Apple's version stands. */

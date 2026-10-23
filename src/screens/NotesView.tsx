@@ -28,6 +28,7 @@ import { useReveal } from "../lib/reveal";
 import { Arriving } from "../components/EmptyState";
 import { useArriving, useRevision, useShownRevision } from "../lib/sync";
 import { Picker } from "../components/Picker";
+import { holdTyping } from "../lib/updates";
 
 const ALL = "__all__";
 
@@ -673,6 +674,12 @@ export function NotesView() {
     },
     []
   );
+  // Words typed and not yet saved: a restart to install an update waits for them (lib/updates).
+  const unsaved = dirty || Boolean(composing?.body.trim());
+  useEffect(() => {
+    holdTyping("notes", unsaved);
+    return () => holdTyping("notes", false);
+  }, [unsaved]);
 
   /**
    * Turn what is being typed into a real note, once, without taking the page away.

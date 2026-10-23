@@ -73,6 +73,9 @@
   }
   /* A quiet button is a fill alone; here it has an edge too. */
   :is(.quiet, .segment, .picker-button) { box-shadow: inset 0 0 0 1px var(--field-edge); }
+  /* A toast's action (Undo, Update and Restart): its words in the text colour, edged, rather
+     than the accent on a pale tint of itself, which fell just short of 4.5:1. */
+  .toast-action { color: var(--text); box-shadow: inset 0 0 0 1px var(--field-edge); }
 }
 
 /* ---- Increase Contrast, read from the desktop ---------------------------------------- */
@@ -128,6 +131,7 @@
   outline-offset: -1px;
 }
 :root[data-contrast="more"] :is(.quiet, .segment, .picker-button) { box-shadow: inset 0 0 0 1px var(--field-edge); }
+:root[data-contrast="more"] .toast-action { color: var(--text); box-shadow: inset 0 0 0 1px var(--field-edge); }
 
 /* ---- Forced colours (Windows High Contrast) -------------------------------------------- */
 

@@ -100,8 +100,9 @@ export function useErrorToast(error: string | null, clear: () => void) {
   }, [error, active]);
 }
 
-/** Drawn once, in the library, over the foot of the content. */
-export function ToastHost() {
+/** Drawn once, in the library, over the foot of the content; `children` (the update notice)
+ *  sit above the toasts, in the same column. */
+export function ToastHost({ children }: { children?: React.ReactNode }) {
   const list = useSyncExternalStore(subscribe, () => shown);
   const lift = useSyncExternalStore(subscribe, clearance);
   // A notice is said by a polite live region that is always on the page: one drawn together
@@ -124,6 +125,7 @@ export function ToastHost() {
   return (
     <>
       <div className="toast-host" style={lift ? ({ "--toast-clear": `${lift}px` } as React.CSSProperties) : undefined}>
+        {children}
         {list.map((t) => (
           <ToastCard key={t.id} toast={t} />
         ))}

@@ -1040,7 +1040,48 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "system_contrast":  return window.__contrast ?? false;
         // LC_TIME, LANG (appearance.rs): null leaves the engine's own language.
         case "system_time_locale": return window.__timeLocale ?? null;
-        case "network_reach": return { apple: ["apple.com", "icloud.com", "icloud-content.com"], subscribed: window.__reachSubscribed ?? [] };
+        case "network_reach": return { apple: ["apple.com", "icloud.com", "icloud-content.com"], subscribed: window.__reachSubscribed ?? [],
+          updates: (window.__update?.install ?? "here") === "here" ? ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"] : [] };
+        // Skykeep's own updates (updates.rs). A test sets `window.__update` (an offer, an install
+        // kind); Update and Restart plays the download, then the wait (`__updateHold`: "changes"
+        // or "typing", lifted by setting it null), then installing. `__updateFail` fails the download.
+        case "update_status": case "update_check": case "update_apply": case "update_later":
+        case "update_auto_set": case "update_typing": {
+          const u = (window.__update ??= {});
+          const base = { install: "here", auto: true, current: "0.1.0", phase: "current", version: null, notes: null,
+            received: 0, total: null, waitingFor: null, problem: null, checkedAt: Math.floor(Date.now() / 1000) - 3600, prompt: false };
+          const st = (window.__updateState ??= { ...base, ...u, ...(u.version && !u.phase ? { phase: "available" } : {}) });
+          const tell = () => window.__emit?.("quince://update", null);
+          const shown = () => ({ ...st, prompt: ["available", "ready", "downloading", "waiting", "installing"].includes(st.phase) && !st.putOff
+            || (st.phase === "failed" && st.inNotice) });
+          (window.__updateCalls ??= []).push([cmd, args]);
+          if (cmd === "update_typing") { window.__typing = args.typing; return null; }
+          if (cmd === "update_auto_set") { st.auto = args.on; tell(); return null; }
+          if (cmd === "update_later") { st.putOff = true; if (st.phase === "downloading" || st.phase === "failed") st.phase = "available"; st.problem = null; tell(); return null; }
+          if (cmd === "update_check") {
+            if (st.install !== "here") throw "Updates come through your package manager.";
+            if (window.__updateCheckFail) { Object.assign(st, { phase: "failed", problem: window.__updateCheckFail, inNotice: false }); return shown(); }
+            if (window.__updateOffer) Object.assign(st, { phase: "available", putOff: false, ...window.__updateOffer });
+            else st.phase = "current";
+            st.checkedAt = Math.floor(Date.now() / 1000);
+            return shown();
+          }
+          if (cmd === "update_apply") {
+            st.putOff = false;
+            const step = (ms) => new Promise((r) => setTimeout(r, ms));
+            (async () => {
+              Object.assign(st, { phase: "downloading", received: 0, total: 1000, problem: null }); tell();
+              for (const n of [250, 600, 1000]) { await step(window.__updateStepMs ?? 150); st.received = n; tell(); }
+              if (window.__updateFail) { Object.assign(st, { phase: "failed", problem: window.__updateFail, inNotice: true }); tell(); return; }
+              while (window.__updateHold && !st.putOff) { Object.assign(st, { phase: "waiting", waitingFor: window.__updateHold }); tell(); await step(150); }
+              if (st.putOff) { st.phase = "ready"; tell(); return; }
+              Object.assign(st, { phase: "installing", waitingFor: null }); tell();
+              window.__restarted = true;
+            })();
+            return null;
+          }
+          return shown();
+        }
         case "outbox_resend": case "outbox_discard": {
           (window.__outboxCalls ??= []).push([cmd, args.id]);
           if (window.__outbox) window.__outbox = { ...window.__outbox, refused: window.__outbox.refused.filter((r) => r.id !== args.id) };

@@ -24,6 +24,7 @@ import {
   settingsApi,
 } from "../lib/ipc";
 import { freshness, useSync } from "../lib/sync";
+import { useUpdateStatus } from "../lib/updates";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
 import { AccountAvatar } from "../components/Account";
@@ -801,6 +802,8 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         )}
       </section>
 
+      <UpdatesGroup />
+
       <ReachGroup />
 
       <h2 className="settings-heading">About</h2>
@@ -828,7 +831,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
           </button>
         </div>
       </section>
-      <p className="settings-note">Skykeep talks only to Apple, and to calendars you subscribe to. It has no servers of its own.</p>
+      <NetworkNote />
     </div>
   );
 }
@@ -861,16 +864,39 @@ function WeekStartRow() {
   );
 }
 
-/**
- * What Skykeep talks to, read from the network lock itself (`quince_auth::APPLE_DOMAINS`): a
- * request to anywhere else fails before a connection exists. Subscribed calendars are listed
- * by host, each reached by a client of its own.
- */
-function ReachGroup() {
-  const [reach, setReach] = useState<{ apple: string[]; subscribed: string[] } | null>(null);
+type Reach = { apple: string[]; subscribed: string[]; updates: string[] };
+
+/** What Skykeep can reach, as its network locks hold it (`network_reach`). */
+function useReach(): Reach | null {
+  const [reach, setReach] = useState<Reach | null>(null);
   useEffect(() => {
     api.networkReach().then(setReach, () => {});
   }, []);
+  return reach;
+}
+
+/** A list of hosts, each as code. */
+function Hosts({ hosts }: { hosts: string[] }) {
+  return (
+    <>
+      {hosts.map((h, i) => (
+        <span key={h}>
+          {i > 0 && ", "}
+          <code>{h}</code>
+        </span>
+      ))}
+    </>
+  );
+}
+
+/**
+ * What Skykeep talks to, read from the network locks themselves: Apple's domains
+ * (`quince_auth::APPLE_DOMAINS`), each subscribed calendar's host, and GitHub's release servers
+ * (`quince_auth::releases::RELEASE_HOSTS`) for a copy that updates itself. Each is reached by a
+ * client of its own that can reach nothing else.
+ */
+function ReachGroup() {
+  const reach = useReach();
   if (!reach) return null;
   const apple = reach.apple.filter((d) => !d.endsWith(".cn"));
   return (
@@ -880,28 +906,158 @@ function ReachGroup() {
         <div className="settings-row is-stacked">
           <span className="settings-label">Apple</span>
           <span className="settings-hint settings-hint-wrap">
-            {apple.map((d, i) => (
-              <span key={d}>
-                {i > 0 && ", "}
-                <code>{d}</code>
-              </span>
-            ))}{" "}
-            and every address under them. Any other address is refused before a connection opens.
+            <Hosts hosts={apple} /> and every address under them, for your iCloud. These connections can reach nothing else.
           </span>
         </div>
         <div className="settings-row is-stacked">
           <span className="settings-label">Calendar Subscriptions</span>
           <span className="settings-hint settings-hint-wrap">
-            {reach.subscribed.length === 0
-              ? "None. A calendar you subscribe to adds its own address here."
-              : reach.subscribed.map((h, i) => (
-                  <span key={h}>
-                    {i > 0 && ", "}
-                    <code>{h}</code>
-                  </span>
-                ))}
+            {reach.subscribed.length === 0 ? "None. A calendar you subscribe to adds its own address here." : <Hosts hosts={reach.subscribed} />}
           </span>
         </div>
+        <div className="settings-row is-stacked">
+          <span className="settings-label">Updates</span>
+          <span className="settings-hint settings-hint-wrap">
+            {reach.updates.length === 0 ? (
+              "None. This copy of Skykeep is updated by the way you installed it."
+            ) : (
+              <>
+                <Hosts hosts={reach.updates} />, GitHub’s release servers, to check for new versions of Skykeep and download
+                them. Nothing about you is sent.
+              </>
+            )}
+          </span>
+        </div>
+      </section>
+    </>
+  );
+}
+
+/** The line at the foot of Settings: what Skykeep connects to, true for this copy. */
+function NetworkNote() {
+  const reach = useReach();
+  if (!reach) return null;
+  return (
+    <p className="settings-note">
+      {reach.updates.length > 0
+        ? "Skykeep connects to Apple for your iCloud, to calendars you subscribe to, and to GitHub for its own updates. No Skykeep account, no analytics."
+        : "Skykeep connects to Apple for your iCloud, and to calendars you subscribe to. No Skykeep account, no analytics."}
+    </p>
+  );
+}
+
+/** When this copy last checked, said as a person would. */
+function checkedLine(at: number | null): string {
+  if (at === null) return "Not checked yet";
+  return freshness(at).replace(/^Updated/, "Checked");
+}
+
+/**
+ * Software Update: Check for Updates Automatically, and Check for Updates — or, for a copy a
+ * package manager installed, who updates it instead. What is found is offered by the update
+ * notice; here it can be installed too.
+ */
+function UpdatesGroup() {
+  const [status, setStatus] = useUpdateStatus();
+  const [checking, setChecking] = useState(false);
+  if (!status) return null;
+  const here = status.install === "here";
+  const elsewhere: Record<string, string> = {
+    packageManager: "Updates come through your package manager.",
+    flatpak: "Updates come through Flatpak.",
+    development: "This is a development build, so it doesn’t update itself.",
+    manual: "This copy wasn’t installed by Skykeep’s installer, so it doesn’t update itself.",
+  };
+  const busy = checking || status.phase === "checking";
+  const offered = (status.phase === "available" || status.phase === "ready") && status.version;
+  let line: string;
+  let trouble = false;
+  switch (status.phase) {
+    case "checking":
+      line = "Checking for updates…";
+      break;
+    case "available":
+    case "ready":
+      line = `Skykeep ${status.version} is available`;
+      break;
+    case "downloading":
+      line = `Downloading Skykeep ${status.version}`;
+      break;
+    case "waiting":
+      line =
+        status.waitingFor === "typing"
+          ? `Skykeep ${status.version} will install when you finish typing`
+          : `Skykeep ${status.version} will install once your changes reach iCloud`;
+      break;
+    case "installing":
+      line = `Installing Skykeep ${status.version}`;
+      break;
+    case "failed":
+      line = status.problem ?? "Couldn’t check for updates. Try again later.";
+      trouble = true;
+      break;
+    case "current":
+      line = `Skykeep ${status.current} is up to date · ${checkedLine(status.checkedAt)}`;
+      break;
+    default:
+      line = `Skykeep ${status.current} · ${checkedLine(status.checkedAt)}`;
+  }
+  return (
+    <>
+      <h2 className="settings-heading">Software Update</h2>
+      <section className="settings-group" aria-label="Software Update">
+        {!here ? (
+          <div className="settings-row">
+            <span className="settings-label settings-hint">{elsewhere[status.install]}</span>
+          </div>
+        ) : (
+          <>
+            <div className="settings-row">
+              <span className="settings-label settings-stack">
+                Check for Updates Automatically
+                <span className="settings-hint">Once a day, from Skykeep’s releases on GitHub</span>
+              </span>
+              <button
+                className="switch"
+                role="switch"
+                aria-checked={status.auto}
+                aria-label="Check for Updates Automatically"
+                onClick={() => {
+                  const was = status;
+                  setStatus({ ...status, auto: !status.auto });
+                  api.updateAutoSet(!was.auto).catch(() => setStatus(was));
+                }}
+              >
+                <span className="switch-knob" />
+              </button>
+            </div>
+            <div className="settings-row">
+              <span className={`settings-label settings-hint settings-hint-wrap${trouble ? " is-trouble" : ""}`} aria-live="polite">
+                {line}
+              </span>
+              {offered ? (
+                <button className="quiet" onClick={() => void api.updateApply().catch(() => {})}>
+                  Update and Restart
+                </button>
+              ) : (
+                <button
+                  className="quiet"
+                  disabled={busy || ["downloading", "waiting", "installing"].includes(status.phase)}
+                  onClick={() => {
+                    setChecking(true);
+                    setStatus({ ...status, phase: "checking" });
+                    api
+                      .updateCheck()
+                      .then(setStatus, (e) => setStatus({ ...status, phase: "failed", problem: messageOf(e) }))
+                      .finally(() => setChecking(false));
+                  }}
+                >
+                  Check for Updates
+                </button>
+              )}
+            </div>
+          </>
+        )}
       </section>
     </>
   );
