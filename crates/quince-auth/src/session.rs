@@ -260,9 +260,9 @@ fn entry_name(state_dir: &Path) -> String {
 /// Windows' Credential Manager keeps at most 2,560 bytes in one credential, and the keyring
 /// crate stores text there as UTF-16 — 1,280 characters. A signed-in session is larger, so on
 /// Windows sign-in failed outright ("longer than platform limit of 2560 chars"). There the
-/// secret is written as parts (`<name>#1`, `<name>#2`, …) and the entry itself holds only
-/// `pomander-parts:<n>`, written last, so a save cut short never leaves a half that reads as
-/// whole. Elsewhere the whole secret stays in the one entry, as it always has; reading takes
+/// secret is written as parts (`<name>#g<k>#1`, `<name>#g<k>#2`, …, a generation `k` of their
+/// own each save) and the entry itself holds only `pomander-parts:g<k>:<n>`, written last, so a
+/// save cut short never leaves a half that reads as whole (see [`write_secret`]). Elsewhere the whole secret stays in the one entry, as it always has; reading takes
 /// either shape on every platform.
 trait Secrets {
     fn get(&self, name: &str) -> Result<Option<String>, String>;
@@ -326,24 +326,55 @@ fn part_name(name: &str, i: usize) -> String {
     format!("{name}#{i}")
 }
 
+/// A part of generation `generation`: `name#g<k>#<i>`. Each save writes a generation of its
+/// own, beside the one the head names, and switches the head over last.
+fn generation_part(name: &str, generation: u64, i: usize) -> String {
+    format!("{name}#g{generation}#{i}")
+}
+
+/// What a head says: the secret itself, or parts — the generation they are under (`None`:
+/// written before generations, as `name#<i>`) and how many.
+enum Head {
+    Whole(String),
+    Parts(Option<u64>, usize),
+}
+
+fn head_of(value: String) -> Result<Head, String> {
+    let Some(rest) = value.strip_prefix(PARTS) else {
+        return Ok(Head::Whole(value));
+    };
+    let damaged = || "the stored sign-in is damaged".to_string();
+    let (generation, n) = match rest.strip_prefix('g').and_then(|r| r.split_once(':')) {
+        Some((g, n)) => (Some(g.parse().map_err(|_| damaged())?), n),
+        None => (None, rest),
+    };
+    let n: usize = n.parse().map_err(|_| damaged())?;
+    if n == 0 || n > MOST_PARTS {
+        return Err(damaged());
+    }
+    Ok(Head::Parts(generation, n))
+}
+
+fn part_of(name: &str, generation: Option<u64>, i: usize) -> String {
+    match generation {
+        Some(g) => generation_part(name, g, i),
+        None => part_name(name, i),
+    }
+}
+
 /// The secret under `name`, whole or reassembled from its parts.
 fn read_secret(k: &dyn Secrets, name: &str) -> Result<Option<String>, String> {
     let Some(head) = k.get(name)? else {
         return Ok(None);
     };
-    let Some(n) = head.strip_prefix(PARTS) else {
-        return Ok(Some(head));
+    let (generation, n) = match head_of(head)? {
+        Head::Whole(value) => return Ok(Some(value)),
+        Head::Parts(generation, n) => (generation, n),
     };
-    let n: usize = n
-        .parse()
-        .map_err(|_| "the stored sign-in is damaged".to_string())?;
-    if n == 0 || n > MOST_PARTS {
-        return Err("the stored sign-in is damaged".into());
-    }
     let mut whole = String::new();
     for i in 1..=n {
         let part = k
-            .get(&part_name(name, i))?
+            .get(&part_of(name, generation, i))?
             .ok_or_else(|| "part of the stored sign-in is missing".to_string())?;
         whole.push_str(&part);
     }
@@ -351,6 +382,13 @@ fn read_secret(k: &dyn Secrets, name: &str) -> Result<Option<String>, String> {
 }
 
 /// Keep `value` under `name`, in parts where one entry cannot hold it.
+///
+/// The parts were written over the very names the stored session's parts had, and only then
+/// the head: a crash between them left the old head over a mix of new and old parts, read as
+/// damaged — the session lost, and two-factor asked for again. Each save's parts now go under
+/// names of their own (a new generation), the head is switched to them in one write, and only
+/// then are the old ones let go of: a crash anywhere leaves either the old session whole or
+/// the new one.
 fn write_secret(
     k: &dyn Secrets,
     name: &str,
@@ -367,18 +405,28 @@ fn write_secret(
     if parts.len() > MOST_PARTS {
         return Err("the sign-in is too large to keep".into());
     }
+    // What the head names now, to be let go of once the new one is in place. A damaged head
+    // names nothing to keep.
+    let before = match k.get(name)?.map(head_of) {
+        Some(Ok(Head::Parts(generation, n))) => Some((generation, n)),
+        _ => None,
+    };
+    let generation = before.and_then(|(g, _)| g).map_or(1, |g| g.wrapping_add(1));
     if parts.is_empty() {
         k.set(name, value)?;
     } else {
-        // The parts first, then the entry that says how many: read before it is written, the
-        // old session (or nothing) is what is found, never a mix.
         for (i, part) in parts.iter().enumerate() {
-            k.set(&part_name(name, i + 1), part)?;
+            k.set(&generation_part(name, generation, i + 1), part)?;
         }
-        k.set(name, &format!("{PARTS}{}", parts.len()))?;
+        k.set(name, &format!("{PARTS}g{generation}:{}", parts.len()))?;
     }
-    // Parts left from a longer secret before: let go of.
-    for i in parts.len() + 1..=MOST_PARTS {
+    // The generation before, and parts left under the names used before generations.
+    if let Some((Some(old), n)) = before {
+        for i in 1..=n {
+            k.delete(&generation_part(name, old, i))?;
+        }
+    }
+    for i in 1..=MOST_PARTS {
         if k.get(&part_name(name, i))?.is_none() {
             break;
         }
@@ -389,6 +437,11 @@ fn write_secret(
 
 /// Forget the secret under `name`, and every part of it.
 fn delete_secret(k: &dyn Secrets, name: &str) -> Result<(), String> {
+    if let Some(Ok(Head::Parts(Some(generation), n))) = k.get(name)?.map(head_of) {
+        for i in 1..=n {
+            k.delete(&generation_part(name, generation, i))?;
+        }
+    }
     k.delete(name)?;
     for i in 1..=MOST_PARTS {
         if k.get(&part_name(name, i))?.is_none() {
@@ -441,6 +494,42 @@ fn read_moving(
     Ok(Some(old))
 }
 
+/// Write `bytes` to `path` whole or not at all: to a file beside it, made sure of on disk, then
+/// renamed over it. Truncated in place, a crash or a full disk part way left an empty or cut-off
+/// cookie jar, read as no cookies at all: the session checked again from the start, and maybe
+/// a code asked for. `private`: readable by this user alone.
+pub(crate) fn write_whole(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let part = path.with_file_name(format!(
+        ".{}.part",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let written = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&part)?;
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::PermissionsExt;
+            // A part left by a run before kept the mode it was made with: set it, too.
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        let _ = private;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&part, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
 impl Store {
     /// Production: secrets in the OS keyring.
     pub fn keyring(state_dir: &Path) -> std::io::Result<Self> {
@@ -491,7 +580,7 @@ impl Store {
     /// with no keyring still remembers to wait.
     pub fn save_cooldown(&self, cooldown: &Cooldown) -> std::io::Result<()> {
         let json = serde_json::to_string(cooldown).unwrap_or_else(|_| "{}".into());
-        std::fs::write(&self.cooldown_path, json)
+        write_whole(&self.cooldown_path, json.as_bytes(), false)
     }
 
     fn name(&self) -> &str {
@@ -804,6 +893,32 @@ mod entry_tests {
     }
 }
 
+#[cfg(test)]
+mod whole_tests {
+    use super::*;
+
+    /// Written whole or not at all, owner-only, and never a part file left behind.
+    #[test]
+    fn a_file_is_replaced_whole_and_kept_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cookies.json");
+        std::fs::write(&path, "old cookies").unwrap();
+        write_whole(&path, b"new cookies", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new cookies");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // One that cannot be written leaves what was there as it was.
+        let gone = dir.path().join("missing").join("cookies.json");
+        assert!(write_whole(&gone, b"x", true).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new cookies");
+    }
+}
+
 /// A secret kept in parts where one entry cannot hold it — Windows' Credential Manager — and
 /// read back whole, whichever shape it was written in.
 #[cfg(test)]
@@ -839,15 +954,15 @@ mod parts_tests {
         write_secret(&k, "s", &session, Some(1000)).unwrap();
         assert_eq!(
             k.0.borrow().get("s").map(String::as_str),
-            Some("pomander-parts:4")
+            Some("pomander-parts:g1:4")
         );
         assert_eq!(
             read_secret(&k, "s").unwrap().as_deref(),
             Some(session.as_str())
         );
-        // Shorter next time: the old fourth part goes.
+        // Shorter next time, under a generation of its own: the old parts all go.
         write_secret(&k, "s", &"y".repeat(1500), Some(1000)).unwrap();
-        assert!(k.0.borrow().get("s#3").is_none() && k.0.borrow().get("s#4").is_none());
+        assert_eq!(k.0.borrow().len(), 3, "{:?}", k.0.borrow().keys());
         assert_eq!(read_secret(&k, "s").unwrap(), Some("y".repeat(1500)));
         delete_secret(&k, "s").unwrap();
         assert!(k.0.borrow().is_empty());
@@ -877,8 +992,54 @@ mod parts_tests {
     fn a_missing_part_is_an_error_not_a_session() {
         let k = Memory::default();
         write_secret(&k, "s", &"q".repeat(2500), Some(1000)).unwrap();
-        k.delete("s#2").unwrap();
+        k.delete("s#g1#2").unwrap();
         assert!(read_secret(&k, "s").is_err());
+    }
+
+    /// A save that stops part way — the process killed, the machine off — leaves the session
+    /// before it whole. Writing the new parts over the old ones' names, it left the old head
+    /// over a mix, and the person was signed out.
+    #[test]
+    fn a_save_cut_short_leaves_the_last_session_whole() {
+        let k = Memory(RefCell::default(), Some(1280));
+        let first = "a".repeat(2500);
+        write_secret(&k, "s", &first, Some(1000)).unwrap();
+        // Cut short after its first part: the store refuses everything after.
+        struct CutShort<'a>(&'a Memory, std::cell::Cell<usize>);
+        impl Secrets for CutShort<'_> {
+            fn get(&self, name: &str) -> Result<Option<String>, String> {
+                self.0.get(name)
+            }
+            fn set(&self, name: &str, value: &str) -> Result<(), String> {
+                if self.1.get() == 0 {
+                    return Err("the process ended".into());
+                }
+                self.1.set(self.1.get() - 1);
+                self.0.set(name, value)
+            }
+            fn delete(&self, name: &str) -> Result<(), String> {
+                self.0.delete(name)
+            }
+        }
+        let cut = CutShort(&k, std::cell::Cell::new(1));
+        assert!(write_secret(&cut, "s", &"b".repeat(2500), Some(1000)).is_err());
+        assert_eq!(read_secret(&k, "s").unwrap(), Some(first));
+        // The next save goes through, and nothing of the cut one is left.
+        write_secret(&k, "s", &"c".repeat(1500), Some(1000)).unwrap();
+        assert_eq!(read_secret(&k, "s").unwrap(), Some("c".repeat(1500)));
+    }
+
+    /// Parts written before generations are read, and replaced cleanly by the next save.
+    #[test]
+    fn parts_kept_before_generations_still_read_and_go() {
+        let k = Memory::default();
+        k.set("s#1", "ab").unwrap();
+        k.set("s#2", "cd").unwrap();
+        k.set("s", "pomander-parts:2").unwrap();
+        assert_eq!(read_secret(&k, "s").unwrap().as_deref(), Some("abcd"));
+        write_secret(&k, "s", &"e".repeat(1500), Some(1000)).unwrap();
+        assert!(k.0.borrow().get("s#1").is_none() && k.0.borrow().get("s#2").is_none());
+        assert_eq!(read_secret(&k, "s").unwrap(), Some("e".repeat(1500)));
     }
 }
 
@@ -946,7 +1107,7 @@ mod move_tests {
 
     #[test]
     fn a_session_in_parts_moves_whole_with_every_part() {
-        // Windows: the Credential Manager's targets are `session` and `session#1..n`.
+        // Windows: the Credential Manager's targets are `session` and `session#g1#1..n`.
         let big = "w".repeat(3500);
         let old = holding("session", &big, Some(1000));
         assert_eq!(old.held.borrow().len(), 5);
@@ -957,7 +1118,7 @@ mod move_tests {
         );
         assert_eq!(
             new.held.borrow().get("session").map(String::as_str),
-            Some("pomander-parts:4")
+            Some("pomander-parts:g1:4")
         );
         assert_eq!(read_secret(&new, "session").unwrap(), Some(big));
         assert!(

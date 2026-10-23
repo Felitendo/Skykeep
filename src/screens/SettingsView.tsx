@@ -26,7 +26,7 @@ import {
 import { freshness, useSync } from "../lib/sync";
 import { setTheme, storedTheme, type Theme } from "../lib/theme";
 import { AppIcon } from "../components/AppIcon";
-import { AccountAvatar } from "../components/Account";
+import { AccountAvatar, NOT_KEPT, useNotKept } from "../components/Account";
 import { Picker } from "../components/Picker";
 import { localeFirstDay, setWeekStart, weekStartChoice, type WeekStartChoice } from "./calendar/model";
 
@@ -488,6 +488,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
   const [login, setLogin] = useState<LoginItem | null>(null);
   const [loginBusy, setLoginBusy] = useState(false);
   const { report, syncing, refresh } = useSync();
+  const notKept = useNotKept();
 
   useEffect(() => {
     api.accountInfo().then(setAccount, () => setAccount({ name: null, email: null }));
@@ -572,6 +573,7 @@ export function SettingsView({ onSignOut }: { onSignOut: (keep: boolean) => Prom
         <div className="settings-account-text">
           <strong>{account?.name ?? "Your Apple Account"}</strong>
           <span>{account?.email ?? ""}</span>
+          {notKept && <span className="settings-account-note">{NOT_KEPT}</span>}
         </div>
         <button
           className="quiet"

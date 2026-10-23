@@ -92,6 +92,8 @@ struct SessionFacts {
     email: Option<String>,
     web_access_allowed: Option<bool>,
     data_protection: Option<bool>,
+    /// Signed in, but no keyring would keep the session: it lasts as long as Skykeep runs.
+    unsaved: bool,
 }
 
 impl SessionFacts {
@@ -115,6 +117,7 @@ impl SessionFacts {
             email: s.account_email.clone().or_else(|| s.apple_id.clone()),
             web_access_allowed: s.web_access_allowed,
             data_protection: s.data_protection,
+            unsaved: client.unsaved().is_some(),
         }
     }
 }
@@ -161,6 +164,8 @@ struct Status {
     /// The stored session's account is the one the library already belongs to: the library
     /// can open on what it holds at once, while the session is taken up again behind it.
     library_ready: bool,
+    /// Signed in for as long as Skykeep runs only: no keyring would keep the session.
+    not_kept: bool,
 }
 
 struct Data(library_lock::LibraryLock);
@@ -985,6 +990,7 @@ async fn auth_status(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<S
         library_ready: facts.has_stored_session
             && facts.account.is_some()
             && owner == facts.account,
+        not_kept: facts.signed_in && facts.unsaved,
     })
 }
 
