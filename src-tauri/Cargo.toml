@@ -68,11 +68,9 @@ windows = { version = "0.62", features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.18", default-features = false }
-# A video's poster when Apple's is blank: one frame read with GStreamer, which WebKitGTK
-# already needs, so nothing new is installed. Linux only: elsewhere Apple's poster stands.
+# What the window's player can decode here (video.rs), asked of GStreamer, which WebKitGTK
+# plays through. The poster reader is quince-media's (poster.rs).
 gstreamer = "0.25"
-gstreamer-app = "0.25"
-gstreamer-video = "0.25"
 zbus = "5"
 # The tray, spoken as StatusNotifierItem over D-Bus itself: a left click (Activate) opens the
 # window. async-io, as zbus here runs on, not a second D-Bus runtime.

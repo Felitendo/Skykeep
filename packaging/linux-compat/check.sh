@@ -1,19 +1,27 @@
 #!/bin/bash
 # Does Skykeep install and run on this distribution? Run as root in a clean container of it:
 #
-#   check.sh <package> <distro_check> <test.heic>
+#   check.sh <package> <distro_check> <test.heic> [<video>...]
 #
 #   <package>       a .deb, .rpm, .pkg.tar.zst or .AppImage — installed with the system's own
 #                   package manager (the .AppImage is only run), with recommends/weak
 #                   dependencies off, so only what the package itself asks for is there;
 #   <distro_check>  the probe's distro_check example (probe/examples/distro_check.rs);
-#   <test.heic>     a HEIC made for the test — never anybody's photo.
+#   <test.heic>     a HEIC made for the test — never anybody's photo;
+#   <video>         made-up test videos (crates/quince-media/tests/fixtures: black-start.mp4,
+#                   H.264, and hevc.mov, HEVC as an iPhone records it).
 #
 # Checked, each on its own line, PASS or FAIL:
 #   ldd       the program finds every library it links;
 #   gst       the GStreamer elements the player and poster reader load at run time are there
-#             (SKIP for an AppImage on a system whose gst-inspect is newer than its GStreamer);
-#   heic      a HEIC decodes through the system's libheif, the app's own way;
+#             (SKIP for an AppImage on a system whose gst-inspect cannot load its GStreamer:
+#             the video lines below are checked through the AppImage's own GStreamer anyway);
+#   heic      a HEIC decodes through the system's libheif, the app's own way — for the
+#             AppImage, through the libheif and HEVC decoder it carries, found as the app
+#             finds them;
+#   video     each video's poster read the app's way (quince_media::poster) and the video
+#             played to its end through playbin3, as the window's player plays it — through
+#             the system's GStreamer, or the AppImage's own;
 #   keyring   a made-up session goes into a Secret Service (gnome-keyring) and back out
 #             through the app's sign-in storage;
 #   launch    started headless under Xvfb on its own session bus, the page draws
@@ -26,6 +34,7 @@
 # Used by .github/workflows/linux-compat.yml, and runs the same by hand under docker.
 set -u
 pkg=$1 probe=$2 heic=$3
+videos=("${@:4}")
 . /etc/os-release
 like=" ${ID} ${ID_LIKE:-} "
 fails=0
@@ -41,9 +50,11 @@ case "$like" in
     # An AppImage carries its libraries but not the ones every desktop has (linuxdeploy's
     # excludelist): GL, X11, fonts and text shaping, ALSA, DRM. Without them in this bare
     # container gst-libav (libavcodec links them) does not load and avdec_* looks missing.
+    # libgpg-error too (under libgcrypt, on every system): libavcodec's libraries link it, and
+    # without it gst-libav — every H.264 and HEVC decoder — does not load.
     [[ $pkg == *.AppImage ]] && tools+=" libgl1 libegl1 libgles2 libfontconfig1 fonts-dejavu-core \
       libx11-6 libx11-xcb1 libxcb1 libxcb-dri3-0 libdrm2 libharfbuzz0b libfribidi0 libfreetype6 \
-      libasound2t64"
+      libasound2t64 libgpg-error0"
     # shellcheck disable=SC2086
     apt-get install -y -qq --no-install-recommends $tools >/dev/null
     [[ $pkg == *.deb ]] && { apt-get install -y -q --no-install-recommends "$pkg" || exit 1; }
@@ -53,7 +64,8 @@ case "$like" in
            desktop-file-utils appstream which"
     # As above; libGLESv2 (libglvnd-gles) too, which WebKit opens and every Fedora desktop has.
     [[ $pkg == *.AppImage ]] && tools+=" mesa-libGL mesa-libEGL libglvnd-gles fontconfig \
-      dejavu-sans-fonts libX11 libX11-xcb libxcb libdrm harfbuzz fribidi freetype alsa-lib"
+      dejavu-sans-fonts libX11 libX11-xcb libxcb libdrm harfbuzz fribidi freetype alsa-lib \
+      libgpg-error"
     # shellcheck disable=SC2086
     dnf -y -q install --setopt=install_weak_deps=False $tools
     [[ $pkg == *.rpm ]] && { dnf -y install --setopt=install_weak_deps=False "$pkg" || exit 1; }
@@ -62,7 +74,7 @@ case "$like" in
     # dbus-run-session is in dbus-1-daemon, not dbus-1.
     tools="xvfb-run dbus-1 dbus-1-daemon gnome-keyring gstreamer-utils desktop-file-utils \
       AppStream which"
-    [[ $pkg == *.AppImage ]] && tools+=" Mesa-libGL1 Mesa-libEGL1 fontconfig dejavu-fonts"
+    [[ $pkg == *.AppImage ]] && tools+=" Mesa-libGL1 Mesa-libEGL1 fontconfig dejavu-fonts libgpg-error0"
     # shellcheck disable=SC2086
     zypper -q --non-interactive install --no-recommends $tools
     [[ $pkg == *.rpm ]] && {
@@ -88,6 +100,11 @@ if [[ $pkg == *.AppImage ]]; then
   prog="$root/AppRun"
   bin="$root/usr/bin/skykeep"
   libs="$root/usr/lib:$root/usr/lib/x86_64-linux-gnu"
+  # The probe beside the program, in the AppDir, with APPDIR set as the AppImage's AppRun sets
+  # it: it then finds the AppImage's libheif plugins exactly as the app does (only a program
+  # inside APPDIR is pointed at them).
+  cp "$probe" "$root/usr/bin/distro_check" && probe="$root/usr/bin/distro_check"
+  export APPDIR=$root
 else
   prog=/usr/bin/skykeep bin=/usr/bin/skykeep libs=
 fi
@@ -102,21 +119,23 @@ missing=$(LD_LIBRARY_PATH=$libs ldd "$bin" | grep "not found")
 # playbin3/decodebin/videoconvert/appsink: gst-plugins-base; qtdemux, videoflip: -good;
 # avdec_h264 / avdec_h265: gst-libav — an iPhone's .mov/.mp4 and its H.264/HEVC video.
 if [[ $pkg == *.AppImage ]]; then
-  gstdir=$(find "$root" -type d -name gstreamer-1.0 -path '*lib*' | head -1)
-  # As the AppImage's own GStreamer hook sets it up: its plugins, its scanner, a registry of
-  # its own — and its libraries (libavcodec for gst-libav) found the way its AppRun finds them.
-  export GST_PLUGIN_SYSTEM_PATH_1_0=$gstdir GST_PLUGIN_PATH_1_0= GST_REGISTRY_1_0=/tmp/appimage-registry.bin
-  scanner=$(find "$root" -type f -name gst-plugin-scanner | head -1)
-  [[ -n $scanner ]] && export GST_PLUGIN_SCANNER_1_0=$scanner
+  # Exactly as the AppImage's AppRun sets GStreamer up — its own hook, sourced: its plugins
+  # (usr/lib/gstreamer-1.0), its scanner — plus a registry of its own for this check. (A
+  # `find -name gstreamer-1.0` here once picked the helpers' directory,
+  # usr/lib/gstreamer1.0/gstreamer-1.0, and every element looked missing.)
+  # shellcheck disable=SC1091
+  source "$root/apprun-hooks/linuxdeploy-plugin-gstreamer.sh" || exit 1
+  export GST_REGISTRY_1_0=/tmp/appimage-registry.bin
 fi
 media() {
   local absent= e
   # The AppImage's elements are looked at with this system's gst-inspect-1.0 on the AppImage's
   # own libgstreamer. A system GStreamer newer than the bundled one (Fedora 42's 1.26 against
   # Ubuntu 24.04's 1.24) cannot do that ("undefined symbol"), which says nothing about the
-  # AppImage; then the elements are not checked here (Ubuntu and Debian check them).
+  # AppImage; then the elements are not listed here, and the video lines below — played
+  # through the AppImage's own GStreamer by the probe, built against it — are the check.
   if [[ $pkg == *.AppImage ]] && ! LD_LIBRARY_PATH=$libs gst-inspect-1.0 --version >/dev/null 2>&1; then
-    echo "SKIP gst — this system's gst-inspect-1.0 cannot load the AppImage's GStreamer"
+    echo "SKIP gst — this system's gst-inspect-1.0 cannot load the AppImage's GStreamer (video below plays through it)"
   else
     for e in playbin3 decodebin videoconvert videoflip appsink qtdemux \
              "avdec_h264|openh264dec" avdec_h265; do
@@ -127,6 +146,12 @@ media() {
   fi
   if out=$(LD_LIBRARY_PATH=$libs "$probe" heic "$heic" 2>&1); then pass heic "$out"
   else $1 heic "$out"; fi
+  local v
+  for v in "${videos[@]}"; do
+    if out=$(LD_LIBRARY_PATH=$libs timeout 60 "$probe" video "$v" 2>&1); then
+      pass "video $(basename "$v")" "$out"
+    else $1 "video $(basename "$v")" "$(tail -3 <<<"$out")"; fi
+  done
 }
 # Fedora leaves HEVC out of its own repositories — libheif without its libde265 decoder, FFmpeg
 # without H.265 — so an iPhone's HEIC photos and HEVC videos need RPM Fusion there (the note
@@ -163,7 +188,8 @@ elif [[ $like == *" suse "* && $pkg != *.AppImage ]]; then
 else
   media fail
 fi
-unset GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_PATH_1_0
+unset GST_PLUGIN_SYSTEM_PATH_1_0 GST_PLUGIN_PATH_1_0 GST_PLUGIN_SCANNER_1_0 GST_PTP_HELPER_1_0 \
+  GST_REGISTRY_1_0 GST_REGISTRY_REUSE_PLUGIN_SCANNER APPDIR
 
 # --- Keyring and launch, in one session bus with a keyring daemon on it ---------------------
 export HOME=$(mktemp -d) XDG_RUNTIME_DIR=$(mktemp -d) RUST_BACKTRACE=1 SKYKEEP_TIMING=1

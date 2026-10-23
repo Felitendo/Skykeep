@@ -6,6 +6,13 @@
 //! square is cut here, in Rust, and the interface is handed a small image that is already
 //! right.
 
+/// Pointing libheif at the HEVC decoder an AppImage carries (Linux only).
+#[cfg(target_os = "linux")]
+pub mod appimage;
+/// A video's picture when Apple's is blank, read with GStreamer (Linux only).
+#[cfg(target_os = "linux")]
+pub mod poster;
+
 /// The square of a picture its owner chose to show, in the stored image's own pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Crop {

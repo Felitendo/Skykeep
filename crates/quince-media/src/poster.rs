@@ -66,8 +66,8 @@ pub fn first_seen_frame(path: &std::path::Path) -> Result<Option<Vec<u8>>, Strin
             let map = buffer.map_readable().map_err(|e| e.to_string())?;
             let (w, h) = (info.width(), info.height());
             let stride = usize::try_from(info.stride()[0]).unwrap_or(0);
-            if quince_media::rgb_lightness(&map, w, h, stride) > SEEN {
-                return quince_media::rgb_to_jpeg(&map, w, h, stride).map(Some);
+            if crate::rgb_lightness(&map, w, h, stride) > SEEN {
+                return crate::rgb_to_jpeg(&map, w, h, stride).map(Some);
             }
         }
         Ok(None)
@@ -96,7 +96,7 @@ mod tests {
             "poster {}x{}, lightness {mean:.1}, blank {}",
             picture.width(),
             picture.height(),
-            quince_media::is_blank(&jpeg)
+            crate::is_blank(&jpeg)
         );
     }
 
@@ -109,12 +109,24 @@ mod tests {
         let jpeg = super::first_seen_frame(&film)
             .unwrap()
             .expect("a frame that shows something");
-        assert!(!quince_media::is_blank(&jpeg), "not the black first frame");
+        assert!(!crate::is_blank(&jpeg), "not the black first frame");
         let picture = image::load_from_memory(&jpeg).unwrap();
         assert_eq!(
             (picture.width(), picture.height()),
             (48, 64),
             "turned upright, as the phone recorded it"
         );
+    }
+
+    /// An iPhone's kind of video: HEVC in a QuickTime file (`hvc1`), a made-up test pattern.
+    /// Read through gst-libav's H.265 decoder, as the AppImage carries it.
+    #[test]
+    fn an_hevc_video() {
+        let film = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hevc.mov");
+        let jpeg = super::first_seen_frame(&film)
+            .unwrap()
+            .expect("a frame of the test pattern");
+        let picture = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((picture.width(), picture.height()), (128, 96));
     }
 }
