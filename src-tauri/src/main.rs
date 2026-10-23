@@ -971,10 +971,66 @@ fn keep_private(dir: &std::path::Path) {
     }
 }
 
+/// The library could not be opened: said in a window of its own, with where it is, and the app
+/// ends — never a panic. A release build on Windows has no console, so a launch that failed
+/// here showed nothing at all, every time.
+fn cannot_start(dir: &std::path::Path, why: &str) -> ! {
+    let text = format!(
+        "{why}\n\nNothing in it has been changed or removed. Your library is in:\n{}",
+        dir.display()
+    );
+    eprintln!("Skykeep couldn’t start: {text}");
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Skykeep couldn’t open your library")
+        .set_description(&text)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+    std::process::exit(1)
+}
+
+/// Why the library would not open, as a person can act on it.
+fn library_problem(e: &quince_core::Error) -> String {
+    e.trouble().map_or_else(|| e.to_string(), trouble_words)
+}
+
+/// [`library_problem`] for the folder itself.
+fn folder_problem(e: &std::io::Error) -> String {
+    quince_core::io_trouble(e).map_or_else(
+        || format!("Skykeep’s folder couldn’t be used: {e}"),
+        trouble_words,
+    )
+}
+
+fn trouble_words(t: quince_core::Trouble) -> String {
+    match t {
+        quince_core::Trouble::Full => "The disk is full. Free some space, then open Skykeep again.",
+        quince_core::Trouble::ReadOnly => {
+            "Skykeep can’t write to its folder. Check that the folder below, and the disk it is \
+             on, can be written to, then open Skykeep again."
+        }
+        quince_core::Trouble::Busy => {
+            "Another program is holding the library — most likely another Skykeep still \
+             closing. Wait a moment, then open Skykeep again."
+        }
+    }
+    .to_string()
+}
+
 fn state_dir(app: &tauri::AppHandle) -> PathBuf {
-    app.path()
+    let roaming = app
+        .path()
         .app_data_dir()
-        .unwrap_or_else(|_| PathBuf::from(".").join("quince"))
+        .unwrap_or_else(|_| PathBuf::from(".").join("quince"));
+    // Windows: Local app data, once the library has moved there (migrate::to_local); still
+    // Roaming while a move could not be made.
+    #[cfg(windows)]
+    if let Ok(local) = app.path().app_local_data_dir() {
+        if local.join("library.db").exists() || !roaming.join("library.db").exists() {
+            return local;
+        }
+    }
+    roaming
 }
 
 #[tauri::command]
@@ -5913,7 +5969,25 @@ fn main() {
             video::serve(app.handle().clone());
             let dir = state_dir(app.handle());
             keep_private(&dir);
-            let client = Client::new(&dir)?;
+            // A second Skykeep the session bus could not stop (there is none): it ends here,
+            // before it touches the library, sends anything or mounts a folder.
+            static HELD: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+            match library_lock::hold(&dir) {
+                Ok(Some(lock)) => {
+                    let _ = HELD.set(lock);
+                }
+                Ok(None) => {
+                    eprintln!("Skykeep is already running.");
+                    std::process::exit(0);
+                }
+                // Somewhere a lock can't be taken (a share that refuses them): run as before.
+                Err(e) => quiet!("the library's lock could not be taken: {e}"),
+            }
+            let client = match Client::new(&dir) {
+                Ok(client) => client,
+                Err(quince_auth::Error::Io(e)) => cannot_start(&dir, &folder_problem(&e)),
+                Err(e) => cannot_start(&dir, &e.to_string()),
+            };
             let known = std::sync::Mutex::new(SessionFacts::of(&client));
             let client = Arc::new(Mutex::new(client));
             app.manage(Auth {
@@ -5923,7 +5997,18 @@ fn main() {
             });
             // The local library. Opened once at startup so every command shares one
             // connection and the WAL behaves.
-            let mut library = Library::open(&dir)?;
+            let opened = match Library::open_or_recover(&dir) {
+                Ok(opened) => opened,
+                Err(e) => cannot_start(&dir, &library_problem(&e)),
+            };
+            if let Some(aside) = &opened.set_aside {
+                quiet!(
+                    "the library was damaged: set aside at {} and made again ({} rows kept)",
+                    aside.display(),
+                    opened.salvaged
+                );
+            }
+            let mut library = opened.library;
             timing::mark("library open");
             adopt_writer(&mut library);
             app.manage(Data(library_lock::LibraryLock::new(
@@ -6615,5 +6700,93 @@ mod tests {
         );
         drop(held);
         assert!(again.try_lock().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+
+    #[test]
+    fn a_library_that_will_not_open_is_explained() {
+        let io = std::io::Error::from(std::io::ErrorKind::ReadOnlyFilesystem);
+        assert!(folder_problem(&io).contains("can’t write to its folder"));
+        let full = quince_core::Error::Io(std::io::ErrorKind::StorageFull.into());
+        assert!(library_problem(&full).starts_with("The disk is full"));
+        let newer = quince_core::Error::Newer {
+            found: 99,
+            known: 48,
+        };
+        assert!(library_problem(&newer).contains("newer version of Skykeep"));
+    }
+
+    /// A picture is written whole or not at all, and a contact keeps only its newest.
+    #[tokio::test]
+    async fn pictures_are_written_whole_and_one_face_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let guid = "0D8D2C3B-6C1E-4C9B-9E57-3A1B2C3D4E5F";
+        let other = "1D8D2C3B-6C1E-4C9B-9E57-3A1B2C3D4E5F";
+        let old = photo_path(dir.path(), guid, "first");
+        let theirs = photo_path(dir.path(), other, "x");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        write_whole(&old, b"before").await.unwrap();
+        write_whole(&theirs, b"someone else").await.unwrap();
+        let new = photo_path(dir.path(), guid, "second");
+        write_whole(&new, b"after").await.unwrap();
+        forget_older_faces(&new);
+        assert!(!old.exists(), "the older picture goes");
+        assert_eq!(std::fs::read(&new).unwrap(), b"after");
+        assert!(theirs.exists(), "another contact's stays");
+        let left: Vec<_> = std::fs::read_dir(new.parent().unwrap()).unwrap().collect();
+        assert_eq!(left.len(), 2, "no part files left behind");
+        // A write that cannot land leaves nothing, not a cut-off file.
+        let nowhere = dir.path().join("missing").join("x");
+        assert!(write_whole(&nowhere, b"z").await.is_err());
+        assert!(!nowhere.exists());
+    }
+
+    /// After a lapse the heartbeat waits for a new sign-in, and keeps that one warm.
+    #[test]
+    fn the_heartbeat_comes_back_for_the_next_sign_in() {
+        let old = Some("old".to_string());
+        assert!(worth_a_ping(true, &old, None));
+        assert!(
+            !worth_a_ping(true, &old, Some(&old)),
+            "the lapsed one rests"
+        );
+        assert!(
+            worth_a_ping(true, &Some("new".into()), Some(&old)),
+            "a new one is kept warm"
+        );
+        assert!(!worth_a_ping(false, &None, None));
+    }
+
+    /// Every folder of one account's pictures goes with the account: a reminder's too, which
+    /// stayed behind for the next person to sign in on this computer.
+    #[test]
+    fn an_accounts_reminder_pictures_go_with_it() {
+        assert!(ACCOUNT_FILES.contains(&"reminder-media"));
+    }
+
+    /// The packages say what the binary needs, so an older system is refused at install with
+    /// the package manager's message, not at launch with `GLIBC_2.39 not found`.
+    #[test]
+    fn the_packages_declare_the_floor_they_are_built_for() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let depends = |kind: &str| -> Vec<String> {
+            conf["bundle"]["linux"][kind]["depends"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d.as_str().unwrap().to_string())
+                .collect()
+        };
+        let deb = depends("deb");
+        assert!(deb.contains(&"libc6 (>= 2.39)".to_string()), "{deb:?}");
+        assert!(deb.contains(&"libheif1 (>= 1.17)".to_string()), "{deb:?}");
+        let rpm = depends("rpm");
+        assert!(rpm.contains(&"glibc >= 2.39".to_string()), "{rpm:?}");
+        assert!(rpm.iter().any(|d| d.contains("libheif >= 1.17")), "{rpm:?}");
     }
 }
