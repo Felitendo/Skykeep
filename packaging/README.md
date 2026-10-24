@@ -5,7 +5,7 @@ Everything that turns a build into something people install.
 | Path | What it is |
 |---|---|
 | `arch/` | A PKGBUILD that builds the checkout it sits in. |
-| `aur/` | The AUR package, `skykeep-git`: the same steps, built from GitHub. |
+| `aur/` | The AUR packages, each in its own folder with its `.SRCINFO`: `skykeep` builds the release's source tarball, `skykeep-bin` installs the release's `.deb`, and `skykeep-git` builds the latest commit. |
 | `flatpak/` | The Flatpak manifest for Flathub, with its own [README](flatpak/README.md). |
 | `apps/` | The six per-app launcher entries (Notes, Reminders, Calendar, Contacts, Drive, Photos). |
 | `*.desktop.in`, `*.metainfo.xml` | The main launcher entry and the AppStream data software centres show. |
@@ -22,6 +22,25 @@ makepkg -si
 
 This installs Skykeep like any other program: `skykeep` on the path, launcher entries for the
 main app and each of the six apps, the icon, search providers and the licence.
+
+### The AUR
+
+`aur/skykeep` is the one to recommend: the tagged release, built with the same steps as
+`arch/`. `aur/skykeep-bin` unpacks the release's `.deb` (the build CI installs and starts on
+Ubuntu), so nothing is compiled and pacman owns every file. `aur/skykeep-git` follows `main`.
+`skykeep-bin` and `skykeep-git` provide and conflict with `skykeep`.
+
+At each release, in `aur/skykeep` and `aur/skykeep-bin`:
+
+```sh
+# set pkgver to the new tag (without the v) and pkgrel=1, then:
+updpkgsums                          # fills sha256sums from the published files
+makepkg --printsrcinfo > .SRCINFO
+```
+
+Until `updpkgsums` has run, their `sha256sums` hold a `TODO` that makepkg refuses, so nothing
+is built from a file nobody checked. Each folder is pushed to its own AUR repository
+(`ssh://aur@aur.archlinux.org/<name>.git`) with just its `PKGBUILD` and `.SRCINFO`.
 
 ## Debian, Ubuntu, Fedora, AppImage, Windows
 

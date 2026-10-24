@@ -25,7 +25,7 @@ Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as fast desktop ap
 [![Latest release](https://img.shields.io/github/v/release/YashwanthKamireddi/Skykeep?sort=semver&color=2f6fd6)](https://github.com/YashwanthKamireddi/Skykeep/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/YashwanthKamireddi/Skykeep/total?color=4a5568)](https://github.com/YashwanthKamireddi/Skykeep/releases)
 Once live:
-[![AUR](https://img.shields.io/aur/version/skykeep-git?logo=archlinux&label=AUR)](https://aur.archlinux.org/packages/skykeep-git)
+[![AUR](https://img.shields.io/aur/version/skykeep?logo=archlinux&label=AUR)](https://aur.archlinux.org/packages/skykeep)
 [![Flathub](https://img.shields.io/flathub/v/io.github.yashwanthkamireddi.Skykeep?logo=flathub)](https://flathub.org/apps/io.github.yashwanthkamireddi.Skykeep)
 -->
 
@@ -144,7 +144,7 @@ Skykeep is free. Download it from the [latest release](https://github.com/Yashwa
 | **Fedora 41+** | `Skykeep-<version>-1.x86_64.rpm` | `sudo dnf install ./Skykeep-*.x86_64.rpm` |
 | **openSUSE Tumbleweed** | `Skykeep-<version>-1.x86_64.rpm` | `sudo zypper install --allow-unsigned-rpm ./Skykeep-*.x86_64.rpm` |
 | **Any other Linux** | `Skykeep_<version>_amd64.AppImage` | `chmod +x Skykeep_*.AppImage && ./Skykeep_*.AppImage` |
-| **Arch, CachyOS, EndeavourOS, Manjaro** | [Build from the PKGBUILD](#arch-linux) | Coming to the AUR as `skykeep-git` |
+| **Arch, CachyOS, EndeavourOS, Manjaro** | [Build from the PKGBUILD](#arch-linux) | Coming to the AUR as `skykeep` |
 
 ### Windows
 
@@ -199,7 +199,7 @@ Or install the library once with `sudo apt install libfuse2t64`, and the AppImag
 <details>
 <summary><b>Arch, CachyOS, EndeavourOS, Manjaro</b></summary>
 
-Skykeep is coming to the AUR as `skykeep-git`. Until then, build it from this repository:
+Skykeep is coming to the AUR as `skykeep`, with `skykeep-bin` for the ready-built release. Until then, build it from this repository:
 
 ```sh
 git clone https://github.com/YashwanthKamireddi/Skykeep.git

@@ -1,6 +1,7 @@
-# The AUR package: Skykeep built from the latest source on GitHub, as `yay -S skykeep-git` or
-# `makepkg -si` installs it. The same build and package steps as packaging/arch, which builds
-# from a local checkout instead.
+# The AUR package `skykeep-git`: Skykeep built from the latest commit on GitHub, as
+# `yay -S skykeep-git` or `makepkg -si` installs it. Most people want `skykeep` (the tagged
+# release, ../skykeep) or `skykeep-bin` (the release's .deb, ../skykeep-bin). The same build and
+# package steps as packaging/arch, which builds from a local checkout instead.
 
 pkgname=skykeep-git
 pkgver=0.1.0.r405.g054560f

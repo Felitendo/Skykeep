@@ -1,0 +1,47 @@
+# The AUR package `skykeep-bin`: the release's own .deb, unpacked as it is, for anyone who'd
+# rather not compile. It's the same build the release workflow installs and starts on Ubuntu
+# 24.04 before publishing it, so on Arch it runs against Arch's newer libraries. Built from
+# source instead: ../skykeep.
+#
+# The .deb rather than the AppImage: a .deb is plain files under /usr, so pacman owns every
+# one of them, and the app uses Arch's own WebKitGTK, GStreamer and libheif with their
+# security updates. The AppImage carries its own copies of those. Installed this way, Skykeep
+# knows its package manager updates it (src-tauri/src/updates.rs) and never contacts GitHub.
+#
+# At each release: set pkgver to the tag (without the v), reset pkgrel to 1, then run
+# `updpkgsums` here to fill in sha256sums, and `makepkg --printsrcinfo > .SRCINFO`.
+
+pkgname=skykeep-bin
+_pkgname=skykeep
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Your iCloud, on this computer — calendar, reminders, notes, contacts and Drive"
+arch=('x86_64')
+url="https://github.com/YashwanthKamireddi/Skykeep"
+license=('GPL-3.0-only')
+
+# The same run-time needs as ../skykeep, which explains each one.
+depends=('webkit2gtk-4.1' 'gtk3' 'libsecret' 'libheif' 'gstreamer' 'gst-plugins-base-libs'
+         'gst-plugins-base' 'gst-plugins-good' 'gst-libav')
+# The iCloud Drive and Photos folders are mounted through fusermount3.
+optdepends=('fuse3: iCloud Drive and Photos as folders in the file manager')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+# The binary is the release's, already stripped; there is nothing to make a debug package from.
+options=('!strip' '!debug')
+
+source=("Skykeep_${pkgver}_amd64.deb::$url/releases/download/v$pkgver/Skykeep_${pkgver}_amd64.deb")
+# TODO(release day): replace with the .deb's real checksum once v$pkgver is published: run
+# `updpkgsums` in this folder, or copy its line from the release's SHA256SUMS-linux.txt. Until
+# then makepkg refuses this value on purpose.
+sha256sums=('TODO-fill-at-release-with-updpkgsums')
+
+package() {
+  # makepkg has already split the .deb into control.tar.* and data.tar.*; the files are in the
+  # second, laid out under /usr exactly as they install.
+  bsdtar -xf "$srcdir"/data.tar.* -C "$pkgdir"
+  # Some Tauri versions also write a 2x icon into a folder no icon theme reads
+  # (hicolor/256x256@2); every size is already there under its proper name.
+  rm -rf "$pkgdir"/usr/share/icons/hicolor/*@2
+  chmod 755 "$pkgdir/usr/bin/skykeep"
+}

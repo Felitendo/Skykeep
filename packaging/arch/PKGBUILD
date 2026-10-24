@@ -2,8 +2,9 @@
 # program on this machine is — `makepkg -si` from here — rather than run out of a build
 # directory. That is the difference between something Yash has and something anyone has.
 #
-# The AUR package (packaging/aur, skykeep-git) is this one built from GitHub, with a real
-# `pkgver()`. Its depends, build and package steps are kept identical to these.
+# The AUR packages in packaging/aur build the same way from GitHub: `skykeep` from a release
+# tag, `skykeep-git` from the latest commit with a real `pkgver()`. Their depends, build and
+# package steps are kept identical to these (`skykeep-bin` repackages the release's .deb).
 
 pkgname=skykeep
 pkgver=0.1.0

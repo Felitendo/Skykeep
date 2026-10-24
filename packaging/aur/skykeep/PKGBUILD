@@ -1,0 +1,133 @@
+# The AUR package `skykeep`: the tagged release, built from its source tarball on GitHub, as
+# `yay -S skykeep` or `makepkg -si` installs it. The same depends, build and package steps as
+# packaging/arch and ../skykeep-git; only where the source comes from differs.
+#
+# At each release: set pkgver to the tag (without the v), reset pkgrel to 1, then run
+# `updpkgsums` here to fill in sha256sums, and `makepkg --printsrcinfo > .SRCINFO`.
+
+pkgname=skykeep
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Your iCloud, on this computer — calendar, reminders, notes, contacts and Drive"
+arch=('x86_64')
+url="https://github.com/YashwanthKamireddi/Skykeep"
+license=('GPL-3.0-only')
+
+# WebKitGTK is what Tauri renders through on Linux, and libsecret is where the session is
+# kept — the app will start without the second but cannot stay signed in.
+# What the built binary asks for, read off it with ldd rather than guessed — webkit2gtk for
+# the window, gtk3 under it, libsecret for the keyring, libheif for HEIC photos (nothing
+# else pulls it in: without it the app does not start; Arch's carries the libde265 decoder),
+# GStreamer for videos. The tray needs no library: it is a StatusNotifierItem spoken over
+# D-Bus by the app itself (ksni), so libayatana-appindicator is no longer asked for.
+# The GStreamer plugins are loaded at run time too, so ldd can't see them either. The window's
+# player (playbin3) and the poster reader (poster.rs: decodebin, videoconvert, videoflip,
+# appsink) need gst-plugins-base for the elements, gst-plugins-good for qtdemux (an iPhone's
+# .mov/.mp4) and videoflip, and gst-libav for the H.264/HEVC decoders. Without them a video
+# shows a black frame and won't play.
+depends=('webkit2gtk-4.1' 'gtk3' 'libsecret' 'libheif' 'gstreamer' 'gst-plugins-base-libs'
+         'gst-plugins-base' 'gst-plugins-good' 'gst-libav')
+# The iCloud Drive and Photos folders are mounted through fusermount3.
+optdepends=('fuse3: iCloud Drive and Photos as folders in the file manager')
+makedepends=('rust' 'nodejs' 'npm' 'pkgconf')
+
+# makepkg turns link-time optimisation on for everything, which compiles the C and assembly
+# inside ring and libsqlite3-sys to LLVM bitcode. Rust links its own way and cannot see into
+# those archives, so the build failed with several hundred undefined symbols — every SQLite
+# entry point and every one of ring's arithmetic primitives. Rust does its own optimising
+# here; this only declines to have it done twice, in two languages that disagree about how.
+options=('!lto')
+
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# TODO(release day): replace with the tarball's real checksum once the v$pkgver tag is pushed:
+# run `updpkgsums` in this folder. Until then makepkg refuses this value on purpose, so nothing
+# can be built from a tarball nobody has checked.
+sha256sums=('TODO-fill-at-release-with-updpkgsums')
+
+# GitHub names the folder inside the tarball after the repository and the tag, without the v.
+_dir="Skykeep-$pkgver"
+
+prepare() {
+  cd "$srcdir/$_dir"
+
+  # makepkg builds in a clean environment, which does not carry a rustup installation. The
+  # `rust` package puts cargo in /usr/bin and needs nothing here; a rustup one lives in the
+  # user's home and would otherwise look simply absent.
+  if ! command -v cargo >/dev/null; then
+    export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+  fi
+  command -v cargo >/dev/null || {
+    echo "cargo not found — install the 'rust' package, or put a rustup one on PATH" >&2
+    return 1
+  }
+
+  # Everything the build downloads is fetched here, so build() runs offline.
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+  npm ci --no-audit --no-fund
+}
+
+build() {
+  cd "$srcdir/$_dir"
+
+  # Its own build directory, not the one a developer is using. makepkg builds with its own
+  # CFLAGS and LDFLAGS, and cargo reuses whatever C objects it finds — so sharing a target
+  # directory with an ordinary `cargo build` produced a binary that would not link at all,
+  # with sqlite3 and ring's assembly missing from it.
+  export CARGO_TARGET_DIR="$srcdir/target"
+  if ! command -v cargo >/dev/null; then
+    export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+  fi
+
+  npm run build
+  cargo build --release --frozen -p quince-app
+}
+
+package() {
+  cd "$srcdir/$_dir"
+  # Cargo names the binary after its crate; `tauri build` renames it and this does not go
+  # through that, so the rename happens here.
+  install -Dm755 "$srcdir/target/release/quince-app" "$pkgdir/usr/bin/skykeep"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  # The metainfo names the .deb's launcher (Skykeep.desktop, Tauri's name for it); here the
+  # launcher is installed under the app ID, so the metainfo is pointed at that one.
+  sed 's|<launchable type="desktop-id">Skykeep.desktop</launchable>|<launchable type="desktop-id">io.github.yashwanthkamireddi.Skykeep.desktop</launchable>|' \
+      packaging/io.github.yashwanthkamireddi.Skykeep.metainfo.xml \
+    > "$srcdir/io.github.yashwanthkamireddi.Skykeep.metainfo.xml"
+  install -Dm644 "$srcdir/io.github.yashwanthkamireddi.Skykeep.metainfo.xml" \
+    "$pkgdir/usr/share/metainfo/io.github.yashwanthkamireddi.Skykeep.metainfo.xml"
+  # The same entry the .deb and .rpm get, with the names this package uses filled in.
+  sed -e 's/{{name}}/Skykeep/' \
+      -e 's/{{comment}}/Your iCloud, on this computer/' \
+      -e 's/{{exec}}/skykeep/g' \
+      -e 's/{{icon}}/io.github.yashwanthkamireddi.Skykeep/' \
+      -e 's/{{categories}}/Office;Calendar;ContactManagement;/' \
+      packaging/io.github.yashwanthkamireddi.Skykeep.desktop.in \
+    > "$srcdir/io.github.yashwanthkamireddi.Skykeep.desktop"
+  install -Dm644 "$srcdir/io.github.yashwanthkamireddi.Skykeep.desktop" \
+    "$pkgdir/usr/share/applications/io.github.yashwanthkamireddi.Skykeep.desktop"
+  # The icon at every size the launchers and panels ask for, under the name they ask for.
+  local size src
+  for size in 16x16:16x16 24x24:24x24 32x32:32x32 48x48:48x48 64x64:64x64 128x128:128x128 \
+              256x256:128x128@2x 512x512:icon; do
+    src=${size#*:}
+    install -Dm644 "src-tauri/icons/$src.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size%%:*}/apps/io.github.yashwanthkamireddi.Skykeep.png"
+  done
+  # The six apps, each its own launcher entry (skykeep --app notes, …).
+  for entry in packaging/apps/*.desktop; do
+    install -Dm644 "$entry" "$pkgdir/usr/share/applications/$(basename "$entry")"
+  done
+  # In the desktop's own search: GNOME Shell's provider, KRunner's D-Bus plugin, and the bus
+  # entry that starts Skykeep hidden when either searches and it is not running.
+  # The provider names the .deb's launcher (Skykeep.desktop); here it is the app ID's.
+  sed 's|^DesktopId=Skykeep.desktop$|DesktopId=io.github.yashwanthkamireddi.Skykeep.desktop|' \
+      packaging/io.github.yashwanthkamireddi.Skykeep.search-provider.ini \
+    > "$srcdir/io.github.yashwanthkamireddi.Skykeep.search-provider.ini"
+  install -Dm644 "$srcdir/io.github.yashwanthkamireddi.Skykeep.search-provider.ini" \
+    "$pkgdir/usr/share/gnome-shell/search-providers/io.github.yashwanthkamireddi.Skykeep.search-provider.ini"
+  install -Dm644 packaging/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service \
+    "$pkgdir/usr/share/dbus-1/services/io.github.yashwanthkamireddi.Skykeep.SearchProvider.service"
+  install -Dm644 packaging/io.github.yashwanthkamireddi.Skykeep.krunner.desktop \
+    "$pkgdir/usr/share/krunner/dbusplugins/io.github.yashwanthkamireddi.Skykeep.krunner.desktop"
+}
