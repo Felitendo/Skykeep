@@ -8,10 +8,10 @@
 
 Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as fast desktop apps<br>that stay in sync with your iPhone. Free and open source.
 
-<a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest"><img src="https://img.shields.io/badge/Download%20for-Windows-2f6fd6?style=for-the-badge" alt="Download for Windows" height="36"></a>&nbsp;
-<a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest"><img src="https://img.shields.io/badge/Download%20for-Linux-2f6fd6?style=for-the-badge" alt="Download for Linux" height="36"></a>
+<a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe"><img src="https://img.shields.io/badge/Download%20for-Windows-2f6fd6?style=for-the-badge" alt="Download for Windows" height="36"></a>&nbsp;
+<a href="#install"><img src="https://img.shields.io/badge/Download%20for-Linux-2f6fd6?style=for-the-badge" alt="Download for Linux" height="36"></a>
 
-<sub><b>Windows 10/11:</b> <code>x64-setup.exe</code> · <b>Ubuntu, Debian, Mint:</b> <code>.deb</code> · <b>Fedora, openSUSE:</b> <code>.rpm</code> · <b>Any other Linux:</b> <code>.AppImage</code> · <a href="#install">All install options</a></sub>
+<sub><b>Windows 10/11:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe"><code>setup.exe</code></a> · <b>Ubuntu, Debian, Mint:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb"><code>.deb</code></a> · <b>Fedora, openSUSE:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm"><code>.rpm</code></a> · <b>Any other Linux:</b> <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.AppImage"><code>.AppImage</code></a> · <a href="#install">All install options</a></sub>
 
 <sub>Works offline · No extra account · No analytics · GPL-3.0</sub>
 
@@ -135,20 +135,20 @@ Your library by month, albums and shared albums, Favourites and Videos. Live Pho
 
 ## Install
 
-Skykeep is free. Download it from the [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest), which lists SHA-256 checksums for every file.
+Skykeep is free. Each link below downloads the newest version straight away. The [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest) has every file, with SHA-256 checksums.
 
 | Your system | Download | |
 |---|---|---|
-| **Windows 10 and 11** | `Skykeep_<version>_x64-setup.exe` | Installs just for you, no administrator password |
-| **Ubuntu 24.04+, Debian 13, Linux Mint 22** | `Skykeep_<version>_amd64.deb` | `sudo apt install ./Skykeep_*_amd64.deb` |
-| **Fedora 41+** | `Skykeep-<version>-1.x86_64.rpm` | `sudo dnf install ./Skykeep-*.x86_64.rpm` |
-| **openSUSE Tumbleweed** | `Skykeep-<version>-1.x86_64.rpm` | `sudo zypper install --allow-unsigned-rpm ./Skykeep-*.x86_64.rpm` |
-| **Any other Linux** | `Skykeep_<version>_amd64.AppImage` | `chmod +x Skykeep_*.AppImage && ./Skykeep_*.AppImage` |
+| **Windows 10 and 11** | [`Skykeep-windows-x64-setup.exe`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe) | Installs just for you, no administrator password |
+| **Ubuntu 24.04+, Debian 13, Linux Mint 22** | [`Skykeep-linux-amd64.deb`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb) | `sudo apt install ./Skykeep-linux-amd64.deb` |
+| **Fedora 41+** | [`Skykeep-linux-x86_64.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) | `sudo dnf install ./Skykeep-linux-x86_64.rpm` |
+| **openSUSE Tumbleweed** | [`Skykeep-linux-x86_64.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) | `sudo zypper install --allow-unsigned-rpm ./Skykeep-linux-x86_64.rpm` |
+| **Any other Linux** | [`Skykeep-linux-x86_64.AppImage`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.AppImage) | `chmod +x Skykeep-linux-x86_64.AppImage && ./Skykeep-linux-x86_64.AppImage` |
 | **Arch, CachyOS, EndeavourOS, Manjaro** | [Build from the PKGBUILD](#arch-linux) | Coming to the AUR as `skykeep` |
 
 ### Windows
 
-1. Download the `x64-setup.exe` file from the [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest).
+1. Download [`Skykeep-windows-x64-setup.exe`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe).
 2. Double-click it. Windows may say **Windows protected your PC**: that's normal for a new free app that isn't code-signed yet. Click **More info**, then **Run anyway**.
 3. Open **Skykeep** from the Start menu and sign in.
 
@@ -189,7 +189,7 @@ sudo zypper install --allow-vendor-change --from packman libavcodec62 libheif1 l
 Ubuntu 24.04 leaves out a small library AppImages usually use. Start it this way instead:
 
 ```sh
-./Skykeep_*_amd64.AppImage --appimage-extract-and-run
+./Skykeep-linux-x86_64.AppImage --appimage-extract-and-run
 ```
 
 Or install the library once with `sudo apt install libfuse2t64`, and the AppImage opens normally.
