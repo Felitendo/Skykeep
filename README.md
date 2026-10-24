@@ -147,28 +147,51 @@ Skykeep is free. Download it from the [latest release](https://github.com/Yashwa
 
 ### Windows
 
-Run the `x64-setup.exe`. Skykeep's installer isn't code-signed yet, so Windows may show **Windows protected your PC**. Choose **More info**, then **Run anyway**. The `.msi` on the same page installs the same app.
+1. Download the `x64-setup.exe` file from the [latest release](https://github.com/YashwanthKamireddi/Skykeep/releases/latest).
+2. Double-click it. Windows may say **Windows protected your PC**: that's normal for a new free app that isn't code-signed yet. Click **More info**, then **Run anyway**.
+3. Open **Skykeep** from the Start menu and sign in.
 
 On Windows, iCloud Drive and Photos open inside the app.
 
 ### Linux
 
-Run the line from the table in the folder you downloaded to.
+1. Download the file for your system from the table above.
+2. Open your **Downloads** folder, right-click an empty spot and choose **Open in Terminal**. (Or open a terminal and type `cd ~/Downloads`.)
+3. Copy the command for your system from the table, paste it into the terminal and press Enter. Type your password if it asks.
+4. Open **Skykeep** from your apps menu and sign in.
 
 <details>
-<summary><b>HEIC photos on Fedora and openSUSE</b></summary>
+<summary><b>iPhone photos (HEIC) on Fedora or openSUSE</b></summary>
 
-Fedora and openSUSE leave the HEVC decoder out of their own repositories, so iPhone HEIC photos and HEVC videos need it from [RPM Fusion](https://rpmfusion.org/Howto/Multimedia) (Fedora: `ffmpeg` in place of `ffmpeg-free`, and `libheif-freeworld`) or [Packman](https://en.opensuse.org/Additional_package_repositories#Packman) (openSUSE: `libavcodec`, `libheif1`, `libde265` and `libheif-HEIF` from Packman). Everything else works without it.
+Fedora and openSUSE don't include the decoder for Apple's photo and video format, for patent reasons. Everything else in Skykeep works without it. To see iPhone photos and videos, run these once:
+
+**Fedora** (adds [RPM Fusion](https://rpmfusion.org/Howto/Multimedia)):
+
+```sh
+sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf swap ffmpeg-free ffmpeg --allowerasing
+sudo dnf install libheif-freeworld
+```
+
+**openSUSE Tumbleweed** (adds [Packman](https://en.opensuse.org/Additional_package_repositories#Packman)):
+
+```sh
+sudo zypper ar -cfp 90 https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/ packman
+sudo zypper refresh
+sudo zypper install --allow-vendor-change --from packman libavcodec62 libheif1 libde265-0 libheif-HEIF
+```
 </details>
 
 <details>
-<summary><b>AppImage on Ubuntu 24.04 (no FUSE 2)</b></summary>
+<summary><b>The AppImage doesn't open on Ubuntu 24.04</b></summary>
 
-Ubuntu 24.04 doesn't install `libfuse2` by default, which AppImages use. Either install it, or run:
+Ubuntu 24.04 leaves out a small library AppImages usually use. Start it this way instead:
 
 ```sh
 ./Skykeep_*_amd64.AppImage --appimage-extract-and-run
 ```
+
+Or install the library once with `sudo apt install libfuse2t64`, and the AppImage opens normally.
 </details>
 
 <a id="arch-linux"></a>
