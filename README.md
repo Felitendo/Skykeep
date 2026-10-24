@@ -369,4 +369,6 @@ If Skykeep saves you a trip to the browser, a star helps other iPhone owners on 
 
 ## License
 
+Writing about Skykeep? The [press kit](press/README.md) has the fact sheet, logo and screenshots.
+
 The code is [GPL-3.0](LICENSE). The Skykeep™ name and logo are covered by a short [trademark note](TRADEMARKS.md): fork freely, under your own name. Skykeep is an independent project, not affiliated with or endorsed by Apple Inc.
