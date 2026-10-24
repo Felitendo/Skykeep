@@ -82,3 +82,18 @@ test("only checklist lines move, and only within their own run", () => {
   assert.equal(checklistMove(doc, 0, true), null, "alone in its run, it stays");
   assert.deepEqual(checklistMove(doc, 2, true), { from: 2, to: 3, before: 4 });
 });
+
+test("the empty line after a checklist's closing newline is plain, not one more item", () => {
+  // As a phone stores it: every checklist line, the last one too, ends with its own newline.
+  const text = "Saturday\nFarmers market before 10\nCall Alex about the cabin\n";
+  const runs = [r(9, { style: STYLE.title }), r(25, { style: STYLE.checklist, checked: false }), r(26, { style: STYLE.checklist, checked: false })];
+  const doc = toDoc(text, runs);
+  const last = doc.child(doc.childCount - 1);
+  assert.equal(last.textContent, "");
+  assert.equal(last.attrs.style, null, "no empty checklist item under the last one");
+  assert.equal(doc.child(doc.childCount - 2).attrs.style, STYLE.checklist);
+  const back = fromDoc(doc);
+  assert.equal(back.text, text);
+  // The two checklist lines come back as one run, as Apple's identical runs merge.
+  assert.deepEqual(back.runs, [r(9, { style: STYLE.title }), r(51, { style: STYLE.checklist, checked: false })]);
+});

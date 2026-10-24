@@ -225,7 +225,9 @@ await page.keyboard.press("Enter");
 await page.keyboard.press("Enter");
 await page.keyboard.press("ArrowUp");
 await page.keyboard.type("Summit plan", { delay: 15 });
-await page.waitForTimeout(1400);
+// Until the save has landed in the library, however busy the machine: a fixed wait failed under load.
+await page.waitForFunction(() => window.__fx.find((n) => n.guid === "nA")?.title === "Summit plan", null, { timeout: 8000 }).catch(() => {});
+await page.waitForTimeout(200);
 const aTitle = await row("nA").locator(".note-row-name").innerText();
 const aStored = await page.evaluate(() => window.__fx.find((n) => n.guid === "nA").title);
 ok(aTitle === "Summit plan" && aTitle === aStored, `a new first line is the title, as the library keeps it  (row ${JSON.stringify(aTitle)}, library ${JSON.stringify(aStored)})`);

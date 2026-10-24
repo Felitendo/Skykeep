@@ -180,7 +180,11 @@ export function toDoc(text: string, runs: Run[] | null): PMNode {
     const nl = text.indexOf("\n", start);
     const end = nl < 0 ? text.length : nl;
     // A paragraph is set by the run its newline is in — or, for the last line, its last unit.
-    const own = fits ? (units[nl < 0 ? Math.max(end - 1, start) : nl] ?? units[units.length - 1]) : null;
+    // The empty line after a note's closing newline has no run of its own: it is plain text, as
+    // Notes shows it. Taking the newline's run before it drew an empty checklist item (or bullet)
+    // under the last one, which the phone never shows.
+    const trailing = nl < 0 && start === text.length && start > 0;
+    const own = fits && !trailing ? (units[nl < 0 ? Math.max(end - 1, start) : nl] ?? units[units.length - 1]) : null;
     const inline: PMNode[] = [];
     let i = start;
     while (i < end) {
