@@ -63,19 +63,19 @@
   <screenshots>
     <screenshot type="default">
       <caption>Notes, in their folders</caption>
-      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/notes-light.png</image>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/press/screenshots/png/notes-light.png</image>
     </screenshot>
     <screenshot>
       <caption>Reminders, in their lists</caption>
-      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/reminders-light.png</image>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/press/screenshots/png/reminders-light.png</image>
     </screenshot>
     <screenshot>
       <caption>Calendar</caption>
-      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/calendar-light.png</image>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/press/screenshots/png/calendar-light.png</image>
     </screenshot>
     <screenshot>
       <caption>The photo library</caption>
-      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/photos-light.png</image>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/press/screenshots/png/photos-light.png</image>
     </screenshot>
   </screenshots>
 
@@ -99,12 +99,22 @@
   </recommends>
 
   <releases>
-    <release version="0.1.0" date="2026-09-14">
+    <!-- RELEASE DAY: set date to the day v0.1.0 is published (YYYY-MM-DD). 2099-01-01 is a
+         placeholder; a word there would fail `appstreamcli validate`. -->
+    <release version="0.1.0" date="2099-01-01">
       <description>
         <p>
-          Calendar, Reminders, Notes, Contacts and iCloud Drive, all readable and writable,
-          kept in step with your other devices.
+          The first release of Skykeep: iCloud Notes, Reminders, Calendar, Contacts, iCloud
+          Drive and Photos as six desktop apps with one sign-in, kept on your computer and in
+          sync with your iPhone.
         </p>
+        <ul>
+          <li>Notes and Reminders changes from your iPhone usually arrive in about a second</li>
+          <li>Everything opens instantly and works offline, and your edits sync when you reconnect</li>
+          <li>A note edited here and on your phone at the same time is merged, not overwritten</li>
+          <li>Search across every app, quick capture, and reminder alerts with Complete and Snooze</li>
+          <li>Export Everything to Markdown, iCalendar, vCard and your original files</li>
+        </ul>
       </description>
     </release>
   </releases>

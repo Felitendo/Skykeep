@@ -113,7 +113,8 @@ flatpak run --command=flatpak-builder-lint org.flatpak.Builder repo repo
 ## Before Flathub
 
 - Point the git source at the public repository at a release tag and commit.
-- `<screenshots>` point at `docs/media/*-light.png` on `raw.githubusercontent.com/…/main`. They
-  only resolve once those files are committed **and** the repository is public. Flathub's
+- Set the v0.1.0 `<release date>` in both metainfo files (it's a 2099-01-01 placeholder).
+- `<screenshots>` point at the press kit's `press/screenshots/png/*-light.png` on
+  `raw.githubusercontent.com/…/main`. They resolve once the repository is public. Flathub's
   linter also asks for `<branding>` colours, which haven't been added yet.
 - Confirm HEIC decodes and the keyring session survives a restart inside the sandbox.
