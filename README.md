@@ -101,19 +101,19 @@ Skykeep brings your iCloud onto the computer itself. Your notes, reminders, cale
 
 ### iCloud Notes
 
-Headings, styles, lists and checklists. Pictures, scans, PDFs and tables shown in place. Folders, pinned notes, search and Recently Deleted. If you edit a note here while it changes on your phone, the two are merged, not overwritten.
+Headings, styles, lists and checklists. Add pictures and files, edit the text in tables, and see #tags, scans, PDFs and drawings in place. Folders, pinned notes, search and Recently Deleted. If you edit a note here while it changes on your phone, the two are merged, not overwritten.
 
 ### Apple Reminders
 
-Lists with colours and icons, plus Today, Scheduled, Flagged and your smart lists. Subtasks, due dates, repeats, flags and priorities. Desktop alerts with **Complete** and **Snooze**.
+Lists with colours, icons and sections, plus Today, Scheduled, Flagged and your smart lists. Subtasks, due dates, repeats, flags, priorities, tags, links and early alerts. Type "Call Alex tomorrow at 5" and it's set for you. Desktop alerts with **Complete** and **Snooze**.
 
 ### iCloud Calendar
 
-Day, Week, Month and Year. Drag to create, move and resize. Repeating events, alerts, time zones, birthdays and holidays. Subscribe to any `webcal://` calendar and open `.ics` files.
+Day, Week, Month and Year. Drag to create, move and resize. Repeating events, alerts, time zones, birthdays and holidays. A **Join** button for video calls, the guest list, and your reminders on the schedule. Subscribe to any `webcal://` calendar and open `.ics` files.
 
 ### iCloud Contacts
 
-Every field, with Apple's labels. Lists, My Card, and finding and merging duplicates. Import vCard or a Google or Outlook CSV, and export vCard.
+Nearly every field, with Apple's labels, and contact photos. Lists, My Card, and finding and merging duplicates. Import vCard or a Google or Outlook CSV, and export vCard.
 
 ### iCloud Drive
 
@@ -131,6 +131,7 @@ Your library by month, albums and shared albums, Favourites and Videos. Live Pho
 - On Windows, each app has its own Start-menu entry and taskbar button, plus a jump list.
 - Light and dark.
 - **Export Everything** to Markdown, iCalendar, vCard and your original files.
+- Updates itself on Windows and as an AppImage.
 
 ## Install
 
@@ -287,7 +288,7 @@ Notes, Reminders, Drive and Photos open only to a full sign-in with two-factor, 
 <details>
 <summary><b>Is this allowed by Apple's terms?</b></summary>
 
-Skykeep signs in the way icloud.com does, with Apple's own two-factor, and syncs your own data while you use it. Unofficial iCloud clients such as icloudpd and rclone's iCloud backend have existed for years. We can't speak for how Apple reads its terms. It's your account, and the code is open, so you can see exactly what it does.
+Skykeep signs in the way icloud.com does, with Apple's own two-factor, and syncs your own data while you use it. Unofficial iCloud clients such as icloudpd and rclone's iCloud backend have existed for years. I can't speak for how Apple reads its terms. It's your account, and the code is open, so you can see exactly what it does.
 </details>
 
 <details>
@@ -334,33 +335,37 @@ Any time. **Settings → Export Everything** saves your notes as Markdown, event
 
 ## Roadmap
 
+What I'd like to add next:
+
 - iCloud Drive and Photos as folders on Windows
-- Adding attachments to notes, and editing tables
-- Editing reminder tags, links, early alerts and sections
-- An accessibility pass
+- Adding and removing rows and columns in note tables
+- Creating #tags in Notes
+- Replying to calendar invitations, and shared calendars and notes
 - Skykeep on the AUR, Flathub and winget
 - A code-signed Windows installer
 
-Ideas and requests are welcome in [Discussions](https://github.com/YashwanthKamireddi/Skykeep/discussions).
+Got an idea or something you miss? Tell me in [Discussions](https://github.com/YashwanthKamireddi/Skykeep/discussions). I read everything.
 
 ## Contributing
 
-Bug reports, packaging recipes, design ideas and code are all welcome. [CONTRIBUTING.md](.github/CONTRIBUTING.md) has the setup, a code map and the checks. Run `./check.sh` before a pull request.
+Skykeep is made by one person, me, [Yashwanth](https://github.com/YashwanthKamireddi). I use an iPhone and a Linux desktop every day, and I wanted my notes, reminders and photos on both without a browser tab. If you'd like to help, you're very welcome: a bug report, a packaging recipe for your distro, a design idea or code all make a real difference.
+
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) has the setup, a map of the code and the checks. Run `./check.sh` before you open a pull request.
 
 ```sh
 git clone https://github.com/YashwanthKamireddi/Skykeep.git
 cd Skykeep && npm ci && ./run.sh
 ```
 
-Good places to start are the [good first issues](https://github.com/YashwanthKamireddi/Skykeep/labels/good%20first%20issue). Found a security issue? Please report it privately, as [SECURITY.md](SECURITY.md) describes.
+New here? The [good first issues](https://github.com/YashwanthKamireddi/Skykeep/labels/good%20first%20issue) are small and friendly, and I'm happy to help you through your first one. Found a security problem? Please tell me privately, as [SECURITY.md](SECURITY.md) explains.
 
 <!-- Support: enable once GitHub Sponsors is approved (see .github/FUNDING.yml).
 ## Support Skykeep
 
-Skykeep is made by one independent developer. If it saves you time, you can [sponsor its development](https://github.com/sponsors/YashwanthKamireddi).
+I build Skykeep in my own time. If it saves you time, you can [sponsor it](https://github.com/sponsors/YashwanthKamireddi), which keeps it going.
 -->
 
-If Skykeep saves you a trip to the browser, a star helps other iPhone owners on Linux and Windows find it.
+If Skykeep saves you a trip to the browser, a star helps other iPhone owners on Linux and Windows find it. Thank you.
 
 ## License
 
