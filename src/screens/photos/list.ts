@@ -148,6 +148,21 @@ export class PhotoStore {
     return Promise.all(pages).then(() => {});
   }
 
+  /**
+   * These photos here before what shows them is drawn: the ones a sync brought into the view
+   * being looked at. Drawn before they were here, their month showed its placeholder where its
+   * photos had been, and every tile in it was made again when they came.
+   */
+  take(ids: string[]): Promise<void> {
+    const wanted = ids.filter((id) => !this.photos.has(id));
+    if (wanted.length === 0) return Promise.resolve();
+    const pages: Promise<void>[] = [];
+    for (let i = 0; i < wanted.length; i += PAGE) {
+      pages.push(api.photosGet(wanted.slice(i, i + PAGE)).then((read) => this.put(read), () => {}));
+    }
+    return Promise.all(pages).then(() => {});
+  }
+
   /** Photos by id, fetched where they are not here: for an action on a selection. */
   async load(ids: string[]): Promise<Photo[]> {
     const missing = ids.filter((id) => !this.photos.has(id));
@@ -188,6 +203,8 @@ export class PhotoList {
   readonly first: number | null;
   readonly last: number | null;
   private places: Map<string, number> | null = null;
+  /** Only the first page of the view, painted before its index came (see `of`). */
+  partial = false;
 
   constructor(index: PhotoIndex, readonly store: PhotoStore) {
     this.ids = index.ids;
@@ -201,7 +218,7 @@ export class PhotoList {
   static of(photos: Photo[], store: PhotoStore, keyOf: (p: Photo) => number): PhotoList {
     store.put(photos);
     const taken = photos.map((p) => p.takenAt);
-    return new PhotoList(
+    const list = new PhotoList(
       {
         ids: photos.map((p) => p.id),
         keys: photos.map(keyOf),
@@ -211,6 +228,8 @@ export class PhotoList {
       },
       store,
     );
+    list.partial = true;
+    return list;
   }
 
   get length(): number {

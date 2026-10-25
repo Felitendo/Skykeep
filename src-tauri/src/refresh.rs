@@ -603,6 +603,17 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
     }
 }
 
+/// [`status`], saying whose rows changed: only those apps' screens read their lists again, and
+/// with none named, none does — the freshness alone is new. Sent without it, every open screen
+/// read its whole list again (Photos its whole index) for a calendar feed fetched, a
+/// subscription loaded or a pass already told as it landed.
+pub async fn status_changed(data: &LibraryLock, changed: &[&'static str]) -> Refresh {
+    Refresh {
+        changed: Some(changed.to_vec()),
+        ..status(data).await
+    }
+}
+
 /// What the library already knows, without asking Apple anything.
 ///
 /// The window renders from this the instant it opens, so freshness is on screen before the
@@ -762,6 +773,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A freshness sent with the services it changed names exactly those, and one that
+    /// changed nothing names none — never "unknown", which has every screen read again.
+    #[tokio::test]
+    async fn a_status_sent_names_whose_rows_changed() {
+        let data = LibraryLock::new(quince_core::Library::in_memory().unwrap(), None);
+        let told = status_changed(&data, &["calendar"]).await;
+        assert_eq!(told.changed, Some(vec!["calendar"]));
+        let json = serde_json::to_value(&told).unwrap();
+        assert_eq!(json["changed"], serde_json::json!(["calendar"]));
+        let quiet = status_changed(&data, &[]).await;
+        assert_eq!(quiet.changed, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(&quiet).unwrap()["changed"],
+            serde_json::json!([])
+        );
+        assert_eq!(quiet.services.len(), status(&data).await.services.len());
+    }
 
     #[test]
     fn the_default_window_reaches_back_a_month_and_forward_a_quarter() {

@@ -34,6 +34,8 @@ import { REFUSED_LINK, outsideHref } from "../lib/links";
 import { DateField, dateWords } from "./contacts/DateField";
 import { PhotoSheet } from "./contacts/PhotoSheet";
 import { DuplicatesBanner, DuplicatesView } from "./contacts/Duplicates";
+import { keepSame } from "../lib/same";
+import { useArrivals } from "../lib/arrival";
 
 /** The sidebar row that is every contact rather than a list. */
 const ALL = "";
@@ -295,7 +297,8 @@ export function ContactsView() {
     const mine = ++reads.current;
     const found = await api.contactsList(query.trim() || null);
     if (mine !== reads.current) return;
-    setContacts(Array.isArray(found) ? found : []);
+    // Each card unchanged keeps its row as it was (lib/same).
+    setContacts((was) => keepSame(was, Array.isArray(found) ? found : [], (c) => c.guid));
     setLoaded(true);
   }, []);
 
@@ -721,6 +724,9 @@ export function ContactsView() {
     return { contact: c, letter, starts: i === 0 || letterOf(all[i - 1]) !== letter };
   }), [sorted]);
   const rowsRef = useRef<HTMLUListElement | null>(null);
+  // A card made on the phone, landing in the list on screen, fades in (lib/arrival).
+  const contactIds = useMemo(() => contacts.map((c) => c.guid), [contacts]);
+  useArrivals(rowsRef, contactIds, `${list}\u0000${search.trim()}`, outbox.waiting.size > 0);
   const [listFocused, setListFocused] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
   /** The row for a person brought into view and given focus, as the arrows and the index do. */

@@ -2227,8 +2227,12 @@ fn spawn_holidays(app: tauri::AppHandle) {
                         std::fs::write(&path, &text).ok();
                         *app.state::<Occasions>().feed.lock().await =
                             quince_icloud::occasions::parse_feed(&text);
-                        app.emit(SYNCED, refresh::status(&app.state::<Data>().0).await)
-                            .ok();
+                        // Holidays are the calendar's; no other screen reads them.
+                        app.emit(
+                            SYNCED,
+                            refresh::status_changed(&app.state::<Data>().0, &["calendar"]).await,
+                        )
+                        .ok();
                     }
                 }
             }
@@ -2361,8 +2365,12 @@ fn spawn_subscriptions(app: tauri::AppHandle) {
                 })
                 .collect();
         }
-        app.emit(SYNCED, refresh::status(&app.state::<Data>().0).await)
-            .ok();
+        // The subscribed calendars are the calendar's alone to read again.
+        app.emit(
+            SYNCED,
+            refresh::status_changed(&app.state::<Data>().0, &["calendar"]).await,
+        )
+        .ok();
         loop {
             let due: Vec<Subscription> = app
                 .state::<Feeds>()
@@ -2414,8 +2422,11 @@ async fn refresh_subscription(app: &tauri::AppHandle, id: &str) -> UiResult<Subs
     };
     save_subscriptions(app, &subs)?;
     drop(subs);
-    app.emit(SYNCED, refresh::status(&app.state::<Data>().0).await)
-        .ok();
+    app.emit(
+        SYNCED,
+        refresh::status_changed(&app.state::<Data>().0, &["calendar"]).await,
+    )
+    .ok();
     outcome
 }
 
@@ -6102,12 +6113,12 @@ fn main() {
                     return;
                 }
                 // A photo's picture made the size it is shown at.
-                if let Some((id, long)) = fit {
+                if let Some((id, long, marked)) = fit {
                     let response = match photos::fitted(&app, &id, long).await {
                         Ok(bytes) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", image_type(&bytes))
-                            .header("Cache-Control", "private, max-age=86400")
+                            .header("Cache-Control", photos::fit_cache(marked))
                             .body(bytes),
                         Err(_) => tauri::http::Response::builder()
                             .status(404)
