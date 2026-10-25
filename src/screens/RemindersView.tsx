@@ -45,6 +45,8 @@ import { dateText, timeText } from "../lib/when";
 import { parseReminder, understood, type QuickReminder } from "./reminderQuick.ts";
 import { useReveal } from "../lib/reveal";
 import { instantIn, wallIn, zoneName, type Wall } from "./calendar/model";
+import { keepSame, same } from "../lib/same";
+import { useArrivals } from "../lib/arrival";
 
 /** Apple's built-in views, in Apple's order, each with the glyph and system colour its app uses. */
 const SMART: { kind: SmartList; title: string; glyph: GlyphName; colour: string }[] = [
@@ -462,7 +464,15 @@ export function RemindersView() {
     const named = (Array.isArray(allTags) ? allTags : []).filter((t) => t.name);
     const custom = (Array.isArray(smart) ? smart : []).filter((x) => x.kind === "custom");
     setTags(named);
-    setTagsOf(new Map(Object.entries(extras?.tagsByReminder ?? {})));
+    // Each row's tags kept as the array it had when they are the same: a new one each read drew
+    // every row with a tag again for any change at all (lib/same).
+    setTagsOf((was) => {
+      const next = new Map(Object.entries(extras?.tagsByReminder ?? {}).map(([k, v]) => {
+        const had = was.get(k);
+        return [k, had && same(had, v) ? had : v] as const;
+      }));
+      return next.size === was.size && [...next].every(([k, v]) => was.get(k) === v) ? was : next;
+    });
     setCustomLists(custom);
     setCustomCounts(new Map(custom.map((x) => [x.guid, extras?.customCounts?.[x.guid] ?? 0])));
   };
@@ -496,6 +506,10 @@ export function RemindersView() {
   const { hold, over } = usePending<Reminder>();
   /** Changes kept here and not yet at Apple, and any Apple turned down. */
   const outbox = useOutbox("reminders");
+  // A reminder added on the phone, landing in the list on screen, fades in (lib/arrival).
+  const mainRef = useRef<HTMLElement | null>(null);
+  const itemIds = useMemo(() => items.map((r) => r.guid), [items]);
+  useArrivals(mainRef, itemIds, `${JSON.stringify(selection)}\u0000${showDone}\u0000${sought.trim()}`, outbox.waiting.size > 0 || itemIds.some((g) => g.startsWith(STAND_IN)));
   /** Each read is numbered: one overtaken by a later pick is dropped, never drawn late. */
   const reads = useRef(0);
   const readItems = useCallback(async (): Promise<Reminder[]> => {
@@ -524,7 +538,8 @@ export function RemindersView() {
     if (seq !== reads.current) return fresh;
     // The view, its reminders and its headings, together.
     setShown(sel);
-    setItems(fresh);
+    // Each reminder unchanged keeps its row as it was (lib/same).
+    setItems((was) => keepSame(was, fresh, (r) => r.guid));
     setListSections(Array.isArray(sections) ? sections : []);
     setUnknownRules(unknown);
     return fresh;
@@ -1869,7 +1884,7 @@ export function RemindersView() {
         )}
       </aside>
 
-      <section className="rx-main">
+      <section className="rx-main" ref={mainRef}>
         <button className="compact-back" onClick={() => setDetail(false)}>
           <ChevronLeft size={18} strokeWidth={2.25} aria-hidden="true" />
           <span>Lists</span>

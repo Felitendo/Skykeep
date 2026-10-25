@@ -759,9 +759,22 @@ export const FITS = [128, 256, 384, 512, 768, 1024, 1536, 2048, 2560, 3072, 3840
  * resampled with care by the app. The engine then draws it at its own size: shrunk by
  * WebKitGTK instead, a large picture came out jagged.
  */
-export function fitSrc(id: string, long: number): string {
+export function fitSrc(photo: string | Pick<Photo, "id" | "master">, long: number): string {
   const step = FITS.find((f) => f >= long) ?? FITS[FITS.length - 1];
-  return convertFileSrc(`pic/${id}/fit${step}`, "quince");
+  if (typeof photo === "string") return convertFileSrc(`pic/${photo}/fit${step}`, "quince");
+  return convertFileSrc(`pic/${photo.id}~${pictureVersion(photo.master)}/fit${step}`, "quince");
+}
+
+/**
+ * What a photo's pictures are made from, as a short mark in their address: its original (the
+ * master — every picture here is made from it, see photos.rs). Two addresses alike are the same
+ * pixels, so the engine keeps the picture for good (the scheme says so for a marked address)
+ * and never asks for it again; a photo whose original changed has a new address and is fetched.
+ */
+export function pictureVersion(master: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < master.length; i++) h = Math.imul(h ^ master.charCodeAt(i), 0x01000193) >>> 0;
+  return h.toString(36);
 }
 
 /** A shared album (Apple's sharedstreams service). */

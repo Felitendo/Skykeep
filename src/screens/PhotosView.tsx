@@ -44,6 +44,7 @@ import { AdjustDate } from "./photos/AdjustDate";
 import { useReveal } from "../lib/reveal";
 import { Picker } from "../components/Picker";
 import { PAGE, PhotoList, PhotoStore } from "./photos/list";
+import { same } from "../lib/same";
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
 const VIEWS: { key: PhotoView; label: string; Icon: LucideIcon }[] = [
@@ -183,7 +184,7 @@ function Filmstrip({ photos, at, onPick }: { photos: PhotoList; at: number; onPi
         {/* At once, never lazily: a slip coming into the strip showed empty for a moment. */}
         {/* One size for every slip, shown or not, so a step never asks for a new picture; decoded
             before it is drawn (they are small), so none appears blank first. */}
-        <img src={fitSrc(p.id, SHOWN * 2 * (window.devicePixelRatio || 1))} alt="" decoding="async" draggable={false} />
+        <img src={fitSrc(p, SHOWN * 2 * (window.devicePixelRatio || 1))} alt="" decoding="async" draggable={false} />
       </button>,
     );
   }
@@ -214,6 +215,43 @@ function Filmstrip({ photos, at, onPick }: { photos: PhotoList; at: number; onPi
  * full quality at once, never a smaller copy first.
  */
 const decoded = new Set<string>();
+/**
+ * Photos a sync has just brought into the view on screen, with when: each one's tile fades its
+ * picture in as it lands (see Tile), and nothing else moves. Only for a moment — a month built
+ * later, as the grid is scrolled to it, draws its photos as it always does.
+ */
+const arrived = new Map<string, number>();
+/** More than this many at once is a batch (an import, a first sync): they simply appear. */
+const ARRIVALS = 12;
+/** How long an arrival is one: its tile is made within a frame or two of it being drawn. */
+const ARRIVAL_MS = 1500;
+/** Whether a tile being made now is for a photo that has just arrived. */
+function justArrived(id: string): boolean {
+  const at = arrived.get(id);
+  return at !== undefined && performance.now() - at < ARRIVAL_MS;
+}
+
+/**
+ * The tile at the top of the view and where it stands, for keeping it there while photos land
+ * above it (see PhotosView). The grid's tiles are in the page in the order they are drawn, so
+ * the first one reaching below the header is found in a few steps, not by measuring them all.
+ */
+function anchorOf(el: HTMLElement | null): { id: string; top: number } | null {
+  if (!el || el.scrollTop <= 0 || !el.clientHeight) return null;
+  const tiles = el.querySelectorAll<HTMLElement>(".px-tile");
+  if (!tiles.length) return null;
+  const edge = el.getBoundingClientRect().top + (parseFloat(getComputedStyle(el).paddingTop) || 0);
+  let [lo, hi] = [0, tiles.length - 1];
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (tiles[mid].getBoundingClientRect().bottom > edge) hi = mid;
+    else lo = mid + 1;
+  }
+  const tile = tiles[lo];
+  const id = tile.dataset.id;
+  return id ? { id, top: tile.getBoundingClientRect().top } : null;
+}
+
 /** The rest on a tile before its picture is fetched (see Tile). */
 let resting: number | undefined;
 const warming = new Map<string, Promise<boolean>>();
@@ -224,7 +262,7 @@ function viewSrc(p: Photo): string {
   const box = stageBox.w ? stageBox : { w: Math.max(320, window.innerWidth - 400), h: Math.max(240, window.innerHeight - 140) };
   const r = p.width && p.height ? p.width / p.height : 4 / 3;
   const w = Math.min(box.w, box.h * r, (p.width || 4000) * 1.5);
-  return fitSrc(p.id, Math.max(w, w / r) * (window.devicePixelRatio || 1));
+  return fitSrc(p, Math.max(w, w / r) * (window.devicePixelRatio || 1));
 }
 /**
  * A small picture of a photo the window has already got and decoded — the grid's tile or the
@@ -267,7 +305,7 @@ function warm(p: Photo): Promise<boolean> {
  *  as a square (so its longer side reaches past the cell). */
 function tileSrc(p: Photo, cell: number, fit: boolean): string {
   const r = p.width && p.height ? Math.max(p.width, p.height) / Math.min(p.width, p.height) : 1;
-  return fitSrc(p.id, fit ? cell : cell * r);
+  return fitSrc(p, fit ? cell : cell * r);
 }
 
 /** What a tile can ask of the screen; one object, kept the same, so tiles need not redraw. */
@@ -306,6 +344,9 @@ const Tile = memo(function Tile({
   act: Acts;
 }) {
   const born = useRef(performance.now());
+  // Just arrived from the phone: its picture fades in once, briefly — the one thing that moves.
+  const arriving = useRef<boolean | null>(null);
+  if (arriving.current === null) arriving.current = justArrived(photo.id);
   // The thumbnail goes under the tile's picture only when that picture cannot be made, or is
   // still not here after a long moment (made from Apple, not the disk). Nearly every picture is made ahead (photos_prepare) and lands at once, and
   // the thumbnail asked for alongside it doubled each tile's requests — every one a trip through
@@ -389,6 +430,10 @@ const Tile = memo(function Tile({
           onLoad={(e) => {
             landed.current = true;
             e.currentTarget.dataset.in = performance.now() - born.current > 80 ? "fade" : "now";
+            if (arriving.current) {
+              arriving.current = false;
+              fadeIn(e.currentTarget, { duration: 120 });
+            }
           }}
           onError={under}
         />
@@ -439,7 +484,7 @@ function idsOf(items: Item[]): Set<string> {
  * month again — every one was handed the whole selection — 166 ms on a 20,000-photo library.
  */
 function sameMonth(a: MonthProps, b: MonthProps): boolean {
-  if (a.label !== b.label || a.month !== b.month || a.items !== b.items || a.list !== b.list || a.deleted !== b.deleted || a.eager !== b.eager || a.across !== b.across
+  if (a.label !== b.label || a.view !== b.view || a.month !== b.month || a.items !== b.items || a.list !== b.list || a.deleted !== b.deleted || a.eager !== b.eager || a.across !== b.across
     || a.fit !== b.fit || a.cell !== b.cell || a.act !== b.act) return false;
   if (a.chosen !== b.chosen) {
     // Only the photos whose selection changed are looked at (worked out once per change, not
@@ -489,6 +534,8 @@ type Item = { id: string; index: number };
 
 type MonthProps = {
   label: string;
+  /** The view it is drawn in (see Month's `whole`). */
+  view: string;
   month: string;
   items: Item[];
   list: PhotoList;
@@ -504,6 +551,7 @@ type MonthProps = {
 
 const Month = memo(function Month({
   label,
+  view,
   month,
   items,
   list,
@@ -517,6 +565,7 @@ const Month = memo(function Month({
   act,
 }: {
   label: string;
+  view: string;
   month: string;
   items: Item[];
   list: PhotoList;
@@ -534,7 +583,13 @@ const Month = memo(function Month({
   // rows a frame once the month comes near (see buildSoon). Built whole in one go, a month of a
   // hundred and fifty photos was one task of 50–110 ms — a frame dropped every time a fast
   // scroll reached the next month.
-  const [built, setBuilt] = useState(eager ? items.length : 0);
+  const [builtTo, setBuilt] = useState(eager ? items.length : 0);
+  // Once built whole, it stays whole as it grows: a photo arriving in it is drawn with the rest,
+  // where its last row used to go back to the placeholder. Whole for the view it was built in —
+  // another view's month of the same name builds a few rows a frame, as a new month does.
+  const whole = useRef<string | null>(null);
+  if (builtTo >= items.length) whole.current = view;
+  const built = whole.current === view ? items.length : builtTo;
   const builtNow = useRef(built);
   builtNow.current = built;
   const step = useRef(across);
@@ -552,19 +607,21 @@ const Month = memo(function Month({
     if (!watching) return "";
     const store = list.store;
     if (seen.current.version === store.version && seen.current.items === items) return seen.current.sig;
-    // How many from its start are here, and each one's change count: a photo read again or
-    // changed here (a heart) draws its tile again, and nothing else does.
+    // How many from its start are here, how many in all, and each one's change count: a photo
+    // read again or changed here (a heart) draws its tile again, and nothing else does.
     let ready = 0;
+    let here = 0;
     let turns = 0;
     for (const { id } of items) {
-      if (!store.get(id)) break;
-      ready++;
+      if (!store.get(id)) continue;
+      if (here === ready) ready++;
+      here++;
       turns += store.turns(id);
     }
-    seen.current = { version: store.version, items, sig: `${ready}:${turns}` };
+    seen.current = { version: store.version, items, sig: `${ready}:${here}:${turns}` };
     return seen.current.sig;
   });
-  const ready = watching ? Number(sig.split(":")[0] || 0) : 0;
+  const [ready, here] = watching ? sig.split(":").map((n) => Number(n || 0)) : [0, 0];
   useEffect(() => {
     if (eager && items.length) void list.need(items[0].index, items[items.length - 1].index);
   }, [eager, list, items]);
@@ -618,17 +675,24 @@ const Month = memo(function Month({
     };
   }, [list, items]); // eslint-disable-line react-hooks/exhaustive-deps
   // Built part way when the zoom changed, or its photos part way here: what shows stays on whole
-  // rows, and the rest is the block below.
-  const upTo = Math.min(built, ready);
+  // rows, and the rest is the block below. Once its grid is showing, it keeps showing: a photo
+  // not here yet (one just arrived, fetched as it is drawn) holds its cell as a plain box, and
+  // the tiles around it stay as they are. Stopping at it, the grid went back to its placeholder
+  // and every tile was made again when it came — the grey flash of a photo arriving. Only a month
+  // whose photos have all been let go (far off, see photos/list) goes back to its block.
+  const showing = useRef(false);
+  const upTo = showing.current && here > 0 ? built : Math.min(built, ready);
   const shownCount = upTo >= items.length ? items.length : Math.floor(upTo / across) * across;
   const live = shownCount > 0;
+  showing.current = live;
   return (
     <section ref={ref} className="px-month" aria-label={label || undefined} data-month={month || undefined}>
       {label && <h2 className="px-month-title">{label}</h2>}
       {live && (
         <div className="px-grid" role="listbox" aria-multiselectable="true" aria-label={label || "Photos"}>
           {(shownCount < items.length ? items.slice(0, shownCount) : items).map(({ id, index }) => {
-            const photo = list.store.get(id)!;
+            const photo = list.store.get(id);
+            if (!photo) return <div key={id} className="px-ph" aria-hidden="true" />;
             const t = deleted ? timeLeft(photo, true) : null;
             return (
               <Tile
@@ -757,6 +821,7 @@ export function PhotosView() {
   // the order only when its photos arrive, all with them — not a frame before, over the last
   // view's photos.
   const [drawn, setDrawn] = useState<{ view: PhotoView; album: PhotoAlbum | null; query: string }>({ view, album, query: "" });
+  const drawnKey = `${drawn.view}/${drawn.album?.id ?? ""}/${drawn.query}`;
   // What is typed in the search field, and — a moment after the typing stops — what is searched.
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState("");
@@ -801,6 +866,21 @@ export function PhotosView() {
   drawnNow.current = drawn;
   const photosNow = useRef(photos);
   photosNow.current = photos;
+  /** The list the last read drew: an arrival is only one over a list read whole, not one changed here. */
+  const readList = useRef<PhotoList | null>(null);
+  /** Photos changed here a moment ago, by id: one coming back from Apple is no arrival. */
+  const ownIds = useRef(new Map<string, number>());
+  const ownTouch = (ids: Iterable<string>) => {
+    const now = Date.now();
+    for (const id of ids) ownIds.current.set(id, now);
+    for (const [id, at] of ownIds.current) if (now - at > 120_000) ownIds.current.delete(id);
+  };
+  /** The files being sent from here, by name: each lands in the library as a photo of that name. */
+  const uploadsNow = useRef(uploads);
+  uploadsNow.current = uploads;
+  const ownNames = () => new Set([...uploadsNow.current.values()].filter((u) => u.state !== "failed" && u.state !== "cancelled").map((u) => u.name));
+  /** The tile at the top of the view as a read with new photos was drawn, kept there (see below). */
+  const anchorAt = useRef<{ id: string; top: number; list: PhotoList } | null>(null);
   const read = useCallback(async () => {
     if (burstOpen.current) return;
     const mine = ++reads.current;
@@ -826,18 +906,41 @@ export function PhotosView() {
     indexed = true;
     if (mine !== reads.current) return;
     const next = new PhotoList(read, store);
+    const before = photosNow.current;
+    if (again && before && !next.same(before)) {
+      // Photos new to the view being looked at (taken on the phone a moment ago) are fetched
+      // before the list with them is drawn, so each lands as its tile with its photo — drawn
+      // first, its month showed its placeholder where its photos had been until they came.
+      const fresh = next.ids.filter((id) => before.indexOf(id) < 0);
+      await store.take(fresh.slice(0, 2 * PAGE));
+      if (mine !== reads.current) return;
+      // A few arriving where the grid was already drawn from a whole read fade in, each alone;
+      // a batch, the person's own, or anything over a partial first page simply appears.
+      const own = ownNames();
+      const arriving = before === readList.current && !before.partial && fresh.length <= ARRIVALS
+        ? fresh.filter((id) => !ownIds.current.has(id) && !own.has(store.get(id)?.filename ?? ""))
+        : [];
+      const at = performance.now();
+      for (const [id, when] of arrived) if (at - when > ARRIVAL_MS) arrived.delete(id);
+      for (const id of arriving) arrived.set(id, at);
+      const keep = anchorOf(scroller.current);
+      anchorAt.current = keep && { ...keep, list: next };
+    }
     // Read again (a sync landed, a change was made): what is held is fetched again where the
     // grid is, and only a list that changed is drawn again.
     if (again) store.refresh();
     store.use(next);
-    setPhotos((before) => (next.same(before) ? before : next));
+    readList.current = before && next.same(before) ? before : next;
+    setPhotos((was) => (next.same(was) ? was : next));
     const near = again ? store.near : 0;
     void next.need(near - PAGE, near + PAGE);
     // The same view read again is the same view drawn: a new object here built every month
     // afresh and faded the grid in again at each landing.
     setDrawn((was) => (was.view === view && was.album === album && was.query === searching ? was : { view, album, query: searching }));
-    setCounts(Object.fromEntries(c));
-    setAlbums(a);
+    // The sidebar's counts and albums, drawn again only when one of them changed.
+    const counted = Object.fromEntries(c);
+    setCounts((was) => (same(was, counted) ? was : counted));
+    setAlbums((was) => (same(was, a) ? was : a));
     // An album deleted elsewhere is not left open, empty.
     if (album && !a.some(([x]) => x.id === album.id)) setAlbum(null);
   }, [view, album, searching, want?.by, want?.oldest]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -857,17 +960,18 @@ export function PhotosView() {
   // the line under the title.
   const byDay = zoom >= DAYS_FROM;
   const months = useMemo(() => {
-    const out: { label: string; month: string; items: Item[] }[] = [];
+    const out: { key: string; label: string; month: string; items: Item[] }[] = [];
     // An album keeps its own order, and Recently Deleted is in the order things were deleted:
     // grouped by the month they were taken, the same month came back again and again. Both are
     // one grid, as icloud.com shows them.
     if (!photos) return out;
-    if (drawn.album || drawn.view === "recentlyDeleted") return [{ label: "", month: "", items: photos.ids.map((id, index) => ({ id, index })) }];
+    if (drawn.album || drawn.view === "recentlyDeleted") return [{ key: "", label: "", month: "", items: photos.ids.map((id, index) => ({ id, index })) }];
     const thisYear = new Date().getFullYear();
     const rated = drawn.view === "rated" && !drawn.album;
     // Named once a month (or day), not once a photo: fifty thousand dates formatted on every
     // read was most of laying the grid out.
     const names = new Map<number, [string, string]>();
+    const seen = new Map<string, number>();
     let lastKey = NaN;
     let lastLabel = "";
     let lastMonth = "";
@@ -898,7 +1002,13 @@ export function PhotosView() {
       }
       const last = out[out.length - 1];
       if (last && last.label === label) last.items.push({ id, index });
-      else out.push({ label, month, items: [{ id, index }] });
+      else {
+        // A name seen before (search results are not in date order) is told apart by how many
+        // times it has come.
+        const times = (seen.get(label) ?? 0) + 1;
+        seen.set(label, times);
+        out.push({ key: times > 1 ? `${label}#${times}` : label, label, month, items: [{ id, index }] });
+      }
     });
     return out;
   }, [photos, drawn, byDay]);
@@ -1552,6 +1662,7 @@ export function PhotosView() {
     }
     try {
       // The whole selection in one call: the library changes at once, Apple hears it batched.
+      ownTouch(list);
       await api.photosSetFlag(list, flag, on);
       read().catch(() => {});
     } catch (e) {
@@ -1573,6 +1684,7 @@ export function PhotosView() {
     try {
       const made = await api.photosAlbumCreate(name, parent ?? undefined, folder);
       setAlbums((list) => list.map((x) => (x[0].id === temp.id ? [made, x[1]] : x)));
+      ownTouch(then);
       if (then.length) await api.photosAlbumAdd(made.id, then);
       read().catch(() => {});
     } catch (e) {
@@ -1634,6 +1746,7 @@ export function PhotosView() {
     const before = albums;
     setAlbums((list) => list.map((x) => (x[0].id === a.id ? [x[0], x[1] + ids.length] : x)));
     try {
+      ownTouch(ids);
       await api.photosAlbumAdd(a.id, ids);
       toast({ message: ids.length === 1 ? `Added to ${a.name}` : `${ids.length} added to ${a.name}`, tone: "done" });
       read().catch(() => {});
@@ -2178,6 +2291,7 @@ export function PhotosView() {
   const keywords = async (p: Photo, words: string[]) => {
     store.patch([p.id], (x) => ({ ...x, keywords: words }));
     try {
+      ownTouch([p.id]);
       await api.photoSetKeywords(p.id, words);
     } catch (e) {
       store.put([p]);
@@ -2191,6 +2305,7 @@ export function PhotosView() {
     if (leaves) setPhotos((all) => all?.without(new Set([p.id])) ?? all);
     else store.patch([p.id], (x) => ({ ...x, rating }));
     try {
+      ownTouch([p.id]);
       await api.photoSetRating(p.id, rating);
       read().catch(() => {});
     } catch (e) {
@@ -2205,6 +2320,7 @@ export function PhotosView() {
     if (t === (p.title ?? "") && c === (p.caption ?? "")) return;
     store.patch([p.id], (x) => ({ ...x, title: t || null, caption: c || null }));
     try {
+      ownTouch([p.id]);
       await api.photoSetText(p.id, t, c);
     } catch (e) {
       store.put([p]);
@@ -2235,6 +2351,7 @@ export function PhotosView() {
     setAdjusting(null);
     store.patch([p.id], (x) => ({ ...x, takenAt }));
     try {
+      ownTouch([p.id]);
       await api.photoSetDate(p.id, takenAt);
       read().catch(() => {});
     } catch (e) {
@@ -2518,6 +2635,23 @@ export function PhotosView() {
     }
     if (top !== null) el.scrollTop = Math.max(0, top - k.top);
   }, [across]); // eslint-disable-line react-hooks/exhaustive-deps
+  /*
+   * Photos landing above the view leave it on the photos it showed, as a chat keeps its place
+   * when older messages load: the tile at its top is put back where it was, before the frame is
+   * painted. The engine's own anchoring is off here (photos.css says why), and WebKit has none.
+   * At the very top nothing is kept: the new photos are what is there to be seen.
+   */
+  useLayoutEffect(() => {
+    const k = anchorAt.current;
+    const el = scroller.current;
+    if (!k || k.list !== photos || !el) return;
+    anchorAt.current = null;
+    const esc = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(k.id) : k.id;
+    const tile = el.querySelector<HTMLElement>(`.px-tile[data-id="${esc}"]`);
+    if (!tile) return;
+    const by = tile.getBoundingClientRect().top - k.top;
+    if (Math.abs(by) >= 0.5) el.scrollTop += by;
+  }, [photos]);
   // A cell's width in device pixels, for the size each tile's picture is made at; in steps of
   // 32, so a window being resized does not redraw every tile on every frame.
   const [gridWidth, setGridWidth] = useState(0);
@@ -3110,8 +3244,11 @@ export function PhotosView() {
           )}
           {!waiting && months.map((m, k) => (
             <Month
-              key={`${k}/${m.label}`}
+              // By its name, never its place: a new month at the top moved every month's place,
+              // and each was made again from nothing — every tile and every picture.
+              key={m.key}
               label={m.label}
+              view={drawnKey}
               month={m.month}
               items={m.items}
               list={photos!}

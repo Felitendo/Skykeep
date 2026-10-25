@@ -64,8 +64,8 @@ fn answer(app: &AppHandle, due: &DueAlarm, due_then: Option<Option<i64>>, action
                 {
                     quiet!("an alert's reminder could not be completed: {e}");
                 }
-                // Every open screen looks again, as after any pass.
-                let report = crate::refresh::status(&data.0).await;
+                // Reminders looks again; no other screen has anything new.
+                let report = crate::refresh::status_changed(&data.0, &["reminders"]).await;
                 app.emit(crate::SYNCED, &report).ok();
             });
         }

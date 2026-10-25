@@ -31,6 +31,7 @@ import { RowMenu } from "../components/RowMenu";
 import { dateText, timeText } from "../lib/when";
 import { Clock } from "lucide-react";
 import { useReveal } from "../lib/reveal";
+import { keepSame } from "../lib/same";
 
 /** iCloud Drive's own four orders, as its "by Name" menu offers them. */
 const SORTS = [
@@ -683,7 +684,8 @@ export function DriveView() {
       // rows, their selection and their pictures exactly as they were.
       const next = Array.isArray(fresh) ? fresh : [];
       const same = sameItems(itemsRef.current, next);
-      setItems((was) => (sameItems(was, next) ? was : next));
+      // And then only the rows that changed: the others keep their objects (lib/same).
+      setItems((was) => (sameItems(was, next) ? was : keepSame(was, next, (i) => i.drivewsid)));
       // Pictures only when something in the folder changed (or they never came): a check that
       // found nothing new already has every picture it had, and asking again every ten seconds
       // redrew every row with them.

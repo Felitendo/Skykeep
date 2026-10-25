@@ -42,7 +42,7 @@ function boxOf(p: Photo) {
 /** The picture a photo is shown at: whole on this screen, in device pixels — never smaller. */
 export const screenSrc = (p: Photo) => {
   const { w, h } = boxOf(p);
-  return fitSrc(p.id, Math.max(w, h) * (window.devicePixelRatio || 1));
+  return fitSrc(p, Math.max(w, h) * (window.devicePixelRatio || 1));
 };
 
 /** Fetched and decoded ahead, by address: the next is ready before its turn. */

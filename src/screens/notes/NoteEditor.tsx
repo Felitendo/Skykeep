@@ -995,16 +995,43 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         return;
       }
       const doc = toDoc(nextText, nextRuns);
-      if (doc.eq(v.state.doc)) return;
-      const { from, to } = v.state.selection;
-      const tr = v.state.tr.replaceWith(0, v.state.doc.content.size, doc.content);
-      const size = tr.doc.content.size;
-      const near = (at: number) => tr.doc.resolve(Math.max(0, Math.min(at, size)));
-      tr.setSelection(TextSelection.between(near(from), near(to)));
+      const was = v.state.doc;
+      if (doc.eq(was)) return;
+      // What is on screen and stays still: the caret's line when it is in view, or else the
+      // first line in view — measured now, put back where it was once the change is in.
+      const keep = steady(v);
+      // Only the part that differs is replaced, and the caret is carried through the change:
+      // a line added above it on the phone leaves it on its own character. Replaced whole, the
+      // caret was put back by its count from the start, and that count was now another line;
+      // and every line was drawn again, a picture in it fetched and decoded again.
+      let tr = v.state.tr;
+      const start = was.content.findDiffStart(doc.content);
+      const end = was.content.findDiffEnd(doc.content);
+      if (start !== null && end) {
+        let { a, b } = end;
+        // The ends cross where the change repeats what is next to it ("aa" to "aaa"): it is
+        // the same change, counted on from the start.
+        const over = start - Math.min(a, b);
+        if (over > 0) {
+          a += over;
+          b += over;
+        }
+        tr.replace(start, a, doc.slice(start, b));
+      }
+      if (!tr.doc.eq(doc)) {
+        // A change the slice did not fit as it is (never seen, but never risked): the whole
+        // note, the caret kept by its place, as before.
+        const { from, to } = v.state.selection;
+        tr = v.state.tr.replaceWith(0, was.content.size, doc.content);
+        const size = tr.doc.content.size;
+        const near = (at: number) => tr.doc.resolve(Math.max(0, Math.min(at, size)));
+        tr.setSelection(TextSelection.between(near(from), near(to)));
+      }
       tr.setMeta("addToHistory", false);
       // Taken in quietly: what Apple holds is not an edit to send back.
       const next = v.state.apply(tr);
       v.updateState(next);
+      if (keep) keep(tr.mapping);
       tell(next);
     },
     focus: () => view.current?.focus(),
@@ -1035,6 +1062,48 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
     </>
   );
 });
+
+/**
+ * A change taken in from elsewhere leaves the view where it was: the caret's line, when the
+ * caret is in view, or else the first line in view, stays at the same height on the screen.
+ * Measured before the change; the returned function, given how positions moved, scrolls the
+ * note back by however far that line went. At the very top with no caret in view nothing is
+ * kept: lines added at the top are what is there to be seen.
+ */
+function steady(v: EditorView): ((mapping: Transaction["mapping"]) => void) | null {
+  const scroller = v.dom.closest<HTMLElement>(".note-editor");
+  if (!scroller) return null;
+  const box = scroller.getBoundingClientRect();
+  const seen = (top: number, bottom: number) => bottom > box.top && top < box.bottom;
+  let pos: number | null = null;
+  const head = v.state.selection.head;
+  if (v.hasFocus()) {
+    const c = v.coordsAtPos(head);
+    if (seen(c.top, c.bottom)) pos = head;
+  }
+  if (pos === null && scroller.scrollTop > 0) {
+    for (const line of v.dom.children) {
+      const r = line.getBoundingClientRect();
+      if (r.bottom <= box.top) continue;
+      try {
+        pos = v.posAtDOM(line, 0);
+      } catch {
+        pos = null;
+      }
+      break;
+    }
+  }
+  if (pos === null) return null;
+  const at = pos;
+  const top = v.coordsAtPos(at).top;
+  return (mapping) => {
+    // Carried past anything put in just where it stood: the line it was on, not the new one.
+    const moved = mapping.map(at, 1);
+    if (moved < 0 || moved > v.state.doc.content.size) return;
+    const by = v.coordsAtPos(moved).top - top;
+    if (Math.abs(by) >= 0.5) scroller.scrollTop += by;
+  };
+}
 
 const toggleChecklistCmd: Command = (state, dispatch) => {
   const all = linesIn(state).every(({ node }) => node.attrs.style === STYLE.checklist);

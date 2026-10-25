@@ -177,11 +177,26 @@ pub fn requested(path: &str) -> Option<(String, Size)> {
 pub const FITS: [u32; 11] = [128, 256, 384, 512, 768, 1024, 1536, 2048, 2560, 3072, 3840];
 
 /// A `quince://` request for a picture made the size it is shown at: `pic/<asset id>/fit<N>`,
-/// N one of [`FITS`].
-pub fn requested_fit(path: &str) -> Option<(String, u32)> {
+/// N one of [`FITS`] — or `pic/<asset id>~<mark>/fit<N>`, the mark saying what the picture is
+/// made from (the window's `pictureVersion`, of the photo's original). Whether it was marked
+/// comes back too: a marked address is the same pixels for good, so it may be kept for good.
+pub fn requested_fit(path: &str) -> Option<(String, u32, bool)> {
     let path = crate::percent_decode(path.trim_start_matches('/'));
     let (id, size) = path.strip_prefix("pic/")?.rsplit_once('/')?;
     let long: u32 = size.strip_prefix("fit")?.parse().ok()?;
+    let (id, marked) = match id.split_once('~') {
+        Some((id, mark))
+            if !mark.is_empty()
+                && mark.len() <= 16
+                && mark
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()) =>
+        {
+            (id, true)
+        }
+        Some(_) => return None,
+        None => (id, false),
+    };
     if !FITS.contains(&long)
         || id.is_empty()
         || !id
@@ -190,7 +205,17 @@ pub fn requested_fit(path: &str) -> Option<(String, u32)> {
     {
         return None;
     }
-    Some((id.to_string(), long))
+    Some((id.to_string(), long, marked))
+}
+
+/// How long the engine may keep a fitted picture: for good when its address is marked with
+/// what it is made from (it cannot change without the address changing), a day when not.
+pub fn fit_cache(marked: bool) -> &'static str {
+    if marked {
+        "private, max-age=31536000, immutable"
+    } else {
+        "private, max-age=86400"
+    }
 }
 
 /// Pictures being made at once: one per core, so a grid filling in never starves the window.
@@ -2761,8 +2786,12 @@ async fn refresh_photos(app: &AppHandle) {
     let auth = app.state::<Auth>();
     let data = app.state::<Data>();
     crate::refresh::some(&auth.client, &data.0, &["photos"]).await;
-    app.emit(crate::SYNCED, crate::refresh::status(&data.0).await)
-        .ok();
+    // What it stored was told as it landed (refresh::on_landed); this brings the freshness.
+    app.emit(
+        crate::SYNCED,
+        crate::refresh::status_changed(&data.0, &[]).await,
+    )
+    .ok();
 }
 
 #[cfg(test)]
@@ -2904,14 +2933,40 @@ mod tests {
     fn a_fitted_picture_is_asked_for_by_its_step_only() {
         assert_eq!(
             requested_fit("/pic/A1-b/fit1024"),
-            Some(("A1-b".into(), 1024))
+            Some(("A1-b".into(), 1024, false))
         );
-        assert_eq!(requested_fit("pic%2FA1%2Ffit256"), Some(("A1".into(), 256)));
+        assert_eq!(
+            requested_fit("pic%2FA1%2Ffit256"),
+            Some(("A1".into(), 256, false))
+        );
         // Not a step (the cache would grow without end), not a picture, not a path.
         assert_eq!(requested_fit("/pic/A1/fit1000"), None);
         assert_eq!(requested_fit("/pic/A1/full"), None);
         assert_eq!(requested_fit("/pic/../x/fit256"), None);
         assert_eq!(requested_fit("/pic/A1/fitx"), None);
+    }
+
+    /// A picture's address marked with what it is made from is the same photo's picture, and
+    /// may be kept for good; the unmarked one still works, kept for a day as before. A mark is
+    /// a few letters and digits, never a way out of the cache.
+    #[test]
+    fn a_marked_picture_is_the_same_photo_kept_for_good() {
+        assert_eq!(
+            requested_fit("pic%2FA1-b~1x9z%2Ffit256"),
+            Some(("A1-b".into(), 256, true))
+        );
+        assert_eq!(
+            requested_fit("/pic/A1~k3/fit1024"),
+            Some(("A1".into(), 1024, true))
+        );
+        assert_eq!(requested_fit("/pic/A1~/fit256"), None);
+        assert_eq!(requested_fit("/pic/A1~X/fit256"), None);
+        assert_eq!(requested_fit("/pic/A1~a~b/fit256"), None);
+        assert_eq!(requested_fit("/pic/~ab/fit256"), None);
+        assert_eq!(requested_fit("/pic/..~ab/fit256"), None);
+        assert_eq!(requested_fit("/pic/A1~0123456789abcdefg/fit256"), None);
+        assert!(fit_cache(true).contains("immutable"));
+        assert!(!fit_cache(false).contains("immutable"));
     }
 
     #[test]

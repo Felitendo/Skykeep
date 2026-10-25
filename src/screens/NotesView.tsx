@@ -29,6 +29,8 @@ import { Arriving } from "../components/EmptyState";
 import { useArriving, useRevision, useShownRevision } from "../lib/sync";
 import { Picker } from "../components/Picker";
 import { holdTyping } from "../lib/updates";
+import { keepSame } from "../lib/same";
+import { useArrivals } from "../lib/arrival";
 
 const ALL = "__all__";
 
@@ -265,7 +267,8 @@ export function NotesView() {
     ]);
     if (mine !== reads.current) return;
     setFolders(Array.isArray(found) ? found : []);
-    setNotes(over(Array.isArray(list) ? list : []));
+    // Each note unchanged keeps its row as it was (lib/same).
+    setNotes((was) => keepSame(was, over(Array.isArray(list) ? list : []), (n) => n.guid));
     setLoaded(true);
   }, [folder, query, searching, scoped, over]);
 
@@ -657,6 +660,10 @@ export function NotesView() {
     folderGuid: string | null;
     body: string;
   } | null>(null);
+  // A note written on the phone, landing in the list on screen, fades in (lib/arrival) — not
+  // one written here, which is being composed until it lands.
+  const noteIds = useMemo(() => notes.map((n) => n.guid), [notes]);
+  useArrivals(rowsRef, noteIds, `${folder}\u0000${searching ? query : ""}\u0000${scoped}\u0000${listOrder.by}`, outbox.waiting.size > 0 || composing !== null);
   const setComposing = useCallback(
     (
       next:
