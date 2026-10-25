@@ -796,7 +796,7 @@ async fn new_link(
     photo: &Photo,
     size: Size,
 ) -> Result<String, String> {
-    let links = quince_icloud::photos::links(http, root, params, &photo.master)
+    let links = quince_icloud::photos::links(http, root, params, &photo.master, &photo.id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or("Apple no longer has that photo.")?;
