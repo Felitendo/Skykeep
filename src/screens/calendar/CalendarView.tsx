@@ -591,7 +591,10 @@ export function CalendarView() {
     const [found, cals, reminders, lists, feeds] = await Promise.all([
       api.calendarEvents(range.from, range.to),
       api.calendarList(),
-      api.remindersDueBetween(range.from, range.to),
+      // A day either side: an all-day reminder is kept as its day's midnight in UTC, which west
+      // of Greenwich is the evening before the view's first local midnight — and was left out.
+      // Each is placed by its own day below, so one outside the view is simply not drawn.
+      api.remindersDueBetween(range.from - 86_400, range.to + 86_400),
       api.reminderLists().catch(() => []),
       calendarFeedsApi.list().catch(() => [] as CalendarSubscription[]),
     ]);
@@ -2157,11 +2160,12 @@ const MonthView = memo(function MonthView({
                               className={`cx-item is-reminder${item.reminder.completedAt ? " is-done" : ""}`}
                               style={listColour(item.reminder)}
                               {...showReminder(item.reminder)}
-                              title={dots ? `${item.reminder.title} · ${clock(item.at)}` : item.reminder.title}
+                              title={dots && !item.reminder.allDay ? `${item.reminder.title} · ${clock(item.at)}` : item.reminder.title}
                             >
                               <Ring reminder={item.reminder} quiet />
                               <span className="cx-item-title">{item.reminder.title}</span>
-                              <span className="cx-item-time">{clock(item.at)}</span>
+                              {/* A day's reminder has no time: "12 AM" beside it said it had one. */}
+                              {!item.reminder.allDay && <span className="cx-item-time">{clock(item.at)}</span>}
                             </span>
                           </li>
                         )
@@ -2977,7 +2981,9 @@ function ReminderCard({ reminder, at, list, onClose }: {
   const due = reminder.dueAt === null ? null : dateOf(reminder.dueAt);
   const when = due
     ? reminder.allDay
-      ? dateText(due, { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })
+      // Its day as read in (`onItsDay`): already this clock's midnight. Read again in UTC, it
+      // named the day before east of Greenwich.
+      ? dateText(due, { weekday: "long", day: "numeric", month: "long", year: "numeric" })
       : `${dateText(due, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}, ${timeText(due, { hour: "numeric", minute: "2-digit" })}`
     : null;
   return (
@@ -3447,7 +3453,7 @@ const DayPane = memo(function DayPane({
               <div className="cx-pane-reminder" style={listColour(r)} {...showReminder(r)}>
                 <Ring reminder={r} quiet />
                 <span className="cx-pane-title">{r.title}</span>
-                <span className="cx-pane-when">{clock(r.dueAt ?? 0)}</span>
+                <span className="cx-pane-when">{r.allDay ? "all-day" : clock(r.dueAt ?? 0)}</span>
               </div>
             </li>
           ))}
