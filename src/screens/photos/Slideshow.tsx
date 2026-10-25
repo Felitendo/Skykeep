@@ -309,7 +309,13 @@ export function Slideshow({
       else if (e.key === " ") toggle();
       else if (e.key === "ArrowRight") void go(1);
       else if (e.key === "ArrowLeft") void go(-1);
-      else return;
+      else {
+        // Every other key stops here too: the viewer and the grid behind took F, H and Delete
+        // as their own and changed the photo under the show, unseen. Its default still
+        // happens — Tab still moves along the show's own controls.
+        e.stopPropagation();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
     };
@@ -317,6 +323,14 @@ export function Slideshow({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [go, toggle, onClose]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A film playing in the viewer behind stops as the show begins: it went on, heard and
+  // unseen, under the show.
+  useEffect(() => {
+    document.querySelectorAll<HTMLVideoElement>("video").forEach((v) => {
+      if (!v.closest(".px-show")) v.pause();
+    });
+  }, []);
 
   // The controls show when the pointer moves and go once it rests.
   const idle = useRef<number | undefined>(undefined);

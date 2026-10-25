@@ -141,6 +141,8 @@ export function VideoPlayer({
     const key = (e: KeyboardEvent) => {
       if (!live.current) return;
       if (e.key !== " " || (e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable]")) return;
+      // A slideshow over the viewer has Space for itself (Slideshow.tsx).
+      if (document.querySelector(".px-show")) return;
       e.preventDefault();
       e.stopPropagation();
       toggle();
