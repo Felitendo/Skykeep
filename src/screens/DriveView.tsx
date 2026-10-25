@@ -510,7 +510,18 @@ export function DriveView() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
-  const [busyGuid, setBusyGuid] = useState<string | null>(null);
+  // Every item with something under way — two downloads at once each keep their spinner: one
+  // value, the second took the first's, and the first one ending cleared the second's.
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const markBusy = useCallback((id: string, on: boolean) => {
+    setBusyIds((was) => {
+      if (was.has(id) === on) return was;
+      const next = new Set(was);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   /** A file just saved to Downloads, and where — shown for a moment, then cleared. */
   const [renaming, setRenaming] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -731,16 +742,16 @@ export function DriveView() {
   }, [due, refresh]);
 
   const download = useCallback(async (item: DriveItem) => {
-    setBusyGuid(item.drivewsid);
+    markBusy(item.drivewsid, true);
     setError(null);
     try {
       toastSaved(await api.driveDownload(item.drivewsid));
     } catch (e) {
       setError(messageOf(e));
     } finally {
-      setBusyGuid(null);
+      markBusy(item.drivewsid, false);
     }
-  }, []);
+  }, [markBusy]);
 
 
   const rename = useCallback(
@@ -753,7 +764,7 @@ export function DriveView() {
         setError(problem);
         return;
       }
-      setBusyGuid(item.drivewsid);
+      markBusy(item.drivewsid, true);
       setError(null);
       // The new name shows the moment Return is pressed; Apple's answer confirms or undoes it.
       const ext = item.extension ? `.${item.extension}` : "";
@@ -768,10 +779,10 @@ export function DriveView() {
         setItems((rows) => rows.map((r) => (r.drivewsid === item.drivewsid ? item : r)));
         setError(messageOf(e));
       } finally {
-        setBusyGuid(null);
+        markBusy(item.drivewsid, false);
       }
     },
-    [refresh, items]
+    [refresh, items, markBusy]
   );
 
   /**
@@ -932,7 +943,7 @@ export function DriveView() {
   itemsRef.current = items;
   const settle = (key: string) => setPending((p) => p.filter((x) => !x.key.startsWith(key)));
   const writingRef = useRef(false);
-  writingRef.current = busyGuid !== null || renaming !== null || pending.length > 0;
+  writingRef.current = busyIds.size > 0 || renaming !== null || pending.length > 0;
 
   // At most one re-read of the open folder every couple of seconds while files land.
   const landedTimer = useRef<number | null>(null);
@@ -1293,7 +1304,7 @@ export function DriveView() {
       e.preventDefault();
       setPeeking(false);
       openItem(primary);
-    } else if (k === "F2" && primary && pickedItems.length === 1 && busyGuid !== primary.drivewsid) {
+    } else if (k === "F2" && primary && pickedItems.length === 1 && !busyIds.has(primary.drivewsid)) {
       e.preventDefault();
       setPeeking(false);
       setRenaming(primary.drivewsid);
@@ -1551,7 +1562,7 @@ export function DriveView() {
           <DriveRow
             key={item.drivewsid}
             item={item}
-            busy={busyGuid === item.drivewsid}
+            busy={busyIds.has(item.drivewsid)}
             selected={picked.includes(item.drivewsid)}
             menuOpen={menu?.item.drivewsid === item.drivewsid}
             dropTarget={dropOn === item.drivewsid}
@@ -1626,7 +1637,7 @@ export function DriveView() {
         <QuickLook
           item={primary}
           thumb={thumbs[primary.drivewsid]}
-          busy={busyGuid === primary.drivewsid}
+          busy={busyIds.has(primary.drivewsid)}
           onOpen={() => { setPeeking(false); openItem(primary); }}
           onClose={() => setPeeking(false)}
         />
