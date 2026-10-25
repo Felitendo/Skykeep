@@ -1100,7 +1100,11 @@ export function PhotosView() {
   // frame, so a pan or a pinch never redraws the screen (which made it crawl). Only crossing
   // into or out of zoom is state — the cursor and the double-click's meaning change with it.
   const lensRef = useRef({ k: 1, x: 0, y: 0 });
-  const [zoomed, setZoomed] = useState(false);
+  // The photo the zoom is on: stepping to the next one draws it at its fit from its first
+  // render. As a plain flag it stayed on for that render, and the next photo's whole original
+  // was asked for (for a HEIC, downloaded and decoded) before the zoom was put back.
+  const [zoomedId, setZoomedId] = useState<string | null>(null);
+  const zoomed = zoomedId !== null && zoomedId === shown?.id;
   const pan = useRef<HTMLDivElement | null>(null);
   const frame = useRef<number | null>(null);
   // What is on the screen now, and a glide on its way to the lens.
@@ -1121,7 +1125,7 @@ export function PhotosView() {
   };
   const paint = (next: { k: number; x: number; y: number }, glide = false) => {
     lensRef.current = next;
-    setZoomed(next.k > 1);
+    setZoomedId(next.k > 1 ? (shown?.id ?? null) : null);
     if (gliding.current !== null) {
       cancelAnimationFrame(gliding.current);
       gliding.current = null;
@@ -1343,9 +1347,16 @@ export function PhotosView() {
     const next = Math.max(1, Math.min(5, k));
     paint(bound(next, dx - next * px, dy - next * py), glide);
   };
-  useEffect(() => {
-    unzoom(false);
-  }, [shown?.id]);
+  // Back to the fit as another photo comes up, before it is drawn: put back a frame later,
+  // the next photo was painted first at the last one's zoom and pan.
+  useLayoutEffect(() => {
+    if (gliding.current !== null) cancelAnimationFrame(gliding.current);
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    gliding.current = frame.current = null;
+    lensRef.current = { k: 1, x: 0, y: 0 };
+    draw(lensRef.current);
+    setZoomedId(null);
+  }, [shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // The stage, measured as it opens and as the window is resized: the picture the viewer shows
   // is made for its size (viewSrc), and asked for again only when that size crosses a step.
   const [, setStep] = useState("");
