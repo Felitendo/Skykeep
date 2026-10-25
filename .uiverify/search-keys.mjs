@@ -11,6 +11,8 @@ import { SERVICES, installStub } from "./stub.mjs";
 const BASE = process.env.BASE ?? "http://localhost:4173";
 const b = await engine.launch();
 let failures = 0;
+/** Until `fn` holds in the page (polled each frame), or 8 s; the check after it says what is there. */
+const until = (page, fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000, polling: "raf" }).then(() => true, () => false);
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 for (const scheme of ["light", "dark"]) {
   const ctx = await b.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: scheme });
@@ -35,7 +37,8 @@ for (const scheme of ["light", "dark"]) {
 
   // The keys move the selection, and it stays in view.
   await page.keyboard.type("marlowe");
-  await page.waitForTimeout(250);
+  await until(page, () => document.querySelectorAll('[role="listbox"][aria-label="Found"] [role="option"]').length >= 5
+    && /Marlowe/.test(document.querySelector('[role="listbox"][aria-label="Found"] [aria-selected="true"]')?.textContent ?? ""));
   ok((await options.count()) >= 5, `${scheme}: results at once`);
   ok(/Marlowe/.test(await selected()), `${scheme}: the first is selected`);
   ok((await panel.locator('[aria-selected="true"] mark').first().innerText()).toLowerCase() === "marlowe", `${scheme}: the typed word is marked`);
@@ -49,7 +52,7 @@ for (const scheme of ["light", "dark"]) {
 
   // Escape: Show All first, then the results, then the field.
   await panel.getByRole("option", { name: /^Show all 600 in Contacts/ }).click();
-  await page.waitForTimeout(200);
+  await until(page, () => document.querySelectorAll('[role="listbox"][aria-label="Found"] [role="option"]').length > 10);
   const drawnRows = await options.count();
   ok(drawnRows > 10 && drawnRows < 80, `${scheme}: 600 found, only those in view drawn  (${drawnRows} rows)`);
   await page.keyboard.press("Escape");
@@ -61,7 +64,7 @@ for (const scheme of ["light", "dark"]) {
 
   // An answer overtaken is never drawn; what was found stays while the next comes.
   await field.fill("curtains");
-  await page.waitForTimeout(200);
+  await until(page, () => /Curtains/.test(document.querySelector('[role="listbox"][aria-label="Found"]')?.textContent ?? ""));
   ok(/Curtains/.test(await panel.innerText()), `${scheme}: Curtains found`);
   await page.evaluate(() => { window.__searchDelay = (q) => (q === "zoya" ? 0 : q === "zoy" ? 250 : q.startsWith("z") ? 700 : 0); });
   await page.keyboard.press("Control+a");
@@ -70,9 +73,11 @@ for (const scheme of ["light", "dark"]) {
   ok(/Curtains/.test(await panel.innerText()) && (await options.count()) > 0, `${scheme}: while the next answer comes, the last stays on screen`);
   await page.keyboard.type("y");
   await page.keyboard.type("a");
-  await page.waitForTimeout(150);
+  await until(page, () => /Zoya/.test(document.querySelector('[role="listbox"][aria-label="Found"]')?.textContent ?? ""));
   ok(/Zoya/.test(await panel.innerText()), `${scheme}: the newest answer is drawn`);
-  await page.waitForTimeout(800);
+  // Every older answer landed (the stub counts those on their way), and two frames drawn after.
+  await until(page, () => window.__searchesOut === 0);
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   const after = await panel.innerText();
   ok(/Zoya/.test(after) && !/Curtains/.test(after), `${scheme}: answers to older questions arriving after it are dropped`);
   const seqs = await page.evaluate(() => window.__searches.slice(-3).map((s) => s.seq));
@@ -81,14 +86,13 @@ for (const scheme of ["light", "dark"]) {
 
   // Return opens the selected one in its own app.
   await page.keyboard.press("Enter");
-  await page.waitForTimeout(300);
+  await until(page, () => !(document.querySelector('[role="listbox"][aria-label="Found"]')?.getClientRects().length) && /Contacts/.test(document.querySelector('.nav-item[aria-current="true"]')?.textContent ?? ""));
   ok(!(await panel.isVisible()) && (await page.locator('.nav-item[aria-current="true"]').innerText()).includes("Contacts"), `${scheme}: Return opens it in Contacts`);
 
   // 600 in one section: read a page at a time to the very end, scrolled without a long frame.
   await field.fill("marlowe");
-  await page.waitForTimeout(250);
   await panel.getByRole("option", { name: /^Show all 600 in Contacts/ }).click();
-  await page.waitForTimeout(150);
+  await until(page, () => document.querySelectorAll('#gsearch-results [role="option"]').length > 10);
   const run = await page.evaluate(async () => {
     const list = document.querySelector("#gsearch-results");
     const out = [];

@@ -535,7 +535,16 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           (window.__pins ??= []).push([args?.guid, args?.pinned]);
           return null;
         }
-        case "note_create": return "Note/new";
+        case "note_create": {
+          // Kept, as the library keeps a note made here (it is listed from then on): left out,
+          // the next read of the list lost it, and the screen went back to the note before.
+          const body = args?.body ?? "";
+          const title = body.split("\n").find((l) => l.trim()) ?? "";
+          if (!noteList.some((x) => x.guid === "Note/new"))
+            noteList.unshift({ guid: "Note/new", folderGuid: args?.folderGuid ?? "f1", title, snippet: "", body,
+              locked: false, editable: true, pinned: false, createdAt: null, modifiedAt: Math.floor(Date.now() / 1000), etag: null });
+          return "Note/new";
+        }
         case "notes_in":
           // A suite's own notes (`window.__notesExtra`), their formatting in `__savedRuns`.
           for (const n of window.__notesExtra ?? []) if (!noteList.some((x) => x.guid === n.guid)) noteList.unshift({ ...n });
@@ -1038,7 +1047,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           (window.__searches ??= []).push({ query: args.query, seq: args.seq, only: args.only ?? null, skip });
           const delay = typeof window.__searchDelay === "function" ? window.__searchDelay(args.query) : window.__searchDelay ?? 0;
           const answer = { seq: args.seq ?? 0, groups };
-          return delay ? new Promise((r) => setTimeout(() => r(answer), delay)) : answer;
+          // Answers still on their way, so a suite can wait for the last of them to land.
+          if (!delay) return answer;
+          window.__searchesOut = (window.__searchesOut ?? 0) + 1;
+          return new Promise((r) => setTimeout(() => { window.__searchesOut--; r(answer); }, delay));
         }
         case "drive_kept": return window.__driveFolder?.on ? [...(window.__kept ??= [])] : null;
         case "drive_keep":

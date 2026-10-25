@@ -41,7 +41,11 @@ const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failu
 const playing = (sel) => page.evaluate((s) => [...document.querySelectorAll(s)].flatMap((e) => e.getAnimations({ subtree: true })).filter((a) => a.playState === "running").length, sel);
 
 await openScreen(page, "Contacts");
-await page.waitForTimeout(800);
+// Every face drawn: as many pictures loaded as there are faces.
+await page.waitForFunction(() => {
+  const f = [...document.querySelectorAll(".face-photo")];
+  return f.length > 0 && f.every((i) => !(i instanceof HTMLImageElement) || (i.complete && i.naturalWidth > 0));
+}, null, { timeout: 8000 }).catch(() => {});
 const faces = await page.locator(".face-photo").count();
 ok(faces > 0, `contacts show their pictures (${faces})`);
 ok((await playing(".face-photo")) === 0, "drawn without a fade");
@@ -54,15 +58,19 @@ ok((await playing(".face-photo")) === 0, "back to Contacts: no face fades in aga
 // frame — lib/fade — so it is measured as the fill's opacity rising, not as an animation).
 await openScreen(page, "Reminders");
 await page.locator(".rx-list", { hasText: "Daily" }).click();
-await page.waitForTimeout(400);
 await page.evaluate(() => { window.__doneDelay = 4000; });
 const tick = page.locator(".rx-row", { has: page.getByLabel("Rename Pick up the parcel") }).locator(".rx-tick");
+await tick.waitFor();
+// This row's own fill, each frame from the press until it is whole (or two seconds): another
+// row ticked before stays whole throughout and is not this one.
 const rising = page.evaluate(() => new Promise((done) => {
   const seen = [];
+  const t0 = performance.now();
   const sample = () => {
-    const fill = document.querySelector(".rx-row.is-settling .rx-tick-fill, .rx-tick[aria-checked='true'] .rx-tick-fill");
+    const row = [...document.querySelectorAll(".rx-row")].find((r) => r.querySelector('[aria-label="Rename Pick up the parcel"]'));
+    const fill = row?.querySelector(".rx-tick-fill");
     if (fill) seen.push(Number(getComputedStyle(fill).opacity));
-    if (seen.length < 12) requestAnimationFrame(sample); else done(seen);
+    if (performance.now() - t0 < 2000 && !(seen.some((o) => o < 0.5) && seen.at(-1) >= 0.9)) requestAnimationFrame(sample); else done(seen);
   };
   requestAnimationFrame(sample);
 }));
@@ -70,7 +78,7 @@ await tick.click();
 const seen = await rising;
 // Faded in: from faint to (nearly) whole over a few frames, never whole at once.
 const low = seen.findIndex((o) => o < 0.5);
-ok(low >= 0 && seen.slice(low).some((o) => o >= 0.9), `a tick pressed fades in  [${seen.map((o) => o.toFixed(2)).join(" ")}]`);
+ok(low >= 0 && seen.slice(low).some((o) => o > 0 && o < 0.9) && seen.slice(low).some((o) => o >= 0.9), `a tick pressed fades in  [${seen.map((o) => o.toFixed(2)).join(" ")}]`);
 await page.waitForTimeout(400);
 await openScreen(page, "Notes");
 await page.waitForTimeout(200);
