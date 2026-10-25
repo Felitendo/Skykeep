@@ -758,7 +758,8 @@ export function RemindersView() {
     if (!fresh || !wasOpen || !rollsOn(r)) return;
     const after = fresh.find((x) => x.guid === r.guid);
     if (after && after.dueAt !== null && after.dueAt !== r.dueAt) {
-      setMoved({ guid: r.guid, text: dueLabel(after.dueAt).text });
+      // A day's reminder moves to a day: said without the time it does not have.
+      setMoved({ guid: r.guid, text: dueLabel(after.dueAt, false, after.allDay).text });
     }
   };
   const flag = (r: Reminder) =>
