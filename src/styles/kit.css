@@ -593,3 +593,24 @@ span.switch::after { content: ""; }
 :where(svg.lucide[width="13"]) { width: 14px; height: 14px; }
 :where(svg.lucide[width="15"]) { width: 16px; height: 16px; }
 :where(svg.lucide[width="17"]) { width: 18px; height: 18px; }
+
+/* ---- arrival: what came in from another device (lib/fade.ts arrive, leave) ---------------- */
+
+/* A new row eases in by opacity, 2px up (arrive), a deleted one out (leave) — page-drawn, so
+   there are no classes for them here; nothing is highlighted. */
+
+/* Many things arriving at once ("Receiving 48 photos", components/ReceivingLine): one calm
+   line in place, a small spinner or a thin bar under the words — never a sheet or a toast. */
+.receiving-line {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 12ch;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--t-12);
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+.receiving-line-text { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.receiving-line .progress { height: 2px; }
