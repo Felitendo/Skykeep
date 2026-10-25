@@ -732,6 +732,16 @@ export function PhotosView() {
   /** Photos selected in the grid, as on a Mac: a click selects, a double-click opens. */
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const anchor = useRef<number | null>(null);
+  // The anchor is a place in the list, so it follows its photo when the list changes under it
+  // (the order turned round, a sync's new photos above it): left where it was, Shift-click and
+  // the arrows started from whichever photo had come to stand there.
+  const anchorList = useRef(photos);
+  if (anchorList.current !== photos) {
+    const id = anchor.current !== null ? anchorList.current?.ids[anchor.current] : undefined;
+    const at = id !== undefined && photos ? photos.indexOf(id) : -1;
+    anchor.current = at >= 0 ? at : null;
+    anchorList.current = photos;
+  }
   const [uploads, setUploads] = useState<Map<string, UploadEvent>>(new Map());
   const [dropping, setDropping] = useState(false);
   const [menu, setMenu] = useState<{ at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] } | null>(null);
