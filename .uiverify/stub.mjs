@@ -162,7 +162,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return { hasStoredSession: screen === "library", signedIn: screen === "library" };
         case "auth_resume":      return screen === "library" ? "library" : "signin";
         case "auth_sign_in":     return screen === "code" ? "needs_two_factor" : "complete";
-        case "auth_submit_code": return null;
+        case "auth_submit_code": window.__codeVia = "devices"; return null;
         case "account_services": return services;
         case "calendar_events": {
           window.__eventReads = (window.__eventReads ?? 0) + 1;
@@ -837,7 +837,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
         case "contact_delete": (window.__contactDeletes ??= []).push(args); return null;
-        case "contacts_list": return !contactsFixture ? [] : contactList.slice();
+        case "contacts_list": {
+          if (!contactsFixture) return [];
+          // Opt-in: a search answered with its matches only, as the library answers it.
+          const q = window.__contactsSearch && args?.search ? String(args.search).toLowerCase() : "";
+          return q ? contactList.filter((c) => [c.firstName, c.lastName, c.company, ...c.methods.map((m) => m.value)].join(" ").toLowerCase().includes(q)) : contactList.slice();
+        }
         // Duplicates as contacts_merge.rs finds them, on the fixture: a shared number (its
         // last ten digits), a shared email, or the same name.
         case "contacts_duplicates": {
@@ -1001,7 +1006,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;
         case "auth_send_sms":       return null;
-        case "auth_submit_sms_code": return null;
+        case "auth_submit_sms_code": window.__codeVia = `sms:${args?.phoneId}`; return null;
         case "auth_sign_out":    sessionStorage.setItem("__signedOut", JSON.stringify(args)); return null;
         case "search_everything": {
           // A search across every app, as search.rs answers it: every word has to begin a word

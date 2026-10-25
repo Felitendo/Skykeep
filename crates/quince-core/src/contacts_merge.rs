@@ -77,6 +77,31 @@ fn name_key(c: &Contact) -> Option<String> {
     (folded.chars().count() >= 2).then_some(folded)
 }
 
+/// Whether two names could be one person's: either has none, or each word of the shorter is
+/// the start of a word of the longer ("A R", "Asha R" and "Asha Rao"; never "Ravi Rao").
+fn same_person(a: &Option<String>, b: &Option<String>) -> bool {
+    let (Some(a), Some(b)) = (a, b) else {
+        return true;
+    };
+    // An initial is its letter: "Z." is the start of "Zoe".
+    let words = |n: &str| -> Vec<String> {
+        n.split(' ')
+            .map(|w| w.trim_end_matches('.').to_string())
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let (a, b) = (words(a), words(b));
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let mut used = vec![false; long.len()];
+    short.iter().all(|w| {
+        let found = long
+            .iter()
+            .enumerate()
+            .find(|(k, l)| !used[*k] && (l.starts_with(w.as_str()) || w.starts_with(l.as_str())));
+        found.map(|(k, _)| used[k] = true).is_some()
+    })
+}
+
 /// Cards that look like one person, and what they have in common.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +125,7 @@ pub fn find_duplicates(book: &[Contact]) -> Vec<Duplicates> {
         }
         i
     }
+    let names: Vec<Option<String>> = book.iter().map(name_key).collect();
     // Each key, the first card that had it and why it counts.
     let mut first: HashMap<String, usize> = HashMap::new();
     let mut shared: HashMap<String, Vec<usize>> = HashMap::new();
@@ -129,6 +155,10 @@ pub fn find_duplicates(book: &[Contact]) -> Vec<Duplicates> {
         for key in keys {
             shared.entry(key.clone()).or_default().push(i);
             match first.get(&key) {
+                // A number or an address shared by two people named differently is a home's
+                // landline or an office's switchboard, not one person: Merge All made Mom and
+                // Dad one card.
+                Some(&j) if !key.starts_with("name:") && !same_person(&names[i], &names[j]) => {}
                 Some(&j) => {
                     let (a, b) = (root(&mut parent, i), root(&mut parent, j));
                     if a != b {
@@ -218,15 +248,21 @@ fn filled(v: &Option<String>) -> bool {
 /// merging the merged card again adds nothing.
 #[must_use]
 pub fn joined_notes<'a>(notes: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
+    // Kept paragraph by paragraph, a paragraph dropped only when it is there already whole:
+    // matched as text anywhere, "peanuts" was lost beside "Allergic to peanuts".
     let mut out = String::new();
-    for n in notes.into_iter().flatten().map(str::trim) {
-        if n.is_empty() || out.contains(n) {
-            continue;
+    let mut seen: Vec<String> = Vec::new();
+    for n in notes.into_iter().flatten() {
+        for p in n.split("\n\n").map(str::trim).filter(|p| !p.is_empty()) {
+            if seen.iter().any(|s| s == p) {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(p);
+            seen.push(p.to_string());
         }
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        out.push_str(n);
     }
     (!out.is_empty()).then_some(out)
 }
@@ -324,6 +360,30 @@ mod tests {
     use super::*;
     use crate::contacts::ContactDetails;
 
+    /// A note is dropped only when it is already there whole, not when its words happen to
+    /// appear inside another card's note: "peanuts" was lost beside "Allergic to peanuts".
+    #[test]
+    fn a_note_inside_another_is_kept_and_a_merged_note_adds_nothing_again() {
+        assert_eq!(
+            joined_notes([Some("Allergic to peanuts and shellfish"), Some("peanuts")]).as_deref(),
+            Some("Allergic to peanuts and shellfish\n\npeanuts")
+        );
+        assert_eq!(
+            joined_notes([Some("Mom's friend"), Some("Mom")]).as_deref(),
+            Some("Mom's friend\n\nMom")
+        );
+        // Merged again with either card: nothing more.
+        let once = joined_notes([Some("Gate code 4410"), Some("Lives upstairs")]).unwrap();
+        assert_eq!(
+            joined_notes([Some(once.as_str()), Some("Lives upstairs")]),
+            Some(once.clone())
+        );
+        assert_eq!(
+            joined_notes([Some("Gate code 4410"), Some(once.as_str())]),
+            Some(once)
+        );
+    }
+
     fn person(guid: &str, first: &str, last: &str, methods: &[(&str, &str, &str)]) -> Card {
         Card {
             contact: Contact {
@@ -414,6 +474,24 @@ mod tests {
         let found = find_duplicates(&book);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].guids, ["A", "B", "C"]);
+    }
+
+    /// People who share a home's landline or an office's number are not one person: only a
+    /// card with no name, or one whose name could be theirs, joins them by it.
+    #[test]
+    fn people_who_share_a_landline_are_not_duplicates() {
+        let book: Vec<Contact> = [
+            person("A", "Asha", "Rao", &[("phone", "HOME", "+1 555 010 0100")]),
+            person("B", "Ravi", "Rao", &[("phone", "HOME", "555 010 0100")]),
+            person("C", "", "", &[("phone", "", "(555) 010-0100")]),
+            person("D", "Asha", "R", &[("phone", "", "555-010-0100")]),
+        ]
+        .into_iter()
+        .map(|c| c.contact)
+        .collect();
+        let found = find_duplicates(&book);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].guids, ["A", "C", "D"]);
     }
 
     #[test]

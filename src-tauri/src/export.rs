@@ -14,7 +14,7 @@ use crate::{Data, UiResult};
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use quince_core::calendar::{Calendar, Event};
-use quince_core::contacts::{Contact, PostalAddress};
+use quince_core::contacts::{Contact, ContactDetails, PostalAddress};
 use quince_core::drive::DriveItem;
 use quince_core::export::ExportPhoto;
 use quince_core::notes::{Note, NoteFolder};
@@ -76,7 +76,7 @@ pub(crate) struct Snapshot {
     notes: Vec<Note>,
     lists: Vec<ReminderList>,
     reminders: Vec<Reminder>,
-    contacts: Vec<(Contact, Vec<PostalAddress>)>,
+    contacts: Vec<(Contact, ContactDetails, Vec<PostalAddress>)>,
     calendars: Vec<Calendar>,
     events: Vec<Event>,
     drive: Vec<DriveItem>,
@@ -86,13 +86,16 @@ pub(crate) struct Snapshot {
 
 pub(crate) fn gather(lib: &Library, photos: bool) -> Result<Snapshot, String> {
     let e = |e: quince_core::Error| e.to_string();
+    // Whole cards: the details too (title, nickname, prefix…), which a backup left out.
     let contacts = lib
-        .contacts(None)
+        .cards(None)
         .map_err(e)?
         .into_iter()
-        .map(|c| {
-            let addresses = lib.contact_addresses(&c.guid).unwrap_or_default();
-            (c, addresses)
+        .map(|card| {
+            let addresses = lib
+                .contact_addresses(&card.contact.guid)
+                .unwrap_or_default();
+            (card.contact, card.details, addresses)
         })
         .collect();
     Ok(Snapshot {
@@ -563,14 +566,27 @@ fn type_param(label: Option<&str>) -> String {
     if plain.trim().is_empty() {
         return String::new();
     }
-    if plain.contains([',', ';', ':']) {
+    // Apple's labels in the types every address book reads: "Mobile" is vCard's CELL, and a fax
+    // is two types, not one with a space ("HOME FAX" was read as neither home nor fax).
+    let standard = match plain.trim().to_ascii_uppercase().as_str() {
+        "MOBILE" | "CELL" => Some("CELL"),
+        "IPHONE" => Some("CELL,IPHONE"),
+        "HOME FAX" => Some("HOME,FAX"),
+        "WORK FAX" => Some("WORK,FAX"),
+        "OTHER FAX" => Some("FAX"),
+        _ => None,
+    };
+    if let Some(types) = standard {
+        return format!(";TYPE={types}");
+    }
+    if plain.contains([',', ';', ':', ' ']) {
         format!(";TYPE=\"{plain}\"")
     } else {
         format!(";TYPE={plain}")
     }
 }
 
-fn vcard(out: &mut String, c: &Contact, addresses: &[PostalAddress]) {
+fn vcard(out: &mut String, c: &Contact, details: &ContactDetails, addresses: &[PostalAddress]) {
     let s = |v: &Option<String>| escape(v.as_deref().unwrap_or(""));
     line(out, "BEGIN:VCARD");
     line(out, "VERSION:3.0");
@@ -578,21 +594,53 @@ fn vcard(out: &mut String, c: &Contact, addresses: &[PostalAddress]) {
     line(
         out,
         &format!(
-            "N:{};{};{};;",
+            "N:{};{};{};{};{}",
             s(&c.last_name),
             s(&c.first_name),
-            s(&c.middle_name)
+            s(&c.middle_name),
+            s(&details.prefix),
+            s(&details.suffix)
         ),
     );
     line(out, &format!("FN:{}", escape(&c.display_name())));
-    if let Some(o) = c.company.as_deref().filter(|s| !s.is_empty()) {
-        line(out, &format!("ORG:{}", escape(o)));
+    let filled = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(escape)
+    };
+    if let Some(n) = filled(&details.nickname) {
+        line(out, &format!("NICKNAME:{n}"));
+    }
+    match (filled(&c.company), filled(&details.department)) {
+        (Some(o), Some(d)) => line(out, &format!("ORG:{o};{d}")),
+        (Some(o), None) => line(out, &format!("ORG:{o}")),
+        (None, Some(d)) => line(out, &format!("ORG:;{d}")),
+        (None, None) => {}
+    }
+    if let Some(t) = filled(&details.job_title) {
+        line(out, &format!("TITLE:{t}"));
+    }
+    if let Some(f) = filled(&details.phonetic_first_name) {
+        line(out, &format!("X-PHONETIC-FIRST-NAME:{f}"));
+    }
+    if let Some(l) = filled(&details.phonetic_last_name) {
+        line(out, &format!("X-PHONETIC-LAST-NAME:{l}"));
+    }
+    if let Some(o) = filled(&details.phonetic_company) {
+        line(out, &format!("X-PHONETIC-ORG:{o}"));
     }
     if c.is_company {
         line(out, "X-ABShowAs:COMPANY");
     }
     if let Some(b) = c.birthday.as_deref().filter(|s| !s.is_empty()) {
-        line(out, &format!("BDAY:{}", escape(b)));
+        // A birthday given without a year is kept by Apple in the year 1604, and goes out as
+        // Apple's own vCards say it, or every other address book reads it as 1604.
+        if b.starts_with("1604-") {
+            line(out, &format!("BDAY;X-APPLE-OMIT-YEAR=1604:{}", escape(b)));
+        } else {
+            line(out, &format!("BDAY:{}", escape(b)));
+        }
     }
     for m in &c.methods {
         let t = type_param(m.label.as_deref());
@@ -1134,9 +1182,9 @@ fn contacts(
     let base = root.join("Contacts");
     std::fs::create_dir(&base)?;
     let mut out = String::new();
-    for (i, (c, addresses)) in snap.contacts.iter().enumerate() {
+    for (i, (c, details, addresses)) in snap.contacts.iter().enumerate() {
         t.tick("contacts", i as u64, total)?;
-        vcard(&mut out, c, addresses);
+        vcard(&mut out, c, details, addresses);
     }
     write(&base.join("Contacts.vcf"), &out)?;
     summary.contacts = snap.contacts.len();
@@ -1499,6 +1547,92 @@ mod tests {
     use super::*;
     use quince_core::contacts::ContactMethod;
     use quince_icloud::ckdocument::Run;
+
+    /// Apple's phone labels go out as the types other address books read.
+    #[test]
+    fn phone_labels_are_written_as_vcard_types() {
+        assert_eq!(type_param(Some("_$!<Mobile>!$_")), ";TYPE=CELL");
+        assert_eq!(type_param(Some("HOME FAX")), ";TYPE=HOME,FAX");
+        assert_eq!(type_param(Some("iPhone")), ";TYPE=CELL,IPHONE");
+        assert_eq!(type_param(Some("home")), ";TYPE=home");
+        assert_eq!(type_param(Some("Apple Watch")), ";TYPE=\"Apple Watch\"");
+        assert_eq!(type_param(None), "");
+    }
+
+    /// A card's details go out with it: job title, department, nickname, prefix and suffix and
+    /// the phonetic names. Export Everything left them all out, so a backup of a book lost them.
+    #[test]
+    fn a_cards_details_are_exported_with_it() {
+        let c = Contact {
+            guid: "C8".into(),
+            first_name: Some("Hana".into()),
+            middle_name: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
+            last_name: Some("Mori".into()),
+            company: Some("Example Works".into()),
+            is_company: false,
+            birthday: None,
+            notes: None,
+            etag: None,
+            methods: Vec::new(),
+        };
+        let details = ContactDetails {
+            prefix: Some("Dr.".into()),
+            suffix: Some("PhD".into()),
+            nickname: Some("Hani".into()),
+            phonetic_first_name: Some("\u{306f}\u{306a}".into()),
+            phonetic_last_name: Some("\u{3082}\u{308a}".into()),
+            phonetic_company: None,
+            job_title: Some("Architect".into()),
+            department: Some("Design".into()),
+        };
+        let mut out = String::new();
+        vcard(&mut out, &c, &details, &[]);
+        for want in [
+            "N:Mori;Hana;;Dr.;PhD\r\n",
+            "NICKNAME:Hani\r\n",
+            "ORG:Example Works;Design\r\n",
+            "TITLE:Architect\r\n",
+            "X-PHONETIC-FIRST-NAME:\u{306f}\u{306a}\r\n",
+            "X-PHONETIC-LAST-NAME:\u{3082}\u{308a}\r\n",
+        ] {
+            assert!(out.contains(want), "{want:?} in {out}");
+        }
+    }
+
+    /// A birthday given without a year is stored by Apple in the year 1604; exported as it is,
+    /// every other address book showed that person as four hundred years old. It goes out as
+    /// Apple's own vCards write it, saying the year is left out.
+    #[test]
+    fn a_birthday_without_a_year_is_exported_as_one() {
+        let mut c = Contact {
+            guid: "C9".into(),
+            first_name: Some("Mira".into()),
+            middle_name: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
+            last_name: Some("Okafor".into()),
+            company: None,
+            is_company: false,
+            birthday: Some("1604-03-14".into()),
+            notes: None,
+            etag: None,
+            methods: Vec::new(),
+        };
+        let mut out = String::new();
+        vcard(&mut out, &c, &ContactDetails::default(), &[]);
+        assert!(
+            out.contains("BDAY;X-APPLE-OMIT-YEAR=1604:1604-03-14\r\n"),
+            "{out}"
+        );
+        c.birthday = Some("1990-03-14".into());
+        let mut out = String::new();
+        vcard(&mut out, &c, &ContactDetails::default(), &[]);
+        assert!(out.contains("BDAY:1990-03-14\r\n"), "{out}");
+    }
 
     /// A library on disk with a little of everything, and its data folder.
     fn library() -> (tempfile::TempDir, Library) {
@@ -1911,8 +2045,8 @@ mod tests {
         assert_eq!(one(&cards[0], "ORG"), "Acme, Inc.");
         assert_eq!(one(&cards[0], "TEL"), "+91 90000 00001");
         assert!(
-            vcf.contains("TEL;TYPE=Mobile:"),
-            "Apple's label read plainly"
+            vcf.contains("TEL;TYPE=CELL:"),
+            "Apple's Mobile label as vCard's CELL"
         );
         assert_eq!(one(&cards[0], "EMAIL"), "zoya@example.com");
         assert_eq!(one(&cards[0], "ADR"), ";;1 Long Road\nFlat 2;Pune;;;India");

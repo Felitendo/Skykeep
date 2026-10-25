@@ -29,6 +29,7 @@ import { api, contactPhotoSrc, pictureSrc, type SearchGroup, type SearchHit } fr
 import { reveal } from "../lib/reveal";
 import { AppIcon } from "./AppIcon";
 import { Portal } from "./Portal";
+import { modalOpen } from "../lib/screen";
 
 /** The height of a result: fixed, so a long list is drawn only where it is in view. */
 const ROW = 44;
@@ -204,6 +205,7 @@ export function GlobalSearch({
     const key = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
+        if (modalOpen()) return;
         summon.current();
       }
     };

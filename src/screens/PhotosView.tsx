@@ -732,6 +732,16 @@ export function PhotosView() {
   /** Photos selected in the grid, as on a Mac: a click selects, a double-click opens. */
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const anchor = useRef<number | null>(null);
+  // The anchor is a place in the list, so it follows its photo when the list changes under it
+  // (the order turned round, a sync's new photos above it): left where it was, Shift-click and
+  // the arrows started from whichever photo had come to stand there.
+  const anchorList = useRef(photos);
+  if (anchorList.current !== photos) {
+    const id = anchor.current !== null ? anchorList.current?.ids[anchor.current] : undefined;
+    const at = id !== undefined && photos ? photos.indexOf(id) : -1;
+    anchor.current = at >= 0 ? at : null;
+    anchorList.current = photos;
+  }
   const [uploads, setUploads] = useState<Map<string, UploadEvent>>(new Map());
   const [dropping, setDropping] = useState(false);
   const [menu, setMenu] = useState<{ at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] } | null>(null);
@@ -758,6 +768,11 @@ export function PhotosView() {
     setQuery("");
     setSearching("");
   };
+  // What the photos on screen are, for what can be done to them: a search finds across the
+  // whole library, so its results take the library's actions — not Recently Deleted's Delete
+  // All, Hidden's Unhide or an album's Remove, from the view it was typed over.
+  const place: PhotoView = drawn.query ? "library" : view;
+  const inAlbum = drawn.query ? null : album;
   const [sorts, setSorts] = useState(readSorts);
   const sortable = !drawn.query && !drawn.album && drawn.view !== "recentlyDeleted" && drawn.view !== "rated";
   const sort = sortable ? (sorts[drawn.view] ?? defaultSort(drawn.view)) : null;
@@ -899,7 +914,7 @@ export function PhotosView() {
   const when = shown && (
     <div className="px-viewer-when">
       <strong>{new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "long" })}</strong>
-      {view === "recentlyDeleted" && !album && timeLeft(shown, false) ? (
+      {place === "recentlyDeleted" && !inAlbum && timeLeft(shown, false) ? (
         <span className={timeLeft(shown, false)!.soon ? "is-soon" : undefined}>{timeLeft(shown, false)!.words}</span>
       ) : (
         <span>
@@ -940,6 +955,13 @@ export function PhotosView() {
         setOpen(again);
         return;
       }
+    }
+    // Gone from the end of the list (hidden, deleted or unfavourited elsewhere): the photo
+    // before it, as a delete here does — left past the end, the viewer drew nothing while the
+    // grid stayed hidden behind it.
+    if (open >= photos.length) {
+      setOpen(photos.length > 0 ? photos.length - 1 : null);
+      return;
     }
     openId.current = photos.ids[open] ?? null;
   }, [open, photos]);
@@ -1093,7 +1115,11 @@ export function PhotosView() {
   // frame, so a pan or a pinch never redraws the screen (which made it crawl). Only crossing
   // into or out of zoom is state — the cursor and the double-click's meaning change with it.
   const lensRef = useRef({ k: 1, x: 0, y: 0 });
-  const [zoomed, setZoomed] = useState(false);
+  // The photo the zoom is on: stepping to the next one draws it at its fit from its first
+  // render. As a plain flag it stayed on for that render, and the next photo's whole original
+  // was asked for (for a HEIC, downloaded and decoded) before the zoom was put back.
+  const [zoomedId, setZoomedId] = useState<string | null>(null);
+  const zoomed = zoomedId !== null && zoomedId === shown?.id;
   const pan = useRef<HTMLDivElement | null>(null);
   const frame = useRef<number | null>(null);
   // What is on the screen now, and a glide on its way to the lens.
@@ -1114,7 +1140,7 @@ export function PhotosView() {
   };
   const paint = (next: { k: number; x: number; y: number }, glide = false) => {
     lensRef.current = next;
-    setZoomed(next.k > 1);
+    setZoomedId(next.k > 1 ? (shown?.id ?? null) : null);
     if (gliding.current !== null) {
       cancelAnimationFrame(gliding.current);
       gliding.current = null;
@@ -1336,9 +1362,16 @@ export function PhotosView() {
     const next = Math.max(1, Math.min(5, k));
     paint(bound(next, dx - next * px, dy - next * py), glide);
   };
-  useEffect(() => {
-    unzoom(false);
-  }, [shown?.id]);
+  // Back to the fit as another photo comes up, before it is drawn: put back a frame later,
+  // the next photo was painted first at the last one's zoom and pan.
+  useLayoutEffect(() => {
+    if (gliding.current !== null) cancelAnimationFrame(gliding.current);
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    gliding.current = frame.current = null;
+    lensRef.current = { k: 1, x: 0, y: 0 };
+    draw(lensRef.current);
+    setZoomedId(null);
+  }, [shown?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // The stage, measured as it opens and as the window is resized: the picture the viewer shows
   // is made for its size (viewSrc), and asked for again only when that size crosses a step.
   const [, setStep] = useState("");
@@ -1436,11 +1469,11 @@ export function PhotosView() {
       else if (e.key.toLowerCase() === "i" && !e.metaKey && !e.ctrlKey) setInfo((v) => !v);
       // As in Photos: "." favorites, Delete sends it to Recently Deleted.
       // F as well as ".", and H as well as Ctrl+L, as icloud.com takes them.
-      else if ((e.key === "." || (e.key.toLowerCase() === "f" && !e.ctrlKey && !e.metaKey)) && current && view !== "recentlyDeleted") void change(current, "favorite", !current.favorite);
-      else if (((e.ctrlKey || e.metaKey) ? e.key.toLowerCase() === "l" : e.key.toLowerCase() === "h") && current && view !== "recentlyDeleted") void change(current, "hidden", view !== "hidden");
-      else if ((e.key === "Delete" || e.key === "Backspace") && current && album) void removeFrom([current.id]);
-      else if ((e.key === "Delete" || e.key === "Backspace") && current && view !== "recentlyDeleted") void change(current, "deleted", true);
-      else if ((e.key === "Delete" || e.key === "Backspace") && current && view === "recentlyDeleted" && !album) void change(current, "expunged", true);
+      else if ((e.key === "." || (e.key.toLowerCase() === "f" && !e.ctrlKey && !e.metaKey)) && current && place !== "recentlyDeleted") void change(current, "favorite", !current.favorite);
+      else if (((e.ctrlKey || e.metaKey) ? e.key.toLowerCase() === "l" : e.key.toLowerCase() === "h") && current && place !== "recentlyDeleted") void change(current, "hidden", place !== "hidden");
+      else if ((e.key === "Delete" || e.key === "Backspace") && current && inAlbum) void removeFrom([current.id]);
+      else if ((e.key === "Delete" || e.key === "Backspace") && current && place !== "recentlyDeleted") void change(current, "deleted", true);
+      else if ((e.key === "Delete" || e.key === "Backspace") && current && place === "recentlyDeleted" && !inAlbum) void change(current, "expunged", true);
       else return;
       e.preventDefault();
     };
@@ -1502,10 +1535,10 @@ export function PhotosView() {
     // Which changes take a photo out of the view it is in.
     const leaves =
       flag === "expunged" ? true
-      : album ? flag !== "favorite" && on
-      : flag === "deleted" ? (on ? view !== "recentlyDeleted" : view === "recentlyDeleted")
-      : flag === "hidden" ? (on ? view !== "hidden" : view === "hidden")
-      : !on && view === "favorites";
+      : inAlbum ? flag !== "favorite" && on
+      : flag === "deleted" ? (on ? place !== "recentlyDeleted" : place === "recentlyDeleted")
+      : flag === "hidden" ? (on ? place !== "hidden" : place === "hidden")
+      : !on && place === "favorites";
     if (leaves) setPhotos((all) => all?.without(ids) ?? all);
     else store.patch(ids, (x) => ({ ...x, [flag]: on }));
     if (leaves) {
@@ -1794,8 +1827,8 @@ export function PhotosView() {
         anchor.current = to;
         reach(to);
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected.length) {
-        if (album) void removeFrom(selected);
-        else if (view !== "recentlyDeleted") void changeAll(selected, "deleted", true);
+        if (inAlbum) void removeFrom(selected);
+        else if (place !== "recentlyDeleted") void changeAll(selected, "deleted", true);
         else void changeAll(selected, "expunged", true);
       } else if (!ctrl && (e.key === "=" || e.key === "+" || e.key === "-")) {
         // = and − size the thumbnails, as in icloud.com's grid.
@@ -1804,10 +1837,10 @@ export function PhotosView() {
         // I: the selected photo, opened with its details.
         setInfo(true);
         openAt(photos!.indexOf(selected[0]));
-      } else if ((ctrl ? e.key.toLowerCase() === "l" : e.key.toLowerCase() === "h") && selected.length && view !== "recentlyDeleted") {
+      } else if ((ctrl ? e.key.toLowerCase() === "l" : e.key.toLowerCase() === "h") && selected.length && place !== "recentlyDeleted") {
         // ⌘L in Photos: hide, or in Hidden, unhide.
-        void changeAll(selected, "hidden", view !== "hidden");
-      } else if ((e.key === "." || (!ctrl && e.key.toLowerCase() === "f")) && selected.length && view !== "recentlyDeleted") {
+        void changeAll(selected, "hidden", place !== "hidden");
+      } else if ((e.key === "." || (!ctrl && e.key.toLowerCase() === "f")) && selected.length && place !== "recentlyDeleted") {
         // As Photos: if any is not a favorite, all become favorites; else all stop being.
         void changeAll(selected, "favorite", anyPlain(selected));
       } else return;
@@ -1953,7 +1986,7 @@ export function PhotosView() {
       setMenu({
         at,
         entries:
-          view === "recentlyDeleted" && !album
+          place === "recentlyDeleted" && !inAlbum
             ? [
                 { label: `Recover ${n} Items`, run: () => void changeAll(group, "deleted", false) },
                 null,
@@ -1968,10 +2001,10 @@ export function PhotosView() {
                 { label: "Start Slideshow", run: () => startShow(p) },
                 { label: "Add to Album", submenu: albumEntries(group) },
                 null,
-                view === "hidden" && !album
+                place === "hidden" && !inAlbum
                   ? { label: `Unhide ${n} Photos`, run: () => void changeAll(group, "hidden", false) }
                   : { label: `Hide ${n} Photos`, run: () => void changeAll(group, "hidden", true) },
-                album
+                inAlbum
                   ? { label: `Remove ${n} Photos from Album`, danger: true, run: () => void removeFrom(group) }
                   : { label: `Delete ${n} Photos`, danger: true, run: () => void changeAll(group, "deleted", true) },
               ],
@@ -1979,7 +2012,7 @@ export function PhotosView() {
       return;
     }
     const entries: MenuEntry[] =
-      view === "recentlyDeleted" && !album
+      place === "recentlyDeleted" && !inAlbum
         ? [
             { label: "Recover", run: () => void change(p, "deleted", false) },
             null,
@@ -1993,10 +2026,10 @@ export function PhotosView() {
             null,
             { label: "Add to Album", submenu: albumEntries([p.id]) },
             null,
-            view === "hidden" && !album
+            place === "hidden" && !inAlbum
               ? { label: "Unhide Photo", run: () => void change(p, "hidden", false) }
               : { label: "Hide Photo", run: () => void change(p, "hidden", true) },
-            album
+            inAlbum
               ? { label: "Remove from Album", danger: true, run: () => void removeFrom([p.id]) }
               : { label: "Delete", danger: true, run: () => void change(p, "deleted", true) },
           ];
@@ -2913,7 +2946,7 @@ export function PhotosView() {
             {title}
           </PaneTitle>
           <div className="px-tools">
-          {view === "recentlyDeleted" && !album && photos && photos.length > 0 && (
+          {place === "recentlyDeleted" && !inAlbum && photos && photos.length > 0 && (
             // Recently Deleted's own toolbar, in Photos' words: Recover and Delete for what is
             // selected, Delete All when nothing is.
             <div className="toolbar-group px-words">
@@ -3169,7 +3202,7 @@ export function PhotosView() {
                 <button className="px-full-btn" aria-label="Info" aria-pressed={info} title="Info (I)" onClick={() => setInfo((v) => !v)}>
                   <Info size={17} />
                 </button>
-                {view === "recentlyDeleted" && !album ? (
+                {place === "recentlyDeleted" && !inAlbum ? (
                   <>
                     <button className="px-full-btn" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
                       <RotateCcw size={17} />
@@ -3192,7 +3225,7 @@ export function PhotosView() {
                     <button className="px-full-btn" aria-label="Download" title="Download the original" onClick={() => void download(shown)}>
                       <Download size={17} />
                     </button>
-                    {album ? (
+                    {inAlbum ? (
                       <button className="px-full-btn" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown.id])}>
                         <CopyMinus size={17} />
                       </button>
@@ -3235,7 +3268,7 @@ export function PhotosView() {
               </div>
               {when}
               <div className="toolbar-group">
-              {view === "recentlyDeleted" && !album ? (
+              {place === "recentlyDeleted" && !inAlbum ? (
                 <>
                   <button className="tool px-cap" aria-label="Recover" title="Recover" onClick={() => void change(shown, "deleted", false)}>
                     <RotateCcw size={17} />
@@ -3267,7 +3300,7 @@ export function PhotosView() {
                   >
                     <CopyPlus size={17} />
                   </button>
-                  {album ? (
+                  {inAlbum ? (
                     <button className="tool px-cap" aria-label="Remove from Album" title="Remove from Album (Delete)" onClick={() => void removeFrom([shown.id])}>
                       <CopyMinus size={17} />
                     </button>
@@ -3517,7 +3550,7 @@ export function PhotosView() {
                     placeholder="Add a Title"
                     defaultValue={shown.title ?? ""}
                     maxLength={255}
-                    readOnly={view === "recentlyDeleted"}
+                    readOnly={place === "recentlyDeleted"}
                     onKeyDown={(e) => wordKeys(e, shown.title)}
                   />
                   <textarea
@@ -3529,7 +3562,7 @@ export function PhotosView() {
                     defaultValue={shown.caption ?? ""}
                     maxLength={2000}
                     rows={1}
-                    readOnly={view === "recentlyDeleted"}
+                    readOnly={place === "recentlyDeleted"}
                     onInput={(e) => grow(e.currentTarget)}
                     onFocus={(e) => grow(e.currentTarget)}
                     onKeyDown={(e) => wordKeys(e, shown.caption)}
@@ -3541,7 +3574,7 @@ export function PhotosView() {
                     <strong>{new Date(shown.takenAt * 1000).toLocaleDateString(undefined, { dateStyle: "full" })}</strong>
                     <span>{new Date(shown.takenAt * 1000).toLocaleTimeString(undefined, { timeStyle: "short" })}</span>
                   </div>
-                  {view !== "recentlyDeleted" && (
+                  {place !== "recentlyDeleted" && (
                     <button className="px-link px-adjust" onClick={() => setAdjusting(shown)}>
                       Adjust
                     </button>
@@ -3571,7 +3604,7 @@ export function PhotosView() {
                           aria-checked={(shown.rating ?? 0) === n}
                           aria-label={`${n} ${n === 1 ? "star" : "stars"}`}
                           className={`px-star${(shown.rating ?? 0) >= n ? " is-on" : ""}`}
-                          disabled={view === "recentlyDeleted"}
+                          disabled={place === "recentlyDeleted"}
                           onClick={() => void rate(shown, (shown.rating ?? 0) === n ? 0 : n)}
                         >
                           <Star size={15} fill={(shown.rating ?? 0) >= n ? "currentColor" : "none"} strokeWidth={1.8} />
@@ -3598,7 +3631,7 @@ export function PhotosView() {
                       {(shown.keywords ?? []).map((k) => (
                         <span key={k} className="px-chip">
                           {k}
-                          {view !== "recentlyDeleted" && (
+                          {place !== "recentlyDeleted" && (
                             <button
                               aria-label={`Remove ${k}`}
                               onClick={() => void keywords(shown, (shown.keywords ?? []).filter((x) => x !== k))}
@@ -3608,7 +3641,7 @@ export function PhotosView() {
                           )}
                         </span>
                       ))}
-                      {view !== "recentlyDeleted" && (
+                      {place !== "recentlyDeleted" && (
                         <input
                           key={`k${shown.id}`}
                           className="px-keyword-field"

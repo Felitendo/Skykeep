@@ -135,7 +135,11 @@ fn children(app: &AppHandle, id: &str) -> Option<Vec<DriveItem>> {
 }
 
 fn children_in(library: &quince_core::Library, id: &str) -> Option<Vec<DriveItem>> {
-    let photos = |view: View| library.photos(view).unwrap_or_default();
+    // Oldest first, so that of two photos with the same name (an iPhone's IMG_ numbers come
+    // round again every ten thousand) the older keeps the plain name and the newer is "(2)".
+    // Newest first, each new favourite or video with a name already there renamed the older
+    // one, and backups and open paths saw a file move.
+    let photos = |view: View| oldest_first(library.photos(view).unwrap_or_default());
     Some(match id {
         ROOT => vec![
             folder(LIBRARY.into(), ROOT, "Library".into()),
@@ -198,9 +202,7 @@ fn children_in(library: &quince_core::Library, id: &str) -> Option<Vec<DriveItem
                 if is_folder {
                     albums_in(library, Some(album), id)
                 } else {
-                    library
-                        .album_photos(album)
-                        .ok()?
+                    oldest_first(library.album_photos(album).ok()?)
                         .iter()
                         .filter(|p| !p.hidden && !p.deleted)
                         .flat_map(|p| files(p, id))
@@ -209,6 +211,12 @@ fn children_in(library: &quince_core::Library, id: &str) -> Option<Vec<DriveItem
             }
         }
     })
+}
+
+/// Photos in the order their names are given out: taken first, named first.
+fn oldest_first(mut photos: Vec<Photo>) -> Vec<Photo> {
+    photos.sort_by(|a, b| a.taken_at.cmp(&b.taken_at).then_with(|| a.id.cmp(&b.id)));
+    photos
 }
 
 /// The albums (and album folders) directly inside `parent`, in Photos' own order.
@@ -399,6 +407,40 @@ impl Remote for PhotosRemote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two photos with the same name keep their names as new ones arrive: the older the plain
+    /// one, the newer "(2)" — a newer favourite of the same name used to take the plain name
+    /// and rename the older file under its owner.
+    #[test]
+    fn same_named_photos_keep_their_names_as_new_ones_arrive() {
+        let shot = |id: &str, at: i64| -> Photo {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "master": format!("M{id}"), "takenAt": at, "kind": "image",
+                "width": 4032, "height": 3024, "filename": "IMG_0001.JPG", "size": 1000,
+                "favorite": true, "hidden": false, "deleted": false, "subtype": 0
+            }))
+            .unwrap()
+        };
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        lib.put_photos(&[shot("old", 1_600_000_000)]).unwrap();
+        let names = |lib: &quince_core::Library| -> Vec<(String, String)> {
+            quince_vfs::named(&children_in(lib, FAVORITES).unwrap())
+                .into_iter()
+                .map(|(n, i)| (n, i.drivewsid))
+                .collect()
+        };
+        let before = names(&lib);
+        lib.put_photos(&[shot("new", 1_700_000_000)]).unwrap();
+        let after = names(&lib);
+        let of = |all: &[(String, String)], id: &str| {
+            all.iter()
+                .find(|(_, d)| d.ends_with(id))
+                .map(|(n, _)| n.clone())
+        };
+        assert_eq!(of(&before, "old"), Some("IMG_0001.JPG".into()));
+        assert_eq!(of(&after, "old"), Some("IMG_0001.JPG".into()), "{after:?}");
+        assert_eq!(of(&after, "new"), Some("IMG_0001 (2).JPG".into()));
+    }
 
     /// A Live Photo is two files under one name — the still and its .MOV, at the moving part's
     /// own size — and each knows which picture it is.

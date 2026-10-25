@@ -26,6 +26,16 @@ export function useActiveRef() {
  * screen's own list of rows (a list box marked `data-rows`, as Notes and Contacts draw theirs)
  * is not one, and nothing in a screen kept out of sight counts.
  */
+/** Whether a modal sheet is up (a confirmation, Keyboard Shortcuts, an import): the keys that
+ * go anywhere — Ctrl+K, Ctrl+, — wait until it is answered, rather than taking the focus out
+ * of it or changing the screen under it. */
+export function modalOpen(): boolean {
+  for (const el of document.querySelectorAll('[aria-modal="true"]')) {
+    if (!el.closest("[inert], [hidden]")) return true;
+  }
+  return false;
+}
+
 export function overlayOpen(): boolean {
   const open = document.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"], .confirm');
   for (const el of open) {

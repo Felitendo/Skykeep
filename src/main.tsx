@@ -10,13 +10,14 @@ import "./styles/calendar.css";
 import "./styles/notes.css";
 import "./styles/photos.css";
 import "./styles/a11y.css";
-import { applyTheme, followContrast, storedTheme } from "./lib/theme";
+import { applyTheme, followContrast, followTheme, storedTheme } from "./lib/theme";
 import { keepTinted } from "./lib/tint";
 import { fadeSheetsIn } from "./lib/fade";
 import { followClick } from "./lib/follow";
 
 // Before the first paint, so the window opens in the appearance chosen.
 applyTheme(storedTheme());
+followTheme();
 followContrast();
 keepTinted();
 fadeSheetsIn();

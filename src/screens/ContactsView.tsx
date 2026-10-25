@@ -90,9 +90,16 @@ const ADDABLE = [
 
 /** The whole name, as the top of a card shows it: prefix and suffix included. */
 function fullName(c: Contact): string {
+  if (c.isCompany && c.company?.trim()) return c.company.trim();
   const name = [c.prefix, c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ");
   if (!name.trim()) return displayName(c);
   return c.suffix ? `${name}, ${c.suffix}` : name;
+}
+
+/** The person's own name on a card, prefix and suffix included; empty when it has none. */
+function personName(c: Contact): string {
+  const name = [c.prefix, c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ").trim();
+  return name && c.suffix ? `${name}, ${c.suffix}` : name;
 }
 
 const blank = (): Contact => ({
@@ -336,6 +343,24 @@ export function ContactsView() {
     } catch (e) {
       setError(messageOf(e));
     }
+  };
+  /**
+   * Export All Contacts, or the open list: everyone in it, whatever the search shows. With a
+   * search typed it exported only the people found, under the whole book's name.
+   */
+  const exportWhole = async () => {
+    let people = sorted;
+    if (search.trim()) {
+      try {
+        const all = await api.contactsList(null);
+        const members = list === ALL ? null : new Set((lists.find((l) => l.guid === list)?.members ?? []).map((m) => m.toUpperCase()));
+        people = sortedContacts(members ? all.filter((c) => members.has(c.guid.toUpperCase())) : all);
+      } catch (e) {
+        setError(messageOf(e));
+        return;
+      }
+    }
+    await exportCards(people, openList?.name);
   };
   const importCards = async () => {
     try {
@@ -1003,7 +1028,7 @@ export function ContactsView() {
             onClose={() => setMoreMenu(null)}
             entries={[
               { label: "Import Contacts", run: () => void importCards() },
-              { label: openList ? `Export \u201c${openList.name}\u201d` : "Export All Contacts", run: () => void exportCards(sorted, openList?.name) },
+              { label: openList ? `Export \u201c${openList.name}\u201d` : "Export All Contacts", run: () => void exportWhole() },
             ]}
           />
         )}
@@ -1497,6 +1522,10 @@ export function ContactsView() {
                 )}
                 {open.company && !open.isCompany && (
                   <p className="contact-company">{open.company}</p>
+                )}
+                {/* A company's card is headed by the company; the person on it comes under. */}
+                {open.isCompany && open.company?.trim() && personName(open) && (
+                  <p className="contact-company">{personName(open)}</p>
                 )}
                 {me === open.guid && <p className="contact-company">My Card</p>}
               </div>

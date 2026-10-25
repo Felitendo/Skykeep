@@ -14,7 +14,7 @@ async fn main() -> Result<()> {
         .service_url("ckdatabasews")
         .ok_or_else(|| anyhow!("no ck"))?;
     let (http, p) = (client.http().clone(), client.service_params());
-    let links = quince_icloud::photos::links(&http, &root, p, master)
+    let links = quince_icloud::photos::links(&http, &root, p, master, master)
         .await?
         .ok_or_else(|| anyhow!("no links"))?;
     let url = links.original.ok_or_else(|| anyhow!("no original"))?;

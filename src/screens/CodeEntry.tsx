@@ -156,7 +156,14 @@ export function CodeEntry({
                   className="quiet"
                   type="button"
                   disabled={busy}
-                  onClick={() => run(api.resendCode, "Sent again. Check your devices.")}
+                  // Back on the devices: the code they show is checked as theirs, not as the
+                  // number's it was texted to before — that was refused as wrong every time.
+                  onClick={() =>
+                    run(async () => {
+                      await api.resendCode();
+                      setSmsPhoneId(null);
+                    }, "Sent again. Check your devices.")
+                  }
                 >
                   Send to my devices again
                 </button>

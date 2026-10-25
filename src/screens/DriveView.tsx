@@ -52,11 +52,13 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 function sortItems(rows: DriveItem[], by: SortKey, reversed = false): DriveItem[] {
   const name = (a: DriveItem, b: DriveItem) => collator.compare(a.name, b.name);
   const folderFirst = (a: DriveItem, b: DriveItem) => Number(isContainer(b)) - Number(isContainer(a));
-  const kindOf = (i: DriveItem) => (isContainer(i) ? " " : (i.extension ?? "").toLowerCase());
+  const kindOf = (i: DriveItem) => (i.extension ?? "").toLowerCase();
   const order: Record<SortKey, (a: DriveItem, b: DriveItem) => number> = {
     name: (a, b) => folderFirst(a, b) || name(a, b),
     date: (a, b) => folderFirst(a, b) || (b.modifiedAt ?? b.createdAt ?? 0) - (a.modifiedAt ?? a.createdAt ?? 0) || name(a, b),
-    kind: (a, b) => collator.compare(kindOf(a), kindOf(b)) || name(a, b),
+    // Folders are a kind of their own, first: told apart by a space for an extension, they
+    // sorted after a file with none at all ("Makefile", "README").
+    kind: (a, b) => folderFirst(a, b) || collator.compare(kindOf(a), kindOf(b)) || name(a, b),
     size: (a, b) => folderFirst(a, b) || (b.size ?? 0) - (a.size ?? 0) || name(a, b),
   };
   // A second click on a heading turns the order round, as in Finder; folders stay on top.
@@ -508,7 +510,18 @@ export function DriveView() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
-  const [busyGuid, setBusyGuid] = useState<string | null>(null);
+  // Every item with something under way — two downloads at once each keep their spinner: one
+  // value, the second took the first's, and the first one ending cleared the second's.
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const markBusy = useCallback((id: string, on: boolean) => {
+    setBusyIds((was) => {
+      if (was.has(id) === on) return was;
+      const next = new Set(was);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   /** A file just saved to Downloads, and where — shown for a moment, then cleared. */
   const [renaming, setRenaming] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -729,16 +742,16 @@ export function DriveView() {
   }, [due, refresh]);
 
   const download = useCallback(async (item: DriveItem) => {
-    setBusyGuid(item.drivewsid);
+    markBusy(item.drivewsid, true);
     setError(null);
     try {
       toastSaved(await api.driveDownload(item.drivewsid));
     } catch (e) {
       setError(messageOf(e));
     } finally {
-      setBusyGuid(null);
+      markBusy(item.drivewsid, false);
     }
-  }, []);
+  }, [markBusy]);
 
 
   const rename = useCallback(
@@ -751,7 +764,7 @@ export function DriveView() {
         setError(problem);
         return;
       }
-      setBusyGuid(item.drivewsid);
+      markBusy(item.drivewsid, true);
       setError(null);
       // The new name shows the moment Return is pressed; Apple's answer confirms or undoes it.
       const ext = item.extension ? `.${item.extension}` : "";
@@ -766,10 +779,10 @@ export function DriveView() {
         setItems((rows) => rows.map((r) => (r.drivewsid === item.drivewsid ? item : r)));
         setError(messageOf(e));
       } finally {
-        setBusyGuid(null);
+        markBusy(item.drivewsid, false);
       }
     },
-    [refresh, items]
+    [refresh, items, markBusy]
   );
 
   /**
@@ -791,10 +804,14 @@ export function DriveView() {
         // A folder still being uploaded into stops taking files first: deleting it while files
         // went on landing was what Apple would not do.
         if (isContainer(item)) {
-          const into = [...uploadsRef.current.values()].filter(
-            (u) => !["done", "failed", "cancelled"].includes(u.state) &&
-              ((u.folder && !u.within && u.name === item.name) || u.within.split("/")[0] === item.name),
-          );
+          // Files dropped onto it, or a folder of that name being made in the folder it is in —
+          // not one of the same name being made somewhere else.
+          const into = [...uploadsRef.current.values()].filter((u) => {
+            if (["done", "failed", "cancelled"].includes(u.state)) return false;
+            const dest = batchInto.current.get(u.batch);
+            if (dest === item.drivewsid) return true;
+            return dest === from && ((u.folder && !u.within && u.name === item.name) || u.within.split("/")[0] === item.name);
+          });
           for (const batch of new Set(into.map((u) => u.batch))) await api.driveUploadCancel([], batch).catch(() => {});
         }
         try {
@@ -926,7 +943,7 @@ export function DriveView() {
   itemsRef.current = items;
   const settle = (key: string) => setPending((p) => p.filter((x) => !x.key.startsWith(key)));
   const writingRef = useRef(false);
-  writingRef.current = busyGuid !== null || renaming !== null || pending.length > 0;
+  writingRef.current = busyIds.size > 0 || renaming !== null || pending.length > 0;
 
   // At most one re-read of the open folder every couple of seconds while files land.
   const landedTimer = useRef<number | null>(null);
@@ -982,6 +999,8 @@ export function DriveView() {
 
   const uploadsRef = useRef(uploads);
   uploadsRef.current = uploads;
+  /** The folder each upload batch was sent into, so deleting a folder stops only its own. */
+  const batchInto = useRef(new Map<string, string>());
   const dismissUploads = useCallback(() => setUploads(new Map()), []);
 
   const upload = useCallback(
@@ -992,6 +1011,7 @@ export function DriveView() {
       const batch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       // The open folder, or a folder in it the files were dropped on.
       const into = target ?? here.id;
+      batchInto.current.set(batch, into);
       setPending((p) => [
         ...p,
         ...paths.map((path, i) => ({
@@ -1241,10 +1261,13 @@ export function DriveView() {
       setPeeking(false);
       return;
     }
-    const step = (by: number) => {
+    const step = (by: number, to?: number) => {
       if (rows.length === 0) return;
       const at = selected ? rows.findIndex((r) => r.drivewsid === selected) : -1;
-      const next = rows[at < 0 ? (by > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, at + by))].drivewsid;
+      // Home and End go to an end whatever is selected; an arrow with nothing selected starts
+      // at the end it points from. (Home with nothing selected used to land on the last row.)
+      const index = to ?? (at < 0 ? (by > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, at + by)));
+      const next = rows[index].drivewsid;
       if (e.shiftKey && selected) setPicked(run(next));
       else {
         anchor.current = next;
@@ -1276,12 +1299,12 @@ export function DriveView() {
       step(k === "ArrowRight" ? 1 : -1);
     } else if (!mod && (k === "Home" || k === "End") && rows.length) {
       e.preventDefault();
-      step(k === "Home" ? -rows.length : rows.length);
+      step(0, k === "Home" ? 0 : rows.length - 1);
     } else if (k === "Enter" && !mod && onRows && primary) {
       e.preventDefault();
       setPeeking(false);
       openItem(primary);
-    } else if (k === "F2" && primary && pickedItems.length === 1 && busyGuid !== primary.drivewsid) {
+    } else if (k === "F2" && primary && pickedItems.length === 1 && !busyIds.has(primary.drivewsid)) {
       e.preventDefault();
       setPeeking(false);
       setRenaming(primary.drivewsid);
@@ -1539,7 +1562,7 @@ export function DriveView() {
           <DriveRow
             key={item.drivewsid}
             item={item}
-            busy={busyGuid === item.drivewsid}
+            busy={busyIds.has(item.drivewsid)}
             selected={picked.includes(item.drivewsid)}
             menuOpen={menu?.item.drivewsid === item.drivewsid}
             dropTarget={dropOn === item.drivewsid}
@@ -1614,7 +1637,7 @@ export function DriveView() {
         <QuickLook
           item={primary}
           thumb={thumbs[primary.drivewsid]}
-          busy={busyGuid === primary.drivewsid}
+          busy={busyIds.has(primary.drivewsid)}
           onOpen={() => { setPeeking(false); openItem(primary); }}
           onClose={() => setPeeking(false)}
         />

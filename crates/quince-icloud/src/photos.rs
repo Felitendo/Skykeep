@@ -150,6 +150,37 @@ fn link(fields: &Value, key: &str, name: &str) -> Option<String> {
 /// A master's download links, as icloud.com takes them (`${f}` is the file name it asks for).
 #[must_use]
 pub fn links_of(master: &Value) -> Links {
+    links_with_edit(None, master)
+}
+
+/// A photo's links, an edit's first: a photo cropped or filtered on an iPhone or a Mac keeps its
+/// edited pictures on the asset (`resJPEG{Thumb,Med,Full}Res`), the master keeping the
+/// original — as icloud.com shows and downloads it (`download_choice`). From the master alone,
+/// every edited photo showed as shot, uncropped, in the grid, the viewer and the folder.
+#[must_use]
+pub fn links_with_edit(asset: Option<&Value>, master: &Value) -> Links {
+    let mut l = master_links(master);
+    let Some(a) = asset.map(|a| &a["fields"]) else {
+        return l;
+    };
+    let edit = |key: &str, name: &str| link(a, key, name);
+    if let Some(full) = edit("resJPEGFullRes", "full.jpg") {
+        l.full = Some(full);
+    }
+    if let Some(med) =
+        edit("resJPEGMedRes", "med.jpg").or_else(|| edit("resJPEGFullRes", "full.jpg"))
+    {
+        l.medium = Some(med);
+    }
+    if let Some(thumb) =
+        edit("resJPEGThumbRes", "thumb.jpg").or_else(|| edit("resJPEGMedRes", "med.jpg"))
+    {
+        l.thumb = Some(thumb);
+    }
+    l
+}
+
+fn master_links(master: &Value) -> Links {
     let f = &master["fields"];
     Links {
         thumb: link(f, "resJPEGThumbRes", "thumb.jpg")
@@ -488,10 +519,20 @@ fn apply_whole(
             _ => {}
         }
     }
-    let links: HashMap<String, Links> = masters
+    let mut links: HashMap<String, Links> = masters
         .iter()
         .map(|(k, m)| (k.clone(), links_of(m)))
         .collect();
+    // An asset's edit, laid over its master's links.
+    for a in &assets {
+        if let Some((name, m)) = a
+            .pointer("/fields/masterRef/value/recordName")
+            .and_then(Value::as_str)
+            .and_then(|n| masters.get(n).map(|m| (n, m)))
+        {
+            links.insert(name.to_string(), links_with_edit(Some(*a), m));
+        }
+    }
     let mut photos = Vec::new();
     // Masters an asset in this pass was built from, and assets whose master is not here yet.
     let mut used: HashSet<&str> = HashSet::new();
@@ -1185,12 +1226,15 @@ pub async fn links(
     ckdatabasews_root: &str,
     params: Vec<(String, String)>,
     master: &str,
+    asset: &str,
 ) -> Result<Option<Links>> {
     let client = ZoneClient::new(http, ckdatabasews_root, CONTAINER, params);
-    Ok(client
-        .lookup_record(ZONE, master)
-        .await?
-        .map(|m| links_of(&m)))
+    let Some(m) = client.lookup_record(ZONE, master).await? else {
+        return Ok(None);
+    };
+    // The asset too, for an edit's pictures; without it, the master's alone.
+    let a = client.lookup_record(ZONE, asset).await.ok().flatten();
+    Ok(Some(links_with_edit(a.as_ref(), &m)))
 }
 
 #[cfg(test)]
@@ -1245,6 +1289,36 @@ mod tests {
             l.original.as_deref(),
             Some("https://cvws.example/orig/original")
         );
+    }
+
+    /// A photo edited on an iPhone or a Mac shows edited: its asset's pictures over the
+    /// master's, the original still the master's.
+    #[test]
+    fn an_edited_photo_shows_its_edit() {
+        let edited = asset(json!({
+            "resJPEGThumbRes": {"downloadURL": "https://cvws.example/edit-thumb/${f}"},
+            "resJPEGFullRes": {"downloadURL": "https://cvws.example/edit-full/${f}"}
+        }));
+        let l = links_with_edit(Some(&edited), &master());
+        assert_eq!(
+            l.thumb.as_deref(),
+            Some("https://cvws.example/edit-thumb/thumb.jpg")
+        );
+        assert_eq!(
+            l.full.as_deref(),
+            Some("https://cvws.example/edit-full/full.jpg")
+        );
+        assert_eq!(
+            l.medium.as_deref(),
+            Some("https://cvws.example/edit-full/full.jpg")
+        );
+        assert_eq!(
+            l.original.as_deref(),
+            Some("https://cvws.example/orig/original")
+        );
+        // Not edited: the master's, as before.
+        let plain = links_with_edit(Some(&asset(json!({}))), &master());
+        assert_eq!(plain, links_of(&master()));
     }
 
     /// A burst's photos know their burst; the chosen one (flags 20 / 32) says so.

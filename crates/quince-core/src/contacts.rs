@@ -361,6 +361,15 @@ impl Contact {
     /// the first method rather than at an empty string.
     #[must_use]
     pub fn display_name(&self) -> String {
+        // A company's card goes by the company, whoever is named on it, as Contacts shows it.
+        if let Some(company) = self
+            .company
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| self.is_company && !c.is_empty())
+        {
+            return company.to_string();
+        }
         let full = [
             self.first_name.as_deref(),
             self.middle_name.as_deref(),
@@ -941,11 +950,28 @@ impl Contact {
             .filter(|m| m.kind == "phone")
             .map(|m| digits(&m.value))
             .collect();
+        // A whole number typed or pasted (its words together: "+91 98765 43210") is found
+        // however the card writes it — with or without the country code or a trunk 0 — by its
+        // last digits, as numbers are told apart when merging.
+        let typed: String = words
+            .iter()
+            .filter(|w| looks_like_number(w))
+            .map(|w| digits(w))
+            .collect();
+        let whole_number = typed.len() >= 7
+            && numbers.iter().any(|n| {
+                let tail = |d: &str| d[d.len().saturating_sub(10)..].to_string();
+                n.contains(&typed)
+                    || (n.len() >= 7 && {
+                        let (a, b) = (tail(n), tail(&typed));
+                        a.ends_with(&b) || b.ends_with(&a)
+                    })
+            });
         words.iter().all(|w| {
             text.contains(w.as_str())
                 || (looks_like_number(w) && {
                     let d = digits(w);
-                    numbers.iter().any(|n| n.contains(&d))
+                    whole_number || numbers.iter().any(|n| n.contains(&d))
                 })
         })
     }
@@ -975,6 +1001,46 @@ mod tests {
                 value: format!("+91{guid}"),
             }],
         }
+    }
+
+    /// A company's card goes by the company, whoever is named on it — as Contacts lists it,
+    /// and as an export names it.
+    #[test]
+    fn a_company_card_goes_by_the_company() {
+        let mut card = contact("1", Some("Ravi"), Some("Menon"));
+        card.company = Some("Bluepine Logistics".into());
+        assert_eq!(card.display_name(), "Ravi Menon");
+        card.is_company = true;
+        assert_eq!(card.display_name(), "Bluepine Logistics");
+        card.company = Some("  ".into());
+        assert_eq!(card.display_name(), "Ravi Menon");
+    }
+
+    /// A number searched as it is pasted from elsewhere — with its country code, or a trunk
+    /// 0 — finds the card that holds it written the other way.
+    #[test]
+    fn a_number_is_found_with_or_without_its_country_code() {
+        let mut lib = Library::in_memory().unwrap();
+        let mut local = contact("1", Some("Asha"), None);
+        local.methods[0].value = "98765 43210".into();
+        let mut intl = contact("2", Some("Bela"), None);
+        intl.methods[0].value = "+44 7700 900123".into();
+        lib.put_contacts(&[local, intl]).unwrap();
+        let found = |q: &str| -> Vec<String> {
+            lib.contacts(Some(q))
+                .unwrap()
+                .into_iter()
+                .map(|c| c.guid)
+                .collect()
+        };
+        assert_eq!(found("+91 98765 43210"), ["1"]);
+        assert_eq!(found("+919876543210"), ["1"]);
+        assert_eq!(found("098765 43210"), ["1"]);
+        assert_eq!(found("07700 900123"), ["2"]);
+        assert_eq!(found("7700"), ["2"]);
+        // Part of a number still finds only what holds that part.
+        assert_eq!(found("98765"), ["1"]);
+        assert!(found("+91 12345 67890").is_empty());
     }
 
     /// Warming the picture cache asks only who has a picture and which: the same people the

@@ -724,16 +724,27 @@ fn merge_methods(
         entry_value(kind, entry).as_deref() == Some(value.as_str())
             && entry_label(kind, entry).as_deref() == label.as_deref()
     };
-    let removed: Vec<&(String, Option<String>)> =
-        base.iter().filter(|b| !mine.contains(b)).collect();
-    let mut added = mine
-        .iter()
-        .filter(|m| !base.contains(m) && !theirs.iter().any(|t| matches(t, m)))
+    // Counted, not just looked for: a number on the card twice with one copy taken out is one
+    // removal, which a plain "is it still there" never saw.
+    let mut left: Vec<&(String, Option<String>)> = mine.iter().collect();
+    let mut removed: Vec<&(String, Option<String>)> = Vec::new();
+    for b in base {
+        match left.iter().position(|m| *m == b) {
+            Some(i) => {
+                left.remove(i);
+            }
+            None => removed.push(b),
+        }
+    }
+    let mut added = left
+        .into_iter()
+        .filter(|m| !theirs.iter().any(|t| matches(t, m)))
         .collect::<Vec<_>>()
         .into_iter();
     let mut out = Vec::with_capacity(theirs.len() + mine.len());
     for t in theirs {
-        if removed.iter().any(|r| matches(t, r)) {
+        if let Some(i) = removed.iter().position(|r| matches(t, r)) {
+            removed.remove(i);
             // Edited rather than taken out: the new entry where the old one was.
             if let Some((v, l)) = added.next() {
                 out.push(build_entry(kind, v, l.as_deref(), Some(t)));
@@ -1371,17 +1382,68 @@ pub fn split_vcards(text: &str) -> Vec<String> {
     out
 }
 
+/// A quoted-printable value's text: `=XX` as the byte it stands for, read as UTF-8.
+fn quoted_printable(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'='
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            let hex = |b: u8| (b as char).to_digit(16).unwrap_or(0) as u8;
+            out.push(hex(bytes[i + 1]) << 4 | hex(bytes[i + 2]));
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Whether a vCard is someone already in the book — the same names and nothing the book's
 /// card lacks (each phone and email on it already there). Importing an export of the same
 /// book once added a copy of every person (2026-10-20, 123 of them); Apple's own Contacts
 /// leaves such a card out, and so does this.
 #[must_use]
 pub fn already_in(card: &str, book: &[Contact]) -> bool {
-    let unfold = card.replace("\r\n ", "").replace("\n ", "");
+    let unfold = card
+        .replace("\r\n ", "")
+        .replace("\r\n\t", "")
+        .replace("\n ", "")
+        .replace("\n\t", "");
     let mut name = (String::new(), String::new(), String::new());
     let mut org = String::new();
     let mut reach: Vec<String> = Vec::new();
-    for line in unfold.lines() {
+    // Read as the import sheet reads it: a vCard 2.1 value in quoted-printable (an Android
+    // export of a name in any script but English) decoded, its soft line breaks joined. Left
+    // encoded, nobody in such a file was ever "already in", and importing it again copied all.
+    let mut lines: Vec<String> = Vec::new();
+    let mut raw = unfold.lines();
+    while let Some(line) = raw.next() {
+        let qp = line
+            .split_once(':')
+            .is_some_and(|(k, _)| k.to_ascii_uppercase().contains("QUOTED-PRINTABLE"));
+        if !qp {
+            lines.push(line.to_string());
+            continue;
+        }
+        let mut whole = line.to_string();
+        while whole.ends_with('=') {
+            whole.pop();
+            match raw.next() {
+                Some(next) => whole.push_str(next),
+                None => break,
+            }
+        }
+        let (key, value) = whole.split_once(':').unwrap_or((&whole, ""));
+        lines.push(format!("{key}:{}", quoted_printable(value)));
+    }
+    for line in &lines {
+        let line = line.as_str();
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
@@ -1391,9 +1453,10 @@ pub fn already_in(card: &str, book: &[Contact]) -> bool {
         match field.as_str() {
             "N" => {
                 let mut parts = line[line.find(':').unwrap_or(0) + 1..].split(';');
-                let last = parts.next().unwrap_or("").trim().to_string();
-                let first = parts.next().unwrap_or("").trim().to_string();
-                let middle = parts.next().unwrap_or("").trim().to_string();
+                let part = |p: Option<&str>| p.unwrap_or("").trim().replace("\\,", ",");
+                let last = part(parts.next());
+                let first = part(parts.next());
+                let middle = part(parts.next());
                 name = (first, middle, last);
             }
             "ORG" => org = value.split(';').next().unwrap_or("").trim().to_string(),
@@ -1502,8 +1565,46 @@ fn csv_rows(text: &str) -> Vec<Vec<String>> {
     rows
 }
 
+/// A birthday as a spreadsheet writes it — `1990-03-14`, Outlook's `3/14/1990`, or `--03-14`
+/// with no year — as (year, month, day). Outlook's empty `0/0/00`, and anything that is not
+/// plainly a date, is left out rather than guessed at.
+fn csv_birthday(text: &str) -> Option<(Option<u16>, u8, u8)> {
+    let t = text.trim();
+    let num = |s: &str| s.trim().parse::<u16>().ok();
+    let (year, month, day) = if let Some(rest) = t.strip_prefix("--") {
+        let (m, d) = rest.split_once('-')?;
+        (None, num(m)?, num(d)?)
+    } else if let Some((y, rest)) = t.split_once('-') {
+        let (m, d) = rest.split_once('-')?;
+        (Some(num(y)?), num(m)?, num(d.get(..2).unwrap_or(d))?)
+    } else {
+        let mut parts = t.split('/');
+        let (m, d, y) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        let y = y.split_whitespace().next()?;
+        if y.len() != 4 {
+            return None;
+        }
+        (Some(num(y)?), num(m)?, num(d)?)
+    };
+    let (month, day) = (u8::try_from(month).ok()?, u8::try_from(day).ok()?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    match year {
+        Some(y) if !(1000..=9999).contains(&y) => None,
+        _ => Some((year, month, day)),
+    }
+}
+
 fn vcard_escape(v: &str) -> String {
-    v.replace('\\', "\\\\")
+    // Line ends as a spreadsheet writes them inside a cell (CRLF, or a lone CR) are one line
+    // end: a bare CR left in a card reads as a break in the middle of the property.
+    v.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\\', "\\\\")
         .replace('\n', "\\n")
         .replace(',', "\\,")
         .replace(';', "\\;")
@@ -1530,11 +1631,21 @@ pub fn csv_to_vcards(text: &str) -> (Vec<String>, usize) {
         "organization 1 - name",
         "organization name",
     ]);
-    let title = col(&["job title", "title", "organization 1 - title"]);
+    // Outlook's "Title" is the name's prefix ("Dr."), its job title "Job Title": with both
+    // there, "Title" was taken as the job and "Dr." became the person's title.
+    let job = col(&["job title", "organization 1 - title", "organization title"]);
+    let bare_title = col(&["title"]);
+    let title = job.or(bare_title);
+    let prefix = col(&["name prefix", "prefix"]).or(job.and(bare_title));
+    let suffix = col(&["name suffix", "suffix"]);
     let birthday = col(&["birthday"]);
     let notes = col(&["notes", "note"]);
     let is_phone = |h: &str| {
-        (h.contains("phone") || h.contains("mobile")) && !h.contains("type") && !h.contains("label")
+        // Not "Phonetic First Name": the reading of a name is not a number.
+        (h.contains("phone") || h.contains("mobile"))
+            && !h.contains("type")
+            && !h.contains("label")
+            && !h.starts_with("phonetic")
     };
     let is_email = |h: &str| {
         (h.contains("e-mail") || h.contains("email"))
@@ -1581,14 +1692,16 @@ pub fn csv_to_vcards(text: &str) -> (Vec<String>, usize) {
         }
         let mut card = String::from("BEGIN:VCARD\r\nVERSION:3.0\r\n");
         card.push_str(&format!(
-            "N:{};{};{};;\r\n",
+            "N:{};{};{};{};{}\r\n",
             vcard_escape(f.unwrap_or("")),
             vcard_escape(g.unwrap_or(if f.is_none() {
                 name.as_deref().unwrap_or("")
             } else {
                 ""
             })),
-            vcard_escape(m.unwrap_or(""))
+            vcard_escape(m.unwrap_or("")),
+            vcard_escape(get(prefix).unwrap_or("")),
+            vcard_escape(get(suffix).unwrap_or(""))
         ));
         card.push_str(&format!(
             "FN:{}\r\n",
@@ -1606,8 +1719,14 @@ pub fn csv_to_vcards(text: &str) -> (Vec<String>, usize) {
         for e in &emails {
             card.push_str(&format!("EMAIL;TYPE=INTERNET:{}\r\n", vcard_escape(e)));
         }
-        if let Some(b) = get(birthday).filter(|b| b.len() >= 8) {
-            card.push_str(&format!("BDAY:{b}\r\n"));
+        match get(birthday).and_then(csv_birthday) {
+            Some((None, month, day)) => card.push_str(&format!(
+                "BDAY;X-APPLE-OMIT-YEAR=1604:1604-{month:02}-{day:02}\r\n"
+            )),
+            Some((Some(year), month, day)) => {
+                card.push_str(&format!("BDAY:{year:04}-{month:02}-{day:02}\r\n"));
+            }
+            None => {}
         }
         if let Some(n) = get(notes) {
             card.push_str(&format!("NOTE:{}\r\n", vcard_escape(n)));
@@ -2046,6 +2165,110 @@ mod tests {
         assert_eq!(c.matches("TEL;TYPE=CELL:").count(), 2);
         assert!(c.contains("EMAIL;TYPE=INTERNET:zoya@example.com"));
         assert!(c.contains("NOTE:Line one\\nline two"));
+    }
+
+    /// A vCard 2.1 card from an Android export, its name in quoted-printable, is the person
+    /// already in the book: importing the same export again copied everyone not named in ASCII.
+    #[test]
+    fn a_quoted_printable_card_is_known_when_its_person_is_in_the_book() {
+        let book = vec![Contact {
+            guid: "1".into(),
+            first_name: Some("\u{906}\u{936}\u{93e}".into()),
+            middle_name: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
+            last_name: Some("Rao".into()),
+            company: None,
+            is_company: false,
+            birthday: None,
+            notes: None,
+            etag: None,
+            methods: vec![quince_core::contacts::ContactMethod {
+                kind: "phone".into(),
+                label: None,
+                value: "+1 555 010 0150".into(),
+            }],
+        }];
+        let card = "BEGIN:VCARD\r\nVERSION:2.1\r\n\
+                    N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:Rao;=E0=A4=86=E0=A4=B6=\r\n=E0=A4=BE;;;\r\n\
+                    TEL;CELL:+1 555 010 0150\r\nEND:VCARD\r\n";
+        assert!(already_in(card, &book));
+        let stranger = card.replace("Rao;", "Iyer;");
+        assert!(!already_in(&stranger, &book));
+    }
+
+    /// Outlook's CSV: "Title" is the name's prefix and "Job Title" the job; birthdays come as
+    /// M/D/YYYY, and an empty one as 0/0/00.
+    #[test]
+    fn an_outlook_csv_keeps_its_prefix_title_and_birthday() {
+        let csv = "Title,First Name,Last Name,Job Title,Mobile Phone,E-mail Address,Birthday\r\n\
+                   Dr.,Mira,Okafor,Pilot,(555) 010-0103,mira@example.com,3/14/1990\r\n\
+                   ,Tomas,Reyes,,(555) 010-0104,,0/0/00\r\n";
+        let (cards, _) = csv_to_vcards(csv);
+        assert!(cards[0].contains("N:Okafor;Mira;;Dr.;\r\n"), "{}", cards[0]);
+        assert!(cards[0].contains("TITLE:Pilot\r\n"), "{}", cards[0]);
+        assert!(!cards[0].contains("TITLE:Dr."), "{}", cards[0]);
+        assert!(cards[0].contains("BDAY:1990-03-14\r\n"), "{}", cards[0]);
+        assert!(!cards[1].contains("BDAY"), "{}", cards[1]);
+        // A lone "Title" column is still the job, as Google's older exports have it.
+        let (one, _) = csv_to_vcards("First Name,Title\r\nAnn,Editor\r\n");
+        assert!(one[0].contains("TITLE:Editor"), "{}", one[0]);
+    }
+
+    #[test]
+    fn spreadsheet_birthdays_are_read_or_left_out() {
+        assert_eq!(csv_birthday("1990-03-14"), Some((Some(1990), 3, 14)));
+        assert_eq!(csv_birthday("3/14/1990"), Some((Some(1990), 3, 14)));
+        assert_eq!(csv_birthday("--03-14"), Some((None, 3, 14)));
+        assert_eq!(csv_birthday("0/0/00"), None);
+        assert_eq!(csv_birthday("3/14/90"), None);
+        assert_eq!(csv_birthday("someday"), None);
+        assert_eq!(csv_birthday("13/40/1990"), None);
+    }
+
+    /// A note written over several lines in a spreadsheet (Windows line ends inside the quoted
+    /// cell) comes in as one note, with no bare carriage return left in the card.
+    #[test]
+    fn a_csv_note_over_several_lines_is_one_clean_note() {
+        let csv = "First Name,Notes\r\nAnn,\"line one\r\nline two\"\r\n";
+        let (cards, _) = csv_to_vcards(csv);
+        let c = &cards[0];
+        assert!(c.contains("NOTE:line one\\nline two\r\n"), "{c:?}");
+        assert!(!c.replace("\r\n", "").contains('\r'), "a bare CR in {c:?}");
+    }
+
+    /// Google's export has Phonetic First/Middle/Last Name columns, and its job title under
+    /// "Organization Title": the reading of a name is not a phone number, and the title stays.
+    #[test]
+    fn a_google_csv_keeps_phonetic_names_out_of_the_numbers() {
+        let csv = "First Name,Phonetic First Name,Last Name,Phonetic Last Name,Organization Name,Organization Title,Phone 1 - Label,Phone 1 - Value\r\n\
+                   Hana,\u{306f}\u{306a},Mori,\u{3082}\u{308a},Example Works,Designer,Mobile,+1 555 010 0177\r\n";
+        let (cards, _) = csv_to_vcards(csv);
+        let c = &cards[0];
+        assert_eq!(c.matches("TEL").count(), 1, "{c}");
+        assert!(c.contains("TEL;TYPE=CELL:+1 555 010 0177"), "{c}");
+        assert!(c.contains("TITLE:Designer"), "{c}");
+        assert!(c.contains("ORG:Example Works"), "{c}");
+    }
+
+    /// A card that holds the same number twice, one copy taken out in the form: one copy goes,
+    /// one stays. Both used to stay, as though nothing had been asked.
+    #[test]
+    fn taking_out_one_of_two_copies_of_a_number_takes_out_one() {
+        let a = || serde_json::json!({ "field": "+1 555 010 0123", "label": "MOBILE" });
+        let theirs = [a(), a()];
+        let one = ("+1 555 010 0123".to_string(), Some("MOBILE".to_string()));
+        let out = merge_methods(
+            "phone",
+            &theirs,
+            &[one.clone(), one.clone()],
+            std::slice::from_ref(&one),
+        );
+        assert_eq!(out.as_array().map(Vec::len), Some(1), "{out}");
+        // Both taken out: none left.
+        let out = merge_methods("phone", &theirs, &[one.clone(), one], &[]);
+        assert_eq!(out.as_array().map(Vec::len), Some(0), "{out}");
     }
 
     /// A file of many cards is read card by card and sent in batches under Apple's limits.
