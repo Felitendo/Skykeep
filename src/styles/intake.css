@@ -22,7 +22,7 @@
 .ix-list li { display: grid; gap: 1px; padding: 8px 12px; }
 .ix-list li + li { border-top: var(--hairline) solid var(--separator); }
 .ix-title { font-size: var(--t-13); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ix-sub { font-size: 0.75rem; color: var(--text-2); line-height: 1.35; }
+.ix-sub { font-size: var(--t-12); color: var(--text-2); line-height: 1.35; }
 .ix-list li.is-skipped .ix-title { color: var(--text-3); }
 .ix-list li.is-refused .ix-title { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--text-3); }
 .ix-list li.is-refused .ix-sub { color: var(--text-2); }
@@ -77,6 +77,6 @@ html:has(.qc), html:has(.qc) body, html:has(.qc) #root { height: 100%; margin: 0
   border-top: var(--hairline) solid var(--separator);
   min-width: 0;
 }
-.qc-note { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-note { font-size: var(--t-12); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qc-error { color: var(--danger); }
 .qc-link { padding: 0; font-size: inherit; }

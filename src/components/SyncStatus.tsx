@@ -18,7 +18,7 @@ export function SyncStatus() {
   const [showTrouble, setShowTrouble] = useState(false);
 
   const failed = report?.services.filter((s) => s.outcome === "failed") ?? [];
-  const state = error || failed.length > 0 ? "trouble" : syncing ? "working" : "clean";
+  const state = error || failed.length > 0 ? "trouble" : syncing ? "working" : report?.asOf ? "clean" : "idle";
   const label = syncing ? "Updating…" : freshness(report?.asOf ?? null);
 
   return (

@@ -3,7 +3,7 @@
 
 /* The screen fills the window as Notes does, so the sidebar's divider runs the full height
    and only the library scrolls. */
-.content[data-screen="photos"] { display: flex; flex-direction: column; overflow: hidden; padding-top: 18px; }
+.content[data-screen="photos"] { display: flex; flex-direction: column; overflow: hidden; }
 
 .px {
   /* An app's own words are not text to select, as in Photos; a field still takes typing. */
@@ -21,13 +21,13 @@
   flex-direction: column;
   gap: 1px;
   min-height: 0;
-  padding: 4px 10px 10px;
+  padding: var(--source-pad);
   border-right: var(--hairline) solid var(--separator);
   overflow-y: auto;
 }
 .px-glyph { flex: none; color: var(--accent); }
 .px-albums { display: flex; flex-direction: column; gap: 1px; }
-.px-side-gap { margin-top: 14px; }
+.px-side-gap { margin-top: var(--source-gap); }
 .px-side-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
 .px-side-row .px-side-heading { margin-bottom: 4px; }
 
@@ -43,7 +43,7 @@
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
-  padding: 12px 16px 0 18px;
+  padding: 0 16px 0 18px;
   pointer-events: none;
 }
 .px-bar > * { pointer-events: auto; }
@@ -212,7 +212,7 @@
   align-items: center;
   gap: 3px;
   color: #fff;
-  font-size: 0.6875rem;
+  font-size: var(--t-11);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
@@ -466,7 +466,7 @@
   border-radius: 5px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  font-size: 0.625rem;
+  font-size: var(--t-10);
   font-weight: 600;
   line-height: 15px;
   font-variant-numeric: tabular-nums;
@@ -496,7 +496,7 @@
 .px-parent-row .px-parent { flex: 1; min-width: 0; }
 .px-parent-row .px-side-add { position: absolute; right: 6px; }
 .px-parent { padding-left: 2px; }
-.px-chevron { flex: none; color: var(--text-3); transition: transform 180ms var(--spring-quick); }
+.px-chevron { flex: none; color: var(--text-3); transition: transform var(--motion-small) var(--motion-ease-out); }
 .px-parent[aria-expanded="true"] .px-chevron { transform: rotate(90deg); }
 .px-children { display: flex; flex-direction: column; gap: 1px; }
 .px-children .px-source, .px-children .px-naming { padding-left: 30px; }
@@ -736,7 +736,7 @@
   border: 2.5px solid rgba(255, 255, 255, 0.28);
   border-top-color: #fff;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.35);
-  animation: px-spin 0.9s linear infinite;
+  animation: px-spin 800ms linear infinite;
   pointer-events: none;
 }
 @keyframes px-spin { to { rotate: 360deg; } }
