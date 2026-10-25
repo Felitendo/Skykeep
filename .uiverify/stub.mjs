@@ -533,6 +533,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "note_create": return "Note/new";
         case "notes_in":
+          // A suite's own notes (`window.__notesExtra`), their formatting in `__savedRuns`.
+          for (const n of window.__notesExtra ?? []) if (!noteList.some((x) => x.guid === n.guid)) noteList.unshift({ ...n });
           // Opt-in: a note holding a table, as a phone makes one.
           if (window.__mediaNote && !noteList.some((n) => n.guid === "nM"))
             noteList.unshift({ guid: "nM", folderGuid: "f1", title: "Trip", snippet: "", body: "Trip\n\uFFFC\n\uFFFC\nend",

@@ -351,6 +351,28 @@ export function sameFormatting(text: string, a: Run[] | null, b: Run[] | null): 
 }
 
 /**
+ * The number each line of a numbered list shows, as Notes numbers them (and as Markdown export
+ * does, markdown.rs): a list nested in another counts from 1 on its own, and the list around it
+ * carries on after it; a line that is not numbered ends every list; a list's first item may
+ * start it elsewhere. Null for a line that is not numbered. One count for every depth had a
+ * nested list's items counted into the outer list, so it went on from 4 where the phone shows 2.
+ */
+export function listNumbers(lines: { style: number | null; indent: number; start?: number | null }[]): (number | null)[] {
+  const counts: number[] = [];
+  return lines.map((line) => {
+    if (line.style !== STYLE.numbered) {
+      counts.length = 0;
+      return null;
+    }
+    const depth = Math.max(0, line.indent | 0);
+    counts.length = Math.min(counts.length, depth + 1);
+    while (counts.length <= depth) counts.push(0);
+    counts[depth] = counts[depth] === 0 && line.start ? line.start : counts[depth] + 1;
+    return counts[depth];
+  });
+}
+
+/**
  * Where a checklist item goes when it is ticked or unticked with "Sort Checked Items
  * Automatically" on, as Notes sorts them: ticked, the item — with the items nested under it — goes
  * to the end of its own checklist; unticked, back up to just above the ticked items. Only

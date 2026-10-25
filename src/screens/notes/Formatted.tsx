@@ -11,6 +11,7 @@
 import { useEffect, useRef } from "react";
 import { describe, drawMedia } from "./NoteEditor";
 import { addressesIn, openLinkAt } from "./links";
+import { listNumbers } from "./rich";
 import { REFUSED_LINK, linkedNote, outsideHref } from "../../lib/links";
 export type Run = {
   length: number;
@@ -185,12 +186,12 @@ export function FormattedBody({
   onTick?: (paragraphStart: number, checked: boolean) => void;
 }) {
   const all = paragraphs(text, runs).filter((p) => p.start >= skip);
-  let number = 0;
+  // Counted as the editor counts them: a nested list on its own, the outer one carrying on.
+  const numbers = listNumbers(all.map((p) => ({ style: p.run?.style ?? STYLE.body, indent: p.run?.indent ?? 0, start: p.run?.start ?? null })));
   return (
     <div className="note-formatted">
       {all.map((p, i) => {
         const style = p.run?.style ?? STYLE.body;
-        number = style === STYLE.numbered ? (p.run?.start ?? number + 1) : 0;
         const indent = { paddingInlineStart: `${(p.run?.indent ?? 0) * 1.5}em` };
         const at = { "data-start": p.start, ...(p.run?.quote ? { "data-quote": "true" } : {}) } as Record<string, number | string>;
         const content = p.spans.length ? p.spans.map((s, j) => <Inline key={j} span={s} />) : <br />;
@@ -219,7 +220,7 @@ export function FormattedBody({
           );
         }
         if (style === STYLE.bulleted || style === STYLE.dashed || style === STYLE.numbered) {
-          const mark = style === STYLE.bulleted ? "•" : style === STYLE.dashed ? "–" : `${number}.`;
+          const mark = style === STYLE.bulleted ? "•" : style === STYLE.dashed ? "–" : `${numbers[i]}.`;
           return (
             <p key={i} className="nf-item" style={indent} {...at}>
               <span className="nf-mark" aria-hidden="true">{mark}</span>

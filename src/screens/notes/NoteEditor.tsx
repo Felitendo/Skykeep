@@ -1,13 +1,13 @@
 import "prosemirror-view/style/prosemirror.css";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { EditorState, Plugin, TextSelection, type Command, type Transaction } from "prosemirror-state";
-import { EditorView } from "prosemirror-view";
+import { Decoration, DecorationSet, EditorView } from "prosemirror-view";
 import { history, undo, redo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap, splitBlockAs, toggleMark, chainCommands } from "prosemirror-commands";
 import { Fragment, Slice, type Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
-import { checklistMove, fromDoc, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
+import { checklistMove, fromDoc, listNumbers, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
 import { MOVE_CHECKED_KEY } from "./model";
 
 function moveCheckedOn(): boolean {
@@ -580,6 +580,30 @@ function moveLines(by: 1 | -1): Command {
   };
 }
 
+/** Each numbered line's number (`data-n`, which the stylesheet draws), counted as Notes counts
+ *  them (rich.ts listNumbers) — worked out again only when the note changes. */
+function numbering(doc: PMNode): DecorationSet {
+  const lines: PMNode[] = [];
+  const at: number[] = [];
+  doc.forEach((node, offset) => {
+    lines.push(node);
+    at.push(offset);
+  });
+  const numbers = listNumbers(lines.map((n) => n.attrs as { style: number | null; indent: number; start: number | null }));
+  const marks: Decoration[] = [];
+  numbers.forEach((n, i) => {
+    if (n !== null) marks.push(Decoration.node(at[i], at[i] + lines[i].nodeSize, { "data-n": String(n) }));
+  });
+  return DecorationSet.create(doc, marks);
+}
+const numbered: Plugin<DecorationSet> = new Plugin<DecorationSet>({
+  state: {
+    init: (_, state) => numbering(state.doc),
+    apply: (tr, was) => (tr.docChanged ? numbering(tr.doc) : was),
+  },
+  props: { decorations: (state): DecorationSet | undefined => numbered.getState(state) },
+});
+
 const parentOf = (state: EditorState) => state.selection.$from.parent;
 const inList = (state: EditorState) => LIST_STYLES.includes(parentOf(state).attrs.style);
 
@@ -728,6 +752,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
       plugins: [
         letTabOut,
         autolink,
+        numbered,
         history(),
         keymap({
           "Mod-z": undo,

@@ -97,3 +97,17 @@ test("the empty line after a checklist's closing newline is plain, not one more 
   // The two checklist lines come back as one run, as Apple's identical runs merge.
   assert.deepEqual(back.runs, [r(9, { style: STYLE.title }), r(51, { style: STYLE.checklist, checked: false })]);
 });
+
+import { listNumbers } from "../src/screens/notes/rich.ts";
+test("a numbered list nested in another counts on its own, and the outer one carries on", () => {
+  const n = (indent, start = null) => ({ style: STYLE.numbered, indent, start });
+  const lines = [
+    { style: STYLE.title, indent: 0 },
+    n(0), n(1), n(1), n(2), n(1), n(0),
+    { style: null, indent: 0 },
+    n(0, 5), n(0), n(1),
+  ];
+  // As a phone numbers it, and as Markdown export (markdown.rs) does: 1, 1, 2, 1, 3, 2; a plain
+  // line ends the list; one begun at 5 goes on 6, its nested item from 1.
+  assert.deepEqual(listNumbers(lines), [null, 1, 1, 2, 1, 3, 2, null, 5, 6, 1]);
+});

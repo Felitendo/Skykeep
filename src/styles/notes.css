@@ -270,9 +270,8 @@ textarea.note-title::placeholder { color: var(--text-3); }
 }
 .note-rich .nf-p[data-style="100"]::before { content: "•"; }
 .note-rich .nf-p[data-style="101"]::before { content: "–"; }
-.note-rich .nf-p:not([data-style="102"]) { counter-reset: nf-num; }
-.note-rich .nf-p[data-style="102"] { counter-increment: nf-num; }
-.note-rich .nf-p[data-style="102"]::before { content: counter(nf-num) "."; }
+/* Its number, counted by the editor as Notes counts them (a nested list on its own). */
+.note-rich .nf-p[data-style="102"]::before { content: attr(data-n) "."; }
 /* A checklist item's circle: clicking it ticks the line (the editor reads the click). */
 /* A checklist circle, crisp as Notes draws it: an 18px vector ring masked over the theme's colour
    and set on whole pixels. The CSS border it replaced was 17px with a 1.5px edge at a fractional
