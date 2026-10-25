@@ -1565,6 +1565,40 @@ fn csv_rows(text: &str) -> Vec<Vec<String>> {
     rows
 }
 
+/// A birthday as a spreadsheet writes it — `1990-03-14`, Outlook's `3/14/1990`, or `--03-14`
+/// with no year — as (year, month, day). Outlook's empty `0/0/00`, and anything that is not
+/// plainly a date, is left out rather than guessed at.
+fn csv_birthday(text: &str) -> Option<(Option<u16>, u8, u8)> {
+    let t = text.trim();
+    let num = |s: &str| s.trim().parse::<u16>().ok();
+    let (year, month, day) = if let Some(rest) = t.strip_prefix("--") {
+        let (m, d) = rest.split_once('-')?;
+        (None, num(m)?, num(d)?)
+    } else if let Some((y, rest)) = t.split_once('-') {
+        let (m, d) = rest.split_once('-')?;
+        (Some(num(y)?), num(m)?, num(d.get(..2).unwrap_or(d))?)
+    } else {
+        let mut parts = t.split('/');
+        let (m, d, y) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        let y = y.split_whitespace().next()?;
+        if y.len() != 4 {
+            return None;
+        }
+        (Some(num(y)?), num(m)?, num(d)?)
+    };
+    let (month, day) = (u8::try_from(month).ok()?, u8::try_from(day).ok()?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    match year {
+        Some(y) if !(1000..=9999).contains(&y) => None,
+        _ => Some((year, month, day)),
+    }
+}
+
 fn vcard_escape(v: &str) -> String {
     // Line ends as a spreadsheet writes them inside a cell (CRLF, or a lone CR) are one line
     // end: a bare CR left in a card reads as a break in the middle of the property.
@@ -1597,12 +1631,13 @@ pub fn csv_to_vcards(text: &str) -> (Vec<String>, usize) {
         "organization 1 - name",
         "organization name",
     ]);
-    let title = col(&[
-        "job title",
-        "title",
-        "organization 1 - title",
-        "organization title",
-    ]);
+    // Outlook's "Title" is the name's prefix ("Dr."), its job title "Job Title": with both
+    // there, "Title" was taken as the job and "Dr." became the person's title.
+    let job = col(&["job title", "organization 1 - title", "organization title"]);
+    let bare_title = col(&["title"]);
+    let title = job.or(bare_title);
+    let prefix = col(&["name prefix", "prefix"]).or(job.and(bare_title));
+    let suffix = col(&["name suffix", "suffix"]);
     let birthday = col(&["birthday"]);
     let notes = col(&["notes", "note"]);
     let is_phone = |h: &str| {
@@ -1657,14 +1692,16 @@ pub fn csv_to_vcards(text: &str) -> (Vec<String>, usize) {
         }
         let mut card = String::from("BEGIN:VCARD\r\nVERSION:3.0\r\n");
         card.push_str(&format!(
-            "N:{};{};{};;\r\n",
+            "N:{};{};{};{};{}\r\n",
             vcard_escape(f.unwrap_or("")),
             vcard_escape(g.unwrap_or(if f.is_none() {
                 name.as_deref().unwrap_or("")
             } else {
                 ""
             })),
-            vcard_escape(m.unwrap_or(""))
+            vcard_escape(m.unwrap_or("")),
+            vcard_escape(get(prefix).unwrap_or("")),
+            vcard_escape(get(suffix).unwrap_or(""))
         ));
         card.push_str(&format!(
             "FN:{}\r\n",
@@ -1682,8 +1719,14 @@ pub fn csv_to_vcards(text: &str) -> (Vec<String>, usize) {
         for e in &emails {
             card.push_str(&format!("EMAIL;TYPE=INTERNET:{}\r\n", vcard_escape(e)));
         }
-        if let Some(b) = get(birthday).filter(|b| b.len() >= 8) {
-            card.push_str(&format!("BDAY:{b}\r\n"));
+        match get(birthday).and_then(csv_birthday) {
+            Some((None, month, day)) => card.push_str(&format!(
+                "BDAY;X-APPLE-OMIT-YEAR=1604:1604-{month:02}-{day:02}\r\n"
+            )),
+            Some((Some(year), month, day)) => {
+                card.push_str(&format!("BDAY:{year:04}-{month:02}-{day:02}\r\n"));
+            }
+            None => {}
         }
         if let Some(n) = get(notes) {
             card.push_str(&format!("NOTE:{}\r\n", vcard_escape(n)));
@@ -2155,6 +2198,35 @@ mod tests {
         assert!(!already_in(&stranger, &book));
     }
 
+    /// Outlook's CSV: "Title" is the name's prefix and "Job Title" the job; birthdays come as
+    /// M/D/YYYY, and an empty one as 0/0/00.
+    #[test]
+    fn an_outlook_csv_keeps_its_prefix_title_and_birthday() {
+        let csv = "Title,First Name,Last Name,Job Title,Mobile Phone,E-mail Address,Birthday\r\n\
+                   Dr.,Mira,Okafor,Pilot,(555) 010-0103,mira@example.com,3/14/1990\r\n\
+                   ,Tomas,Reyes,,(555) 010-0104,,0/0/00\r\n";
+        let (cards, _) = csv_to_vcards(csv);
+        assert!(cards[0].contains("N:Okafor;Mira;;Dr.;\r\n"), "{}", cards[0]);
+        assert!(cards[0].contains("TITLE:Pilot\r\n"), "{}", cards[0]);
+        assert!(!cards[0].contains("TITLE:Dr."), "{}", cards[0]);
+        assert!(cards[0].contains("BDAY:1990-03-14\r\n"), "{}", cards[0]);
+        assert!(!cards[1].contains("BDAY"), "{}", cards[1]);
+        // A lone "Title" column is still the job, as Google's older exports have it.
+        let (one, _) = csv_to_vcards("First Name,Title\r\nAnn,Editor\r\n");
+        assert!(one[0].contains("TITLE:Editor"), "{}", one[0]);
+    }
+
+    #[test]
+    fn spreadsheet_birthdays_are_read_or_left_out() {
+        assert_eq!(csv_birthday("1990-03-14"), Some((Some(1990), 3, 14)));
+        assert_eq!(csv_birthday("3/14/1990"), Some((Some(1990), 3, 14)));
+        assert_eq!(csv_birthday("--03-14"), Some((None, 3, 14)));
+        assert_eq!(csv_birthday("0/0/00"), None);
+        assert_eq!(csv_birthday("3/14/90"), None);
+        assert_eq!(csv_birthday("someday"), None);
+        assert_eq!(csv_birthday("13/40/1990"), None);
+    }
+
     /// A note written over several lines in a spreadsheet (Windows line ends inside the quoted
     /// cell) comes in as one note, with no bare carriage return left in the card.
     #[test]
@@ -2191,7 +2263,7 @@ mod tests {
             "phone",
             &theirs,
             &[one.clone(), one.clone()],
-            &[one.clone()],
+            std::slice::from_ref(&one),
         );
         assert_eq!(out.as_array().map(Vec::len), Some(1), "{out}");
         // Both taken out: none left.
