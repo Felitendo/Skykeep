@@ -233,9 +233,7 @@ impl Inodes {
 /// path cannot hold) are told apart, never one hiding the other.
 #[must_use]
 pub fn named(items: &[DriveItem]) -> Vec<(String, DriveItem)> {
-    let mut taken: HashMap<String, usize> = HashMap::new();
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
+    let base_of = |item: &DriveItem| {
         // "/" cannot be in a name on Linux, and NUL nowhere: Apple allows the first.
         let base: String = item
             .display_name()
@@ -246,22 +244,38 @@ pub fn named(items: &[DriveItem]) -> Vec<(String, DriveItem)> {
                 c => c,
             })
             .collect();
-        let base = if base == "." || base == ".." || base.is_empty() {
+        if base == "." || base == ".." || base.is_empty() {
             format!("{base}_")
         } else {
             base
-        };
+        }
+    };
+    // Every name the folder holds as it is, so a number given to tell two apart never lands on
+    // a third that is really called that ("Report (2).pdf" beside two "Report.pdf"s).
+    let real: std::collections::HashSet<String> = items.iter().map(base_of).collect();
+    let mut given: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut taken: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let base = base_of(item);
         let n = taken.entry(base.clone()).or_insert(0);
         *n += 1;
-        let name = if *n == 1 {
+        let name = if *n == 1 && given.insert(base.clone()) {
             base
         } else {
             // "Report (2).pdf": the second of two with the same name.
-            match base.rsplit_once('.') {
-                Some((stem, ext)) if !item.is_container() && !stem.is_empty() => {
-                    format!("{stem} ({n}).{ext}")
+            loop {
+                *n = (*n).max(2);
+                let candidate = match base.rsplit_once('.') {
+                    Some((stem, ext)) if !item.is_container() && !stem.is_empty() => {
+                        format!("{stem} ({n}).{ext}")
+                    }
+                    _ => format!("{base} ({n})"),
+                };
+                if !real.contains(&candidate) && given.insert(candidate.clone()) {
+                    break candidate;
                 }
-                _ => format!("{base} ({n})"),
+                *n += 1;
             }
         };
         out.push((name, item.clone()));
@@ -789,6 +803,18 @@ mod tests {
         ];
         let names: Vec<String> = named(&items).into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["Report.pdf", "Report (2).pdf", "a∕b", ".._"]);
+    }
+
+    /// A number given to tell two apart never takes the name of a third that really has it.
+    #[test]
+    fn a_numbered_name_never_hides_a_real_one() {
+        let items = [
+            item("a", "Report", Some("pdf"), "FILE", 1, "e"),
+            item("b", "Report", Some("pdf"), "FILE", 1, "e"),
+            item("c", "Report (2)", Some("pdf"), "FILE", 1, "e"),
+        ];
+        let names: Vec<String> = named(&items).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["Report.pdf", "Report (3).pdf", "Report (2).pdf"]);
     }
 
     #[test]
