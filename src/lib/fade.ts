@@ -88,30 +88,87 @@ export function fadeSheetsIn() {
   }).observe(document.body, { childList: true });
 }
 
-/**
- * A row folding away, drawn by the page the same way: each frame its height, padding and
- * opacity set from here, so the rows below glide up. Then `done`.
+/* ---- arrival: content that came in from another device ------------------------------------
+ *
+ * It settles in without being pointed at — no highlight, no wash, as the best apps do it —
+ * drawn by the page frame by frame (as above), on opacity and a 2px transform only, so nothing
+ * is laid out and no row beside it moves; only ever on a small thing, a row or a tile, never a
+ * pane or a list. Under Reduce Motion each is instant. Timings are tokens (tokens.css "Arrival").
+ *
+ *   arrive(row)          a new row: fades in over 120ms, rising 2px
+ *   leave(row, remove)   a row deleted elsewhere: out by opacity over 140ms, lifting 2px, then
+ *                        `remove` takes it away (the rows below close up at once)
+ *   <ReceivingLine>      the calm line while many things arrive at once (components/ReceivingLine)
  */
-export function foldAway(el: HTMLElement, done: () => void, duration = 240) {
-  if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+
+const reduced = () =>
+  typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** A timing token in ms (or px, for a distance), as tokens.css sets it — 0 under Reduce
+    Motion — or `fallback`. */
+function token(name: string, fallback: number): number {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const n = parseFloat(v);
+  if (!Number.isFinite(n)) return fallback;
+  return v.endsWith("ms") ? n : v.endsWith("s") ? n * 1000 : n;
+}
+
+/** A new row arriving: a quick fade in, rising 2px. No highlight — it simply settles in. */
+export function arrive(el: HTMLElement | null) {
+  if (!el) return;
+  const duration = token("--arrive-in-d", 120);
+  if (reduced() || duration <= 0) return;
+  const rise = token("--arrive-rise", 2);
+  cancelAnimationFrame(running.get(el) ?? 0);
+  const start = performance.now();
+  el.style.opacity = "0";
+  el.style.transform = `translateY(${rise}px)`;
+  const finish = () => {
+    el.style.opacity = "";
+    el.style.transform = "";
+    running.delete(el);
+  };
+  const step = (now: number) => {
+    const t = Math.max(0, Math.min(1, (now - start) / duration));
+    if (t >= 1) return finish();
+    const k = 1 - (1 - t) * (1 - t);
+    el.style.opacity = String(k);
+    el.style.transform = `translateY(${(rise * (1 - k)).toFixed(2)}px)`;
+    running.set(el, requestAnimationFrame(step));
+  };
+  running.set(el, requestAnimationFrame(step));
+  window.setTimeout(() => { if (running.has(el)) { cancelAnimationFrame(running.get(el)!); finish(); } }, duration + 250);
+}
+
+/**
+ * A row deleted on another device leaving: out by opacity, lifting 2px, then `done` — which
+ * removes it. Its height is never animated (a layout animation, and the flicker this file
+ * exists to avoid); the rows below close up the moment it is gone.
+ */
+export function leave(el: HTMLElement | null, done: () => void) {
+  const duration = el ? token("--leave-d", 140) : 0;
+  if (!el || reduced() || duration <= 0) {
     done();
     return;
   }
-  const cs = getComputedStyle(el);
-  const h = el.getBoundingClientRect().height;
-  const [pt, pb] = [parseFloat(cs.paddingTop), parseFloat(cs.paddingBottom)];
-  el.style.overflow = "hidden";
+  cancelAnimationFrame(running.get(el) ?? 0);
+  el.style.pointerEvents = "none";
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    running.delete(el);
+    done();
+  };
+  window.setTimeout(finish, duration + 250);
   const start = performance.now();
   const step = (now: number) => {
     const t = Math.min(1, (now - start) / duration);
-    // Quick at first, settling: Apple's own curve for things leaving.
-    const k = 1 - (1 - t) ** 3;
-    el.style.height = `${h * (1 - k)}px`;
-    el.style.paddingTop = `${pt * (1 - k)}px`;
-    el.style.paddingBottom = `${pb * (1 - k)}px`;
+    const k = t * t;
     el.style.opacity = String(1 - k);
-    if (t < 1) requestAnimationFrame(step);
-    else done();
+    el.style.transform = `translateY(${(-2 * k).toFixed(2)}px)`;
+    if (t >= 1) return finish();
+    running.set(el, requestAnimationFrame(step));
   };
-  requestAnimationFrame(step);
+  running.set(el, requestAnimationFrame(step));
 }

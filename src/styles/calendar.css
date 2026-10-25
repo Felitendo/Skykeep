@@ -4,7 +4,6 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding-top: 18px;
   /* The calendar lays itself out by the room it has, not the window's: the app's own sidebar
      takes a share of the window, so a window-sized rule came in far too late. */
   container: cx-page / inline-size;
@@ -25,7 +24,7 @@
   flex-direction: column;
   justify-content: space-between;
   min-height: 0;
-  padding: 4px 14px 10px;
+  padding: var(--source-pad);
   border-right: var(--hairline) solid var(--separator);
   overflow-y: auto;
 }
@@ -65,7 +64,7 @@
 }
 .cx-minimonth-head > span:last-child { display: inline-flex; gap: 2px; }
 .cx-minimonth-grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 1px; }
-.cx-minimonth-wd { color: var(--text-3); font-size: 0.625rem; font-weight: 600; text-align: center; line-height: 20px; }
+.cx-minimonth-wd { color: var(--text-3); font-size: var(--t-10); font-weight: 600; text-align: center; line-height: 20px; }
 .cx-minimonth-day {
   position: relative;
   justify-self: center;
@@ -77,7 +76,7 @@
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 0.6875rem;
+  font-size: var(--t-11);
   font-variant-numeric: tabular-nums;
   cursor: default;
 }
@@ -122,7 +121,7 @@
   flex: 1 1 100%;
   min-width: 0;
   margin: 2px 0 0;
-  font-size: 1.75rem;
+  font-size: var(--t-28);
   font-weight: 400;
   letter-spacing: -0.02em;
   white-space: nowrap;
@@ -357,7 +356,7 @@
   font-size: var(--t-13);
   cursor: default;
 }
-.cx-col-num { font-size: 1.25rem; font-weight: 400; color: var(--text); font-variant-numeric: tabular-nums; }
+.cx-col-num { font-size: var(--t-20); font-weight: 400; color: var(--text); font-variant-numeric: tabular-nums; }
 .cal-col-head.is-today .cx-col-num {
   min-width: 28px;
   padding: 0 6px;
@@ -548,7 +547,7 @@
   .cx { grid-template-columns: 1fr; }
   .cx-side { display: none; }
   .cal-year { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cx .cx-title { font-size: 1.375rem; }
+  .cx .cx-title { font-size: var(--t-22); }
   .cx-title-full { display: none; }
   .cx-title-brief { display: inline; }
   .cx-bar { gap: 10px 12px; padding-inline: 0; }
@@ -752,7 +751,7 @@
 }
 
 /* New Calendar: a quiet + at the end of the iCloud heading, as the Mac's sidebar has. */
-.cx-side-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; padding-right: 0; }
+.cx-side-heading { display: flex; align-items: center; justify-content: space-between; margin-top: var(--source-gap); padding-right: 0; }
 .cx-side-heading:first-child { margin-top: 0; }
 
 /* An event's time zone: its city, with the offset quieter beside it; a field that finds one. */
@@ -786,7 +785,7 @@
 
 /* ---- sidebar groups: iCloud, Subscriptions, Other — each folds away -------------------- */
 
-.cx-group { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+.cx-group { display: flex; align-items: center; justify-content: space-between; margin-top: var(--source-gap); }
 .cx-group:first-child { margin-top: 0; }
 .cx-group .cx-side-heading {
   display: inline-flex; align-items: center; gap: 4px; margin: 0; padding: 2px 8px 2px 4px; border: 0;
@@ -795,13 +794,13 @@
 }
 .cx-group .cx-side-heading:hover { color: var(--text-2); }
 .cx-group .cx-side-heading:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
-.cx-fold { flex: none; transition: transform 120ms ease; }
+.cx-fold { flex: none; transition: transform var(--motion-small) var(--motion-ease-out); }
 .cx-side-heading[aria-expanded="false"] .cx-fold { transform: rotate(-90deg); }
 @media (prefers-reduced-motion: reduce) { .cx-fold { transition: none; } }
 .cx-cal-problem {
   flex: none; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%;
   background: color-mix(in srgb, var(--sys-orange, #ff9500) 22%, transparent); color: var(--sys-orange, #c76b00);
-  font-size: 10px; font-weight: 700;
+  font-size: var(--t-10); font-weight: 700;
 }
 
 /* New Calendar Subscription: a small panel in the sidebar, where the subscription will be. */
@@ -920,7 +919,7 @@
 .cx-guest-mark {
   width: 16px; height: 16px; border-radius: 50%;
   display: grid; place-items: center;
-  font-size: 10px; font-weight: 700; line-height: 1; color: #fff;
+  font-size: var(--t-10); font-weight: 700; line-height: 1; color: #fff;
   box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 25%, transparent);
 }
 .cx-guest-mark.is-accepted { background: #1f8034; box-shadow: none; }

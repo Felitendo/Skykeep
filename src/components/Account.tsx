@@ -96,6 +96,8 @@ export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen
     working = syncing;
     status = syncing ? "Syncing…" : failed ? "Some things didn't update" : freshness(report?.asOf ?? null);
   }
+  // Nothing synced yet, or the service is not there: the dot does not say all is well.
+  const idle = app ? own.unavailable || own.lastSyncedAt === null : !report?.asOf;
   // The first name, as the menu bar greets someone: a full name did not fit the sidebar and
   // ended in "…". Settings shows it whole.
   const name = account?.name?.split(/\s+/)[0] ?? account?.email ?? "Settings";
@@ -132,7 +134,7 @@ export function AccountCard({ current, onOpen, app }: { current: boolean; onOpen
         title={working ? full ?? status : `${full ?? status}. Click to update now`}
         aria-label={working ? full ?? status : `${full ?? status}. Update now`}
       >
-        <span className={`sync-dot ${failed ? "trouble" : working ? "working" : "clean"}`} aria-hidden="true" />
+        <span className={`sync-dot ${failed ? "trouble" : working ? "working" : idle ? "idle" : "clean"}`} aria-hidden="true" />
         <span className="sidebar-sync-text" aria-hidden="true">{status}</span>
         <span className="sidebar-sync-now" aria-hidden="true">Update Now</span>
       </button>
