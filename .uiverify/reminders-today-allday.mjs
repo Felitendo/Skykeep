@@ -12,8 +12,14 @@ await ctx.addInitScript(() => {
   const d = new Date();
   // Today, as Apple keeps a day: its midnight in UTC.
   const day = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 1000;
+  const at = (h) => Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate(), h).getTime() / 1000);
   window.__smartExtra = [{ guid: "allday1", listGuid: "l1", title: "Renew the parking permit", notes: null, dueAt: day, allDay: true,
-    completedAt: null, priority: 0, flagged: false, parentGuid: null, etag: null }];
+    completedAt: null, priority: 0, flagged: false, parentGuid: null, etag: null },
+    // A morning reminder with a subtask due in the afternoon: the subtask stays under it.
+    { guid: "par", listGuid: "l1", title: "Get ready for the trip", notes: null, dueAt: at(10), allDay: false,
+      completedAt: null, priority: 0, flagged: false, parentGuid: null, etag: null },
+    { guid: "kid", listGuid: "l1", title: "Charge the camera", notes: null, dueAt: at(15), allDay: false,
+      completedAt: null, priority: 0, flagged: false, parentGuid: "par", etag: null }];
 });
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, remindersFixture: true });
 const page = await ctx.newPage();
@@ -33,6 +39,10 @@ const layout = await page.evaluate(() => {
 });
 const at = layout.find(([, t]) => t.startsWith("Renew the parking permit"));
 ok(at && at[0] === null, `the day's reminder sits above the times of day  ${JSON.stringify(at)}  ${JSON.stringify(layout.map(([h]) => h))}`);
+
+const parent = layout.findIndex(([, t]) => t.startsWith("Get ready for the trip"));
+const kid = layout.findIndex(([, t]) => t.startsWith("Charge the camera"));
+ok(parent >= 0 && kid === parent + 1 && layout[kid][0] === layout[parent][0], `a subtask stays under its reminder, in its part of the day  ${JSON.stringify([layout[parent], layout[kid]])}`);
 
 // One added in Today is the same: due today, no time.
 const field = page.locator(".rx-add input").first();

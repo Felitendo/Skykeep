@@ -1430,23 +1430,37 @@ export function RemindersView() {
         { key: "afternoon", heading: "Afternoon", rows: [] },
         { key: "tonight", heading: "Tonight", rows: [] },
       ];
+      // A subtask goes where its reminder went, directly under it: filed by its own time, it was
+      // drawn nested under whatever reminder ended another part of the day.
+      let parentBucket = 0;
       for (const row of threaded) {
+        if (row.depth > 0) {
+          buckets[parentBucket].rows.push(row);
+          continue;
+        }
         const due = row.reminder.dueAt;
         // Anything overdue, or with no time at all, sits above the buckets — which is where
         // Apple puts it. A day's reminder has no time either: read as its midnight, it went
         // under Morning, with every one added here.
         if (due === null || row.reminder.allDay || daysApart(now, new Date(due * 1000)) < 0) {
-          buckets[0].rows.push(row);
-          continue;
+          parentBucket = 0;
+        } else {
+          const hour = new Date(due * 1000).getHours();
+          parentBucket = hour < 12 ? 1 : hour < 17 ? 2 : 3;
         }
-        const hour = new Date(due * 1000).getHours();
-        buckets[hour < 12 ? 1 : hour < 17 ? 2 : 3].rows.push(row);
+        buckets[parentBucket].rows.push(row);
       }
       // Each part of the day in time order, as Today reads; the list's own order put 9:30
       // above 8:30. A subtask keeps its place under its parent.
+      // Its subtasks move with it.
       for (const b of buckets.slice(1)) {
-        if (b.rows.some((r) => r.depth > 0)) continue;
-        b.rows.sort((x, y) => (x.reminder.dueAt ?? 0) - (y.reminder.dueAt ?? 0));
+        const units: (typeof threaded)[] = [];
+        for (const r of b.rows) {
+          if (r.depth > 0 && units.length) units[units.length - 1].push(r);
+          else units.push([r]);
+        }
+        units.sort((x, y) => (x[0].reminder.dueAt ?? 0) - (y[0].reminder.dueAt ?? 0));
+        b.rows = units.flat();
       }
       return buckets
         .filter((b) => b.rows.length > 0)
