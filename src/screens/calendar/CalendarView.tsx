@@ -3239,8 +3239,14 @@ function EventPopover({
             editable={editable}
             label="Starts"
             zone={zoneOf(draft)}
-            // Moving the start keeps the length, as Calendar does.
-            onChange={(startsAt) => set({ startsAt, endsAt: startsAt + (draft.endsAt - draft.startsAt) })}
+            // Moving the start keeps the length, as Calendar does — an all-day event's in days:
+            // kept in seconds, one moved onto a day the clock changes ran an hour into the next.
+            onChange={(startsAt) => set({
+              startsAt,
+              endsAt: draft.allDay
+                ? addDaysIn(ZONE, startsAt, Math.max(1, Math.round((draft.endsAt - draft.startsAt) / 86_400)))
+                : startsAt + (draft.endsAt - draft.startsAt),
+            })}
           />
         </div>
         <div className="cx-pop-row">

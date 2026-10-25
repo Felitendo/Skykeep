@@ -15,6 +15,9 @@ const ctx = await b.newContext({ viewport: { width: 1300, height: 900 }, timezon
 await ctx.addInitScript((e) => { window.__fixedEvents = e; }, [
   { guid: "dst1", calendarGuid: "work", title: "Spring standup", location: null, startsAt: nine, endsAt: nine + 3600,
     allDay: false, timezone: "America/New_York", url: null, notes: null, etag: null },
+  // A day out, on 1 March: midnight to midnight, New York.
+  { guid: "dst2", calendarGuid: "work", title: "Museum day", location: null, startsAt: Date.UTC(2026, 2, 1, 5) / 1000,
+    endsAt: Date.UTC(2026, 2, 2, 5) / 1000, allDay: true, timezone: null, url: null, notes: null, etag: null },
 ]);
 await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null, calendarFixture: true });
 const page = await ctx.newPage();
@@ -44,6 +47,19 @@ const drawn = await page.locator(".cx-block.is-draft").first().evaluate((el) => 
 ok(drawn === 11.5 * HOUR_PX, `and draws it where it was made  (top ${drawn}px)`);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
+
+// The day out moved to 8 March, the 23-hour day: still that one day, not on into the 9th.
+await page.keyboard.press("Shift+Control+T");
+await page.getByRole("dialog", { name: "Go to Date" }).getByLabel("Date").fill("2026-03-01");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(400);
+await page.locator(".cx-allday .cx-bar-event", { hasText: "Museum day" }).click();
+await page.waitForTimeout(300);
+await page.getByLabel("Starts date").fill("2026-03-08");
+await page.waitForTimeout(150);
+const ends = await page.getByLabel("Ends date").inputValue().catch(() => "(none)");
+ok(ends === "2026-03-08", `an all-day event moved onto the clock's change keeps its one day  (ends ${ends})`);
+await page.keyboard.press("Escape");
 
 await b.close();
 process.exitCode = failures ? 1 : 0;
