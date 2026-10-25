@@ -99,6 +99,12 @@ export function setWeekStart(choice: WeekStartChoice) {
   refreshWeek();
 }
 /** Calls `run` whenever the week changes; answers the way to stop. */
+// The first day chosen in Settings, in the library window, reaches Calendar's own window too.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === WEEK_KEY || e.key === null) refreshWeek();
+  });
+}
 export function onWeekChange(run: () => void): () => void {
   window.addEventListener(WEEK_CHANGED, run);
   return () => window.removeEventListener(WEEK_CHANGED, run);

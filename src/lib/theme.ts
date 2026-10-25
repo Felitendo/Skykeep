@@ -29,6 +29,17 @@ export function setTheme(theme: Theme) {
 }
 
 /**
+ * The appearance chosen in another window: Settings lives in the library window, and each
+ * app's own window (and one put away, hidden, to be shown again) kept the old appearance until
+ * it was opened afresh. They share this computer's storage, which says when it changes.
+ */
+export function followTheme() {
+  window.addEventListener("storage", (e) => {
+    if (e.key === KEY || e.key === null) applyTheme(storedTheme());
+  });
+}
+
+/**
  * The desktop's Increase Contrast, where the engine does not say it itself: on Linux the app
  * reads the Settings portal (appearance.rs) and the root is marked `data-contrast="more"`,
  * which a11y.css treats as `prefers-contrast: more`. Followed as it changes.
