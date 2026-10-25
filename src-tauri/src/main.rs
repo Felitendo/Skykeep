@@ -810,12 +810,23 @@ pub(crate) fn attachment_name(given: Option<&str>, id: &str) -> String {
     // Long enough for any real name, short enough for every file system — and, cut short, it
     // still ends in neither a dot nor a space, which Windows drops (turning `a.pdf.` into
     // another file than the one checked).
-    let mut name: String = trimmed
-        .chars()
-        .take(120)
-        .collect::<String>()
-        .trim_end_matches(['.', ' '])
-        .to_string();
+    //
+    // Counted in bytes, as Linux counts a name (255 at most, with room left for " 2" and
+    // ".part"), and cut from the stem so the extension stays: 120 characters dropped ".pdf",
+    // and 120 CJK characters or emoji were over the limit and could not be saved at all.
+    const LONGEST: usize = 120;
+    let cut: String = if trimmed.len() <= LONGEST {
+        trimmed.to_string()
+    } else {
+        let (stem, ext) = name_parts(trimmed);
+        let room = LONGEST.saturating_sub(ext.len()).max(1);
+        let mut at = room.min(stem.len());
+        while !stem.is_char_boundary(at) {
+            at -= 1;
+        }
+        format!("{}{ext}", stem[..at].trim_end_matches(['.', ' ']))
+    };
+    let mut name = cut.trim_end_matches(['.', ' ']).to_string();
     // Windows reads a device in the stem whatever follows it (`CON.txt`, `CON .txt`), and
     // counts superscript digits as digits (`COM¹`).
     let stem = name
@@ -3839,20 +3850,42 @@ async fn contact_delete(guid: String, data: State<'_, Data>) -> UiResult<()> {
 /// A path in `dir` for `name` that holds nothing yet: a number goes on the end rather than
 /// writing over a file already there — the rule a browser follows.
 fn free_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-    let (stem, ext) = name.rsplit_once('.').map_or((name, ""), |(s, e)| (s, e));
+    let (stem, ext) = name_parts(name);
     let mut path = dir.join(name);
     let mut suffix = 1;
     // Anything at all under the name counts as taken — a link too, even one that leads
     // nowhere: written through, it would put the file wherever the link points.
     while path.symlink_metadata().is_ok() {
-        path = dir.join(if ext.is_empty() {
-            format!("{stem} {suffix}")
-        } else {
-            format!("{stem} {suffix}.{ext}")
-        });
+        path = dir.join(format!("{stem} {suffix}{ext}"));
         suffix += 1;
     }
     path
+}
+
+/// A file name as its stem and its extension (with the dot, or empty): the whole of a
+/// compressed tar's (".tar.gz"), and only something that reads as one — short, with no space —
+/// so "v1.2 notes" has none.
+pub(crate) fn name_parts(name: &str) -> (&str, &str) {
+    let lower = name.to_ascii_lowercase();
+    for double in [".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"] {
+        if lower.len() > double.len() && lower.ends_with(double) {
+            let at = name.len() - double.len();
+            if name.is_char_boundary(at) {
+                return (&name[..at], &name[at..]);
+            }
+        }
+    }
+    match name.rfind('.') {
+        Some(at)
+            if at > 0
+                && name.len() - at - 1 <= 16
+                && !name[at..].contains(' ')
+                && at + 1 < name.len() =>
+        {
+            (&name[..at], &name[at..])
+        }
+        _ => (name, ""),
+    }
 }
 
 /// These people as a vCard file in Downloads, written by Apple. Returns where it went.
@@ -4173,6 +4206,31 @@ fn cancelled(batch: &str) -> bool {
     cancelled_batches().lock().is_ok_and(|b| b.contains(batch))
 }
 
+/// Files stopped one by one with their ✕, by id: one stopped while its folder upload was still
+/// being walked had no stop registered yet, so it was sent anyway once the walk was done.
+fn cancelled_uploads() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static CANCELLED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    CANCELLED.get_or_init(Default::default)
+}
+
+/// Whether this file was stopped before it began — on its own, or with its whole batch. Asked
+/// as each file is about to send: Cancel pressed while a folder upload is still being planned
+/// stops the planning, and must stop the files already found too.
+fn upload_stopped(batch: &str, id: &str) -> bool {
+    cancelled(batch) || cancelled_uploads().lock().is_ok_and(|c| c.contains(id))
+}
+
+/// A batch is over: what was remembered about stopping it is let go.
+fn forget_cancelled(batch: &str) {
+    cancelled_batches().lock().map(|mut b| b.remove(batch)).ok();
+    let mine = format!("{batch}:");
+    cancelled_uploads()
+        .lock()
+        .map(|mut c| c.retain(|id| !id.starts_with(&mine)))
+        .ok();
+}
+
 /// Stop uploads: these files, or a whole batch. A file already being filed in iCloud is past
 /// stopping and finishes; anything waiting or still sending stops, with nothing of it kept.
 #[tauri::command]
@@ -4183,6 +4241,10 @@ fn drive_upload_cancel(ids: Vec<String>, batch: Option<String>) {
             .map(|mut b| b.insert(batch.clone()))
             .ok();
     }
+    cancelled_uploads()
+        .lock()
+        .map(|mut c| c.extend(ids.iter().cloned()))
+        .ok();
     if let Ok(running) = uploads_running().lock() {
         for (id, handle) in running.iter() {
             let in_batch = batch
@@ -4193,6 +4255,36 @@ fn drive_upload_cancel(ids: Vec<String>, batch: Option<String>) {
             }
         }
     }
+}
+
+/// Something in an upload that will not go up, said in the tray with its own row as well as in
+/// the answer: found while the upload was being planned — a file that could not be read, a link,
+/// a folder Apple would not make — it had no row, and the tray said "Uploaded" over it.
+fn upload_failed(
+    app: &tauri::AppHandle,
+    batch: &str,
+    name: &str,
+    within: &str,
+    folder: bool,
+    error: String,
+    failed: &mut Vec<String>,
+) {
+    app.emit(
+        UPLOAD,
+        &UploadEvent {
+            id: format!("{batch}:x:{}", failed.len()),
+            batch: batch.to_string(),
+            name: name.to_string(),
+            within: within.to_string(),
+            sent: 0,
+            total: 0,
+            state: "failed",
+            folder,
+            error: Some(error.clone()),
+        },
+    )
+    .ok();
+    failed.push(format!("{name}: {error}"));
 }
 
 /// One file to send, and the Drive folder it goes into.
@@ -4271,10 +4363,17 @@ async fn plan_upload(
             || path.display().to_string(),
             |n| n.to_string_lossy().into(),
         );
-        let meta = match tokio::fs::symlink_metadata(&path).await {
+        // What was chosen is followed if it is a link (a Music folder linked from another
+        // disk); only what is found inside is not.
+        let chosen = within.is_empty() && resolved.is_none();
+        let meta = match if chosen {
+            tokio::fs::metadata(&path).await
+        } else {
+            tokio::fs::symlink_metadata(&path).await
+        } {
             Ok(meta) => meta,
             Err(e) => {
-                failed.push(format!("{name}: {e}"));
+                upload_failed(app, batch, &name, &within, false, e.to_string(), failed);
                 continue;
             }
         };
@@ -4326,6 +4425,9 @@ async fn plan_upload(
             let mut entries = match tokio::fs::read_dir(&path).await {
                 Ok(entries) => entries,
                 Err(e) => {
+                    shown.state = "failed";
+                    shown.error = Some(e.to_string());
+                    app.emit(UPLOAD, &shown).ok();
                     failed.push(format!("{name}: {e}"));
                     continue;
                 }
@@ -4387,7 +4489,7 @@ async fn plan_upload(
                     Some(Ok(id)) => {
                         pending.push((child, folder.clone(), below.clone(), Some((id, true))))
                     }
-                    Some(Err(e)) => failed.push(format!("{child_name}: {e}")),
+                    Some(Err(e)) => upload_failed(app, batch, &child_name, &below, true, e, failed),
                     None => pending.push((child, folder.clone(), below.clone(), None)),
                 }
             }
@@ -4410,6 +4512,16 @@ async fn plan_upload(
                 path,
                 folder: into,
             });
+        } else {
+            upload_failed(
+                app,
+                batch,
+                &name,
+                &within,
+                false,
+                "a link or a special file, which isn\u{2019}t uploaded".into(),
+                failed,
+            );
         }
     }
     jobs
@@ -4507,8 +4619,13 @@ async fn drive_upload(
                 e
             };
             let app_for_cancel = app.clone();
+            let stopped_event = cancelled_event.clone();
             let run = async move {
                 let mut event = job.event.clone();
+                if upload_stopped(&event.batch, &event.id) {
+                    app.emit(UPLOAD, &stopped_event).ok();
+                    return None;
+                }
                 event.state = "sending";
                 app.emit(UPLOAD, &event).ok();
 
@@ -4580,10 +4697,7 @@ async fn drive_upload(
         .collect()
         .await;
     failed.extend(results.into_iter().flatten());
-    cancelled_batches()
-        .lock()
-        .map(|mut b| b.remove(&batch))
-        .ok();
+    forget_cancelled(&batch);
 
     settle(resync_drive_folder(&http, &root, params, &data, &folder_id).await)?;
     Ok(failed)
@@ -6656,6 +6770,73 @@ mod tests {
         assert_eq!(mode(&data.join("photos")), 0o700);
         assert_eq!(mode(&data.join("note-media")), 0o700);
         assert_eq!(mode(&outside), 0o644);
+    }
+
+    /// A long name is cut to fit every disk, counted in bytes as Linux counts them, and keeps
+    /// its extension: 120 characters of it dropped ".pdf", and 120 CJK characters or emoji,
+    /// with " 2" and ".part" added on the way, were over ext4's 255 bytes and failed to save.
+    #[test]
+    fn a_long_name_keeps_its_extension_and_fits_the_disk() {
+        use super::attachment_name;
+        for given in [
+            format!("{}.pdf", "a".repeat(200)),
+            format!("{}.pdf", "\u{6f22}".repeat(100)),
+            format!("{}.pdf", "\u{1f600}".repeat(64)),
+        ] {
+            let name = attachment_name(Some(&given), "A");
+            assert!(name.ends_with(".pdf"), "{name}");
+            assert!(name.len() <= 120, "{} bytes: {name}", name.len());
+            assert!(format!("{name} 99.part").len() <= 255);
+        }
+        // Short names, and the parts of one that look like an extension and are not, as before.
+        assert_eq!(
+            attachment_name(Some("Report 2026.pdf"), "A"),
+            "Report 2026.pdf"
+        );
+        let plain = attachment_name(Some(&format!("{}.v2 final draft", "b".repeat(150))), "A");
+        assert!(plain.len() <= 120 && plain.starts_with('b'), "{plain}");
+    }
+
+    /// The number a second copy takes goes before the whole extension, as a browser puts it:
+    /// "archive.tar.gz" was saved as "archive.tar 1.gz", and "v1.2 notes" as "v1 1.2 notes".
+    #[test]
+    fn a_second_copy_is_numbered_before_its_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["archive.tar.gz", "v1.2 notes", "Report.pdf", "Makefile"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let next = |n: &str| {
+            super::free_path(dir.path(), n)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(next("archive.tar.gz"), "archive 1.tar.gz");
+        assert_eq!(next("v1.2 notes"), "v1.2 notes 1");
+        assert_eq!(next("Report.pdf"), "Report 1.pdf");
+        assert_eq!(next("Makefile"), "Makefile 1");
+        assert_eq!(next("new.txt"), "new.txt");
+    }
+
+    /// Cancel pressed while a folder upload is still being walked — before any file has a stop
+    /// of its own — reaches every file found by then, as does one file's ✕; the next batch
+    /// starts clean.
+    #[test]
+    fn an_upload_cancelled_before_it_began_is_never_sent() {
+        use super::{drive_upload_cancel, forget_cancelled, upload_stopped};
+        drive_upload_cancel(Vec::new(), Some("planning".into()));
+        assert!(upload_stopped("planning", "planning:0"));
+        assert!(upload_stopped("planning", "planning:41"));
+        assert!(!upload_stopped("other", "other:0"));
+        forget_cancelled("planning");
+        assert!(!upload_stopped("planning", "planning:0"));
+
+        drive_upload_cancel(vec!["one:2".into()], None);
+        assert!(upload_stopped("one", "one:2"));
+        assert!(!upload_stopped("one", "one:3"));
+        forget_cancelled("one");
+        assert!(!upload_stopped("one", "one:2"));
     }
 
     /// A plain http feed is tried over https first; a secure one is left as it is.

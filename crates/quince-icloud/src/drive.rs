@@ -259,16 +259,39 @@ pub async fn download_to(
     // Into a file of its own beside the destination, moved into place only once it is all
     // there and only if nothing has taken the name meanwhile. Written straight to the name,
     // a download that broke off left a truncated file under the real one.
-    let partial = destination.with_extension(match destination.extension() {
+    let base = destination.with_extension(match destination.extension() {
         Some(ext) => format!("{}.part", ext.to_string_lossy()),
         None => "part".into(),
     });
-    let written: Result<()> = async {
-        let mut file = tokio::fs::OpenOptions::new()
+    // A partial file left by a download cut off (a crash, a power cut) keeps its name: this one
+    // takes the next free one beside it, rather than failing on "File exists" for good.
+    let mut partial = base.clone();
+    let mut opened = None;
+    for n in 1..=100 {
+        match tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&partial)
-            .await?;
+            .await
+        {
+            Ok(file) => {
+                opened = Some(file);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let mut name = base.as_os_str().to_owned();
+                name.push(format!(".{n}"));
+                partial = std::path::PathBuf::from(name);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let Some(mut file) = opened else {
+        return Err(Error::Protocol(
+            "too many unfinished downloads of this file are in the way".into(),
+        ));
+    };
+    let written: Result<()> = async {
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             file.write_all(&chunk?).await?;
@@ -357,13 +380,21 @@ pub async fn create_folders(
 ) -> Result<Vec<(String, std::result::Result<String, String>)>> {
     let mut out = Vec::with_capacity(names.len());
     for chunk in names.chunks(100) {
-        let asked: Vec<(String, String)> = chunk
+        // (as asked, as sent, client id): answered under the name asked, which is how the caller
+        // looks each one up — "Notes " is made as "Notes".
+        let asked: Vec<(String, String, String)> = chunk
             .iter()
-            .map(|n| (n.trim().to_string(), uuid::Uuid::new_v4().to_string()))
+            .map(|n| {
+                (
+                    n.clone(),
+                    n.trim().to_string(),
+                    uuid::Uuid::new_v4().to_string(),
+                )
+            })
             .collect();
         let body = json!({
             "destinationDrivewsId": parent_id,
-            "folders": asked.iter().map(|(name, id)| json!({ "name": name, "clientId": id })).collect::<Vec<_>>(),
+            "folders": asked.iter().map(|(_, name, id)| json!({ "name": name, "clientId": id })).collect::<Vec<_>>(),
         });
         let url = format!("{}/createFolders", root.trim_end_matches('/'));
         let reply = post_json(http, &url, &params, &body).await?;
@@ -372,7 +403,7 @@ pub async fn create_folders(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        for (name, client_id) in asked {
+        for (key, name, client_id) in asked {
             let folder = made
                 .iter()
                 .find(|f| f.get("clientId").and_then(Value::as_str) == Some(client_id.as_str()))
@@ -398,7 +429,7 @@ pub async fn create_folders(
                     "iCloud Drive said nothing about \u{201c}{name}\u{201d}."
                 )),
             };
-            out.push((name, result));
+            out.push((key, result));
         }
     }
     Ok(out)
@@ -1541,6 +1572,44 @@ mod write_tests {
         assert_eq!(body["folders"][0]["name"], "Scans");
     }
 
+    /// A folder made with its siblings in one request answers under the name it was asked by:
+    /// "Notes " (a space at the end, as folders copied from a Mac often have) was made as
+    /// "Notes" and answered as "Notes", so the upload never found it, and every file in it
+    /// failed against the folder it had just made.
+    #[tokio::test]
+    async fn folders_made_together_answer_under_the_names_asked() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/createFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "folders": [{
+                    "drivewsid": "FOLDER::com.apple.CloudDocs::N1",
+                    "parentId": "FOLDER::com.apple.CloudDocs::root",
+                    "name": "Notes",
+                    "type": "FOLDER",
+                    "status": "OK"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let made = create_folders(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "FOLDER::com.apple.CloudDocs::root",
+            &["Notes ".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].0, "Notes ");
+        assert_eq!(made[0].1.as_deref(), Ok("FOLDER::com.apple.CloudDocs::N1"));
+        assert_eq!(
+            sent(&server, "/createFolders").await["folders"][0]["name"],
+            "Notes"
+        );
+    }
+
     /// A response shaped like a real `retrieveItemDetailsInFolders` reply, holding `item`
     /// (possibly under a different, current etag) as the sole child of its folder.
     fn listing_of(folder_id: &str, item: &DriveItem, etag: &str) -> serde_json::Value {
@@ -2030,6 +2099,45 @@ mod write_tests {
         .unwrap();
 
         assert_eq!(std::fs::read(&destination).unwrap(), b"hello drive");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A download cut off by a crash or a power cut leaves its partial file behind; the next
+    /// download of that file must not trip over it — it failed with "File exists" for good.
+    #[tokio::test]
+    async fn a_partial_file_left_by_a_crash_does_not_block_the_next_download() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data_token": { "url": format!("{}/bytes", server.uri()) }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bytes"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"whole film".to_vec()))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir();
+        std::fs::write(dir.join("Film.mov.part"), b"half a fi").unwrap();
+        let destination = dir.join("Film.mov");
+        download_to(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            &destination,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"whole film");
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left.len(), 2, "only the film and the old partial: {left:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
