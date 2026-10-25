@@ -52,11 +52,13 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 function sortItems(rows: DriveItem[], by: SortKey, reversed = false): DriveItem[] {
   const name = (a: DriveItem, b: DriveItem) => collator.compare(a.name, b.name);
   const folderFirst = (a: DriveItem, b: DriveItem) => Number(isContainer(b)) - Number(isContainer(a));
-  const kindOf = (i: DriveItem) => (isContainer(i) ? " " : (i.extension ?? "").toLowerCase());
+  const kindOf = (i: DriveItem) => (i.extension ?? "").toLowerCase();
   const order: Record<SortKey, (a: DriveItem, b: DriveItem) => number> = {
     name: (a, b) => folderFirst(a, b) || name(a, b),
     date: (a, b) => folderFirst(a, b) || (b.modifiedAt ?? b.createdAt ?? 0) - (a.modifiedAt ?? a.createdAt ?? 0) || name(a, b),
-    kind: (a, b) => collator.compare(kindOf(a), kindOf(b)) || name(a, b),
+    // Folders are a kind of their own, first: told apart by a space for an extension, they
+    // sorted after a file with none at all ("Makefile", "README").
+    kind: (a, b) => folderFirst(a, b) || collator.compare(kindOf(a), kindOf(b)) || name(a, b),
     size: (a, b) => folderFirst(a, b) || (b.size ?? 0) - (a.size ?? 0) || name(a, b),
   };
   // A second click on a heading turns the order round, as in Finder; folders stay on top.
@@ -1241,10 +1243,13 @@ export function DriveView() {
       setPeeking(false);
       return;
     }
-    const step = (by: number) => {
+    const step = (by: number, to?: number) => {
       if (rows.length === 0) return;
       const at = selected ? rows.findIndex((r) => r.drivewsid === selected) : -1;
-      const next = rows[at < 0 ? (by > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, at + by))].drivewsid;
+      // Home and End go to an end whatever is selected; an arrow with nothing selected starts
+      // at the end it points from. (Home with nothing selected used to land on the last row.)
+      const index = to ?? (at < 0 ? (by > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, at + by)));
+      const next = rows[index].drivewsid;
       if (e.shiftKey && selected) setPicked(run(next));
       else {
         anchor.current = next;
@@ -1276,7 +1281,7 @@ export function DriveView() {
       step(k === "ArrowRight" ? 1 : -1);
     } else if (!mod && (k === "Home" || k === "End") && rows.length) {
       e.preventDefault();
-      step(k === "Home" ? -rows.length : rows.length);
+      step(0, k === "Home" ? 0 : rows.length - 1);
     } else if (k === "Enter" && !mod && onRows && primary) {
       e.preventDefault();
       setPeeking(false);
