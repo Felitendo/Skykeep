@@ -52,6 +52,10 @@ async function open(timezoneId, due) {
   await page.getByRole("dialog", { name: "Go to Date" }).getByLabel("Date").fill(`${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`);
   await page.keyboard.press("Enter");
   await page.waitForTimeout(400);
+  // In the all-day row, not on the hour grid's midnight line out of sight.
+  const inRow = await page.locator(".cx-allday .cx-reminder", { hasText: "Renew the passport" }).count();
+  const onGrid = await page.locator(".cx-columns .cx-reminder", { hasText: "Renew the passport" }).count();
+  ok(inRow === 1 && onGrid === 0, `Day: in the all-day row, not on the hour grid  (row ${inRow}, grid ${onGrid})`);
   const row = page.locator(".cx-pane-reminder", { hasText: "Renew the passport" });
   const when = (await row.count()) ? (await row.locator(".cx-pane-when").innerText()).trim() : "(none)";
   ok((await row.count()) === 1 && !/\d/.test(when), `Day: in the day's list, with no time  ${JSON.stringify(when)}`);

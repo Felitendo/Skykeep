@@ -2274,7 +2274,15 @@ const TimeGrid = memo(function TimeGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [events, daysKey]
   );
-  const lanes = Math.max(1, ...spans.map((s) => s.lane + 1));
+  const eventLanes = Math.max(0, ...spans.map((s) => s.lane + 1));
+  // A reminder for a day has no time: it sits in the all-day row under the day's bars, as in
+  // Calendar. On the hour grid it was drawn on the midnight line, scrolled out of sight.
+  const dayReminders = useMemo(
+    () => days.map((d) => reminders.filter((r) => r.allDay && r.dueAt !== null && sameDay(dateOf(r.dueAt), d))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [reminders, daysKey]
+  );
+  const lanes = Math.max(1, eventLanes + Math.max(0, ...dayReminders.map((l) => l.length)));
 
   // Opened, it shows the working day rather than midnight — as Calendar does.
   useLayoutEffect(() => {
@@ -2431,7 +2439,7 @@ const TimeGrid = memo(function TimeGrid({
   const pendingTo = pending?.endsAt ?? null;
   const layouts = useMemo(() => days.map((d) => {
     const pending = pendingFrom === null || pendingTo === null ? null : { startsAt: pendingFrom, endsAt: pendingTo };
-    const due = stackReminders(reminders.filter((r) => r.dueAt !== null && sameDay(dateOf(r.dueAt), d)));
+    const due = stackReminders(reminders.filter((r) => r.dueAt !== null && !r.allDay && sameDay(dateOf(r.dueAt), d)));
     const marks = due.map(({ reminder, top }) => ({
       id: reminder.guid,
       top: (top / HOUR) * 60,
@@ -2503,6 +2511,23 @@ const TimeGrid = memo(function TimeGrid({
               {s.event.title}
             </button>
           ))}
+          {dayReminders.map((list, column) => list.map((r, k) => (
+            <span
+              key={r.guid}
+              {...showReminder(r)}
+              className={`cx-reminder${r.completedAt ? " is-done" : ""}`}
+              style={{
+                ...listColour(r),
+                top: `${4 + (eventLanes + k) * LANE + 2}px`,
+                left: `calc(${(column / days.length) * 100}% + 4px)`,
+                width: `calc(${100 / days.length}% - 8px)`,
+                maxWidth: `calc(${100 / days.length}% - 8px)`,
+              }}
+            >
+              <Ring reminder={r} quiet />
+              <span className="cx-reminder-title">{r.title}</span>
+            </span>
+          )))}
         </div>
       </div>
 
