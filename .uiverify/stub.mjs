@@ -162,7 +162,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return { hasStoredSession: screen === "library", signedIn: screen === "library" };
         case "auth_resume":      return screen === "library" ? "library" : "signin";
         case "auth_sign_in":     return screen === "code" ? "needs_two_factor" : "complete";
-        case "auth_submit_code": return null;
+        case "auth_submit_code": window.__codeVia = "devices"; return null;
         case "account_services": return services;
         case "calendar_events": {
           window.__eventReads = (window.__eventReads ?? 0) + 1;
@@ -990,7 +990,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "auth_two_factor_options": return twoFactor;
         case "auth_resend_code":    return null;
         case "auth_send_sms":       return null;
-        case "auth_submit_sms_code": return null;
+        case "auth_submit_sms_code": window.__codeVia = `sms:${args?.phoneId}`; return null;
         case "auth_sign_out":    sessionStorage.setItem("__signedOut", JSON.stringify(args)); return null;
         case "search_everything": {
           // A search across every app, as search.rs answers it: every word has to begin a word
