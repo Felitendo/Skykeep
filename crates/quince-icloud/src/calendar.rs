@@ -474,7 +474,7 @@ pub fn guests_from(body: &Value, event_guid: &str) -> Vec<Guest> {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     };
-    let mut guests: Vec<Guest> = body
+    let guests: Vec<Guest> = body
         .get("Invitee")
         .and_then(Value::as_array)
         .into_iter()
@@ -512,6 +512,29 @@ pub fn guests_from(body: &Value, event_guid: &str) -> Vec<Guest> {
                 .unwrap_or(false),
         })
         .collect();
+    // One person once: an address listed twice — the organizer among the invited too, or in
+    // another case — is one guest, with what either copy says of them. Left to a dedup after
+    // the sort, the copies sorted apart by name and both were shown.
+    let mut guests: Vec<Guest> = guests.into_iter().fold(Vec::new(), |mut out, g| {
+        let same = |m: &Guest| {
+            m.email.is_some()
+                && m.email.as_deref().map(str::to_lowercase)
+                    == g.email.as_deref().map(str::to_lowercase)
+        };
+        if let Some(was) = out.iter_mut().find(|m| same(m)) {
+            was.is_me |= g.is_me;
+            was.is_organizer |= g.is_organizer;
+            if was.name.is_none() {
+                was.name = g.name;
+            }
+            if was.status == "pending" {
+                was.status = g.status;
+            }
+        } else {
+            out.push(g);
+        }
+        out
+    });
     guests.sort_by(|a, b| {
         b.is_organizer.cmp(&a.is_organizer).then_with(|| {
             let key = |g: &Guest| {
@@ -524,7 +547,6 @@ pub fn guests_from(body: &Value, event_guid: &str) -> Vec<Guest> {
             key(a).cmp(&key(b))
         })
     });
-    guests.dedup_by(|a, b| a.email.is_some() && a.email == b.email);
     guests
 }
 
@@ -1522,6 +1544,30 @@ mod tests {
                     false
                 ),
             ]
+        );
+    }
+
+    /// One person listed twice — the organizer also among those invited, as an invitation from
+    /// another calendar lists them, their address written in another case — is one guest: the
+    /// organizer, with the name either copy gives. Sorted apart by name, both copies were shown.
+    #[test]
+    fn a_guest_listed_twice_is_shown_once() {
+        let body = json!({
+            "Event": [{ "guid": "E1", "invitees": ["I1", "I2", "I3"] }],
+            "Invitee": [
+                { "guid": "I1", "email": "mailto:Zoe@Example.com", "inviteeStatus": "ACCEPTED", "isOrganizer": true },
+                { "guid": "I2", "commonName": "Amir", "email": "amir@example.com", "inviteeStatus": "ACCEPTED" },
+                { "guid": "I3", "commonName": "Zoe Park", "email": "mailto:zoe@example.com", "inviteeStatus": "ACCEPTED", "isMe": true },
+            ]
+        });
+        let g = guests_from(&body, "E1");
+        let shown: Vec<_> = g
+            .iter()
+            .map(|g| (g.name.as_deref(), g.is_organizer, g.is_me))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![(Some("Zoe Park"), true, true), (Some("Amir"), false, false)]
         );
     }
 
