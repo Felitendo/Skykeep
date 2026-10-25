@@ -46,3 +46,13 @@ test("a place is kept in the title", () => {
   const q = parseReminder("Pick up parcel at the post office tomorrow", now, true);
   assert.match(q.title, /post office/);
 });
+
+test("how long it takes is part of what to do: it stays in the title", () => {
+  // A reminder has no length. Read as one, "for 20 minutes" went from the title unsaid.
+  const read = parseReminder("Read for 20 minutes daily", now, true);
+  assert.deepEqual([read.title, read.repeat], ["Read for 20 minutes", { frequency: 0, interval: 1 }]);
+  const piano = parseReminder("Practice piano for an hour tomorrow", now, true);
+  assert.deepEqual([piano.title, piano.dueAt, piano.allDay], ["Practice piano for an hour", local(2026, 9, 23), true]);
+  const run = parseReminder("Run for 30 mins tomorrow 7am", now, true);
+  assert.deepEqual([run.title, run.dueAt, run.allDay], ["Run for 30 mins", local(2026, 9, 23, 7), false]);
+});

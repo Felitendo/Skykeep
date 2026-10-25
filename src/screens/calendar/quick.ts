@@ -79,7 +79,9 @@ function dayFirst(): boolean {
   }
 }
 
-export function parseQuick(text: string, now: Date = new Date(), dmy: boolean = dayFirst()): Quick {
+/** `lengths`: whether "for an hour" is read as how long it lasts — an event's, not a
+ *  reminder's, which has no length and keeps the words. */
+export function parseQuick(text: string, now: Date = new Date(), dmy: boolean = dayFirst(), lengths = true): Quick {
   let rest = ` ${text.replace(/\s+/g, " ").trim()} `;
   const today = midnightOf(now);
   let day = null as Date | null;
@@ -176,7 +178,7 @@ export function parseQuick(text: string, now: Date = new Date(), dmy: boolean = 
       if (!c) return false;
       start = c;
     });
-  take(w(String.raw`for\s+(\d+(?:\.\d+)?|an?|half\s+an?)\s*(minutes?|mins?|m|hours?|hrs?|h)`), (m) => {
+  if (lengths) take(w(String.raw`for\s+(\d+(?:\.\d+)?|an?|half\s+an?)\s*(minutes?|mins?|m|hours?|hrs?|h)`), (m) => {
     const n = /half/i.test(m[1]) ? 0.5 : /^an?$/i.test(m[1]) ? 1 : Number(m[1]);
     minutes = Math.round(n * (/^h/i.test(m[2]) ? 60 : 1));
     if (!(minutes > 0 && minutes <= 14 * 24 * 60)) return false;

@@ -30,7 +30,8 @@ export function parseReminder(text: string, now: Date = new Date(), dayFirst?: b
     priority = PRIORITY[(bang[1] ?? bang[2]).length];
     line = (line.slice(0, bang.index) + " " + line.slice(bang.index + bang[0].length)).trim();
   }
-  const q = parseQuick(line, now, dayFirst);
+  // How long is not a reminder's to know ("Read for 20 minutes daily"): those words stay.
+  const q = parseQuick(line, now, dayFirst, false);
   // Where Quick Event took out a place, it goes back: a reminder keeps "at the office" as
   // words, as the phone does when typed.
   let title = q.location ? `${q.title} at ${q.location}`.trim() : q.title;
