@@ -1423,8 +1423,9 @@ export function RemindersView() {
       for (const row of threaded) {
         const due = row.reminder.dueAt;
         // Anything overdue, or with no time at all, sits above the buckets — which is where
-        // Apple puts it.
-        if (due === null || daysApart(now, new Date(due * 1000)) < 0) {
+        // Apple puts it. A day's reminder has no time either: read as its midnight, it went
+        // under Morning, with every one added here.
+        if (due === null || row.reminder.allDay || daysApart(now, new Date(due * 1000)) < 0) {
           buckets[0].rows.push(row);
           continue;
         }

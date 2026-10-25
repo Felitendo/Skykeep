@@ -340,7 +340,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;
-        case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : reminderItems.filter(r => !r.completedAt);
+        // A suite's own reminders in the smart lists (`window.__smartExtra`).
+        case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : [...reminderItems, ...(window.__smartExtra ?? [])].filter(r => !r.completedAt);
         // Reminders' details (reminders_cmds.rs): tags, a link, early alerts, custom smart lists
         // and sections. A test sets __tagMap / __details / __smartLists / __sections to change them.
         case "reminder_sections": return (window.__sections ?? []).filter((s) => s.listGuid === args.listGuid);
