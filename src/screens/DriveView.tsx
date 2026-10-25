@@ -793,10 +793,14 @@ export function DriveView() {
         // A folder still being uploaded into stops taking files first: deleting it while files
         // went on landing was what Apple would not do.
         if (isContainer(item)) {
-          const into = [...uploadsRef.current.values()].filter(
-            (u) => !["done", "failed", "cancelled"].includes(u.state) &&
-              ((u.folder && !u.within && u.name === item.name) || u.within.split("/")[0] === item.name),
-          );
+          // Files dropped onto it, or a folder of that name being made in the folder it is in —
+          // not one of the same name being made somewhere else.
+          const into = [...uploadsRef.current.values()].filter((u) => {
+            if (["done", "failed", "cancelled"].includes(u.state)) return false;
+            const dest = batchInto.current.get(u.batch);
+            if (dest === item.drivewsid) return true;
+            return dest === from && ((u.folder && !u.within && u.name === item.name) || u.within.split("/")[0] === item.name);
+          });
           for (const batch of new Set(into.map((u) => u.batch))) await api.driveUploadCancel([], batch).catch(() => {});
         }
         try {
@@ -984,6 +988,8 @@ export function DriveView() {
 
   const uploadsRef = useRef(uploads);
   uploadsRef.current = uploads;
+  /** The folder each upload batch was sent into, so deleting a folder stops only its own. */
+  const batchInto = useRef(new Map<string, string>());
   const dismissUploads = useCallback(() => setUploads(new Map()), []);
 
   const upload = useCallback(
@@ -994,6 +1000,7 @@ export function DriveView() {
       const batch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       // The open folder, or a folder in it the files were dropped on.
       const into = target ?? here.id;
+      batchInto.current.set(batch, into);
       setPending((p) => [
         ...p,
         ...paths.map((path, i) => ({
