@@ -28,6 +28,10 @@
     --glass-edge: rgba(0, 0, 0, 0.5);
     --fill: color-mix(in srgb, var(--text) 12%, transparent);
     --fill-selected: color-mix(in srgb, var(--text) 20%, transparent);
+    --fill-hover: color-mix(in srgb, var(--text) 10%, transparent);
+    --fill-press: color-mix(in srgb, var(--text) 18%, transparent);
+    --fill-raised-hover: color-mix(in srgb, var(--text) 18%, transparent);
+    --fill-raised-press: color-mix(in srgb, var(--text) 24%, transparent);
     --accent-ring: var(--accent-strong);
     --ring: 0 0 0 2px var(--accent-strong);
     --focus-ring: 2px solid var(--text);
@@ -94,6 +98,10 @@
   --glass-edge: rgba(0, 0, 0, 0.5);
   --fill: color-mix(in srgb, var(--text) 12%, transparent);
   --fill-selected: color-mix(in srgb, var(--text) 20%, transparent);
+  --fill-hover: color-mix(in srgb, var(--text) 10%, transparent);
+  --fill-press: color-mix(in srgb, var(--text) 18%, transparent);
+  --fill-raised-hover: color-mix(in srgb, var(--text) 18%, transparent);
+  --fill-raised-press: color-mix(in srgb, var(--text) 24%, transparent);
   --accent-ring: var(--accent-strong);
   --ring: 0 0 0 2px var(--accent-strong);
   --focus-ring: 2px solid var(--text);

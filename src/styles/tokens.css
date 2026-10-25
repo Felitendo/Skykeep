@@ -52,13 +52,24 @@
      default 16px but follow the system's text size: WebKitGTK derives its default font size
      from GTK's font DPI (Xft.dpi — what GNOME's "Large Text" and text-scaling-factor change),
      WebView2 from Windows' "Text size". Pixel sizes would ignore both. */
+  --t-10: 0.625rem;
   --t-11: 0.6875rem;
   --t-12: 0.75rem;
   --t-13: 0.8125rem;
   --t-15: 0.9375rem;
   --t-17: 1.0625rem;
+  --t-20: 1.25rem;
   --t-22: 1.375rem;
+  --t-24: 1.5rem;
   --t-28: 1.75rem;
+
+  /* Where every screen's first line sits: the top of its columns, its pane title and its
+     toolbar. One value for all seven, so switching apps leaves the head where it was. */
+  --pane-top: 18px;
+  /* A source list (an app's own column of folders, lists, albums, calendars): its inset, and
+     the space above each section's heading after the first. */
+  --source-pad: 2px 12px 12px;
+  --source-gap: 14px;
 
 
   /* Liquid Glass, as macOS 26/27 builds it (docs/macos27-kit.md). Apple's rules: glass is
@@ -130,9 +141,23 @@
   --mask-ring-20-dashed: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><circle cx='10' cy='10' r='9.25' fill='none' stroke='black' stroke-width='1.5' stroke-dasharray='2.9 2.9'/></svg>");
   --mask-disc: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'><circle cx='1' cy='1' r='1'/></svg>");
 
-  /* A press: in fast, so the control answers the finger; out on the snappy spring. */
+  /* A press: in fast, so the control answers the finger; back out within the small-motion
+     limit (160ms), decelerating. */
   --press-scale: 0.96;
   --press-in: 90ms;
+  --press-out: 160ms;
+  /* A small thing turning or sliding in answer to a click — a disclosure chevron, a switch's
+     knob, a progress fill: one timing for all of them. */
+  --motion-small: 140ms;
+
+  /* Arrival: what came in from another device (lib/fade.ts arrive / leave, kit.css
+     .receiving-line). Small elements only, opacity and transform only, no highlight — the
+     item simply settles in — and instant under Reduce Motion. */
+  /* A new row: a quick fade, rising 2px. */
+  --arrive-in-d: 120ms;
+  --arrive-rise: 2px;
+  /* A row someone deleted elsewhere: out by opacity, 2px up, then removed. */
+  --leave-d: 140ms;
 
   /* Tahoe moved windows from Sequoia's 4px to 12px, and radii nest concentrically:
      an inner radius is the outer radius minus the gap between them. */
@@ -158,6 +183,10 @@
   --fill-hover: color-mix(in srgb, var(--text) 6%, transparent);
   --fill-press: color-mix(in srgb, var(--text) 12%, transparent);
   --fill-selected: color-mix(in srgb, var(--text) 11%, transparent);
+  /* A control that is filled at rest (a quiet button, a chip, a tile, a pop-up button): its
+     hover and press, a step up from --fill. */
+  --fill-raised-hover: color-mix(in srgb, var(--text) 11%, transparent);
+  --fill-raised-press: color-mix(in srgb, var(--text) 16%, transparent);
   --ring: 0 0 0 3px var(--accent-ring);
   /* Filled red, under white text at 4.5:1 in either appearance. */
   --danger-deep: #c1121f;
@@ -181,7 +210,11 @@
   /* The library opening (kept by name; the bouncy spring is the same idea, computed). */
   --ease-spring: linear(0.0000 0.0%, 0.0230 2.5%, 0.0834 5.0%, 0.1694 7.5%, 0.2710 10.0%, 0.3800 12.5%, 0.4897 15.0%, 0.5951 17.5%, 0.6927 20.0%, 0.7800 22.5%, 0.8558 25.0%, 0.9194 27.5%, 0.9711 30.0%, 1.0115 32.5%, 1.0416 35.0%, 1.0625 37.5%, 1.0755 40.0%, 1.0821 42.5%, 1.0834 45.0%, 1.0808 47.5%, 1.0752 50.0%, 1.0677 52.5%, 1.0591 55.0%, 1.0499 57.5%, 1.0408 60.0%, 1.0321 62.5%, 1.0241 65.0%, 1.0170 67.5%, 1.0109 70.0%, 1.0058 72.5%, 1.0016 75.0%, 0.9985 77.5%, 0.9961 80.0%, 0.9945 82.5%, 0.9935 85.0%, 0.9931 87.5%, 0.9931 90.0%, 0.9933 92.5%, 0.9938 95.0%, 0.9945 97.5%, 0.9952 100.0%);
 
-  --sf: "SF Pro Text", "SF Pro Display", Inter, "Inter Variable", system-ui,
+  /* Adwaita Sans is GNOME's interface face (adwaita-fonts, which GTK pulls in): Inter's design,
+     variable, every weight. Before system-ui, because on Linux system-ui resolves through
+     fontconfig to a family with 400 and 700 only — and there every weight above 500 (510 on a
+     button, 590 on a selected row) was drawn bold, the hierarchy flat. */
+  --sf: "SF Pro Text", "SF Pro Display", Inter, "Inter Variable", "Adwaita Sans", system-ui,
     -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
@@ -301,7 +334,7 @@ body {
 :is(.quiet, .primary, .icon-button, .tool, .segment, .picker-button, .sidebar-toggle,
   .compact-back, .toast-action, .search-clear):not(:disabled) {
   /* `scale`, not `transform`: a control placed with a transform keeps it. */
-  transition: scale var(--spring-snappy-d) var(--spring-snappy), background-color 120ms ease,
+  transition: scale var(--press-out) var(--motion-ease-out), background-color 120ms ease,
     background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 160ms ease;
 }
 :is(.quiet, .primary, .icon-button, .tool, .segment, .picker-button, .sidebar-toggle,
@@ -311,7 +344,8 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root { --motion-hover: 0ms; --motion-fade: 0ms; }
+  :root { --motion-hover: 0ms; --motion-fade: 0ms; --motion-small: 0ms; --press-out: 0ms;
+    --arrive-in-d: 0ms; --leave-d: 0ms; }
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
