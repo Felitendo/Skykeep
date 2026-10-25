@@ -80,3 +80,17 @@ test("numbers that are not times stay in the title", () => {
   assert.equal(q("Room 101 meeting Thursday 3pm").title, "Room 101 meeting");
   assert.equal(q("Room 101 meeting Thursday 3pm").startsAt, at(2026, 9, 22, 15));
 });
+
+test("a range whose am or pm comes at its end is read on that side, on the day named", () => {
+  // "6-7am" is six to seven in the morning: the bare 6 had been read as 6 PM, the end pushed into
+  // the next morning, and the whole event then moved on a day — tomorrow's gym the day after.
+  const gym = q("Gym tomorrow 6-7am");
+  assert.deepEqual([gym.startsAt, gym.endsAt], [at(2026, 9, 22, 6), at(2026, 9, 22, 7)]);
+  const early = q("Swim Fri 5:30-6:30am");
+  assert.deepEqual([early.startsAt, early.endsAt], [at(2026, 9, 23, 5, 30), at(2026, 9, 23, 6, 30)]);
+  // And as before: the start on the end's side where it can be, crossing noon or midnight
+  // where it has to.
+  assert.deepEqual([q("Class tomorrow 7-9pm").startsAt, q("Class tomorrow 7-9pm").endsAt], [at(2026, 9, 22, 19), at(2026, 9, 22, 21)]);
+  assert.deepEqual([q("Shift tomorrow 9-5pm").startsAt, q("Shift tomorrow 9-5pm").endsAt], [at(2026, 9, 22, 9), at(2026, 9, 22, 17)]);
+  assert.deepEqual([q("Party tomorrow 11-1am").startsAt, q("Party tomorrow 11-1am").endsAt], [at(2026, 9, 22, 23), at(2026, 9, 23, 1)]);
+});

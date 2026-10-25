@@ -200,7 +200,17 @@ export function parseQuick(text: string, now: Date = new Date(), dmy: boolean = 
   let allDay = false;
   if (start) {
     const s: Clock = start;
-    const h = hours24(s);
+    // A bare start with an am or pm only at the end is read on the end's side where that puts
+    // it first ("6-7am" is six in the morning, "7-9pm" seven in the evening), else on the other
+    // ("11-1pm" from eleven in the morning). Guessed alone, "6-7am" began at 6 PM and the whole
+    // event moved on a day.
+    const e0: Clock | null = end;
+    let h = hours24(s);
+    if (e0 && !s.meridiem && e0.meridiem) {
+      const eh0 = hours24(e0);
+      const side = hours24(s, e0.meridiem);
+      h = side * 60 + s.m < eh0 * 60 + e0.m ? side : hours24(s, e0.meridiem === "am" ? "pm" : "am");
+    }
     const from = new Date(base.getFullYear(), base.getMonth(), base.getDate(), h, s.m);
     // Today, a time already gone is tomorrow's — unless a day was named.
     if (!dated && from.getTime() < now.getTime() - 60_000) from.setDate(from.getDate() + 1);
