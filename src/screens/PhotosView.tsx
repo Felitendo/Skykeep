@@ -1988,7 +1988,11 @@ export function PhotosView() {
     let pointer = { x: e.clientX, y: e.clientY };
     let moved = false;
     let tick = 0;
-    let last = "";
+    // Nothing drawn yet: the first frame sets the selection even to none, so a sweep from the
+    // space over no photo lets go of what was chosen (as "" it matched, and the old one stayed).
+    let last: string | null = null;
+    // What the sweep has chosen so far, as it set it (the state is a render behind).
+    let picked: Set<string> | null = null;
     // The grid's geometry, read once: each group's block (built or not), and the cells' pitch.
     const groups = [...el.querySelectorAll<HTMLElement>(".px-month")].map((sec, k) => {
       const r = photosArea(sec);
@@ -2034,6 +2038,7 @@ export function PhotosView() {
       const key = [...next].join();
       if (key !== last) {
         last = key;
+        picked = next;
         setChosen(next);
       }
     };
@@ -2057,11 +2062,15 @@ export function PhotosView() {
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);
       cancelAnimationFrame(tick);
+      // A move not drawn yet — the button let go within the frame — is drawn now: the
+      // selection is where the pointer was let go, never a frame behind it.
+      if (moved && tick) draw();
+      tick = 0;
       if (sweepBox.current) sweepBox.current.hidden = true;
       if (moved) {
         swept.current = true;
         // The keys go on from the sweep's last photo.
-        const ids = [...chosenNow.current];
+        const ids = [...(picked ?? chosenNow.current)];
         const at = ids.length ? Math.max(...ids.map((id) => photos?.indexOf(id) ?? -1)) : -1;
         anchor.current = at >= 0 ? at : anchor.current;
       }
