@@ -2318,8 +2318,21 @@ const ReminderRow = memo(function ReminderRow({
                 e.preventDefault();
                 const typed = e.currentTarget.value;
                 const out = e.key === "[" || (e.key === "Tab" && e.shiftKey);
-                void act.current.rename(reminder, typed);
-                void (out ? (reminder.parentGuid ? act.current.outdent(reminder) : null) : (reminder.parentGuid ? null : act.current.indent(reminder)));
+                const caret = e.currentTarget.selectionStart ?? typed.length;
+                const renamed = act.current.rename(reminder, typed);
+                const moved = out ? (reminder.parentGuid ? act.current.outdent(reminder) : null) : (reminder.parentGuid ? null : act.current.indent(reminder));
+                // The cursor stays in the title, as on the Mac: the rename redraws the field (and
+                // the move the row), which had dropped it.
+                const refocus = () => {
+                  const active = document.activeElement;
+                  if (active && active !== document.body && !active.closest(".rx-row")) return;
+                  const field = document.querySelector<HTMLInputElement>(`.rx-row[data-guid="${CSS.escape(reminder.guid)}"] .rx-title`);
+                  if (!field || field === active) return;
+                  field.focus();
+                  field.setSelectionRange(caret, caret);
+                };
+                window.setTimeout(refocus, 0);
+                void Promise.all([renamed, moved]).then(refocus, refocus);
               } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
                 // Up and Down walk the list, keeping where the caret was.
                 const all = [...document.querySelectorAll<HTMLInputElement>(".rx-row .rx-title")];
