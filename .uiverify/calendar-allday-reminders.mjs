@@ -41,8 +41,9 @@ async function open(timezoneId, due) {
   const card = page.locator(".cx-popover.is-reminder");
   await card.waitFor({ timeout: 2000 }).catch(() => {});
   const text = (await card.count()) ? await card.innerText() : "";
-  const wanted = `${day.toLocaleDateString("en-GB", { weekday: "long" })}, ${day.toLocaleDateString("en-GB", { day: "numeric", month: "long" })}`;
-  ok(text.includes(wanted), `its card names its day, ${wanted}  ${JSON.stringify(text.split("\n").slice(0, 3))}`);
+  // Its weekday and date, however the engine punctuates them.
+  const wanted = `${day.toLocaleDateString("en-GB", { weekday: "long" })} ${day.toLocaleDateString("en-GB", { day: "numeric", month: "long" })}`;
+  ok(text.replace(/,/g, "").includes(wanted), `its card names its day, ${wanted}  ${JSON.stringify(text.split("\n").slice(0, 3))}`);
   await page.keyboard.press("Escape");
   // The day's list, in Day.
   await page.keyboard.press("Control+1");
