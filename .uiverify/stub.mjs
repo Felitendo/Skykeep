@@ -176,7 +176,9 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             { guid: `quince:sub:${x.id}:m2:1`, calendarGuid: `quince:sub:${x.id}`, title: "Liverpool v Spurs", location: null,
               startsAt: base + 2 * DAY + 8 * HOUR, endsAt: base + 2 * DAY + 10 * HOUR, allDay: false, timezone: "Europe/London", url: null, notes: null, etag: null },
           ]);
-          if (!n) return [...events, ...subbed];
+          // A suite's own events at fixed moments (`window.__fixedEvents`), for a given day.
+          const fixed = window.__fixedEvents ?? [];
+          if (!n) return [...events, ...subbed, ...fixed];
           const extra = (window.__extra ??= Array.from({ length: n }, (_, i) => ({
             guid: `many${i}`, calendarGuid: i % 2 ? "work" : "home", title: `Event ${i}`, location: null,
             startsAt: base + Math.floor((i - n / 2) / 8) * DAY + (8 + (i % 8)) * HOUR, endsAt: base + Math.floor((i - n / 2) / 8) * DAY + (9 + (i % 8)) * HOUR,
@@ -261,7 +263,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__longReminder && calendarFixture && !dueReminders.some((r) => r.guid === "r9"))
             dueReminders.push({ guid: "r9", listGuid: "l2", title: "Sort out everything for the trip to the coast before Friday, including the tickets and the bags",
               notes: "Ask Alex Rivera about the car", dueAt: base + 4 * HOUR, completedAt: null, priority: 0, etag: null });
-          return calendarFixture ? dueReminders : [];
+          // A suite's own (`window.__dueExtra`), chosen as the library chooses them: by the
+          // moment Apple stores, inside the range asked for.
+          if (!calendarFixture) return [];
+          return [...dueReminders, ...(window.__dueExtra ?? []).filter((r) => r.dueAt >= args.from && r.dueAt < args.to)];
         case "reminder_create":
           // Kept, as Apple keeps it, with what the view implied.
           {

@@ -247,6 +247,14 @@ export function placeDayWith(
 ): { events: Placed[]; marks: PlacedMark[] } {
   const start = seconds(midnight(day));
   const end = seconds(addDays(day, 1));
+  // Minutes on the clock, as the hour labels count them — the day's end its 24:00. Counted
+  // as time gone since midnight, every block after the clock moved sat an hour off its label
+  // on the two days a year it does.
+  const onClock = (s: number) => {
+    if (s >= end) return 24 * 60;
+    const d = dateOf(s);
+    return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+  };
   type Item = { top: number; length: number; column: number; columns: number } & (
     | { kind: "event"; event: CalendarEvent }
     | { kind: "mark"; mark: Mark }
@@ -257,7 +265,8 @@ export function placeDayWith(
       .map((event): Item => {
         const from = Math.max(event.startsAt, start);
         const to = Math.min(Math.max(event.endsAt, event.startsAt), end);
-        return { kind: "event", event, top: (from - start) / 60, length: Math.max((to - from) / 60, minLength), column: 0, columns: 1 };
+        const top = onClock(from);
+        return { kind: "event", event, top, length: Math.max(onClock(to) - top, minLength), column: 0, columns: 1 };
       }),
     ...marks.map((mark): Item => ({ kind: "mark", mark, top: mark.top, length: mark.length, column: 0, columns: 1 })),
   ].sort((a, b) => a.top - b.top || b.length - a.length);

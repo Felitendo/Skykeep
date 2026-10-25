@@ -2355,8 +2355,7 @@ const TimeGrid = memo(function TimeGrid({
       // A click on empty time does nothing, as in Calendar — only a drag or a double-click
       // makes an event, so looking around the week never opens a form by accident.
       if (done.to - done.from > 15) {
-        const base = seconds(done.day);
-        onCreate(base + done.from * 60, base + done.to * 60, false, besideColumn(done.column, clientY));
+        onCreate(onClockOf(done.day, done.from), onClockOf(done.day, done.to), false, besideColumn(done.column, clientY));
       }
     } else if (done.kind === "resize") {
       if (done.dMinutes !== 0) {
@@ -2538,8 +2537,8 @@ const TimeGrid = memo(function TimeGrid({
               const at = where(e.clientX, e.clientY);
               if (!at) return;
               const start = Math.min(snap(Math.floor(at.minutes / 30) * 30), 23 * 60);
-              const base = seconds(days[at.column]);
-              onCreate(base + start * 60, base + (start + 60) * 60, false, besideColumn(at.column, e.clientY));
+              const day = days[at.column];
+              onCreate(onClockOf(day, start), onClockOf(day, start + 60), false, besideColumn(at.column, e.clientY));
             }}
           >
             {days.map((d, column) => (
@@ -2698,6 +2697,11 @@ export function stackReminders(list: Reminder[]): { reminder: Reminder; top: num
     return { reminder, top };
   });
 }
+
+/** The moment `minutes` on the clock into `day` — the grid's own measure. Added to midnight as
+ *  seconds, an event made after the clock moved landed an hour off where it was drawn. */
+const onClockOf = (day: Date, minutes: number) =>
+  seconds(new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, minutes));
 
 const pointOf = (el: Element): Anchor => {
   const r = el.getBoundingClientRect();
@@ -3122,7 +3126,9 @@ function EventPopover({
   // is — not a form of greyed fields with a note saying they cannot be used.
   if (!editable) {
     const start = dateOf(draft.startsAt);
-    const end = dateOf(Math.max(draft.startsAt, draft.endsAt - (draft.allDay ? 86_400 : 0)));
+    // An all-day event's last day is the one before its end midnight — a second before it, not a
+    // fixed 86,400 seconds, which across the clock's spring change named the day before.
+    const end = dateOf(Math.max(draft.startsAt, draft.endsAt - (draft.allDay ? 1 : 0)));
     const day = (d: Date) => dateText(d, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
     const time = (d: Date) => timeText(d, { hour: "numeric", minute: "2-digit" });
     const sameDay = start.toDateString() === end.toDateString();
@@ -3214,7 +3220,7 @@ function EventPopover({
               set(
                 allDay
                   ? { allDay, startsAt: seconds(day), endsAt: seconds(addDays(day, 1)) }
-                  : { allDay, startsAt: seconds(day) + 9 * 3600, endsAt: seconds(day) + 10 * 3600 }
+                  : { allDay, startsAt: onClockOf(day, 9 * 60), endsAt: onClockOf(day, 10 * 60) }
               );
             }}
           />
