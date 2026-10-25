@@ -41,7 +41,7 @@ async function open(reduced) {
   await ctx.route(`${PICS}/**`, async (route) => {
     const path = decodeURIComponent(route.request().url().slice(PICS.length + 1));
     asked.push(path);
-    const [, id, size] = /pic\/([^/]+)\/(\w+)/.exec(path) ?? [];
+    const [, id, size] = /pic\/([^/~]+)(?:~[0-9a-z]+)?\/(\w+)/.exec(path) ?? [];
     const c = COLOURS[id] ?? [128, 128, 128];
     const long = /^fit(\d+)/.test(size) ? +size.slice(3) : 512;
     // A slow picture now and then, as one made from the network is: the show waits for it.
@@ -82,7 +82,7 @@ const first = await page.evaluate(() => {
   return { src: decodeURIComponent(img?.src ?? ""), w: img?.naturalWidth, dpr: devicePixelRatio, W: innerWidth, H: innerHeight };
 });
 const step = +(/fit(\d+)/.exec(first.src)?.[1] ?? 0);
-ok(/p1\/fit/.test(first.src) && step >= Math.min(first.W, (first.H * 4) / 3) * first.dpr, `the photo is made the size of the screen, never smaller  (${first.src.split("/").pop()} for ${first.W}×${first.H} at ${first.dpr}×)`);
+ok(/p1(~[0-9a-z]+)?\/fit/.test(first.src) && step >= Math.min(first.W, (first.H * 4) / 3) * first.dpr, `the photo is made the size of the screen, never smaller  (${first.src.split("/").pop()} for ${first.W}×${first.H} at ${first.dpr}×)`);
 
 // Each frame of the dissolve into the next photo, as the page sets it: the layers' opacities
 // and whether the picture of each is decoded. The screen behind is never left uncovered.
@@ -122,7 +122,7 @@ const film = await page.waitForFunction(() => {
   const v = [...document.querySelectorAll(".px-slide video")].find((x) => x.getAttribute("src"));
   return v && { src: v.getAttribute("src"), o: v.style.opacity, t: v.currentTime, poster: decodeURIComponent(v.closest(".px-slide").querySelector("img").src) };
 }, null, { timeout: 5000 }).then((h) => h.jsonValue());
-ok(film.src === `${base}/p3/video` && /p3\/fit/.test(film.poster), `a video shows its picture and plays its film from the app's server  ${film.src}`);
+ok(film.src === `${base}/p3/video` && /p3(~[0-9a-z]+)?\/fit/.test(film.poster), `a video shows its picture and plays its film from the app's server  ${film.src}`);
 const shownFilm = await page.waitForFunction(() => {
   const v = [...document.querySelectorAll(".px-slide video")].find((x) => x.getAttribute("src"));
   return v && v.style.opacity === "1" && v.currentTime > 0 ? v.currentTime : null;

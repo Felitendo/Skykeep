@@ -41,7 +41,7 @@ await ctx.addInitScript(([v, pics]) => {
 }, [base, PICS]);
 await ctx.route(`${PICS}/**`, async (route) => {
   const path = decodeURIComponent(route.request().url().slice(PICS.length + 1));
-  const [, id, size] = /pic\/([^/]+)\/(\w+)/.exec(path) ?? [];
+  const [, id, size] = /pic\/([^/~]+)(?:~[0-9a-z]+)?\/(\w+)/.exec(path) ?? [];
   const c = COLOURS[id] ?? [128, 128, 128];
   const long = /^fit(\d+)/.test(size) ? +size.slice(3) : 512;
   // The viewer's pictures are slow to come, as ones made from the network are: what stands in
@@ -106,7 +106,7 @@ await page.evaluate(() => {
   window.__seen = [];
   const tick = () => {
     const v = document.querySelector(".px-stage video");
-    if (v) window.__seen.push({ o: v.style.opacity, t: v.currentTime, poster: !!document.querySelector(".px-player-poster") && decodeURIComponent(document.querySelector(".px-player-poster").src).includes("p3/fit") });
+    if (v) window.__seen.push({ o: v.style.opacity, t: v.currentTime, poster: !!document.querySelector(".px-player-poster") && decodeURIComponent(document.querySelector(".px-player-poster").src).match(/p3(~[0-9a-z]+)?\/fit/) !== null });
     if (window.__seen.length < 120) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);

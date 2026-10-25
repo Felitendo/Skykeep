@@ -148,11 +148,13 @@ pub async fn upload_picture(app: &AppHandle, id: &str) -> UiResult<Vec<u8>> {
 }
 
 /// The photo and picture a `quince://` request asks for: `pic/<asset id>/<size>`, escaped as
-/// Tauri escapes it.
+/// Tauri escapes it — or `pic/<asset id>~<mark>/<size>`, marked as fitted pictures are (see
+/// [`requested_fit`]): the same photo, whichever address the window built.
 pub fn requested(path: &str) -> Option<(String, Size)> {
     let path = crate::percent_decode(path.trim_start_matches('/'));
     let rest = path.strip_prefix("pic/")?;
     let (id, size) = rest.rsplit_once('/')?;
+    let (id, _) = unmarked(id)?;
     let size = match size {
         "thumb" => Size::Thumb,
         "medium" => Size::Medium,
@@ -172,6 +174,25 @@ pub fn requested(path: &str) -> Option<(String, Size)> {
     Some((id.to_string(), size))
 }
 
+/// An asset id from an address's id part, and whether it carried a mark (`<id>~<mark>`, the
+/// window's `pictureVersion`). A mark is a few lowercase letters and digits, never a path; an
+/// address with a bad one asks for nothing.
+fn unmarked(id: &str) -> Option<(&str, bool)> {
+    match id.split_once('~') {
+        Some((id, mark))
+            if !mark.is_empty()
+                && mark.len() <= 16
+                && mark
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()) =>
+        {
+            Some((id, true))
+        }
+        Some(_) => None,
+        None => Some((id, false)),
+    }
+}
+
 /// The widths a picture is made at for the screen (its longer side), in steps — so a photo
 /// is made a handful of times, not once per window size.
 pub const FITS: [u32; 11] = [128, 256, 384, 512, 768, 1024, 1536, 2048, 2560, 3072, 3840];
@@ -184,19 +205,7 @@ pub fn requested_fit(path: &str) -> Option<(String, u32, bool)> {
     let path = crate::percent_decode(path.trim_start_matches('/'));
     let (id, size) = path.strip_prefix("pic/")?.rsplit_once('/')?;
     let long: u32 = size.strip_prefix("fit")?.parse().ok()?;
-    let (id, marked) = match id.split_once('~') {
-        Some((id, mark))
-            if !mark.is_empty()
-                && mark.len() <= 16
-                && mark
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()) =>
-        {
-            (id, true)
-        }
-        Some(_) => return None,
-        None => (id, false),
-    };
+    let (id, marked) = unmarked(id)?;
     if !FITS.contains(&long)
         || id.is_empty()
         || !id
@@ -2965,6 +2974,22 @@ mod tests {
         assert_eq!(requested_fit("/pic/~ab/fit256"), None);
         assert_eq!(requested_fit("/pic/..~ab/fit256"), None);
         assert_eq!(requested_fit("/pic/A1~0123456789abcdefg/fit256"), None);
+        // Every other picture of the photo takes the mark too, and the old address still works.
+        assert_eq!(
+            requested("pic%2FA1-b~1x9z%2Fthumb"),
+            Some(("A1-b".into(), Size::Thumb))
+        );
+        assert_eq!(
+            requested("/pic/A1~k3/video"),
+            Some(("A1".into(), Size::Video))
+        );
+        assert_eq!(
+            requested("/pic/A1/original"),
+            Some(("A1".into(), Size::Original))
+        );
+        assert_eq!(requested("/pic/A1~X/full"), None);
+        assert_eq!(requested("/pic/~ab/full"), None);
+        assert_eq!(requested("/pic/..~ab/full"), None);
         assert!(fit_cache(true).contains("immutable"));
         assert!(!fit_cache(false).contains("immutable"));
     }
