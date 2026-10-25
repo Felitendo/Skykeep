@@ -7320,7 +7320,9 @@ mod start_tests {
         assert!(deb.contains(&"libc6 (>= 2.39)".to_string()), "{deb:?}");
         assert!(deb.contains(&"libheif1 (>= 1.17)".to_string()), "{deb:?}");
         let rpm = depends("rpm");
-        assert!(rpm.contains(&"glibc >= 2.39".to_string()), "{rpm:?}");
+        // In parentheses, a versioned rich dependency: bare, the bundler wrote a package literally
+        // named "glibc >= 2.39", which nothing provides, and Fedora and openSUSE refused it.
+        assert!(rpm.contains(&"(glibc >= 2.39)".to_string()), "{rpm:?}");
         assert!(rpm.iter().any(|d| d.contains("libheif >= 1.17")), "{rpm:?}");
     }
 }
