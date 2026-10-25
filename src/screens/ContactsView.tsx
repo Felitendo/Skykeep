@@ -90,9 +90,16 @@ const ADDABLE = [
 
 /** The whole name, as the top of a card shows it: prefix and suffix included. */
 function fullName(c: Contact): string {
+  if (c.isCompany && c.company?.trim()) return c.company.trim();
   const name = [c.prefix, c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ");
   if (!name.trim()) return displayName(c);
   return c.suffix ? `${name}, ${c.suffix}` : name;
+}
+
+/** The person's own name on a card, prefix and suffix included; empty when it has none. */
+function personName(c: Contact): string {
+  const name = [c.prefix, c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ").trim();
+  return name && c.suffix ? `${name}, ${c.suffix}` : name;
 }
 
 const blank = (): Contact => ({
@@ -1497,6 +1504,10 @@ export function ContactsView() {
                 )}
                 {open.company && !open.isCompany && (
                   <p className="contact-company">{open.company}</p>
+                )}
+                {/* A company's card is headed by the company; the person on it comes under. */}
+                {open.isCompany && open.company?.trim() && personName(open) && (
+                  <p className="contact-company">{personName(open)}</p>
                 )}
                 {me === open.guid && <p className="contact-company">My Card</p>}
               </div>

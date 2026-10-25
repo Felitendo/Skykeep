@@ -879,6 +879,8 @@ export type SearchGroup = { app: string; count: number; hits: SearchHit[] };
 export type SearchFound = { seq: number; groups: SearchGroup[] };
 
 export function displayName(c: Contact): string {
+  // A company's card goes by the company, as Contacts shows it, whoever is named on it.
+  if (c.isCompany && c.company?.trim()) return c.company.trim();
   const full = [c.firstName, c.middleName, c.lastName].filter(Boolean).join(" ").trim();
   if (full) return full;
   if (c.company?.trim()) return c.company;
