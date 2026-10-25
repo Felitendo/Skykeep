@@ -1472,16 +1472,27 @@ export function RemindersView() {
     if (kind === "scheduled") {
       const byDay = new Map<number, typeof threaded>();
       const overdue: typeof threaded = [];
+      // A subtask goes with its reminder, directly under it, as in Today; one of a reminder not
+      // shown here (no date) stands on its own day.
+      let parentRows: typeof threaded | null = null;
       for (const row of threaded) {
-        const due = row.reminder.dueAt;
-        if (due === null) continue;
-        const days = daysApart(now, new Date(due * 1000));
-        if (days < 0) overdue.push(row);
-        else {
-          const bucket = byDay.get(days);
-          if (bucket) bucket.push(row);
-          else byDay.set(days, [row]);
+        if (row.depth > 0 && parentRows) {
+          parentRows.push(row);
+          continue;
         }
+        const due = row.reminder.dueAt;
+        if (due === null) {
+          parentRows = null;
+          continue;
+        }
+        const days = daysApart(now, new Date(due * 1000));
+        if (days < 0) parentRows = overdue;
+        else {
+          parentRows = byDay.get(days) ?? [];
+          byDay.set(days, parentRows);
+        }
+        parentRows.push(row);
+        if (row.depth > 0) parentRows = null;
       }
       const out = overdue.length
         ? [{ key: "overdue", heading: "Overdue", colour: null, dated: false, rows: overdue }]
