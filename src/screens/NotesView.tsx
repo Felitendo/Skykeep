@@ -1017,7 +1017,9 @@ export function NotesView() {
   // Editable once the words AND their formatting are in. Opened on the words alone, the editor
   // came up plain; a key typed before the formatting arrived was then saved as the note's
   // formatting, and took its titles, checklists and bold off every device.
-  const canEdit = Boolean(composing) || Boolean(open && !open.locked && open.editable && body !== null && runs !== null);
+  // A note in Recently Deleted is read, not edited, as on the phone: recovering it is how to
+  // edit it again. Editable here, what was typed into a deleted note was saved to it.
+  const canEdit = Boolean(composing) || Boolean(open && !open.locked && open.editable && !inTrash && body !== null && runs !== null);
   const canAttach = attachOn && !composing && !inTrash && Boolean(open && !open.locked && open.editable && body !== null);
   canAttachRef.current = canAttach;
 
@@ -1743,10 +1745,14 @@ export function NotesView() {
             ) : (
               <pre className="note-text">{splitTitle(body ?? "").rest}</pre>
             )}
-            <p className="note-readonly">
-              Read-only here, to keep everything in it safe. A quick edit on your iPhone, iPad or
-              Mac usually makes it editable again.
-            </p>
+            {inTrash ? (
+              <p className="note-readonly">Recover this note to edit it.</p>
+            ) : (
+              <p className="note-readonly">
+                Read-only here, to keep everything in it safe. A quick edit on your iPhone, iPad or
+                Mac usually makes it editable again.
+              </p>
+            )}
           </div>
         ) : (
           loaded && <EmptyState className="note-pick">Select a note.</EmptyState>
