@@ -344,6 +344,24 @@ export function ContactsView() {
       setError(messageOf(e));
     }
   };
+  /**
+   * Export All Contacts, or the open list: everyone in it, whatever the search shows. With a
+   * search typed it exported only the people found, under the whole book's name.
+   */
+  const exportWhole = async () => {
+    let people = sorted;
+    if (search.trim()) {
+      try {
+        const all = await api.contactsList(null);
+        const members = list === ALL ? null : new Set((lists.find((l) => l.guid === list)?.members ?? []).map((m) => m.toUpperCase()));
+        people = sortedContacts(members ? all.filter((c) => members.has(c.guid.toUpperCase())) : all);
+      } catch (e) {
+        setError(messageOf(e));
+        return;
+      }
+    }
+    await exportCards(people, openList?.name);
+  };
   const importCards = async () => {
     try {
       // Any number of files at once, vCard or a CSV exported from Google Contacts or Outlook.
@@ -1010,7 +1028,7 @@ export function ContactsView() {
             onClose={() => setMoreMenu(null)}
             entries={[
               { label: "Import Contacts", run: () => void importCards() },
-              { label: openList ? `Export \u201c${openList.name}\u201d` : "Export All Contacts", run: () => void exportCards(sorted, openList?.name) },
+              { label: openList ? `Export \u201c${openList.name}\u201d` : "Export All Contacts", run: () => void exportWhole() },
             ]}
           />
         )}

@@ -826,7 +826,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "contact_save": (window.__contactSaves ??= []).push(args); return "C-new";
         case "contact_delete": (window.__contactDeletes ??= []).push(args); return null;
-        case "contacts_list": return !contactsFixture ? [] : contactList.slice();
+        case "contacts_list": {
+          if (!contactsFixture) return [];
+          // Opt-in: a search answered with its matches only, as the library answers it.
+          const q = window.__contactsSearch && args?.search ? String(args.search).toLowerCase() : "";
+          return q ? contactList.filter((c) => [c.firstName, c.lastName, c.company, ...c.methods.map((m) => m.value)].join(" ").toLowerCase().includes(q)) : contactList.slice();
+        }
         // Duplicates as contacts_merge.rs finds them, on the fixture: a shared number (its
         // last ten digits), a shared email, or the same name.
         case "contacts_duplicates": {
