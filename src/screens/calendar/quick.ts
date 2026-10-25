@@ -34,7 +34,8 @@ const monthOf = (w: string) => MONTHS.findIndex((m) => m.startsWith(w.slice(0, 3
 const TIME = String.raw`(noon|midday|midnight|\d{1,2}(?::\d{2}|\.\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)`;
 const DASH = String.raw`\s*(?:-|–|—|to|till|until)\s*`;
 
-type Clock = { h: number; m: number; meridiem: "am" | "pm" | null };
+/** `exact`: an hour written with its leading zero ("06:15"), a 24-hour clock's, read as written. */
+type Clock = { h: number; m: number; meridiem: "am" | "pm" | null; exact?: boolean };
 
 function clockOf(raw: string): Clock | null {
   const t = raw.trim().toLowerCase();
@@ -47,12 +48,13 @@ function clockOf(raw: string): Clock | null {
   if (min > 59) return null;
   const meridiem = m[3] ? (m[3][0] === "a" ? "am" : "pm") : null;
   if (meridiem ? h < 1 || h > 12 : h > 23) return null;
-  return { h, m: min, meridiem };
+  return { h, m: min, meridiem, ...(!meridiem && m[1].length === 2 && m[1][0] === "0" ? { exact: true } : {}) };
 }
 
 /** Hours on a 24-hour clock. A bare hour with no am or pm is read as people mean one: 1 to 6
  * in the afternoon, 7 to 11 in the morning — "lunch at 1", "gym at 7". */
 function hours24(c: Clock, guess: "am" | "pm" | null = null): number {
+  if (c.exact) return c.h;
   const meridiem = c.meridiem ?? (c.h > 12 || c.h === 0 ? null : guess ?? (c.h >= 1 && c.h <= 6 ? "pm" : c.h === 12 ? "pm" : "am"));
   if (!meridiem) return c.h;
   if (meridiem === "am") return c.h === 12 ? 0 : c.h;

@@ -94,3 +94,11 @@ test("a range whose am or pm comes at its end is read on that side, on the day n
   assert.deepEqual([q("Shift tomorrow 9-5pm").startsAt, q("Shift tomorrow 9-5pm").endsAt], [at(2026, 9, 22, 9), at(2026, 9, 22, 17)]);
   assert.deepEqual([q("Party tomorrow 11-1am").startsAt, q("Party tomorrow 11-1am").endsAt], [at(2026, 9, 22, 23), at(2026, 9, 23, 1)]);
 });
+
+test("an hour written with its leading zero is a 24-hour clock's: 06:15 is the morning", () => {
+  const r = q("Flight Fri 06:15");
+  assert.equal(r.startsAt, at(2026, 9, 23, 6, 15));
+  assert.equal(q("Train Fri 05:40-07:10").endsAt, at(2026, 9, 23, 7, 10));
+  // Without the zero, a bare hour is still read as people mean one.
+  assert.equal(q("Dentist Fri 3:30").startsAt, at(2026, 9, 23, 15, 30));
+});
