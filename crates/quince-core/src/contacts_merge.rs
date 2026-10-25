@@ -83,14 +83,21 @@ fn same_person(a: &Option<String>, b: &Option<String>) -> bool {
     let (Some(a), Some(b)) = (a, b) else {
         return true;
     };
-    let (a, b): (Vec<&str>, Vec<&str>) = (a.split(' ').collect(), b.split(' ').collect());
+    // An initial is its letter: "Z." is the start of "Zoe".
+    let words = |n: &str| -> Vec<String> {
+        n.split(' ')
+            .map(|w| w.trim_end_matches('.').to_string())
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let (a, b) = (words(a), words(b));
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
     let mut used = vec![false; long.len()];
     short.iter().all(|w| {
         let found = long
             .iter()
             .enumerate()
-            .find(|(k, l)| !used[*k] && (l.starts_with(w) || w.starts_with(*l)));
+            .find(|(k, l)| !used[*k] && (l.starts_with(w.as_str()) || w.starts_with(l.as_str())));
         found.map(|(k, _)| used[k] = true).is_some()
     })
 }

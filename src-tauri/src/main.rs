@@ -4608,10 +4608,15 @@ async fn drive_upload(
                 params.clone(),
             );
             let (abort, registration) = futures_util::future::AbortHandle::new_pair();
-            uploads_running()
-                .lock()
-                .map(|mut m| m.insert(job.event.id.clone(), abort))
-                .ok();
+            // An empty file has no bytes to report, so nothing ever took its stop away before it
+            // was filed: a Cancel then could cut its filing short and call it cancelled while it
+            // was in iCloud. Waiting, it is still stopped (`upload_stopped`); begun, it finishes.
+            if job.event.total > 0 {
+                uploads_running()
+                    .lock()
+                    .map(|mut m| m.insert(job.event.id.clone(), abort))
+                    .ok();
+            }
             let id = job.event.id.clone();
             let cancelled_event = {
                 let mut e = job.event.clone();
