@@ -56,3 +56,17 @@ test("how long it takes is part of what to do: it stays in the title", () => {
   const run = parseReminder("Run for 30 mins tomorrow 7am", now, true);
   assert.deepEqual([run.title, run.dueAt, run.allDay], ["Run for 30 mins", local(2026, 9, 23, 7), false]);
 });
+
+test("a day it is due by: the day is read, and \"by\" goes with it", () => {
+  const form = parseReminder("Submit the form by Friday", now, true);
+  assert.deepEqual([form.title, form.dueAt, form.allDay], ["Submit the form", local(2026, 9, 23), true]);
+  assert.equal(parseReminder("Pay the deposit by tomorrow", now, true).title, "Pay the deposit");
+  assert.equal(parseReminder("Return the books by 3 Nov", now, true).title, "Return the books");
+  // "by" that is not before a day stays.
+  assert.equal(parseReminder("Stop by the bakery tomorrow", now, true).title, "Stop by the bakery");
+});
+
+test("a time it is due by goes with its \"by\" too", () => {
+  const q = parseReminder("Pick up the suit by 5pm tomorrow", now, true);
+  assert.deepEqual([q.title, q.dueAt], ["Pick up the suit", local(2026, 9, 23, 17)]);
+});

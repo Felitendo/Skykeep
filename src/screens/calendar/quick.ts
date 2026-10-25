@@ -120,28 +120,28 @@ export function parseQuick(text: string, now: Date = new Date(), dmy: boolean = 
       repeat = { freq: (word === "annually" ? "yearly" : word) as EventRepeat["freq"], interval: 1, count: null };
     });
 
-  // Days.
-  take(w(String.raw`(?:on\s+)?(\d{4})-(\d{1,2})-(\d{1,2})`), (m) => {
+  // Days — and "by" one, as a reminder is due by a day: the word goes with the day.
+  take(w(String.raw`(?:(?:on|by)\s+)?(\d{4})-(\d{1,2})-(\d{1,2})`), (m) => {
     const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
     if (d.getMonth() !== Number(m[2]) - 1) return false;
     day = d;
   }) ||
-    take(w(String.raw`(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+${MONTH_WORD}(?:,?\s+(\d{4}))?`), (m) => {
+    take(w(String.raw`(?:(?:on|by)\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+${MONTH_WORD}(?:,?\s+(\d{4}))?`), (m) => {
       day = dateIn(Number(m[1]), monthOf(m[2].toLowerCase()), m[3] ? Number(m[3]) : null, today);
       if (!day) return false;
     }) ||
-    take(w(String.raw`(?:on\s+)?${MONTH_WORD}\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?`), (m) => {
+    take(w(String.raw`(?:(?:on|by)\s+)?${MONTH_WORD}\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?`), (m) => {
       day = dateIn(Number(m[2]), monthOf(m[1].toLowerCase()), m[3] ? Number(m[3]) : null, today);
       if (!day) return false;
     }) ||
-    take(w(String.raw`(?:on\s+)?(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?`), (m) => {
+    take(w(String.raw`(?:(?:on|by)\s+)?(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?`), (m) => {
       const [a, b] = [Number(m[1]), Number(m[2])];
       const year = m[3] ? (m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3])) : null;
       day = dmy ? dateIn(a, b - 1, year, today) : dateIn(b, a - 1, year, today);
       if (!day) return false;
     }) ||
     take(w(String.raw`(?:the\s+)?day\s+after\s+tomorrow`), () => { day = plusDays(today, 2); }) ||
-    take(w(String.raw`(today|tonight|tomorrow|tmrw|tmr|yesterday)`), (m) => {
+    take(w(String.raw`(?:by\s+)?(today|tonight|tomorrow|tmrw|tmr|yesterday)`), (m) => {
       const word = m[1].toLowerCase();
       day = plusDays(today, word === "yesterday" ? -1 : word.startsWith("tom") || word.startsWith("tm") ? 1 : 0);
       if (word === "tonight") evening = true;
@@ -150,7 +150,7 @@ export function parseQuick(text: string, now: Date = new Date(), dmy: boolean = 
       const n = { a: 1, one: 1, two: 2, three: 3 }[m[1].toLowerCase()] ?? Number(m[1]);
       day = plusDays(today, n * (m[2].toLowerCase() === "week" ? 7 : 1));
     }) ||
-    take(w(String.raw`(?:(next|this|on)\s+)?${WEEKDAY_WORD}`), (m) => {
+    take(w(String.raw`(?:(next|this|on|by)\s+)?${WEEKDAY_WORD}`), (m) => {
       const target = weekdayOf(m[2].toLowerCase());
       const which = m[1]?.toLowerCase();
       // "next Friday" is the Friday of next week when said early in the week, as people mean it.
@@ -170,7 +170,7 @@ export function parseQuick(text: string, now: Date = new Date(), dmy: boolean = 
     start = a;
     end = b;
   }) ||
-    take(w(String.raw`(?:at|@)\s*` + TIME), (m) => {
+    take(w(String.raw`(?:at|@|by\s)\s*` + TIME), (m) => {
       const c = clockOf(m[1]);
       if (!c) return false;
       start = c;
