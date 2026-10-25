@@ -5,12 +5,16 @@
 //   - leave: out by opacity, then `done`; the row keeps its height until it is removed
 //   - Reduce Motion: both instant
 //   - the receiving line: one calm line in the secondary text, figures that do not jitter
-// Needs the dev server (the helpers are imported from source):
-//   npx vite --port 4211 & DEV=http://localhost:4211 node .uiverify/design-arrival.mjs
+// Runs against the built app as the other suites do; the helpers it drives (lib/fade.ts) are
+// compiled from source here and served at their source path, so the page imports them as is:
+//   BASE=http://localhost:4173 node .uiverify/design-arrival.mjs
+import { readFile } from "node:fs/promises";
+import { transform } from "esbuild";
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub } from "./stub.mjs";
 
-const DEV = process.env.DEV ?? "http://localhost:5173";
+const BASE = process.env.BASE ?? "http://localhost:4173";
+const fade = (await transform(await readFile(new URL("../src/lib/fade.ts", import.meta.url), "utf8"), { loader: "ts", format: "esm" })).code;
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 const b = await engine.launch();
@@ -18,8 +22,9 @@ const b = await engine.launch();
 async function open(reducedMotion) {
   const ctx = await b.newContext({ viewport: { width: 1000, height: 700 }, reducedMotion });
   await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null });
+  await ctx.route(`${BASE}/src/lib/fade.ts`, (route) => route.fulfill({ contentType: "text/javascript", body: fade }));
   const page = await ctx.newPage();
-  await page.goto(DEV, { waitUntil: "networkidle" });
+  await page.goto(BASE, { waitUntil: "networkidle" });
   // Three rows in a plain list, the middle one the one that arrives or leaves.
   await page.evaluate(() => {
     const ul = document.createElement("ul");
