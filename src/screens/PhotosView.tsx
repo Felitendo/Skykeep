@@ -941,6 +941,13 @@ export function PhotosView() {
         return;
       }
     }
+    // Gone from the end of the list (hidden, deleted or unfavourited elsewhere): the photo
+    // before it, as a delete here does — left past the end, the viewer drew nothing while the
+    // grid stayed hidden behind it.
+    if (open >= photos.length) {
+      setOpen(photos.length > 0 ? photos.length - 1 : null);
+      return;
+    }
     openId.current = photos.ids[open] ?? null;
   }, [open, photos]);
 
