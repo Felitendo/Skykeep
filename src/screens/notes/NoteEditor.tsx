@@ -408,9 +408,12 @@ function attachmentView(node: PMNode) {
         return showMedia(id);
       }
       if (!dom.classList.contains("is-table") && !dom.classList.contains("is-table-unread")) return;
+      // Never under a cell being typed in: drawn again, the table threw the typing away and the
+      // cursor with it. The next sync after the cell is left brings the other cells' changes.
+      if (dom.contains(document.activeElement)) return;
       api.noteTable(id).then(
         (cells) => {
-          if (cells && cells.length && JSON.stringify(cells) !== JSON.stringify(tableCells.get(id))) draw(cells);
+          if (cells && cells.length && !dom.contains(document.activeElement) && JSON.stringify(cells) !== JSON.stringify(tableCells.get(id))) draw(cells);
         },
         () => {},
       );
