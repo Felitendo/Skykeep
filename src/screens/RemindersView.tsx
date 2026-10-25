@@ -1102,12 +1102,21 @@ export function RemindersView() {
   const reorder = (guid: string, before: string) => {
     const r = items.find((x) => x.guid === guid);
     if (!r || !listGuid) return Promise.resolve(null);
+    // Dropped among another section's reminders, it goes into that section too, as on the
+    // phone: put in order alone, it sprang back under its old heading.
+    const target = items.find((x) => x.guid === before);
+    const into = target ? sectionOf(target) : sectionOf(r);
+    const across = REMINDER_DETAIL_WRITES && into !== sectionOf(r);
     return write(
       r,
-      () => api.reminderReorder(listGuid, guid, before),
+      async () => {
+        await api.reminderReorder(listGuid, guid, before);
+        if (across) await remindersApi.sectionMove(listGuid, guid, into);
+      },
       (rows) => {
-        const moved = rows.find((x) => x.guid === guid);
-        if (!moved) return rows;
+        const found = rows.find((x) => x.guid === guid);
+        if (!found) return rows;
+        const moved = across ? { ...found, sectionGuid: into } : found;
         const rest = rows.filter((x) => x.guid !== guid);
         const at = rest.findIndex((x) => x.guid === before);
         return [...rest.slice(0, at < 0 ? rest.length : at), moved, ...rest.slice(at < 0 ? rest.length : at)];

@@ -325,10 +325,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "reminder_reorder": {
           (window.__reorders ??= []).push(args);
-          const i = reminderItems.findIndex((x) => x.guid === args.guid);
-          const [moved] = reminderItems.splice(i, 1);
-          const at = reminderItems.findIndex((x) => x.guid === args.before);
-          reminderItems.splice(at < 0 ? reminderItems.length : at, 0, moved);
+          // In whichever list of rows holds it: a suite's own (__extraReminders) too.
+          const rows = reminderItems.some((x) => x.guid === args.guid) ? reminderItems : (window.__extraReminders ?? []);
+          const i = rows.findIndex((x) => x.guid === args.guid);
+          if (i < 0) return null;
+          const [moved] = rows.splice(i, 1);
+          const at = rows.findIndex((x) => x.guid === args.before);
+          rows.splice(at < 0 ? rows.length : at, 0, moved);
           return null;
         }
         case "reminder_list_colour": {
