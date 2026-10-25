@@ -659,8 +659,10 @@ const Month = memo(function Month({
       };
     }
     const watch = new IntersectionObserver(
-      ([e]) => {
-        close = e.isIntersecting;
+      (entries) => {
+        // The latest of what came in one go: a layout that moved it out and back within a
+        // frame comes as two entries, and the first alone left it out — half built for good.
+        close = entries[entries.length - 1].isIntersecting;
         if (!close) return;
         setNear(true);
         void list.need(items[0].index, items[items.length - 1].index);
