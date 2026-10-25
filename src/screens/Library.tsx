@@ -59,7 +59,7 @@ const DriveView = apps.drivews.Screen;
 const PhotosView = apps.photos.Screen;
 const SettingsView = apps.settings.Screen;
 import { ScreenBoundary } from "../components/ScreenBoundary";
-import { ScreenActive } from "../lib/screen";
+import { ScreenActive, modalOpen } from "../lib/screen";
 import { AppIcon } from "../components/AppIcon";
 import { GlobalSearch } from "../components/GlobalSearch";
 import { ShortcutsSheet } from "../components/ShortcutsSheet";
@@ -116,6 +116,10 @@ function AppKeys({ screen, onSettings }: { screen: string | null; onSettings: ()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.defaultPrevented) return;
+      if ((e.key === "," || e.key === "/" || e.key === "?") && modalOpen()) {
+        e.preventDefault();
+        return;
+      }
       if (e.key === ",") {
         e.preventDefault();
         onSettings();
