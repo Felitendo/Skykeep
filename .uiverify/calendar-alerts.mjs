@@ -33,5 +33,20 @@ await page.locator('input[placeholder="New Event"]').first().press("Enter");
 await page.waitForTimeout(300);
 sent = await page.evaluate(() => window.__eventSaves?.at(-1));
 ok(sent && !("alerts" in sent), `an edit that leaves the alerts alone sends none  ${JSON.stringify(Object.keys(sent ?? {}))}`);
+
+// An all-day event's alerts are Apple's: on the day or days before, each at 9 AM.
+await page.keyboard.press("Escape");
+await page.keyboard.press("Control+3");
+await page.waitForTimeout(300);
+await page.getByText("Flight to Hyderabad").first().click();
+await page.waitForTimeout(300);
+await page.getByRole("button", { name: "Alert", exact: true }).click();
+const offered = await page.getByRole("option").allInnerTexts();
+ok(offered.includes("On day of event (9 AM)") && offered.includes("1 week before (9 AM)"), `an all-day event offers Apple's 9 AM alerts  ${JSON.stringify(offered)}`);
+await page.getByRole("option", { name: "1 day before (9 AM)" }).click();
+await page.locator('input[placeholder="New Event"]').first().press("Enter");
+await page.waitForTimeout(300);
+sent = await page.evaluate(() => window.__eventSaves?.at(-1));
+ok(JSON.stringify(sent?.alerts) === "[900]", `and rings at 9 AM the day before  ${JSON.stringify(sent?.alerts)}`);
 await b.close();
 process.exitCode = failures ? 1 : 0;

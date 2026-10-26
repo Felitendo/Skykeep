@@ -90,12 +90,15 @@ const ALERTS = [
   { minutes: 1440, label: "1 day before" },
   { minutes: 2880, label: "2 days before" },
 ];
+/** Apple's all-day alerts ring at 9 AM: minutes from the day's midnight, negative after it. */
 const ALL_DAY_ALERTS = [
-  { minutes: 0, label: "On day of event" },
-  { minutes: 1440, label: "1 day before" },
-  { minutes: 2880, label: "2 days before" },
-  { minutes: 10080, label: "1 week before" },
+  { minutes: -540, label: "On day of event (9 AM)" },
+  { minutes: 900, label: "1 day before (9 AM)" },
+  { minutes: 2340, label: "2 days before (9 AM)" },
+  { minutes: 9540, label: "1 week before (9 AM)" },
 ];
+/** The midnight presets kept before, read as the 9 AM ones they meant. */
+const ALL_DAY_WAS: Record<number, number> = { 0: -540, 1440: 900, 2880: 2340, 10080: 9540 };
 /** An alert Apple holds that no preset names — set on a phone, say. */
 function alertLabel(m: number): string {
   if (m === 0) return "At time of event";
@@ -473,7 +476,11 @@ export function CalendarView() {
     setWeekNumbersState(on);
     writeJson(WEEK_NUMBERS_KEY, on);
   };
-  const [defaultAlerts, setDefaultAlertsState] = useState<DefaultAlerts>(() => readJson(DEFAULT_ALERTS_KEY, { timed: {}, allDay: {} }));
+  const [defaultAlerts, setDefaultAlertsState] = useState<DefaultAlerts>(() => {
+    const kept = readJson<DefaultAlerts>(DEFAULT_ALERTS_KEY, { timed: {}, allDay: {} });
+    const allDay = Object.fromEntries(Object.entries(kept.allDay ?? {}).map(([g, m]) => [g, ALL_DAY_WAS[m] ?? m]));
+    return { timed: kept.timed ?? {}, allDay };
+  });
   const setDefaultAlert = (kind: "timed" | "allDay", guid: string, minutes: number | null) =>
     setDefaultAlertsState((was) => {
       const next = { ...was, [kind]: { ...was[kind] } };
