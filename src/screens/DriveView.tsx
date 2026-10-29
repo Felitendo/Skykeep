@@ -33,6 +33,7 @@ import { Clock } from "lucide-react";
 import { useReveal } from "../lib/reveal";
 import { keepSame } from "../lib/same";
 import { copyName, copyText } from "../lib/clipboard";
+import { useChosen, useIsChosen, type Chosen } from "../lib/chosen";
 
 /** iCloud Drive's own four orders, as its "by Name" menu offers them. */
 const SORTS = [
@@ -568,6 +569,8 @@ export function DriveView() {
    */
   const [picked, setPicked] = useState<string[]>([]);
   const selected = picked.length ? picked[picked.length - 1] : null;
+  /** What is selected, told to the rows one by one (lib/chosen). */
+  const chosen = useChosen(picked);
   const setSelected = (id: string | null) => setPicked(id ? [id] : []);
   /** Where a Shift-click or Shift-arrow run starts. */
   const anchor = useRef<string | null>(null);
@@ -1788,19 +1791,16 @@ export function DriveView() {
           </li>
         )}
 
-        {rows.map((item) => (
-          <DriveRow
-            key={item.drivewsid}
-            item={item}
-            busy={busyIds.has(item.drivewsid)}
-            selected={picked.includes(item.drivewsid)}
-            menuOpen={menu?.item.drivewsid === item.drivewsid}
-            dropTarget={dropOn === item.drivewsid}
-            thumb={thumbs[item.drivewsid]}
-            renaming={renaming === item.drivewsid}
-            actions={rowActions}
-          />
-        ))}
+        <DriveRows
+          rows={rows}
+          chosen={chosen}
+          busyIds={busyIds}
+          menuOn={menu?.item.drivewsid ?? null}
+          dropOn={dropOn}
+          thumbs={thumbs}
+          renaming={renaming}
+          actions={rowActions}
+        />
       </ul>
 
       {items.length === 0 && !creatingFolder && !error && (loading || !loaded) && (
@@ -1922,21 +1922,59 @@ const sizeText = (item: DriveItem) =>
     : fileSize(item.size);
 
 /**
+ * The folder's rows. Drawn again only when what they show changes — not when the selection
+ * moves: that reaches each row through `chosen` (lib/chosen), so an arrow press in a folder of
+ * thousands draws the two rows it moved between, without making every row anew to find them.
+ */
+const DriveRows = memo(function DriveRows({
+  rows, chosen, busyIds, menuOn, dropOn, thumbs, renaming, actions,
+}: {
+  rows: DriveItem[];
+  chosen: Chosen;
+  busyIds: ReadonlySet<string>;
+  /** The row whose menu is open. */
+  menuOn: string | null;
+  dropOn: string | null;
+  thumbs: Record<string, string>;
+  renaming: string | null;
+  actions: DriveRowActions;
+}) {
+  return (
+    <>
+      {rows.map((item) => (
+        <DriveRow
+          key={item.drivewsid}
+          item={item}
+          busy={busyIds.has(item.drivewsid)}
+          chosen={chosen}
+          menuOpen={menuOn === item.drivewsid}
+          dropTarget={dropOn === item.drivewsid}
+          thumb={thumbs[item.drivewsid]}
+          renaming={renaming === item.drivewsid}
+          actions={actions}
+        />
+      ))}
+    </>
+  );
+});
+
+/**
  * One file or folder. Memoised on what it shows, so in a folder of thousands a click, a key or
  * a menu opening redraws the rows it changes and no others.
  */
 const DriveRow = memo(function DriveRow({
-  item, busy, selected, menuOpen, dropTarget, thumb, renaming, actions,
+  item, busy, chosen, menuOpen, dropTarget, thumb, renaming, actions,
 }: {
   item: DriveItem;
   busy: boolean;
-  selected: boolean;
+  chosen: Chosen;
   menuOpen: boolean;
   dropTarget: boolean;
   thumb?: string;
   renaming: boolean;
   actions: DriveRowActions;
 }) {
+  const selected = useIsChosen(chosen, item.drivewsid);
   const container = isContainer(item);
   if (renaming) {
     return (
