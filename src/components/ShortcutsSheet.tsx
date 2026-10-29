@@ -52,6 +52,7 @@ export const SHORTCUTS: { app: string; key: string; rows: Row[] }[] = [
       [[["Ctrl", "N"]], "New event"],
       [[["Ctrl", "D"], ["Ctrl", "C"], ["Ctrl", "V"]], "Duplicate / copy / paste event"],
       [[["Ctrl", "Alt", "Arrows"]], "Nudge the selected event"],
+      [[["Ctrl", "Z"]], "Undo the last change or deletion"],
     ],
   },
   {
