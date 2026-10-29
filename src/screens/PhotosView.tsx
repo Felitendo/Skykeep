@@ -17,6 +17,7 @@ import {
   PHOTO_UPLOAD,
   type Photo,
   type PhotoAlbum,
+  type PhotoMonth,
   type PhotoOrder,
   type PhotoSource,
   type PhotoView,
@@ -44,6 +45,7 @@ import { AdjustDate } from "./photos/AdjustDate";
 import { useReveal } from "../lib/reveal";
 import { Picker } from "../components/Picker";
 import { PAGE, PhotoList, PhotoStore } from "./photos/list";
+import { Periods, monthName, type Level, type Place } from "./photos/Periods";
 import { same } from "../lib/same";
 
 /** The sidebar, in Photos' order, each with the symbol Photos gives it. */
@@ -65,6 +67,10 @@ const UTILITIES: typeof VIEWS = [
   { key: "hidden", label: "Hidden", Icon: EyeOff },
   { key: "recentlyDeleted", label: "Recently Deleted", Icon: Trash2 },
 ];
+
+/** The Library's three levels, as Photos names them in its toolbar. */
+const LEVELS: [Level, string][] = [["years", "Years"], ["months", "Months"], ["all", "All Photos"]];
+const LEVEL_KEY = "quince.photos.level";
 
 /** How many across at each step of the zoom, as Photos steps it. */
 const ACROSS = [10, 7, 5, 3];
@@ -799,6 +805,15 @@ export function PhotosView() {
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
   const [zoom, setZoom] = useState(1);
+  // The Library's level — Years, Months or All Photos — kept on this machine, as Photos keeps it.
+  const [level, setLevel] = useState<Level>(() => {
+    try {
+      const kept = window.localStorage.getItem(LEVEL_KEY);
+      return kept === "years" || kept === "months" ? kept : "all";
+    } catch {
+      return "all";
+    }
+  });
   // Squares that fill each cell, or each photo whole in its own shape — icloud.com's toggle,
   // kept on this machine.
   const [fit, setFit] = useState(() => {
@@ -1979,6 +1994,16 @@ export function PhotosView() {
       // after Photos is chosen there — never the page's text.
       const selectAll = ctrl && e.key.toLowerCase() === "a";
       if (!selectAll && !t?.closest?.(".px") && t !== document.body) return;
+      // Ctrl+[ — and Escape, with nothing selected — step out a level, as Photos' Back does:
+      // All Photos to Months, Months to Years.
+      if (periodsHere && level !== "years" && !e.altKey && !e.shiftKey && !chosen.size
+        && ((ctrl && (e.key === "[" || e.code === "BracketLeft")) || (!ctrl && e.key === "Escape"))) {
+        e.preventDefault();
+        goLevel(level === "all" ? "months" : "years");
+        return;
+      }
+      // Years or Months showing: the grid behind them takes no keys.
+      if (away) return;
       if (ctrl && e.key.toLowerCase() === "a") {
         setChosen(new Set(list));
       } else if (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "c" && selected.length && place !== "recentlyDeleted") {
@@ -2608,14 +2633,14 @@ export function PhotosView() {
         return { label: m.month, year: d.getFullYear(), month: d.getMonth(), cover: { id: m.items[0].id } };
       });
   }, [months, drawn]); // eslint-disable-line react-hooks/exhaustive-deps
-  const goToMonth = (label: string) => {
+  const goToMonth = (label: string, instant = false) => {
     const el = scroller.current;
     const at = el?.querySelector<HTMLElement>(`.px-month[data-month="${CSS.escape(label)}"]`);
     // Measured against the scroller itself: offsetTop counts from whatever positioned box
     // happens to hold the month, which is not always the scroller.
     if (el && at) {
       const top = at.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 4;
-      el.scrollTo({ top, behavior: still() ? "auto" : "smooth" });
+      el.scrollTo({ top, behavior: instant || still() ? "auto" : "smooth" });
     }
   };
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -2643,6 +2668,87 @@ export function PhotosView() {
     }, 120);
   }, [album]);
   useEffect(() => setHere(null), [view, album]);
+
+  /*
+   * Years, Months and All Photos, as Photos on a Mac steps through its Library: only the
+   * Library has them (every other view, an album and a search are their own grid). Years and
+   * Months are drawn in place of the grid, which stays as it was beneath them — built and kept
+   * current by every sync, its scroll put back — so coming back to All Photos is instant and
+   * finds it where it was.
+   */
+  const periodsHere = drawn.view === "library" && !drawn.album && !drawn.query;
+  const away = periodsHere && level !== "all";
+  const awayRef = useRef(away);
+  awayRef.current = away;
+  // The library's months, with their counts and key photos, asked of the library whenever Years
+  // or Months is shown and again whenever the library changes under them.
+  const [periodMonths, setPeriodMonths] = useState<PhotoMonth[] | null>(null);
+  useEffect(() => {
+    if (!away) return undefined;
+    let mine = true;
+    api.photosMonths().then(
+      (m) => mine && setPeriodMonths((was) => (same(was, m) ? was : m)),
+      (e) => mine && setError(messageOf(e)),
+    );
+    return () => {
+      mine = false;
+    };
+  }, [away, photos]);
+  /** Where a level just shown lands: the place carried from the last one (a new object each time). */
+  const [landAt, setLandAt] = useState<Place | null>(null);
+  /** The place at the top of Years or Months now (kept by them). */
+  const periodAt = useRef<Place | null>(null);
+  /** All Photos as it was left: its scroll, and the month at its top. */
+  const leftAll = useRef<{ top: number; place: Place | null } | null>(null);
+  /** All Photos about to be shown, and the place to show it at. */
+  const toAll = useRef<Place | null | undefined>(undefined);
+  /** The month at the top of All Photos. */
+  const gridPlace = (): Place | null => {
+    const label = here ?? months[0]?.month;
+    const g = months.find((m) => m.month === label && m.items.length);
+    if (!g || !photos) return null;
+    const d = new Date(photos.keys[g.items[0].index] * 1000);
+    return { year: d.getFullYear(), month: d.getMonth() + 1 };
+  };
+  const goLevel = (next: Level, to?: Place | null) => {
+    if (next === level) return;
+    const from = level === "all" ? gridPlace() : periodAt.current;
+    const place = to === undefined ? from : to;
+    if (level === "all") {
+      leftAll.current = { top: scroller.current?.scrollTop ?? 0, place: from };
+      // Nothing stays chosen out of sight, for a key to act on.
+      setChosen(new Set());
+      anchor.current = null;
+    }
+    setJumping(null);
+    if (next === "all") toAll.current = place;
+    else setLandAt(place ? { year: place.year, month: next === "months" ? place.month : undefined } : null);
+    setLevel(next);
+    try {
+      window.localStorage.setItem(LEVEL_KEY, next);
+    } catch {
+      // For this run only.
+    }
+  };
+  // All Photos shown again: at the month chosen, or exactly where it was left when that is the
+  // same month, or a year it was in (Escape and back again), before its first frame is painted.
+  useLayoutEffect(() => {
+    const to = toAll.current;
+    toAll.current = undefined;
+    const el = scroller.current;
+    if (level !== "all" || to === undefined || !el) return;
+    const left = leftAll.current;
+    if (left && (!to || (left.place?.year === to.year && (to.month === undefined || left.place.month === to.month)))) {
+      el.scrollTop = left.top;
+      return;
+    }
+    if (!to) return;
+    // A year alone: its first month as the grid shows them.
+    const label = to.month
+      ? monthName(to.year, to.month)
+      : months.find((m) => m.month && photos && new Date(photos.keys[m.items[0].index] * 1000).getFullYear() === to.year)?.month;
+    if (label) goToMonth(label, true);
+  }, [level]); // eslint-disable-line react-hooks/exhaustive-deps
   // Info closes with the photo: the next photo opens plain, as he expects it to.
   useEffect(() => {
     if (open === null) setInfo(false);
@@ -2656,7 +2762,7 @@ export function PhotosView() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!live.current) return;
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || viewer.current) return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || viewer.current || awayRef.current) return;
       if (e.key === "=" || e.key === "+") acts.current.zoomBy(1);
       else if (e.key === "-") acts.current.zoomBy(-1);
       else return;
@@ -3193,12 +3299,21 @@ export function PhotosView() {
                           </span>
                         </>
                       )
-                    : (here ?? span) || undefined
+                    : (away ? span : (here ?? span)) || undefined
             }
           >
             {title}
           </PaneTitle>
           <div className="px-tools">
+          {periodsHere && (
+            <div className="segmented toolbar-group px-levels" role="group" aria-label="Library">
+              {LEVELS.map(([key, label]) => (
+                <button key={key} className="segment" aria-pressed={level === key} onClick={() => goLevel(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {place === "recentlyDeleted" && !inAlbum && photos && photos.length > 0 && (
             // Recently Deleted's own toolbar, in Photos' words: Recover and Delete for what is
             // selected, Delete All when nothing is.
@@ -3219,7 +3334,7 @@ export function PhotosView() {
               )}
             </div>
           )}
-          <div className="toolbar-group">
+          {!away && <div className="toolbar-group">
             <button
               className="tool px-cap is-glyph-state"
               aria-label={fit ? "Show Square Photos" : "Show Whole Photos"}
@@ -3229,7 +3344,7 @@ export function PhotosView() {
             >
               {fit ? <Square size={15} strokeWidth={1.9} aria-hidden="true" /> : <RectangleHorizontal size={16} strokeWidth={1.9} aria-hidden="true" />}
             </button>
-          </div>
+          </div>}
           {sort && (
             <div className="toolbar-group">
               <button
@@ -3255,7 +3370,7 @@ export function PhotosView() {
               </button>
             </div>
           )}
-          {monthCovers.length > 1 && (
+          {monthCovers.length > 1 && !away && (
             <div className="toolbar-group">
               <button
                 className="tool px-cap"
@@ -3270,14 +3385,14 @@ export function PhotosView() {
             </div>
           )}
           {jumping && <JumpTo months={monthCovers} at={jumping} current={here ?? monthCovers[0]?.label ?? null} onPick={goToMonth} onClose={() => setJumping(null)} />}
-          <div className="toolbar-group" role="group" aria-label="Zoom">
+          {!away && <div className="toolbar-group" role="group" aria-label="Zoom">
             <button className="tool px-cap" aria-label="Zoom Out" title="Zoom Out (Ctrl −)" disabled={zoom === 0} onClick={() => zoomBy(-1)}>
               <Minus size={15} strokeWidth={2.2} aria-hidden="true" />
             </button>
             <button className="tool px-cap" aria-label="Zoom In" title="Zoom In (Ctrl +)" disabled={zoom === ACROSS.length - 1} onClick={() => zoomBy(1)}>
               <Plus size={15} strokeWidth={2.2} aria-hidden="true" />
             </button>
-          </div>
+          </div>}
           <div className="toolbar-group">
             <button className="tool px-cap px-add" onClick={() => void choose()} title="Add photos and videos" aria-label="Add Photos">
               <ImagePlus size={16} strokeWidth={1.9} aria-hidden="true" />
@@ -3350,7 +3465,7 @@ export function PhotosView() {
               return;
             }
             if (!(e.target as HTMLElement).closest(".px-tile")) setChosen(new Set());
-          }} data-fit={fit || undefined} style={{ "--across": across } as React.CSSProperties}>
+          }} data-fit={fit || undefined} data-away={away || undefined} style={{ "--across": across } as React.CSSProperties}>
           {waiting && (
             <div className="px-month" aria-busy="true">
               <h2 className="px-month-title px-month-title-ph" aria-hidden="true">&nbsp;</h2>
@@ -3384,6 +3499,17 @@ export function PhotosView() {
           {tally && <p className="px-tally">{tally}</p>}
           <div className="px-sweep" ref={sweepBox} aria-hidden="true" hidden />
         </div>
+        {away && periodMonths && (
+          <Periods
+            level={level as "years" | "months"}
+            months={periodMonths}
+            oldest={sort?.oldest ?? false}
+            land={landAt}
+            at={periodAt}
+            onYear={(year) => goLevel("months", { year })}
+            onMonth={(year, month) => goLevel("all", { year, month })}
+          />
+        )}
 
         {shown && (
           <div

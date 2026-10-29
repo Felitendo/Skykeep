@@ -180,6 +180,8 @@ export const api = {
   /** Photos by id, in the order asked; any gone are left out. */
   photosGet: (ids: string[]) => invoke<Photo[]>("photos_get", { ids }),
   photosCounts: () => invoke<[PhotoView, number][]>("photos_counts"),
+  /** The library's months, newest first, each with its count and key photos (Years and Months). */
+  photosMonths: () => invoke<PhotoMonth[]>("photos_months"),
   /** The albums the person made, each with how many photos it holds. */
   /** Each album, how many it shows, and its cover — the first photo it shows. */
   photosAlbums: () => invoke<[PhotoAlbum, number, string | null][]>("photos_albums"),
@@ -833,6 +835,19 @@ export type PhotoIndex = {
   marks: number[];
   first: number | null;
   last: number | null;
+};
+/** One month of the library as Years and Months show it (quince-core photos::PhotoMonth). */
+export type PhotoMonth = {
+  year: number;
+  /** 1–12. */
+  month: number;
+  count: number;
+  videos: number;
+  /** The photo that stands for it: a favourite if it has one, else the still nearest its middle. */
+  key: string;
+  keyFavorite: boolean;
+  /** Up to three more, spread through it, newest first. */
+  more: string[];
 };
 export type PhotoView = "library" | "favorites" | "videos" | "screenshots" | "panoramas" | "portrait" | "recents" | "hidden" | "rated" | "recentlyDeleted";
 

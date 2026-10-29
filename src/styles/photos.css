@@ -1019,3 +1019,80 @@ img[data-failed] { content: url("data:image/gif;base64,R0lGODlhAQABAAAAACw="); }
   z-index: 1;
   justify-content: center;
 }
+
+/* ---- Years and Months: the Library a tile a year, or a tile a month, over the grid ---------- */
+/* The grid stays beneath, built and kept current, but out of the page's layout (see PhotosView's
+   levels): only hidden, it went on being laid out under Years and Months, and their scroll lost
+   frames of 100–250 ms to it on fifty thousand photos. */
+.px-scroll[data-away] { display: none; }
+.px-periods {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow-y: auto;
+  /* As the grid's: room for the header floating over it, and a tile reached by a key lands
+     below it. */
+  padding: calc(var(--bar, 68px) + 12px) 16px 24px;
+  scroll-padding-top: calc(var(--bar, 68px) + 8px);
+  contain: strict;
+  overflow-anchor: none;
+}
+.px-periods::-webkit-scrollbar-track { margin-top: calc(var(--bar, 68px) + 4px); }
+/* Its columns, gap and height worked out by Periods from the width (only the rows near the screen
+   are made; the padding stands for the rows above them). */
+.px-periods-grid {
+  display: grid;
+  box-sizing: border-box;
+  align-content: start;
+  gap: var(--gap, 12px);
+  grid-template-columns: repeat(var(--across, 4), minmax(0, 1fr));
+}
+/* A tile is exactly the shape its column makes it, whatever is in it. */
+.px-period {
+  position: relative;
+  display: grid;
+  grid-template: 1fr / 1fr;
+  gap: 2px;
+  aspect-ratio: 4 / 3;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-plateau);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.px-periods[data-level="years"] .px-period { aspect-ratio: 3 / 2; }
+/* A month's key photo large, with a few more from it in a column beside, as Photos gathers one. */
+.px-period[data-mosaic] { grid-template-columns: 2fr 1fr; }
+.px-period[data-mosaic="2"] { grid-template-rows: 1fr 1fr; }
+.px-period[data-mosaic="3"] { grid-template-rows: 1fr 1fr 1fr; }
+.px-period[data-mosaic] .px-period-key { grid-row: 1 / -1; }
+.px-period img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: cover;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+/* Its name over the top of the photo, white on a soft shade, as Photos writes it. */
+.px-period-words {
+  position: absolute;
+  inset: 0 0 auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 12px 14px 28px;
+  background: linear-gradient(rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.18) 60%, transparent);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+.px-period-words strong { font-size: var(--t-17, 17px); font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+.px-period-words span { font-size: var(--t-12, 12px); font-weight: 500; opacity: 0.9; font-variant-numeric: tabular-nums; }
+.px-periods[data-level="years"] .px-period-words { padding: 16px 18px 40px; }
+.px-periods[data-level="years"] .px-period-words strong { font-size: 30px; letter-spacing: -0.02em; }
+.px-period:hover img { filter: brightness(1.06); }
+.px-period:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
