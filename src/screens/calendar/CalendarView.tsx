@@ -1205,12 +1205,13 @@ export function CalendarView() {
   }, [setView]);
   const canWrite = useCallback((guid: string) => byGuid.get(guid)?.writable ?? false, [byGuid]);
   const gridDays = useMemo(() => (view === "week" ? week : [selected]), [view, week, selected]);
-  const pendingFrom = draft && !draft.guid && !draft.allDay ? draft.startsAt : null;
-  const pendingTo = draft && !draft.guid && !draft.allDay ? draft.endsAt : null;
-  const pendingTitle = draft && !draft.guid && !draft.allDay ? draft.title : "";
+  const pendingFrom = draft && !draft.guid ? draft.startsAt : null;
+  const pendingTo = draft && !draft.guid ? draft.endsAt : null;
+  const pendingTitle = draft && !draft.guid ? draft.title : "";
+  const pendingAllDay = Boolean(draft && !draft.guid && draft.allDay);
   const pending = useMemo(
-    () => (pendingFrom === null || pendingTo === null ? null : { startsAt: pendingFrom, endsAt: pendingTo, title: pendingTitle }),
-    [pendingFrom, pendingTo, pendingTitle]
+    () => (pendingFrom === null || pendingTo === null ? null : { startsAt: pendingFrom, endsAt: pendingTo, title: pendingTitle, allDay: pendingAllDay }),
+    [pendingFrom, pendingTo, pendingTitle, pendingAllDay]
   );
 
   /** "New event": the next whole hour on the selected day, for an hour — Apple's default. */
@@ -2355,8 +2356,9 @@ const TimeGrid = memo(function TimeGrid({
   onCreate: (startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => void;
   onMove: (e: CalendarEvent, startsAt: number, endsAt: number) => void;
   onPickDay: (d: Date) => void;
-  /** A new event being named in the popover, held on the grid where it was made. */
-  pending?: { startsAt: number; endsAt: number; title: string } | null;
+  /** A new event being named in the popover, held on the grid where it was made — in the
+   *  all-day row when it is all-day. */
+  pending?: { startsAt: number; endsAt: number; title: string; allDay: boolean } | null;
   onMenu: (e: CalendarEvent, at: { x: number; y: number }) => void;
   picked: string | null;
   weekNumbers: boolean;
@@ -2369,12 +2371,22 @@ const TimeGrid = memo(function TimeGrid({
   const daysKey = days.map((d) => dayKey(d)).join();
   // A bar that runs past the last day shown carries on to the right — in Day, past the one
   // day, not only past the week the layout counts from.
+  // A new all-day event being named takes its place among them, so it is seen where it is
+  // being made rather than nowhere until it is saved.
+  const draftFrom = pending?.allDay ? pending.startsAt : null;
+  const draftTo = pending?.allDay ? pending.endsAt : null;
   const spans = useMemo(
-    () => weekSpans(events, days[0])
+    () => weekSpans(
+      draftFrom === null || draftTo === null ? events : [...events, {
+        guid: PENDING, calendarGuid: "", title: "", location: null, startsAt: draftFrom, endsAt: draftTo,
+        allDay: true, timezone: null, url: null, notes: null, etag: null,
+      }],
+      days[0],
+    )
       .filter((s) => s.from < days.length)
       .map((s) => (s.to >= days.length ? { ...s, to: days.length - 1, continuesRight: true } : s)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [events, daysKey]
+    [events, daysKey, draftFrom, draftTo]
   );
   const eventLanes = Math.max(0, ...spans.map((s) => s.lane + 1));
   // A reminder for a day has no time: it sits in the all-day row under the day's bars, as in
@@ -2606,8 +2618,8 @@ const TimeGrid = memo(function TimeGrid({
   // Each day's events and timed reminders, laid out together so neither is drawn over the other.
   // Worked out once for what is shown, not again for every move of a drag or key typed in the
   // popover; the title of the event being named changes nothing here.
-  const pendingFrom = pending?.startsAt ?? null;
-  const pendingTo = pending?.endsAt ?? null;
+  const pendingFrom = pending && !pending.allDay ? pending.startsAt : null;
+  const pendingTo = pending && !pending.allDay ? pending.endsAt : null;
   const layouts = useMemo(() => days.map((d) => {
     const pending = pendingFrom === null || pendingTo === null ? null : { startsAt: pendingFrom, endsAt: pendingTo };
     const due = stackReminders(reminders.filter((r) => r.dueAt !== null && !r.allDay && sameDay(dateOf(r.dueAt), d)));
@@ -2672,6 +2684,21 @@ const TimeGrid = memo(function TimeGrid({
           }}
         >
           {spans.map((s) => {
+            if (s.event.guid === PENDING) {
+              return (
+                <span
+                  key={PENDING}
+                  className="cx-bar-event is-draft"
+                  style={{
+                    left: `calc(${(s.from / days.length) * 100}% + 2px)`,
+                    width: `calc(${((s.to - s.from + 1) / days.length) * 100}% - 4px)`,
+                    top: `${4 + s.lane * LANE}px`,
+                  }}
+                >
+                  {pending?.title.trim() || "New Event"}
+                </span>
+              );
+            }
             const carried = drag?.kind === "days" && drag.event.guid === s.event.guid ? drag : null;
             const from = s.from + (carried && carried.edge !== "end" ? carried.dx : 0);
             const to = Math.min(s.to + (carried && carried.edge !== "start" ? carried.dx : 0), days.length - 1);

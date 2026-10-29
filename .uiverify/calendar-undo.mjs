@@ -50,6 +50,12 @@ const made = page.getByRole("dialog", { name: "New event" });
 await made.waitFor({ timeout: 2000 }).catch(() => {});
 ok(await made.isVisible(), "a double-click on the all-day row starts a new event");
 ok(await made.getByRole("checkbox", { name: "all-day" }).isChecked().catch(() => false), "and it is all-day");
+// Drawn in the row while it is named, under its name as typed.
+await made.getByLabel("Title").fill("Team day");
+const draftBar = page.locator(".cx-allday .cx-bar-event.is-draft");
+ok(await draftBar.count() === 1 && (await draftBar.textContent()) === "Team day", `it is drawn in the all-day row as it is named  [${await draftBar.count()}]`);
+const drawnAt = await draftBar.boundingBox();
+ok(drawnAt && Math.abs(drawnAt.x - (box.x + colWidth * other)) < 6, "on the day it was made");
 await page.keyboard.press("Escape");
 await made.waitFor({ state: "detached" });
 

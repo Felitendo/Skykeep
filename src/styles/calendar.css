@@ -445,6 +445,7 @@
 .cx-bar-grip { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; }
 .cx-bar-grip.is-start { left: 0; }
 .cx-bar-grip.is-end { right: 0; }
+.cx-bar-event.is-draft { --cal: var(--sys-blue); display: flex; align-items: center; pointer-events: none; }
 .cx-block.is-draft {
   --cal: var(--sys-blue);
   left: 0;
