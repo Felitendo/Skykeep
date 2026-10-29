@@ -58,6 +58,9 @@ const ticked = () => page.evaluate(() => document.querySelector('.note-rich p[da
 // is its state read: a click that strayed onto the circle ticked it and read as the key failing.
 await page.locator('.note-rich p[data-style="103"]').first().click({ position: { x: 120, y: 8 } });
 await page.keyboard.press("End");
+// Two frames for the caret's move to settle: the shortcut ten milliseconds after End — faster
+// than anyone types — was handled before the editor had taken in where End put the caret.
+await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 const was = await ticked();
 await page.keyboard.press("Control+Shift+u");
 ok(await until(page, (w) => (document.querySelector('.note-rich p[data-style="103"]')?.getAttribute("data-checked") === "true") !== w, was),
