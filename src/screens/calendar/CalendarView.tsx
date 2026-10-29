@@ -2297,6 +2297,8 @@ type Drag =
   /** `anchor` is the quarter hour pressed: the drag runs from it up or down, as in Calendar. */
   | { kind: "create"; day: Date; column: number; anchor: number; from: number; to: number }
   /** `column` is the day the event was taken from, so it can be carried only to days shown. */
+  /** `startY` is where it was pressed in the grid's own height (the pointer plus the scroll),
+   *  so the hours scrolled past while it is held count as hours moved. */
   | { kind: "move"; event: CalendarEvent; column: number; startX: number; startY: number; dx: number; dMinutes: number }
   /** Dragging an event's bottom edge: its end moves, its start stays — or, by its top edge
    *  (`top`), its start moves and its end stays. */
@@ -2375,6 +2377,8 @@ const TimeGrid = memo(function TimeGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const scrolled = () => scroller.current?.scrollTop ?? 0;
+
   /** Minutes since midnight under the pointer, in the column it is over. */
   const where = (clientX: number, clientY: number) => {
     const el = columnsEl.current;
@@ -2423,7 +2427,7 @@ const TimeGrid = memo(function TimeGrid({
     } else if (current.kind === "resize") {
       // Never shorter than a quarter hour, as Calendar holds it.
       const length = (current.event.endsAt - current.event.startsAt) / 60;
-      const by = snap(((clientY - current.startY) / HOUR) * 60);
+      const by = snap(((clientY + scrolled() - current.startY) / HOUR) * 60);
       next = { ...current, dMinutes: current.top ? Math.min(length - 15, by) : Math.max(15 - length, by) };
       if (next.dMinutes === current.dMinutes) return;
     } else if (current.kind === "days") {
@@ -2439,7 +2443,7 @@ const TimeGrid = memo(function TimeGrid({
       // Carried only as far as the days on screen: past them it went nowhere visible and
       // landed on a day no one could see.
       const dx = Math.min(days.length - 1 - current.column, Math.max(-current.column, Math.round((clientX - current.startX) / width)));
-      next = { ...current, dx, dMinutes: snap(((clientY - current.startY) / HOUR) * 60) };
+      next = { ...current, dx, dMinutes: snap(((clientY + scrolled() - current.startY) / HOUR) * 60) };
       if (next.dx === current.dx && next.dMinutes === current.dMinutes) return;
     }
     setDragNow(next);
@@ -2491,10 +2495,41 @@ const TimeGrid = memo(function TimeGrid({
   const live = useActiveRef();
   useEffect(() => {
     if (!dragging) return undefined;
-    const move = (e: PointerEvent) => {
-      if (e.buttons === 0) handlers.current.finish(e.clientX, e.clientY);
-      else handlers.current.follow(e.clientX, e.clientY);
+    // Held near the top or bottom of the hours, they scroll, as Calendar's do — faster the
+    // nearer the edge — so an event can be carried to an hour out of sight. The pointer still,
+    // the drag follows the hours scrolling under it.
+    let last: { x: number; y: number } | null = null;
+    // Only once the pointer has really gone somewhere: a press on an event near the edge, the
+    // hand not quite still, had scrolled it away under the click.
+    let first: { x: number; y: number } | null = null;
+    let travelled = false;
+    let frame = 0;
+    const edge = () => {
+      frame = 0;
+      const el = scroller.current;
+      if (!el || !last || !dragRef.current || dragRef.current.kind === "days") return;
+      const r = el.getBoundingClientRect();
+      const ZONE_PX = 32;
+      const into = last.y < r.top + ZONE_PX ? last.y - (r.top + ZONE_PX) : last.y > r.bottom - ZONE_PX ? last.y - (r.bottom - ZONE_PX) : 0;
+      if (!into) return;
+      const before = el.scrollTop;
+      el.scrollTop += Math.max(-16, Math.min(16, into / 2));
+      if (el.scrollTop === before) return;
+      handlers.current.follow(last.x, last.y);
+      frame = requestAnimationFrame(edge);
     };
+    const move = (e: PointerEvent) => {
+      if (e.buttons === 0) return handlers.current.finish(e.clientX, e.clientY);
+      last = { x: e.clientX, y: e.clientY };
+      first ??= last;
+      travelled ||= Math.hypot(last.x - first.x, last.y - first.y) > 6;
+      handlers.current.follow(e.clientX, e.clientY);
+      if (travelled && !frame) frame = requestAnimationFrame(edge);
+    };
+    // Scrolled by the wheel while held: followed as if the pointer had moved over the hours.
+    const scrolledBy = () => last && handlers.current.follow(last.x, last.y);
+    const hours = scroller.current;
+    hours?.addEventListener("scroll", scrolledBy, { passive: true });
     const up = (e: PointerEvent | MouseEvent) => handlers.current.finish(e.clientX, e.clientY);
     const drop = () => setDragNow(null);
     const key = (e: KeyboardEvent) => live.current && e.key === "Escape" && drop();
@@ -2509,6 +2544,8 @@ const TimeGrid = memo(function TimeGrid({
     window.addEventListener("dragstart", drop);
     window.addEventListener("dragend", drop);
     return () => {
+      cancelAnimationFrame(frame);
+      hours?.removeEventListener("scroll", scrolledBy);
       window.removeEventListener("dragstart", drop);
       window.removeEventListener("dragend", drop);
       window.removeEventListener("pointermove", move);
@@ -2719,7 +2756,7 @@ const TimeGrid = memo(function TimeGrid({
                         e.stopPropagation();
                         e.preventDefault();
                         if (canWrite(p.event.calendarGuid)) {
-                          setDragNow({ kind: "move", event: p.event, column, startX: e.clientX, startY: e.clientY, dx: 0, dMinutes: 0 });
+                          setDragNow({ kind: "move", event: p.event, column, startX: e.clientX, startY: e.clientY + scrolled(), dx: 0, dMinutes: 0 });
                         } else {
                           onOpen(p.event, { x: e.clientX, y: e.clientY });
                         }
@@ -2742,7 +2779,7 @@ const TimeGrid = memo(function TimeGrid({
                             if (e.button !== 0) return;
                             e.stopPropagation();
                             e.preventDefault();
-                            setDragNow({ kind: "resize", event: p.event, startY: e.clientY, dMinutes: 0, top: true });
+                            setDragNow({ kind: "resize", event: p.event, startY: e.clientY + scrolled(), dMinutes: 0, top: true });
                           }}
                         />
                       )}
@@ -2754,7 +2791,7 @@ const TimeGrid = memo(function TimeGrid({
                             if (e.button !== 0) return;
                             e.stopPropagation();
                             e.preventDefault();
-                            setDragNow({ kind: "resize", event: p.event, startY: e.clientY, dMinutes: 0 });
+                            setDragNow({ kind: "resize", event: p.event, startY: e.clientY + scrolled(), dMinutes: 0 });
                           }}
                         />
                       )}
