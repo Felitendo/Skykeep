@@ -1061,7 +1061,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           if (window.__slowDrive) await new Promise((r) => setTimeout(r, window.__slowDrive));
           // A folder of a test's own, where it keeps one (__driveIn); every folder holds the fixture otherwise.
           if (window.__driveIn?.[args.folderId]) return [...window.__driveIn[args.folderId]];
-          return !driveFixture ? [] : driveItems;
+          // A suite's own extra files (`window.__driveExtra`), for a long list.
+          return !driveFixture ? [] : window.__driveExtra ? driveItems.concat(window.__driveExtra) : driveItems;
         case "drive_recents": {
           if (!driveFixture) return [];
           const now = Math.floor(Date.now() / 1000);
