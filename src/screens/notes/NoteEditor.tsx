@@ -105,6 +105,9 @@ function size(bytes: number | null): string {
 /** A note's picture asked to be shown large: the viewer (NotePicture) listens for it. */
 export const PICTURE_EVENT = "quince:note-picture";
 export type PictureShown = { id: string; name: string; src: string; srcDark?: string; drawing?: boolean; whole?: string };
+/** A note's picture drawn, so now kept on this computer: the list may show it beside the note
+ *  (NotesView asks which notes have one). */
+export const PICTURE_KEPT_EVENT = "quince:note-picture-kept";
 
 export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
   const name = info.filename ?? info.title ?? (info.kind === "audio" ? "Recording" : "Attachment");
@@ -179,6 +182,7 @@ export function drawMedia(dom: HTMLElement, info: NoteAttachment) {
     }
     img.loading = "lazy";
     img.src = noteMediaSrc(info.id, part);
+    img.addEventListener("load", () => window.dispatchEvent(new Event(PICTURE_KEPT_EVENT)), { once: true });
     // The backend says whether the picture can be shown: a 404 (a HEIC with no decoder on
     // this computer, a fetch that failed) and it is the file's chip, drawn as one.
     img.addEventListener("error", () => {

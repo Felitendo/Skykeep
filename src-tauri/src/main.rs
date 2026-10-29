@@ -539,6 +539,74 @@ async fn note_media_inline(app: &tauri::AppHandle, id: &str) -> Result<Vec<u8>, 
     Ok(small)
 }
 
+/// The edge of the small square picture the notes list shows beside a note: three times its
+/// 34 points, sharp on a high-density screen.
+const NOTE_THUMB: u32 = 102;
+
+/// Where a note's picture already sits on this computer, to make the list's small one from:
+/// the picture as the note draws it, a drawing as Apple renders it, or a document's rendering
+/// — each kept the first time the note drew it. Never fetched for the list.
+fn note_thumb_source(dir: &std::path::Path, id: &str) -> Option<std::path::PathBuf> {
+    let safe = media_file_id(id);
+    ["inline", "drawing", "preview"]
+        .iter()
+        .map(|part| dir.join(format!("{safe}-{part}")))
+        .find(|p| p.is_file())
+}
+
+/// The note attachment whose small list picture a `quince://` request asks for:
+/// `note/<attachment id>/thumb`.
+fn note_thumb_part(path: &str) -> Option<String> {
+    let path = percent_decode(path.trim_start_matches('/'));
+    let id = path.strip_prefix("note/")?.strip_suffix("/thumb")?;
+    (!id.is_empty() && !id.contains('/')).then(|| id.to_string())
+}
+
+/// A note's small list picture: made once from the picture already kept on this computer
+/// (`note_thumb_source`), cut to a square as Notes shows it, and kept. Nothing is asked of
+/// Apple — a picture not kept yet is no picture, and the list shows none.
+async fn note_media_thumb(app: &tauri::AppHandle, id: &str) -> Result<Vec<u8>, String> {
+    let dir = state_dir(app).join("note-media");
+    let made = dir.join(format!("{}-thumb", media_file_id(id)));
+    if let Ok(bytes) = tokio::fs::read(&made).await {
+        return Ok(bytes);
+    }
+    let source = note_thumb_source(&dir, id).ok_or("not kept on this computer")?;
+    let bytes = tokio::fs::read(&source).await.map_err(|e| e.to_string())?;
+    let small = crate::cpu::run(move || quince_media::avatar(&bytes, None, NOTE_THUMB))
+        .await?
+        .map_err(|e| e.to_string())?;
+    let part = made.with_extension("part");
+    if tokio::fs::write(&part, &small).await.is_ok() {
+        let _ = tokio::fs::rename(&part, &made).await;
+    }
+    Ok(small)
+}
+
+/// Each note's first picture that this computer already holds, by note, for the small picture
+/// the list shows beside it (`note/<id>/thumb`). Read from the library and the files already
+/// kept: nothing is fetched for it, so a note whose pictures were never drawn here shows none
+/// until they are.
+#[tauri::command]
+async fn note_pictures(
+    app: tauri::AppHandle,
+    data: State<'_, Data>,
+) -> UiResult<std::collections::HashMap<String, String>> {
+    let first = data
+        .0
+        .read(quince_core::Library::note_first_pictures)
+        .await
+        .map_err(|e| e.to_string())?;
+    let dir = state_dir(&app).join("note-media");
+    crate::cpu::run(move || {
+        first
+            .into_iter()
+            .filter(|(_, id)| note_thumb_source(&dir, id).is_some())
+            .collect()
+    })
+    .await
+}
+
 /// Show a file the app saved in its folder, in the file manager, chosen: a "Saved to
 /// Downloads" toast's Show in Folder. Only a file in Downloads — what the app itself saves
 /// there — never any other path the page might name.
@@ -6288,6 +6356,7 @@ fn main() {
             let uri = request.uri();
             let wanted = photo_guid(uri.host(), uri.path());
             let attachment = note_part(uri.path());
+            let note_thumb = note_thumb_part(uri.path());
             let reminder_image = reminder_image_part(uri.path());
             let drive_thumb = drive_thumb_part(uri.path());
             // A drawing's ink for a dark page, rather than a light one.
@@ -6360,6 +6429,21 @@ fn main() {
                 // A picture attached to a reminder.
                 if let Some(id) = reminder_image {
                     let response = match reminder_image_shown(&app, &id).await {
+                        Ok(bytes) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", image_type(&bytes))
+                            .header("Cache-Control", "private, max-age=86400")
+                            .body(bytes),
+                        Err(_) => tauri::http::Response::builder()
+                            .status(404)
+                            .body(Vec::new()),
+                    };
+                    responder.respond(response.unwrap_or_default());
+                    return;
+                }
+                // A note's small picture in the list: from what is kept, or none.
+                if let Some(id) = note_thumb {
+                    let response = match note_media_thumb(&app, &id).await {
                         Ok(bytes) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", image_type(&bytes))
@@ -6744,6 +6828,7 @@ fn main() {
             note_table_add_row,
             note_table_remove,
             note_attachment_info,
+            note_pictures,
             note_attachment_open,
             diagnostics_save,
             download_reveal,
@@ -7245,6 +7330,26 @@ mod tests {
             Some((_, quince_icloud::note_media::Part::File))
         ));
         assert!(note_part("/note%2FABC-1%2Fother").is_none());
+        // The list's small picture is its own route, never one that could fetch.
+        assert!(note_part("/note%2FABC-1%2Fthumb").is_none());
+        assert_eq!(
+            super::note_thumb_part("/note%2FABC-1%2Fthumb").as_deref(),
+            Some("ABC-1")
+        );
+        assert_eq!(super::note_thumb_part("/note%2FABC-1%2Finline"), None);
+        assert_eq!(super::note_thumb_part("/note%2Fa%2Fb%2Fthumb"), None);
+        // Made only from a picture already kept: the one the note draws first, and nothing
+        // when none is.
+        let dir = std::env::temp_dir().join(format!("skykeep-thumb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(super::note_thumb_source(&dir, "P-1"), None);
+        std::fs::write(dir.join("P-1-preview"), b"x").unwrap();
+        std::fs::write(dir.join("P-1-inline"), b"x").unwrap();
+        assert_eq!(
+            super::note_thumb_source(&dir, "P-1"),
+            Some(dir.join("P-1-inline"))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(percent_decode("plain-uuid"), "plain-uuid");
         assert_eq!(percent_decode("%zz"), "%zz", "malformed stays as it was");
     }

@@ -315,6 +315,9 @@ export const api = {
   noteAttachmentInfo: (id: string) => invoke<NoteAttachment>("note_attachment_info", { id }),
   /** Open a note's attachment in the app this computer uses for it. */
   noteAttachmentOpen: (id: string) => invoke<void>("note_attachment_open", { id }),
+  /** Each note's first picture this computer already holds, by note: the attachment whose
+   *  small picture the list shows beside it (`noteMediaSrc(id, "thumb")`). Nothing fetched. */
+  notePictures: () => invoke<Record<string, string>>("note_pictures"),
   noteTableSetCell: (id: string, row: number, column: number, text: string) =>
     invoke<string[][]>("note_table_set_cell", { id, row, column, text }),
   /** An empty row added at `at` (0 the top); answers the table as Apple now holds it. */
@@ -755,7 +758,7 @@ export type NoteAttachment = {
 };
 
 /** A note attachment's picture — the file itself, or Apple's rendering of it. */
-export function noteMediaSrc(id: string, part: "file" | "inline" | "preview" | "drawing" | "drawing-dark"): string {
+export function noteMediaSrc(id: string, part: "file" | "inline" | "preview" | "drawing" | "drawing-dark" | "thumb"): string {
   return convertFileSrc(`note/${id}/${part}`, "quince");
 }
 

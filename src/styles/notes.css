@@ -58,10 +58,14 @@
 }
 .notes-section:first-child { margin-top: 0; }
 
+/* Two lines — title, then date and snippet — and, for a note with a picture, that picture
+   small at the end, across both (`.note-row-thumb`). A grid so the picture takes a column of
+   its own without a box around the two lines. */
 .note-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 2px;
+  align-items: center;
   width: 100%;
   padding: 8px 10px 9px;
   border: 0;
@@ -101,6 +105,21 @@
 .note-row-meta { display: flex; gap: 8px; min-width: 0; font-size: var(--t-11); }
 .note-row-when { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
 .note-row-snippet { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
+.note-row-title, .note-row-meta { grid-column: 1; }
+/* A note's first picture, as Notes shows it at the end of the row: a small rounded square,
+   no taller than the two lines beside it, so a row that gains one keeps its height. */
+.note-row-thumb {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  margin-left: 10px;
+  display: block;
+  width: 34px;
+  height: 34px;
+  border-radius: 5px;
+  object-fit: cover;
+  box-shadow: 0 0 0 var(--hairline) var(--separator);
+}
+.note-row-thumb[hidden] { display: none; }
 
 /* What a search found, marked in yellow as Notes marks it: in the results and in the note. */
 .note-found { border-radius: 2px; background: color-mix(in srgb, var(--sys-yellow, #ffcc00) 45%, transparent); color: inherit; }

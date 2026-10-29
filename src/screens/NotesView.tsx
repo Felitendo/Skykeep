@@ -11,7 +11,7 @@ import { ArrowDownUp, ChevronLeft, Folder, FolderOpen, FolderPlus, ListChecks, L
 import { pickOpen, pickSave } from "../lib/pick";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { DEFAULT_ORDER, editorDate, groupNotes, listDate, mergeEdits, splitTitle, type NoteOrder, type Section } from "./notes/model";
-import { api, messageOf, nestFolders, notesLockApi, type Note, type NoteFolder, type UnlockedNote } from "../lib/ipc";
+import { api, messageOf, nestFolders, noteMediaSrc, notesLockApi, type Note, type NoteFolder, type UnlockedNote } from "../lib/ipc";
 import { LockScreen } from "./notes/LockedNote";
 import { fileName, useAttachEnabled } from "./notes/attach";
 import { toast } from "../components/Toast";
@@ -20,7 +20,7 @@ import { RowMenu } from "../components/RowMenu";
 import { Spinner } from "../components/Spinner";
 import { FormattedBody, type Run } from "./notes/Formatted";
 import { carryRuns, runsFit, sameFormatting } from "./notes/rich";
-import { NoteEditor, refreshTables, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
+import { NoteEditor, PICTURE_KEPT_EVENT, refreshTables, type EditorHandle, type EditorStatus } from "./notes/NoteEditor";
 import { FormatPanel } from "./notes/FormatPanel";
 import { NotePicture } from "./notes/NotePicture";
 import { OPEN_NOTE_EVENT } from "./notes/links";
@@ -29,7 +29,7 @@ import { Arriving } from "../components/EmptyState";
 import { useArriving, useRevision, useShownRevision } from "../lib/sync";
 import { Picker } from "../components/Picker";
 import { holdTyping } from "../lib/updates";
-import { keepSame } from "../lib/same";
+import { keepSame, same } from "../lib/same";
 import { useArrivals } from "../lib/arrival";
 import { foundRanges, queryWords } from "./notes/found";
 
@@ -106,6 +106,7 @@ const NoteRows = memo(function NoteRows({
   rowsRef,
   onPick,
   found,
+  pictures,
 }: {
   sections: Section[];
   openGuid: string | null;
@@ -113,6 +114,8 @@ const NoteRows = memo(function NoteRows({
   onPick: (note: Note, e: React.MouseEvent) => void;
   /** The words being searched for, marked where they fall in each row. */
   found: string[];
+  /** Each note's first picture kept on this computer, by note (`api.notePictures`). */
+  pictures: Record<string, string>;
 }) {
   return (
     <div className="note-rows" ref={rowsRef} role="listbox" aria-label="Notes" data-rows="">
@@ -120,30 +123,15 @@ const NoteRows = memo(function NoteRows({
         <Fragment key={section.key}>
           <div className="notes-section" aria-hidden="true">{section.heading}</div>
           <div role="group" aria-label={section.heading}>
-          {/* Each note is one element, the row itself: wrapped in a box of its own, every row
-              was two boxes deep, and the separator had to reach across from one to the next. */}
           {section.notes.map((note) => (
-            <button
+            <NoteRow
               key={note.guid}
-              className="note-row"
-              role="option"
-              data-guid={note.guid}
-              aria-selected={openGuid === note.guid}
-              onClick={(e) => onPick(note, e)}
-            >
-              <span className="note-row-title">
-                {note.locked && (
-                  <LockKeyhole className="note-row-lock" size={12} strokeWidth={2.4} aria-label="Locked" />
-                )}
-                <span className="note-row-name"><Found text={wordsOnly(note.title) || "New Note"} words={found} /></span>
-              </span>
-              <span className="note-row-meta">
-                <span className="note-row-when">{listDate(note.modifiedAt)}</span>
-                <span className="note-row-snippet">
-                  {note.locked ? "Locked" : <Found text={wordsOnly(note.snippet ?? "").slice(0, 120) || "No additional text"} words={found} />}
-                </span>
-              </span>
-            </button>
+              note={note}
+              selected={openGuid === note.guid}
+              picture={pictures[note.guid] ?? null}
+              onPick={onPick}
+              found={found}
+            />
           ))}
           </div>
         </Fragment>
@@ -151,6 +139,77 @@ const NoteRows = memo(function NoteRows({
     </div>
   );
 });
+
+/**
+ * One note in the list, drawn again only when something it shows changes: its note, whether
+ * it is the one open, its picture. Moving the selection with the arrow keys draws the two rows
+ * it moved between, not every row in the folder.
+ *
+ * Each note is one element, the row itself: wrapped in a box of its own, every row was two
+ * boxes deep, and the separator had to reach across from one to the next.
+ */
+const NoteRow = memo(function NoteRow({
+  note,
+  selected,
+  picture,
+  onPick,
+  found,
+}: {
+  note: Note;
+  selected: boolean;
+  picture: string | null;
+  onPick: (note: Note, e: React.MouseEvent) => void;
+  found: string[];
+}) {
+  return (
+    <button
+      className="note-row"
+      role="option"
+      data-guid={note.guid}
+      aria-selected={selected}
+      onClick={(e) => onPick(note, e)}
+    >
+      <span className="note-row-title">
+        {note.locked && (
+          <LockKeyhole className="note-row-lock" size={12} strokeWidth={2.4} aria-label="Locked" />
+        )}
+        <span className="note-row-name"><Found text={wordsOnly(note.title) || "New Note"} words={found} /></span>
+      </span>
+      <span className="note-row-meta">
+        <span className="note-row-when">{listDate(note.modifiedAt)}</span>
+        <span className="note-row-snippet">
+          {note.locked ? "Locked" : <Found text={wordsOnly(note.snippet ?? "").slice(0, 120) || "No additional text"} words={found} />}
+        </span>
+      </span>
+      {/* The note's first picture, small, at the row's end, as Notes on the Mac shows it —
+          only one already kept on this computer, so a row never waits on Apple for it. */}
+      {picture && <NoteThumb key={picture} id={picture} />}
+    </button>
+  );
+});
+
+/**
+ * A note's small picture in the list. It takes the row's end only once it is decoded — never
+ * a blank square first, and never a broken one: a picture this computer no longer holds is
+ * not shown. It sits inside the row's own height, so a row that gains one never grows; the
+ * title and snippet just end sooner, as in Notes.
+ */
+function NoteThumb({ id }: { id: string }) {
+  const [state, setState] = useState<"loading" | "shown" | "gone">("loading");
+  if (state === "gone") return null;
+  return (
+    <img
+      className="note-row-thumb"
+      src={noteMediaSrc(id, "thumb")}
+      alt=""
+      draggable={false}
+      decoding="async"
+      hidden={state !== "shown"}
+      onLoad={() => setState("shown")}
+      onError={() => setState("gone")}
+    />
+  );
+}
 
 /** `text` with the searched-for words marked, as Notes marks them in its results. */
 function Found({ text, words }: { text: string; words: string[] }) {
@@ -308,6 +367,37 @@ export function NotesView() {
     };
     // `outbox.tick`: an edit sent, or turned down, changes what the library holds.
   }, [read, revision, outbox.tick]);
+
+  /**
+   * Each note's first picture this computer already holds, for the small picture at the end of
+   * its row. Asked again when the library moves and when a note draws a picture (and so keeps
+   * it) — a burst of pictures in one note is one ask — and kept as it was when nothing changed,
+   * so no row is drawn again for it.
+   */
+  const [pictures, setPictures] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let live = true;
+    let timer: number | undefined;
+    const ask = () => {
+      api.notePictures().then(
+        (found) => live && found && setPictures((was) => (same(was, found) ? was : found)),
+        () => {
+          // Only the small pictures are missing; the list itself is unaffected.
+        },
+      );
+    };
+    const kept = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(ask, 120);
+    };
+    ask();
+    window.addEventListener(PICTURE_KEPT_EVENT, kept);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+      window.removeEventListener(PICTURE_KEPT_EVENT, kept);
+    };
+  }, [revision, outbox.tick]);
 
   /**
    * Every write goes to Apple first and the library is re-read after, so nothing on screen
@@ -1505,7 +1595,7 @@ export function NotesView() {
 
         {/* One list box of notes, a group per heading: the open note is its selected option.
             The heading is drawn for the eye; the group's name says it to a screen reader. */}
-        <NoteRows sections={sections} openGuid={openGuid} rowsRef={rowsRef} onPick={pickRow} found={foundWords} />
+        <NoteRows sections={sections} openGuid={openGuid} rowsRef={rowsRef} onPick={pickRow} found={foundWords} pictures={pictures} />
 
         {loaded && notes.length === 0 && !error && !(arriving && !searching) && (
           searching ? (

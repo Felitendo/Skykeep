@@ -172,6 +172,37 @@ impl Library {
             .flatten())
     }
 
+    /// Each note's first picture — a photo, a drawing, or a scan or PDF Apple keeps a
+    /// rendering of — as `(note, attachment)`, for the small picture the list shows beside a
+    /// note, as Notes on the Mac does. Read from what this computer already knows: the note's
+    /// stored formatting says where its attachments sit, and an attachment's kind is known
+    /// once it has been drawn (`notes.attachment.<id>`, kept by `note_attachment_info`). One
+    /// whose kind is not known yet is passed over, never asked of Apple from here. Locked
+    /// notes show none: their pictures are not shown either.
+    pub fn note_first_pictures(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT n.guid, j.value ->> '$.attachment'
+             FROM notes n, json_each(n.runs) j
+             JOIN app_state s ON s.key = 'notes.attachment.' || (j.value ->> '$.attachment')
+             WHERE n.locked = 0
+               AND n.runs LIKE '%\"attachment\"%'
+               AND json_valid(n.runs)
+               AND json_valid(s.value)
+               AND (s.value ->> '$.kind' IN ('image', 'drawing')
+                    OR (s.value ->> '$.kind' = 'document' AND s.value ->> '$.hasPreview'))
+             ORDER BY n.guid, j.key",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out: Vec<(String, String)> = Vec::new();
+        for row in rows {
+            let (note, attachment) = row?;
+            if out.last().is_none_or(|(n, _)| *n != note) {
+                out.push((note, attachment));
+            }
+        }
+        Ok(out)
+    }
+
     pub fn put_notes(&mut self, notes: &[Note]) -> Result<()> {
         let tx = self.conn.savepoint()?;
         {
@@ -983,5 +1014,59 @@ mod count_tests {
         assert_eq!(of("DefaultFolder-CloudKit"), Some(2));
         assert_eq!(of("Folder/work"), Some(1));
         assert_eq!(of(TRASH_FOLDER), Some(1));
+    }
+
+    /// The list's picture for a note is its first picture whose kind is known here — a file
+    /// before it, or one not drawn yet, is passed over — and none for a note without one, a
+    /// film, or a locked note.
+    #[test]
+    fn a_notes_first_known_picture_is_its_picture() {
+        let mut lib = Library::in_memory().unwrap();
+        let with = |guid: &str, ids: &[&str], locked: bool| {
+            let mut runs = vec![r#"{"length":5}"#.to_string()];
+            runs.extend(
+                ids.iter()
+                    .map(|id| format!(r#"{{"length":1,"attachment":"{id}"}}"#)),
+            );
+            Note {
+                guid: guid.into(),
+                folder_guid: None,
+                title: guid.into(),
+                snippet: None,
+                body: Some("x".into()),
+                locked,
+                pinned: false,
+                created_at: None,
+                modified_at: Some(1),
+                editable: true,
+                etag: None,
+                runs: Some(format!("[{}]", runs.join(","))),
+            }
+        };
+        lib.put_notes(&[
+            with("trip", &["FILE", "UNKNOWN", "PIC2", "PIC3"], false),
+            with("plain", &[], false),
+            with("bank", &["PIC3"], true),
+            with("scan", &["DOC"], false),
+            with("film", &["FILM"], false),
+        ])
+        .unwrap();
+        for (id, json) in [
+            ("FILE", r#"{"kind":"file","hasPreview":false}"#),
+            ("PIC2", r#"{"kind":"drawing","hasPreview":true}"#),
+            ("PIC3", r#"{"kind":"image","hasPreview":true}"#),
+            ("DOC", r#"{"kind":"document","hasPreview":true}"#),
+            ("FILM", r#"{"kind":"video","hasPreview":true}"#),
+        ] {
+            lib.set_state(&format!("notes.attachment.{id}"), json)
+                .unwrap();
+        }
+        assert_eq!(
+            lib.note_first_pictures().unwrap(),
+            vec![
+                ("scan".to_string(), "DOC".to_string()),
+                ("trip".to_string(), "PIC2".to_string()),
+            ]
+        );
     }
 }

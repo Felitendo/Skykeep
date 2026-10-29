@@ -637,6 +637,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             ? { id: "M1", uti: "public.jpeg", kind: "image", filename: "beach.jpeg", title: null, width: 1200, height: 800, size: 271872, hasPreview: true }
             : { id: "M2", uti: "org.openxmlformats.spreadsheetml.sheet", kind: "file", filename: "Budget.xlsx", title: null, width: null, height: null, size: 9100, hasPreview: false };
         case "note_attachment_open": (window.__opened ??= []).push(args.id); return null;
+        // Each note's first picture kept on this computer (`__notePictures`, by note); none by default.
+        case "note_pictures": window.__pictureAsks = (window.__pictureAsks ?? 0) + 1; return { ...(window.__notePictures ?? {}) };
         case "note_table": if (/^[MDU]/.test(String(args.id)) || /^A[1-79]$/.test(String(args.id))) return null; return (window.__table ??= [["Item", "Qty"], ["Milk", "2"], ["", ""]]).map((r) => r.slice());
         case "photos_list": case "photos_counts": {
           const P = (id, takenAt, extra = {}) => ({ id, master: `m${id}`, takenAt, addedAt: takenAt, kind: "image",
