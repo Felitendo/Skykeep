@@ -356,6 +356,28 @@ const draftOf = (e: CalendarEvent): Draft => ({
  *  lengthening it to a quarter hour changed it on every device whenever its title was edited. */
 const endOf = (d: Draft) => Math.max(d.endsAt, d.allDay ? addDaysIn(ZONE, d.startsAt, 1) : d.startsAt);
 
+/**
+ * `next`, or `was` when every row holds the same values as before. Every read answers new
+ * objects; handed on as they came, each one drew every view again — the week, the month and
+ * every reminder's ring — though nothing in them had changed.
+ */
+function same<T extends object>(was: T[], next: T[]): T[] {
+  if (was.length !== next.length) return next;
+  for (let i = 0; i < next.length; i++) {
+    const a = was[i] as Record<string, unknown>;
+    const b = next[i] as Record<string, unknown>;
+    if (a === b) continue;
+    const keys = Object.keys(b);
+    if (keys.length !== Object.keys(a).length || keys.some((k) => a[k] !== b[k])) return next;
+  }
+  return was;
+}
+function sameMap<V>(was: Map<string, V>, next: Map<string, V>): Map<string, V> {
+  if (was.size !== next.size) return next;
+  for (const [k, v] of next) if (was.get(k) !== v) return next;
+  return was;
+}
+
 /** `YYYY-MM-DDTHH:mm` and `YYYY-MM-DD` for the date inputs, in local time. */
 const pad = (n: number) => String(n).padStart(2, "0");
 /** The zone an event's times are read in: its own, or this computer's (all-day events are
@@ -610,11 +632,13 @@ export function CalendarView() {
       api.reminderLists().catch(() => []),
       calendarFeedsApi.list().catch(() => [] as CalendarSubscription[]),
     ]);
-    setSubs(Array.isArray(feeds) ? feeds : []);
-    setListColours(new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.colour && /^#[0-9a-f]{6}$/i.test(l.colour) ? l.colour : ""])));
-    setListNames(new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.title])));
-    setEvents(over(Array.isArray(found) ? found : []));
-    setCalendars(Array.isArray(cals) ? cals : []);
+    // What reads the same as before is kept as it was, so a read that found nothing new —
+    // after every save, every sync, every month stepped into — draws nothing again.
+    setSubs((was) => same(was, Array.isArray(feeds) ? feeds : []));
+    setListColours((was) => sameMap(was, new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.colour && /^#[0-9a-f]{6}$/i.test(l.colour) ? l.colour : ""]))));
+    setListNames((was) => sameMap(was, new Map((Array.isArray(lists) ? lists : []).map((l) => [l.guid, l.title]))));
+    setEvents((was) => same(was, over(Array.isArray(found) ? found : [])));
+    setCalendars((was) => same(was, Array.isArray(cals) ? cals : []));
     // What is done is not on the schedule any more; Calendar hides completed reminders.
     // An all-day reminder's date is Apple's: midnight UTC on its day. Read as an instant it
     // landed a day early for anyone west of UTC; it is that day, on this clock.
@@ -623,7 +647,7 @@ export function CalendarView() {
       const d = new Date(r.dueAt * 1000);
       return { ...r, dueAt: Math.floor(new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()).getTime() / 1000) };
     };
-    setDue(Array.isArray(reminders) ? reminders.filter((r) => !r.completedAt).map(onItsDay) : []);
+    setDue((was) => same(was, Array.isArray(reminders) ? reminders.filter((r) => !r.completedAt).map(onItsDay) : []));
     setLoaded(true);
   }, [range, over]);
 
