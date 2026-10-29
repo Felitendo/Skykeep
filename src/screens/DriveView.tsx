@@ -718,20 +718,40 @@ export function DriveView() {
     const look = () => {
       if (document.visibilityState === "visible" && !writingRef.current) void refresh();
     };
-    let gone = false;
-    let stop: (() => void) | undefined;
-    void listen<string[]>("quince://drive-changed", (e) => {
-      if (!writingRef.current && e.payload.includes(hereRef.current)) void refresh(false);
-    }).then((un) => (gone ? un() : (stop = un)));
     document.addEventListener("visibilitychange", look);
     window.addEventListener("focus", look);
     return () => {
-      gone = true;
-      stop?.();
       document.removeEventListener("visibilitychange", look);
       window.removeEventListener("focus", look);
     };
   }, [shown, refresh]);
+  // Heard for as long as the screen lives, not only while it shows: a folder that changed
+  // behind another app is read when it comes back (the look above).
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    listen<string[]>("quince://drive-changed", (e) => {
+      if (shownNow.current && !writingRef.current && e.payload.includes(hereRef.current)) void refresh(false);
+    })
+      .then((unlisten) => {
+        // Stopping may throw where there is no event system behind the page (see the
+        // uploads' listener below), and a screen closing must not throw for that.
+        const quietly = () => {
+          try {
+            void Promise.resolve(unlisten() as unknown).catch(() => {});
+          } catch {
+            // Nothing was listening.
+          }
+        };
+        if (cancelled) quietly();
+        else stop = quietly;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [refresh]);
   const revision = useRevision("drive");
   // A pass that lands while another screen is in front is read when this one comes back, once
   // (a screen out of sight stays mounted): each landing asked Apple for the folder again.
