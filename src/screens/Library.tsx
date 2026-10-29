@@ -364,7 +364,20 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
     keptRef.current = [...keptRef.current, selected];
   }
   const kept = keptRef.current;
-  const screenFor = (key: string) =>
+  /**
+   * Each screen's element, made once and handed back the same ever after: React passes over an
+   * element it has already drawn, so the sidebar moving, the window's title changing or a sync
+   * landing in this component no longer draws every screen kept here again — each switch of
+   * app used to redraw all of them, out of sight or not. What they read from context (the sync,
+   * whether they are in front) still reaches them.
+   */
+  const made = useRef(new Map<string, JSX.Element>());
+  const screenFor = (key: string) => {
+    let el = made.current.get(key);
+    if (!el) made.current.set(key, (el = makeScreen(key)));
+    return el;
+  };
+  const makeScreen = (key: string) =>
     key === "calendar" ? (
       <CalendarView />
     ) : key === "reminders" ? (
@@ -379,7 +392,20 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
       <DriveView />
     );
 
+  /**
+   * The app the sidebar marks. It is the one in front, except while an arrow key is held: then
+   * it walks down the apps at the key's pace and the content follows only once it settles.
+   */
+  const [marked, setMarked] = useState<string | null>(null);
+  const shownMark = marked ?? selected;
+  /** An app the arrows have reached and not yet opened (see `glide`). */
+  const gliding = useRef<string | null>(null);
+  const settleTimer = useRef<number | undefined>(undefined);
+
   const choose = (key: string) => {
+    window.clearTimeout(settleTimer.current);
+    gliding.current = null;
+    setMarked(null);
     setSelected(key);
     setSidebarOpen(false);
     try {
@@ -388,6 +414,45 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
       // Remembering is a convenience; choosing still works.
     }
   };
+  const chooseRef = useRef(choose);
+  chooseRef.current = choose;
+
+  /**
+   * The arrows in the sidebar, as in a Mac's: the selection moves at once, and the app it lands
+   * on opens when the key is let go. Held, every app passed used to be opened on the way — each
+   * one's whole screen built (Photos' grid, a long address book) at each repeat of the key —
+   * and the walk crawled. A single press onto an app already open opens it straight away, as
+   * that costs nothing; one never opened yet opens as the key comes up, a moment later.
+   */
+  const glide = (key: string, repeat: boolean) => {
+    window.clearTimeout(settleTimer.current);
+    if (!repeat && keptRef.current.includes(key)) {
+      choose(key);
+      return;
+    }
+    gliding.current = key;
+    setMarked(key);
+    // A key let go out of this window's sight (focus taken elsewhere) is never heard: then it
+    // settles after a pause longer than a key's first repeat waits.
+    settleTimer.current = window.setTimeout(() => settle(), 700);
+  };
+  const settle = () => {
+    const key = gliding.current;
+    if (key !== null) chooseRef.current(key);
+  };
+  useEffect(() => {
+    const onUp = (e: KeyboardEvent) => {
+      if (gliding.current !== null && ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) settle();
+    };
+    const onBlur = () => settle();
+    window.addEventListener("keyup", onUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keyup", onUp);
+      window.removeEventListener("blur", onBlur);
+      window.clearTimeout(settleTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!sidebarOpen) return undefined;
@@ -435,7 +500,7 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
       e.preventDefault();
       const clamped = Math.max(0, Math.min(to, order.length - 1));
       rows.current[clamped]?.focus();
-      choose(order[clamped]);
+      if (order[clamped] !== shownMark || gliding.current !== null) glide(order[clamped], e.repeat);
     };
     if (e.key === "ArrowDown") move(index + 1);
     else if (e.key === "ArrowUp") move(index - 1);
@@ -452,8 +517,8 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
           rows.current[index] = el;
         }}
         className="nav-item"
-        aria-current={selected === key}
-        tabIndex={selected === key ? 0 : -1}
+        aria-current={shownMark === key}
+        tabIndex={shownMark === key ? 0 : -1}
         onKeyDown={(e) => onKeyDown(e, index)}
         onClick={() => choose(key)}
         title={rail ? (SCREENS.find((s) => s.key === key)?.name ?? key) : undefined}
