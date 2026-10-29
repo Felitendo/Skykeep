@@ -1164,6 +1164,18 @@ pub async fn photos_index(
         .map_err(|e| e.to_string())
 }
 
+/// The library's months, each with its count and the photos that stand for it: the Years and
+/// Months views. Read from the library on this machine; nothing is asked of Apple.
+#[tauri::command]
+pub async fn photos_months(
+    data: State<'_, Data>,
+) -> UiResult<Vec<quince_core::photos::PhotoMonth>> {
+    data.0
+        .read(|library| library.photo_months())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// `limit` photos from `offset` of a source, in its index's order.
 #[tauri::command]
 pub async fn photos_page(

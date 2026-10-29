@@ -966,6 +966,123 @@ impl Library {
         }
         self.with_bursts(out)
     }
+
+    /// The library's months, newest first, each with how many it holds and the photos that stand
+    /// for it (see [`PhotoMonth`]): what the Years and Months views draw. Counted and chosen here,
+    /// a month at a time over the date index, so a library of fifty thousand answers in a few
+    /// hundred rows — the window never walks its photos to find them.
+    ///
+    /// Months are this machine's own calendar months, the same months the grid groups its photos
+    /// into, so a month chosen here is a month the grid has. Their edges are worked out here
+    /// rather than in the query: dating every photo in SQLite (`strftime … 'localtime'`) was
+    /// most of the time on a large library, where a range over the index costs next to nothing.
+    pub fn photo_months(&self) -> Result<Vec<PhotoMonth>> {
+        use jiff::{civil::Date, Span, Timestamp};
+        let (filter, _) = Self::view_query(View::Library);
+        let shown = format!("{filter} AND {ONE_PER_BURST} AND taken_at >= ?1 AND taken_at < ?2");
+        let (first, last): (Option<i64>, Option<i64>) = self.conn.query_row(
+            &format!("SELECT MIN(taken_at), MAX(taken_at) FROM photos WHERE {filter}"),
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let (Some(first), Some(last)) = (first, last) else {
+            return Ok(Vec::new());
+        };
+        let zone = self.local_zone();
+        let month_of = |t: i64| -> Option<Date> {
+            Some(
+                Timestamp::from_second(t)
+                    .ok()?
+                    .to_zoned(zone.clone())
+                    .date()
+                    .first_of_month(),
+            )
+        };
+        let start_of = |d: Date| -> Option<i64> {
+            Some(d.to_zoned(zone.clone()).ok()?.timestamp().as_second())
+        };
+        let (Some(oldest), Some(mut month)) = (month_of(first), month_of(last)) else {
+            return Ok(Vec::new());
+        };
+        let mut tally = self.conn.prepare_cached(&format!(
+            "SELECT COUNT(*), COALESCE(SUM(kind = 'video'), 0) FROM photos WHERE {shown}"
+        ))?;
+        // The n-th taken in the month, oldest first.
+        let mut nth = self.conn.prepare_cached(&format!(
+            "SELECT id, taken_at FROM photos WHERE {shown} ORDER BY taken_at, id LIMIT 1 OFFSET ?3"
+        ))?;
+        // The key: a favourite first, a still before a video, then the nearest the middle photo
+        // (SQLite gives the other columns of the row MIN chose).
+        let mut key = self.conn.prepare_cached(&format!(
+            "SELECT id, favorite, MIN((favorite = 0) * 4000000000000 + (kind = 'video') * 2000000000000
+                                     + ABS(taken_at - ?3))
+             FROM photos WHERE {shown}"
+        ))?;
+        let mut out = Vec::new();
+        while month >= oldest {
+            let next = month.checked_add(Span::new().months(1)).ok();
+            let (Some(from), Some(to)) = (start_of(month), next.and_then(start_of)) else {
+                break;
+            };
+            let (count, videos): (i64, i64) =
+                tally.query_row(params![from, to], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            if count > 0 {
+                let mut at = |n: i64| -> rusqlite::Result<(String, i64)> {
+                    nth.query_row(params![from, to, n], |r| Ok((r.get(0)?, r.get(1)?)))
+                };
+                let (middle, mid) = at(count / 2)?;
+                let (chosen, favorite): (String, bool) =
+                    key.query_row(params![from, to, mid], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                let mut more = Vec::new();
+                if count >= 4 {
+                    for n in [(3 * count) / 4, count / 2, count / 4] {
+                        let id = if n == count / 2 {
+                            middle.clone()
+                        } else {
+                            at(n)?.0
+                        };
+                        // The key, when it is one of these too, is shown once: as the large one.
+                        if id != chosen && !more.contains(&id) {
+                            more.push(id);
+                        }
+                    }
+                }
+                out.push(PhotoMonth {
+                    year: i32::from(month.year()),
+                    month: month.month() as u32,
+                    count,
+                    videos,
+                    key: chosen,
+                    key_favorite: favorite,
+                    more,
+                });
+            }
+            match month.checked_sub(Span::new().months(1)) {
+                Ok(m) => month = m,
+                Err(_) => break,
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// One month of the library as the Years and Months views show it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PhotoMonth {
+    pub year: i32,
+    /// 1–12.
+    pub month: u32,
+    /// Photos and videos it holds, a burst counted once (as the library shows it).
+    pub count: i64,
+    pub videos: i64,
+    /// The photo that stands for it: a favourite if it has one, a still before a video, and the
+    /// one taken nearest the middle of the month among those.
+    pub key: String,
+    pub key_favorite: bool,
+    /// Up to three more, spread through the month in the order taken, newest first; none for a
+    /// month of fewer than four.
+    pub more: Vec<String>,
 }
 
 /// A whole read of Photos that takes more than one pass.
@@ -1418,6 +1535,107 @@ mod tests {
 
     /// Media types as Apple decides them (read from its smart albums on his library): a
     /// screenshot is assetSubtypeV2 3 and a panorama 1 — not every PNG.
+    #[test]
+    fn the_months_count_and_choose_their_key_photos() {
+        let mut lib = Library::in_memory().unwrap();
+        // Mid-month at noon UTC, so no time zone moves one into the next month.
+        const OCT: i64 = 1_791_028_800; // 3 Oct 2026
+        const SEP: i64 = 1_789_473_600; // 15 Sep 2026
+        const DEC: i64 = 1_765_800_000; // 15 Dec 2025
+        let mut all: Vec<Photo> = (0..9)
+            .map(|i| photo(&format!("o{i}"), OCT + i * 2 * 86_400))
+            .collect();
+        all.extend((0..3).map(|i| Photo {
+            favorite: i == 0,
+            ..photo(&format!("s{i}"), SEP + i * 3_600)
+        }));
+        // The middle of December is a video: the still is chosen.
+        all.push(photo("d0", DEC));
+        all.push(Photo {
+            kind: Kind::Video,
+            ..photo("d1", DEC + 3_600)
+        });
+        all.push(Photo {
+            hidden: true,
+            favorite: true,
+            ..photo("dh", DEC + 60)
+        });
+        all.push(Photo {
+            deleted: true,
+            ..photo("dx", DEC + 120)
+        });
+        // A burst of three counts once, as its chosen photo.
+        all.extend((0..3).map(|i| Photo {
+            burst: Some("B".into()),
+            burst_pick: i == 1,
+            ..photo(&format!("b{i}"), DEC + 7_200 + i)
+        }));
+        lib.put_photos(&all).unwrap();
+
+        let months = lib.photo_months().unwrap();
+        let at = |y, m| months.iter().find(|x| x.year == y && x.month == m).unwrap();
+        assert_eq!(
+            months.iter().map(|m| (m.year, m.month)).collect::<Vec<_>>(),
+            vec![(2026, 10), (2026, 9), (2025, 12)]
+        );
+        // No favourite: the one in the middle, with three spread through it (the key not twice).
+        let oct = at(2026, 10);
+        assert_eq!(
+            (oct.count, oct.key.as_str(), oct.key_favorite),
+            (9, "o4", false)
+        );
+        assert_eq!(oct.more, vec!["o6", "o2"]);
+        // A favourite stands for its month; too few for more.
+        let sep = at(2026, 9);
+        assert_eq!(
+            (sep.count, sep.key.as_str(), sep.key_favorite),
+            (3, "s0", true)
+        );
+        assert!(sep.more.is_empty());
+        // The hidden favourite and the deleted one are not the library's.
+        let dec = at(2025, 12);
+        assert_eq!((dec.count, dec.videos), (3, 1));
+        assert_eq!(dec.key, "d0");
+
+        // Months are this machine's own: 20:00 UTC on 31 October is 1 November in Kolkata.
+        lib.put_photos(&[photo("late", 1_793_476_800)]).unwrap();
+        lib.set_zone(Some(jiff::tz::TimeZone::get("Asia/Kolkata").unwrap()));
+        let months = lib.photo_months().unwrap();
+        assert_eq!(
+            (months[0].year, months[0].month, months[0].key.as_str()),
+            (2026, 11, "late")
+        );
+        lib.set_zone(Some(jiff::tz::TimeZone::UTC));
+        let months = lib.photo_months().unwrap();
+        assert_eq!(
+            (months[0].year, months[0].month, months[0].count),
+            (2026, 10, 10)
+        );
+    }
+
+    /// Fifty thousand photos over twenty years: the months come in one quick query.
+    #[test]
+    fn the_months_of_a_large_library_are_quick() {
+        let mut lib = Library::in_memory().unwrap();
+        let all: Vec<Photo> = (0..50_000i64)
+            .map(|i| Photo {
+                favorite: i % 997 == 0,
+                ..photo(&format!("q{i}"), 1_792_000_000 - i * 12_600)
+            })
+            .collect();
+        lib.put_photos(&all).unwrap();
+        let t = std::time::Instant::now();
+        let months = lib.photo_months().unwrap();
+        let took = t.elapsed();
+        eprintln!(
+            "photo_months over 50,000: {took:?}, {} months",
+            months.len()
+        );
+        assert_eq!(months.iter().map(|m| m.count).sum::<i64>(), 50_000);
+        assert!(months.len() > 200 && months.len() < 245);
+        assert!(took.as_millis() < 500, "{took:?}");
+    }
+
     #[test]
     fn media_types_follow_apple() {
         let mut lib = Library::in_memory().unwrap();

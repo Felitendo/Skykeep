@@ -6801,6 +6801,7 @@ fn main() {
             photos::photos_shared_delete,
             photos::photos_prepare,
             photos::photos_index,
+            photos::photos_months,
             photos::photos_page,
             photos::photos_get,
             photo_cache::photos_cache_status,
