@@ -36,6 +36,7 @@ import { DateField, dateWords } from "./contacts/DateField";
 import { PhotoSheet } from "./contacts/PhotoSheet";
 import { DuplicatesBanner, DuplicatesView } from "./contacts/Duplicates";
 import { keepSame } from "../lib/same";
+import { useChosen, useIsChosen, type Chosen } from "../lib/chosen";
 import { useArrivals } from "../lib/arrival";
 import { copyText } from "../lib/clipboard";
 
@@ -809,7 +810,8 @@ export function ContactsView() {
     return sortedContacts(shown.filter((c) => chosen.has(c.guid)));
   }, [shown, picked]);
   const multi = pickedPeople.length > 1;
-  const pickedSet = useMemo(() => new Set(picked), [picked]);
+  /** Who is selected — everyone picked, or the open card — told to the list's rows one by one. */
+  const chosen = useChosen(multi ? picked : openGuid ? [openGuid] : []);
   /** How many of each list's people are here, counted once per change rather than per render. */
   const listCounts = useMemo(() => {
     const here = new Set(contacts.map((c) => c.guid.toUpperCase()));
@@ -881,7 +883,7 @@ export function ContactsView() {
             return;
           }
         }
-        setPicked([]);
+        setPicked((was) => (was.length ? [] : was));
         setShowDupes(false);
         setOpenGuid(contact.guid);
         setDetail(true);
@@ -994,7 +996,9 @@ export function ContactsView() {
         setPicked(range.length > 1 ? (anchor === range[0] ? range : [anchor, ...range.filter((g) => g !== anchor)]) : []);
         setOpenGuid(next);
       } else {
-        setPicked([]);
+        // Left as it was when nothing is picked: a new empty list each step had who is picked
+        // worked out again across the whole address book.
+        setPicked((was) => (was.length ? [] : was));
         setOpenGuid(next);
       }
       showRow(next, !inSearch);
@@ -1181,21 +1185,14 @@ export function ContactsView() {
             }
           }}
         >
-          {lettered.map(({ contact, letter, starts }) => (
-            <Fragment key={contact.guid}>
-            {starts && (
-              <li className="contact-letter" data-letter={letter} role="presentation" aria-hidden="true">{letter}</li>
-            )}
-            <ContactRow
-              contact={contact}
-              current={multi ? pickedSet.has(contact.guid) : openGuid === contact.guid}
-              mine={me === contact.guid}
-              draggable={lists.length > 0}
-              waiting={outbox.waiting.has(contact.guid)}
-              actions={rowActions}
-            />
-            </Fragment>
-          ))}
+          <ContactRows
+            lettered={lettered}
+            chosen={chosen}
+            me={me}
+            draggable={lists.length > 0}
+            waiting={outbox.waiting}
+            actions={rowActions}
+          />
         </ul>
         {/* The letters down the edge, as icloud.com and the phone index a long list: a press,
             or a drag along them, goes straight to that letter. */}
@@ -1772,19 +1769,55 @@ type RowActions = {
 };
 
 /**
+ * Everyone in the list, under their letters. Drawn again only when who is in it changes — not
+ * when the selection moves: the selection reaches each row through `chosen` (lib/chosen), so an
+ * arrow press in an address book of thousands draws the two rows it moved between, without
+ * making every row anew to find them.
+ */
+const ContactRows = memo(function ContactRows({ lettered, chosen, me, draggable, waiting, actions }: {
+  lettered: { contact: Contact; letter: string; starts: boolean }[];
+  chosen: Chosen;
+  me: string | null;
+  draggable: boolean;
+  waiting: Set<string>;
+  actions: RowActions;
+}) {
+  return (
+    <>
+      {lettered.map(({ contact, letter, starts }) => (
+        <Fragment key={contact.guid}>
+          {starts && (
+            <li className="contact-letter" data-letter={letter} role="presentation" aria-hidden="true">{letter}</li>
+          )}
+          <ContactRow
+            contact={contact}
+            chosen={chosen}
+            mine={me === contact.guid}
+            draggable={draggable}
+            waiting={waiting.has(contact.guid)}
+            actions={actions}
+          />
+        </Fragment>
+      ))}
+    </>
+  );
+});
+
+/**
  * One person in the list. Drawn again only when what it shows changes — its name, its picture,
  * whether it is selected — so a click or a key in a long address book touches two rows, not
  * every one. The layout of a row off screen is skipped too (content-visibility, in the CSS).
  */
-const ContactRow = memo(function ContactRow({ contact, current, mine, draggable, waiting, actions }: {
+const ContactRow = memo(function ContactRow({ contact, chosen, mine, draggable, waiting, actions }: {
   contact: Contact;
-  current: boolean;
+  chosen: Chosen;
   mine: boolean;
   draggable: boolean;
   /** Saved here, not yet at Apple. */
   waiting: boolean;
   actions: RowActions;
 }) {
+  const current = useIsChosen(chosen, contact.guid);
   return (
     <li
       role="presentation"
