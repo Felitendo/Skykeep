@@ -418,4 +418,207 @@ mod tests {
         lib.outbox_discard(again).unwrap();
         assert!(lib.outbox_refused().unwrap().is_empty());
     }
+
+    /// The queue against a plain model of it, under thousands of random runs of everything
+    /// the app does to it — with the process dying at random between steps — after Dropbox's
+    /// way of testing its sync engine. Each run comes from a seed; a failure names the seed
+    /// and the steps, so it can be run again exactly.
+    #[test]
+    fn the_queue_keeps_its_promises_under_random_use_and_crashes() {
+        /// What the queue should hold: (id, service, record, kind, payload, tries, refused).
+        type Row = (
+            i64,
+            &'static str,
+            &'static str,
+            &'static str,
+            String,
+            i64,
+            bool,
+        );
+
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, n: usize) -> usize {
+                // xorshift64*: enough to spread the steps, and the same every time per seed.
+                self.0 ^= self.0 >> 12;
+                self.0 ^= self.0 << 25;
+                self.0 ^= self.0 >> 27;
+                (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33) as usize % n
+            }
+            fn pick<T: Copy>(&mut self, of: &[T]) -> T {
+                of[self.below(of.len())]
+            }
+        }
+
+        const SERVICES: [&str; 2] = ["notes", "reminders"];
+        const RECORDS: [&str; 3] = ["A", "B", "C"];
+        const KINDS: [&str; 2] = ["save", "done"];
+
+        let runs: u64 = std::env::var("OUTBOX_RUNS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
+        for seed in 1..=runs {
+            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let dir = tempfile::tempdir().unwrap();
+            let mut lib = Library::open(dir.path()).unwrap();
+            let mut model: Vec<Row> = Vec::new();
+            let mut log: Vec<String> = Vec::new();
+            let mut words = 0;
+            for _ in 0..60 {
+                let service = rng.pick(&SERVICES);
+                let (record, kind) = (rng.pick(&RECORDS), rng.pick(&KINDS));
+                words += 1;
+                let payload = format!("w{words}");
+                let any = |model: &Vec<Row>, rng: &mut Rng| -> Option<i64> {
+                    (!model.is_empty()).then(|| model[rng.below(model.len())].0)
+                };
+                let step = rng.below(11);
+                log.push(format!("{step} {service} {record} {kind} {payload}"));
+                match step {
+                    0 => {
+                        let id = lib.outbox_push(service, record, kind, &payload).unwrap();
+                        model.retain(|r| {
+                            !(r.1 == service && r.2 == record && r.3 == kind && r.5 == 0 && !r.6)
+                        });
+                        model.push((id, service, record, kind, payload, 0, false));
+                    }
+                    1 => {
+                        let id = lib.outbox_append(service, record, kind, &payload).unwrap();
+                        model.push((id, service, record, kind, payload, 0, false));
+                    }
+                    2 => {
+                        if let Some(id) = any(&model, &mut rng) {
+                            let r = model.iter_mut().find(|r| r.0 == id).unwrap();
+                            let can = r.5 == 0 && !r.6;
+                            assert_eq!(
+                                lib.outbox_amend(id, &payload).unwrap(),
+                                can,
+                                "seed {seed}: {log:?}"
+                            );
+                            if can {
+                                r.4 = payload;
+                            }
+                        }
+                    }
+                    3 => {
+                        let taken = lib.outbox_take(service).unwrap();
+                        let next = model.iter_mut().find(|r| r.1 == service && !r.6);
+                        match (taken, next) {
+                            (None, None) => {}
+                            (Some(t), Some(r)) => {
+                                r.5 += 1;
+                                assert_eq!(
+                                    (t.id, t.payload.as_str(), t.tries),
+                                    (r.0, r.4.as_str(), r.5),
+                                    "seed {seed}: oldest waiting goes first: {log:?}"
+                                );
+                            }
+                            (t, r) => panic!("seed {seed}: took {t:?}, expected {r:?}: {log:?}"),
+                        }
+                    }
+                    4 => {
+                        // Sent and taken by Apple: only ever something that was taken.
+                        if let Some(r) = model.iter().find(|r| r.1 == service && r.5 > 0 && !r.6) {
+                            let id = r.0;
+                            lib.outbox_done(id).unwrap();
+                            model.retain(|r| r.0 != id);
+                        }
+                    }
+                    5 => {
+                        if let Some(r) =
+                            model.iter_mut().find(|r| r.1 == service && r.5 > 0 && !r.6)
+                        {
+                            r.6 = true;
+                            lib.outbox_refuse(r.0, "turned down").unwrap();
+                        }
+                    }
+                    6 => {
+                        if let Some(id) = any(&model, &mut rng) {
+                            let was = model.iter().position(|r| r.0 == id).unwrap();
+                            let refused = model[was].6;
+                            let sent = lib.outbox_resend(id).unwrap();
+                            assert_eq!(sent, refused, "seed {seed}: {log:?}");
+                            if sent {
+                                // A new id at the back; the change itself as it was.
+                                let mut row = model.remove(was);
+                                let now = lib.outbox_pending(row.1).unwrap();
+                                row.0 = now.last().unwrap().id;
+                                (row.5, row.6) = (0, false);
+                                model.push(row);
+                            }
+                        }
+                    }
+                    7 => {
+                        if let Some(id) = any(&model, &mut rng) {
+                            let refused = model.iter().any(|r| r.0 == id && r.6);
+                            lib.outbox_discard(id).unwrap();
+                            if refused {
+                                model.retain(|r| r.0 != id);
+                            }
+                        }
+                    }
+                    8 => {
+                        if let Some(id) = any(&model, &mut rng) {
+                            let can = model.iter().any(|r| r.0 == id && r.5 == 0 && !r.6);
+                            assert_eq!(
+                                lib.outbox_withdraw(id).unwrap(),
+                                can,
+                                "seed {seed}: {log:?}"
+                            );
+                            if can {
+                                model.retain(|r| r.0 != id);
+                            }
+                        }
+                    }
+                    9 => {
+                        if let Some(r) =
+                            model.iter_mut().find(|r| r.1 == service && r.5 > 0 && !r.6)
+                        {
+                            r.5 = 0;
+                            lib.outbox_untry(r.0).unwrap();
+                        }
+                    }
+                    _ => {
+                        // The process dies here and starts again: only what is on disk is left.
+                        drop(lib);
+                        lib = Library::open(dir.path()).unwrap();
+                    }
+                }
+                // After every step, the queue is exactly the model: nothing lost, nothing
+                // doubled, order kept, refused kept apart with their words.
+                for s in SERVICES {
+                    let got: Vec<_> = lib
+                        .outbox_pending(s)
+                        .unwrap()
+                        .into_iter()
+                        .map(|p| (p.id, p.record, p.kind, p.payload, p.tries))
+                        .collect();
+                    let want: Vec<_> = model
+                        .iter()
+                        .filter(|r| r.1 == s && !r.6)
+                        .map(|r| (r.0, r.2.to_string(), r.3.to_string(), r.4.clone(), r.5))
+                        .collect();
+                    assert_eq!(got, want, "seed {seed}: waiting for {s}: {log:?}");
+                }
+                let refused: Vec<_> = lib
+                    .outbox_refused()
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| (r.change.id, r.change.payload))
+                    .collect();
+                let want: Vec<_> = model
+                    .iter()
+                    .filter(|r| r.6)
+                    .map(|r| (r.0, r.4.clone()))
+                    .collect();
+                assert_eq!(refused, want, "seed {seed}: refused: {log:?}");
+                assert_eq!(
+                    lib.outbox_count().unwrap(),
+                    model.len(),
+                    "seed {seed}: {log:?}"
+                );
+            }
+        }
+    }
 }
