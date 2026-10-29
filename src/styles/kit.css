@@ -573,9 +573,17 @@ textarea.field { padding-block: 5px; resize: vertical; }
 .segment:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 /* The thumb on its way from one segment to the next (lib/thumb.ts): the chosen segment's cap,
    drawn by the group under the segments while the segment's own waits, hidden. */
+/* Registered as not inherited: set on the group each frame, an inherited property would have
+   every segment and its words styled again with it. */
+@property --thumb-x { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --thumb-w { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --thumb-y { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --thumb-h { syntax: "<length>"; inherits: false; initial-value: 0px; }
 .segmented.is-sliding > .segment { position: relative; z-index: 1; }
 .segmented.is-sliding > .segment[aria-pressed="true"] { background: none; box-shadow: none; }
 .segmented.is-sliding::before {
+  /* The group's, explicitly: registered as not inherited, they reach the thumb only so. */
+  --thumb-x: inherit; --thumb-w: inherit; --thumb-y: inherit; --thumb-h: inherit;
   content: "";
   position: absolute;
   z-index: 0;
