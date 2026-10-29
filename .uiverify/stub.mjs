@@ -465,7 +465,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const words = String(args.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
           return !notesFixture ? [] : noteList
             .filter((n) => n.folderGuid !== "f2" && words.every((w) => `${n.title} ${n.body ?? ""}`.toLowerCase().includes(w)))
-            .map((n) => ({ ...n }));
+            // The preview is the line where a word is, past the title, as the library gives it
+            // (search.rs note_line); the stored one when the words are only in the title.
+            .map((n) => {
+              const rest = (n.body ?? "").split("\n").slice(1);
+              const line = rest.find((l) => words.some((w) => l.toLowerCase().includes(w)));
+              return { ...n, snippet: line ?? n.snippet };
+            });
         }
         // Adding files: off unless a test turns it on (`__attachOn`), as the backend's switch is.
         case "note_attach_enabled": return Boolean(window.__attachOn);

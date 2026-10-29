@@ -31,6 +31,7 @@ import { Picker } from "../components/Picker";
 import { holdTyping } from "../lib/updates";
 import { keepSame } from "../lib/same";
 import { useArrivals } from "../lib/arrival";
+import { foundRanges, queryWords } from "./notes/found";
 
 const ALL = "__all__";
 
@@ -104,11 +105,14 @@ const NoteRows = memo(function NoteRows({
   openGuid,
   rowsRef,
   onPick,
+  found,
 }: {
   sections: Section[];
   openGuid: string | null;
   rowsRef: React.MutableRefObject<HTMLDivElement | null>;
   onPick: (note: Note, e: React.MouseEvent) => void;
+  /** The words being searched for, marked where they fall in each row. */
+  found: string[];
 }) {
   return (
     <div className="note-rows" ref={rowsRef} role="listbox" aria-label="Notes" data-rows="">
@@ -131,12 +135,12 @@ const NoteRows = memo(function NoteRows({
                 {note.locked && (
                   <LockKeyhole className="note-row-lock" size={12} strokeWidth={2.4} aria-label="Locked" />
                 )}
-                <span className="note-row-name">{wordsOnly(note.title) || "New Note"}</span>
+                <span className="note-row-name"><Found text={wordsOnly(note.title) || "New Note"} words={found} /></span>
               </span>
               <span className="note-row-meta">
                 <span className="note-row-when">{listDate(note.modifiedAt)}</span>
                 <span className="note-row-snippet">
-                  {note.locked ? "Locked" : wordsOnly(note.snippet ?? "").slice(0, 80) || "No additional text"}
+                  {note.locked ? "Locked" : <Found text={wordsOnly(note.snippet ?? "").slice(0, 120) || "No additional text"} words={found} />}
                 </span>
               </span>
             </button>
@@ -147,6 +151,21 @@ const NoteRows = memo(function NoteRows({
     </div>
   );
 });
+
+/** `text` with the searched-for words marked, as Notes marks them in its results. */
+function Found({ text, words }: { text: string; words: string[] }) {
+  const ranges = words.length ? foundRanges(text, words) : [];
+  if (!ranges.length) return <>{text}</>;
+  const out: React.ReactNode[] = [];
+  let from = 0;
+  ranges.forEach(([a, b], i) => {
+    if (a > from) out.push(text.slice(from, a));
+    out.push(<mark key={i} className="note-found">{text.slice(a, b)}</mark>);
+    from = b;
+  });
+  if (from < text.length) out.push(text.slice(from));
+  return <>{out}</>;
+}
 
 export function NotesView() {
   // The folders' column: as wide as it was left, or — the first time — as wide as the longest
@@ -1188,6 +1207,8 @@ export function NotesView() {
   useEffect(() => setDetail(false), [folder]);
 
   const sections = useMemo(() => groupNotes(notes, new Date(), listOrder), [notes, listOrder]);
+  /** What a search is looking for, marked in the results and in the note opened from them. */
+  const foundWords = useMemo(() => (searching ? queryWords(query) : []), [searching, query]);
   /** The folders as nested, worked out when they change rather than on every key typed. */
   const nested = useMemo(() => nestFolders(folders), [folders]);
 
@@ -1477,7 +1498,7 @@ export function NotesView() {
 
         {/* One list box of notes, a group per heading: the open note is its selected option.
             The heading is drawn for the eye; the group's name says it to a screen reader. */}
-        <NoteRows sections={sections} openGuid={openGuid} rowsRef={rowsRef} onPick={pickRow} />
+        <NoteRows sections={sections} openGuid={openGuid} rowsRef={rowsRef} onPick={pickRow} found={foundWords} />
 
         {loaded && notes.length === 0 && !error && !(arriving && !searching) && (
           searching ? (
@@ -1692,6 +1713,7 @@ export function NotesView() {
               onChange={apply}
               onStatus={setStatus}
               onBlur={leave}
+              found={composing ? undefined : foundWords}
             />
           </div>
           {attaching && (

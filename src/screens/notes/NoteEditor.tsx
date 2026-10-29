@@ -9,6 +9,7 @@ import { Fragment, Slice, type Node as PMNode } from "prosemirror-model";
 import type { Run } from "./Formatted";
 import { checklistMove, fromDoc, listNumbers, LIST_STYLES, schema, STYLE, tableCells, toDoc } from "./rich";
 import { MOVE_CHECKED_KEY } from "./model";
+import { foundRanges } from "./found";
 
 function moveCheckedOn(): boolean {
   try {
@@ -484,6 +485,8 @@ type Props = {
   onChange: (text: string, runs: Run[]) => void;
   onStatus?: (status: EditorStatus) => void;
   onBlur?: () => void;
+  /** The words of the search the note was opened from, marked where they fall (found.ts). */
+  found?: string[];
 };
 
 /** Every paragraph the selection touches, with where it starts. */
@@ -607,6 +610,35 @@ const numbered: Plugin<DecorationSet> = new Plugin<DecorationSet>({
   props: { decorations: (state): DecorationSet | undefined => numbered.getState(state) },
 });
 
+/**
+ * The words of a search marked in the note, as Notes marks them in a note opened from its
+ * results. Only drawn — never part of the note — and worked out again only when the words or
+ * the text change; with no search, nothing is walked at all.
+ */
+type FoundState = { words: string[]; marks: DecorationSet };
+function foundMarks(doc: PMNode, words: string[]): DecorationSet {
+  if (!words.length) return DecorationSet.empty;
+  const marks: Decoration[] = [];
+  doc.descendants((node, pos) => {
+    if (!node.isText || !node.text) return true;
+    for (const [a, b] of foundRanges(node.text, words)) marks.push(Decoration.inline(pos + a, pos + b, { class: "note-found" }));
+    return false;
+  });
+  return DecorationSet.create(doc, marks);
+}
+const found: Plugin<FoundState> = new Plugin<FoundState>({
+  state: {
+    init: () => ({ words: [], marks: DecorationSet.empty }),
+    apply: (tr, was) => {
+      const words = tr.getMeta(found) as string[] | undefined;
+      if (words) return { words, marks: foundMarks(tr.doc, words) };
+      if (!tr.docChanged || !was.words.length) return was;
+      return { words: was.words, marks: foundMarks(tr.doc, was.words) };
+    },
+  },
+  props: { decorations: (state): DecorationSet | undefined => found.getState(state)?.marks },
+});
+
 const parentOf = (state: EditorState) => state.selection.$from.parent;
 const inList = (state: EditorState) => LIST_STYLES.includes(parentOf(state).attrs.style);
 
@@ -705,7 +737,7 @@ function statusOf(state: EditorState): EditorStatus {
  * back as Apple's text and runs on every change.
  */
 export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
-  { text, runs, editable, label, placeholder, autoFocus, onChange, onStatus, onBlur },
+  { text, runs, editable, label, placeholder, autoFocus, onChange, onStatus, onBlur, found: words },
   ref,
 ) {
   const host = useRef<HTMLDivElement | null>(null);
@@ -756,6 +788,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
         letTabOut,
         autolink,
         numbered,
+        found,
         history(),
         keymap({
           "Mod-z": undo,
@@ -940,6 +973,29 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
   useEffect(() => {
     view.current?.setProps({ editable: () => editable });
   }, [editable]);
+
+  // The search's words, marked; a new search marks its own, and leaving it clears them.
+  const wordsKey = (words ?? []).join("\u0000");
+  useEffect(() => {
+    const v = view.current;
+    if (!v) return;
+    const now = words ?? [];
+    const was = found.getState(v.state)?.words ?? [];
+    if (was.join("\u0000") === now.join("\u0000")) return;
+    v.dispatch(v.state.tr.setMeta(found, now).setMeta("addToHistory", false));
+    // The first place it is found is brought into view, as Notes opens a result there — not
+    // while someone is writing in the note, whose place is their own.
+    if (now.length && !v.hasFocus()) {
+      const first = v.dom.querySelector<HTMLElement>(".note-found");
+      const scroller = v.dom.closest<HTMLElement>(".note-editor");
+      if (first && scroller) {
+        const box = scroller.getBoundingClientRect();
+        const at = first.getBoundingClientRect();
+        if (at.top < box.top || at.bottom > box.bottom) first.scrollIntoView({ block: "center" });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wordsKey]);
 
   useImperativeHandle(ref, () => ({
     setStyle: (style) => {

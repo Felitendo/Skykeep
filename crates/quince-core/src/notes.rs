@@ -436,10 +436,11 @@ impl Library {
         let Some(question) = crate::search::match_all(query) else {
             return Ok(Vec::new());
         };
+        let words = crate::search::folded_words(query);
         let mut stmt = self.conn.prepare_cached(
             "SELECT guid, folder_guid, title,
                     coalesce(snippet, substr(body, 1, 200)), locked, pinned,
-                    created_at, modified_at, editable, etag
+                    created_at, modified_at, editable, etag, body
              FROM notes
              WHERE guid IN (SELECT d.key FROM search_text
                             JOIN search_docs d ON d.id = search_text.rowid
@@ -447,13 +448,27 @@ impl Library {
              ORDER BY pinned DESC, modified_at DESC, title",
         )?;
         let rows = stmt.query_map(params![question], |row| {
+            let title: String = row.get(2)?;
+            let snippet: Option<String> = row.get(3)?;
+            let locked = row.get::<_, i64>(4)? != 0;
+            // Each result's preview is where its words are, as in Notes: a note found by a
+            // word far down its text shows that part of it, not its first line. Never for a
+            // locked note, whose text is not shown.
+            let snippet = if locked {
+                snippet
+            } else {
+                let body: Option<String> = row.get(10)?;
+                crate::search::note_line(&title, body, snippet.clone(), &words)
+                    .0
+                    .or(snippet)
+            };
             Ok(Note {
                 guid: row.get(0)?,
                 folder_guid: row.get(1)?,
-                title: row.get(2)?,
-                snippet: row.get(3)?,
+                title,
+                snippet,
                 body: None,
-                locked: row.get::<_, i64>(4)? != 0,
+                locked,
                 pinned: row.get::<_, i64>(5)? != 0,
                 created_at: row.get(6)?,
                 modified_at: row.get(7)?,
@@ -553,6 +568,31 @@ mod search_tests {
             .into_iter()
             .map(|n| n.guid)
             .collect()
+    }
+
+    /// A note found by a word deep in its text shows that part of it under its title.
+    #[test]
+    fn a_result_previews_where_its_words_are() {
+        let mut lib = library();
+        lib.put_notes(&[note(
+            "E",
+            "F",
+            "Trip",
+            "Trip\nPack the bags\nBook the train\nWater the ferns before leaving",
+        )])
+        .unwrap();
+        let hit = lib.search_notes("ferns").unwrap();
+        assert_eq!(
+            hit[0].snippet.as_deref(),
+            Some("Water the ferns before leaving")
+        );
+        // Found by its title alone, the preview is its text from the top.
+        let hit = lib.search_notes("trip").unwrap();
+        assert!(hit[0]
+            .snippet
+            .as_deref()
+            .unwrap()
+            .starts_with("Pack the bags"));
     }
 
     #[test]

@@ -183,7 +183,7 @@ fn words_of(text: &str) -> impl Iterator<Item = (usize, &str)> {
 }
 
 /// The typed words, folded and split as the index splits them.
-fn folded_words(query: &str) -> Vec<String> {
+pub(crate) fn folded_words(query: &str) -> Vec<String> {
     let mut out: Vec<String> = query_words(query)
         .into_iter()
         .flat_map(|w| {
@@ -269,6 +269,33 @@ fn excerpt(text: &str, words: &[String]) -> Option<String> {
         .take(LONG)
         .collect();
     (!line.is_empty()).then_some(line)
+}
+
+/// The line a found note shows under its title, and where the typed words fall in it: from
+/// the note's text past its title line, around the first word found there, as Notes shows a
+/// search's results; its own preview when the words are only in the title.
+pub(crate) fn note_line(
+    title: &str,
+    body: Option<String>,
+    snippet: Option<String>,
+    words: &[String],
+) -> (Option<String>, Vec<[u32; 2]>) {
+    let line = |text: Option<String>| -> (Option<String>, Vec<[u32; 2]>) {
+        let line = text.as_deref().and_then(|t| excerpt(t, words));
+        let m = line.as_deref().map(|l| marks(l, words)).unwrap_or_default();
+        (line, m)
+    };
+    // The first line of a note is its title: the line shown is from the rest.
+    let rest = body.map(|b| match b.split_once('\n') {
+        Some((first, rest)) if first.trim() == title.trim() => rest.to_string(),
+        _ => b,
+    });
+    let (d, m) = line(rest.filter(|r| !r.trim().is_empty()));
+    if d.is_some() {
+        (d, m)
+    } else {
+        line(snippet)
+    }
 }
 
 /// The ranking query: what `ranked` asks, written once.
@@ -410,17 +437,7 @@ impl Library {
                     let (detail, detail_marks) = if locked {
                         (None, Vec::new())
                     } else {
-                        // The first line of a note is its title: the line shown is from the rest.
-                        let rest = body.map(|b| match b.split_once('\n') {
-                            Some((first, rest)) if first.trim() == title.trim() => rest.to_string(),
-                            _ => b,
-                        });
-                        let (d, m) = line(rest.filter(|r| !r.trim().is_empty()));
-                        if d.is_some() {
-                            (d, m)
-                        } else {
-                            line(snippet)
-                        }
+                        note_line(&title, body, snippet, words)
                     };
                     Hit {
                         id: key.into(),

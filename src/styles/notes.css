@@ -102,6 +102,10 @@
 .note-row-when { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
 .note-row-snippet { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
 
+/* What a search found, marked in yellow as Notes marks it: in the results and in the note. */
+.note-found { border-radius: 2px; background: color-mix(in srgb, var(--sys-yellow, #ffcc00) 45%, transparent); color: inherit; }
+.note-rows:focus-within .note-row[aria-selected="true"] .note-found { background: color-mix(in srgb, var(--sys-yellow, #ffcc00) 35%, transparent); }
+
 /* ---- the note ------------------------------------------------------------------- */
 
 .note-body { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0 0 0 28px; }
