@@ -1,5 +1,5 @@
 // Reminders' keys, as on a Mac: Tab tucks a reminder under the one above, at once;
-// Shift-Tab brings it back out; Return goes on to a new reminder.
+// Shift-Tab brings it back out; Return goes on to a new reminder below it.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
 const b = await engine.launch();
@@ -49,7 +49,12 @@ ok(await page.evaluate(() => document.activeElement?.getAttribute("aria-label") 
 await page.getByLabel("Rename Pick up the parcel").focus();
 await page.keyboard.press("Enter");
 await page.waitForTimeout(150);
-ok(await page.evaluate(() => document.activeElement?.closest(".rx-add") !== null), "Return goes on to a new reminder");
+// Right below it, as on the Mac (reminders-next-below.mjs has the rest); Escape ends it there.
+ok(await page.evaluate(() => {
+  const next = document.activeElement?.closest(".rx-next");
+  return next?.previousElementSibling?.querySelector(".rx-title")?.value === "Pick up the parcel";
+}), "Return goes on to a new reminder, right below it");
+await page.keyboard.press("Escape");
 // Drag to reorder: the row lands where it is dropped, at once, and Apple is asked.
 const titles = () => page.locator(".rx-row:not(.is-done) .rx-title").evaluateAll((els) => els.map((e) => e.value));
 const before = await titles();

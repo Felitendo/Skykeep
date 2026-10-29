@@ -1379,6 +1379,75 @@ export function RemindersView() {
     }
   }
 
+  /**
+   * Return on a reminder in a list begins the next one right below it, as on the Mac: a new
+   * row there, its title being typed. A subtask's next is a subtask of the same reminder, and
+   * one in a section stays in that section. Nothing is made until something is typed.
+   */
+  /** The reminder the next one goes below; `was` its stand-in's id, once it has its own. */
+  const [insertAfter, setInsertAfter] = useState<(Reminder & { was?: string }) | null>(null);
+  const addBelow = async (typed: string, anchor: Reminder & { was?: string }, goOn: boolean) => {
+    const line = typed.trim();
+    if (!line || !listGuid) return;
+    const said = parseReminder(line);
+    const q = understood(said) ? said : null;
+    const title = q ? q.title : line;
+    const parentGuid = anchor.parentGuid;
+    const section = sectionOf(anchor);
+    const keyOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const implied =
+      q?.dueAt != null
+        ? q.allDay
+          ? { dueAt: dayToUtc(keyOf(new Date(q.dueAt * 1000))), allDay: true }
+          : { dueAt: q.dueAt, allDay: false }
+        : {};
+    // Where it goes in the list's order: before the reminder that follows this one's block in
+    // the same section, or last in it when there is none.
+    const flat = threaded.map((t) => t.reminder);
+    // The anchor by its id, or by its stand-in's while the list has not been read since it was made.
+    const isAnchor = (x: Reminder) => x.guid === anchor.guid || (anchor.was !== undefined && x.guid === anchor.was);
+    const at = flat.findIndex(isAnchor);
+    const next = parentGuid || at < 0
+      ? null
+      : flat.slice(at + 1).find((x) => !x.parentGuid && !x.completedAt && sectionOf(x) === section && !x.guid.startsWith(STAND_IN)) ?? null;
+    const standIn = `${STAND_IN}${Date.now()}`;
+    // Shown in its place at once, the field going on below it for the next.
+    const shown = {
+      guid: standIn, listGuid, title, notes: null,
+      dueAt: implied.dueAt === undefined ? null : implied.allDay ? dayToLocal(implied.dueAt) : implied.dueAt,
+      allDay: implied.allDay ?? false, completedAt: null, priority: q?.priority ?? 0, flagged: false,
+      parentGuid, sectionGuid: section, recurFrequency: q?.repeat?.frequency ?? null,
+      recurInterval: q?.repeat?.interval ?? null, etag: null,
+    } as Reminder;
+    setItems((rows) => {
+      const i = rows.findIndex(isAnchor);
+      // After the anchor's own subtasks, where the row is drawn.
+      let end = i;
+      if (!parentGuid) while (end + 1 < rows.length && rows[end + 1].parentGuid === rows[i].guid) end += 1;
+      return i < 0 ? [...rows, shown] : [...rows.slice(0, end + 1), shown, ...rows.slice(end + 1)];
+    });
+    // Return goes on to another below this one; leaving the field ends there.
+    setInsertAfter(goOn ? shown : null);
+    setError(null);
+    try {
+      const made = await api.reminderCreate(listGuid, title, implied);
+      if (typeof made === "string" && made) {
+        // The field below follows the real reminder once it has its id.
+        setInsertAfter((was) => (was?.guid === standIn ? { ...shown, guid: made, was: standIn } : was));
+        if (next) await api.reminderReorder(listGuid, made, next.guid).catch((e) => setError(messageOf(e)));
+        if (section && REMINDER_DETAIL_WRITES) await remindersApi.sectionMove(listGuid, made, section).catch((e) => setError(messageOf(e)));
+        if (parentGuid) await api.reminderEdit(made, listGuid, { parentGuid }).catch((e) => setError(messageOf(e)));
+        if (q?.priority) await api.reminderEdit(made, listGuid, { priority: q.priority }).catch((e) => setError(messageOf(e)));
+        if (q?.repeat) await api.reminderSetRepeat(made, listGuid, q.repeat).catch((e) => setError(messageOf(e)));
+      }
+      await readItems();
+    } catch (err) {
+      setItems((rows) => rows.filter((r) => r.guid !== standIn));
+      setInsertAfter((was) => (was?.guid === standIn ? null : was));
+      setError(messageOf(err));
+    }
+  };
+
   const heading = inList
     ? (lists.find((l) => l.guid === listGuid)?.title ?? "Reminders")
     : selection.type === "tag"
@@ -1817,6 +1886,11 @@ export function RemindersView() {
     toggle, askRemove, rename, indent, outdent, flag, setNotes, setUrl, setDue, setEarly, setRepeat,
     tagAdd, tagRemove, setPriority, moveToList, moveToSection, openTag, setOpenGuid, reorder,
     foldSubtasks,
+    next: (r) => {
+      // Below it in a list, where its order is the list's; elsewhere, at the foot of the view.
+      if (inList && !searching && !r.completedAt) setInsertAfter(r);
+      else window.setTimeout(() => document.querySelector<HTMLInputElement>(".rx-add input")?.focus(), 0);
+    },
     openMenu: (reminder, at) => setRowMenu({ reminder, at }),
     dragging: () => draggingRef.current,
     startDrag: (guid) => {
@@ -2058,9 +2132,17 @@ export function RemindersView() {
                 </h2>
               ))}
             <ul className="rx-rows">
-              {section.rows.map(({ reminder, depth }) => {
+              {section.rows.flatMap(({ reminder, depth }, i) => {
                 const isOpen = openGuid === reminder.guid;
-                return (
+                // The next reminder's field goes below the one Return was pressed on, after its
+                // subtasks — the same field throughout, keyed apart from the rows, so a row
+                // becoming real under it (its stand-in replaced) never takes what is being typed.
+                const anchored = (g: string) => insertAfter !== null && (g === insertAfter.guid || g === insertAfter.was);
+                const below =
+                  insertAfter !== null &&
+                  (anchored(reminder.guid) || (depth > 0 && reminder.parentGuid !== null && anchored(reminder.parentGuid))) &&
+                  !(section.rows[i + 1]?.reminder.parentGuid && anchored(section.rows[i + 1].reminder.parentGuid!));
+                return [
                   <ReminderRow
                     key={reminder.guid}
                     reminder={reminder}
@@ -2090,8 +2172,22 @@ export function RemindersView() {
                     subtasks={isOpen ? items.filter((x) => x.parentGuid === reminder.guid).length : 0}
                     kids={depth === 0 ? (kidsOf.get(reminder.guid) ?? 0) : 0}
                     kidsHidden={hiddenSubtasks.has(reminder.guid)}
-                  />
-                );
+                  />,
+                  ...(below && insertAfter
+                    ? [
+                        <NextReminder
+                          key="rx-next"
+                          subtask={Boolean(insertAfter.parentGuid)}
+                          onAdd={(text, goOn) => {
+                            const anchor = insertAfter;
+                            if (text.trim()) void addBelow(text, anchor, goOn);
+                            else setInsertAfter(null);
+                          }}
+                          onCancel={() => setInsertAfter(null)}
+                        />,
+                      ]
+                    : []),
+                ];
               })}
             </ul>
           </Fragment>
@@ -2257,6 +2353,8 @@ type RowActions = {
   reorder: (guid: string, before: string) => Promise<unknown>;
   /** Fold a reminder's subtasks away under it, or open them again. */
   foldSubtasks: (guid: string) => void;
+  /** Return on a reminder's title: begin the next one, below it. */
+  next: (r: Reminder) => void;
   /** The reminder being dragged now, read at the moment it is asked. */
   dragging: () => string | null;
   startDrag: (guid: string) => void;
@@ -2453,7 +2551,7 @@ const ReminderRow = memo(function ReminderRow({
               if (e.key === "Enter") {
                 e.preventDefault();
                 e.currentTarget.blur();
-                window.setTimeout(() => document.querySelector<HTMLInputElement>(".rx-add input")?.focus(), 0);
+                act.current.next(reminder);
               } else if (e.key === "Escape") {
                 // Back to the row, which then takes the arrows and Space.
                 e.currentTarget.value = reminder.title;
@@ -2757,6 +2855,53 @@ const ReminderRow = memo(function ReminderRow({
     </li>
   );
 });
+
+/**
+ * The next reminder, being typed right below the one Return was pressed on. Return adds it and
+ * goes on to another; Return or Escape on an empty one ends there, and leaving it with words
+ * in it adds them.
+ */
+function NextReminder({ subtask, onAdd, onCancel }: { subtask: boolean; onAdd: (text: string, goOn: boolean) => void; onCancel: () => void }) {
+  const done = useRef(false);
+  return (
+    <li className={`rx-row rx-next${subtask ? " is-subtask" : ""}`}>
+      <span className="rx-tick" aria-hidden="true" />
+      <div className="rx-text">
+        <div className="rx-title-row">
+          <input
+            className="rx-title"
+            autoFocus
+            aria-label="New reminder"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                const typed = e.currentTarget.value;
+                // Added, and the same field goes on below it, empty, for the next.
+                if (typed.trim()) e.currentTarget.value = "";
+                else done.current = true;
+                onAdd(typed, true);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                done.current = true;
+                onCancel();
+              }
+            }}
+            onBlur={(e) => {
+              const field = e.currentTarget;
+              // Moved down past the row just added, the field can lose the focus for a moment and
+              // have it put back: only a focus that stays elsewhere is leaving it.
+              window.setTimeout(() => {
+                if (done.current || document.activeElement === field || !field.isConnected) return;
+                done.current = true;
+                onAdd(field.value, false);
+              }, 0);
+            }}
+          />
+        </div>
+      </div>
+    </li>
+  );
+}
 
 /** Apple's twelve list colours, in its picker's order, keyed as CloudKit names them. */
 const LIST_COLOURS = [

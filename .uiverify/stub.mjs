@@ -277,7 +277,10 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_create":
           // Kept, as Apple keeps it, with what the view implied.
           {
-            const guid = `made-${reminderItems.length}`;
+            // Numbered on from the fixture, never twice: one moved away by a reorder does not
+            // free its number for the next.
+            window.__madeSeq = (window.__madeSeq ?? reminderItems.length - 1) + 1;
+            const guid = `made-${window.__madeSeq}`;
             (window.__creates ??= []).push(args);
             reminderItems.push({ guid, listGuid: args.listGuid, title: args.title,
               notes: null, dueAt: args.dueAt ?? null, allDay: args.allDay ?? false, completedAt: null, priority: 0,
@@ -340,8 +343,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const i = rows.findIndex((x) => x.guid === args.guid);
           if (i < 0) return null;
           const [moved] = rows.splice(i, 1);
-          const at = rows.findIndex((x) => x.guid === args.before);
-          rows.splice(at < 0 ? rows.length : at, 0, moved);
+          // Put before one in the other list of rows (one made here, before a suite's own), it
+          // goes into that one, so the order read back is the order asked for.
+          const into = rows.some((x) => x.guid === args.before) ? rows : [reminderItems, window.__extraReminders ?? []].find((l) => l.some((x) => x.guid === args.before)) ?? rows;
+          const at = into.findIndex((x) => x.guid === args.before);
+          into.splice(at < 0 ? into.length : at, 0, moved);
           return null;
         }
         case "reminder_list_colour": {
