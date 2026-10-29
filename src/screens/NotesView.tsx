@@ -30,6 +30,7 @@ import { useArriving, useRevision, useShownRevision } from "../lib/sync";
 import { Picker } from "../components/Picker";
 import { holdTyping } from "../lib/updates";
 import { keepSame, same } from "../lib/same";
+import { useChosen, useIsChosen, type Chosen } from "../lib/chosen";
 import { useArrivals } from "../lib/arrival";
 import { foundRanges, queryWords } from "./notes/found";
 
@@ -96,20 +97,22 @@ function fitFolders(aside: HTMLElement | null): number | null {
 }
 
 /**
- * The list of notes, drawn again only when the notes or the open one change. Inline in the
- * screen, every key typed in a note — and every move of the cursor — drew every row again,
- * which in an account of thousands was felt in the typing.
+ * The list of notes, drawn again only when the notes change. Inline in the screen, every key
+ * typed in a note — and every move of the cursor — drew every row again, which in an account
+ * of thousands was felt in the typing. The open note is not one of its props either: each row
+ * asks `chosen` itself (lib/chosen), so the arrows draw the two rows they move between.
  */
 const NoteRows = memo(function NoteRows({
   sections,
-  openGuid,
+  chosen,
   rowsRef,
   onPick,
   found,
   pictures,
 }: {
   sections: Section[];
-  openGuid: string | null;
+  /** The open note, as each row asks it. */
+  chosen: Chosen;
   rowsRef: React.MutableRefObject<HTMLDivElement | null>;
   onPick: (note: Note, e: React.MouseEvent) => void;
   /** The words being searched for, marked where they fall in each row. */
@@ -127,7 +130,7 @@ const NoteRows = memo(function NoteRows({
             <NoteRow
               key={note.guid}
               note={note}
-              selected={openGuid === note.guid}
+              chosen={chosen}
               picture={pictures[note.guid] ?? null}
               onPick={onPick}
               found={found}
@@ -150,17 +153,18 @@ const NoteRows = memo(function NoteRows({
  */
 const NoteRow = memo(function NoteRow({
   note,
-  selected,
+  chosen,
   picture,
   onPick,
   found,
 }: {
   note: Note;
-  selected: boolean;
+  chosen: Chosen;
   picture: string | null;
   onPick: (note: Note, e: React.MouseEvent) => void;
   found: string[];
 }) {
+  const selected = useIsChosen(chosen, note.guid);
   return (
     <button
       className="note-row"
@@ -1320,6 +1324,8 @@ export function NotesView() {
   const pickRef = useRef(pick);
   pickRef.current = pick;
   const pickRow = useCallback((note: Note, e: React.MouseEvent) => pickRef.current(note, e), []);
+  /** The open note, told to the rows of the list one by one (lib/chosen). */
+  const chosenNote = useChosen(openGuid ? [openGuid] : []);
 
   // The notes either side of the open one, read ahead once it has opened (see `ahead`): behind
   // every save already on its way, and dropped if the library changed meanwhile.
@@ -1595,7 +1601,7 @@ export function NotesView() {
 
         {/* One list box of notes, a group per heading: the open note is its selected option.
             The heading is drawn for the eye; the group's name says it to a screen reader. */}
-        <NoteRows sections={sections} openGuid={openGuid} rowsRef={rowsRef} onPick={pickRow} found={foundWords} pictures={pictures} />
+        <NoteRows sections={sections} chosen={chosenNote} rowsRef={rowsRef} onPick={pickRow} found={foundWords} pictures={pictures} />
 
         {loaded && notes.length === 0 && !error && !(arriving && !searching) && (
           searching ? (
