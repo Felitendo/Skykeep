@@ -336,6 +336,8 @@ textarea.note-title::placeholder { color: var(--text-3); }
   padding: 10px 8px 8px;
   border-radius: 12px;
   background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
   color: var(--text);
 }
@@ -450,7 +452,8 @@ textarea.note-title::placeholder { color: var(--text-3); }
 .nf-picture img { max-width: 100%; max-height: calc(90vh - 52px); object-fit: contain; border-radius: 12px; align-self: center;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35); background: color-mix(in srgb, var(--text) 6%, transparent); }
 .nf-picture figcaption { display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; border-radius: 12px;
-  background: var(--glass-thick); box-shadow: var(--glass-float); color: var(--text); font-size: var(--t-13); align-self: center; max-width: 100%; }
+  background: var(--glass-thick); -webkit-backdrop-filter: var(--glass-regular-filter); backdrop-filter: var(--glass-regular-filter);
+  box-shadow: var(--glass-float); color: var(--text); font-size: var(--t-13); align-self: center; max-width: 100%; }
 .nf-picture-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* A block quote, as Notes draws one: a grey bar down the left of every quoted line, one

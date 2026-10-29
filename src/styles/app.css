@@ -310,7 +310,7 @@
   /* Frosted to opaque, without a live blur: folding animates its width, and a blurred layer
      has its blur worked out again on every frame of that — a stutter in WebKitGTK, which
      does not draw the blur on many machines in any case. Content still passes under it. */
-  background: var(--glass-thick);
+  background: var(--glass-frost);
   box-shadow: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge);
   border-radius: var(--r-plateau);
   padding: 12px 9px;
@@ -1125,6 +1125,8 @@
   list-style: none;
   border-radius: var(--r-float);
   background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
   color: var(--text);
   /* No opening animation, as a macOS menu has none: it is simply there. Animating it in
@@ -1414,12 +1416,15 @@
   padding: 5px;
   border-radius: var(--r-float);
   background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
 }
 .upload-menu button {
   padding: 6px 10px;
   border: 0;
-  border-radius: 6px;
+  /* A menu's line, rounded as every menu's is (.row-menu-item). */
+  border-radius: 8px;
   background: none;
   color: var(--text);
   font: inherit;
@@ -1442,7 +1447,8 @@
   flex-direction: column;
   border: 1px solid var(--glass-edge);
   border-radius: var(--r-float);
-  background: var(--glass-thick);
+  /* Frosted, never blurred: it stays up over Drive's list as it scrolls (tokens.css). */
+  background: var(--glass-frost);
   box-shadow: var(--shadow-sheet), var(--glass-specular);
   overflow: hidden;
 }
@@ -1462,7 +1468,8 @@
 .upload-rows { margin: 0; padding: 0 6px 8px; list-style: none; overflow-y: auto; }
 .upload-row {
   padding: 6px 8px;
-  border-radius: 8px;
+  /* Concentric with the tray: its 12px corner less the list's 6px inset. */
+  border-radius: calc(var(--r-float) - 6px);
 }
 /* A file, or a whole folder counted as one: glyph, name over its bar, how far, and its
    controls — the folder's ▸ to see what in it did not upload, and ✕ while it can stop. */
@@ -1522,6 +1529,8 @@
   display: flex; flex-direction: column; outline: none;
   border-radius: var(--r-float);
   background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
   /* Opens and closes at once, as a macOS menu does, and as the pop-up's menu and search's
      results do — one rule for every menu. A 120ms fade-and-drop was tried here and flashed on
@@ -1771,7 +1780,8 @@
 .gsearch-more:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
 .gsearch-row {
   display: flex; align-items: center; gap: 10px; width: 100%; height: 44px; padding: 0 10px; border: 0;
-  border-radius: 8px; background: none; color: inherit; font: inherit; text-align: start; cursor: default;
+  /* Concentric with the panel: its 12px corner less the results' 6px inset. */
+  border-radius: calc(var(--r-float) - 6px); background: none; color: inherit; font: inherit; text-align: start; cursor: default;
 }
 /* White on the deep accent, as a filled control is drawn (tokens.css): --on-accent is the text
    for the bright fill, and on Notes' gold-deep its near-black read at 3.3:1. */

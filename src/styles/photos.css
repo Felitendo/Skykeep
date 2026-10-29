@@ -295,7 +295,10 @@
   border: 0;
   /* A rounded square, as icloud.com's viewer has them. */
   border-radius: 10px;
-  background: color-mix(in srgb, var(--sheet) 90%, transparent);
+  /* Clear glass: a glyph alone over the photo, which shows through it. */
+  background: var(--glass-clear);
+  -webkit-backdrop-filter: var(--glass-clear-filter);
+  backdrop-filter: var(--glass-clear-filter);
   box-shadow: var(--glass-float);
   color: var(--text);
   transition: none;
@@ -321,6 +324,8 @@
   padding: 14px 16px 16px;
   border-radius: var(--r-float);
   background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
   font-size: var(--t-13);
   overflow-y: auto;
@@ -867,6 +872,8 @@
   max-height: min(460px, 70vh);
   border-radius: var(--r-float);
   background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
   overflow: hidden;
   outline: none;

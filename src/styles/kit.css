@@ -97,7 +97,9 @@
 
 /* A group of a toolbar's controls, as macOS 27 floats them: one capsule, its controls round
    inside it, concentric. Nearly solid rather than a live blur — these sit over scrolling
-   photos and lists, and WebKitGTK blurs what is behind again on every frame of a scroll. */
+   photos and lists, and every engine blurs what is behind again on every frame of a scroll:
+   measured (.uiverify/glass-frames.mjs), Photos' six capsules blurred took a scroll from
+   16.7 to 200ms at p95 in Chromium and froze frames for 280ms. */
 .toolbar-group {
   display: inline-flex;
   align-items: center;
@@ -351,12 +353,23 @@ textarea.field { padding-block: 5px; resize: vertical; }
 
 /* ---- floating surfaces -------------------------------------------------------------------- */
 
-/* Menus, pop-ups, popovers: thick glass, rim, edge and lift — the whole recipe, one radius. */
+/* Menus, pop-ups, popovers: regular glass, rim, edge and lift — the whole recipe, one radius. */
 .popover {
   border-radius: var(--r-float);
   background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
   color: var(--text);
+}
+/* Never glass on glass: a floating surface opened inside another (Go to Date under a
+   toolbar's capsule, a menu in a sheet) is already frosted by the one it sits in, and a
+   blur inside a blur sees only its parent — a second layer for nothing. */
+:is(.toolbar-group, .popover, .modal-sheet, .row-menu, .picker-menu, .cx-popover, .format-panel,
+  .px-info, .px-jump)
+  :is(.popover, .row-menu, .picker-menu, .cx-popover, .format-panel) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* ---- toasts (components/Toast) ------------------------------------------------------------ */
@@ -385,7 +398,8 @@ textarea.field { padding-block: 5px; resize: vertical; }
   min-height: 38px;
   padding: 5px 6px 5px 14px;
   border-radius: var(--r-float);
-  background: var(--glass-thick);
+  /* Frosted, never blurred: it stays up over lists that scroll (tokens.css "The two tiers"). */
+  background: var(--glass-frost);
   box-shadow: var(--glass-float);
   color: var(--text);
   font-size: var(--t-13);
@@ -472,6 +486,8 @@ textarea.field { padding-block: 5px; resize: vertical; }
   padding: 20px 22px;
   border-radius: var(--r-window);
   background: var(--glass-thick);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
   color: var(--text);
 }
