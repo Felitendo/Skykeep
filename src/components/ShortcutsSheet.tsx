@@ -60,6 +60,9 @@ export const SHORTCUTS: { app: string; key: string; rows: Row[] }[] = [
     key: "contacts",
     rows: [
       [[["Ctrl", "N"]], "New contact"],
+      [[["Ctrl", "Shift", "N"]], "New list"],
+      [[["Ctrl", "L"], ["Return"]], "Edit contact"],
+      [[["Delete"]], "Delete contact"],
       [[["Ctrl", "F"]], "Search"],
       [[["Ctrl", "A"]], "Select all"],
     ],

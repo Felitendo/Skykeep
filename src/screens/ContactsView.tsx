@@ -21,9 +21,10 @@ import {
   type AddressEdit,
   type AddressPart,
   type PostalAddress,
+  type ItemChanges,
 } from "../lib/ipc";
 import { Arriving } from "../components/EmptyState";
-import { useArriving, useRevision } from "../lib/sync";
+import { useArriving, useItemChanges } from "../lib/sync";
 import { overlayOpen, useActiveRef, useScreenActive } from "../lib/screen";
 import { Picker } from "../components/Picker";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
@@ -168,13 +169,12 @@ export function ContactsView() {
   const [error, setError] = useState<string | null>(null);
   useErrorToast(error, () => setError(null));
   const [confirm, confirmSheet] = useConfirm();
-  const revision = useRevision("contacts");
-  // A pass that lands while another screen is in front is read when this one comes back, once,
-  // not at every landing: a screen out of sight stays mounted (lib/screen).
+  // A pass that names the cards it changed has those alone read again (`patch`, below); one
+  // that can't say moves `due`, and the book is read whole. Either, landing while another
+  // screen is in front, is taken when this one comes back, once (lib/sync, lib/screen).
+  const patch = useRef<(items: ItemChanges) => void>(() => {});
+  const due = useItemChanges("contacts", (items) => patch.current(items));
   const active = useScreenActive();
-  const seen = useRef(revision);
-  if (active) seen.current = revision;
-  const due = seen.current;
   const arriving = useArriving("contacts");
   /** The card being written, or null while simply looking. */
   const [draft, setDraft] = useState<Contact | null>(null);
@@ -300,14 +300,27 @@ export function ContactsView() {
   const tickDue = seenTick.current;
   /** Each read is numbered: one overtaken by a later one (a key typed since) never draws. */
   const reads = useRef(0);
+  /** Whole reads on their way: a pass's cards landing meanwhile are read whole too (`patch`). */
+  const reading = useRef(0);
   const read = useCallback(async (query: string) => {
     const mine = ++reads.current;
-    const found = await api.contactsList(query.trim() || null);
+    reading.current += 1;
+    let found: Contact[];
+    try {
+      found = await api.contactsList(query.trim() || null);
+    } finally {
+      reading.current -= 1;
+    }
     if (mine !== reads.current) return;
     // Each card unchanged keeps its row as it was (lib/same).
     setContacts((was) => keepSame(was, Array.isArray(found) ? found : [], (c) => c.guid));
     setLoaded(true);
   }, []);
+  /** The book as last drawn, for a handler that runs after awaiting something. */
+  const shownBook = useRef(contacts);
+  shownBook.current = contacts;
+  /** Moves when the open card was among those a pass changed: its addresses are read again. */
+  const [cardRead, setCardRead] = useState(0);
 
   // The library is the only thing this screen reads. `revision` ticks whenever a refresh
   // finishes — pressed or on the timer — so a change made on the phone lands here without
@@ -415,6 +428,49 @@ export function ContactsView() {
   useEffect(() => {
     readDupes().catch(() => {});
   }, [readDupes, due, tickDue]);
+  /**
+   * A pass that named the cards it changed: those alone are read and put in their places, and
+   * every other row is left as it is. It used to read the whole book again for one card edited
+   * on the phone — every card, every number — and compare each row. With a search typed, or a
+   * read of the whole book already on its way, the book is read as the search has it instead:
+   * that read decides who shows.
+   */
+  patch.current = (items: ItemChanges) => {
+    const ids = [...items.added, ...items.changed];
+    const next = () => {
+      readDupes().catch(() => {});
+      if (openGuid && (ids.includes(openGuid) || items.removed.includes(openGuid))) setCardRead((n) => n + 1);
+    };
+    if (search.trim() || reading.current > 0 || !loaded) {
+      read(search).then(next, () => {});
+      return;
+    }
+    const before = reads.current;
+    (ids.length ? contactsApi.get(ids) : Promise.resolve([] as Contact[]))
+      .then((found) => {
+        // A whole read started since has every card as it is now.
+        if (before !== reads.current) return;
+        const fresh = new Map((Array.isArray(found) ? found : []).map((c) => [c.guid, c]));
+        // Named but not found: gone since, as a removal is.
+        const gone = new Set([...items.removed, ...ids.filter((id) => !fresh.has(id))]);
+        setContacts((was) => {
+          const placed = new Set<string>();
+          const kept = was
+            .filter((c) => !gone.has(c.guid))
+            .map((c) => {
+              const now = fresh.get(c.guid);
+              if (!now) return c;
+              placed.add(c.guid);
+              return now;
+            });
+          const added = [...fresh.values()].filter((c) => !placed.has(c.guid));
+          return added.length ? [...kept, ...added] : kept;
+        });
+        next();
+      })
+      .catch(() => read(search).then(next, () => {}));
+  };
+
   /** Everyone by id, for the duplicates view to draw from. */
   const byGuid = useMemo(() => new Map(contacts.map((c) => [c.guid, c])), [contacts]);
 
@@ -482,7 +538,7 @@ export function ContactsView() {
     return () => {
       cancelled = true;
     };
-  }, [openGuid, due, tickDue]);
+  }, [openGuid, due, tickDue, cardRead]);
 
   /**
    * Address edits: drawn at once, then sent. Turned down, the list goes back to what it was,
@@ -627,25 +683,12 @@ export function ContactsView() {
     ];
   };
 
-  /** Every write goes to Apple first, then the library is re-read. */
-  const write = useCallback(
-    async (run: () => Promise<void>) => {
-      setBusy(true);
-      setError(null);
-      try {
-        await run();
-        // A deleted contact leaves every list it was in, so the lists are read again too.
-        await Promise.all([read(search), readLists()]);
-        return true;
-      } catch (e) {
-        setError(messageOf(e));
-        return false;
-      } finally {
-        setBusy(false);
-      }
-    },
-    [read, readLists, search]
-  );
+  /** After a write lands in the library: the book and the lists as it now holds them — a
+   * deleted card leaves every list it was in — and who looks like whom. */
+  const settleWrite = useCallback(() => {
+    Promise.all([read(search), readLists()]).catch((e) => setError(messageOf(e)));
+    readDupes().catch(() => {});
+  }, [read, readLists, readDupes, search]);
 
   const saveDraft = useCallback(async () => {
     if (!draft) return;
@@ -663,17 +706,40 @@ export function ContactsView() {
       if (edits.length) sendAddresses(saving.guid, base, edits, after);
       return;
     }
+    // Shown at once as saved — the form put away, the card in the list and open — as every
+    // write here is: the library takes it behind (it can wait out a pass storing, seconds on a
+    // first sync of Photos), and Apple after that. Turned down, the card goes back to what it
+    // was and the form comes back as it was being written, so nothing typed is lost.
+    const was = draftBase.current;
+    const stand: Contact = saving.guid ? saving : { ...saving, guid: `pending-card-${Date.now()}` };
+    setContacts((all) => (saving.guid ? all.map((c) => (c.guid === saving.guid ? stand : c)) : [...all, stand]));
+    setDraft(null);
+    setPicked([]);
+    setShowDupes(false);
+    setOpenGuid(stand.guid);
+    setError(null);
     if (edits.length && saving.guid) setAddresses({ guid: saving.guid, list: after });
-    const ok = await write(async () => {
-      guid = await api.contactSave(saving, saving.guid ? draftBase.current : null);
-    });
-    if (ok) {
-      setDraft(null);
-      setOpenGuid(guid);
-      readDupes().catch(() => {});
-      if (edits.length) sendAddresses(guid, base, edits, after);
-    } else if (edits.length && saving.guid) setAddresses({ guid: saving.guid, list: base });
-  }, [draft, draftAddresses, sendAddresses, write]);
+    try {
+      guid = await api.contactSave(saving, saving.guid ? was : null);
+    } catch (e) {
+      setContacts((all) =>
+        saving.guid && was ? all.map((c) => (c.guid === saving.guid ? was : c)) : all.filter((c) => c.guid !== stand.guid),
+      );
+      if (edits.length && saving.guid) setAddresses({ guid: saving.guid, list: base });
+      draftBase.current = was;
+      setDraft(saving);
+      setOpenGuid((cur) => (cur === stand.guid ? saving.guid || null : cur));
+      setError(messageOf(e));
+      return;
+    }
+    // The stand-in takes the id the card will keep, so the row and the selection stay put.
+    if (!saving.guid) {
+      setContacts((all) => all.map((c) => (c.guid === stand.guid ? { ...stand, guid } : c)));
+      setOpenGuid((cur) => (cur === stand.guid ? guid : cur));
+    }
+    settleWrite();
+    if (edits.length) sendAddresses(guid, base, edits, after);
+  }, [draft, draftAddresses, sendAddresses, settleWrite]);
 
   /**
    * Deleting a person is not something to discover by accident. Inside a list, icloud.com
@@ -687,12 +753,37 @@ export function ContactsView() {
       );
   };
 
-  const removeContact = useCallback(
-    async (guid: string) => {
-      if (await write(() => api.contactDelete(guid))) setDraft(null);
+  /**
+   * Cards deleted: gone from the list at once, then from the library and Apple behind. Any the
+   * library turns down come back where they were, and say why.
+   */
+  const removeContacts = useCallback(
+    async (guids: string[]) => {
+      const going = new Set(guids);
+      const gone = shownBook.current.filter((c) => going.has(c.guid));
+      setContacts((all) => all.filter((c) => !going.has(c.guid)));
+      setDraft((d) => (d && going.has(d.guid) ? null : d));
+      setError(null);
+      const kept: string[] = [];
+      let why: unknown = null;
+      for (const guid of guids) {
+        try {
+          await api.contactDelete(guid);
+        } catch (e) {
+          kept.push(guid);
+          why = e;
+        }
+      }
+      if (kept.length) {
+        const back = gone.filter((c) => kept.includes(c.guid));
+        setContacts((all) => [...all.filter((c) => !kept.includes(c.guid)), ...back]);
+        setError(messageOf(why));
+      }
+      settleWrite();
     },
-    [write]
+    [settleWrite]
   );
+  const removeContact = useCallback((guid: string) => removeContacts([guid]), [removeContacts]);
 
   /** Editing a method in the draft, by position. */
   const editMethod = (index: number, patch: Partial<ContactMethod>) =>
@@ -733,9 +824,7 @@ export function ContactsView() {
     });
     if (!sure) return;
     setPicked([]);
-    await write(async () => {
-      for (const c of people) await api.contactDelete(c.guid);
-    });
+    await removeContacts(people.map((c) => c.guid));
   };
 
   /**
@@ -834,10 +923,12 @@ export function ContactsView() {
     if (list && head) list.scrollTop = head.offsetTop;
   };
 
-  // The keys Contacts on the Mac answers (Ctrl in place of Command here): ⌘N a new card,
-  // ⌘F the search, the arrows walk the list — Shift with them widens the selection — Return
-  // edits the card, Delete deletes it, and Escape leaves a card being written unsaved.
+  // The keys Contacts on the Mac answers (Ctrl in place of Command here): ⌘N a new card, ⇧⌘N
+  // a new list, ⌘F the search, ⌘L edits the card, the arrows walk the list — Shift with them
+  // widens the selection — Return edits the card, Delete deletes it, and Escape leaves a card
+  // being written unsaved.
   const live = useActiveRef();
+  const listsColumn = useRef<HTMLElement | null>(null);
   const keys = useRef<(e: KeyboardEvent) => void>(() => {});
   keys.current = (e: KeyboardEvent) => {
     if (!live.current || e.defaultPrevented) return;
@@ -854,6 +945,19 @@ export function ContactsView() {
         setPicked([]);
         startNew();
       }
+      return;
+    }
+    if (command && e.shiftKey && k === "n") {
+      e.preventDefault();
+      if (draft) return;
+      // Named in place in the lists column; where that has folded away, made as Untitled List.
+      if (listsColumn.current?.offsetParent) setNaming("new");
+      else void createList("Untitled List");
+      return;
+    }
+    if (command && !e.shiftKey && k === "l") {
+      e.preventDefault();
+      if (!draft && open && !multi && !busy) edit(open);
       return;
     }
     if (command && !e.shiftKey && k === "f") {
@@ -926,7 +1030,7 @@ export function ContactsView() {
   return (
     // A contact being written is always what shows; it has its own Cancel.
     <div className={`contacts${detail || draft ? " is-detail" : ""}`}>
-      <aside className="contacts-lists" aria-label="Contact lists">
+      <aside className="contacts-lists" aria-label="Contact lists" ref={listsColumn}>
         <p className="side-heading">iCloud</p>
         <ListRow
           name="All Contacts"
@@ -1697,13 +1801,35 @@ const ContactRow = memo(function ContactRow({ contact, current, mine, draggable,
         onClick={(e) => actions.click(contact, e)}
       >
         <Avatar contact={contact} />
-        <span className="contact-row-name">{displayName(contact)}</span>
+        <span className="contact-row-name"><RowName contact={contact} /></span>
         {mine && <span className="contact-me" title="My Card">me</span>}
         <Waiting shown={waiting} />
       </button>
     </li>
   );
 });
+
+/**
+ * A name in the list as Contacts on the Mac sets it: the part it is sorted by in bold — the
+ * last name, or a company's name — the rest of it plain, so the order reads at a glance.
+ */
+function RowName({ contact: c }: { contact: Contact }) {
+  const company = c.company?.trim();
+  const last = c.lastName?.trim();
+  if (!(c.isCompany && company) && last) {
+    const lead = [c.firstName, c.middleName].filter((p) => p?.trim()).join(" ");
+    return (
+      <>
+        {lead && `${lead} `}
+        <b>{last}</b>
+      </>
+    );
+  }
+  const name = displayName(c);
+  // A card with only a number has nothing it is sorted by: plain.
+  const named = (c.isCompany && company) || c.firstName?.trim() || c.middleName?.trim() || company;
+  return named ? <b>{name}</b> : <>{name}</>;
+}
 
 /** Text onto the clipboard; the older way where the newer one is refused. */
 async function copyText(text: string): Promise<boolean> {

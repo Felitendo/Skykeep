@@ -707,6 +707,7 @@
 .contact-rows.is-focused .contact-row[aria-selected="true"] .avatar:not(:has(img)) { background: rgba(255, 255, 255, 0.28); color: #fff; }
 .contact-row:focus-visible { outline: var(--focus-ring); outline-offset: -1px; }
 .contact-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.contact-row-name b { font-weight: 600; }
 /* Several picked: their faces fanned, the count, and what can be done to all of them. */
 .contact-many { display: flex; flex-direction: column; align-items: center; gap: 14px; padding-top: 48px; text-align: center; }
 .contact-many-faces { display: flex; }
