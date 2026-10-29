@@ -116,29 +116,30 @@ const NoteRows = memo(function NoteRows({
         <Fragment key={section.key}>
           <div className="notes-section" aria-hidden="true">{section.heading}</div>
           <div role="group" aria-label={section.heading}>
+          {/* Each note is one element, the row itself: wrapped in a box of its own, every row
+              was two boxes deep, and the separator had to reach across from one to the next. */}
           {section.notes.map((note) => (
-            <div role="presentation" className="note-item" key={note.guid}>
-              <button
-                className="note-row"
-                role="option"
-                data-guid={note.guid}
-                aria-selected={openGuid === note.guid}
-                onClick={(e) => onPick(note, e)}
-              >
-                <span className="note-row-title">
-                  {note.locked && (
-                    <LockKeyhole className="note-row-lock" size={12} strokeWidth={2.4} aria-label="Locked" />
-                  )}
-                  <span className="note-row-name">{wordsOnly(note.title) || "New Note"}</span>
+            <button
+              key={note.guid}
+              className="note-row"
+              role="option"
+              data-guid={note.guid}
+              aria-selected={openGuid === note.guid}
+              onClick={(e) => onPick(note, e)}
+            >
+              <span className="note-row-title">
+                {note.locked && (
+                  <LockKeyhole className="note-row-lock" size={12} strokeWidth={2.4} aria-label="Locked" />
+                )}
+                <span className="note-row-name">{wordsOnly(note.title) || "New Note"}</span>
+              </span>
+              <span className="note-row-meta">
+                <span className="note-row-when">{listDate(note.modifiedAt)}</span>
+                <span className="note-row-snippet">
+                  {note.locked ? "Locked" : wordsOnly(note.snippet ?? "").slice(0, 80) || "No additional text"}
                 </span>
-                <span className="note-row-meta">
-                  <span className="note-row-when">{listDate(note.modifiedAt)}</span>
-                  <span className="note-row-snippet">
-                    {note.locked ? "Locked" : wordsOnly(note.snippet ?? "").slice(0, 80) || "No additional text"}
-                  </span>
-                </span>
-              </button>
-            </div>
+              </span>
+            </button>
           ))}
           </div>
         </Fragment>

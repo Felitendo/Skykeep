@@ -72,8 +72,9 @@
   text-align: left;
   cursor: default;
 }
-/* Rows are separated by a hairline that stops short of the selected row, as in Notes. */
-.note-item + .note-item > .note-row:not([aria-selected="true"]) {
+/* Rows are separated by a hairline that stops short of the selected row, above it and
+   below it, as in Notes. */
+.note-row + .note-row:not([aria-selected="true"], [aria-selected="true"] + .note-row) {
   box-shadow: inset 0 1px 0 var(--separator);
   border-radius: 0 0 8px 8px;
 }
