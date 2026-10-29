@@ -40,6 +40,15 @@ const offered = await page.locator(".note-bar-actions button").allInnerTexts();
 ok(offered.includes("Recover") && offered.includes("Delete Now"),
   "a deleted note offers Recover and Delete Now", `it offered ${JSON.stringify(offered)}`);
 
+// Nothing is begun in Recently Deleted: New Note is dimmed there, and Ctrl+N starts nothing.
+ok(await page.getByRole("button", { name: "New note" }).isDisabled(), "New Note is dimmed in Recently Deleted",
+  "New Note could be pressed in Recently Deleted");
+await page.locator(".note-row").first().focus();
+await page.keyboard.press("Control+n");
+await page.waitForTimeout(300);
+ok(await page.locator('[aria-label="New note"][role="textbox"]').count() === 0, "and Ctrl+N begins no note there",
+  "Ctrl+N began a note inside Recently Deleted");
+
 await page.getByRole("button", { name: "Delete Now" }).click();
 await page.locator(".confirm").getByRole("button", { name: "Cancel" }).click();
 await page.waitForTimeout(300);

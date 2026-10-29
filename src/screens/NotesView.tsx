@@ -789,6 +789,9 @@ export function NotesView() {
   );
 
   const create = useCallback(async () => {
+    // Nothing is written in Recently Deleted, as in Notes, where New Note is dimmed there: a
+    // note begun here was made inside the deleted notes, and went with them.
+    if (folder === TRASH_FOLDER) return;
     // What was typed a moment ago is handed over first, to the note it was typed in.
     editorRef.current?.flushChange();
     if (composingRef.current) await commitComposing();
@@ -1445,7 +1448,7 @@ export function NotesView() {
             aria-label="New note"
             title="New Note"
             onClick={() => void create()}
-            disabled={busy}
+            disabled={busy || folder === TRASH_FOLDER}
           >
             <SquarePen size={18} strokeWidth={2} aria-hidden="true" />
           </button>
