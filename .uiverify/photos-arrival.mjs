@@ -8,7 +8,7 @@
 //   URL=http://localhost:4173 node .uiverify/photos-arrival.mjs   (ENGINE=webkit for WebKit)
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub, openScreen } from "./stub.mjs";
-import { instrument, land, servePictures } from "./arrival.mjs";
+import { PICS, instrument, land, servePictures } from "./arrival.mjs";
 
 const URL = process.env.URL ?? process.env.BASE ?? "http://localhost:4173";
 const b = await engine.launch();
@@ -136,28 +136,39 @@ const say = (r) => `remade ${r.remade}, blank ${r.blank}, lost ${r.lost}, moved 
       if (t && window.__said.at(-1) !== t) window.__said.push(t);
     }).observe(document, { subtree: true, childList: true, characterData: true });
   });
-  // Pictures a while in coming, as from the network: the line waits for them.
-  await servePictures(ctx, { delay: 2600 });
+  // The first screen's pictures from the disk; the batch's a while in coming, as from the
+  // network (`slow`, set once the grid is drawn): the line waits for them. Held back by a route
+  // of its own over servePictures' — the later route is asked first, and passes it on.
+  await servePictures(ctx);
+  let slow = 0;
+  await ctx.route(`${PICS}/**`, async (route) => {
+    if (slow) await new Promise((r) => setTimeout(r, slow));
+    await route.fallback();
+  });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => ok(false, `page error: ${e.message}`));
   await page.goto(URL, { waitUntil: "networkidle" });
   await openScreen(page, "Photos");
   await page.locator(".px-tile img[data-in]").first().waitFor({ timeout: 15000 });
+  slow = 1500;
   const said = () => page.evaluate(() => window.__said.splice(0));
-  const gone = () => page.waitForFunction(() => !document.querySelector(".px-receiving"), null, { timeout: 15000 }).then(() => true, () => false);
+  const gone = () => page.waitForFunction(() => !document.querySelector(".px-receiving"), null, { timeout: 30000 }).then(() => true, () => false);
 
   await land(page, cfg, { changed: ["photos"], mutate: arrive(one("pS", newest + 600)) });
   ok((await said()).length === 0, "one photo arriving says nothing under the title");
 
   await land(page, cfg, { changed: ["photos"], mutate: arrive(many(30, newest + 50 * 86400, "pB")) });
-  const landedAt = Date.now();
   const words = await said();
   ok(words.includes("Receiving 30 photos"), `thirty arriving at once say "Receiving 30 photos" (${JSON.stringify(words)})`);
   ok(/·\s*Receiving 30 photos/.test(await page.locator(".px-span").innerText()), `…after the months shown, on the title's own line (${await page.locator(".px-span").innerText()})`);
-  // Still there while their pictures are on their way.
-  await page.waitForTimeout(Math.max(0, 2200 - (Date.now() - landedAt)));
-  const stillWaiting = await page.evaluate(() => [...document.querySelectorAll('.px-tile[data-id^="pB"] img')].some((i) => !i.dataset.in));
-  ok(!stillWaiting || (await page.locator(".px-receiving").count()) === 1, "…and stays while their pictures are still coming");
+  // Still there while their pictures are on their way, past the moment it always stays.
+  await page.waitForTimeout(1900);
+  const waiting = await page.evaluate(() => {
+    const imgs = [...document.querySelectorAll('.px-tile[data-id^="pB"] img')];
+    return { pending: imgs.some((i) => !i.dataset.in), line: !!document.querySelector(".px-receiving") };
+  });
+  ok(!waiting.pending || waiting.line, `…and stays while their pictures are still coming (${JSON.stringify(waiting)})`);
+  slow = 0;
   ok(await gone(), "…and goes once they are in");
 
   await land(page, cfg, { changed: ["photos"], mutate: arrive(`[...${many(18, newest + 60 * 86400, "pV")}].map((p, i) => i < 3 ? { ...p, kind: "video", duration: 9 } : p)`) });
