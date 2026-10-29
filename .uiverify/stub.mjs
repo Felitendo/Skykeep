@@ -91,6 +91,9 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
       birthday: null, notes: null, etag: null,
       methods: [{ kind: "phone", label: null, value: "+91 90000 11111" }] },
   ].concat(contactsFixture ? (window.__contactsExtra ?? []) : []);
+  // The book as the library holds it, for a test to change "on the phone" before playing a
+  // pass in with __emit.
+  window.__contactList = contactList;
   const driveItems = !driveFixture ? [] : [
     { drivewsid: "FOLDER::a", parentId: null, name: "Downloads", extension: null,
       kind: "FOLDER", size: null, childCount: 3, createdAt: 1785000000,
@@ -855,6 +858,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           // Opt-in: a search answered with its matches only, as the library answers it.
           const q = window.__contactsSearch && args?.search ? String(args.search).toLowerCase() : "";
           return q ? contactList.filter((c) => [c.firstName, c.lastName, c.company, ...c.methods.map((m) => m.value)].join(" ").toLowerCase().includes(q)) : contactList.slice();
+        }
+        // These cards alone, those still here: what a pass that named them has read.
+        case "contacts_get": {
+          if (!contactsFixture) return [];
+          const want = new Set(args?.guids ?? []);
+          return contactList.filter((c) => want.has(c.guid));
         }
         // Duplicates as contacts_merge.rs finds them, on the fixture: a shared number (its
         // last ten digits), a shared email, or the same name.

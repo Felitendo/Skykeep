@@ -6,6 +6,7 @@
 
 pub mod alarms;
 pub mod calendar;
+pub mod changes;
 pub mod contacts;
 pub mod drive;
 pub mod export;
@@ -205,6 +206,8 @@ pub struct Library {
     /// The zone all-day and floating events are read and stored in: this computer's, asked
     /// each time (`None`), so a change of zone is seen at once — or one given, for tests.
     zone: Option<jiff::tz::TimeZone>,
+    /// What a change being watched has written so far, row by row (`changing_items`).
+    watch: changes::Watch,
 }
 
 impl Library {
@@ -322,7 +325,11 @@ impl Library {
         )?;
         conn.pragma_update(None, "query_only", true)?;
         conn.busy_timeout(std::time::Duration::from_millis(250))?;
-        Ok(Self { conn, zone: None })
+        Ok(Self {
+            conn,
+            zone: None,
+            watch: changes::Watch::default(),
+        })
     }
 
     /// An in-memory library. Tests, and nothing else.
@@ -343,8 +350,13 @@ impl Library {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        let mut library = Self { conn, zone: None };
+        let mut library = Self {
+            conn,
+            zone: None,
+            watch: changes::Watch::default(),
+        };
         library.migrate()?;
+        changes::register(&library.conn, &library.watch)?;
         Ok(library)
     }
 
@@ -439,6 +451,52 @@ impl Library {
         };
         let written = self.conn.total_changes().saturating_sub(before);
         (out, written > aside.load(Ordering::Relaxed))
+    }
+
+    /// [`Library::changing`], saying besides which of each app's items the change really
+    /// touched — added, changed, removed — once rows stored again as they were cancel out
+    /// (`changes`). A screen redraws those rows rather than reading its whole list again.
+    pub fn changing_items<T>(
+        &mut self,
+        besides: &'static [&'static str],
+        apply: impl FnOnce(&mut Self) -> T,
+    ) -> (T, changes::Changed) {
+        /// The watch ended however `apply` ends, a panic included.
+        struct Unwatch(changes::Watch);
+        impl Drop for Unwatch {
+            fn drop(&mut self) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+            }
+        }
+        // Made where missing on each change, so a table made since (a walk's own) is watched
+        // too. A library whose triggers cannot be made places nothing, and is read whole.
+        let watching = changes::install(&self.conn).is_ok();
+        if watching {
+            *self
+                .watch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(changes::Tally::default());
+        }
+        let unwatch = Unwatch(std::sync::Arc::clone(&self.watch));
+        let (out, written) = self.changing(besides, apply);
+        let tally = unwatch
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let changed = match tally {
+            Some(tally) => changes::place(tally, written),
+            None => changes::Changed {
+                written,
+                items: None,
+                arranged: std::collections::BTreeSet::new(),
+            },
+        };
+        (out, changed)
     }
 
     pub fn schema_version(&self) -> Result<u32> {

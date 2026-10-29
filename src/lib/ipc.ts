@@ -54,7 +54,15 @@ export type Refresh = {
    * only for its own. Absent, every screen reads again.
    */
   changed?: string[];
+  /**
+   * For services in `changed` whose items the backend could place, which ones: a screen that
+   * takes them redraws those rows alone. A service in `changed` and not here is read whole.
+   */
+  items?: Record<string, ItemChanges>;
 };
+
+/** What a pass did to one app's items, by their ids. */
+export type ItemChanges = { added: string[]; changed: string[]; removed: string[] };
 
 /** Emitted by the backend whenever a refresh finishes, background ones included. */
 /** Where each uploading file's progress is announced. */
@@ -1112,6 +1120,8 @@ export type AddressEdit =
   | { op: "remove"; index: number };
 
 export const contactsApi = {
+  /** These cards alone, whole — those still here. */
+  get: (guids: string[]) => invoke<Contact[]>("contacts_get", { guids }),
   /** One card's addresses, part by part. */
   addresses: (guid: string) => invoke<PostalAddress[]>("contact_addresses", { guid }),
   /** Edits laid over the card's addresses at Apple; answers the list as written. */

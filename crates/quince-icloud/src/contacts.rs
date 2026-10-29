@@ -1958,6 +1958,71 @@ fn apply_whole(library: &mut quince_core::Library, book: AddressBook) -> Result<
 #[cfg(test)]
 mod list_tests {
 
+    /// The whole book read again after one card's address moved on the phone: the pass names
+    /// that card alone, and a book read again unchanged names none — so Contacts redraws one
+    /// row, or nothing, rather than reading every card again.
+    #[test]
+    fn a_whole_book_read_again_names_only_the_card_that_moved() {
+        use quince_core::contacts::{Contact, ContactDetails, ContactMethod, PostalAddress};
+        let person = |guid: &str, last: &str| Contact {
+            guid: guid.into(),
+            first_name: Some("Sam".into()),
+            middle_name: None,
+            last_name: Some(last.into()),
+            company: None,
+            is_company: false,
+            birthday: None,
+            notes: None,
+            photo_url: None,
+            photo_signature: None,
+            photo_crop: None,
+            etag: Some("e1".into()),
+            methods: vec![ContactMethod {
+                kind: "email".into(),
+                label: Some("home".into()),
+                value: format!("{guid}@example.com"),
+            }],
+        };
+        let book = |city: &str| super::AddressBook {
+            contacts: vec![person("A", "Rivera"), person("B", "Turner")],
+            lists: Vec::new(),
+            me: Some("A".into()),
+            addresses: vec![(
+                "B".into(),
+                vec![PostalAddress {
+                    label: Some("HOME".into()),
+                    city: Some(city.into()),
+                    ..PostalAddress::default()
+                }],
+            )],
+            details: vec![(
+                "A".into(),
+                ContactDetails {
+                    nickname: Some("Al".into()),
+                    ..ContactDetails::default()
+                },
+            )],
+        };
+        let mut library = quince_core::Library::in_memory().unwrap();
+        super::apply(&mut library, book("Lisbon")).unwrap();
+
+        let (_, same) = library.changing_items(&["sync_state"], |l| {
+            super::apply(l, book("Lisbon")).unwrap();
+        });
+        assert_eq!(
+            same.for_service("contacts"),
+            Some(quince_core::changes::Items::default()),
+            "the same book read again changes no card"
+        );
+
+        let (_, moved) = library.changing_items(&["sync_state"], |l| {
+            super::apply(l, book("Porto")).unwrap();
+        });
+        let items = moved.for_service("contacts").expect("placed");
+        assert_eq!(items.changed, ["B"]);
+        assert!(items.added.is_empty() && items.removed.is_empty());
+    }
+
     /// The tokens a pass keeps come back as they went in; anything else kept there (a library
     /// from before) reads as none, so the book is read whole rather than trusted.
     #[test]

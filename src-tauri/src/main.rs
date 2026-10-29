@@ -3847,12 +3847,15 @@ async fn contact_save(
 async fn contact_delete(guid: String, data: State<'_, Data>) -> UiResult<()> {
     {
         let mut library = data.0.lock().await;
+        // The one card, not the whole book: deleting fifty people read every card fifty times,
+        // each under the library's lock.
         let contact = library
-            .contacts(None)
+            .cards_by_guid(std::slice::from_ref(&guid))
             .map_err(|e| e.to_string())?
             .into_iter()
-            .find(|c| c.guid == guid)
-            .ok_or("That contact is no longer in the local library.")?;
+            .next()
+            .ok_or("That contact is no longer in the local library.")?
+            .contact;
         outbox::record_contact_delete(&mut library, &contact).map_err(|e| e.to_string())?;
     }
     outbox::kick();
@@ -4034,6 +4037,18 @@ async fn contacts_list(
 ) -> UiResult<Vec<quince_core::contacts::Card>> {
     data.0
         .read(|library| library.cards(search.as_deref()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// These cards alone, whole: what Contacts reads when a pass names the cards it changed.
+#[tauri::command]
+async fn contacts_get(
+    guids: Vec<String>,
+    data: State<'_, Data>,
+) -> UiResult<Vec<quince_core::contacts::Card>> {
+    data.0
+        .read(move |library| library.cards_by_guid(&guids))
         .await
         .map_err(|e| e.to_string())
 }
@@ -5217,6 +5232,7 @@ fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
 fn told(result: &refresh::Refresh) -> refresh::Refresh {
     refresh::Refresh {
         changed: Some(Vec::new()),
+        items: None,
         ..result.clone()
     }
 }
@@ -6471,13 +6487,14 @@ fn main() {
             spawn_auto_sync(app.handle().clone(), client);
             // Each service's part of a pass, told to the open screens as it is stored.
             let landing = app.handle().clone();
-            refresh::on_landed(move |service, changed| {
+            refresh::on_landed(move |service, changed, items| {
                 let app = landing.clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut status = refresh::status(&app.state::<Data>().0).await;
-                    // Its freshness for every screen; a read again only for its own, and only
-                    // when it stored something.
-                    status.changed = Some(if changed { vec![service] } else { Vec::new() });
+                    // Its freshness for every screen; a read again only for its own, only when
+                    // it stored something — and of only the items it changed, when known.
+                    let status =
+                        refresh::status_landed(&app.state::<Data>().0, service, changed, items)
+                            .await;
                     app.emit(SYNCED, status).ok();
                 });
             });
@@ -6675,6 +6692,7 @@ fn main() {
             notes_search,
             note_counts,
             contacts_list,
+            contacts_get,
             contact_save,
             contact_lists,
             contacts_export,

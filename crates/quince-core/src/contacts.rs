@@ -808,14 +808,27 @@ impl Library {
     /// [`Library::contacts`], each card whole: with the rest of its name and work, which a
     /// search matches too — a nickname or a job title finds the person.
     pub fn cards(&self, search: Option<&str>) -> Result<Vec<Card>> {
+        self.cards_among(search, None)
+    }
+
+    /// The cards with these ids, whole, in the same order — those still here. What a screen
+    /// reads when a pass names the cards it changed, rather than the whole book again.
+    pub fn cards_by_guid(&self, guids: &[String]) -> Result<Vec<Card>> {
+        self.cards_among(None, Some(guids))
+    }
+
+    fn cards_among(&self, search: Option<&str>, only: Option<&[String]>) -> Result<Vec<Card>> {
         let words = crate::fold::words(search.unwrap_or(""));
+        // The ids as one JSON array, matched in SQL: no statement built per count of them.
+        let only = only.map(|ids| serde_json::to_string(ids).unwrap_or_else(|_| "[]".into()));
 
         let mut stmt = self.conn.prepare(
             "SELECT c.guid, c.first_name, c.middle_name, c.last_name, c.company, c.is_company,
                     c.birthday, c.notes, c.photo_url, c.photo_signature, c.photo_crop, c.etag
-             FROM contacts c",
+             FROM contacts c
+             WHERE ?1 IS NULL OR c.guid IN (SELECT value FROM json_each(?1))",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![only], |row| {
             Ok(Contact {
                 guid: row.get(0)?,
                 first_name: row.get(1)?,
@@ -840,9 +853,10 @@ impl Library {
             std::collections::HashMap::new();
         let mut stmt = self.conn.prepare(
             "SELECT contact_guid, kind, label, value FROM contact_methods
+             WHERE ?1 IS NULL OR contact_guid IN (SELECT value FROM json_each(?1))
              ORDER BY contact_guid, position",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![only], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 ContactMethod {
@@ -859,7 +873,15 @@ impl Library {
         for contact in &mut contacts {
             contact.methods = methods.remove(&contact.guid).unwrap_or_default();
         }
-        let mut details = self.details_by_guid(None)?;
+        let mut details = if only.is_some() {
+            let mut some = std::collections::HashMap::new();
+            for c in &contacts {
+                some.extend(self.details_by_guid(Some(&c.guid))?);
+            }
+            some
+        } else {
+            self.details_by_guid(None)?
+        };
         let mut cards: Vec<Card> = contacts
             .into_iter()
             .map(|contact| Card {
@@ -1001,6 +1023,41 @@ mod tests {
                 value: format!("+91{guid}"),
             }],
         }
+    }
+
+    /// Cards asked for by id come whole — numbers and the rest of the name — and only those
+    /// still here, the same as the whole book has them.
+    #[test]
+    fn cards_by_id_are_the_cards_the_book_has() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.put_contacts(&[
+            contact("1", Some("Sam"), Some("Rivera")),
+            contact("2", Some("Maya"), Some("Chen")),
+            contact("3", Some("Jamie"), None),
+        ])
+        .unwrap();
+        lib.put_contact_details(
+            &[(
+                "2".into(),
+                ContactDetails {
+                    nickname: Some("May".into()),
+                    ..ContactDetails::default()
+                },
+            )],
+            false,
+        )
+        .unwrap();
+        let some = lib
+            .cards_by_guid(&["2".into(), "3".into(), "gone".into()])
+            .unwrap();
+        let whole = lib.cards(None).unwrap();
+        assert_eq!(some.len(), 2);
+        for card in &some {
+            let same = whole.iter().find(|c| c.contact.guid == card.contact.guid);
+            assert_eq!(Some(card), same);
+        }
+        assert_eq!(some[0].details.nickname.as_deref(), Some("May"));
+        assert!(lib.cards_by_guid(&[]).unwrap().is_empty());
     }
 
     /// A company's card goes by the company, whoever is named on it — as Contacts lists it,

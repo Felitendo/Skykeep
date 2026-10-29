@@ -16,8 +16,10 @@
 
 use crate::library_lock::LibraryLock;
 use quince_auth::Client;
+use quince_core::changes::Items;
 use quince_core::Library;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -48,6 +50,10 @@ pub struct ServiceReport {
     /// the pass, never sent with the report itself.
     #[serde(skip)]
     pub changed: bool,
+    /// Which of the app's items it changed, when that could be placed: its screen redraws those
+    /// rows alone. `None`, it reads its list whole.
+    #[serde(skip)]
+    pub items: Option<Items>,
 }
 
 /// Everything one refresh pass did.
@@ -64,7 +70,15 @@ pub struct Refresh {
     /// only for its own. Absent, every screen reads again, as it always did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed: Option<Vec<&'static str>>,
+    /// For services in `changed` whose items could be placed, which ones: added, changed and
+    /// removed, by id. A service in `changed` and not here is read whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub items: Option<BTreeMap<&'static str, Items>>,
 }
+
+/// More items than this changed in one go and the screen reads its list whole: one read of
+/// everything is quicker than asking after each.
+const MOST_ITEMS: usize = 500;
 
 /// How often a service reconciles against everything Apple has, rather than the changes
 /// since last time.
@@ -134,18 +148,18 @@ async fn context(client: &Arc<Mutex<Client>>) -> Context {
 }
 
 /// Told each time one service's part of a pass has been stored, before the rest are done,
-/// with whether it changed anything a screen shows.
-type Landed = Box<dyn Fn(&'static str, bool) + Send + Sync>;
+/// with whether it changed anything a screen shows, and which items when that is known.
+type Landed = Box<dyn Fn(&'static str, bool, Option<Items>) + Send + Sync>;
 static LANDED: std::sync::OnceLock<Landed> = std::sync::OnceLock::new();
 
 /// What to do when a service lands: set once, by the app, to tell the open screens.
-pub fn on_landed(f: impl Fn(&'static str, bool) + Send + Sync + 'static) {
+pub fn on_landed(f: impl Fn(&'static str, bool, Option<Items>) + Send + Sync + 'static) {
     let _ = LANDED.set(Box::new(f));
 }
 
 fn landed(report: &ServiceReport) {
     if let Some(f) = LANDED.get() {
-        f(report.service, report.changed);
+        f(report.service, report.changed, report.items.clone());
     }
 }
 
@@ -226,6 +240,7 @@ fn arrived((mut report, ran): (ServiceReport, bool)) -> ServiceReport {
         landed(&report);
     } else {
         report.changed = false;
+        report.items = None;
     }
     report
 }
@@ -511,6 +526,8 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                     // is asked for: the walk holds no more of it in memory than those pages, and
                     // goes as far in one pass as it did when it held all of them at once.
                     let mut changed = false;
+                    // What every round changed, put together; read whole once any round can't say.
+                    let mut items = Some(Items::default());
                     let mut rounds = 0;
                     loop {
                         rounds += 1;
@@ -550,11 +567,18 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
                         )
                         .await;
                         changed |= report.changed;
+                        if report.changed {
+                            items = match (items, report.items.take()) {
+                                (Some(all), Some(round)) => joined(all, round),
+                                _ => None,
+                            };
+                        }
                         if report.outcome != Outcome::Ok
                             || !more
                             || rounds >= quince_icloud::photos::PASS_ROUNDS
                         {
                             report.changed = changed;
+                            report.items = if changed { items } else { None };
                             break report;
                         }
                     }
@@ -594,12 +618,18 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
         .filter(|r| r.changed)
         .map(|r| r.service)
         .collect();
+    let items = reports
+        .iter()
+        .filter(|r| r.changed)
+        .filter_map(|r| Some((r.service, r.items.clone()?)))
+        .collect();
 
     Refresh {
         services: reports,
         as_of,
         took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         changed: Some(changed),
+        items: Some(items),
     }
 }
 
@@ -610,6 +640,24 @@ async fn run(client: &Arc<Mutex<Client>>, data: &LibraryLock, services: &[&str])
 pub async fn status_changed(data: &LibraryLock, changed: &[&'static str]) -> Refresh {
     Refresh {
         changed: Some(changed.to_vec()),
+        ..status(data).await
+    }
+}
+
+/// [`status`], for one service that has just landed: whose rows changed and, when known, which
+/// of its items — so its screen redraws those rows and every other screen stays as it is.
+pub async fn status_landed(
+    data: &LibraryLock,
+    service: &'static str,
+    changed: bool,
+    items: Option<Items>,
+) -> Refresh {
+    Refresh {
+        changed: Some(if changed { vec![service] } else { Vec::new() }),
+        items: Some(match items {
+            Some(items) if changed => BTreeMap::from([(service, items)]),
+            _ => BTreeMap::new(),
+        }),
         ..status(data).await
     }
 }
@@ -647,6 +695,7 @@ pub async fn status(data: &LibraryLock) -> Refresh {
                 detail: error,
                 last_synced_at: found.and_then(|h| h.last_synced_at),
                 changed: false,
+                items: None,
             }
         })
         .collect();
@@ -655,7 +704,40 @@ pub async fn status(data: &LibraryLock) -> Refresh {
         as_of,
         took_ms: 0,
         changed: None,
+        items: None,
     }
+}
+
+/// Two rounds' items as one: an item two rounds touched is counted once, as changed — its
+/// screen reads it again either way. More than are worth placing, and it is read whole.
+fn joined(mut all: Items, round: Items) -> Option<Items> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for id in all.added.iter().chain(&all.changed).chain(&all.removed) {
+        seen.insert(id.clone());
+    }
+    for (id, list) in round
+        .added
+        .into_iter()
+        .map(|id| (id, 0))
+        .chain(round.changed.into_iter().map(|id| (id, 1)))
+        .chain(round.removed.into_iter().map(|id| (id, 2)))
+    {
+        if seen.contains(&id) {
+            all.added.retain(|x| *x != id);
+            all.removed.retain(|x| *x != id);
+            if !all.changed.contains(&id) {
+                all.changed.push(id);
+            }
+            continue;
+        }
+        seen.insert(id.clone());
+        match list {
+            0 => all.added.push(id),
+            1 => all.changed.push(id),
+            _ => all.removed.push(id),
+        }
+    }
+    (all.len() <= MOST_ITEMS).then_some(all)
 }
 
 fn plural(n: usize) -> &'static str {
@@ -674,6 +756,7 @@ fn unavailable(service: &'static str, label: &'static str) -> ServiceReport {
         detail: None,
         last_synced_at: None,
         changed: false,
+        items: None,
     }
 }
 
@@ -726,6 +809,7 @@ where
             detail: Some("Signed out while this was being read.".into()),
             last_synced_at: None,
             changed: false,
+            items: None,
         };
     }
     // SQLite is synchronous: a full pass's apply (a whole photo library, every reminder and its
@@ -737,11 +821,18 @@ where
     // position land together, or — failing, or the app dying part way — none of them do.
     // Whether it stored anything beyond its position is noted on the way, so a pass that found
     // nothing new does not have every screen read its whole list again.
-    let (result, changed) = tokio::task::block_in_place(|| {
-        library.changing(BOOKKEEPING, |library| {
+    //
+    // Which items it changed is noted too — rows stored again just as they were cancel out —
+    // so the screen redraws those rows alone, and a pass that rewrote everything as it was
+    // (a whole address book read again for one card's sake) leaves the rest untouched.
+    let (result, seen) = tokio::task::block_in_place(|| {
+        library.changing_items(BOOKKEEPING, |library| {
             fetched.and_then(|value| library.atomically(|library| apply(library, value)))
         })
     });
+    let items = seen.for_service(service).filter(|i| i.len() <= MOST_ITEMS);
+    // Written, but nothing it shows is different: no screen has anything to read.
+    let changed = seen.written && items.as_ref().is_none_or(|i| !i.is_empty());
     let took = started.elapsed();
     if took > std::time::Duration::from_millis(50) {
         quiet!("{service}: stored in {} ms", took.as_millis());
@@ -754,6 +845,7 @@ where
             detail: Some(detail),
             last_synced_at: library.last_synced(service).ok().flatten(),
             changed,
+            items: if changed { items } else { None },
         },
         Err(e) => {
             let message = e.to_string();
@@ -765,6 +857,7 @@ where
                 detail: Some(message),
                 last_synced_at: library.last_synced(service).ok().flatten(),
                 changed: false,
+                items: None,
             }
         }
     }
@@ -790,6 +883,63 @@ mod tests {
             serde_json::json!([])
         );
         assert_eq!(quiet.services.len(), status(&data).await.services.len());
+    }
+
+    /// A service landing names its items with it — for its own screen alone — and one that
+    /// stored nothing new names none.
+    #[tokio::test]
+    async fn a_landing_names_the_items_it_changed() {
+        let data = LibraryLock::new(quince_core::Library::in_memory().unwrap(), None);
+        let items = Items {
+            added: vec!["A".into()],
+            changed: vec!["B".into()],
+            removed: vec![],
+        };
+        let told = status_landed(&data, "contacts", true, Some(items)).await;
+        let json = serde_json::to_value(&told).unwrap();
+        assert_eq!(json["changed"], serde_json::json!(["contacts"]));
+        assert_eq!(
+            json["items"],
+            serde_json::json!({"contacts": {"added": ["A"], "changed": ["B"], "removed": []}})
+        );
+        let whole = status_landed(&data, "contacts", true, None).await;
+        assert_eq!(
+            serde_json::to_value(&whole).unwrap()["items"],
+            serde_json::json!({}),
+            "changed, with no items named: read whole"
+        );
+        let quiet = status_landed(&data, "contacts", false, None).await;
+        assert_eq!(
+            serde_json::to_value(&quiet).unwrap()["changed"],
+            serde_json::json!([])
+        );
+    }
+
+    /// Photos' rounds put together: an item two rounds touched is one change, and too many
+    /// are read whole.
+    #[test]
+    fn rounds_join_into_one_set_of_items() {
+        let ids = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let first = Items {
+            added: ids(&["a"]),
+            changed: ids(&["b"]),
+            removed: vec![],
+        };
+        let second = Items {
+            added: ids(&["c"]),
+            changed: ids(&["a"]),
+            removed: ids(&["d"]),
+        };
+        let all = joined(first, second).unwrap();
+        assert_eq!(all.added, ids(&["c"]));
+        assert_eq!(all.changed, ids(&["b", "a"]));
+        assert_eq!(all.removed, ids(&["d"]));
+        let many = Items {
+            added: (0..=MOST_ITEMS).map(|n| n.to_string()).collect(),
+            changed: vec![],
+            removed: vec![],
+        };
+        assert_eq!(joined(Items::default(), many), None);
     }
 
     #[test]

@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, messageOf, SYNCED, type Refresh } from "./ipc";
+import { api, messageOf, SYNCED, type ItemChanges, type Refresh } from "./ipc";
 import { useScreenActive } from "./screen";
 
 /**
@@ -41,6 +41,10 @@ type Sync = {
   serviceErrors: Readonly<Record<string, string>>;
   /** When the whole-account pass in flight began (unix seconds), or null. */
   passStartedAt: number | null;
+  /** Like `revisions`, but only for changes whose items could not be named (`useItemChanges`). */
+  wholeRevisions: Readonly<Record<string, number>>;
+  /** Be told the items each pass changes in a service, when they are known. */
+  subscribe: (service: string, told: (items: ItemChanges) => void) => () => void;
 };
 
 const Context = createContext<Sync | null>(null);
@@ -53,20 +57,47 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const [syncing, setSyncing] = useState(false);
   const [revision, setRevision] = useState(0);
   const [revisions, setRevisions] = useState<Record<string, number>>({});
+  const [wholeRevisions, setWholeRevisions] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
+  /** Who is told of each service's items, as `useItemChanges` asks. */
+  const listeners = useRef(new Map<string, Set<(items: ItemChanges) => void>>());
+  const subscribe = useCallback((service: string, told: (items: ItemChanges) => void) => {
+    const mine = listeners.current.get(service) ?? new Set();
+    listeners.current.set(service, mine);
+    mine.add(told);
+    return () => {
+      mine.delete(told);
+    };
+  }, []);
   /**
    * A pass landed. With the services it changed named, only their screens read again — and
    * none, when it stored nothing new: a clean pass landing every service told every open
    * screen to read its whole list seven times. Unnamed, every screen reads again.
    */
-  const bump = useCallback((changed?: readonly string[]) => {
+  const bump = useCallback((changed?: readonly string[], items?: Readonly<Record<string, ItemChanges>>) => {
     if (Array.isArray(changed) && changed.length === 0) return;
+    const services = Array.isArray(changed) ? changed : ["all"];
     setRevision((n) => n + 1);
     setRevisions((was) => {
       const next = { ...was };
-      for (const s of Array.isArray(changed) ? changed : ["all"]) next[s] = (next[s] ?? 0) + 1;
+      for (const s of services) next[s] = (next[s] ?? 0) + 1;
       return next;
     });
+    // A service whose items are named: those who take them redraw just those rows. The rest —
+    // and every screen that reads by `revisions` — read whole, as before.
+    const whole: string[] = [];
+    for (const s of services) {
+      const named = items?.[s];
+      const told = listeners.current.get(s);
+      if (named && told?.size) for (const tell of told) tell(named);
+      else if (!named) whole.push(s);
+    }
+    if (whole.length)
+      setWholeRevisions((was) => {
+        const next = { ...was };
+        for (const s of whole) next[s] = (next[s] ?? 0) + 1;
+        return next;
+      });
   }, []);
   // A second click while a pass is running would mean two walks of the same zones.
   const inFlight = useRef(false);
@@ -153,7 +184,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     const stop = listen<Refresh>(SYNCED, (event) => {
       if (cancelled) return;
       setReport(event.payload);
-      bump(event.payload?.changed);
+      bump(event.payload?.changed, event.payload?.items);
     });
 
     /*
@@ -182,8 +213,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, [refresh, bump]);
 
   const value = useMemo(
-    () => ({ report, syncing, revision, revisions, refresh, error, refreshService, updating, serviceErrors, passStartedAt }),
-    [report, syncing, revision, revisions, refresh, error, refreshService, updating, serviceErrors, passStartedAt]
+    () => ({ report, syncing, revision, revisions, refresh, error, refreshService, updating, serviceErrors, passStartedAt, wholeRevisions, subscribe }),
+    [report, syncing, revision, revisions, refresh, error, refreshService, updating, serviceErrors, passStartedAt, wholeRevisions, subscribe]
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
@@ -215,6 +246,53 @@ export function useShownRevision(...services: string[]): number {
   const seen = useRef(revision);
   if (active) seen.current = revision;
   return seen.current;
+}
+
+/**
+ * For a screen that redraws only what a pass changed. `apply` is handed the ids of the items a
+ * pass added, changed and removed in `service`, as each lands; the revision returned moves only
+ * for a change whose items could not be named, which the screen reads whole. A screen kept out
+ * of sight holds both until it comes back, then takes them once — the items put together.
+ *
+ * Every other screen keeps reading by `useRevision`, which moves for both.
+ */
+export function useItemChanges(service: string, apply: (items: ItemChanges) => void): number {
+  const { wholeRevisions, subscribe } = useSync();
+  const whole = (wholeRevisions[service] ?? 0) + (wholeRevisions.all ?? 0);
+  const active = useScreenActive();
+  const seen = useRef(whole);
+  if (active) seen.current = whole;
+  const latest = useRef({ apply, active });
+  latest.current = { apply, active };
+  const waiting = useRef<ItemChanges | null>(null);
+  useEffect(
+    () =>
+      subscribe(service, (items) => {
+        if (latest.current.active) latest.current.apply(items);
+        else waiting.current = joinItems(waiting.current, items);
+      }),
+    [service, subscribe],
+  );
+  useEffect(() => {
+    if (!active || !waiting.current) return;
+    const items = waiting.current;
+    waiting.current = null;
+    latest.current.apply(items);
+  }, [active]);
+  return seen.current;
+}
+
+/** Two passes' items as one: an id named twice is read again once, as changed. */
+export function joinItems(a: ItemChanges | null, b: ItemChanges): ItemChanges {
+  if (!a) return b;
+  const named = new Set([...a.added, ...a.changed, ...a.removed]);
+  const twice = new Set([...b.added, ...b.changed, ...b.removed].filter((id) => named.has(id)));
+  const keep = (ids: string[]) => ids.filter((id) => !twice.has(id));
+  return {
+    added: [...keep(a.added), ...keep(b.added)],
+    changed: [...new Set([...a.changed, ...b.changed, ...twice])],
+    removed: [...keep(a.removed), ...keep(b.removed)],
+  };
 }
 
 /** "just now", "4 min ago", "yesterday" — how old the library is, in words. */
