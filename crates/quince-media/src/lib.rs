@@ -99,17 +99,23 @@ fn cut(image: image::DynamicImage, crop: Option<Crop>) -> image::DynamicImage {
 ///
 /// # Errors
 /// When the bytes are not a HEIF image libheif can decode.
+pub fn heic_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let picture = heic_rgb(bytes)?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92)
+        .encode_image(&picture)
+        .map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
 #[cfg(all(windows, target_env = "gnu"))]
-pub fn heic_to_jpeg(_bytes: &[u8]) -> Result<Vec<u8>, String> {
+fn heic_rgb(_bytes: &[u8]) -> Result<image::RgbImage, String> {
     Err("HEIC pictures are not decoded in this build.".into())
 }
 
-/// A HEIC picture made a JPEG (see the variant above for the one build where it is not).
-///
-/// # Errors
-/// When the bytes are not a HEIF image libheif can decode.
+/// A HEIC picture's pixels, upright (see the variant above for the one build where it is not).
 #[cfg(not(all(windows, target_env = "gnu")))]
-pub fn heic_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
+fn heic_rgb(bytes: &[u8]) -> Result<image::RgbImage, String> {
     use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
     let lib = LibHeif::new();
     let ctx = HeifContext::read_from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -127,12 +133,45 @@ pub fn heic_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
     for y in 0..h as usize {
         rgb.extend_from_slice(&plane.data[y * stride..y * stride + row]);
     }
-    let picture = image::RgbImage::from_raw(w, h, rgb).ok_or("the picture had the wrong size")?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92)
-        .encode_image(&picture)
+    image::RgbImage::from_raw(w, h, rgb).ok_or_else(|| "the picture had the wrong size".to_string())
+}
+
+/// A photo as a PNG, upright: what Copy puts on the clipboard. PNG because it is lossless and
+/// is the picture type every desktop's apps take from the clipboard; HEIC never goes there —
+/// most apps cannot read it. A HEIC is decoded here (libheif turns it as the file says);
+/// anything else is turned the way its camera wrote it, since a PNG carries no orientation of
+/// its own. Fast compression: a 12-megapixel photo is ready in well under a second, and the
+/// bytes are only held while they are on the clipboard.
+///
+/// # Errors
+/// When the bytes are not a picture this can decode.
+pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageDecoder;
+    let picture = if is_heif(bytes) {
+        image::DynamicImage::ImageRgb8(heic_rgb(bytes)?)
+    } else {
+        let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())?
+            .into_decoder()
+            .map_err(|e| e.to_string())?;
+        let orientation = decoder
+            .orientation()
+            .unwrap_or(image::metadata::Orientation::NoTransforms);
+        let mut picture = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+        picture.apply_orientation(orientation);
+        picture
+    };
+    let mut out = Vec::new();
+    picture
+        .write_with_encoder(PngEncoder::new_with_quality(
+            &mut out,
+            CompressionType::Fast,
+            FilterType::Adaptive,
+        ))
         .map_err(|e| e.to_string())?;
-    Ok(out.into_inner())
+    Ok(out)
 }
 
 /// RGB rows (`stride` bytes apart) made a JPEG, as heic_to_jpeg makes one.
@@ -674,6 +713,60 @@ mod tests {
         assert!(left[0] > 200 && left[2] < 60, "{left:?}");
         // Never made larger than it is.
         assert!(super::fit(jpg.get_ref(), 800).unwrap().is_none());
+    }
+
+    /// Copy's picture from a HEIC: a PNG, whole and in its colours (red left, blue right — a
+    /// 64×32 HEIC made with libheif's own heif-enc).
+    #[cfg(not(all(windows, target_env = "gnu")))]
+    #[test]
+    fn a_heic_is_copied_as_a_png() {
+        let heic = include_bytes!("../fixtures/two.heic");
+        assert!(super::is_heif(heic));
+        let png = super::to_png(heic).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let back = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(back.dimensions(), (64, 32));
+        let (left, right) = (back.get_pixel(8, 16).0, back.get_pixel(56, 16).0);
+        assert!(left[0] > 200 && left[2] < 60, "{left:?}");
+        assert!(right[2] > 200 && right[0] < 60, "{right:?}");
+    }
+
+    /// A JPEG the camera wrote on its side comes out upright: a PNG has no orientation to say
+    /// it with, so the turn is made in the pixels.
+    #[test]
+    fn a_jpeg_is_copied_upright() {
+        let img = image::RgbImage::from_fn(40, 20, |x, _| {
+            if x < 20 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
+        let mut jpg = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        // An EXIF block saying "turn a quarter clockwise" (orientation 6), put after SOI.
+        let exif: &[u8] =
+            b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0";
+        let len = u16::try_from(exif.len() + 2).unwrap().to_be_bytes();
+        let mut turned = jpg[..2].to_vec();
+        turned.extend_from_slice(&[0xFF, 0xE1, len[0], len[1]]);
+        turned.extend_from_slice(exif);
+        turned.extend_from_slice(&jpg[2..]);
+        let back = image::load_from_memory(&super::to_png(&turned).unwrap())
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(back.dimensions(), (20, 40));
+        // Turned clockwise, the red left half is now the top.
+        let top = back.get_pixel(10, 5).0;
+        assert!(top[0] > 200 && top[2] < 60, "{top:?}");
+        assert!(super::to_png(b"not a picture").is_err());
     }
 
     use super::*;

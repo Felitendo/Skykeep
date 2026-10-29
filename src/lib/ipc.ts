@@ -234,6 +234,9 @@ export const api = {
    * the most compatible. Answers where it was saved. */
   photoDownload: (id: string, want?: "originals" | "highestQuality" | "mostCompatible") =>
     invoke<string>("photo_download", { id, want: want ?? null }),
+  /** A photo on the clipboard as a PNG. On Linux it is put there by the app and nothing comes
+   * back; elsewhere the PNG comes back for the window to put there. */
+  photoCopy: (id: string) => invoke<ArrayBuffer>("photo_copy", { id }),
   /** Title and caption together, as Info saves them. */
   photoSetText: (id: string, title: string, caption: string) => invoke<Photo>("photo_set_text", { id, title, caption }),
   photoSetRating: (id: string, rating: number) => invoke<Photo>("photo_set_rating", { id, rating }),

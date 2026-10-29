@@ -28,7 +28,7 @@ import { Arriving, EmptyState } from "../components/EmptyState";
 import { SearchField } from "../components/SearchField";
 import { PaneTitle } from "../components/PaneTitle";
 import { useArriving, useRevision } from "../lib/sync";
-import { toast, toastSaved, useErrorToast, useToastClearance } from "../components/Toast";
+import { dismissToast, toast, toastSaved, useErrorToast, useToastClearance } from "../components/Toast";
 import { UploadPanel } from "./photos/UploadPanel";
 import { RowMenu, type MenuEntry } from "../components/RowMenu";
 import { Portal } from "../components/Portal";
@@ -1577,6 +1577,8 @@ export function PhotosView() {
       else if (e.key === "Escape") close();
       // Cmd/Ctrl + "." closes too, as icloud.com's one-up view does.
       else if ((e.ctrlKey || e.metaKey) && e.key === ".") close();
+      // Ctrl+C: the photo shown, on the clipboard — unless words in the Info are selected.
+      else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "c" && current && current.kind !== "video" && !window.getSelection()?.toString()) void copy([current.id]);
       // Z: fit, or the photo at full size about its middle.
       else if (e.key.toLowerCase() === "z" && !e.ctrlKey && !e.metaKey && current?.kind !== "video") {
         const box = pan.current?.getBoundingClientRect();
@@ -1937,6 +1939,9 @@ export function PhotosView() {
       if (!selectAll && !t?.closest?.(".px") && t !== document.body) return;
       if (ctrl && e.key.toLowerCase() === "a") {
         setChosen(new Set(list));
+      } else if (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "c" && selected.length && place !== "recentlyDeleted") {
+        // Ctrl+C: the selected photo on the clipboard, to paste into any app.
+        void copy(selected);
       } else if (e.key === "Escape" && chosen.size) {
         setChosen(new Set());
       } else if ((e.key === "Enter" || e.key === " ") && t?.closest?.(".px-tile[data-index]") && !t.closest(".px-tile")!.matches('[aria-selected="true"]')) {
@@ -2159,6 +2164,8 @@ export function PhotosView() {
           ]
         : [
             { label: p.favorite ? "Unfavorite" : "Favorite", run: () => void change(p, "favorite", !p.favorite) },
+            // A picture to paste anywhere; a video has none to give.
+            ...(p.kind !== "video" ? [{ label: "Copy", run: () => void copy([p.id]) }] : []),
             { label: "Download", run: () => void download(p) },
             { label: "More Download Options", run: () => setOptions([p]) },
             { label: "Start Slideshow", run: () => startShow(p) },
@@ -2359,6 +2366,41 @@ export function PhotosView() {
       await api.photoPlay(p.id);
     } catch (e) {
       setError(messageOf(e));
+    }
+  };
+
+  /**
+   * Copy, as in Photos: the photo on the clipboard as a picture, to paste into any app. One
+   * picture — the clipboard holds one, on Linux and Windows alike — so with several chosen it
+   * is the first photo of them (a video is never copied). Quiet: "Copied" once it is there, and
+   * a word while it is made only when that takes a moment (a large HEIC, or one not here yet).
+   */
+  const copying = useRef(0);
+  const copy = async (ids: string[]) => {
+    const mine = ++copying.current;
+    let picked: Photo | undefined;
+    try {
+      picked = (await store.load(ids)).find((x) => x.kind !== "video");
+    } catch (e) {
+      setError(messageOf(e));
+      return;
+    }
+    if (!picked) return;
+    let waitNote = 0;
+    const slow = window.setTimeout(() => {
+      waitNote = toast({ message: "Copying photo", duration: null });
+    }, 300);
+    try {
+      const png = await api.photoCopy(picked.id);
+      // Not on Linux, where the app has put it there itself: the webview's own clipboard, which
+      // takes a PNG as the system's picture.
+      if (png.byteLength) await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]);
+      if (mine === copying.current) toast({ message: ids.length > 1 ? "Copied the first photo" : "Copied", tone: "done" });
+    } catch (e) {
+      if (mine === copying.current) setError(messageOf(e));
+    } finally {
+      window.clearTimeout(slow);
+      if (waitNote) dismissToast(waitNote);
     }
   };
 

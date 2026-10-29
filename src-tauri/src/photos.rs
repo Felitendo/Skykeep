@@ -2050,6 +2050,89 @@ pub async fn photos_counts(app: AppHandle, data: State<'_, Data>) -> UiResult<Ve
         .map_err(|e| e.to_string())
 }
 
+/// A photo put on the clipboard as a PNG, as Photos' Copy puts one, to paste into any app with
+/// nothing saved first. Made from the best picture already on this computer — the original when
+/// it is here (a HEIC decoded, never put there as HEIC), else the whole picture kept for the
+/// viewer — and fetched only when neither is. Read-only: nothing is asked of iCloud but the
+/// picture itself. Decoded and made a PNG off the window's thread.
+///
+/// On Linux it is offered on the clipboard here, through GTK — the window's own toolkit, which
+/// speaks Wayland's clipboard and X11's alike — and nothing comes back. Elsewhere the PNG comes
+/// back for the window to put there (the webview's own clipboard, which on Windows and macOS
+/// takes a PNG as the system's picture type).
+#[tauri::command]
+pub async fn photo_copy(
+    id: String,
+    app: AppHandle,
+    data: State<'_, Data>,
+) -> UiResult<tauri::ipc::Response> {
+    let photo = data
+        .0
+        .lock()
+        .await
+        .photo(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("That photo is no longer in the library.")?;
+    if photo.kind == quince_core::photos::Kind::Video {
+        return Err("A video can’t be copied as a picture.".into());
+    }
+    let (original, full) = (
+        cache_path(&app, &id, Size::Original),
+        cache_path(&app, &id, Size::Full),
+    );
+    let png_of = |path: PathBuf| async move {
+        crate::photo_cache::hold(&path);
+        let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+        crate::cpu::run(move || quince_media::to_png(&bytes)).await?
+    };
+    if tokio::fs::metadata(&full).await.is_err() && tokio::fs::metadata(&original).await.is_err() {
+        // Neither here yet: the whole picture, as the viewer would fetch it (a HEIC's comes with
+        // its original, which is then the one used).
+        cached(&app, &id, Size::Full).await?;
+    }
+    // The original first; one this cannot decode (a RAW) gives way to the whole picture.
+    let from_original = if tokio::fs::metadata(&original).await.is_ok() {
+        png_of(original).await
+    } else {
+        Err(String::new())
+    };
+    let png = match from_original {
+        Ok(png) => png,
+        Err(_) => png_of(cached(&app, &id, Size::Full).await?).await?,
+    };
+    #[cfg(target_os = "linux")]
+    {
+        offer_png(&app, png).await?;
+        Ok(tauri::ipc::Response::new(Vec::new()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(tauri::ipc::Response::new(png))
+}
+
+/// A PNG offered on the desktop's clipboard through GTK, on the thread GTK lives on. Held by
+/// the clipboard until something else is copied; a clipboard manager keeps it past that.
+#[cfg(target_os = "linux")]
+async fn offer_png(app: &AppHandle, png: Vec<u8>) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
+        let targets = [gtk::TargetEntry::new(
+            "image/png",
+            gtk::TargetFlags::empty(),
+            0,
+        )];
+        let offered = clipboard.set_with_data(&targets, move |_, selection, _| {
+            selection.set(&gdk::Atom::intern("image/png"), 8, &png);
+        });
+        let _ = tx.send(offered);
+    })
+    .map_err(|e| e.to_string())?;
+    match rx.await {
+        Ok(true) => Ok(()),
+        _ => Err("The clipboard didn’t take the photo.".into()),
+    }
+}
+
 /// A photo saved to Downloads, as icloud.com's Download Options choose the file: the original
 /// as captured, the highest quality (edits included), or the most compatible (JPEG or MP4). Both
 /// records are read fresh — their links expire — and the file is streamed to a part file, named

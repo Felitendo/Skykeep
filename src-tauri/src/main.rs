@@ -6676,6 +6676,7 @@ fn main() {
             photos::photo_set_date,
             photos::photos_search,
             photos::photo_download,
+            photos::photo_copy,
             note_table_add_row,
             note_table_remove,
             note_attachment_info,

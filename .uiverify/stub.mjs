@@ -821,6 +821,14 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "window_tint": (window.__tints ??= []).push(args.rgb.join(",")); return null;
         case "window_fullscreen": (window.__fullscreen ??= []).push(args.on); return args.on;
         case "photo_download": (window.__downloads ??= []).push(args); return `/home/test/Downloads/IMG_${args.id}.JPG`;
+        // Linux's answer (the app put it on the clipboard: nothing back) unless a test hands the
+        // PNG back as Windows and macOS do (__copyPng), after __copyDelay ms when one is set.
+        case "photo_copy": {
+          (window.__copies ??= []).push(args.id);
+          if (window.__copyDelay) await new Promise((r) => setTimeout(r, window.__copyDelay));
+          if (window.__copyFail) throw "The clipboard didn’t take the photo.";
+          return window.__copyPng ? Uint8Array.from(atob(window.__copyPng), (c) => c.charCodeAt(0)).buffer : new ArrayBuffer(0);
+        }
         // Each file is answered at once with where it stands; a test plays the rest in with __emit.
         case "photos_upload": {
           (window.__photoUploads ??= []).push(args.paths);
