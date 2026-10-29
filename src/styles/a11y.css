@@ -90,6 +90,7 @@
   --glass: var(--bg);
   --glass-thick: var(--sheet);
   --glass-blur: none;
+  --glass-frost: var(--sheet); --glass-regular-filter: none; --glass-clear-filter: none; --glass-clear: var(--sheet);
   --text-2: #3a3a3e;
   --text-3: #4a4a4f;
   --separator: rgba(0, 0, 0, 0.42);

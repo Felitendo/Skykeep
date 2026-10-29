@@ -82,20 +82,56 @@
      top, where the light catches it. The rim is what makes it read as a material and not
      as a translucent rectangle. */
   --glass: rgba(255, 255, 255, 0.58);
-  /* Menus, popovers and sheets: frosted nearly to opaque. Over text, anything thinner reads
-     the words beneath — and WebKitGTK, Quince's engine on Linux, does not always run the
-     blur that would hide them (measured on his machine: sharp text through a menu). */
-  --glass-thick: rgba(248, 248, 250, 0.96);
   --glass-blur: blur(30px) saturate(190%);
+
+  /* The two tiers Apple names (WWDC25, "Meet Liquid Glass"), each a fill and the live blur
+     laid under it, and the frost that stands in for them where a blur would cost frames.
+     Content (lists, editors, grids, the photo) takes none of them, and glass is never laid
+     on glass.
+
+       Regular — what appears over the window for a moment and goes: menus, pop-ups,
+       popovers, sheets, Photos' Info. Primary and secondary text keep 4.5:1 over anything
+       at all behind it, black or white; tertiary text over the window's own colours (4:1
+       over pure black or white).
+       Clear — glyph-only controls floating over a photo (the viewer's arrows): thinner, so
+       the picture shows through; its glyphs keep 3:1 over black.
+       Frost — chrome that stays up while what is under it scrolls: the sidebar, toolbars'
+       capsules, toasts, the upload tray. Frosted nearly to opaque, never blurred, in every
+       engine: a blur is worked out again on every frame of the scroll beneath it, and
+       measured (.uiverify/glass-frames.mjs) Photos' capsules blurred took its scroll from
+       16.7 to 200ms a frame at p95 in Chromium.
+
+     WebKitGTK (Linux, the engine he uses) gets no live blur at all — it blurs what is
+     behind again on every frame anything under it moves, builds the layer on the frame a
+     menu appears (the flash that keeps menus from animating), and does not always draw the
+     blur (measured on his machine: sharp text through a menu) — so there Regular and Clear
+     are frosted too, as Reduce Transparency draws them. lib/engine.ts marks the window
+     `data-engine="gtk"`; a block below does the rest, changing only the alphas. */
+  --glass-rgb: 248 248 250;
+  --glass-thick-a: 0.9;
+  --glass-thick: rgb(var(--glass-rgb) / var(--glass-thick-a));
+  --glass-frost: rgb(var(--glass-rgb) / 0.96);
+  --glass-regular-filter: blur(24px) saturate(180%);
+  --glass-clear-a: 0.64;
+  --glass-clear-rgb: 255 255 255;
+  --glass-clear: rgb(var(--glass-clear-rgb) / var(--glass-clear-a));
+  --glass-clear-filter: blur(14px) saturate(170%);
   --glass-specular: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.9), inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.45);
   --glass-edge: rgba(0, 0, 0, 0.08);
   /* Floating glass casts a soft, wide shadow — it sits above the window, not on it. */
   --glass-lift: 0 8px 30px rgba(0, 0, 0, 0.13), 0 1px 3px rgba(0, 0, 0, 0.08);
-  /* A menu, popover or sheet: thick glass, rim, edge and lift — the whole recipe. Menus
-     take it without the live blur: a blurred layer is a compositing layer, and WebKitGTK
+  /* A menu, popover or sheet: regular glass, rim, edge and lift — the whole recipe. In
+     WebKitGTK it takes no live blur: a blurred layer is a compositing layer, and WebKitGTK
      building one on a menu's first frame is the flash that made menus open without
      animation in the first place. */
   --glass-float: var(--glass-specular), 0 0 0 var(--hairline) var(--glass-edge), var(--glass-lift);
+
+  /* Concentric corners (WWDC25, "Get to know the new design system"): a shape inside
+     another takes the outer radius less the padding between them, so the two curves share
+     a centre. A menu's and a pop-up's 5px inset gives its highlighted line 7px corners; a
+     list inside a floating card (the upload tray) its 6px inset, 6px. */
+  --pad-float: 5px;
+  --r-float-inner: calc(var(--r-float) - var(--pad-float));
 
   /* Motion. Apple's interface moves on springs, not curves: these are SwiftUI's own,
      computed from the spring itself (response and bounce) rather than eyeballed, and each
@@ -248,7 +284,8 @@
     --shadow-sheet: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
     --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
     --glass: rgba(40, 40, 44, 0.56);
-    --glass-thick: rgba(38, 38, 42, 0.96);
+    --glass-rgb: 38 38 42;
+    --glass-clear-rgb: 30 30 32;
     --glass-specular: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.2), inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.1);
     --glass-edge: rgba(0, 0, 0, 0.5);
     --glass-lift: 0 10px 36px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
@@ -275,7 +312,8 @@
     --shadow-sheet: 0 18px 50px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
     --shadow-field: inset 0 1px 1px rgba(0, 0, 0, 0.25);
     --glass: rgba(40, 40, 44, 0.56);
-    --glass-thick: rgba(38, 38, 42, 0.96);
+    --glass-rgb: 38 38 42;
+    --glass-clear-rgb: 30 30 32;
     --glass-specular: inset 0 var(--hairline) 0 rgba(255, 255, 255, 0.2), inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.1);
     --glass-edge: rgba(0, 0, 0, 0.5);
     --glass-lift: 0 10px 36px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
@@ -325,7 +363,16 @@ body {
 /* Where the engine has no backdrop blur, glass would be a see-through panel over text.
    Opaque instead, as Reduce Transparency draws it. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  :root:root:root { --glass: var(--bg); --glass-thick: var(--sheet); }
+  :root:root:root { --glass: var(--bg); --glass-thick: var(--sheet); --glass-frost: var(--sheet); --glass-regular-filter: none; --glass-clear-filter: none; --glass-clear: var(--sheet); }
+}
+
+/* WebKitGTK: the same surfaces, frosted nearly to opaque, with no live blur (see "The two
+   tiers" above). Only the alphas change; the colours stay each appearance's own. */
+:root:root[data-engine="gtk"] {
+  --glass-thick-a: 0.96;
+  --glass-clear-a: 0.9;
+  --glass-regular-filter: none;
+  --glass-clear-filter: none;
 }
 
 /* A control gives under a press and springs back, as Apple's do — buttons, icons, pop-up
@@ -357,7 +404,8 @@ body {
    and merely copying its look. */
 @media (prefers-reduced-transparency: reduce) {
   /* Outranks the dark set, which is chosen by a theme as well as by the system. */
-  :root:root:root { --glass: var(--bg); --glass-thick: var(--sheet); --glass-blur: none; --glass-specular: none; }
+  :root:root:root { --glass: var(--bg); --glass-thick: var(--sheet); --glass-blur: none; --glass-specular: none;
+    --glass-frost: var(--sheet); --glass-regular-filter: none; --glass-clear-filter: none; --glass-clear: var(--sheet); }
 }
 
 @media (prefers-contrast: more) {
@@ -365,6 +413,7 @@ body {
     --glass: var(--bg);
     --glass-thick: var(--sheet);
     --glass-blur: none;
+    --glass-frost: var(--sheet); --glass-regular-filter: none; --glass-clear-filter: none; --glass-clear: var(--sheet);
     --field-edge: rgba(0, 0, 0, 0.55);
     --separator: rgba(0, 0, 0, 0.42);
   }

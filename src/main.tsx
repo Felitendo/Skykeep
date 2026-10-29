@@ -13,8 +13,10 @@ import { applyTheme, followContrast, followTheme, storedTheme } from "./lib/them
 import { keepTinted } from "./lib/tint";
 import { fadeSheetsIn } from "./lib/fade";
 import { followClick } from "./lib/follow";
+import { markEngine } from "./lib/engine";
 
 // Before the first paint, so the window opens in the appearance chosen.
+markEngine();
 applyTheme(storedTheme());
 followTheme();
 followContrast();
