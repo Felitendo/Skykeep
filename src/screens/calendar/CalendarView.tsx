@@ -953,7 +953,10 @@ export function CalendarView() {
     if (gone) await restore(gone);
   }, [undo, restore]);
   const moveEvent = useCallback(
-    (e: CalendarEvent, startsAt: number, endsAt: number) => void save({ ...draftOf(e), startsAt, endsAt }),
+    // `allDay` when it was carried between the all-day row and the hours: Undo puts it back as
+    // it was, all-day or not, as for any change.
+    (e: CalendarEvent, startsAt: number, endsAt: number, allDay = e.allDay) =>
+      void save({ ...draftOf(e), startsAt, endsAt, allDay }),
     [save]
   );
   /** Dragged to another day in Month: the same clock time, that many days on. */
@@ -2321,14 +2324,18 @@ type Drag =
   /** `column` is the day the event was taken from, so it can be carried only to days shown. */
   /** `startY` is where it was pressed in the grid's own height (the pointer plus the scroll),
    *  so the hours scrolled past while it is held count as hours moved. */
-  | { kind: "move"; event: CalendarEvent; column: number; startX: number; startY: number; dx: number; dMinutes: number }
+  /** `allDay` while it is held over the all-day row: let go there, it becomes all-day on the
+   *  day it is over, as in Calendar. */
+  | { kind: "move"; event: CalendarEvent; column: number; startX: number; startY: number; dx: number; dMinutes: number; allDay?: boolean }
   /** Dragging an event's bottom edge: its end moves, its start stays — or, by its top edge
    *  (`top`), its start moves and its end stays. */
   | { kind: "resize"; event: CalendarEvent; startY: number; dMinutes: number; top?: boolean }
   /** A bar in the all-day row carried to other days: `from` and `to` are its first and last
    *  columns shown, and `dx` how many days it has been carried — or, by one of its ends
-   *  (`edge`), how many days that end has been stretched. */
-  | { kind: "days"; event: CalendarEvent; from: number; to: number; startX: number; dx: number; edge?: "start" | "end" };
+   *  (`edge`), how many days that end has been stretched. `into` while the whole bar is held
+   *  over the hours: the day and quarter hour it would start at, let go there — an hour long,
+   *  no longer all-day, as in Calendar. */
+  | { kind: "days"; event: CalendarEvent; from: number; to: number; startX: number; dx: number; edge?: "start" | "end"; into?: { column: number; minutes: number } };
 
 const TimeGrid = memo(function TimeGrid({
   days,
@@ -2354,7 +2361,8 @@ const TimeGrid = memo(function TimeGrid({
   canWrite: (calendarGuid: string) => boolean;
   onOpen: (e: CalendarEvent, at: Anchor) => void;
   onCreate: (startsAt: number, endsAt: number, allDay: boolean, at: Anchor) => void;
-  onMove: (e: CalendarEvent, startsAt: number, endsAt: number) => void;
+  /** `allDay` given when the event was carried into the all-day row or out of it. */
+  onMove: (e: CalendarEvent, startsAt: number, endsAt: number, allDay?: boolean) => void;
   onPickDay: (d: Date) => void;
   /** A new event being named in the popover, held on the grid where it was made — in the
    *  all-day row when it is all-day. */
@@ -2396,7 +2404,14 @@ const TimeGrid = memo(function TimeGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [reminders, daysKey]
   );
-  const lanes = Math.max(1, eventLanes + Math.max(0, ...dayReminders.map((l) => l.length)));
+  const reminderLanes = Math.max(0, ...dayReminders.map((l) => l.length));
+  // A timed event held over the all-day row is drawn there, in a lane of its own below the
+  // rest, so it covers nothing while it is carried.
+  const carriedUp = drag?.kind === "move" && drag.allDay ? drag : null;
+  const lanes = Math.max(1, eventLanes + reminderLanes + (carriedUp ? 1 : 0));
+  /** An all-day bar held down over the hours, and where it would start. */
+  const carriedDown = drag?.kind === "days" && drag.into ? drag : null;
+  const alldayEl = useRef<HTMLDivElement | null>(null);
 
   // Opened, it shows the working day rather than midnight — as Calendar does. Only when it
   // opens: stepping to the next week or day keeps the hours scrolled to, as Calendar keeps
@@ -2475,16 +2490,24 @@ const TimeGrid = memo(function TimeGrid({
         : current.edge === "start"
           ? Math.min(current.to - current.from, Math.max(-current.from, want))
           : Math.min(days.length - 1 - current.from, Math.max(-current.from, want));
-      if (dx === current.dx) return;
-      next = { ...current, dx };
+      // The whole bar held down over the hours: the quarter hour under the pointer.
+      const hours = scroller.current?.getBoundingClientRect();
+      const into = !current.edge && hours && clientY > hours.top
+        ? { column: at.column, minutes: Math.min(Math.floor(at.minutes / 15) * 15, 23 * 60) }
+        : undefined;
+      if (dx === current.dx && into?.column === current.into?.column && into?.minutes === current.into?.minutes) return;
+      next = { ...current, dx, into };
     } else {
       const el = columnsEl.current;
       const width = el ? el.getBoundingClientRect().width / days.length : 1;
       // Carried only as far as the days on screen: past them it went nowhere visible and
       // landed on a day no one could see.
       const dx = Math.min(days.length - 1 - current.column, Math.max(-current.column, Math.round((clientX - current.startX) / width)));
-      next = { ...current, dx, dMinutes: snap(((clientY + scrolled() - current.startY) / HOUR) * 60) };
-      if (next.dx === current.dx && next.dMinutes === current.dMinutes) return;
+      // Held up over the all-day row, it would become all-day there.
+      const row = alldayEl.current?.getBoundingClientRect();
+      const allDay = !!row && clientY < row.bottom;
+      next = { ...current, dx, dMinutes: allDay ? current.dMinutes : snap(((clientY + scrolled() - current.startY) / HOUR) * 60), allDay };
+      if (next.dx === current.dx && next.dMinutes === current.dMinutes && next.allDay === !!current.allDay) return;
     }
     setDragNow(next);
   };
@@ -2499,6 +2522,12 @@ const TimeGrid = memo(function TimeGrid({
       if (done.to - done.from > 15) {
         onCreate(onClockOf(done.day, done.from), onClockOf(done.day, done.to), false, besideColumn(done.column, clientY));
       }
+    } else if (done.kind === "days" && done.into) {
+      // Let go over the hours: an hour from the quarter hour it was let go at, on that day.
+      swallowClick.current = true;
+      window.setTimeout(() => (swallowClick.current = false), 0);
+      const day = days[done.into.column];
+      onMove(done.event, onClockOf(day, done.into.minutes), onClockOf(day, done.into.minutes + 60), false);
     } else if (done.kind === "days") {
       // Let go where it was taken, it was a click: the bar's own click opens it.
       if (done.dx !== 0) {
@@ -2517,6 +2546,10 @@ const TimeGrid = memo(function TimeGrid({
         if (done.top) onMove(done.event, done.event.startsAt + done.dMinutes * 60, done.event.endsAt);
         else onMove(done.event, done.event.startsAt, done.event.endsAt + done.dMinutes * 60);
       }
+    } else if (done.allDay) {
+      // Let go over the all-day row: all-day on the day it is over.
+      const day = midnight(days[done.column + done.dx]);
+      onMove(done.event, seconds(day), seconds(addDays(day, 1)), true);
     } else if (done.dx !== 0 || done.dMinutes !== 0) {
       const shift = done.dMinutes * 60;
       const moved = (t: number) => {
@@ -2552,7 +2585,9 @@ const TimeGrid = memo(function TimeGrid({
     const edge = () => {
       frame = 0;
       const el = scroller.current;
-      if (!el || !last || !dragRef.current || dragRef.current.kind === "days") return;
+      // Held over the all-day row, it is going there, not to an earlier hour.
+      const held = dragRef.current;
+      if (!el || !last || !held || held.kind === "days" || (held.kind === "move" && held.allDay)) return;
       const r = el.getBoundingClientRect();
       const ZONE_PX = 28;
       // Toward the edge it was carried to, never the other way: an event taken near the top
@@ -2685,6 +2720,7 @@ const TimeGrid = memo(function TimeGrid({
         <span className="cx-gutter cx-allday-label">all-day</span>
         <div
           className="cx-allday-lanes"
+          ref={alldayEl}
           // A double-click on a day's free part of the row makes an all-day event on it, as in
           // Calendar.
           onDoubleClick={(e) => {
@@ -2729,7 +2765,7 @@ const TimeGrid = memo(function TimeGrid({
                 e.preventDefault();
                 onMenu(s.event, { x: e.clientX, y: e.clientY });
               }}
-              className={`cx-bar-event${s.continuesLeft ? " from-before" : ""}${s.continuesRight ? " to-after" : ""}${picked === s.event.guid ? " is-picked" : ""}${carried ? " is-moving" : ""}`}
+              className={`cx-bar-event${s.continuesLeft ? " from-before" : ""}${s.continuesRight ? " to-after" : ""}${picked === s.event.guid ? " is-picked" : ""}${carried ? " is-moving" : ""}${carried?.into ? " is-away" : ""}`}
               style={
                 {
                   "--cal": tint(calendars.get(s.event.calendarGuid)),
@@ -2739,8 +2775,9 @@ const TimeGrid = memo(function TimeGrid({
                 } as React.CSSProperties
               }
               // Carried to other days, as a bar in Month is; held still, a click opens it.
+              // In Day too: there is no other day to carry it to, but there are the hours.
               onPointerDown={(e) => {
-                if (e.button !== 0 || days.length < 2 || !mine) return;
+                if (e.button !== 0 || !mine) return;
                 e.preventDefault();
                 setDragNow({ kind: "days", event: s.event, from: s.from, to: s.to, startX: e.clientX, dx: 0 });
               }}
@@ -2775,6 +2812,21 @@ const TimeGrid = memo(function TimeGrid({
               <span className="cx-reminder-title">{r.title}</span>
             </span>
           )))}
+          {carriedUp && (
+            <span
+              className="cx-bar-event is-moving is-carried"
+              style={
+                {
+                  "--cal": tint(calendars.get(carriedUp.event.calendarGuid)),
+                  left: `calc(${((carriedUp.column + carriedUp.dx) / days.length) * 100}% + 2px)`,
+                  width: `calc(${100 / days.length}% - 4px)`,
+                  top: `${4 + (eventLanes + reminderLanes) * LANE}px`,
+                } as React.CSSProperties
+              }
+            >
+              {carriedUp.event.title}
+            </span>
+          )}
         </div>
       </div>
 
@@ -2827,7 +2879,7 @@ const TimeGrid = memo(function TimeGrid({
                     <button
                       key={p.event.guid}
                       data-event={p.event.guid}
-                      className={`cx-block${moving || sizing ? " is-moving" : ""}${p.length < 45 ? " is-short" : ""}${picked === p.event.guid ? " is-picked" : ""}`}
+                      className={`cx-block${moving || sizing ? " is-moving" : ""}${moving?.allDay ? " is-away" : ""}${p.length < 45 ? " is-short" : ""}${picked === p.event.guid ? " is-picked" : ""}`}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         onMenu(p.event, { x: e.clientX, y: e.clientY });
@@ -2919,6 +2971,22 @@ const TimeGrid = memo(function TimeGrid({
                   >
                     <span className="cx-block-title">{pending.title.trim() || "New Event"}</span>
                     <span className="cx-block-time">{clock(pending.startsAt)}</span>
+                  </span>
+                )}
+                {/* An all-day bar held over the hours: the hour it would become. */}
+                {carriedDown?.into?.column === column && (
+                  <span
+                    className="cx-block is-moving is-carried"
+                    style={
+                      {
+                        "--cal": tint(calendars.get(carriedDown.event.calendarGuid)),
+                        top: `${(carriedDown.into.minutes / 60) * HOUR}px`,
+                        height: `${HOUR - 2}px`,
+                      } as React.CSSProperties
+                    }
+                  >
+                    <span className="cx-block-title">{carriedDown.event.title}</span>
+                    <span className="cx-block-time">{clock(onClockOf(d, carriedDown.into.minutes))}</span>
                   </span>
                 )}
                 {/* Drawn once the drag is one, never for a press held still: a
