@@ -351,6 +351,11 @@ const draftOf = (e: CalendarEvent): Draft => ({
   timezone: e.timezone,
 });
 
+/** Where a saved event ends: an all-day one at least a day on, a timed one never before its
+ *  start. A timed event may end as it starts — a deadline sent in an invitation does — and
+ *  lengthening it to a quarter hour changed it on every device whenever its title was edited. */
+const endOf = (d: Draft) => Math.max(d.endsAt, d.allDay ? addDaysIn(ZONE, d.startsAt, 1) : d.startsAt);
+
 /** `YYYY-MM-DDTHH:mm` and `YYYY-MM-DD` for the date inputs, in local time. */
 const pad = (n: number) => String(n).padStart(2, "0");
 /** The zone an event's times are read in: its own, or this computer's (all-day events are
@@ -769,8 +774,16 @@ export function CalendarView() {
   const whichEvents = (verb: "change" | "delete") =>
     new Promise<EventScope | null>((answer) => setAsking({ verb, answer: (scope) => { setAsking(null); answer(scope); } }));
 
+  /**
+   * What ⌘Z (Ctrl+Z here) takes back, as Edit ▸ Undo does in Calendar: the last event deleted,
+   * or the last change to one — a drag, a resize, a nudge, an edit — put back as it was. One
+   * step, and only for an event of its own: one day of a repeating event, or a change of its
+   * alerts or repeat, is not something putting the old fields back would undo.
+   */
+  const lastAct = useRef<{ kind: "delete"; gone: CalendarEvent & { alerts: Promise<number[]> } } | { kind: "change"; before: Draft } | null>(null);
+
   const save = useCallback(
-    async (d: Draft, close = false) => {
+    async (d: Draft, close = false, undoing = false) => {
       const occurrence = Boolean(d.guid && d.guid.includes("__"));
       // A repeat belongs to the series, so changing it is a change to all of it.
       const scope = occurrence ? (d.repeatChanged ? "all" : await whichEvents("change")) : null;
@@ -778,7 +791,17 @@ export function CalendarView() {
       // Closed the moment it is saved, drawn as saved, never waiting on Apple: kept open until
       // Apple answered, the popover hung for a second or two on every Done.
       if (close) setDraft(null);
-      return write(async () => {
+      const was = d.guid ? events.find((e) => e.guid === d.guid) : undefined;
+      const undoable = !undoing && !occurrence && !d.alertsChanged && !d.repeatChanged && was &&
+        !was.guid.startsWith("quince:") && !was.guid.startsWith("pending:") && (
+          was.startsAt !== d.startsAt || was.endsAt !== endOf(d) || was.title !== (d.title.trim() || "New Event") ||
+          (was.location ?? "") !== d.location.trim() || (was.notes ?? "") !== d.notes.trim() ||
+          was.allDay !== d.allDay || was.calendarGuid !== d.calendarGuid || (was.url ?? "") !== (d.url?.trim() ?? "") ||
+          (!d.allDay && was.timezone !== d.timezone));
+      const step = undoable ? { kind: "change" as const, before: draftOf(was) } : null;
+      if (step) lastAct.current = step;
+      else if (undoing) lastAct.current = null;
+      const saved = await write(async () => {
         await api.eventSave({
           ...(scope ? { scope } : {}),
           guid: d.guid,
@@ -786,7 +809,7 @@ export function CalendarView() {
           title: d.title.trim() || "New Event",
           location: d.location.trim() || null,
           startsAt: d.startsAt,
-          endsAt: Math.max(d.endsAt, (d.allDay ? addDaysIn(ZONE, d.startsAt, 1) : d.startsAt + 900)),
+          endsAt: endOf(d),
           allDay: d.allDay,
           timezone: d.allDay ? ZONE : (d.timezone ?? ZONE),
           notes: d.notes.trim() || null,
@@ -800,7 +823,7 @@ export function CalendarView() {
           return [...rows, {
             guid: `pending:${d.startsAt}:${d.title}`, calendarGuid: d.calendarGuid,
             title: d.title.trim() || "New Event", location: d.location.trim() || null,
-            startsAt: d.startsAt, endsAt: Math.max(d.endsAt, (d.allDay ? addDaysIn(ZONE, d.startsAt, 1) : d.startsAt + 900)),
+            startsAt: d.startsAt, endsAt: endOf(d),
             allDay: d.allDay, timezone: d.allDay ? ZONE : (d.timezone ?? ZONE),
             url: d.url?.trim() || null, notes: d.notes.trim() || null, etag: null,
           }];
@@ -817,10 +840,13 @@ export function CalendarView() {
         } : e.guid === d.guid ? {
           ...e, calendarGuid: d.calendarGuid, title: d.title.trim() || "New Event",
           location: d.location.trim() || null, startsAt: d.startsAt,
-          endsAt: Math.max(d.endsAt, (d.allDay ? addDaysIn(ZONE, d.startsAt, 1) : d.startsAt + 900)),
+          endsAt: endOf(d),
           allDay: d.allDay, notes: d.notes.trim() || null,
         } : e);
       });
+      // Turned down, there is nothing of it to take back.
+      if (!saved && step && lastAct.current === step) lastAct.current = null;
+      return saved;
     },
     [write, events]
   );
@@ -861,19 +887,26 @@ export function CalendarView() {
       )) {
         // Undo makes the event again; for one day out of a series that would be a new event,
         // not the day put back, so it is not offered.
-        if (!occurrence && gone) setUndo({ ...gone, alerts });
+        if (!occurrence && gone) {
+          setUndo({ ...gone, alerts });
+          lastAct.current = { kind: "delete", gone: { ...gone, alerts } };
+        }
       }
     },
     [events, write]
   );
+  /** A deleted event made again as it was, its alerts with it (its guests are not this app's
+   *  to invite). */
+  const restore = useCallback(async (gone: CalendarEvent & { alerts: Promise<number[]> }) => {
+    if (lastAct.current?.kind === "delete" && lastAct.current.gone.guid === gone.guid) lastAct.current = null;
+    const alerts = await gone.alerts;
+    await save({ ...draftOf(gone), guid: null, alerts, alertsChanged: alerts.length > 0 }, false, true);
+  }, [save]);
   const takeBack = useCallback(async () => {
     const gone = undo;
     setUndo(null);
-    // Made again as it was, its alerts with it (its guests are not this app's to invite).
-    if (!gone) return;
-    const alerts = await gone.alerts;
-    await save({ ...draftOf(gone), guid: null, alerts, alertsChanged: alerts.length > 0 });
-  }, [undo, save]);
+    if (gone) await restore(gone);
+  }, [undo, restore]);
   const moveEvent = useCallback(
     (e: CalendarEvent, startsAt: number, endsAt: number) => void save({ ...draftOf(e), startsAt, endsAt }),
     [save]
@@ -1211,6 +1244,17 @@ export function CalendarView() {
         if (plain && e.key === "Escape") { setPicked(null); return; }
       }
       if (command && k === "v" && clip && !inMenuNow) { e.preventDefault(); paste(clip); return; }
+      // ⌘Z: the last deletion or change taken back (fields have their own undo, above).
+      if (command && k === "z" && !inMenuNow) {
+        e.preventDefault();
+        const last = lastAct.current;
+        lastAct.current = null;
+        if (last?.kind === "delete") {
+          if (undo?.guid === last.gone.guid) setUndo(null);
+          void restore(last.gone);
+        } else if (last) void save(last.before, false, true);
+        return;
+      }
       // ⇧⌘T, Go to Date…, as in Calendar's View menu.
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && k === "t") {
         e.preventDefault();
