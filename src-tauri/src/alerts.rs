@@ -25,6 +25,19 @@ const LONGEST_SLEEP: Duration = Duration::from_secs(10 * 60);
 /// left, so opening Quince after a week away is not a wall of old alerts.
 const STILL_WORTH_SAYING: i64 = 6 * 60 * 60;
 
+/// The latest after its event's start an alert is looked for: a day, past the 9 AM of an
+/// all-day event's "on the day" alert and any after-the-start alert set on a Mac.
+const LATEST_AFTER_START: i64 = 86_400;
+
+/// The earliest start of an event whose alerts are looked at, at `at`. As far ahead as the
+/// earliest alert Calendar offers — a week before — and a day more is looked at too (two days
+/// ahead, a week-before alert never rang). Back, as far as an alert can ring after its event
+/// starts and still be shown: an all-day event's "on the day" alert rings at 9 AM, nine hours
+/// after its midnight start, and looking six hours back the event had gone before it rang.
+fn coming_from(at: i64) -> i64 {
+    at - STILL_WORTH_SAYING - LATEST_AFTER_START
+}
+
 /// Snooze, as the phone offers it.
 const SNOOZE: i64 = 60 * 60;
 
@@ -392,9 +405,7 @@ pub fn spawn_events(app: AppHandle) {
                 let data = app.state::<Data>();
                 let library = data.0.lock().await;
                 library
-                    // As far ahead as the earliest alert Calendar offers — a week before —
-                    // and a day more: looking two days ahead, a week-before alert never rang.
-                    .events_starting_between(at - STILL_WORTH_SAYING, at + 8 * 86_400)
+                    .events_starting_between(coming_from(at), at + 8 * 86_400)
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|(guid, _)| !guid.starts_with("quince:"))
@@ -465,27 +476,11 @@ pub fn spawn_events(app: AppHandle) {
 /// "Dentist" — "In 15 minutes · 4:30 PM", as Calendar words an alert.
 fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64) {
     std::thread::spawn(move || {
-        let when = jiff::Timestamp::from_second(event.starts_at)
-            .map(|t| {
-                t.to_zoned(jiff::tz::TimeZone::system())
-                    .strftime("%-I:%M %p")
-                    .to_string()
-            })
-            .unwrap_or_default();
-        let lead = match minutes {
-            0 => "Now".to_string(),
-            m if m % 1440 == 0 => {
-                format!("In {} day{}", m / 1440, if m == 1440 { "" } else { "s" })
-            }
-            m if m % 60 == 0 => format!("In {} hour{}", m / 60, if m == 60 { "" } else { "s" }),
-            m if m > 0 => format!("In {m} minutes"),
-            m => format!("Started {} minutes ago", -m),
-        };
-        let mut body = if event.all_day {
-            lead
-        } else {
-            format!("{lead} · {when}")
-        };
+        let zone = jiff::tz::TimeZone::system();
+        let twelve = crate::appearance::system_time_locale()
+            .as_deref()
+            .is_none_or(twelve_hour);
+        let mut body = event_lead(&event, minutes, &zone, twelve);
         if let Some(place) = event.location.as_deref().filter(|p| !p.trim().is_empty()) {
             body.push_str(&format!("\n{place}"));
         }
@@ -530,8 +525,140 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
     });
 }
 
+/// What an event's alert says under its title. A timed event: how long until it starts and
+/// when, on this computer's clock — "In 15 minutes · 4:30 PM", or "16:30" where the clock is a
+/// 24-hour one. An all-day event has no time: the day, as Calendar says it — "Today",
+/// "Tomorrow", "In 2 days" — counted from the day the alert rings. Its 9 AM alerts had read
+/// "In 15 hours" and "Started 540 minutes ago".
+fn event_lead(
+    event: &quince_core::calendar::Event,
+    minutes: i64,
+    zone: &jiff::tz::TimeZone,
+    twelve: bool,
+) -> String {
+    let local = |s: i64| {
+        jiff::Timestamp::from_second(s)
+            .ok()
+            .map(|t| t.to_zoned(zone.clone()))
+    };
+    if event.all_day {
+        let days = local(event.starts_at)
+            .zip(local(event.starts_at - minutes * 60))
+            .and_then(|(day, rung)| rung.date().until(day.date()).ok())
+            .map_or(0, |span| i64::from(span.get_days()));
+        return match days {
+            ..=0 => "Today".to_string(),
+            1 => "Tomorrow".to_string(),
+            n => format!("In {n} days"),
+        };
+    }
+    let when = local(event.starts_at)
+        .map(|t| {
+            t.strftime(if twelve { "%-I:%M %p" } else { "%H:%M" })
+                .to_string()
+        })
+        .unwrap_or_default();
+    let lead = match minutes {
+        0 => "Now".to_string(),
+        m if m % 1440 == 0 => {
+            format!("In {} day{}", m / 1440, if m == 1440 { "" } else { "s" })
+        }
+        m if m % 60 == 0 => format!("In {} hour{}", m / 60, if m == 60 { "" } else { "s" }),
+        m if m > 0 => format!("In {m} minutes"),
+        m => format!("Started {} minutes ago", -m),
+    };
+    format!("{lead} · {when}")
+}
+
+/// Whether a locale's clock is a twelve-hour one: CLDR's preferred hour cycle, by region. A
+/// language alone (`fr`) or a region not listed reads a 24-hour clock.
+fn twelve_hour(tag: &str) -> bool {
+    const TWELVE: &[&str] = &[
+        "AE", "AG", "AL", "AS", "AU", "BB", "BD", "BH", "BM", "BN", "BS", "BT", "CA", "CO", "DM",
+        "DZ", "EG", "EH", "ER", "ET", "FJ", "FM", "GH", "GM", "GU", "GY", "HK", "IN", "IQ", "JM",
+        "JO", "KH", "KI", "KN", "KP", "KR", "KW", "KY", "LB", "LC", "LR", "LS", "LY", "MH", "MO",
+        "MP", "MR", "MW", "MY", "NA", "NZ", "OM", "PA", "PG", "PH", "PK", "PR", "PS", "PW", "QA",
+        "SA", "SB", "SD", "SL", "SO", "SS", "SY", "SZ", "TC", "TD", "TN", "TO", "TT", "TW", "UM",
+        "US", "VC", "VG", "VI", "VU", "WS", "YE", "ZM",
+    ];
+    // French Canada keeps a 24-hour clock where English Canada does not.
+    if tag.starts_with("fr-CA") {
+        return false;
+    }
+    tag.split('-')
+        .skip(1)
+        .find(|part| part.len() == 2 && part.chars().all(|c| c.is_ascii_uppercase()))
+        .is_some_and(|region| TWELVE.contains(&region))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_all_day_alert_names_the_day_not_the_hours() {
+        let zone = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
+        // Midnight on 2 November 2026 in Kolkata.
+        let midnight = jiff::civil::date(2026, 11, 2)
+            .to_zoned(zone.clone())
+            .unwrap()
+            .timestamp()
+            .as_second();
+        let event = quince_core::calendar::Event {
+            title: "Trip".into(),
+            starts_at: midnight,
+            ends_at: midnight + 86_400,
+            all_day: true,
+            ..Default::default()
+        };
+        assert_eq!(super::event_lead(&event, -540, &zone, true), "Today");
+        assert_eq!(super::event_lead(&event, 900, &zone, true), "Tomorrow");
+        assert_eq!(super::event_lead(&event, 2340, &zone, true), "In 2 days");
+        assert_eq!(super::event_lead(&event, 9540, &zone, true), "In 7 days");
+    }
+
+    #[test]
+    fn a_timed_alert_says_when_on_this_computers_clock() {
+        let zone = jiff::tz::TimeZone::get("Asia/Kolkata").unwrap();
+        let start = jiff::civil::date(2026, 11, 2)
+            .at(16, 30, 0, 0)
+            .to_zoned(zone.clone())
+            .unwrap()
+            .timestamp()
+            .as_second();
+        let event = quince_core::calendar::Event {
+            starts_at: start,
+            ends_at: start + 3_600,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::event_lead(&event, 15, &zone, true),
+            "In 15 minutes · 4:30 PM"
+        );
+        assert_eq!(
+            super::event_lead(&event, 60, &zone, false),
+            "In 1 hour · 16:30"
+        );
+        assert_eq!(super::event_lead(&event, 0, &zone, false), "Now · 16:30");
+    }
+
+    #[test]
+    fn an_on_the_day_alert_is_looked_for_after_its_event_starts() {
+        let midnight = 1_793_000_000;
+        // 9 AM, when the alert rings, and 2 PM, five hours late after a sleep: the event that
+        // started at midnight is still among those looked at.
+        for at in [midnight + 9 * 3_600, midnight + 14 * 3_600] {
+            assert!(super::coming_from(at) <= midnight);
+        }
+    }
+
+    #[test]
+    fn the_clock_follows_the_locale_region() {
+        assert!(super::twelve_hour("en-US"));
+        assert!(super::twelve_hour("en-IN"));
+        assert!(!super::twelve_hour("en-GB"));
+        assert!(!super::twelve_hour("de-DE"));
+        assert!(!super::twelve_hour("fr-CA"));
+        assert!(!super::twelve_hour("fr"));
+    }
 
     #[test]
     fn alerts_of_events_no_longer_coming_are_let_go_of() {
