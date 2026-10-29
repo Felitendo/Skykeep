@@ -77,15 +77,83 @@ export function fadeOut(el: HTMLElement | null, done: () => void, duration = 120
  */
 export function fadeSheetsIn() {
   const sheets = ".modal-sheet";
+  // Popovers drawn at the top of the page grow out of what opened them (`grow`); menus and
+  // the search's results are simply there, as a Mac's are.
+  const popovers = ".cx-popover, .format-panel";
+  watchPresses();
   new MutationObserver((changes) => {
     for (const change of changes) {
       for (const node of change.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
         if (node.matches(sheets)) fadeIn(node, { duration: 140 });
         node.querySelectorAll<HTMLElement>(sheets).forEach((el) => fadeIn(el, { duration: 140 }));
+        if (node.matches(popovers)) grow(node);
       }
     }
   }).observe(document.body, { childList: true });
+}
+
+/* ---- a popover growing out of what opened it ----------------------------------------------
+ *
+ * As a macOS 26 popover does: from just smaller than itself, at the side nearest the control
+ * or the spot that was clicked, to whole, fading in as it goes — 140ms, decelerating. Drawn by
+ * the page frame by frame on opacity and `scale` only (the reasons are at the top of this
+ * file), so nothing is laid out and nothing beside it moves; set before its first frame is
+ * painted, so it never shows whole first. Only as it opens: moved to a new place while open,
+ * it simply is there. Instant under Reduce Motion. */
+
+/** Where the last press was, and when: what a popover opened by it grows out of. */
+let lastPress: { x: number; y: number; at: number } | null = null;
+let watching = false;
+function watchPresses() {
+  if (watching) return;
+  watching = true;
+  document.addEventListener("pointerdown", (e) => { lastPress = { x: e.clientX, y: e.clientY, at: performance.now() }; }, true);
+}
+
+/** What opened a popover appearing now: the press just made, or else the control with the
+    keyboard's focus (a popover opened from the keyboard). */
+function opener(): { x: number; y: number } | null {
+  if (lastPress && performance.now() - lastPress.at < 800) return lastPress;
+  const el = document.activeElement;
+  if (!(el instanceof HTMLElement) || el === document.body) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+export function grow(el: HTMLElement | null, from: { x: number; y: number } | null = opener()) {
+  if (!el) return;
+  const duration = token("--motion-pop", 140);
+  if (reduced() || duration <= 0) return;
+  const start0 = token("--pop-from", 0.96);
+  // Out of the point of the popover nearest what opened it: a popover below its button grows
+  // down from its top edge under the button; one beside an event, out of the side facing it.
+  const r = el.getBoundingClientRect();
+  const ox = from ? Math.min(Math.max(from.x, r.left), r.right) - r.left : r.width / 2;
+  const oy = from ? Math.min(Math.max(from.y, r.top), r.bottom) - r.top : 0;
+  cancelAnimationFrame(running.get(el) ?? 0);
+  el.style.transformOrigin = `${ox.toFixed(1)}px ${oy.toFixed(1)}px`;
+  el.style.opacity = "0";
+  el.style.scale = String(start0);
+  const finish = () => {
+    el.style.opacity = "";
+    el.style.scale = "";
+    el.style.transformOrigin = "";
+    running.delete(el);
+  };
+  const start = performance.now();
+  const step = (now: number) => {
+    const t = Math.max(0, Math.min(1, (now - start) / duration));
+    if (t >= 1) return finish();
+    // Decelerating (cubic ease-out): most of the way at once, settling gently.
+    const k = 1 - (1 - t) ** 3;
+    el.style.opacity = String(Math.min(1, k * 1.4).toFixed(3));
+    el.style.scale = (start0 + (1 - start0) * k).toFixed(4);
+    running.set(el, requestAnimationFrame(step));
+  };
+  running.set(el, requestAnimationFrame(step));
+  // Whole on time even where no frames are drawn (a window out of sight draws none).
+  window.setTimeout(() => { if (running.has(el)) { cancelAnimationFrame(running.get(el)!); finish(); } }, duration + 250);
 }
 
 /* ---- arrival: content that came in from another device ------------------------------------
@@ -101,12 +169,12 @@ export function fadeSheetsIn() {
  *   <ReceivingLine>      the calm line while many things arrive at once (components/ReceivingLine)
  */
 
-const reduced = () =>
+export const reduced = () =>
   typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /** A timing token in ms (or px, for a distance), as tokens.css sets it — 0 under Reduce
     Motion — or `fallback`. */
-function token(name: string, fallback: number): number {
+export function token(name: string, fallback: number): number {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const n = parseFloat(v);
   if (!Number.isFinite(n)) return fallback;

@@ -14,6 +14,7 @@ import { keepTinted } from "./lib/tint";
 import { fadeSheetsIn } from "./lib/fade";
 import { followClick } from "./lib/follow";
 import { markEngine } from "./lib/engine";
+import { slideThumbs } from "./lib/thumb";
 
 // Before the first paint, so the window opens in the appearance chosen.
 markEngine();
@@ -22,6 +23,7 @@ followTheme();
 followContrast();
 keepTinted();
 fadeSheetsIn();
+slideThumbs();
 
 /*
  * Every link goes the one way out: through `followClick` (lib/follow.ts), which checks what

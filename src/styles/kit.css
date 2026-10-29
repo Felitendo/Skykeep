@@ -541,6 +541,9 @@ textarea.field { padding-block: 5px; resize: vertical; }
 
 /* A segmented control: one recessed track, a raised cap over the chosen segment. */
 .segmented {
+  /* The thumb that slides between segments (lib/thumb.ts) is drawn inside it, under them. */
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   padding: 2px;
   gap: 2px;
@@ -568,6 +571,25 @@ textarea.field { padding-block: 5px; resize: vertical; }
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14), 0 0 0 var(--hairline) var(--glass-edge);
 }
 .segment:focus-visible { outline: var(--focus-ring); outline-offset: 1px; }
+/* The thumb on its way from one segment to the next (lib/thumb.ts): the chosen segment's cap,
+   drawn by the group under the segments while the segment's own waits, hidden. */
+.segmented.is-sliding > .segment { position: relative; z-index: 1; }
+.segmented.is-sliding > .segment[aria-pressed="true"] { background: none; box-shadow: none; }
+.segmented.is-sliding::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: var(--thumb-y);
+  left: 0;
+  width: var(--thumb-w);
+  height: var(--thumb-h);
+  translate: var(--thumb-x) 0;
+  border-radius: var(--r-pill);
+  background: var(--sheet);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14), 0 0 0 var(--hairline) var(--glass-edge);
+  pointer-events: none;
+}
+.toolbar-group.segmented.is-sliding::before { background: var(--fill-selected); box-shadow: none; }
 
 /* The switch, as macOS draws it: a capsule in the accent when on, the knob sliding on the
    snappy spring (a small thing moving a short way, its own layer only). */

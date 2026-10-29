@@ -185,6 +185,13 @@
   /* A small thing turning or sliding in answer to a click — a disclosure chevron, a switch's
      knob, a progress fill: one timing for all of them. */
   --motion-small: 140ms;
+  /* Drawn by the page frame by frame, never handed to the compositor (lib/fade.ts says why):
+     a popover growing out of what opened it — from 96%, fading in (lib/fade.ts grow) — and a
+     segmented control's thumb sliding to the segment chosen (lib/thumb.ts). Menus have
+     neither: a Mac's menu is simply there. */
+  --motion-pop: 140ms;
+  --pop-from: 0.96;
+  --motion-thumb: 160ms;
 
   /* Arrival: what came in from another device (lib/fade.ts arrive / leave, kit.css
      .receiving-line). Small elements only, opacity and transform only, no highlight — the
@@ -392,7 +399,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-hover: 0ms; --motion-fade: 0ms; --motion-small: 0ms; --press-out: 0ms;
-    --arrive-in-d: 0ms; --leave-d: 0ms; }
+    --arrive-in-d: 0ms; --leave-d: 0ms; --motion-pop: 0ms; --motion-thumb: 0ms; }
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;

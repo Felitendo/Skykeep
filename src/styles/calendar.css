@@ -592,11 +592,11 @@
   -webkit-backdrop-filter: var(--glass-regular-filter);
   backdrop-filter: var(--glass-regular-filter);
   box-shadow: var(--glass-float);
-  /* Opacity and a small lift only, on the compositor: scaling from the corner read as a
-     jump toward the click, and re-ran on every re-anchor. */
-  /* A short fade and nothing else — no movement, no layer hint — as a macOS popover. */
-  /* No opening animation, as a menu has none: a fade over a large shadowed layer is what
-     WebKitGTK drew with a glitch. It is simply there. */
+  /* Grows out of the event that opened it as it appears (lib/fade.ts grow): drawn by the
+     page frame by frame, from 96% only and from the edge facing the click, once — never on a
+     re-anchor. History: a compositor (CSS) fade over this large shadowed layer was what
+     WebKitGTK drew with a glitch, and scaling from the corner, further and again on each
+     re-anchor, read as a jump toward the click. */
 }
 @keyframes cx-pop { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .cx-popover { animation: none; } }

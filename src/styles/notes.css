@@ -328,7 +328,8 @@ textarea.note-title::placeholder { color: var(--text-3); }
 
 /* ---- Aa ----------------------------------------------------------------------------
    As icloud.com and the Mac draw it: the four marks in a row, the styles beneath, each set
-   the way it sets a line, the current one ticked. Opens without animation, as menus do. */
+   the way it sets a line, the current one ticked. A popover: it grows out of the Aa that
+   opened it, drawn by the page (lib/fade.ts grow), never a CSS animation. */
 .format-panel {
   position: fixed;
   z-index: 60;

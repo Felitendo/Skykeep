@@ -7,7 +7,7 @@ import { useActiveRef } from "../../lib/screen";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { fitSrc } from "../../lib/ipc";
 import { Portal } from "../../components/Portal";
-import { fadeIn } from "../../lib/fade";
+import { grow } from "../../lib/fade";
 
 export type MonthCover = { label: string; year: number; month: number; cover: { id: string } };
 
@@ -35,8 +35,8 @@ export function JumpTo({
   const shown = months.filter((m) => m.year === year).sort((a, b) => a.month - b.month);
 
   // Once, before its first frame is painted: run after it, the picker showed whole for a frame
-  // and then began its fade from nothing — a flash.
-  useLayoutEffect(() => fadeIn(box.current, { duration: 140 }), []);
+  // and then began its fade from nothing — a flash. It grows out of the button that opened it.
+  useLayoutEffect(() => grow(box.current, { x: at.left + at.width / 2, y: at.top + at.height / 2 }), []);
   const live = useActiveRef();
   useEffect(() => {
     box.current?.focus({ preventScroll: true });

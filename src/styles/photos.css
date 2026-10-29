@@ -877,7 +877,7 @@
   box-shadow: var(--glass-float);
   overflow: hidden;
   outline: none;
-  /* Fades in frame by frame from the page (fadeIn), never a CSS animation: animated by the
+  /* Grows in frame by frame from the page (grow), never a CSS animation: animated by the
      engine's compositor it glitched on his screen as it opened. */
 }
 .px-jump-years { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px; border-right: var(--hairline) solid var(--separator); overflow-y: auto; }
