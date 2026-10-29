@@ -8,7 +8,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { pickOpen } from "../lib/pick";
-import { ChevronLeft, ChevronRight, Ellipsis, GalleryThumbnails, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Ellipsis, GalleryThumbnails, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, SquareStack, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -128,10 +128,15 @@ const timeLeft = (p: Photo, compact: boolean) => {
   return { words: `${n} ${unit}${n === 1 ? "" : "s"}${compact ? "" : " left"}`, soon: ms < 4 * 86_400_000 };
 };
 
+/** A video's length as Photos writes it on its tile: "0:07", "4:32", "1:02:05". */
 const clock = (s: number | null) => {
   if (!s) return "";
-  const m = Math.floor(s / 60);
-  return `${m}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+  // Whole seconds first: the seconds rounded on their own read 59.6 s as "0:60", and an
+  // hour-long video ran on in minutes ("75:03"). A clip under half a second is still "0:01".
+  const t = Math.max(1, Math.round(s));
+  const two = (n: number) => String(n).padStart(2, "0");
+  const [h, m, sec] = [Math.floor(t / 3600), Math.floor((t % 3600) / 60), t % 60];
+  return h ? `${h}:${two(m)}:${two(sec)}` : `${m}:${two(sec)}`;
 };
 
 /** A photo's frame when fitted: its own shape, as large as the square cell lets it be. */
@@ -375,7 +380,9 @@ const Tile = memo(function Tile({
       // A photo is chosen as an option in a listbox is: aria-selected belongs to an option.
       role="option"
       className="px-tile"
-      aria-label={`${photo.filename ?? "Photo"}, ${new Date(photo.takenAt * 1000).toLocaleString()}`}
+      aria-label={`${photo.filename ?? "Photo"}, ${new Date(photo.takenAt * 1000).toLocaleString()}${
+        photo.burst && (photo.burstCount ?? 0) > 1 ? `, burst of ${photo.burstCount} photos` : ""
+      }`}
       data-id={photo.id}
       data-index={index}
       aria-selected={selected}
@@ -441,6 +448,14 @@ const Tile = memo(function Tile({
           <span className="px-badge px-duration">
             <Play size={10} strokeWidth={0} fill="currentColor" aria-hidden="true" />
             {clock(photo.duration)}
+          </span>
+        )}
+        {/* A burst is one photo in the grid, as in Photos: its chosen shot, marked as a stack
+            with how many it holds, so it is known for one before it is opened. */}
+        {photo.burst && (photo.burstCount ?? 0) > 1 && (
+          <span className="px-badge px-burst">
+            <SquareStack size={11} strokeWidth={2.2} aria-hidden="true" />
+            {photo.burstCount}
           </span>
         )}
         {left && <span className={`px-badge px-left${soon ? " is-soon" : ""}`}>{left}</span>}

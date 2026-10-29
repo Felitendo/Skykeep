@@ -24,7 +24,8 @@ await ctx.addInitScript((v) => {
   // A selfie Live Photo's moving part: a quarter turn and a mirror, as the front camera writes it.
   window.__turn = [0, 1, 1, 0];
   // p2 is a burst's chosen photo (of 3), p4 a Live Photo.
-  window.__photoExtra = { p2: { burst: "B1", burstPick: true, burstCount: 3 }, p4: { kind: "live" } };
+  // p3 a video just over an hour long, 0.4 s short of 1:01:00: written "1:01:00", never "60:60".
+  window.__photoExtra = { p2: { burst: "B1", burstPick: true, burstCount: 3 }, p3: { duration: 3659.6 }, p4: { kind: "live" } };
 }, base);
 const page = await ctx.newPage();
 page.on("pageerror", (e) => { console.log(`FAIL page error: ${e.message}`); process.exitCode = 1; });
@@ -35,6 +36,15 @@ let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 const tiles = () => page.locator(".px-tile").count();
 const before = await tiles();
+
+// In the grid: the burst is one tile, marked as a stack with how many it holds; the video
+// shows its length, whole.
+const badge = page.locator('.px-tile[data-id="p2"] .px-burst');
+ok((await badge.count()) === 1 && (await badge.innerText()).trim() === "3" && (await badge.locator("svg").count()) === 1, "a burst's tile is marked as a stack of 3");
+ok(/burst of 3 photos/.test(await page.locator('.px-tile[data-id="p2"]').getAttribute("aria-label")), "…and says so to a screen reader");
+ok((await page.locator(".px-burst").count()) === 1, "no other tile is marked as a burst");
+const length = (await page.locator('.px-tile[data-id="p3"] .px-duration').innerText()).trim();
+ok(length === "1:01:00", `a video over an hour shows hours, minutes and seconds (${length})`);
 
 await page.locator('.px-tile[data-id="p2"]').dblclick();
 await page.waitForTimeout(600);

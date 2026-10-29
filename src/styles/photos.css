@@ -217,6 +217,8 @@
   font-variant-numeric: tabular-nums;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
 }
+/* The stack a burst is marked with: shadowed as the count beside it is, to read on any photo. */
+.px-burst svg { filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6)); }
 .px-heart { position: absolute; left: 6px; bottom: 6px; color: #fff; filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6)); }
 
 /* ---- the viewer: a dark stage, the photo fitted to it -------------------------------------- */
