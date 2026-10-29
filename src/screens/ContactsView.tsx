@@ -1052,7 +1052,7 @@ export function ContactsView() {
         )}
         <div className="contact-rows-wrap">
         <ul
-          className={`contact-rows${listFocused ? " is-focused" : ""}`}
+          className={`contact-rows${listFocused ? " is-focused" : ""}${letters.length > 1 && overflowing ? " has-index" : ""}`}
           ref={rowsRef}
           // A list box of people: the open card is the selected option, or every picked one.
           role="listbox"

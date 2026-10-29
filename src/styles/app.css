@@ -657,7 +657,7 @@
 }
 
 /* The list and the letter index beside it share what is left of the column's height. */
-.contact-rows-wrap { display: flex; flex: 1 1 auto; min-height: 0; }
+.contact-rows-wrap { position: relative; display: flex; flex: 1 1 auto; min-height: 0; }
 /* With no one to show, the line saying so takes the column, centred as Notes centres its own —
    after the rows' wrapper, which otherwise took the height and left it at the foot. */
 .contact-rows-wrap:has(~ .empty-state) { flex: none; }
@@ -665,13 +665,20 @@
 .contact-rows { position: relative; flex: 1 1 auto; min-width: 0; list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
 /* A long address book lays out and paints only the rows in view. */
 .contact-rows > li:not(.contact-letter) { content-visibility: auto; contain-intrinsic-size: auto 38px; }
+/* The letters ride the list's own trailing edge, as the phone and icloud.com draw them: one
+   narrow strip over the rows' inset, not a column of its own beside the list's scroll bar.
+   As its own column, with the bar between, it took about thirty pixels from every name. The
+   strip is how a long list is travelled, so the bar gives way to it while it is there. */
+.contact-rows.has-index { padding-right: 15px; scrollbar-width: none; }
+.contact-rows.has-index::-webkit-scrollbar { display: none; }
 .contact-index {
-  display: flex; flex-direction: column; justify-content: center; flex: none;
-  width: 16px; margin-left: 2px; padding: 4px 0;
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 2;
+  display: flex; flex-direction: column; justify-content: center;
+  width: 15px; padding: 4px 0;
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .contact-index button {
-  flex: 0 1 18px; min-height: 0; padding: 0; border: 0; background: none;
+  flex: 0 1 15px; min-height: 0; padding: 0; border: 0; background: none;
   color: var(--accent-strong); font: inherit; font-size: var(--t-10); font-weight: 600; line-height: 1;
   cursor: pointer;
 }

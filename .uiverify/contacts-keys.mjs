@@ -105,6 +105,14 @@ await p2.goto(process.env.URL ?? "http://localhost:4173", { waitUntil: "networki
 await openScreen(p2, "Contacts");
 await p2.waitForTimeout(800);
 ok((await p2.locator(".contact-index button").count()) >= 26, "a long list has the letters down its edge");
+// The letters take a narrow strip at the list's edge, not a column beside its scroll bar.
+const room = await p2.evaluate(() => {
+  const wrap = document.querySelector(".contact-rows-wrap").getBoundingClientRect();
+  const row = document.querySelector(".contact-row").getBoundingClientRect();
+  const index = document.querySelector(".contact-index").getBoundingClientRect();
+  return { lost: Math.round(wrap.width - row.width), index: Math.round(index.width), edge: Math.round(wrap.right - index.right), overlap: row.right > index.left + 0.5 };
+});
+ok(room.index <= 16 && room.edge === 0 && room.lost <= 16 && !room.overlap, `the letters take a narrow strip at the edge, and the names nearly all the width  ${JSON.stringify(room)}`);
 await p2.locator(".contact-index button", { hasText: "M" }).click();
 await p2.waitForTimeout(100);
 const top = await p2.evaluate(() => {
