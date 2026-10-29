@@ -88,6 +88,23 @@ ok(await opened.isVisible(), "a click on the bar opens it");
 await page.keyboard.press("Escape");
 await opened.waitFor({ state: "detached" });
 
+// Its end stretched a day on (or, on the week's last day, its start a day back).
+const ends = await bar.boundingBox();
+const grabX = by === 1 ? ends.x + ends.width - 2 : ends.x + 2;
+await page.mouse.move(grabX, ends.y + ends.height / 2);
+await page.mouse.down();
+await page.mouse.move(grabX + (by * colWidth) / 2, ends.y + ends.height / 2, { steps: 3 });
+await page.mouse.move(grabX + by * colWidth, ends.y + ends.height / 2, { steps: 4 });
+const stretched = await bar.boundingBox();
+ok(Math.abs(stretched.width - ends.width - colWidth) < 4, `the bar stretches with the pointer  [${Math.round(stretched.width - ends.width)}]`);
+await page.mouse.up();
+await savesReach(3);
+s = await saves();
+const [wantFrom, wantTo] = by === 1 ? [start, await midnightIn(2)] : [await midnightIn(-1), await midnightIn(1)];
+ok(s.length === 3 && s[2].guid === "ad1" && s[2].startsAt === wantFrom && s[2].endsAt === wantTo,
+  `stretched, it spans two days  ${JSON.stringify(s[2] && { g: s[2].guid, from: (s[2].startsAt - start) / 3600, to: (s[2].endsAt - start) / 3600 })}`);
+ok(await page.getByRole("dialog").count() === 0, "a stretched bar does not open");
+
 // Deleted from the keyboard, then Ctrl+Z makes it again.
 await page.locator(".cx-block", { hasText: "Dentist" }).click();
 await page.getByRole("dialog", { name: "Dentist" }).waitFor();
@@ -96,10 +113,10 @@ await page.keyboard.press("Delete");
 await page.getByRole("button", { name: "Delete", exact: true }).click();
 await page.waitForFunction(() => (window.__eventDeletes ?? []).length === 1);
 await page.keyboard.press("Control+z");
-await savesReach(3);
+await savesReach(4);
 s = await saves();
-ok(s.length === 3 && s[2].guid === null && s[2].title === "Dentist" && JSON.stringify(s[2].alerts) === "[15]",
-  `Ctrl+Z makes the deleted event again, its alert with it  ${JSON.stringify(s[2] && { g: s[2].guid, t: s[2].title, a: s[2].alerts })}`);
+ok(s.length === 4 && s[3].guid === null && s[3].title === "Dentist" && JSON.stringify(s[3].alerts) === "[15]",
+  `Ctrl+Z makes the deleted event again, its alert with it  ${JSON.stringify(s[3] && { g: s[3].guid, t: s[3].title, a: s[3].alerts })}`);
 
 // An event that ends as it starts keeps no length when its title is changed.
 await page.locator(".cx-block", { hasText: "Forms due" }).click();
@@ -108,9 +125,9 @@ await deadline.waitFor();
 await deadline.getByLabel("Title").fill("Forms in");
 // Named by its title, the dialog is "Forms in" now.
 await page.getByRole("dialog", { name: "Forms in" }).getByRole("button", { name: "Save" }).click();
-await savesReach(4);
+await savesReach(5);
 s = await saves();
-ok(s.length === 4 && s[3].guid === "dl1" && s[3].endsAt === s[3].startsAt, `a deadline stays a moment  ${JSON.stringify(s[3] && { g: s[3].guid, len: s[3].endsAt - s[3].startsAt })}`);
+ok(s.length === 5 && s[4].guid === "dl1" && s[4].endsAt === s[4].startsAt, `a deadline stays a moment  ${JSON.stringify(s[4] && { g: s[4].guid, len: s[4].endsAt - s[4].startsAt })}`);
 
 await b.close();
 console.log(failures ? `${failures} failed` : "all passed");

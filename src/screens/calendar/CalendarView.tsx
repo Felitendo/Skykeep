@@ -2324,9 +2324,10 @@ type Drag =
   /** Dragging an event's bottom edge: its end moves, its start stays — or, by its top edge
    *  (`top`), its start moves and its end stays. */
   | { kind: "resize"; event: CalendarEvent; startY: number; dMinutes: number; top?: boolean }
-  /** A bar in the all-day row carried to other days: `from` is its first column shown, and
-   *  `dx` how many days it has been carried. */
-  | { kind: "days"; event: CalendarEvent; from: number; startX: number; dx: number };
+  /** A bar in the all-day row carried to other days: `from` and `to` are its first and last
+   *  columns shown, and `dx` how many days it has been carried — or, by one of its ends
+   *  (`edge`), how many days that end has been stretched. */
+  | { kind: "days"; event: CalendarEvent; from: number; to: number; startX: number; dx: number; edge?: "start" | "end" };
 
 const TimeGrid = memo(function TimeGrid({
   days,
@@ -2454,8 +2455,14 @@ const TimeGrid = memo(function TimeGrid({
     } else if (current.kind === "days") {
       const el = columnsEl.current;
       const width = el ? el.getBoundingClientRect().width / days.length : 1;
-      // Its first day shown kept on the screen, as a timed event is.
-      const dx = Math.min(days.length - 1 - current.from, Math.max(-current.from, Math.round((clientX - current.startX) / width)));
+      // Its first day shown kept on the screen, as a timed event is; stretched, an end never
+      // past the other one.
+      const want = Math.round((clientX - current.startX) / width);
+      const dx = current.edge === "end"
+        ? Math.min(days.length - 1 - current.to, Math.max(current.from - current.to, want))
+        : current.edge === "start"
+          ? Math.min(current.to - current.from, Math.max(-current.from, want))
+          : Math.min(days.length - 1 - current.from, Math.max(-current.from, want));
       if (dx === current.dx) return;
       next = { ...current, dx };
     } else {
@@ -2487,7 +2494,11 @@ const TimeGrid = memo(function TimeGrid({
         window.setTimeout(() => (swallowClick.current = false), 0);
         // Whole days on the event's own clock, never 86,400 seconds (model.ts).
         const zone = zoneOf(done.event);
-        onMove(done.event, addDaysIn(zone, done.event.startsAt, done.dx), addDaysIn(zone, done.event.endsAt, done.dx));
+        onMove(
+          done.event,
+          done.edge === "end" ? done.event.startsAt : addDaysIn(zone, done.event.startsAt, done.dx),
+          done.edge === "start" ? done.event.endsAt : addDaysIn(zone, done.event.endsAt, done.dx),
+        );
       }
     } else if (done.kind === "resize") {
       if (done.dMinutes !== 0) {
@@ -2662,8 +2673,15 @@ const TimeGrid = memo(function TimeGrid({
         >
           {spans.map((s) => {
             const carried = drag?.kind === "days" && drag.event.guid === s.event.guid ? drag : null;
-            const from = s.from + (carried?.dx ?? 0);
-            const to = Math.min(s.to + (carried?.dx ?? 0), days.length - 1);
+            const from = s.from + (carried && carried.edge !== "end" ? carried.dx : 0);
+            const to = Math.min(s.to + (carried && carried.edge !== "start" ? carried.dx : 0), days.length - 1);
+            const stretch = (edge: "start" | "end") => (e: React.PointerEvent) => {
+              if (e.button !== 0) return;
+              e.stopPropagation();
+              e.preventDefault();
+              setDragNow({ kind: "days", event: s.event, from: s.from, to: s.to, startX: e.clientX, dx: 0, edge });
+            };
+            const mine = canWrite(s.event.calendarGuid);
             return (
             <button
               key={s.event.guid}
@@ -2683,13 +2701,21 @@ const TimeGrid = memo(function TimeGrid({
               }
               // Carried to other days, as a bar in Month is; held still, a click opens it.
               onPointerDown={(e) => {
-                if (e.button !== 0 || days.length < 2 || !canWrite(s.event.calendarGuid)) return;
+                if (e.button !== 0 || days.length < 2 || !mine) return;
                 e.preventDefault();
-                setDragNow({ kind: "days", event: s.event, from: s.from, startX: e.clientX, dx: 0 });
+                setDragNow({ kind: "days", event: s.event, from: s.from, to: s.to, startX: e.clientX, dx: 0 });
               }}
               onClick={(e) => !swallowClick.current && onOpen(s.event, { x: e.clientX, y: e.clientY })}
             >
               {s.event.title}
+              {/* Its ends, to stretch it over more days or fewer, as in Calendar — where they
+                  are on screen. */}
+              {mine && days.length > 1 && !s.continuesLeft && (
+                <span className="cx-bar-grip is-start" aria-hidden="true" onPointerDown={stretch("start")} />
+              )}
+              {mine && days.length > 1 && !s.continuesRight && (
+                <span className="cx-bar-grip is-end" aria-hidden="true" onPointerDown={stretch("end")} />
+              )}
             </button>
             );
           })}
