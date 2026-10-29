@@ -333,7 +333,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           (window.__edits ??= []).push(args.edit);
           // Kept, as Apple keeps it, so the read after a write shows the write.
           const r = [...reminderItems, ...(window.__extraReminders ?? [])].find((x) => x.guid === args.guid);
-          if (r) for (const [k, v] of Object.entries(args.edit)) if (k !== "listGuid") r[k] = v;
+          // A move to another list is kept only where a suite asks (`__keepMoves`).
+          if (r) for (const [k, v] of Object.entries(args.edit)) if (k !== "listGuid" || window.__keepMoves) r[k] = v;
           return null;
         }
         case "reminder_reorder": {

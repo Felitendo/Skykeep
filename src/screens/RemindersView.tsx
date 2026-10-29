@@ -1112,7 +1112,8 @@ export function RemindersView() {
     // The reminder the keys act on: the row the focus is in, or the one whose details are open.
     const chosen = () => {
       const row = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>(".rx-row");
-      const guid = row?.dataset.guid ?? openGuid;
+      // In a row with no reminder yet (the next one being typed), there is none to act on.
+      const guid = row ? (row.dataset.guid ?? null) : openGuid;
       return guid ? (items.find((r) => r.guid === guid) ?? null) : null;
     };
     if (command && e.shiftKey && (k === "f" || k === "c")) {
@@ -1777,6 +1778,26 @@ export function RemindersView() {
             onContextMenu={(e) => {
               e.preventDefault();
               setListMenu({ list, at: { x: e.clientX, y: e.clientY, alignRight: false } });
+            }}
+            // A reminder dragged onto another list moves to it, its subtasks with it, as on the
+            // Mac. Marked on the element itself while it is over it, as the rows mark a drop.
+            onDragOver={(e) => {
+              const moving = draggingRef.current ? items.find((x) => x.guid === draggingRef.current) : null;
+              if (!moving || moving.listGuid === list.guid) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              e.currentTarget.classList.add("is-drop-target");
+            }}
+            onDragLeave={(e) => e.currentTarget.classList.remove("is-drop-target")}
+            onDrop={(e) => {
+              e.currentTarget.classList.remove("is-drop-target");
+              const moving = draggingRef.current ? items.find((x) => x.guid === draggingRef.current) : null;
+              if (!moving || moving.listGuid === list.guid) return;
+              e.preventDefault();
+              markDrop(null);
+              draggingRef.current = null;
+              setDragging(null);
+              void moveToList(moving, list.guid);
             }}
           >
             <span className="rx-badge" style={{ background: colourOf(list) }}>
