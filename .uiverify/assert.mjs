@@ -326,8 +326,8 @@ let failures = 0;
   console.log(even ? `PASS the Reminders sidebar has the same inset on both sides  [${m.left.toFixed(1)} / ${m.right.toFixed(1)}]`
     : `FAIL the Reminders sidebar is lopsided  [left ${m.left.toFixed(1)}, right ${m.right.toFixed(1)}]`);
   if (!even) failures++;
-  const same = m.count === 6 && new Set(m.sizes).size === 1;
-  console.log(same ? `PASS six tiles, all one size  [${m.sizes[0]}]` : `FAIL tiles differ  ${JSON.stringify(m.sizes)}`);
+  const same = m.count === 7 && new Set(m.sizes).size === 1;
+  console.log(same ? `PASS seven tiles (Completed among them, as on the Mac), all one size  [${m.sizes[0]}]` : `FAIL tiles differ  ${JSON.stringify(m.sizes)}`);
   if (!same) failures++;
   console.log(m.clipped.length === 0 ? "PASS no tile's text runs out of it" : `FAIL text runs out of its tile: ${JSON.stringify(m.clipped)}`);
   if (m.clipped.length) failures++;

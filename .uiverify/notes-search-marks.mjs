@@ -54,8 +54,11 @@ ok(await until(page, () => document.querySelector(".note-rich") && !document.que
 await page.locator(".note-row", { hasText: "Curtains" }).click();
 await until(page, () => document.querySelector('.note-rich p[data-style="103"]'));
 const ticked = () => page.evaluate(() => document.querySelector('.note-rich p[data-style="103"]')?.getAttribute("data-checked") === "true");
+// The caret put in the item's text first (at its end, clear of the tick circle), and only then
+// is its state read: a click that strayed onto the circle ticked it and read as the key failing.
+await page.locator('.note-rich p[data-style="103"]').first().click({ position: { x: 120, y: 8 } });
+await page.keyboard.press("End");
 const was = await ticked();
-await page.locator('.note-rich p[data-style="103"]').click({ position: { x: 120, y: 8 } });
 await page.keyboard.press("Control+Shift+u");
 ok(await until(page, (w) => (document.querySelector('.note-rich p[data-style="103"]')?.getAttribute("data-checked") === "true") !== w, was),
   "Shift+Ctrl+U ticks or unticks the checklist item", "the item stayed as it was");
