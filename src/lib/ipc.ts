@@ -439,6 +439,11 @@ export const api = {
     invoke<{ drivewsid: string; reason: string }[]>("drive_trash_out", { items, recover }),
   driveMove: (drivewsid: string, destinationId: string) =>
     invoke<void>("drive_move", { drivewsid, destinationId }),
+  /** A copy of a file or folder put into a folder, named as Finder names a copy. */
+  driveCopy: (drivewsid: string, destinationId: string) =>
+    invoke<void>("drive_copy", { drivewsid, destinationId }),
+  /** The desktop's clipboard: files copied in the file manager, as paths, or else its text. */
+  clipboardRead: () => invoke<{ files: string[]; text: string | null }>("clipboard_read"),
 };
 
 /** Tauri rejects with a plain string from our commands; keep it readable either way. */

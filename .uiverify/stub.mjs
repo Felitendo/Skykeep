@@ -980,6 +980,20 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "drive_thumbnails": return driveFixture ? { "FILE::d": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='60'><rect width='80' height='60' fill='%23eee'/></svg>" } : {};
         case "drive_duplicate": (window.__dups ??= []).push(args.drivewsid); return null;
+        // Copy and Paste: each copy asked for, and — where a test keeps folders of its own in
+        // __driveIn — the copy landing there under the name __driveCopyName gives it.
+        case "drive_copy": {
+          (window.__driveCopies ??= []).push(args);
+          if (window.__driveCopyDelay) await new Promise((r) => setTimeout(r, window.__driveCopyDelay));
+          if (window.__driveCopyFail) throw window.__driveCopyFail;
+          const from = [...driveItems, ...Object.values(window.__driveIn ?? {}).flat()].find((i) => i.drivewsid === args.drivewsid);
+          const into = window.__driveIn?.[args.destinationId];
+          if (from && into) into.push({ ...from, drivewsid: `${from.drivewsid}-copy${window.__driveCopies.length}`, parentId: args.destinationId, name: window.__driveCopyName ?? from.name });
+          return null;
+        }
+        // The desktop's clipboard as the backend reads it: files copied in the file manager, or text.
+        case "clipboard_read": return { files: window.__clipFiles ?? [], text: window.__clipText ?? null };
+        case "drive_upload": (window.__driveUploads ??= []).push(args); return [];
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
         // The local copy's room, as settings.rs measures it; clearing takes away only the cached pictures.
         case "local_storage": return (window.__local ??= { library: 13_800_000, photos: 4_812_000_000, notes: 456_000_000, drive: 24_000, other: 7_400_000, total: 5_289_224_000, clearable: 4_480_000_000 });
@@ -1017,6 +1031,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "drive_children":
           // A slow read, when a test asks for one.
           if (window.__slowDrive) await new Promise((r) => setTimeout(r, window.__slowDrive));
+          // A folder of a test's own, where it keeps one (__driveIn); every folder holds the fixture otherwise.
+          if (window.__driveIn?.[args.folderId]) return [...window.__driveIn[args.folderId]];
           return !driveFixture ? [] : driveItems;
         case "drive_recents": {
           if (!driveFixture) return [];

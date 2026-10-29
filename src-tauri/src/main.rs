@@ -15,6 +15,7 @@ macro_rules! quiet {
 mod alerts;
 mod appearance;
 mod apps;
+mod clipboard;
 mod contacts_cmds;
 mod contacts_merge;
 mod cpu;
@@ -4813,20 +4814,7 @@ async fn drive_duplicate(
             .map_err(|e| e.to_string())?
             .ok_or("That item is no longer in the local library.")?
     };
-    let (http, drivews, docws, params) = {
-        let client = auth.client.lock().await;
-        let session = client.session();
-        (
-            client.http().clone(),
-            session
-                .service_url("drivews")
-                .ok_or("Apple hasn't offered iCloud Drive for this account.")?,
-            session
-                .service_url("docws")
-                .ok_or("Apple hasn't offered iCloud Drive for this account.")?,
-            client.service_params(),
-        )
-    };
+    let (http, drivews, docws, params) = drive_hosts(&auth).await?;
     quince_icloud::drive::duplicate(&http, &docws, &drivews, params.clone(), &item)
         .await
         .map_err(|e| e.to_string())?;
@@ -4835,6 +4823,82 @@ async fn drive_duplicate(
         .as_deref()
         .unwrap_or(quince_core::drive::ROOT);
     settle(resync_drive_folder(&http, &drivews, params, &data, parent).await)
+}
+
+/// Drive's two hosts — `drivews` lists and writes, `docws` copies — and what goes with them.
+async fn drive_hosts(
+    auth: &State<'_, Auth>,
+) -> Result<(reqwest::Client, String, String, Vec<(String, String)>), String> {
+    let client = auth.client.lock().await;
+    let session = client.session();
+    Ok((
+        client.http().clone(),
+        session
+            .service_url("drivews")
+            .ok_or("Apple hasn't offered iCloud Drive for this account.")?,
+        session
+            .service_url("docws")
+            .ok_or("Apple hasn't offered iCloud Drive for this account.")?,
+        client.service_params(),
+    ))
+}
+
+/// Copy a file or folder into another folder, as Finder's Copy and Paste: named as Finder
+/// names a copy where its name is taken there (quince_icloud::drive::copy_to). A folder is
+/// never pasted into itself or into a folder inside it, as Finder will not.
+#[tauri::command]
+async fn drive_copy(
+    drivewsid: String,
+    destination_id: String,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<()> {
+    let item = {
+        let library = data.0.lock().await;
+        let item = library
+            .drive_item(&drivewsid)
+            .map_err(|e| e.to_string())?
+            .ok_or("That item is no longer in the local library.")?;
+        // Up from the destination through the folders the library knows: the folder copied
+        // must not be one of them.
+        let mut at = Some(destination_id.clone());
+        for _ in 0..64 {
+            let Some(id) = at.take() else { break };
+            if id == item.drivewsid {
+                return Err(format!(
+                    "“{}” can’t be copied into a folder inside itself.",
+                    item.display_name()
+                ));
+            }
+            at = library
+                .drive_item(&id)
+                .ok()
+                .flatten()
+                .and_then(|f| f.parent_id);
+        }
+        item
+    };
+    let (http, drivews, docws, params) = drive_hosts(&auth).await?;
+    quince_icloud::drive::copy_to(
+        &http,
+        &docws,
+        &drivews,
+        params.clone(),
+        &item,
+        &destination_id,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let source = item
+        .parent_id
+        .as_deref()
+        .unwrap_or(quince_core::drive::ROOT);
+    // The folder it was copied beside changed for a moment too, and is read again with it.
+    settle(resync_drive_folder(&http, &drivews, params.clone(), &data, &destination_id).await)?;
+    if source != destination_id {
+        settle(resync_drive_folder(&http, &drivews, params, &data, source).await)?;
+    }
+    Ok(())
 }
 
 /// Apple's thumbnails for one folder's files, keyed by drivewsid: each an address the
@@ -6740,6 +6804,8 @@ fn main() {
             drive_recents,
             storage_info,
             drive_duplicate,
+            drive_copy,
+            clipboard::clipboard_read,
             drive_thumbnails,
             drive_put_back,
             drive_delete_forever,

@@ -32,6 +32,7 @@ import { dateText, timeText } from "../lib/when";
 import { Clock } from "lucide-react";
 import { useReveal } from "../lib/reveal";
 import { keepSame } from "../lib/same";
+import { copyName, copyText } from "../lib/clipboard";
 
 /** iCloud Drive's own four orders, as its "by Name" menu offers them. */
 const SORTS = [
@@ -443,6 +444,12 @@ function sameItems(a: DriveItem[], b: DriveItem[]): boolean {
   return b.every((i) => seen.has(key(i)));
 }
 
+/**
+ * Files and folders of iCloud Drive's own: an app's library (Keynote, Shortcuts), and what is in
+ * one, belongs to that app (see acceptsUploads), so it is not copied out of it.
+ */
+const copyable = (item: DriveItem) => (item.kind === "FILE" || item.kind === "FOLDER") && acceptsUploads(item.drivewsid);
+
 export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "Drive" }]);
   /**
@@ -597,6 +604,8 @@ export function DriveView() {
   }, [items]);
   /** The ⋯ menu, or the same menu opened by a right-click, for one item. */
   const [menu, setMenu] = useState<{ item: DriveItem; x: number; y: number; alignRight: boolean } | null>(null);
+  /** The folder's own menu, from a right-click on nothing; with what the clipboard held then. */
+  const [spaceMenu, setSpaceMenu] = useState<{ x: number; y: number; alignRight: boolean; files: number; other: string | null } | null>(null);
   /** Items of Drive's own being dragged onto a folder — one, or all selected — and the folder it is over. */
   const dragItem = useRef<DriveItem[] | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
@@ -610,6 +619,8 @@ export function DriveView() {
   // back to the previous location".
   const hereRef = useRef(here.id);
   hereRef.current = here.id;
+  const trailRef = useRef(trail);
+  trailRef.current = trail;
   /** Items deleted or moved out of a folder that Apple's listing of it may still carry for a
    *  moment after — each kept as "folder:item", so it is hidden only in the folder it left.
    *  By item alone, an item moved into another folder, or recovered from Recently Deleted,
@@ -906,15 +917,25 @@ export function DriveView() {
     [refresh, here.id]
   );
 
+  /**
+   * Move, from the folder open (a drag, Move to Folder) or from the folder they were copied in
+   * (Ctrl-Alt-V, as Finder's Option-Command-V). Gone from where they were at once, and shown
+   * where they go when that is the folder open; back, with the reason, if Apple refuses.
+   */
   const moveAll = useCallback(
-    async (list: DriveItem[], destinationId: string) => {
+    async (list: DriveItem[], destinationId: string, from: string = hereRef.current) => {
       setMoving(null);
       setError(null);
       const going = list.filter((i) => i.drivewsid !== destinationId);
       if (going.length === 0) return;
-      // Out of this folder at once; back, with the reason, if Apple refuses.
-      const from = hereRef.current;
       setGone((g) => new Set([...g, ...going.map((i) => goneKey(from, i.drivewsid))]));
+      const batch = `move-${Date.now()}`;
+      if (destinationId === hereRef.current) {
+        setPending((p) => [
+          ...p,
+          ...going.map((i) => ({ key: `${batch}:${i.drivewsid}`, folder: destinationId, name: driveName(i), doing: "Moving…" })),
+        ]);
+      }
       const refused: string[] = [];
       let reason = "";
       for (const item of going) {
@@ -923,6 +944,7 @@ export function DriveView() {
         } catch (e) {
           refused.push(item.drivewsid);
           reason = messageOf(e);
+          settle(`${batch}:${item.drivewsid}`);
         }
       }
       if (refused.length) {
@@ -934,9 +956,75 @@ export function DriveView() {
         setError(going.length === 1 ? reason : `${refused.length} of ${going.length} items could not be moved: ${reason}`);
       }
       if (refused.length < going.length) await refresh();
+      settle(batch);
     },
     [refresh]
   );
+
+  /**
+   * Copy and Paste, as Finder: Ctrl-C keeps what is chosen (and puts its names on the
+   * desktop's clipboard as text, as Finder does, so the clipboard says what was copied last);
+   * Ctrl-V in any folder puts copies there. Kept across folders, and for more than one paste.
+   */
+  const [clip, setClip] = useState<{ items: DriveItem[]; from: string; text: string | null } | null>(null);
+  const clipRef = useRef(clip);
+  clipRef.current = clip;
+  const copyItems = useCallback(async (list: DriveItem[]) => {
+    const copying = list.filter(copyable);
+    if (copying.length === 0) return;
+    const text = copying.map(driveName).join("\n");
+    const from = hereRef.current;
+    setClip({ items: copying, from, text: null });
+    if (await copyText(text)) setClip((c) => (c && c.items === copying ? { ...c, text } : c));
+  }, []);
+
+  /**
+   * Copies of `list` in the folder open, each shown at once under the name Finder would give
+   * it there and made one after another (Apple turns a burst of writes away as busy). One that
+   * fails leaves, with the reason; the rest still land.
+   */
+  const copyHere = useCallback(
+    async (list: DriveItem[]) => {
+      setError(null);
+      const into = hereRef.current;
+      const inside = trailRef.current.map((c) => c.id);
+      // Never into itself, or into a folder within it, as Finder will not.
+      const insideItself = list.find((i) => inside.includes(i.drivewsid));
+      const copying = list.filter((i) => !inside.includes(i.drivewsid));
+      if (insideItself) setError(`\u201c${driveName(insideItself)}\u201d can\u2019t be copied into a folder inside itself.`);
+      if (copying.length === 0) return;
+      const taken = new Set([
+        ...itemsRef.current.map(driveName),
+        ...pendingRef.current.filter((p) => p.folder === into).map((p) => p.name),
+      ]);
+      const batch = `paste-${Date.now()}`;
+      const shown = copying.map((item, i) => {
+        const name = copyName(item.name, isContainer(item) ? null : item.extension, taken);
+        taken.add(name);
+        return { key: `${batch}:${i}`, folder: into, name, doing: "Copying…" };
+      });
+      setPending((p) => [...p, ...shown]);
+      const refused: string[] = [];
+      let reason = "";
+      for (const [i, item] of copying.entries()) {
+        try {
+          await api.driveCopy(item.drivewsid, into);
+          // The backend has read the folder again: the library has the copy, so no new look.
+          if (into === hereRef.current) await refresh(false);
+        } catch (e) {
+          refused.push(item.drivewsid);
+          reason = messageOf(e);
+        } finally {
+          settle(shown[i].key);
+        }
+      }
+      if (refused.length) {
+        setError(copying.length === 1 ? reason : `${refused.length} of ${copying.length} items could not be copied: ${reason}`);
+      }
+    },
+    [refresh]
+  );
+
 
   /**
    * Send files from this machine to the folder currently open.
@@ -956,6 +1044,8 @@ export function DriveView() {
    * seconds later — so a press seemed to do nothing, and then a folder appeared from nowhere.
    */
   const [pending, setPending] = useState<{ key: string; folder: string; name: string; doing: string }[]>([]);
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
   // What is kept on this computer — null while the iCloud Drive folder is off.
   const [kept, setKept] = useState<Set<string> | null>(null);
   useEffect(() => {
@@ -1096,6 +1186,49 @@ export function DriveView() {
     },
     [here.id, refresh]
   );
+
+  /**
+   * Paste into the folder open. Whatever was copied last decides: files copied in the
+   * desktop's file manager go up into it, as a drop would send them; else what Drive copied
+   * is copied here — or, with Alt (Option on a Mac), moved here, as Finder's Option-Command-V.
+   */
+  // Each render's own, as the keys are: it uploads into the folder open now.
+  const paste = async (move: boolean) => {
+    if (!acceptsUploads(hereRef.current)) {
+      setError("This folder belongs to an app, which is the only thing that can add to it.");
+      return;
+    }
+    const board = await api.clipboardRead().catch(() => null);
+    if (board?.files.length) {
+      await upload(board.files);
+      return;
+    }
+    const c = clipRef.current;
+    if (!c) return;
+    // Something else copied since (text in another app): that is what is on the clipboard.
+    if (c.text !== null && board?.text != null && board.text !== c.text) return;
+    if (!move) {
+      await copyHere(c.items);
+      return;
+    }
+    const into = hereRef.current;
+    if (c.from === into) return;
+    const inside = trailRef.current.map((t) => t.id);
+    const names = new Set(itemsRef.current.map((i) => driveName(i).toLocaleLowerCase()));
+    const clash = c.items.find((i) => names.has(driveName(i).toLocaleLowerCase()));
+    const insideItself = c.items.find((i) => inside.includes(i.drivewsid));
+    if (clash || insideItself) {
+      setError(
+        clash
+          ? `An item named \u201c${driveName(clash)}\u201d is already in this folder, so nothing was moved.`
+          : `\u201c${driveName(insideItself!)}\u201d can\u2019t be moved into a folder inside itself.`,
+      );
+      return;
+    }
+    // Moved, it is no longer where it was copied: nothing is left to paste.
+    setClip(null);
+    await moveAll(c.items, into, c.from);
+  };
 
   const chooseAndUpload = useCallback(
     async (folders: boolean) => {
@@ -1289,9 +1422,9 @@ export function DriveView() {
 
   // Finder's keys (Ctrl in place of Command): the arrows walk the selection — across and down
   // in Grid — and Shift with them widens it; Return or Ctrl-Down opens, Ctrl-Up goes up a
-  // folder, Ctrl-[ and Ctrl-] go back and forward, F2 renames, Ctrl-D duplicates, Delete moves
-  // to Recently Deleted, Ctrl-A selects all, and Space shows the selected file large, as Quick
-  // Look does.
+  // folder, Ctrl-[ and Ctrl-] go back and forward, F2 renames, Ctrl-D duplicates, Ctrl-C and
+  // Ctrl-V copy and paste (Ctrl-Alt-V moves), Delete moves to Recently Deleted, Ctrl-A selects
+  // all, and Space shows the selected file large, as Quick Look does.
   const live = useActiveRef();
   const keys = useRef<(e: KeyboardEvent) => void>(() => {});
   keys.current = (e: KeyboardEvent) => {
@@ -1346,6 +1479,16 @@ export function DriveView() {
       // Duplicate, as Finder's Command-D: each file chosen, beside itself (folders are not).
       e.preventDefault();
       for (const item of pickedItems) if (!isContainer(item) && !busyIds.has(item.drivewsid)) void duplicate(item);
+    } else if (mod && k.toLowerCase() === "c" && !e.shiftKey && pickedItems.length && !window.getSelection()?.toString()) {
+      // Copy, as Finder's Command-C: what is chosen, to paste into any folder.
+      e.preventDefault();
+      void copyItems(pickedItems);
+    } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (k.toLowerCase() === "v" || (e.altKey && e.code === "KeyV"))) {
+      // Paste, as Finder's Command-V; with Alt (Option), moved here instead, as Option-Command-V.
+      // By the key's place too with Alt: Option-V on a Mac types "√".
+      e.preventDefault();
+      setPeeking(false);
+      void paste(e.altKey);
     } else if (mod && k === "ArrowUp") {
       e.preventDefault();
       if (trail.length > 1) setTrail((t) => t.slice(0, -1));
@@ -1443,6 +1586,20 @@ export function DriveView() {
       onClick={(e) => {
         const t = e.target as HTMLElement;
         if (!t.closest("[data-id], button, input, form, a, [role='menu'], .modal-veil, .drive-peek-veil")) setPicked([]);
+      }}
+      // A right-click on nothing is for the folder itself, as Finder's: a new folder, and Paste
+      // when the clipboard holds something to paste — files copied in the file manager, or what
+      // was copied here.
+      onContextMenu={(e) => {
+        const t = e.target as HTMLElement;
+        if (t.closest("[data-id], button, input, textarea, form, a, [role='menu'], .drive-bar, .modal-veil, .drive-peek-veil, .upload-tray")) return;
+        e.preventDefault();
+        setPicked([]);
+        const at = { x: e.clientX, y: e.clientY, alignRight: false };
+        void api.clipboardRead().then(
+          (board) => setSpaceMenu({ ...at, files: board.files.length, other: board.text }),
+          () => setSpaceMenu({ ...at, files: 0, other: null }),
+        );
       }}
     >
       <header className="pane-head drive-bar">
@@ -1677,6 +1834,7 @@ export function DriveView() {
                     run: () => void (async () => { for (const f of files) await download(f); })(),
                   }]
                 : []),
+              ...(many.some(copyable) ? [{ label: "Copy", run: () => void copyItems(many) }] : []),
               { label: "Move to Folder", run: () => setMoving(many) },
               null,
               { label: `Delete ${many.length} Items`, danger: true, run: () => void removeAll(many) },
@@ -1697,10 +1855,28 @@ export function DriveView() {
               { label: "Get Info", run: () => setInfo(menu.item) },
               null,
               ...(isContainer(menu.item) ? [] : [{ label: "Duplicate", run: () => void duplicate(menu.item) }]),
+              ...(copyable(menu.item) ? [{ label: "Copy", run: () => void copyItems([menu.item]) }] : []),
               { label: "Rename", run: () => setRenaming(menu.item.drivewsid) },
               { label: "Move to Folder", run: () => setMoving([menu.item]) },
               null,
               { label: "Delete", danger: true, run: () => void remove(menu.item) },
+            ]}
+          />
+        );
+      })()}
+
+      {spaceMenu && (() => {
+        // What Paste would put here: the file manager's files, or what was copied in Drive while
+        // nothing else has been copied since (see paste).
+        const theirs = spaceMenu.files > 0;
+        const ours = !!clip && (clip.text === null || spaceMenu.other === null || spaceMenu.other === clip.text);
+        return (
+          <RowMenu
+            at={spaceMenu}
+            onClose={() => setSpaceMenu(null)}
+            entries={[
+              { label: "New Folder", run: () => setCreatingFolder(true) },
+              ...(theirs || ours ? [null, { label: "Paste", run: () => void paste(false) }] : []),
             ]}
           />
         );

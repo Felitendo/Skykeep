@@ -37,6 +37,7 @@ import { PhotoSheet } from "./contacts/PhotoSheet";
 import { DuplicatesBanner, DuplicatesView } from "./contacts/Duplicates";
 import { keepSame } from "../lib/same";
 import { useArrivals } from "../lib/arrival";
+import { copyText } from "../lib/clipboard";
 
 /** The sidebar row that is every contact rather than a list. */
 const ALL = "";
@@ -1829,30 +1830,6 @@ function RowName({ contact: c }: { contact: Contact }) {
   // A card with only a number has nothing it is sorted by: plain.
   const named = (c.isCompany && company) || c.firstName?.trim() || c.middleName?.trim() || company;
   return named ? <b>{name}</b> : <>{name}</>;
-}
-
-/** Text onto the clipboard; the older way where the newer one is refused. */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    const field = document.createElement("textarea");
-    field.value = text;
-    field.setAttribute("readonly", "");
-    field.style.position = "fixed";
-    field.style.opacity = "0";
-    document.body.appendChild(field);
-    field.select();
-    let copied = false;
-    try {
-      copied = document.execCommand("copy");
-    } catch {
-      copied = false;
-    }
-    field.remove();
-    return copied;
-  }
 }
 
 /** A link a person typed without its scheme still opens: "example.com" is the web. One of a
