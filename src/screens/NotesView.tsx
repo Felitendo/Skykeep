@@ -1104,8 +1104,8 @@ export function NotesView() {
 
   // The keys, as Notes on a Mac has them (Ctrl here). Only while Notes is the screen in front,
   // and never over a sheet or a menu, which answer their own keys.
-  const keys = useRef({ create, find, removeAsked, step, leaveSearch, searching });
-  keys.current = { create, find, removeAsked, step, leaveSearch, searching };
+  const keys = useRef({ create, find, removeAsked, step, leaveSearch, searching, newFolder });
+  keys.current = { create, find, removeAsked, step, leaveSearch, searching, newFolder };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!live.current || e.defaultPrevented || e.isComposing) return;
@@ -1118,6 +1118,10 @@ export function NotesView() {
       if (mod && !e.shiftKey && k === "n") {
         e.preventDefault();
         if (!e.repeat) void k_.create();
+      } else if (mod && e.shiftKey && k === "n") {
+        // New Folder, as Shift-Command-N makes one on a Mac: ready to be named.
+        e.preventDefault();
+        if (!e.repeat) void k_.newFolder(null);
       } else if (mod && k === "f") {
         e.preventDefault();
         k_.find(e.shiftKey ? "all" : "folder");

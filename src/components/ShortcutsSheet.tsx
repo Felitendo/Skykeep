@@ -23,11 +23,12 @@ export const SHORTCUTS: { app: string; key: string; rows: Row[] }[] = [
     app: "Notes",
     key: "notes",
     rows: [
-      [[["Ctrl", "N"]], "New note"],
+      [[["Ctrl", "N"], ["Ctrl", "Shift", "N"]], "New note / new folder"],
       [[["Ctrl", "F"], ["Ctrl", "Shift", "F"]], "Search this folder / all notes"],
       [[["↑"], ["↓"]], "Previous / next note"],
       [[["Ctrl", "Delete"]], "Delete note"],
       [[["Ctrl", "S"]], "Finish editing"],
+      [[["Ctrl", "Shift", "L"], ["Ctrl", "Shift", "U"]], "Checklist / tick the item"],
     ],
   },
   {

@@ -818,6 +818,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           "Mod-Shift-8": restyle(STYLE.dashed),
           "Mod-Shift-9": restyle(STYLE.numbered),
           "Mod-Shift-l": (s, d) => toggleChecklistCmd(s, d),
+          "Mod-Shift-u": tickSelected,
         }),
         keymap(baseKeymap),
       ],
@@ -929,28 +930,7 @@ export const NoteEditor = forwardRef<EditorHandle, Props>(function NoteEditor(
           const node = vw.state.doc.nodeAt(pos);
           if (!node) return false;
           event.preventDefault();
-          const checked = !node.attrs.checked;
-          const tr = vw.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked });
-          // With "Sort Checked Items Automatically" on, the item goes where Notes sorts it, in
-          // the same edit, so one undo puts both back.
-          if (moveCheckedOn()) {
-            const starts: number[] = [];
-            vw.state.doc.forEach((_, offset) => starts.push(offset));
-            const move = checklistMove(vw.state.doc, starts.indexOf(pos), checked);
-            if (move) {
-              const at = (i: number) => (i < starts.length ? starts[i] : vw.state.doc.content.size);
-              const slice = tr.doc.slice(at(move.from), at(move.to));
-              const target = tr.mapping.map(at(move.before));
-              if (move.before > move.from) {
-                tr.insert(target, slice.content);
-                tr.delete(at(move.from), at(move.to));
-              } else {
-                tr.delete(at(move.from), at(move.to));
-                tr.insert(target, slice.content);
-              }
-            }
-          }
-          vw.dispatch(tr);
+          vw.dispatch(tickLine(vw.state, pos, !node.attrs.checked));
           return true;
         },
       },
@@ -1160,6 +1140,56 @@ function steady(v: EditorView): ((mapping: Transaction["mapping"]) => void) | nu
     if (Math.abs(by) >= 0.5) scroller.scrollTop += by;
   };
 }
+
+/**
+ * A checklist item ticked or unticked, as one edit. With "Sort Checked Items Automatically"
+ * on, the item goes where Notes sorts it in the same edit, so one undo puts both back.
+ */
+function tickLine(state: EditorState, pos: number, checked: boolean): Transaction {
+  const node = state.doc.nodeAt(pos)!;
+  const tr = state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked });
+  if (moveCheckedOn()) {
+    const starts: number[] = [];
+    state.doc.forEach((_, offset) => starts.push(offset));
+    const move = checklistMove(state.doc, starts.indexOf(pos), checked);
+    if (move) {
+      const at = (i: number) => (i < starts.length ? starts[i] : state.doc.content.size);
+      const slice = tr.doc.slice(at(move.from), at(move.to));
+      const target = tr.mapping.map(at(move.before));
+      if (move.before > move.from) {
+        tr.insert(target, slice.content);
+        tr.delete(at(move.from), at(move.to));
+      } else {
+        tr.delete(at(move.from), at(move.to));
+        tr.insert(target, slice.content);
+      }
+    }
+  }
+  return tr;
+}
+
+/**
+ * Mark as Checked (Shift-Command-U on a Mac): the checklist items the cursor or selection is
+ * in ticked — or, when every one is ticked already, unticked. Lines that are not checklist
+ * items are left as they are; the key does nothing outside a checklist.
+ */
+const tickSelected: Command = (state, dispatch) => {
+  const items = linesIn(state).filter(({ node }) => node.attrs.style === STYLE.checklist);
+  if (!items.length) return false;
+  const checked = !items.every(({ node }) => node.attrs.checked);
+  if (!dispatch) return true;
+  // One line goes through the same tick a click on its circle makes, sorting included.
+  if (items.length === 1) {
+    dispatch(tickLine(state, items[0].pos, checked).scrollIntoView());
+    return true;
+  }
+  const tr = state.tr;
+  for (const { node, pos } of items) {
+    if (Boolean(node.attrs.checked) !== checked) tr.setNodeMarkup(pos, undefined, { ...node.attrs, checked });
+  }
+  dispatch(tr);
+  return true;
+};
 
 const toggleChecklistCmd: Command = (state, dispatch) => {
   const all = linesIn(state).every(({ node }) => node.attrs.style === STYLE.checklist);
