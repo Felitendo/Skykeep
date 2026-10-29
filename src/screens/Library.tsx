@@ -4,7 +4,7 @@ import { EmptyState } from "../components/EmptyState";
 import { StatusLine } from "../components/StatusLine";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { PanelLeft } from "lucide-react";
 import { api, messageOf, NEW_EVENT, OPEN_REMINDER } from "../lib/ipc";
 import { SyncProvider, useSync } from "../lib/sync";
@@ -62,7 +62,8 @@ import { ScreenBoundary } from "../components/ScreenBoundary";
 import { ScreenActive, modalOpen } from "../lib/screen";
 import { AppIcon } from "../components/AppIcon";
 import { GlobalSearch } from "../components/GlobalSearch";
-import { ShortcutsSheet } from "../components/ShortcutsSheet";
+// Only when asked for (Ctrl-/): the window opens without its code.
+const ShortcutsSheet = lazy(() => import("../components/ShortcutsSheet").then((m) => ({ default: m.ShortcutsSheet })));
 
 /**
  * What the sidebar holds: the services with a real screen behind them, most used first.
@@ -131,7 +132,11 @@ function AppKeys({ screen, onSettings }: { screen: string | null; onSettings: ()
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onSettings]);
-  return sheet ? <ShortcutsSheet front={screen} onClose={() => setSheet(false)} /> : null;
+  return sheet ? (
+    <Suspense fallback={null}>
+      <ShortcutsSheet front={screen} onClose={() => setSheet(false)} />
+    </Suspense>
+  ) : null;
 }
 
 /**
@@ -325,8 +330,11 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
     const title = selected === "settings" ? "Settings" : SCREENS.find((s) => s.key === selected)?.name;
     if (!title) return;
     document.title = title;
+    // Asked of the window plugin by itself: `@tauri-apps/api/window` for this one call was a
+    // quarter of the code the window had to read before it could draw anything.
     try {
-      void getCurrentWindow().setTitle(title).catch(() => {});
+      const label = (window as { __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: string } } } }).__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
+      if (label) void invoke("plugin:window|set_title", { label, value: title }).catch(() => {});
     } catch {
       // Not in a Tauri window.
     }

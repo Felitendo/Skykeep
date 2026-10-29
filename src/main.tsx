@@ -1,7 +1,6 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { QuickCapture } from "./components/QuickCapture";
 import "./styles/tokens.css";
 import "./styles/kit.css";
 import "./styles/app.css";
@@ -46,12 +45,20 @@ document.addEventListener("contextmenu", (e) => {
   if (!editable) e.preventDefault();
 });
 
-// The quick-capture window (`skykeep --new reminder`) is one field, not the library.
+// The quick-capture window (`skykeep --new reminder`) is one field, not the library — and the
+// library's window never reads its code.
 const capture = new URLSearchParams(window.location.search).get("capture");
+const QuickCapture = lazy(() => import("./components/QuickCapture").then((m) => ({ default: m.QuickCapture })));
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {capture === "reminder" || capture === "note" ? <QuickCapture initial={capture} /> : <App />}
+    {capture === "reminder" || capture === "note" ? (
+      <Suspense fallback={null}>
+        <QuickCapture initial={capture} />
+      </Suspense>
+    ) : (
+      <App />
+    )}
   </React.StrictMode>
 );
 
