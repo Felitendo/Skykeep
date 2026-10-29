@@ -482,6 +482,17 @@ async fn folder_listing(
     params: &[(String, String)],
     folder_id: &str,
 ) -> Result<Vec<DriveItem>> {
+    listing(&raw_listing(http, root, params, folder_id).await?)
+}
+
+/// A folder's listing as Apple sent it, every field kept: a copy is asked for by `item_id`,
+/// which only this has.
+async fn raw_listing(
+    http: &reqwest::Client,
+    root: &str,
+    params: &[(String, String)],
+    folder_id: &str,
+) -> Result<Value> {
     let url = format!(
         "{}/retrieveItemDetailsInFolders",
         root.trim_end_matches('/')
@@ -499,9 +510,8 @@ async fn folder_listing(
             text.chars().take(160).collect::<String>()
         )));
     }
-    let parsed: Value = serde_json::from_str(&text)
-        .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))?;
-    listing(&parsed)
+    serde_json::from_str(&text)
+        .map_err(|e| Error::Protocol(format!("Drive returned invalid JSON: {e}")))
 }
 
 /// The parent a write on `item` should be verified against: its own folder if it has one,
@@ -669,20 +679,21 @@ pub async fn duplicate(
     params: Vec<(String, String)>,
     item: &DriveItem,
 ) -> Result<()> {
-    let parent = parent_of(item);
-    let url = format!(
-        "{}/retrieveItemDetailsInFolders",
-        drivews_root.trim_end_matches('/')
-    );
-    let body = json!([{ "drivewsid": parent, "partialData": false }]);
-    let response = http.post(url).query(&params).json(&body).send().await?;
-    if response.status().as_u16() == 450 {
-        return Err(Error::ReauthRequired);
-    }
-    let listing: Value = response
-        .json()
+    ask_for_copy(http, docws_root, drivews_root, &params, item)
         .await
-        .map_err(|e| Error::Protocol(format!("Drive listing: {e}")))?;
+        .map(|_| ())
+}
+
+/// Asks Apple for a copy of `item` beside itself ([`duplicate`]); answers the folder as it was
+/// just before, to tell the copy by.
+async fn ask_for_copy(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: &[(String, String)],
+    item: &DriveItem,
+) -> Result<Vec<DriveItem>> {
+    let listing = raw_listing(http, drivews_root, params, parent_of(item)).await?;
     let item_id = listing
         .pointer("/0/items")
         .and_then(Value::as_array)
@@ -696,13 +707,14 @@ pub async fn duplicate(
             Error::Refused("That item is no longer in its folder, so it was not duplicated.".into())
         })?
         .to_string();
+    let before = parse_folder(&listing);
     let url = format!(
         "{}/v1/item/copy/{item_id}",
         docws_root.trim_end_matches('/')
     );
     let response = http
         .post(url)
-        .query(&params)
+        .query(params)
         .json(&json!({ "info_to_update": {} }))
         .send()
         .await?;
@@ -717,7 +729,47 @@ pub async fn duplicate(
             text.chars().take(200).collect::<String>()
         )));
     }
-    Ok(())
+    Ok(before)
+}
+
+/// A copy of `item` made beside it, and found: what Apple answers the copy with says nothing
+/// of it, so it is the item in the folder that was not there before, of the same kind and
+/// extension — the one named after the original if another device added something meanwhile.
+/// Looked for a few times, spaced out, as a write takes Apple a moment to list.
+async fn copy_beside(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: &[(String, String)],
+    item: &DriveItem,
+) -> Result<DriveItem> {
+    let before = ask_for_copy(http, docws_root, drivews_root, params, item).await?;
+    let parent = parent_of(item);
+    let stem = without_copy(&item.name).to_lowercase();
+    for wait in [0u64, 400, 800, 1500, 2500, 4000] {
+        if wait > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        }
+        let mut new: Vec<DriveItem> = folder_listing(http, drivews_root, params, parent)
+            .await?
+            .into_iter()
+            .filter(|i| {
+                i.kind == item.kind
+                    && i.extension == item.extension
+                    && !before.iter().any(|b| b.drivewsid == i.drivewsid)
+            })
+            .collect();
+        new.sort_by_key(|i| !i.name.to_lowercase().starts_with(&stem));
+        if let Some(copy) = new.into_iter().next() {
+            return Ok(DriveItem {
+                parent_id: Some(parent.to_string()),
+                ..copy
+            });
+        }
+    }
+    Err(Error::Refused(
+        "iCloud answered, but the copy hasn’t shown up yet — try again in a moment.".into(),
+    ))
 }
 
 /// Apple's own thumbnails for the files in one folder, as `(drivewsid, image bytes)`.
@@ -1197,6 +1249,237 @@ pub async fn move_to(
         ));
     }
     Ok(())
+}
+
+/// The name Finder gives a copy put into a folder that already holds `taken`: its own name
+/// where that is free, else "Report copy.pdf", then "Report copy 2.pdf", "Report copy 3.pdf".
+/// A copy of a copy is not "Report copy copy.pdf": the " copy" or " copy 2" it ends with is
+/// counted on from, as Finder counts. Names are compared without regard to case, as iCloud
+/// Drive compares them. `extension` is Apple's own, kept apart from the name; a folder has none.
+#[must_use]
+pub fn copy_name(stem: &str, extension: Option<&str>, taken: &[String]) -> String {
+    let ext = extension
+        .filter(|e| !e.is_empty())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let taken: std::collections::HashSet<String> = taken.iter().map(|t| t.to_lowercase()).collect();
+    let free = |name: &String| !taken.contains(&name.to_lowercase());
+    let whole = format!("{stem}{ext}");
+    if free(&whole) {
+        return whole;
+    }
+    let base = without_copy(stem);
+    std::iter::once(format!("{base} copy{ext}"))
+        .chain((2u32..).map(|n| format!("{base} copy {n}{ext}")))
+        .find(free)
+        .unwrap_or(whole)
+}
+
+/// "Report copy" and "Report copy 3" as "Report": the name a copy's number counts from.
+fn without_copy(stem: &str) -> &str {
+    if let Some(rest) = stem.strip_suffix(" copy").filter(|r| !r.is_empty()) {
+        return rest;
+    }
+    match stem.rsplit_once(" copy ") {
+        Some((rest, n))
+            if !rest.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            rest
+        }
+        _ => stem,
+    }
+}
+
+/// Copy a file or folder into another folder, as Finder's Copy and then Paste: the copy keeps
+/// the original's name where that is free there and is named as Finder names a copy where it
+/// is not ([`copy_name`]). Answers the copy, where it now is.
+///
+/// iCloud Drive's web service copies only beside the original (`v1/item/copy`, [`duplicate`]),
+/// so a file is copied there, given a name free in both folders, moved, and named last: never
+/// two things of one name in a folder at any step. A folder is made anew at the destination
+/// and what is in it copied the same way, folder by folder. Into its own folder it is a
+/// duplicate named as Finder names one ("Report copy.pdf"). Anything that fails part-way sends
+/// what it made to Recently Deleted again, so a failed paste leaves no half copy behind.
+pub async fn copy_to(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: Vec<(String, String)>,
+    item: &DriveItem,
+    destination_id: &str,
+) -> Result<DriveItem> {
+    match item.kind.as_str() {
+        "FILE" => {
+            copy_file_to(
+                http,
+                docws_root,
+                drivews_root,
+                &params,
+                item,
+                destination_id,
+            )
+            .await
+        }
+        "FOLDER" => {
+            copy_folder_to(
+                http,
+                docws_root,
+                drivews_root,
+                &params,
+                item,
+                destination_id,
+            )
+            .await
+        }
+        _ => Err(Error::Refused(format!(
+            "“{}” belongs to an app and can’t be copied.",
+            item.display_name()
+        ))),
+    }
+}
+
+async fn copy_folder_to(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: &[(String, String)],
+    folder: &DriveItem,
+    destination_id: &str,
+) -> Result<DriveItem> {
+    if folder.drivewsid == destination_id {
+        return Err(Error::Refused(format!(
+            "“{}” can’t be copied into itself.",
+            folder.name
+        )));
+    }
+    let taken = names_in(
+        &folder_listing(http, drivews_root, params, destination_id).await?,
+        None,
+    );
+    let name = copy_name(&folder.name, None, &taken);
+    let mut made =
+        create_folder(http, drivews_root, params.to_vec(), destination_id, &name).await?;
+    made.parent_id = Some(destination_id.to_string());
+    // Each folder of the original beside the one made for it, walked a level at a time. What
+    // was made here is never walked into: a folder pasted into itself would go on for ever.
+    let mut ours = vec![made.drivewsid.clone()];
+    let mut to_fill = vec![(folder.drivewsid.clone(), made.drivewsid.clone())];
+    let filled: Result<()> = async {
+        while let Some((from, into)) = to_fill.pop() {
+            for child in folder_listing(http, drivews_root, params, &from).await? {
+                if ours.contains(&child.drivewsid) {
+                    continue;
+                }
+                let child = DriveItem {
+                    parent_id: Some(from.clone()),
+                    ..child
+                };
+                match child.kind.as_str() {
+                    "FOLDER" => {
+                        let sub =
+                            create_folder(http, drivews_root, params.to_vec(), &into, &child.name)
+                                .await?;
+                        ours.push(sub.drivewsid.clone());
+                        to_fill.push((child.drivewsid, sub.drivewsid));
+                    }
+                    "FILE" => {
+                        copy_file_to(http, docws_root, drivews_root, params, &child, &into).await?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+    match filled {
+        Ok(()) => Ok(made),
+        Err(e) => {
+            delete(http, drivews_root, params.to_vec(), &made)
+                .await
+                .ok();
+            Err(e)
+        }
+    }
+}
+
+async fn copy_file_to(
+    http: &reqwest::Client,
+    docws_root: &str,
+    drivews_root: &str,
+    params: &[(String, String)],
+    file: &DriveItem,
+    destination_id: &str,
+) -> Result<DriveItem> {
+    let source = parent_of(file).to_string();
+    let mut copy = copy_beside(http, docws_root, drivews_root, params, file).await?;
+    let placed: Result<String> = async {
+        let ext = file.extension.as_deref();
+        let source_names = names_in(
+            &folder_listing(http, drivews_root, params, &source).await?,
+            Some(&copy.drivewsid),
+        );
+        if source == destination_id {
+            // A duplicate, named as Finder names one: Apple's "Report 2.pdf" is "Report copy.pdf".
+            let want = copy_name(&file.name, ext, &source_names);
+            if copy.display_name() != want {
+                rename(http, drivews_root, params.to_vec(), &copy, &want).await?;
+            }
+            return Ok(want);
+        }
+        let dest_names = names_in(
+            &folder_listing(http, drivews_root, params, destination_id).await?,
+            None,
+        );
+        let want = copy_name(&file.name, ext, &dest_names);
+        let free_in = |names: &[String], name: &str| {
+            let name = name.to_lowercase();
+            !names.iter().any(|n| n.to_lowercase() == name)
+        };
+        // The name it travels under: free in the folder it leaves and in the one it goes to.
+        let travel = if free_in(&source_names, &want) {
+            want.clone()
+        } else if free_in(&dest_names, &copy.display_name()) {
+            copy.display_name()
+        } else {
+            copy_name(&file.name, ext, &[source_names, dest_names].concat())
+        };
+        if copy.display_name() != travel {
+            rename(http, drivews_root, params.to_vec(), &copy, &travel).await?;
+        }
+        move_to(http, drivews_root, params.to_vec(), &copy, destination_id).await?;
+        copy.parent_id = Some(destination_id.to_string());
+        if travel != want {
+            rename(http, drivews_root, params.to_vec(), &copy, &want).await?;
+        }
+        Ok(want)
+    }
+    .await;
+    match placed {
+        Ok(named) => {
+            let ext = copy.extension.as_deref().map(|e| format!(".{e}"));
+            copy.name = match ext {
+                Some(ext) if named.ends_with(&ext) => named[..named.len() - ext.len()].to_string(),
+                _ => named,
+            };
+            Ok(copy)
+        }
+        Err(e) => {
+            delete(http, drivews_root, params.to_vec(), &copy)
+                .await
+                .ok();
+            Err(e)
+        }
+    }
+}
+
+/// The names in a folder as a person reads them, all but `except`'s.
+fn names_in(items: &[DriveItem], except: Option<&str>) -> Vec<String> {
+    items
+        .iter()
+        .filter(|i| Some(i.drivewsid.as_str()) != except)
+        .map(DriveItem::display_name)
+        .collect()
 }
 
 #[cfg(test)]
@@ -3113,5 +3396,488 @@ mod recents_tests {
             ["New", "Old"]
         );
         assert_eq!(got[0].opened_at, Some(1_792_176_371));
+    }
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    const ROOT: &str = quince_core::drive::ROOT;
+    const WORK: &str = "FOLDER::com.apple.CloudDocs::work";
+
+    /// Finder's names for a copy, as it gives them.
+    #[test]
+    fn a_copy_is_named_as_finder_names_one() {
+        let taken = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(copy_name("Report", Some("pdf"), &[]), "Report.pdf");
+        assert_eq!(
+            copy_name("Report", Some("pdf"), &taken(&["Report.pdf"])),
+            "Report copy.pdf"
+        );
+        assert_eq!(
+            copy_name(
+                "Report",
+                Some("pdf"),
+                &taken(&["report.PDF", "Report copy.pdf"])
+            ),
+            "Report copy 2.pdf",
+            "names are the same whatever their case"
+        );
+        assert_eq!(
+            copy_name(
+                "Report",
+                Some("pdf"),
+                &taken(&["Report.pdf", "Report copy.pdf", "Report copy 2.pdf"])
+            ),
+            "Report copy 3.pdf"
+        );
+        // A copy of a copy counts on, never "copy copy".
+        assert_eq!(
+            copy_name("Report copy", Some("pdf"), &taken(&["Report copy.pdf"])),
+            "Report copy 2.pdf"
+        );
+        assert_eq!(
+            copy_name(
+                "Report copy 2",
+                Some("pdf"),
+                &taken(&["Report copy.pdf", "Report copy 2.pdf"])
+            ),
+            "Report copy 3.pdf"
+        );
+        // A folder, and a file with no extension.
+        assert_eq!(copy_name("Trip", None, &taken(&["Trip"])), "Trip copy");
+        assert_eq!(
+            copy_name("Makefile", Some(""), &taken(&["Makefile"])),
+            "Makefile copy"
+        );
+        // "copy" inside a name is just a word.
+        assert_eq!(
+            copy_name("copy", Some("txt"), &taken(&["copy.txt"])),
+            "copy copy.txt"
+        );
+        assert_eq!(
+            copy_name("Hard copy 2b", None, &taken(&["Hard copy 2b"])),
+            "Hard copy 2b copy"
+        );
+    }
+
+    #[derive(Clone, Debug)]
+    struct Item {
+        id: String,
+        item_id: String,
+        parent: String,
+        name: String,
+        ext: Option<String>,
+        kind: &'static str,
+    }
+
+    impl Item {
+        fn whole(&self) -> String {
+            match &self.ext {
+                Some(e) => format!("{}.{e}", self.name),
+                None => self.name.clone(),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct State {
+        items: Vec<Item>,
+        made: u32,
+        /// Each write, in order: what was done, and to which name.
+        writes: Vec<String>,
+        refuse_moves: bool,
+    }
+
+    /// A stand-in for iCloud Drive's web service that keeps its folders as Apple does — a copy
+    /// lands beside its original as "Name 2", and a name already in a folder is refused there —
+    /// so a paste's steps are checked against what the service would do with them.
+    #[derive(Clone)]
+    struct FakeDrive(Arc<Mutex<State>>);
+
+    impl FakeDrive {
+        fn new(items: &[(&str, &str, &str, Option<&str>, &'static str)]) -> Self {
+            let state = State {
+                items: items
+                    .iter()
+                    .map(|(id, parent, name, ext, kind)| Item {
+                        id: (*id).into(),
+                        item_id: format!("i-{id}"),
+                        parent: (*parent).into(),
+                        name: (*name).into(),
+                        ext: ext.map(Into::into),
+                        kind,
+                    })
+                    .collect(),
+                ..State::default()
+            };
+            Self(Arc::new(Mutex::new(state)))
+        }
+
+        fn names(&self, folder: &str) -> Vec<String> {
+            let mut names: Vec<String> = self
+                .0
+                .lock()
+                .unwrap()
+                .items
+                .iter()
+                .filter(|i| i.parent == folder)
+                .map(Item::whole)
+                .collect();
+            names.sort();
+            names
+        }
+
+        fn item(&self, id: &str) -> DriveItem {
+            let state = self.0.lock().unwrap();
+            let i = state.items.iter().find(|i| i.id == id).unwrap();
+            DriveItem {
+                drivewsid: i.id.clone(),
+                parent_id: Some(i.parent.clone()),
+                name: i.name.clone(),
+                extension: i.ext.clone(),
+                kind: i.kind.into(),
+                size: None,
+                child_count: None,
+                created_at: None,
+                modified_at: None,
+                etag: Some("e".into()),
+            }
+        }
+
+        fn writes(&self) -> Vec<String> {
+            self.0.lock().unwrap().writes.clone()
+        }
+    }
+
+    fn taken_in(state: &State, folder: &str, name: &str, except: &str) -> bool {
+        state
+            .items
+            .iter()
+            .any(|i| i.parent == folder && i.id != except && i.whole().eq_ignore_ascii_case(name))
+    }
+
+    impl Respond for FakeDrive {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let mut state = self.0.lock().unwrap();
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let path = request.url.path().to_string();
+            let refused = ResponseTemplate::new(409);
+            if path.ends_with("/retrieveItemDetailsInFolders") {
+                let folder = body[0]["drivewsid"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let known = folder == ROOT || state.items.iter().any(|i| i.id == folder);
+                let items: Vec<Value> = state
+                    .items
+                    .iter()
+                    .filter(|i| i.parent == folder)
+                    .map(|i| {
+                        json!({ "drivewsid": i.id, "parentId": i.parent, "name": i.name,
+                                "extension": i.ext, "type": i.kind, "etag": "e", "item_id": i.item_id })
+                    })
+                    .collect();
+                let status = if known { "OK" } else { "ID_INVALID" };
+                return ResponseTemplate::new(200).set_body_json(
+                    json!([{ "drivewsid": folder, "status": status, "items": items }]),
+                );
+            }
+            if let Some(item_id) = path.strip_prefix("/v1/item/copy/") {
+                let Some(original) = state.items.iter().find(|i| i.item_id == item_id).cloned()
+                else {
+                    return ResponseTemplate::new(404);
+                };
+                // Apple's own name for a copy beside its original: "Report 2.pdf".
+                let name = (2..)
+                    .map(|n| format!("{} {n}", original.name))
+                    .find(|n| {
+                        let whole = Item {
+                            name: n.clone(),
+                            ..original.clone()
+                        }
+                        .whole();
+                        !taken_in(&state, &original.parent, &whole, "")
+                    })
+                    .unwrap();
+                state.made += 1;
+                let id = format!("FILE::com.apple.CloudDocs::copy{}", state.made);
+                state.writes.push(format!("copy {}", original.whole()));
+                state.items.push(Item {
+                    item_id: format!("i-{id}"),
+                    id,
+                    name,
+                    ..original
+                });
+                return ResponseTemplate::new(200).set_body_json(json!({}));
+            }
+            if path.ends_with("/renameItems") {
+                let id = body["items"][0]["drivewsid"].as_str().unwrap().to_string();
+                let whole = body["items"][0]["name"].as_str().unwrap().to_string();
+                let at = state.items.iter().position(|i| i.id == id).unwrap();
+                let parent = state.items[at].parent.clone();
+                if taken_in(&state, &parent, &whole, &id) {
+                    return refused;
+                }
+                let item = &mut state.items[at];
+                match (&item.ext, whole.rsplit_once('.')) {
+                    (Some(_), Some((stem, ext))) if item.kind == "FILE" => {
+                        item.name = stem.into();
+                        item.ext = Some(ext.into());
+                    }
+                    _ => item.name.clone_from(&whole),
+                }
+                state.writes.push(format!("rename {whole}"));
+                return ResponseTemplate::new(200).set_body_json(json!({ "items": [] }));
+            }
+            if path.ends_with("/moveItems") {
+                if state.refuse_moves {
+                    return ResponseTemplate::new(403);
+                }
+                let id = body["items"][0]["drivewsid"].as_str().unwrap().to_string();
+                let to = body["destinationDrivewsId"].as_str().unwrap().to_string();
+                let at = state.items.iter().position(|i| i.id == id).unwrap();
+                let whole = state.items[at].whole();
+                if taken_in(&state, &to, &whole, &id) {
+                    return refused;
+                }
+                state.items[at].parent.clone_from(&to);
+                state.writes.push(format!("move {whole}"));
+                return ResponseTemplate::new(200).set_body_json(json!({ "items": [] }));
+            }
+            if path.ends_with("/createFolders") {
+                let parent = body["destinationDrivewsId"].as_str().unwrap().to_string();
+                let name = body["folders"][0]["name"].as_str().unwrap().to_string();
+                if taken_in(&state, &parent, &name, "") {
+                    return ResponseTemplate::new(200).set_body_json(
+                        json!({ "folders": [{ "clientId": "x", "status": "UNKNOWN" }] }),
+                    );
+                }
+                state.made += 1;
+                let id = format!("FOLDER::com.apple.CloudDocs::made{}", state.made);
+                state.writes.push(format!("folder {name}"));
+                state.items.push(Item {
+                    id: id.clone(),
+                    item_id: format!("i-{id}"),
+                    parent: parent.clone(),
+                    name: name.clone(),
+                    ext: None,
+                    kind: "FOLDER",
+                });
+                return ResponseTemplate::new(200).set_body_json(json!({ "folders": [{
+                    "drivewsid": id, "parentId": parent, "name": name, "type": "FOLDER", "status": "OK"
+                }] }));
+            }
+            if path.ends_with("/moveItemsToTrash") {
+                let id = body["items"][0]["drivewsid"].as_str().unwrap().to_string();
+                let whole = state.items.iter().find(|i| i.id == id).map(Item::whole);
+                state.items.retain(|i| i.id != id);
+                state
+                    .writes
+                    .push(format!("trash {}", whole.unwrap_or_default()));
+                return ResponseTemplate::new(200)
+                    .set_body_json(json!({ "items": [{ "drivewsid": id, "status": "OK" }] }));
+            }
+            ResponseTemplate::new(404)
+        }
+    }
+
+    async fn serve(drive: &FakeDrive) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(drive.clone())
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn paste(server: &MockServer, item: &DriveItem, into: &str) -> Result<DriveItem> {
+        let uri = server.uri();
+        copy_to(&reqwest::Client::new(), &uri, &uri, vec![], item, into).await
+    }
+
+    const REPORT: &str = "FILE::com.apple.CloudDocs::report";
+
+    /// Into a folder without one of its name, the copy keeps its name: copied beside the
+    /// original, named there, moved — and the original is where it was.
+    #[tokio::test]
+    async fn a_file_pasted_elsewhere_keeps_its_name() {
+        let drive = FakeDrive::new(&[
+            (REPORT, ROOT, "Report", Some("pdf"), "FILE"),
+            (WORK, ROOT, "Work", None, "FOLDER"),
+        ]);
+        let server = serve(&drive).await;
+        let copy = paste(&server, &drive.item(REPORT), WORK).await.unwrap();
+        assert_eq!(drive.names(WORK), ["Report.pdf"]);
+        assert_eq!(drive.names(ROOT), ["Report.pdf", "Work"]);
+        assert_eq!(copy.display_name(), "Report.pdf");
+        assert_eq!(copy.parent_id.as_deref(), Some(WORK));
+        // Apple's "Report 2.pdf" is free in Work, so it travels under that and is named there.
+        assert_eq!(
+            drive.writes(),
+            ["copy Report.pdf", "move Report 2.pdf", "rename Report.pdf"]
+        );
+    }
+
+    /// Where the name is taken, the copy is "Report copy.pdf", then "Report copy 2.pdf".
+    #[tokio::test]
+    async fn a_file_pasted_where_its_name_is_taken_is_named_as_finder_names_a_copy() {
+        let drive = FakeDrive::new(&[
+            (REPORT, ROOT, "Report", Some("pdf"), "FILE"),
+            (WORK, ROOT, "Work", None, "FOLDER"),
+            (
+                "FILE::com.apple.CloudDocs::theirs",
+                WORK,
+                "Report",
+                Some("pdf"),
+                "FILE",
+            ),
+            // Taken in Work too: the name Apple gives the copy cannot be the one it travels under.
+            (
+                "FILE::com.apple.CloudDocs::two",
+                WORK,
+                "Report 2",
+                Some("pdf"),
+                "FILE",
+            ),
+        ]);
+        let server = serve(&drive).await;
+        paste(&server, &drive.item(REPORT), WORK).await.unwrap();
+        assert_eq!(
+            drive.names(WORK),
+            ["Report 2.pdf", "Report copy.pdf", "Report.pdf"]
+        );
+        paste(&server, &drive.item(REPORT), WORK).await.unwrap();
+        assert_eq!(
+            drive.names(WORK),
+            [
+                "Report 2.pdf",
+                "Report copy 2.pdf",
+                "Report copy.pdf",
+                "Report.pdf"
+            ]
+        );
+        assert_eq!(
+            drive.names(ROOT),
+            ["Report.pdf", "Work"],
+            "nothing left beside the original"
+        );
+    }
+
+    /// Pasted into its own folder, it is a duplicate named "Report copy.pdf", not Apple's
+    /// "Report 2.pdf".
+    #[tokio::test]
+    async fn a_file_pasted_into_its_own_folder_is_a_finder_duplicate() {
+        let drive = FakeDrive::new(&[(REPORT, ROOT, "Report", Some("pdf"), "FILE")]);
+        let server = serve(&drive).await;
+        paste(&server, &drive.item(REPORT), ROOT).await.unwrap();
+        paste(&server, &drive.item(REPORT), ROOT).await.unwrap();
+        assert_eq!(
+            drive.names(ROOT),
+            ["Report copy 2.pdf", "Report copy.pdf", "Report.pdf"]
+        );
+    }
+
+    /// A folder is made anew where it is pasted, with all that is in it copied in under the
+    /// same names, folders within folders too.
+    #[tokio::test]
+    async fn a_folder_is_pasted_with_everything_in_it() {
+        let trip = "FOLDER::com.apple.CloudDocs::trip";
+        let days = "FOLDER::com.apple.CloudDocs::days";
+        let drive = FakeDrive::new(&[
+            (trip, ROOT, "Trip", None, "FOLDER"),
+            (
+                "FILE::com.apple.CloudDocs::plan",
+                trip,
+                "Plan",
+                Some("pdf"),
+                "FILE",
+            ),
+            (
+                "FILE::com.apple.CloudDocs::plan2",
+                trip,
+                "Plan 2",
+                Some("pdf"),
+                "FILE",
+            ),
+            (days, trip, "Days", None, "FOLDER"),
+            (
+                "FILE::com.apple.CloudDocs::d1",
+                days,
+                "Day one",
+                Some("txt"),
+                "FILE",
+            ),
+            (WORK, ROOT, "Work", None, "FOLDER"),
+        ]);
+        let server = serve(&drive).await;
+        let made = paste(&server, &drive.item(trip), WORK).await.unwrap();
+        assert_eq!(made.name, "Trip");
+        assert_eq!(drive.names(WORK), ["Trip"]);
+        assert_eq!(
+            drive.names(&made.drivewsid),
+            ["Days", "Plan 2.pdf", "Plan.pdf"]
+        );
+        let inner = drive
+            .0
+            .lock()
+            .unwrap()
+            .items
+            .iter()
+            .find(|i| i.parent == made.drivewsid && i.name == "Days")
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(drive.names(&inner), ["Day one.txt"]);
+        // The originals are untouched.
+        assert_eq!(drive.names(trip), ["Days", "Plan 2.pdf", "Plan.pdf"]);
+        assert_eq!(drive.names(days), ["Day one.txt"]);
+
+        // Into the folder it is in: "Trip copy", and never into the copy being made.
+        let again = paste(&server, &drive.item(trip), ROOT).await.unwrap();
+        assert_eq!(again.name, "Trip copy");
+        assert_eq!(drive.names(ROOT), ["Trip", "Trip copy", "Work"]);
+        assert_eq!(
+            drive.names(&again.drivewsid),
+            ["Days", "Plan 2.pdf", "Plan.pdf"]
+        );
+        // Into itself, it never begins.
+        assert!(paste(&server, &drive.item(trip), trip).await.is_err());
+    }
+
+    /// A paste that fails part-way leaves nothing of itself behind: the copy goes to Recently
+    /// Deleted again, and Apple's refusal is the answer.
+    #[tokio::test]
+    async fn a_failed_paste_takes_its_copy_away_again() {
+        let drive = FakeDrive::new(&[
+            (REPORT, ROOT, "Report", Some("pdf"), "FILE"),
+            (WORK, ROOT, "Work", None, "FOLDER"),
+        ]);
+        drive.0.lock().unwrap().refuse_moves = true;
+        let server = serve(&drive).await;
+        assert!(paste(&server, &drive.item(REPORT), WORK).await.is_err());
+        assert_eq!(drive.names(ROOT), ["Report.pdf", "Work"]);
+        assert!(drive.names(WORK).is_empty());
+        assert_eq!(drive.writes().last().unwrap(), "trash Report 2.pdf");
+    }
+
+    /// Only files and folders: an app's own library is not copied.
+    #[tokio::test]
+    async fn an_app_library_is_not_copied() {
+        let drive = FakeDrive::new(&[(
+            "APPLIBRARY::com.apple.Keynote",
+            ROOT,
+            "Keynote",
+            None,
+            "APP_LIBRARY",
+        )]);
+        let server = serve(&drive).await;
+        let keynote = drive.item("APPLIBRARY::com.apple.Keynote");
+        assert!(paste(&server, &keynote, WORK).await.is_err());
+        assert!(drive.writes().is_empty());
     }
 }
