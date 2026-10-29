@@ -190,9 +190,14 @@ pub struct ReminderCounts {
     pub scheduled: usize,
     pub flagged: usize,
     pub all: usize,
+    /// Every reminder ticked off, in every list shown.
+    pub completed: usize,
     /// Outstanding reminders per list, keyed by list guid.
     pub lists: Vec<(String, usize)>,
 }
+
+/// What the Completed list holds, for its tile's count and for opening it alike.
+const COMPLETED: &str = "r.completed_at IS NOT NULL";
 
 /// Apple's built-in views over every list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +207,9 @@ pub enum SmartList {
     Scheduled,
     Flagged,
     All,
+    /// Every reminder ticked off, the most recently completed first, as Reminders' own
+    /// Completed list shows them.
+    Completed,
 }
 
 impl Reminder {
@@ -709,6 +717,7 @@ impl Library {
             scheduled: one("r.completed_at IS NULL AND r.due_at IS NOT NULL", &[])?,
             flagged: one("r.completed_at IS NULL AND r.flagged = 1", &[])?,
             all: one("r.completed_at IS NULL", &[])?,
+            completed: one(COMPLETED, &[])?,
             lists,
         })
     }
@@ -722,6 +731,13 @@ impl Library {
             SmartList::Scheduled => ("r.completed_at IS NULL AND r.due_at IS NOT NULL", vec![]),
             SmartList::Flagged => ("r.completed_at IS NULL AND r.flagged = 1", vec![]),
             SmartList::All => ("r.completed_at IS NULL", vec![]),
+            SmartList::Completed => (COMPLETED, vec![]),
+        };
+        // Completed reminders come latest first; the rest by when they are due.
+        let order = if kind == SmartList::Completed {
+            "r.completed_at DESC, r.title"
+        } else {
+            "r.due_at IS NULL, r.due_at, r.priority DESC, r.title"
         };
         let sql = format!(
             "SELECT r.guid, r.list_guid, r.title, r.notes, r.due_at, r.completed_at,
@@ -730,7 +746,7 @@ impl Library {
              FROM reminders r
              JOIN reminder_lists l ON l.guid = r.list_guid
              WHERE l.enabled = 1 AND {clause}
-             ORDER BY r.due_at IS NULL, r.due_at, r.priority DESC, r.title
+             ORDER BY {order}
              LIMIT {MOST_AT_ONCE}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1500,6 +1516,7 @@ mod smart_tests {
             SmartList::Scheduled,
             SmartList::Flagged,
             SmartList::All,
+            SmartList::Completed,
         ] {
             assert!(lib.reminders_smart(kind, DAY_END).unwrap().is_empty());
         }
@@ -1585,6 +1602,7 @@ mod count_tests {
             (SmartList::Scheduled, counts.scheduled),
             (SmartList::Flagged, counts.flagged),
             (SmartList::All, counts.all),
+            (SmartList::Completed, counts.completed),
         ] {
             assert_eq!(
                 lib.reminders_smart(kind, now).unwrap().len(),
@@ -1594,6 +1612,26 @@ mod count_tests {
         }
         assert_eq!(counts.today, 1, "overdue counts as today");
         assert_eq!(counts.all, 3, "completed does not count");
+        assert_eq!(counts.completed, 1, "Completed holds the one ticked off");
+    }
+
+    /// Completed shows the reminders ticked off, the latest first.
+    #[test]
+    fn completed_lists_the_latest_first() {
+        let mut lib = library();
+        let mut early = reminder("early", "L1", None, true, false);
+        early.completed_at = Some(100);
+        let mut late = reminder("late", "L1", None, true, false);
+        late.completed_at = Some(900);
+        lib.put_reminders(&[early, late, reminder("open", "L1", None, false, false)])
+            .unwrap();
+        let shown: Vec<String> = lib
+            .reminders_smart(SmartList::Completed, 0)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.guid)
+            .collect();
+        assert_eq!(shown, vec!["late", "early"]);
     }
 
     /// A list nobody has switched on contributes to nothing.

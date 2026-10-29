@@ -255,7 +255,7 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "event_save": (window.__eventSaves ??= []).push(args.draft); return "E-new";
         case "event_delete": (window.__eventDeletes ??= []).push(args); return null;
         case "calendar_sync": return { calendars: calendars.length, events: events.length };
-        case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
+        case "reminder_counts": return { today: 4, scheduled: 7, flagged: 2, all: 12, completed: 3, lists: [["L1", 5], ["L2", 3], ["lists", 4]] };
         case "reminder_lists": return !remindersFixture ? [] : reminderLists;
         case "reminders_in": {
           if (!remindersFixture || remindersFixture === "lists") return [];
@@ -297,6 +297,9 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             const last = (window.__ending ?? []).includes(args.guid);
             if (r && last && args.done) { r.completedAt = Math.floor(Date.now() / 1000); window.__ending = window.__ending.filter((g) => g !== args.guid); }
             else if (r && r.recurFrequency !== null && r.recurFrequency !== undefined && args.done) r.dueAt += 86400 * (r.recurInterval ?? 1);
+            // Unticked, a fixture reminder is open again in the library.
+            const own = reminderItems.find((x) => x.guid === args.guid);
+            if (own && !args.done) own.completedAt = null;
           }
           return null;
         case "reminder_set_repeat": {
@@ -351,7 +354,13 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         case "reminder_list_create": case "reminder_list_rename": case "reminder_list_delete":
           return null;
         // A suite's own reminders in the smart lists (`window.__smartExtra`).
-        case "reminders_smart": return !remindersFixture || remindersFixture === "lists" ? [] : [...reminderItems, ...(window.__smartExtra ?? [])].filter(r => !r.completedAt);
+        case "reminders_smart": {
+          if (!remindersFixture || remindersFixture === "lists") return [];
+          const every = [...reminderItems, ...(window.__smartExtra ?? [])];
+          // Completed: those ticked off, the latest first (reminders.rs reminders_smart).
+          if (args?.kind === "completed") return every.filter((r) => r.completedAt).sort((a, b) => b.completedAt - a.completedAt);
+          return every.filter((r) => !r.completedAt);
+        }
         // Reminders' details (reminders_cmds.rs): tags, a link, early alerts, custom smart lists
         // and sections. A test sets __tagMap / __details / __smartLists / __sections to change them.
         case "reminder_sections": return (window.__sections ?? []).filter((s) => s.listGuid === args.listGuid);

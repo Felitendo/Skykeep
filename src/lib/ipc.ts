@@ -543,7 +543,7 @@ export type ReminderSection = {
   createdAt: number | null;
 };
 
-export type SmartList = "today" | "scheduled" | "flagged" | "all";
+export type SmartList = "today" | "scheduled" | "flagged" | "all" | "completed";
 
 /** What every entry in the Reminders sidebar is holding. */
 export type ReminderCounts = {
@@ -551,6 +551,8 @@ export type ReminderCounts = {
   scheduled: number;
   flagged: number;
   all: number;
+  /** Every reminder ticked off. */
+  completed: number;
   /** [list guid, outstanding count] */
   lists: [string, number][];
 };

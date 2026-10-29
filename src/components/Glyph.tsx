@@ -1,6 +1,7 @@
 import {
   BookOpen,
   Calendar,
+  Check,
   CalendarDays,
   ChevronRight,
   Dumbbell,
@@ -23,6 +24,7 @@ export type GlyphName =
   | "scheduled"
   | "all"
   | "flagged"
+  | "completed"
   | "list"
   | "bullets"
   | "fitness"
@@ -47,6 +49,7 @@ const ICONS: Record<GlyphName, { icon: LucideIcon; filled?: boolean }> = {
   scheduled: { icon: CalendarDays },
   all: { icon: Inbox },
   flagged: { icon: Flag, filled: true },
+  completed: { icon: Check },
   list: { icon: List },
   bullets: { icon: List },
   fitness: { icon: Dumbbell },

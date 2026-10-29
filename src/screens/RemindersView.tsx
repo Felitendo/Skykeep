@@ -54,6 +54,7 @@ const SMART: { kind: SmartList; title: string; glyph: GlyphName; colour: string 
   { kind: "scheduled", title: "Scheduled", glyph: "scheduled", colour: "var(--sys-red)" },
   { kind: "all", title: "All", glyph: "all", colour: "var(--sys-gray)" },
   { kind: "flagged", title: "Flagged", glyph: "flagged", colour: "var(--sys-orange)" },
+  { kind: "completed", title: "Completed", glyph: "completed", colour: "var(--sys-gray)" },
 ];
 
 /** A list's own colour, or Apple's blue for one that has none. */
@@ -752,7 +753,8 @@ export function RemindersView() {
     setItems(patch(r.guid, { completedAt: wasOpen ? Math.floor(Date.now() / 1000) : null }));
     // Only where completed reminders are hidden, and never for a repeating one, which rolls on.
     // Its last time before End Repeat is a completion too, as on the phone.
-    if (wasOpen && !showDone && !repeating) depart(r.guid);
+    // In Completed, a reminder unticked is no longer completed, and leaves it the same way.
+    if ((wasOpen && !showDone && !repeating) || (!wasOpen && smartKind === "completed")) depart(r.guid);
     else stay(r.guid);
     const before = ticks.current.get(r.guid) ?? Promise.resolve();
     const next = before.then(() => send(r, wasOpen));
@@ -1388,7 +1390,8 @@ export function RemindersView() {
     !inList &&
     !gathered &&
     smartKind !== "all" &&
-    smartKind !== "flagged";
+    smartKind !== "flagged" &&
+    smartKind !== "completed";
 
   const sections = useMemo(() => {
     if (searching) {
@@ -1534,7 +1537,8 @@ export function RemindersView() {
       return out;
     }
 
-    // All and Flagged gather from everywhere, so the list each came from is the grouping.
+    // All, Flagged and Completed gather from everywhere, so the list each came from is the
+    // grouping.
     const byList = new Map<string, typeof threaded>();
     for (const row of threaded) {
       const bucket = byList.get(row.reminder.listGuid);
@@ -1677,7 +1681,8 @@ export function RemindersView() {
   );
 
   /** Where a reminder typed at the foot of the view is filed, when that is a choice. */
-  const canAdd = !gathered || (selection.type === "tag" && REMINDER_DETAIL_WRITES);
+  // Completed has nothing to add to, as on the Mac: a reminder begins open.
+  const canAdd = (!gathered || (selection.type === "tag" && REMINDER_DETAIL_WRITES)) && smartKind !== "completed";
   const addRow = targetListGuid && !searching && canAdd && (
     <form className="rx-add" onSubmit={add}>
       <span className="rx-tick ghost" aria-hidden="true">
@@ -1890,7 +1895,13 @@ export function RemindersView() {
           <span>Lists</span>
         </button>
         <header className="pane-head rx-head">
-          <PaneTitle count={`${outstanding} ${outstanding === 1 ? "reminder" : "reminders"}`}>
+          <PaneTitle
+            count={
+              smartKind === "completed" && !searching
+                ? `${items.length - outstanding} completed`
+                : `${outstanding} ${outstanding === 1 ? "reminder" : "reminders"}`
+            }
+          >
             {searching ? `Results for “${query.trim()}”` : heading}
           </PaneTitle>
           {inList && (
@@ -2036,7 +2047,9 @@ export function RemindersView() {
                 ? showDone
                   ? "Nothing in this list yet."
                   : "All done here."
-                : "No Reminders"}
+                : smartKind === "completed"
+                  ? "No Completed Reminders"
+                  : "No Reminders"}
           </EmptyState>
         )}
       </section>
