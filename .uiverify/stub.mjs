@@ -176,8 +176,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             { guid: `quince:sub:${x.id}:m2:1`, calendarGuid: `quince:sub:${x.id}`, title: "Liverpool v Spurs", location: null,
               startsAt: base + 2 * DAY + 8 * HOUR, endsAt: base + 2 * DAY + 10 * HOUR, allDay: false, timezone: "Europe/London", url: null, notes: null, etag: null },
           ]);
-          // A suite's own events at fixed moments (`window.__fixedEvents`), for a given day.
-          const fixed = window.__fixedEvents ?? [];
+          // A suite's own events at fixed moments (`window.__fixedEvents`), for a given day —
+          // and, with `__eventsSlow` set, only those inside the range asked for, answered that
+          // many milliseconds late, as a library read over a range is.
+          const slow = window.__eventsSlow ?? 0;
+          if (slow) await new Promise((r) => setTimeout(r, slow));
+          const fixed = (window.__fixedEvents ?? []).filter((e) => !slow || (e.endsAt > args.from && e.startsAt < args.to));
           if (!n) return [...events, ...subbed, ...fixed];
           const extra = (window.__extra ??= Array.from({ length: n }, (_, i) => ({
             guid: `many${i}`, calendarGuid: i % 2 ? "work" : "home", title: `Event ${i}`, location: null,

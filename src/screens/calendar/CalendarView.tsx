@@ -601,27 +601,42 @@ export function CalendarView() {
   // month either side: asked for one day at a time, stepping to the next day showed the last
   // day's data — none of it on the new day — until the read came back, and the day's list
   // flickered empty and full. Read from this computer, three months cost nothing, and moving
-  // through them waits on nothing.
-  const rawRange = useMemo(() => {
-    if (view === "day" || view === "week")
-      return {
-        from: seconds(addDays(month[0] < week[0] ? month[0] : week[0], -35)),
-        to: seconds(addDays(month[41] > week[6] ? month[41] : week[6], 36)),
-      };
-    if (view === "year")
-      return {
+  // through them waits on nothing. Month reads a month either side too: read alone, the next
+  // month came up empty and filled in a moment later on every step.
+  //
+  // And the range read is kept while what is on screen, and a step either way, is inside it:
+  // a day stepped into the next month, or a week across one, asks for nothing again.
+  const heldRange = useRef<{ from: number; to: number; year: boolean } | null>(null);
+  const range = useMemo(() => {
+    if (view === "year") {
+      const year = {
         from: seconds(new Date(selected.getFullYear(), 0, 1)),
         to: seconds(new Date(selected.getFullYear() + 1, 0, 1)),
+        year: true,
       };
-    return { from: seconds(month[0]), to: seconds(addDays(month[41], 1)) };
+      const h = heldRange.current;
+      return (heldRange.current = h && h.year && h.from === year.from ? h : year);
+    }
+    // On screen, and a step on either side: a week in Day and Week, a month's grid in Month.
+    const need = view === "month"
+      ? { from: seconds(monthDays(addDays(month[0], -1))[0]), to: seconds(addDays(monthDays(addDays(month[41], 1))[41], 1)) }
+      : { from: seconds(addDays(week[0], -7)), to: seconds(addDays(week[6], 8)) };
+    const h = heldRange.current;
+    if (h && !h.year && h.from <= need.from && h.to >= need.to) return h;
+    return (heldRange.current = {
+      from: Math.min(need.from, seconds(addDays(month[0] < week[0] ? month[0] : week[0], -35))),
+      to: Math.max(need.to, seconds(addDays(month[41] > week[6] ? month[41] : week[6], 36))),
+      year: false,
+    });
   }, [view, selected, week, month]);
-  // The same bounds are the same read: stepping a day inside them asks for nothing again.
-  const rangeKey = `${rawRange.from}-${rawRange.to}`;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const range = useMemo(() => rawRange, [rangeKey]);
 
   const { hold, over } = usePending<CalendarEvent>();
+  // Reads in the order they were asked: one answered after a later one — a month stepped
+  // past, a slow read under a quick one — is let go, never drawn over what is newer.
+  const asked = useRef(0);
+  const shownRead = useRef(0);
   const read = useCallback(async () => {
+    const turn = ++asked.current;
     const [found, cals, reminders, lists, feeds] = await Promise.all([
       api.calendarEvents(range.from, range.to),
       api.calendarList(),
@@ -632,6 +647,8 @@ export function CalendarView() {
       api.reminderLists().catch(() => []),
       calendarFeedsApi.list().catch(() => [] as CalendarSubscription[]),
     ]);
+    if (turn < shownRead.current) return;
+    shownRead.current = turn;
     // What reads the same as before is kept as it was, so a read that found nothing new —
     // after every save, every sync, every month stepped into — draws nothing again.
     setSubs((was) => same(was, Array.isArray(feeds) ? feeds : []));
@@ -667,10 +684,14 @@ export function CalendarView() {
 
   // Beyond the months the shared refresh keeps warm, fetch what is being looked at — once,
   // and not for every month flicked past on the way.
+  // What Month fetches is the month on screen: the months either side are read only from
+  // what is here, and fetched when they are looked at.
   const fetched = useRef(new Set<string>());
+  const fetchFrom = view === "month" ? seconds(month[0]) : range.from;
+  const fetchTo = view === "month" ? seconds(addDays(month[41], 1)) : range.to;
   useEffect(() => {
-    const from = toLocalInput(range.from, true);
-    const to = toLocalInput(range.to - 1, true);
+    const from = toLocalInput(fetchFrom, true);
+    const to = toLocalInput(fetchTo - 1, true);
     const key = `${from}:${to}`;
     if (fetched.current.has(key)) return undefined;
     let cancelled = false;
@@ -688,7 +709,7 @@ export function CalendarView() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [range, read]);
+  }, [fetchFrom, fetchTo, read]);
 
   const byGuid = useMemo(() => new Map(calendars.map((c) => [c.guid, c])), [calendars]);
   const shown = useMemo(
