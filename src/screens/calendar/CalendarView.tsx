@@ -2547,6 +2547,7 @@ const TimeGrid = memo(function TimeGrid({
     // hand not quite still, had scrolled it away under the click.
     let first: { x: number; y: number } | null = null;
     let travelled = false;
+    let inZoneSince = 0;
     let frame = 0;
     const edge = () => {
       frame = 0;
@@ -2559,9 +2560,20 @@ const TimeGrid = memo(function TimeGrid({
       const up = first && last.y < first.y - 8;
       const down = first && last.y > first.y + 8;
       const into = up && last.y < r.top + ZONE_PX ? last.y - (r.top + ZONE_PX) : down && last.y > r.bottom - ZONE_PX ? last.y - (r.bottom - ZONE_PX) : 0;
-      if (!into) return;
+      if (!into) {
+        inZoneSince = 0;
+        return;
+      }
+      // Only once held there a moment, as Calendar waits: an edge dragged to the last hour
+      // in view, and let go, had already scrolled the hours and stretched it far past it.
+      const now = performance.now();
+      inZoneSince ||= now;
+      if (now - inZoneSince < 300) {
+        frame = requestAnimationFrame(edge);
+        return;
+      }
       const before = el.scrollTop;
-      el.scrollTop += Math.max(-16, Math.min(16, into / 2));
+      el.scrollTop += Math.max(-10, Math.min(10, into / 3));
       if (el.scrollTop === before) return;
       handlers.current.follow(last.x, last.y);
       frame = requestAnimationFrame(edge);
