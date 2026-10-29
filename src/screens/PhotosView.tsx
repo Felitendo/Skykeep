@@ -97,6 +97,11 @@ const pickedWords = (kinds: Photo["kind"][]) => {
   const noun = videos === 0 ? "Photo" : videos === n ? "Video" : "Item";
   return `${n.toLocaleString()} ${n === 1 ? noun : `${noun}s`} Selected`;
 };
+/** "340 photos", "12 videos", "352 items" — what a batch being received holds. */
+const receivingWords = (n: number, videos: number) => {
+  const noun = videos === 0 ? "photo" : videos === n ? "video" : "item";
+  return `${n.toLocaleString()} ${n === 1 ? noun : `${noun}s`}`;
+};
 
 type Flag = "favorite" | "deleted" | "hidden" | "expunged";
 
@@ -230,6 +235,9 @@ const arrived = new Map<string, number>();
 const ARRIVALS = 12;
 /** How long an arrival is one: its tile is made within a frame or two of it being drawn. */
 const ARRIVAL_MS = 1500;
+/** "Receiving 340 photos" stays at least this long, to be read, and at most this long. */
+const RECEIVING_SHOWN = 1800;
+const RECEIVING_MOST = 30_000;
 /** Whether a tile being made now is for a photo that has just arrived. */
 function justArrived(id: string): boolean {
   const at = arrived.get(id);
@@ -442,7 +450,10 @@ const Tile = memo(function Tile({
               fadeIn(e.currentTarget, { duration: 120 });
             }
           }}
-          onError={under}
+          onError={(e) => {
+            e.currentTarget.dataset.gone = "";
+            under();
+          }}
         />
         {photo.kind === "video" && (
           <span className="px-badge px-duration">
@@ -824,6 +835,24 @@ export function PhotosView() {
     anchorList.current = photos;
   }
   const [uploads, setUploads] = useState<Map<string, UploadEvent>>(new Map());
+  /**
+   * A batch of photos from another device landing in the view (see read): which, how many of
+   * them are videos, and when the last of them landed. Said under the title until the pictures
+   * of those near the screen are in — at least a moment, so it is read, and never for long.
+   */
+  const [receiving, setReceiving] = useState<{ ids: Set<string>; videos: number; at: number } | null>(null);
+  useEffect(() => {
+    if (!receiving) return undefined;
+    const t = window.setInterval(() => {
+      const age = performance.now() - receiving.at;
+      // Only tiles built (near the screen) and still waiting on their picture; one whose
+      // picture cannot be made shows its thumbnail and waits no more.
+      const waiting = [...(scroller.current?.querySelectorAll<HTMLImageElement>(".px-tile img:not([data-in]):not([data-gone])") ?? [])]
+        .some((img) => receiving.ids.has(img.closest<HTMLElement>(".px-tile")?.dataset.id ?? ""));
+      if ((!waiting && age > RECEIVING_SHOWN) || age > RECEIVING_MOST) setReceiving(null);
+    }, 250);
+    return () => window.clearInterval(t);
+  }, [receiving]);
   const [dropping, setDropping] = useState(false);
   const [menu, setMenu] = useState<{ at: { x: number; y: number; alignRight: boolean }; entries: MenuEntry[] } | null>(null);
   /** An album being named in the sidebar: a new one (with the photos to put in it), or a rename. */
@@ -905,6 +934,8 @@ export function PhotosView() {
     const order: PhotoOrder | null = want;
     const d = drawnNow.current;
     const again = photosNow.current !== null && d.view === view && d.album?.id === album?.id && d.query === searching;
+    // Another place: photos being received into the last one are not this one's to speak of.
+    if (!again) setReceiving(null);
     const index = api.photosIndex(source, order);
     let indexed = false;
     // Another place chosen: its first screen from its first page, which is small and comes at
@@ -934,10 +965,21 @@ export function PhotosView() {
       // A few arriving where the grid was already drawn from a whole read fade in, each alone;
       // a batch, the person's own, or anything over a partial first page simply appears.
       const own = ownNames();
-      const arriving = before === readList.current && !before.partial && fresh.length <= ARRIVALS
+      const incoming = before === readList.current && !before.partial
         ? fresh.filter((id) => !ownIds.current.has(id) && !own.has(store.get(id)?.filename ?? ""))
         : [];
+      const arriving = fresh.length <= ARRIVALS ? incoming : [];
       const at = performance.now();
+      // A batch from another device: the line under the title says so while its pictures come
+      // in, as Photos' quiet status line does, rather than tile after tile appearing unexplained.
+      // Photos landing while it is up are counted in.
+      setReceiving((was) => {
+        if (incoming.length <= ARRIVALS && !was) return was;
+        const added = incoming.filter((id) => !was?.ids.has(id));
+        if (!added.length) return was;
+        const videos = (was?.videos ?? 0) + added.filter((id) => (next.marks[next.indexOf(id)] & 3) === 1).length;
+        return { ids: new Set([...(was?.ids ?? []), ...added]), videos, at };
+      });
       for (const [id, when] of arrived) if (at - when > ARRIVAL_MS) arrived.delete(id);
       for (const id of arriving) arrived.set(id, at);
       const keep = anchorOf(scroller.current);
@@ -3142,7 +3184,16 @@ export function PhotosView() {
                 ? pickedWords(kindsOf(selected))
                 : drawn.query
                   ? photos?.length === 1 ? "1 Result" : `${(photos?.length ?? 0).toLocaleString()} Results`
-                  : (here ?? span) || undefined
+                  : receiving
+                    ? (
+                        <>
+                          {(here ?? span) && <>{here ?? span} · </>}
+                          <span className="px-receiving" role="status">
+                            Receiving {receivingWords(receiving.ids.size, receiving.videos)}
+                          </span>
+                        </>
+                      )
+                    : (here ?? span) || undefined
             }
           >
             {title}

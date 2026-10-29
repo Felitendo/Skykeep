@@ -122,6 +122,56 @@ const say = (r) => `remade ${r.remade}, blank ${r.blank}, lost ${r.lost}, moved 
   await ctx.close();
 }
 
+// A batch from another device is said under the title — "Receiving 30 photos" — while its
+// pictures come in, then the line goes; one photo, or the person's own upload, says nothing.
+{
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
+  await ctx.addInitScript(installStub, { screen: "library", services: SERVICES, twoFactor: null });
+  await ctx.addInitScript(instrument);
+  await ctx.addInitScript(library);
+  await ctx.addInitScript(() => {
+    window.__said = [];
+    new MutationObserver(() => {
+      const t = document.querySelector(".px-receiving")?.textContent;
+      if (t && window.__said.at(-1) !== t) window.__said.push(t);
+    }).observe(document, { subtree: true, childList: true, characterData: true });
+  });
+  // Pictures a while in coming, as from the network: the line waits for them.
+  await servePictures(ctx, { delay: 2600 });
+  const page = await ctx.newPage();
+  page.on("pageerror", (e) => ok(false, `page error: ${e.message}`));
+  await page.goto(URL, { waitUntil: "networkidle" });
+  await openScreen(page, "Photos");
+  await page.locator(".px-tile img[data-in]").first().waitFor({ timeout: 15000 });
+  const said = () => page.evaluate(() => window.__said.splice(0));
+  const gone = () => page.waitForFunction(() => !document.querySelector(".px-receiving"), null, { timeout: 15000 }).then(() => true, () => false);
+
+  await land(page, cfg, { changed: ["photos"], mutate: arrive(one("pS", newest + 600)) });
+  ok((await said()).length === 0, "one photo arriving says nothing under the title");
+
+  await land(page, cfg, { changed: ["photos"], mutate: arrive(many(30, newest + 50 * 86400, "pB")) });
+  const landedAt = Date.now();
+  const words = await said();
+  ok(words.includes("Receiving 30 photos"), `thirty arriving at once say "Receiving 30 photos" (${JSON.stringify(words)})`);
+  ok(/·\s*Receiving 30 photos/.test(await page.locator(".px-span").innerText()), `…after the months shown, on the title's own line (${await page.locator(".px-span").innerText()})`);
+  // Still there while their pictures are on their way.
+  await page.waitForTimeout(Math.max(0, 2200 - (Date.now() - landedAt)));
+  const stillWaiting = await page.evaluate(() => [...document.querySelectorAll('.px-tile[data-id^="pB"] img')].some((i) => !i.dataset.in));
+  ok(!stillWaiting || (await page.locator(".px-receiving").count()) === 1, "…and stays while their pictures are still coming");
+  ok(await gone(), "…and goes once they are in");
+
+  await land(page, cfg, { changed: ["photos"], mutate: arrive(`[...${many(18, newest + 60 * 86400, "pV")}].map((p, i) => i < 3 ? { ...p, kind: "video", duration: 9 } : p)`) });
+  ok((await said()).includes("Receiving 18 items"), "photos and videos together are items");
+  await gone();
+
+  // The person's own upload, landing as a batch: the upload panel already speaks for it.
+  await page.evaluate(() => { for (let i = 0; i < 20; i++) window.__emit("quince://photo-upload", { id: `u${i}`, batch: "b1", name: `IMG_pO${i}.JPG`, within: "", sent: 1, total: 1, folder: false, error: null, state: "done" }); });
+  await page.waitForTimeout(200);
+  await land(page, cfg, { changed: ["photos"], mutate: arrive(many(20, newest + 70 * 86400, "pO")) });
+  ok((await said()).length === 0, "the person's own upload landing says nothing under the title");
+  await ctx.close();
+}
+
 // Opening Photos and switching views never fades a tile.
 {
   const ctx = await b.newContext({ viewport: { width: 1280, height: 800 } });
