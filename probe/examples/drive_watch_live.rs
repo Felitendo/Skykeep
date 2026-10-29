@@ -16,7 +16,14 @@ async fn read(
 ) -> Result<Vec<Changed>> {
     let mut all = Vec::new();
     loop {
-        let pg = page(http, ck, p, token.as_deref()).await?;
+        let pg = page(
+            http,
+            ck,
+            p,
+            quince_icloud::drive_changes::MAIN_ZONE,
+            token.as_deref(),
+        )
+        .await?;
         all.extend(pg.changed);
         *token = pg.token.or(token.take());
         if !pg.more {

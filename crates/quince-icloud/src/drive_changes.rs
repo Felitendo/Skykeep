@@ -12,6 +12,11 @@
 //! - a structure record's `parent` field is a reference to its folder's `directory/<id>`; a
 //!   deletion is a move into Recently Deleted's directory, a purge a `deleted` record.
 //!
+//! Each app's own folder (Pages, Numbers, Shortcuts…) is a zone of its own named for the app,
+//! with the same records: `directory/<id>` is Drive's `FOLDER::<zone>::<id>`, and
+//! `directory/documents` the app's top folder, `FOLDER::<zone>::documents`. The database's
+//! changes name the zones that moved, so only those are read.
+//!
 //! Names are encrypted there, so the feed is read for *which* folders changed — never what
 //! is in them: those folders are then listed again through Drive's web service, as before.
 
@@ -20,7 +25,7 @@ use serde_json::{json, Value};
 
 /// Drive's container and its main zone.
 pub const CONTAINER: &str = "com.apple.clouddocs";
-const ZONE: &str = "com.apple.CloudDocs";
+pub const MAIN_ZONE: &str = "com.apple.CloudDocs";
 
 /// One record the feed named, as Drive knows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,8 +48,8 @@ pub struct Page {
     pub more: bool,
 }
 
-/// Drive's identifier for a record of the main zone, or `None` for anything else it holds.
-pub fn drivewsid_of(record_name: &str) -> Option<String> {
+/// Drive's identifier for a record of `zone`, or `None` for anything else it holds.
+pub fn drivewsid_of(zone: &str, record_name: &str) -> Option<String> {
     let (kind, id) = record_name.split_once('/')?;
     if id.is_empty() {
         return None;
@@ -54,12 +59,13 @@ pub fn drivewsid_of(record_name: &str) -> Option<String> {
         "documentStructure" | "documentContent" => "FILE",
         _ => return None,
     };
-    Some(format!("{kind}::{ZONE}::{id}"))
+    Some(format!("{kind}::{zone}::{id}"))
 }
 
 /// A page of `changes/zone`, as Drive knows its items. The same item named twice (its
 /// structure and its content) is told once, with what the structure said of its folder.
-pub fn parse_page(body: &Value) -> Result<Page> {
+pub fn parse_page(zone_name: &str, body: &Value) -> Result<Page> {
+    let id_of = |name: &str| drivewsid_of(zone_name, name);
     let zone = body["zones"]
         .get(0)
         .ok_or_else(|| Error::Protocol("changes/zone answered no zone".into()))?;
@@ -72,12 +78,12 @@ pub fn parse_page(body: &Value) -> Result<Page> {
     }
     let mut changed: Vec<Changed> = Vec::new();
     for record in zone["records"].as_array().into_iter().flatten() {
-        let Some(drivewsid) = record["recordName"].as_str().and_then(drivewsid_of) else {
+        let Some(drivewsid) = record["recordName"].as_str().and_then(id_of) else {
             continue;
         };
         let parent = record["fields"]["parent"]["value"]["recordName"]
             .as_str()
-            .and_then(drivewsid_of);
+            .and_then(id_of);
         let gone = record["deleted"].as_bool().unwrap_or(false);
         match changed.iter_mut().find(|c| c.drivewsid == drivewsid) {
             Some(seen) => {
@@ -98,12 +104,21 @@ pub fn parse_page(body: &Value) -> Result<Page> {
     })
 }
 
-/// One page of Drive's change feed from `token` (from the start with none). Read-only; asks
-/// only for the `parent` field, so a page is small whatever the files hold.
+/// CloudKit's query, as CloudKit JS asks — the way every other CloudKit read here does.
+fn query(params: &[(String, String)]) -> Vec<(String, String)> {
+    let mut query = params.to_vec();
+    query.push(("ckjsBuildVersion".into(), "17DProjectDev77".into()));
+    query.push(("ckjsVersion".into(), "2.6.1".into()));
+    query
+}
+
+/// One page of a Drive zone's change feed from `token` (from the start with none). Read-only;
+/// asks only for the `parent` field, so a page is small whatever the files hold.
 pub async fn page(
     http: &reqwest::Client,
     ckdatabasews_root: &str,
     params: &[(String, String)],
+    zone_name: &str,
     token: Option<&str>,
 ) -> Result<Page> {
     let url = format!(
@@ -111,20 +126,16 @@ pub async fn page(
         ckdatabasews_root.trim_end_matches('/')
     );
     let mut zone = json!({
-        "zoneID": { "zoneName": ZONE, "zoneType": "REGULAR_CUSTOM_ZONE" },
+        "zoneID": { "zoneName": zone_name, "zoneType": "REGULAR_CUSTOM_ZONE" },
         "resultsLimit": 200,
         "desiredKeys": ["parent"],
     });
     if let Some(t) = token.filter(|t| !t.is_empty()) {
         zone["syncToken"] = Value::String(t.to_string());
     }
-    // As CloudKit JS asks, the way every other CloudKit read here does.
-    let mut query = params.to_vec();
-    query.push(("ckjsBuildVersion".into(), "17DProjectDev77".into()));
-    query.push(("ckjsVersion".into(), "2.6.1".into()));
     let response = http
         .post(url)
-        .query(&query)
+        .query(&query(params))
         .json(&json!({ "zones": [zone] }))
         .send()
         .await?;
@@ -141,7 +152,80 @@ pub async fn page(
     }
     let body: Value = serde_json::from_str(&text)
         .map_err(|e| Error::Protocol(format!("changes/zone sent invalid JSON: {e}")))?;
-    parse_page(&body)
+    parse_page(zone_name, &body)
+}
+
+/// The zones of Drive a page of `changes/database` names — every zone there is when asked
+/// with no token — leaving out each app's settings zone, which holds no files.
+pub fn parse_zones(body: &Value) -> (Vec<String>, Option<String>, bool) {
+    let zones = body["zones"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|z| z["zoneID"]["zoneName"].as_str())
+        .filter(|z| !z.ends_with(".container-metadata"))
+        .map(str::to_string)
+        .collect();
+    (
+        zones,
+        body["syncToken"].as_str().map(str::to_string),
+        body["moreComing"].as_bool().unwrap_or(false),
+    )
+}
+
+/// The zones of Drive that moved since `token` — with none, every zone there is — and the
+/// token to ask from next time. Read-only; a few hundred bytes when nothing moved.
+pub async fn zones_moved(
+    http: &reqwest::Client,
+    ckdatabasews_root: &str,
+    params: &[(String, String)],
+    token: Option<&str>,
+) -> Result<(Vec<String>, Option<String>)> {
+    let url = format!(
+        "{}/database/1/{CONTAINER}/production/private/changes/database",
+        ckdatabasews_root.trim_end_matches('/')
+    );
+    let mut token = token.filter(|t| !t.is_empty()).map(str::to_string);
+    let asked_with_token = token.is_some();
+    let mut all: Vec<String> = Vec::new();
+    for _ in 0..50 {
+        let mut body = json!({});
+        if let Some(t) = &token {
+            body["syncToken"] = Value::String(t.clone());
+        }
+        let response = http
+            .post(&url)
+            .query(&query(params))
+            .json(&body)
+            .send()
+            .await?;
+        let status = response.status();
+        if matches!(status.as_u16(), 401 | 421 | 450) {
+            return Err(Error::ReauthRequired);
+        }
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            if text.contains("CHANGE_TOKEN_EXPIRED") || status.as_u16() == 400 && asked_with_token {
+                return Err(Error::StaleCursor);
+            }
+            return Err(Error::Protocol(format!(
+                "changes/database answered {status}"
+            )));
+        }
+        let body: Value = serde_json::from_str(&text)
+            .map_err(|e| Error::Protocol(format!("changes/database sent invalid JSON: {e}")))?;
+        let (zones, next, more) = parse_zones(&body);
+        for z in zones {
+            if !all.contains(&z) {
+                all.push(z);
+            }
+        }
+        token = next.or(token);
+        if !more {
+            break;
+        }
+    }
+    Ok((all, token))
 }
 
 /// The folders to list again for what changed: where each item is now, and where it was —
@@ -184,22 +268,28 @@ mod tests {
 
     #[test]
     fn records_are_read_as_drive_knows_them() {
-        assert_eq!(drivewsid_of("directory/root").as_deref(), Some(ROOT));
+        let of = |name| drivewsid_of(MAIN_ZONE, name);
+        assert_eq!(of("directory/root").as_deref(), Some(ROOT));
         assert_eq!(
-            drivewsid_of("directory/12121DA4").as_deref(),
+            of("directory/12121DA4").as_deref(),
             Some("FOLDER::com.apple.CloudDocs::12121DA4")
         );
         assert_eq!(
-            drivewsid_of("documentStructure/7D85").as_deref(),
+            of("documentStructure/7D85").as_deref(),
             Some("FILE::com.apple.CloudDocs::7D85")
         );
         assert_eq!(
-            drivewsid_of("documentContent/7D85").as_deref(),
+            of("documentContent/7D85").as_deref(),
             Some("FILE::com.apple.CloudDocs::7D85")
         );
-        assert_eq!(drivewsid_of("AppContainer/x"), None);
-        assert_eq!(drivewsid_of("directory/"), None);
-        assert_eq!(drivewsid_of("nothing"), None);
+        assert_eq!(of("AppContainer/x"), None);
+        assert_eq!(of("directory/"), None);
+        assert_eq!(of("nothing"), None);
+        // An app's own folder (measured on Shortcuts' zone).
+        assert_eq!(
+            drivewsid_of("iCloud.is.workflow.my.workflows", "directory/documents").as_deref(),
+            Some("FOLDER::iCloud.is.workflow.my.workflows::documents")
+        );
     }
 
     /// The shape measured live when a folder was made in the top level and then deleted.
@@ -215,7 +305,7 @@ mod tests {
                 record("documentStructure/P", None, true),
                 { "recordName": "AppContainer/x", "recordType": "AppContainer" },
             ] }] });
-        let page = parse_page(&body).unwrap();
+        let page = parse_page(MAIN_ZONE, &body).unwrap();
         assert_eq!(page.token.as_deref(), Some("T2"));
         assert!(!page.more);
         assert_eq!(
@@ -248,11 +338,33 @@ mod tests {
     #[test]
     fn a_token_apple_no_longer_knows_starts_over() {
         let body = json!({ "zones": [{ "serverErrorCode": "CHANGE_TOKEN_EXPIRED" }] });
-        assert!(matches!(parse_page(&body), Err(Error::StaleCursor)));
         assert!(matches!(
-            parse_page(&json!({ "zones": [] })),
+            parse_page(MAIN_ZONE, &body),
+            Err(Error::StaleCursor)
+        ));
+        assert!(matches!(
+            parse_page(MAIN_ZONE, &json!({ "zones": [] })),
             Err(Error::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn the_database_names_the_zones_that_moved_but_not_settings() {
+        let body = json!({ "syncToken": "D2", "moreComing": false, "zones": [
+            { "zoneID": { "zoneName": "com.apple.CloudDocs" } },
+            { "zoneID": { "zoneName": "com.apple.CloudDocs.container-metadata" } },
+            { "zoneID": { "zoneName": "com.apple.Pages" } } ] });
+        assert_eq!(
+            parse_zones(&body),
+            (
+                vec![
+                    "com.apple.CloudDocs".to_string(),
+                    "com.apple.Pages".to_string()
+                ],
+                Some("D2".to_string()),
+                false
+            )
+        );
     }
 
     /// A file moved from one folder to another: both are listed again, once each; a folder

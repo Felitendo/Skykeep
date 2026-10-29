@@ -9,14 +9,17 @@
 //! Stored, every view reads them at once: the window is told which folders changed, and the
 //! Drive folder on this computer sees the library move.
 //!
-//! The feed's position is kept in the library, so changes made while the app was closed are
-//! read when it starts. The first run reads the feed through to now once — identifiers only,
+//! Each app's own folder (Pages, Numbers, Shortcuts…) is a zone of its own, read the same way
+//! when the database names it as moved.
+//!
+//! Each zone's position is kept in the library, so changes made while the app was closed are
+//! read when it starts. The first run reads each zone through to now once — identifiers only,
 //! a few hundred bytes a record — before it can tell what is new.
 
 use crate::push::{poll_every, presence, sleep_or_wake, WAKE};
 use crate::Data;
 use quince_auth::Client;
-use quince_icloud::drive_changes::{self, Changed, CONTAINER};
+use quince_icloud::drive_changes::{self, Changed};
 use quince_icloud::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,18 +29,18 @@ use tokio::sync::Mutex;
 /// Told to the window with the folders listed again, so an open one redraws.
 pub const CHANGED: &str = "quince://drive-changed";
 
-/// Where the feed was last read to, with the account it belongs to: `<dsid>\t<token>`.
-const POSITION: &str = "drive.changes";
+/// Where each zone's feed was last read to, with the account it belongs to ([`Positions`]).
+const POSITION: &str = "drive.positions";
 
 /// The most pages one catch-up reads before it stores what it has and lets the next check go
 /// on. A first read of a large Drive is a few dozen pages.
 const PAGES_AT_ONCE: usize = 500;
 
 pub async fn watch(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
+    // The database's own position, in memory: asked with none, it names every zone there is,
+    // so the first check after a start reads every zone from where it was left — changes made
+    // while the app was closed included.
     let mut database: Option<String> = None;
-    // Read the feed on the first check whatever the database says: changes made while the
-    // app was closed are behind a database token seeded only now.
-    let mut catch_up = true;
     let mut backoff: Option<Duration> = None;
     let mut woken = WAKE.subscribe();
     loop {
@@ -65,40 +68,30 @@ pub async fn watch(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
                 })
         };
         let Some((http, params, ck, drivews, dsid)) = session else {
-            (database, catch_up) = (None, true);
+            database = None;
             sleep_or_wake(Duration::from_secs(30), &mut woken).await;
             continue;
         };
-        let moved = match quince_icloud::push::database_changed(
-            &http,
-            &ck,
-            &params,
-            CONTAINER,
-            database.as_deref(),
-        )
-        .await
-        {
-            Ok((moved, next)) => {
-                database = next;
-                Ok(moved)
-            }
-            Err(Error::StaleCursor) => {
-                database = None;
-                Ok(true)
-            }
-            Err(e) => Err(e),
-        };
-        let result = match moved {
-            Ok(moved) if moved || catch_up => {
-                let read = read_feed(&app, &http, &params, &ck, &drivews, &dsid).await;
-                if read.is_ok() {
-                    catch_up = false;
+        let result =
+            match drive_changes::zones_moved(&http, &ck, &params, database.as_deref()).await {
+                Ok((zones, next)) => {
+                    let read = if zones.is_empty() {
+                        Ok(())
+                    } else {
+                        read_zones(&app, &http, &params, &ck, &drivews, &dsid, &zones).await
+                    };
+                    // Moved on only once what it named is read: a failure asks the same again.
+                    if read.is_ok() {
+                        database = next;
+                    }
+                    read
                 }
-                read
-            }
-            Ok(_) => Ok(()),
-            Err(e) => Err(e),
-        };
+                Err(Error::StaleCursor) => {
+                    database = None;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            };
         backoff = match result {
             Ok(()) => None,
             Err(e) => {
@@ -116,50 +109,72 @@ pub async fn watch(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
     }
 }
 
-/// Read the feed from where it was left, list again the folders it touched, and keep the new
-/// position — only once they are stored, so a failure part way reads the same changes again.
-async fn read_feed(
+/// Where each zone's feed was last read to, for one account.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Positions {
+    dsid: String,
+    zones: std::collections::BTreeMap<String, String>,
+}
+
+/// Read each zone's feed from where it was left, list again the folders it touched, and keep
+/// the new positions — only once they are stored, so a failure part way reads the same
+/// changes again. A zone never read before (the first run, an app newly using iCloud) is read
+/// through to now, and only its end position kept: everything there is, not news.
+async fn read_zones(
     app: &tauri::AppHandle,
     http: &reqwest::Client,
     params: &[(String, String)],
     ck: &str,
     drivews: &str,
     dsid: &str,
+    zones: &[String],
 ) -> quince_icloud::Result<()> {
     let data = app.state::<Data>();
-    let kept = data
-        .0
-        .lock()
-        .await
-        .state(POSITION)
-        .ok()
-        .flatten()
-        .and_then(|v| {
-            let (who, token) = v.split_once('\t')?;
-            (who == dsid).then(|| token.to_string())
+    let kept: Option<String> = data.0.lock().await.state(POSITION).ok().flatten();
+    let mut positions = kept
+        .and_then(|v| serde_json::from_str::<Positions>(&v).ok())
+        .filter(|p| p.dsid == dsid)
+        .unwrap_or_else(|| Positions {
+            dsid: dsid.to_string(),
+            ..Positions::default()
         });
-    let first = kept.is_none();
-    let mut token = kept;
     let mut changed: Vec<Changed> = Vec::new();
-    for _ in 0..PAGES_AT_ONCE {
-        let page = match drive_changes::page(http, ck, params, token.as_deref()).await {
-            Err(Error::StaleCursor) if token.is_some() => {
-                // Apple no longer knows this position: forgotten, so the next check reads
-                // through to now as a first run does. What changed in between is found as
-                // before this watch, when each folder is next listed.
-                quiet!("drive watch: position expired; reading Drive's changes afresh");
-                let _ = data.0.lock().await.set_state(POSITION, "");
-                return Err(Error::StaleCursor);
+    let mut failed = None;
+    for zone in zones {
+        let first = !positions.zones.contains_key(zone);
+        let mut token = positions.zones.get(zone).cloned();
+        let mut ok = true;
+        for _ in 0..PAGES_AT_ONCE {
+            match drive_changes::page(http, ck, params, zone, token.as_deref()).await {
+                Ok(page) => {
+                    if !first {
+                        changed.extend(page.changed);
+                    }
+                    token = page.token.or(token);
+                    if !page.more {
+                        break;
+                    }
+                }
+                Err(Error::StaleCursor) if !first => {
+                    // Apple no longer knows this position (or the zone is gone): forgotten,
+                    // so the next look reads it through as new. What changed in between is
+                    // found when each folder is next listed.
+                    quiet!("drive watch: {zone}'s position expired; reading it afresh");
+                    positions.zones.remove(zone);
+                    ok = false;
+                    break;
+                }
+                Err(e) => {
+                    failed = Some(e);
+                    ok = false;
+                    break;
+                }
             }
-            other => other?,
-        };
-        // A first read is everything there is, not news: only its end position is kept.
-        if !first {
-            changed.extend(page.changed);
         }
-        token = page.token.or(token);
-        if !page.more {
-            break;
+        if ok {
+            if let Some(t) = token {
+                positions.zones.insert(zone.clone(), t);
+            }
         }
     }
     let folders = {
@@ -194,16 +209,12 @@ async fn read_feed(
         }
         listed.push(folder);
     }
-    if let Some(t) = token {
-        let _ = data
-            .0
-            .lock()
-            .await
-            .set_state(POSITION, &format!("{dsid}\t{t}"));
+    if let Ok(json) = serde_json::to_string(&positions) {
+        let _ = data.0.lock().await.set_state(POSITION, &json);
     }
     if !listed.is_empty() {
         quiet!("drive watch: {} folder(s) changed", listed.len());
         app.emit(CHANGED, &listed).ok();
     }
-    Ok(())
+    failed.map_or(Ok(()), Err)
 }
