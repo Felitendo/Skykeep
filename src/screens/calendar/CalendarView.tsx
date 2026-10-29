@@ -2509,8 +2509,12 @@ const TimeGrid = memo(function TimeGrid({
       const el = scroller.current;
       if (!el || !last || !dragRef.current || dragRef.current.kind === "days") return;
       const r = el.getBoundingClientRect();
-      const ZONE_PX = 32;
-      const into = last.y < r.top + ZONE_PX ? last.y - (r.top + ZONE_PX) : last.y > r.bottom - ZONE_PX ? last.y - (r.bottom - ZONE_PX) : 0;
+      const ZONE_PX = 28;
+      // Toward the edge it was carried to, never the other way: an event taken near the top
+      // and carried across to another day stays at its hour.
+      const up = first && last.y < first.y - 8;
+      const down = first && last.y > first.y + 8;
+      const into = up && last.y < r.top + ZONE_PX ? last.y - (r.top + ZONE_PX) : down && last.y > r.bottom - ZONE_PX ? last.y - (r.bottom - ZONE_PX) : 0;
       if (!into) return;
       const before = el.scrollTop;
       el.scrollTop += Math.max(-16, Math.min(16, into / 2));
