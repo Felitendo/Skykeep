@@ -445,6 +445,31 @@ function sameItems(a: DriveItem[], b: DriveItem[]): boolean {
 
 export function DriveView() {
   const [trail, setTrail] = useState<Crumb[]>([{ id: DRIVE_ROOT, name: "Drive" }]);
+  /**
+   * Back and Forward, as Finder's: the folders opened before this one, and those gone back
+   * from, by whole path. Every way of reaching a folder — a double-click, the path, a search,
+   * a folder taken away elsewhere — is a step; a new one after going back drops what was ahead.
+   */
+  const history = useRef<{ back: Crumb[][]; ahead: Crumb[][]; last: Crumb[]; stepping: boolean }>({ back: [], ahead: [], last: trail, stepping: false });
+  useEffect(() => {
+    const h = history.current;
+    if (h.last === trail) return;
+    const same = h.last.length === trail.length && h.last.every((c, i) => c.id === trail[i].id);
+    if (!same && !h.stepping) {
+      h.back.push(h.last);
+      h.ahead = [];
+    }
+    h.stepping = false;
+    h.last = trail;
+  }, [trail]);
+  const travel = (by: -1 | 1) => {
+    const h = history.current;
+    const to = (by < 0 ? h.back : h.ahead).pop();
+    if (!to) return;
+    (by < 0 ? h.ahead : h.back).push(h.last);
+    h.stepping = true;
+    setTrail(to);
+  };
   const [items, setItems] = useState<DriveItem[]>([]);
   const [inTrash, setInTrash] = useState(false);
   const [inRecents, setInRecents] = useState(false);
@@ -865,7 +890,8 @@ export function DriveView() {
   const duplicate = useCallback(
     async (item: DriveItem) => {
       setError(null);
-      const key = `copy-${Date.now()}`;
+      // By the item as well as the moment: several duplicated at once share a millisecond.
+      const key = `copy-${item.drivewsid}-${Date.now()}`;
       const ext = item.extension ? `.${item.extension}` : "";
       setPending((p) => [...p, { key, folder: here.id, name: `${item.name} copy${ext}`, doing: "Duplicating…" }]);
       try {
@@ -1263,8 +1289,9 @@ export function DriveView() {
 
   // Finder's keys (Ctrl in place of Command): the arrows walk the selection — across and down
   // in Grid — and Shift with them widens it; Return or Ctrl-Down opens, Ctrl-Up goes up a
-  // folder, F2 renames, Delete moves to Recently Deleted, Ctrl-A selects all, and Space shows
-  // the selected file large, as Quick Look does.
+  // folder, Ctrl-[ and Ctrl-] go back and forward, F2 renames, Ctrl-D duplicates, Delete moves
+  // to Recently Deleted, Ctrl-A selects all, and Space shows the selected file large, as Quick
+  // Look does.
   const live = useActiveRef();
   const keys = useRef<(e: KeyboardEvent) => void>(() => {});
   keys.current = (e: KeyboardEvent) => {
@@ -1304,10 +1331,21 @@ export function DriveView() {
       const top = tiles[0]?.offsetTop;
       return Math.max(1, tiles.filter((t) => t.offsetTop === top).length);
     };
-    if (mod && (k === "ArrowDown" || k === "o")) {
+    // Back and Forward: Ctrl-[ and Ctrl-] as Finder's, Alt and the arrows as the desktop's
+    // file managers take them. By the key's place as well, for layouts with no bare bracket.
+    const back = (mod && (k === "[" || e.code === "BracketLeft")) || (e.altKey && !e.ctrlKey && !e.metaKey && k === "ArrowLeft");
+    const ahead = (mod && (k === "]" || e.code === "BracketRight")) || (e.altKey && !e.ctrlKey && !e.metaKey && k === "ArrowRight");
+    if (back || ahead) {
+      e.preventDefault();
+      travel(back ? -1 : 1);
+    } else if (mod && (k === "ArrowDown" || k === "o")) {
       if (!primary) return;
       e.preventDefault();
       openItem(primary);
+    } else if (mod && k.toLowerCase() === "d" && !e.shiftKey) {
+      // Duplicate, as Finder's Command-D: each file chosen, beside itself (folders are not).
+      e.preventDefault();
+      for (const item of pickedItems) if (!isContainer(item) && !busyIds.has(item.drivewsid)) void duplicate(item);
     } else if (mod && k === "ArrowUp") {
       e.preventDefault();
       if (trail.length > 1) setTrail((t) => t.slice(0, -1));
@@ -1340,10 +1378,22 @@ export function DriveView() {
       setPeeking(true);
     }
   };
+  // The mouse's own Back and Forward buttons, as every file manager takes them.
+  const sideButton = useRef<(e: MouseEvent) => void>(() => {});
+  sideButton.current = (e: MouseEvent) => {
+    if (!live.current || inTrash || inRecents || (e.button !== 3 && e.button !== 4)) return;
+    e.preventDefault();
+    travel(e.button === 3 ? -1 : 1);
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => keys.current(e);
+    const onMouse = (e: MouseEvent) => sideButton.current(e);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("mouseup", onMouse);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mouseup", onMouse);
+    };
   }, []);
   // Nothing selected, nothing to look at.
   useEffect(() => {
