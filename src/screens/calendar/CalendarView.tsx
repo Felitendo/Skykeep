@@ -2291,7 +2291,9 @@ const TimeGrid = memo(function TimeGrid({
   );
   const lanes = Math.max(1, eventLanes + Math.max(0, ...dayReminders.map((l) => l.length)));
 
-  // Opened, it shows the working day rather than midnight — as Calendar does.
+  // Opened, it shows the working day rather than midnight — as Calendar does. Only when it
+  // opens: stepping to the next week or day keeps the hours scrolled to, as Calendar keeps
+  // them — set again on every step, an evening being looked at jumped back to the morning.
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -2299,9 +2301,8 @@ const TimeGrid = memo(function TimeGrid({
     const hour = showsToday ? Math.max(0, new Date().getHours() - 2) : 7;
     // A little above the hour, so its label — centred on the line — shows whole.
     el.scrollTop = Math.max(0, hour * HOUR - 12);
-    // Only when the days change, never under someone's scrolling.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [daysKey]);
+  }, []);
 
   /** Minutes since midnight under the pointer, in the column it is over. */
   const where = (clientX: number, clientY: number) => {
