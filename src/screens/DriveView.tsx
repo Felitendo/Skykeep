@@ -672,11 +672,12 @@ export function DriveView() {
    * "loading", and the pictures stay: re-opening the folder wiped the thumbnails and drew
    * them back, a blink across the grid every time a file arrived.
    */
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (ask = true) => {
     const folderId = hereRef.current;
     const token = openToken.current;
     try {
-      await api.driveSyncFolder(folderId);
+      // Not asked again when the backend has just listed it (`quince://drive-changed`).
+      if (ask) await api.driveSyncFolder(folderId);
       if (token !== openToken.current) return;
       const fresh = await api.driveChildren(folderId);
       if (token !== openToken.current) return;
@@ -702,11 +703,11 @@ export function DriveView() {
       // A quiet refresh that fails changes nothing; opening the folder says what is wrong.
     }
   }, []);
-  // Apple sends no push for iCloud Drive (measured: none in 25 s for a folder made or
-  // deleted), and icloud.com reads a folder only as it is opened. The folder in front is
-  // checked again every ten seconds while the window has the focus, and at once when the
-  // window comes back — one small request; none while hidden or in the background — so a file saved on the phone appears
-  // here as it would in Finder.
+  // Apple sends no push for iCloud Drive, but Drive's change feed names each item changed
+  // anywhere in it within a second (src-tauri drive_watch.rs). The backend lists again the
+  // folders it touched and says which: the one in front is redrawn from the library, with no
+  // request of its own. Coming back to the window still looks at once, for the app libraries
+  // (Pages, Numbers…) the feed does not cover.
   const shown = useScreenActive();
   const shownNow = useRef(shown);
   shownNow.current = shown;
@@ -717,16 +718,16 @@ export function DriveView() {
     const look = () => {
       if (document.visibilityState === "visible" && !writingRef.current) void refresh();
     };
-    // The timed check only while the window has the focus: one merely open behind another, or
-    // on another workspace, asked Apple every ten seconds all day for a folder nobody was
-    // looking at. Coming back to it (focus) looks at once, so nothing is missed.
-    const t = window.setInterval(() => {
-      if (document.hasFocus()) look();
-    }, 10_000);
+    let gone = false;
+    let stop: (() => void) | undefined;
+    void listen<string[]>("quince://drive-changed", (e) => {
+      if (!writingRef.current && e.payload.includes(hereRef.current)) void refresh(false);
+    }).then((un) => (gone ? un() : (stop = un)));
     document.addEventListener("visibilitychange", look);
     window.addEventListener("focus", look);
     return () => {
-      window.clearInterval(t);
+      gone = true;
+      stop?.();
       document.removeEventListener("visibilitychange", look);
       window.removeEventListener("focus", look);
     };

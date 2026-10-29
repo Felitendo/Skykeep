@@ -35,20 +35,25 @@ const ok = (p, m) => { console.log(`${p ? "ok  " : "FAIL"} ${m}`); if (!p) failu
 const thumbs = () => page.evaluate(() => window.__thumbs ?? 0);
 const checks = () => page.evaluate(() => window.__checks ?? 0);
 
+const look = async () => {
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForTimeout(500);
+};
 ok((await thumbs()) === 1, "opening the folder asks for its pictures");
 ok((await page.locator("img.drive-thumb").count()) > 0, "and draws them");
 
-// Nothing new in ten seconds: the folder is looked at, its pictures are not asked for again.
+// Nothing new at a look (the window coming to the front): the folder is looked at, its
+// pictures are not asked for again.
 let before = await thumbs();
 let looked = await checks();
-await page.waitForTimeout(10_600);
-ok((await checks()) > looked, "the open folder is checked again after ten seconds");
+await look();
+ok((await checks()) > looked, "the open folder is looked at again when the window comes to the front");
 ok((await thumbs()) === before, "and a check that found nothing new asks for no pictures");
 ok((await page.locator("img.drive-thumb").count()) > 0, "which stay on screen");
 
 // Something new: its picture is asked for.
 await page.evaluate(() => { window.__phone = true; });
-await page.waitForTimeout(10_600);
+await look();
 ok((await thumbs()) === before + 1, "a file arriving asks for the pictures again");
 
 // Pictures that never came (offline) are asked for at the next look, changed or not.
@@ -58,10 +63,10 @@ await page.locator(".drive-row-hit", { hasText: "Downloads" }).dblclick();
 await page.waitForTimeout(800);
 await page.evaluate(() => { window.__thumbsFail = false; });
 before = await thumbs();
-await page.waitForTimeout(10_600);
+await look();
 ok((await thumbs()) === before + 1, "a folder whose pictures failed is asked again");
 before = await thumbs();
-await page.waitForTimeout(10_600);
+await look();
 ok((await thumbs()) === before, "and, once they came, not again while nothing changes");
 
 await b.close();

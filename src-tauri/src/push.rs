@@ -60,7 +60,7 @@ static LIVE: AtomicBool = AtomicBool::new(false);
 static CATCH_UP: AtomicBool = AtomicBool::new(false);
 
 /// Bumped by [`wake`]; the channel and the poller each watch it.
-static WAKE: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
+pub(crate) static WAKE: LazyLock<watch::Sender<u64>> = LazyLock::new(|| watch::channel(0).0);
 
 /// Something happened that makes now a good moment to look: a window gained focus, or the
 /// network came back. A channel that failed for a passing reason is tried again at once, and
@@ -70,7 +70,7 @@ pub fn wake() {
 }
 
 /// Sleep for `wait`, or until [`wake`] — whichever is first. True when woken.
-async fn sleep_or_wake(wait: Duration, woken: &mut watch::Receiver<u64>) -> bool {
+pub(crate) async fn sleep_or_wake(wait: Duration, woken: &mut watch::Receiver<u64>) -> bool {
     tokio::select! {
         () = tokio::time::sleep(wait) => false,
         r = woken.changed() => r.is_ok(),
@@ -83,6 +83,7 @@ pub fn spawn(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
     tauri::async_runtime::spawn(refresher(app.clone(), Arc::clone(&client), rx));
     tauri::async_runtime::spawn(watch_calendar(app.clone(), Arc::clone(&client), tx.clone()));
     tauri::async_runtime::spawn(watch_contacts(app.clone(), Arc::clone(&client), tx.clone()));
+    tauri::async_runtime::spawn(crate::drive_watch::watch(app.clone(), Arc::clone(&client)));
     tauri::async_runtime::spawn(poll_cloudkit(app, Arc::clone(&client), tx.clone()));
     tauri::async_runtime::spawn(listen(client, tx));
 }
@@ -143,7 +144,7 @@ async fn watch_contacts(
 
 /// How present the app is: a window with focus, one merely on screen, or none (the tray).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Presence {
+pub(crate) enum Presence {
     Focused,
     Open,
     Hidden,
@@ -151,7 +152,7 @@ enum Presence {
 
 /// Every window counts — the whole-library one and each app's own. A minimized window is
 /// still "visible" to Windows (and to Tauri there), so it is counted as hidden.
-fn presence(app: &tauri::AppHandle) -> Presence {
+pub(crate) fn presence(app: &tauri::AppHandle) -> Presence {
     let mut open = false;
     for w in app.webview_windows().values() {
         if !w.is_visible().unwrap_or(false) || w.is_minimized().unwrap_or(false) {
@@ -516,7 +517,7 @@ async fn run(
 /// How often the containers are asked whether anything changed while no live channel is up:
 /// often with a window in focus, less with one merely open, rarely from the tray.
 /// On the battery, what no one is looking at is asked half as often (power.rs).
-fn poll_every(presence: Presence) -> Duration {
+pub(crate) fn poll_every(presence: Presence) -> Duration {
     let every = match presence {
         Presence::Focused => Duration::from_secs(5),
         Presence::Open => Duration::from_secs(15),

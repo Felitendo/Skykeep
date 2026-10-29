@@ -18,6 +18,7 @@ mod apps;
 mod contacts_cmds;
 mod contacts_merge;
 mod cpu;
+mod drive_watch;
 mod export;
 mod grants;
 mod intake;

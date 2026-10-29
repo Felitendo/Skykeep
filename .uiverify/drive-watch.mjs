@@ -1,6 +1,7 @@
-// The folder in front is checked again while it shows: a file saved on the phone appears
-// within ten seconds, unasked — and a check that finds nothing new redraws nothing, and stands
-// aside while a change of this computer's own is on its way.
+// The folder in front follows Drive's change feed: told by the backend that it changed
+// (quince://drive-changed), it redraws from the library with no request of its own; told of
+// other folders, or nothing, it does nothing — no timed checks — and it stands aside while a
+// change of this computer's own is on its way. Coming back to the window still looks once.
 import { engine } from "./engine.mjs";
 import { SERVICES, installStub } from "./stub.mjs";
 
@@ -31,40 +32,57 @@ let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 const names = () => page.locator(".drive-name").allInnerTexts();
 
-// Nothing new: the rows stay the very same elements, so a selection or a hover is never lost.
+const told = (folders) => page.evaluate((f) => window.__emit("quince://drive-changed", f), folders);
+const reads = () => page.evaluate(() => window.__reads ?? 0);
+await page.evaluate(() => {
+  const invoke = window.__TAURI_INTERNALS__.invoke;
+  window.__TAURI_INTERNALS__.invoke = (cmd, args) => {
+    if (cmd === "drive_children") window.__reads = (window.__reads ?? 0) + 1;
+    return invoke(cmd, args);
+  };
+});
+const ROOT = "FOLDER::com.apple.CloudDocs::root";
+
+// No timed checks: a folder nobody changed is never asked about again.
 await page.evaluate(() => { window.__firstRow = document.querySelector(".drive-name"); });
 const before = await page.evaluate(() => window.__checks);
 await page.waitForTimeout(10_600);
-ok((await page.evaluate(() => window.__checks)) > before, "the open folder is checked again after ten seconds");
-ok(await page.evaluate(() => document.querySelector(".drive-name") === window.__firstRow), "and a check that found nothing redraws nothing");
+ok((await page.evaluate(() => window.__checks)) === before, "no timed check of the open folder");
 
-// Saved on the phone: here without anyone opening the folder again.
+// Another folder changed: nothing here moves.
+const r0 = await reads();
+await told(["FOLDER::com.apple.CloudDocs::elsewhere"]);
+await page.waitForTimeout(300);
+ok((await reads()) === r0, "a change in another folder reads nothing");
+
+// Saved on the phone: told, read from the library, and drawn — without asking Apple.
 await page.evaluate(() => { window.__phone = true; });
-await page.waitForTimeout(10_600);
-ok((await names()).some((n) => n.startsWith("Scan from phone")), "a file saved elsewhere appears unasked");
+await told([ROOT]);
+await page.waitForFunction(() => [...document.querySelectorAll(".drive-name")].some((e) => e.textContent.startsWith("Scan from phone")), null, { timeout: 3000 }).catch(() => {});
+ok((await names()).some((n) => n.startsWith("Scan from phone")), "a file saved elsewhere appears when the backend says so");
+ok((await page.evaluate(() => window.__checks)) === before, "and the folder was not asked of Apple again");
+ok(await page.evaluate(() => document.querySelector(".drive-name") === window.__firstRow), "and the rows already there stay the same elements");
 
-// A rename on its way (Apple slow to answer): the timed check stands aside.
+// A rename on its way (Apple slow to answer): a change told meanwhile stands aside.
 await page.evaluate(() => { window.__phone = false; });
 await page.locator(".drive-row-hit", { hasText: "Downloads" }).click({ button: "right" });
 await page.getByRole("menuitem", { name: "Rename" }).click();
 await page.keyboard.press("Control+a");
 await page.keyboard.type("Downloads 2");
 await page.keyboard.press("Enter");
-const during = await page.evaluate(() => window.__checks);
-await page.waitForTimeout(10_600);
-ok((await page.evaluate(() => window.__checks)) === during, "no check while a rename is on its way");
+await page.waitForTimeout(200);
+const during = await reads();
+await told([ROOT]);
+await page.waitForTimeout(500);
+ok((await reads()) === during, "nothing read over a rename on its way");
 ok((await names()).some((n) => n.startsWith("Downloads 2")), "and the new name stays on screen meanwhile");
 
-// The window open but not in front (behind another, on another workspace): no timed checks —
-// and focus coming back checks at once.
-await page.waitForTimeout(2500); // the rename's answer lands
-await page.evaluate(() => { document.hasFocus = () => false; });
+// Coming back to the window looks once, for what the feed does not cover.
+await page.waitForTimeout(12_500); // the rename's answer lands
 const away = await page.evaluate(() => window.__checks);
-await page.waitForTimeout(10_600);
-ok((await page.evaluate(() => window.__checks)) === away, "no timed check while the window is in the background");
-await page.evaluate(() => { document.hasFocus = () => true; window.dispatchEvent(new Event("focus")); });
+await page.evaluate(() => window.dispatchEvent(new Event("focus")));
 await page.waitForTimeout(300);
-ok((await page.evaluate(() => window.__checks)) > away, "and one at once when it comes to the front");
+ok((await page.evaluate(() => window.__checks)) > away, "and one look at once when the window comes to the front");
 
 await b.close();
 if (failures) process.exitCode = 1;

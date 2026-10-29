@@ -22,6 +22,7 @@ pub mod cloudkit;
 pub mod contacts;
 pub mod courier;
 pub mod drive;
+pub mod drive_changes;
 pub mod markdown;
 pub mod mergeable;
 pub mod note_media;
