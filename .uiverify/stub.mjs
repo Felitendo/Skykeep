@@ -689,6 +689,32 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
             last: taken.length ? Math.max(...taken) : null,
           };
         }
+        // The library's months, as quince-core photo_months chooses them: counted, with a
+        // favourite (or else the still nearest the middle) as the key and three spread through.
+        case "photos_months": {
+          (window.__monthReads ??= []).push(Date.now());
+          // Worked out once per fixture: on fifty thousand, the stub's own work showed as the app's.
+          if (window.__monthsOf?.all === window.__photos) return window.__monthsOf.months;
+          const self = window.__TAURI_INTERNALS__.invoke;
+          const lib = (await self("photos_list", { view: "library" })).sort((a, b) => a.takenAt - b.takenAt || (a.id < b.id ? -1 : 1));
+          const groups = new Map();
+          for (const p of lib) {
+            const d = new Date(p.takenAt * 1000);
+            const k = d.getFullYear() * 100 + d.getMonth() + 1;
+            if (!groups.has(k)) groups.set(k, []);
+            groups.get(k).push(p);
+          }
+          const months = [...groups.entries()].sort((a, b) => b[0] - a[0]).map(([k, ps]) => {
+            const n = ps.length;
+            const mid = ps[Math.floor(n / 2)].takenAt;
+            const score = (p) => (p.favorite ? 0 : 4e12) + (p.kind === "video" ? 2e12 : 0) + Math.abs(p.takenAt - mid);
+            const key = ps.reduce((best, p) => (score(p) < score(best) ? p : best));
+            const more = n >= 4 ? [...new Set([Math.floor((3 * n) / 4), Math.floor(n / 2), Math.floor(n / 4)].map((i) => ps[i].id))].filter((id) => id !== key.id) : [];
+            return { year: Math.floor(k / 100), month: k % 100, count: n, videos: ps.filter((p) => p.kind === "video").length, key: key.id, keyFavorite: !!key.favorite, more };
+          });
+          window.__monthsOf = { all: window.__photos, months };
+          return months;
+        }
         case "photos_get": {
           (window.__gets ??= []).push(args.ids.length);
           const all = window.__photos ?? [];
