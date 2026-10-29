@@ -441,6 +441,7 @@
 .cx-block:hover { background: color-mix(in srgb, var(--cal) 32%, var(--bg)); }
 .cx-block:focus-visible { outline: var(--focus-ring); outline-offset: 0; }
 .cx-block.is-moving { z-index: 3; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28); opacity: 0.94; }
+.cx-bar-event.is-moving { z-index: 3; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24); cursor: grabbing; }
 .cx-block.is-draft {
   --cal: var(--sys-blue);
   left: 0;

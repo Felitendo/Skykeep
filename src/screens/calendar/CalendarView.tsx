@@ -2232,7 +2232,10 @@ type Drag =
   | { kind: "move"; event: CalendarEvent; column: number; startX: number; startY: number; dx: number; dMinutes: number }
   /** Dragging an event's bottom edge: its end moves, its start stays — or, by its top edge
    *  (`top`), its start moves and its end stays. */
-  | { kind: "resize"; event: CalendarEvent; startY: number; dMinutes: number; top?: boolean };
+  | { kind: "resize"; event: CalendarEvent; startY: number; dMinutes: number; top?: boolean }
+  /** A bar in the all-day row carried to other days: `from` is its first column shown, and
+   *  `dx` how many days it has been carried. */
+  | { kind: "days"; event: CalendarEvent; from: number; startX: number; dx: number };
 
 const TimeGrid = memo(function TimeGrid({
   days,
@@ -2355,6 +2358,13 @@ const TimeGrid = memo(function TimeGrid({
       const by = snap(((clientY - current.startY) / HOUR) * 60);
       next = { ...current, dMinutes: current.top ? Math.min(length - 15, by) : Math.max(15 - length, by) };
       if (next.dMinutes === current.dMinutes) return;
+    } else if (current.kind === "days") {
+      const el = columnsEl.current;
+      const width = el ? el.getBoundingClientRect().width / days.length : 1;
+      // Its first day shown kept on the screen, as a timed event is.
+      const dx = Math.min(days.length - 1 - current.from, Math.max(-current.from, Math.round((clientX - current.startX) / width)));
+      if (dx === current.dx) return;
+      next = { ...current, dx };
     } else {
       const el = columnsEl.current;
       const width = el ? el.getBoundingClientRect().width / days.length : 1;
@@ -2377,6 +2387,15 @@ const TimeGrid = memo(function TimeGrid({
       if (done.to - done.from > 15) {
         onCreate(onClockOf(done.day, done.from), onClockOf(done.day, done.to), false, besideColumn(done.column, clientY));
       }
+    } else if (done.kind === "days") {
+      // Let go where it was taken, it was a click: the bar's own click opens it.
+      if (done.dx !== 0) {
+        swallowClick.current = true;
+        window.setTimeout(() => (swallowClick.current = false), 0);
+        // Whole days on the event's own clock, never 86,400 seconds (model.ts).
+        const zone = zoneOf(done.event);
+        onMove(done.event, addDaysIn(zone, done.event.startsAt, done.dx), addDaysIn(zone, done.event.endsAt, done.dx));
+      }
     } else if (done.kind === "resize") {
       if (done.dMinutes !== 0) {
         if (done.top) onMove(done.event, done.event.startsAt + done.dMinutes * 60, done.event.endsAt);
@@ -2393,6 +2412,9 @@ const TimeGrid = memo(function TimeGrid({
       onOpen(done.event, { x: clientX, y: clientY });
     }
   };
+
+  /** The click that ends a bar's drag is not a click on the bar. */
+  const swallowClick = useRef(false);
 
   // The newest handlers, for listeners attached once per drag.
   const handlers = useRef({ follow, finish });
@@ -2496,8 +2518,23 @@ const TimeGrid = memo(function TimeGrid({
 
       <div className="cx-allday" style={{ "--cols": days.length, height: `${lanes * LANE + 8}px` } as React.CSSProperties}>
         <span className="cx-gutter cx-allday-label">all-day</span>
-        <div className="cx-allday-lanes">
-          {spans.map((s) => (
+        <div
+          className="cx-allday-lanes"
+          // A double-click on a day's free part of the row makes an all-day event on it, as in
+          // Calendar.
+          onDoubleClick={(e) => {
+            if ((e.target as HTMLElement).closest(".cx-bar-event, .cx-reminder")) return;
+            const r = e.currentTarget.getBoundingClientRect();
+            const column = Math.min(days.length - 1, Math.max(0, Math.floor(((e.clientX - r.left) / r.width) * days.length)));
+            const day = midnight(days[column]);
+            onCreate(seconds(day), seconds(addDays(day, 1)), true, besideColumn(column, e.clientY));
+          }}
+        >
+          {spans.map((s) => {
+            const carried = drag?.kind === "days" && drag.event.guid === s.event.guid ? drag : null;
+            const from = s.from + (carried?.dx ?? 0);
+            const to = Math.min(s.to + (carried?.dx ?? 0), days.length - 1);
+            return (
             <button
               key={s.event.guid}
               data-event={s.event.guid}
@@ -2505,20 +2542,27 @@ const TimeGrid = memo(function TimeGrid({
                 e.preventDefault();
                 onMenu(s.event, { x: e.clientX, y: e.clientY });
               }}
-              className={`cx-bar-event${s.continuesLeft ? " from-before" : ""}${s.continuesRight ? " to-after" : ""}${picked === s.event.guid ? " is-picked" : ""}`}
+              className={`cx-bar-event${s.continuesLeft ? " from-before" : ""}${s.continuesRight ? " to-after" : ""}${picked === s.event.guid ? " is-picked" : ""}${carried ? " is-moving" : ""}`}
               style={
                 {
                   "--cal": tint(calendars.get(s.event.calendarGuid)),
-                  left: `calc(${(s.from / days.length) * 100}% + 2px)`,
-                  width: `calc(${((Math.min(s.to, days.length - 1) - s.from + 1) / days.length) * 100}% - 4px)`,
+                  left: `calc(${(from / days.length) * 100}% + 2px)`,
+                  width: `calc(${((to - from + 1) / days.length) * 100}% - 4px)`,
                   top: `${4 + s.lane * LANE}px`,
                 } as React.CSSProperties
               }
-              onClick={(e) => onOpen(s.event, { x: e.clientX, y: e.clientY })}
+              // Carried to other days, as a bar in Month is; held still, a click opens it.
+              onPointerDown={(e) => {
+                if (e.button !== 0 || days.length < 2 || !canWrite(s.event.calendarGuid)) return;
+                e.preventDefault();
+                setDragNow({ kind: "days", event: s.event, from: s.from, startX: e.clientX, dx: 0 });
+              }}
+              onClick={(e) => !swallowClick.current && onOpen(s.event, { x: e.clientX, y: e.clientY })}
             >
               {s.event.title}
             </button>
-          ))}
+            );
+          })}
           {dayReminders.map((list, column) => list.map((r, k) => (
             <span
               key={r.guid}
