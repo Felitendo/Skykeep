@@ -14,7 +14,7 @@ import { SearchField } from "../components/SearchField";
 import { PaneTitle } from "../components/PaneTitle";
 import { Portal } from "../components/Portal";
 import { TimeField } from "../components/TimeField";
-import { AlarmClock, ChevronLeft, Link2, ListFilter, MapPin, MessageCircle, X } from "lucide-react";
+import { AlarmClock, ChevronLeft, ChevronRight, Link2, ListFilter, MapPin, MessageCircle, X } from "lucide-react";
 import {
   api,
   MOST_AT_ONCE,
@@ -69,6 +69,24 @@ function readFolded(): Set<string> {
     return new Set(raw ? (JSON.parse(raw) as string[]) : []);
   } catch {
     return new Set();
+  }
+}
+
+/** Reminders whose subtasks are hidden, remembered on this computer, as the Mac keeps them. */
+const HIDDEN_SUBTASKS_KEY = "quince.reminders.hiddenSubtasks";
+function readHiddenSubtasks(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_SUBTASKS_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+function keepHiddenSubtasks(hidden: Set<string>) {
+  try {
+    window.localStorage.setItem(HIDDEN_SUBTASKS_KEY, JSON.stringify([...hidden]));
+  } catch {
+    // Without storage they still fold; it is forgotten on restart.
   }
 }
 
@@ -328,6 +346,17 @@ export function RemindersView() {
   const [infoFor, setInfoFor] = useState<ReminderList | null>(null);
   const [groups, setGroups] = useState<ReminderGroup[]>([]);
   const [folded, setFolded] = useState<Set<string>>(readFolded);
+  /** Reminders whose subtasks are folded away under them (the arrow beside one, Ctrl+E). */
+  const [hiddenSubtasks, setHiddenSubtasks] = useState<Set<string>>(readHiddenSubtasks);
+  const foldSubtasks = useCallback((guid: string) => {
+    setHiddenSubtasks((was) => {
+      const next = new Set(was);
+      if (next.has(guid)) next.delete(guid);
+      else next.add(guid);
+      keepHiddenSubtasks(next);
+      return next;
+    });
+  }, []);
   const toggleFolded = useCallback((guid: string) => {
     setFolded((was) => {
       const next = new Set(was);
@@ -1030,8 +1059,12 @@ export function RemindersView() {
 
   /**
    * The keys Reminders on the Mac answers, with Ctrl for Command: Ctrl+N a new reminder,
-   * Ctrl+Shift+N a new list, Ctrl+F the search, Ctrl+I the selected reminder's info. On a row:
-   * Up and Down move, Space ticks it, Return edits it, Delete deletes it (asking first).
+   * Ctrl+Shift+N a new list, Ctrl+F the search, Ctrl+I the selected reminder's info. For the
+   * selected reminder — its row, or its title being typed in — Ctrl+Shift+F flags it,
+   * Ctrl+Shift+C completes it and Ctrl+T makes it due today; Ctrl+Shift+H shows or hides a
+   * list's completed reminders; Ctrl+E shows every subtask and Ctrl+Shift+E hides them. On a
+   * row: Up and Down move, Space ticks it, Return edits it,
+   * Delete deletes it (asking first).
    */
   const live = useActiveRef();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -1074,6 +1107,47 @@ export function RemindersView() {
       e.preventDefault();
       searchRef.current?.focus();
       searchRef.current?.select();
+      return;
+    }
+    // The reminder the keys act on: the row the focus is in, or the one whose details are open.
+    const chosen = () => {
+      const row = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>(".rx-row");
+      const guid = row?.dataset.guid ?? openGuid;
+      return guid ? (items.find((r) => r.guid === guid) ?? null) : null;
+    };
+    if (command && e.shiftKey && (k === "f" || k === "c")) {
+      e.preventDefault();
+      if (e.repeat) return;
+      const r = chosen();
+      if (!r || r.guid.startsWith(STAND_IN)) return;
+      if (k === "f") void flag(r);
+      else toggle(r);
+      return;
+    }
+    if (command && k === "e") {
+      // Show All Subtasks (Ctrl+E) and Hide All Subtasks (Ctrl+Shift+E), as the View menu has them.
+      e.preventDefault();
+      const next = e.shiftKey ? new Set([...hiddenSubtasks, ...kidsOf.keys()]) : new Set<string>();
+      setHiddenSubtasks(next);
+      keepHiddenSubtasks(next);
+      return;
+    }
+    if (command && e.shiftKey && k === "h") {
+      e.preventDefault();
+      if (inList) setShowDone((v) => !v);
+      return;
+    }
+    if (command && !e.shiftKey && k === "t") {
+      // Due Today: the day moves to today; a time it had is kept, on its own zone's clock.
+      e.preventDefault();
+      if (e.repeat) return;
+      const r = chosen();
+      if (!r || r.guid.startsWith(STAND_IN)) return;
+      const now = new Date();
+      const pad2 = (n: number) => String(n).padStart(2, "0");
+      const day = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+      const w = r.dueAt !== null && !r.allDay ? wallIn(zoneOf(r), r.dueAt) : null;
+      void setDue(r, day, w ? `${pad2(w.h)}:${pad2(w.min)}` : null);
       return;
     }
     if (command && !e.shiftKey && k === "i") {
@@ -1363,10 +1437,19 @@ export function RemindersView() {
       // has to appear at the top level rather than vanish.
       if (r.parentGuid && known.has(r.parentGuid)) continue;
       out.push({ reminder: r, depth: 0 });
+      // Folded away under it, its subtasks are not drawn at all — until it is opened again.
+      if (hiddenSubtasks.has(r.guid)) continue;
       for (const child of children.get(r.guid) ?? []) {
         out.push({ reminder: child, depth: 1 });
       }
     }
+    return out;
+  }, [shownItems, hiddenSubtasks]);
+  /** How many subtasks each reminder in view has, for the arrow that folds them. */
+  const kidsOf = useMemo(() => {
+    const known = new Set(shownItems.map((r) => r.guid));
+    const out = new Map<string, number>();
+    for (const r of shownItems) if (r.parentGuid && known.has(r.parentGuid)) out.set(r.parentGuid, (out.get(r.parentGuid) ?? 0) + 1);
     return out;
   }, [shownItems]);
   /**
@@ -1733,6 +1816,7 @@ export function RemindersView() {
   rowActions.current = {
     toggle, askRemove, rename, indent, outdent, flag, setNotes, setUrl, setDue, setEarly, setRepeat,
     tagAdd, tagRemove, setPriority, moveToList, moveToSection, openTag, setOpenGuid, reorder,
+    foldSubtasks,
     openMenu: (reminder, at) => setRowMenu({ reminder, at }),
     dragging: () => draggingRef.current,
     startDrag: (guid) => {
@@ -2004,6 +2088,8 @@ export function RemindersView() {
                     sections={isOpen ? listSections : NO_SECTIONS}
                     section={isOpen ? sectionOf(reminder) : null}
                     subtasks={isOpen ? items.filter((x) => x.parentGuid === reminder.guid).length : 0}
+                    kids={depth === 0 ? (kidsOf.get(reminder.guid) ?? 0) : 0}
+                    kidsHidden={hiddenSubtasks.has(reminder.guid)}
                   />
                 );
               })}
@@ -2169,6 +2255,8 @@ type RowActions = {
   setOpenGuid: (guid: string | null) => void;
   openMenu: (r: Reminder, at: { x: number; y: number; alignRight: boolean }) => void;
   reorder: (guid: string, before: string) => Promise<unknown>;
+  /** Fold a reminder's subtasks away under it, or open them again. */
+  foldSubtasks: (guid: string) => void;
   /** The reminder being dragged now, read at the moment it is asked. */
   dragging: () => string | null;
   startDrag: (guid: string) => void;
@@ -2219,6 +2307,9 @@ type ReminderRowProps = {
   sections: ReminderSection[];
   section: string | null;
   subtasks: number;
+  /** How many subtasks it has in view, and whether they are folded away under it. */
+  kids: number;
+  kidsHidden: boolean;
 };
 
 /**
@@ -2229,6 +2320,7 @@ type ReminderRowProps = {
 const ReminderRow = memo(function ReminderRow({
   reminder, depth, dated, isOpen, marks: rowMarks, tags: rowTags, home, showListName, justMoved, waiting,
   leaving, settling, isDragging, canReorder, inList, act, focused, detailOf, moreOf, lists, sections, section, subtasks,
+  kids, kidsHidden,
 }: ReminderRowProps) {
   const due = reminder.dueAt === null ? null : dueLabel(reminder.dueAt, dated, reminder.allDay);
   const repeat = repeatLabel(reminder);
@@ -2627,6 +2719,19 @@ const ReminderRow = memo(function ReminderRow({
       </div>
 
       <span className="rx-trailing">
+        {/* A reminder with subtasks shows they are there, and folds them away under it. */}
+        {kids > 0 && (
+          <button
+            className={`icon-button small rx-kids${kidsHidden ? "" : " is-open"}`}
+            aria-expanded={!kidsHidden}
+            aria-label={`${kidsHidden ? "Show" : "Hide"} ${kids === 1 ? "subtask" : `${kids} subtasks`} of ${reminder.title}`}
+            title={kidsHidden ? `${kids === 1 ? "1 subtask" : `${kids} subtasks`}` : undefined}
+            onClick={() => act.current.foldSubtasks(reminder.guid)}
+          >
+            {kidsHidden && <span className="rx-kids-count">{kids}</span>}
+            <ChevronRight size={14} strokeWidth={2.25} aria-hidden="true" />
+          </button>
+        )}
         <button
           className="icon-button small rx-icon-button"
           aria-label={

@@ -365,6 +365,11 @@ button.rx-tag:hover { background: color-mix(in srgb, var(--text) 12%, transparen
 .rx-row.is-open .rx-icon-button,
 .rx-icon-button.rx-flag.on { opacity: 1; }
 .rx-icon-button.rx-flag.on { color: var(--sys-orange); }
+/* A reminder's subtasks, folded or shown: always there, as it says something about the row.
+   Folded, how many wait under it; shown, the arrow points down at them. */
+.rx-kids { display: inline-flex; align-items: center; gap: 1px; width: auto; min-width: 24px; padding: 0 4px; color: var(--text-2); }
+.rx-kids.is-open svg { transform: rotate(90deg); }
+.rx-kids-count { font-size: var(--t-11); font-variant-numeric: tabular-nums; }
 
 .rx-detail {
   display: flex;
