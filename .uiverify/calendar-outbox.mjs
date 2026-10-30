@@ -69,6 +69,17 @@ for (const scheme of ["light", "dark"]) {
   await page.locator(".cx-block", { hasText: "Design review" }).first().click();
   const pop = page.getByRole("dialog", { name: "Design review" });
   await pop.waitFor();
+  // The popover grows in (lib/fade.ts grow, drawn frame by frame): measured once it has settled.
+  await pop.evaluate((el) => new Promise((done) => {
+    const until = performance.now() + 1500;
+    const look = () => {
+      const t = getComputedStyle(el).transform;
+      if ((t === "none" || t === "matrix(1, 0, 0, 1, 0, 0)") && getComputedStyle(el).opacity === "1") done();
+      else if (performance.now() > until) done();
+      else requestAnimationFrame(look);
+    };
+    look();
+  }));
   const marker = pop.locator(".sync-waiting");
   ok((await marker.count()) === 1 && (await marker.innerText()) === "Waiting to sync", `${tag} an event saved here and not yet at Apple says so`);
   ok((await marker.getAttribute("role")) === "status", `${tag} the marker is a status, read out politely`);
