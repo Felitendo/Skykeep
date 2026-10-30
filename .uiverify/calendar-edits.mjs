@@ -52,7 +52,11 @@ s = await saves();
 const two = await local(2, 10);
 ok(s.length === 2 && s[1].guid === null && s[1].startsAt === two && s[1].endsAt === two + 3600, `Ctrl+V pastes it on the selected day  ${JSON.stringify(s[1])}`);
 
-// Month: dragged from tomorrow to three days on, the clock time kept.
+// Month: dragged from tomorrow to three days on, the clock time kept. Back to this month first:
+// the paste above selected a day two on, and when that day opens the next month (on 30 October
+// 2026, 1 November begins a month that starts on a Sunday) tomorrow is not on its page.
+await page.getByRole("button", { name: "Today" }).click();
+await page.waitForTimeout(300);
 const sprint = page.locator(".cx-item", { hasText: "Sprint planning" });
 const target = page.getByRole("gridcell").filter({ has: page.getByRole("button", { name: new RegExp(`^${await fullDate(3)}`) }) });
 const from = await sprint.boundingBox();
