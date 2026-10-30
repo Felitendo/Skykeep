@@ -2640,7 +2640,35 @@ export function PhotosView() {
     // happens to hold the month, which is not always the scroller.
     if (el && at) {
       const top = at.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 4;
-      el.scrollTo({ top, behavior: instant || still() ? "auto" : "smooth" });
+      const now = instant || still();
+      el.scrollTo({ top, behavior: now ? "auto" : "smooth" });
+      // Months drawn as they come into view take their real height, and those above the one
+      // chosen move it. Chromium's scroll anchoring holds it in place; WebKit has none, and a
+      // month twenty years down landed a year off. So, for a moment after an instant jump, it
+      // is held at the top — let go at once if the person scrolls or presses a key themselves.
+      if (now) {
+        let frames = 0;
+        let held = true;
+        const letGo = () => { held = false; };
+        const opts = { once: true, passive: true } as const;
+        el.addEventListener("wheel", letGo, opts);
+        el.addEventListener("pointerdown", letGo, opts);
+        el.addEventListener("touchstart", letGo, opts);
+        window.addEventListener("keydown", letGo, { once: true });
+        const hold = () => {
+          if (!held || !at.isConnected) return;
+          const off = at.getBoundingClientRect().top - el.getBoundingClientRect().top - 4;
+          if (Math.abs(off) > 1) el.scrollTop += off;
+          if (++frames < 30) requestAnimationFrame(hold);
+          else {
+            el.removeEventListener("wheel", letGo);
+            el.removeEventListener("pointerdown", letGo);
+            el.removeEventListener("touchstart", letGo);
+            window.removeEventListener("keydown", letGo);
+          }
+        };
+        requestAnimationFrame(hold);
+      }
     }
   };
   const scroller = useRef<HTMLDivElement | null>(null);
