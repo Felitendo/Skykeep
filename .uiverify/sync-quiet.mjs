@@ -12,26 +12,46 @@ const b = await engine.launch();
 let failures = 0;
 const ok = (p, m) => { console.log(`${p ? "PASS" : "FAIL"} ${m}`); if (!p) failures++; };
 
-/** Each row's component, by its element: the nearest drawn-by-a-function fiber above it. */
-const mark = (rows) => window.__rowProps = new Map([...document.querySelectorAll(rows)].map((el) => {
-  const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
-  let f = key ? el[key] : null;
-  while (f && ![0, 14, 15].includes(f.tag)) f = f.return;
-  return [el, f ? f.memoizedProps : null];
-}));
-/** How many of the rows marked were drawn again since, and how many are new. */
-const drawn = (rows) => {
-  let again = 0, fresh = 0;
-  for (const el of document.querySelectorAll(rows)) {
+/**
+ * Each row's component, by its element: the nearest drawn-by-a-function fiber above it, and
+ * the props both halves of its fiber pair hold. The element keeps whichever half drew it last,
+ * and a row skipped by its memo only hands the props it already had to the other half — so a
+ * row is drawn again only when a props object neither half held before turns up. (Reading the
+ * one half the element points at counted rows of a memoised list as drawn when they were not.)
+ */
+// (Each sent into the page whole, so each carries its own fiberOf.)
+const mark = (rows) => {
+  const fiberOf = (el) => {
     const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
     let f = key ? el[key] : null;
     while (f && ![0, 14, 15].includes(f.tag)) f = f.return;
-    if (!window.__rowProps.has(el)) fresh++;
-    else if (window.__rowProps.get(el) !== f?.memoizedProps) {
+    return f;
+  };
+  window.__rowProps = new Map([...document.querySelectorAll(rows)].map((el) => {
+    const f = fiberOf(el);
+    return [el, new Set([f?.memoizedProps, f?.alternate?.memoizedProps].filter(Boolean))];
+  }));
+};
+/** How many of the rows marked were drawn again since, and how many are new. */
+const drawn = (rows) => {
+  const fiberOf = (el) => {
+    const key = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
+    let f = key ? el[key] : null;
+    while (f && ![0, 14, 15].includes(f.tag)) f = f.return;
+    return f;
+  };
+  let again = 0, fresh = 0;
+  for (const el of document.querySelectorAll(rows)) {
+    const f = fiberOf(el);
+    if (!window.__rowProps.has(el)) { fresh++; continue; }
+    const had = window.__rowProps.get(el);
+    const now = [f?.memoizedProps, f?.alternate?.memoizedProps].filter(Boolean);
+    const drewAgain = now.find((p) => !had.has(p));
+    if (drewAgain) {
       again++;
-      const was = window.__rowProps.get(el) ?? {};
+      const was = [...had][0] ?? {};
       (window.__why ??= new Set());
-      for (const k of Object.keys(f.memoizedProps)) if (was[k] !== f.memoizedProps[k]) window.__why.add(k);
+      for (const k of Object.keys(drewAgain)) if (was[k] !== drewAgain[k]) window.__why.add(k);
     }
   }
   return { again, fresh, rows: document.querySelectorAll(rows).length };
