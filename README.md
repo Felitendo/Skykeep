@@ -6,7 +6,7 @@
 
 ### Your iCloud, at home on Linux and Windows.
 
-Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos, kept on your computer<br>and in sync with your iPhone. Not icloud.com in a window: it opens instantly,<br>works offline and puts iCloud Drive in your file manager. Free and open source.
+Six real desktop apps for Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos,<br>on a native Rust engine that keeps your library on your computer. They open instantly,<br>work offline and stay in sync with your iPhone. Free and open source.
 
 <a href="https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe"><img src="https://img.shields.io/badge/Download%20for-Windows-2f6fd6?style=for-the-badge" alt="Download for Windows" height="36"></a>&nbsp;
 <a href="#install"><img src="https://img.shields.io/badge/Download%20for-Linux-2f6fd6?style=for-the-badge" alt="Download for Linux" height="36"></a>
