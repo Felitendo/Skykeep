@@ -6106,6 +6106,9 @@ mod linux_tray {
             .collect()
     }
 
+    /// The tray's handle, held so ksni's service keeps a reason to wait (see `spawn`).
+    static HANDLE: std::sync::OnceLock<ksni::Handle<SkykeepTray>> = std::sync::OnceLock::new();
+
     pub fn spawn(app: tauri::AppHandle) {
         let tray = SkykeepTray {
             app,
@@ -6121,8 +6124,14 @@ mod linux_tray {
                 .spawn()
                 .await
             {
-                // The service runs on its own; the handle is only for changing it later.
-                Ok(_handle) => MADE.store(true, Ordering::SeqCst),
+                // Kept for as long as the app runs. Dropped, it closed ksni's command channel,
+                // and when the session bus then went too (logging out, a session ending) both
+                // of ksni's waits were over and its loop panicked ("all futures in select!
+                // were completed").
+                Ok(handle) => {
+                    let _ = HANDLE.set(handle);
+                    MADE.store(true, Ordering::SeqCst);
+                }
                 Err(e) => quiet!("no tray on this desktop, so closing the window quits: {e}"),
             }
         });
