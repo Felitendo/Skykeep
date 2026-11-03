@@ -356,4 +356,6 @@ If Skykeep saves you a trip to the browser, a star helps other iPhone owners on 
 
 ## License
 
-The code is [GPL-3.0](LICENSE). Skykeep is an independent project, not affiliated with or endorsed by Apple Inc. iCloud is a trademark of Apple Inc.
+Copyright (C) 2026 Yashwanth Kamireddi. Skykeep was created by Yashwanth Kamireddi, and the code is released under [GPL-3.0](LICENSE): if you share a copy or a changed version, keep this notice and the same licence.
+
+Skykeep is an independent project, not affiliated with or endorsed by Apple Inc. iCloud is a trademark of Apple Inc.
