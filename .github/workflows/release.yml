@@ -22,6 +22,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A dry run from a branch: everything built and started, nothing published. A tag can never
+  # be moved or deleted, so the whole path is proven here before the next one is pushed.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,6 +38,7 @@ jobs:
       # The updater binds each signature to the version the program was built as, and
       # latest.json names the tag's: they must be the same, or every update would be refused.
       - name: The tag is the version built
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           built=$(node -p 'require("./src-tauri/tauri.conf.json").version')
           if [ "v$built" != "$GITHUB_REF_NAME" ]; then
@@ -101,7 +105,8 @@ jobs:
         run: |
           deb=$(ls target/release/bundle/deb/*.deb)
           dpkg-deb -f "$deb" Depends
-          sudo apt-get install -y "$deb"
+          # "./": apt takes a bare relative path for a package name ("Unable to locate package").
+          sudo apt-get install -y "./$deb"
           prog=$(dpkg -L "$(dpkg-deb -f "$deb" Package)" | grep -m1 '^/usr/bin/')
           echo "installed: $prog"
           if ldd "$prog" | grep "not found"; then exit 1; fi
@@ -148,6 +153,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
   publish:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     permissions:
