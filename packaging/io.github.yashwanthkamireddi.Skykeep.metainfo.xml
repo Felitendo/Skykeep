@@ -95,9 +95,7 @@
   </recommends>
 
   <releases>
-    <!-- RELEASE DAY: set date to the day v0.1.0 is published (YYYY-MM-DD). 2099-01-01 is a
-         placeholder; a word there would fail `appstreamcli validate`. -->
-    <release version="0.1.0" date="2099-01-01">
+    <release version="0.1.0" date="2026-11-03">
       <description>
         <p>
           The first release of Skykeep: iCloud Notes, Reminders, Calendar, Contacts, iCloud
