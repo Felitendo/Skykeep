@@ -134,8 +134,15 @@ media() {
   # Ubuntu 24.04's 1.24) cannot do that ("undefined symbol"), which says nothing about the
   # AppImage; then the elements are not listed here, and the video lines below — played
   # through the AppImage's own GStreamer by the probe, built against it — are the check.
+  # Nor can it list them when the two are different releases even where it loads (Debian 13's
+  # 1.26 against the AppImage's 1.24: every element reads as missing while the videos play).
+  local own carried
+  own=$(gst-inspect-1.0 --version 2>/dev/null | sed -n 's/^GStreamer \([0-9]*\.[0-9]*\).*/\1/p')
+  carried=$(LD_LIBRARY_PATH=$libs gst-inspect-1.0 --version 2>/dev/null | sed -n 's/^GStreamer \([0-9]*\.[0-9]*\).*/\1/p')
   if [[ $pkg == *.AppImage ]] && ! LD_LIBRARY_PATH=$libs gst-inspect-1.0 --version >/dev/null 2>&1; then
     echo "SKIP gst — this system's gst-inspect-1.0 cannot load the AppImage's GStreamer (video below plays through it)"
+  elif [[ $pkg == *.AppImage && -n $own && $own != "$carried" ]]; then
+    echo "SKIP gst — this system's GStreamer is $own, the AppImage carries ${carried:-another}; its gst-inspect cannot list those (video below plays through it)"
   else
     for e in playbin3 decodebin videoconvert videoflip appsink qtdemux \
              "avdec_h264|openh264dec" avdec_h265; do

@@ -250,5 +250,5 @@ jobs:
       - name: Install and run
         run: |
           chmod +x /compat/check.sh /compat/distro_check
-          bash /compat/check.sh "$(ls "$GITHUB_WORKSPACE"/packaging/arch/skykeep-*.pkg.tar.zst)" \
+          bash /compat/check.sh "$(ls "$GITHUB_WORKSPACE"/packaging/arch/skykeep-[0-9]*.pkg.tar.zst)" \
             /compat/distro_check /compat/test.heic /compat/black-start.mp4 /compat/hevc.mov
