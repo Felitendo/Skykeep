@@ -6648,9 +6648,11 @@ fn main() {
             });
             // In the desktop's own search (GNOME Shell, KRunner) for as long as it runs.
             #[cfg(target_os = "linux")]
-            search_provider::serve(app.handle().clone());
-            if login::search_only() {
-                search_provider::end_when_idle(app.handle().clone());
+            {
+                search_provider::serve(app.handle().clone());
+                if login::search_only() {
+                    search_provider::end_when_idle(app.handle().clone());
+                }
             }
             alerts::spawn(app.handle().clone());
             alerts::spawn_events(app.handle().clone());
