@@ -60,19 +60,19 @@
   <screenshots>
     <screenshot type="default">
       <caption>Notes, in their folders</caption>
-      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/press/screenshots/png/notes-light.png</image>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/screenshots/notes-light.png</image>
     </screenshot>
     <screenshot>
       <caption>Reminders, in their lists</caption>
-      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/press/screenshots/png/reminders-light.png</image>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/screenshots/reminders-light.png</image>
     </screenshot>
     <screenshot>
       <caption>Calendar</caption>
-      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/press/screenshots/png/calendar-light.png</image>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/screenshots/calendar-light.png</image>
     </screenshot>
     <screenshot>
       <caption>The photo library</caption>
-      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/press/screenshots/png/photos-light.png</image>
+      <image type="source">https://raw.githubusercontent.com/YashwanthKamireddi/Skykeep/main/docs/media/screenshots/photos-light.png</image>
     </screenshot>
   </screenshots>
 

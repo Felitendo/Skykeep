@@ -21,13 +21,6 @@ Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos as fast desktop ap
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-2f6fd6)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-4a5568)](#install)
-<!-- Dynamic badges: enable once the repository is public and v0.1.0 is published.
-[![Latest release](https://img.shields.io/github/v/release/YashwanthKamireddi/Skykeep?sort=semver&color=2f6fd6)](https://github.com/YashwanthKamireddi/Skykeep/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/YashwanthKamireddi/Skykeep/total?color=4a5568)](https://github.com/YashwanthKamireddi/Skykeep/releases)
-Once live:
-[![AUR](https://img.shields.io/aur/version/skykeep?logo=archlinux&label=AUR)](https://aur.archlinux.org/packages/skykeep)
-[![Flathub](https://img.shields.io/flathub/v/io.github.yashwanthkamireddi.Skykeep?logo=flathub)](https://flathub.org/apps/io.github.yashwanthkamireddi.Skykeep)
--->
 
 [Why](#why-skykeep) · [Features](#features) · [Install](#install) · [Privacy](#privacy-and-security) · [How it works](#how-it-works) · [FAQ](#faq) · [Contributing](#contributing)
 
@@ -344,7 +337,7 @@ What I'd like to add next:
 - Skykeep on the AUR, Flathub and winget
 - A code-signed Windows installer
 
-Got an idea or something you miss? Tell me in [Discussions](https://github.com/YashwanthKamireddi/Skykeep/discussions). I read everything.
+Got an idea or something you miss? [Open an issue](https://github.com/YashwanthKamireddi/Skykeep/issues). I read everything.
 
 ## Contributing
 
@@ -357,18 +350,10 @@ git clone https://github.com/YashwanthKamireddi/Skykeep.git
 cd Skykeep && npm ci && ./run.sh
 ```
 
-New here? The [good first issues](https://github.com/YashwanthKamireddi/Skykeep/labels/good%20first%20issue) are small and friendly, and I'm happy to help you through your first one. Found a security problem? Please tell me privately, as [SECURITY.md](SECURITY.md) explains.
-
-<!-- Support: enable once GitHub Sponsors is approved (see .github/FUNDING.yml).
-## Support Skykeep
-
-I build Skykeep in my own time. If it saves you time, you can [sponsor it](https://github.com/sponsors/YashwanthKamireddi), which keeps it going.
--->
+Found a security problem? Please tell me privately, as [SECURITY.md](SECURITY.md) explains.
 
 If Skykeep saves you a trip to the browser, a star helps other iPhone owners on Linux and Windows find it. Thank you.
 
 ## License
 
-Writing about Skykeep? The [press kit](press/README.md) has the fact sheet, logo and screenshots.
-
-The code is [GPL-3.0](LICENSE). The Skykeep™ name and logo are covered by a short [trademark note](TRADEMARKS.md): fork freely, under your own name. Skykeep is an independent project, not affiliated with or endorsed by Apple Inc.
+The code is [GPL-3.0](LICENSE). Skykeep is an independent project, not affiliated with or endorsed by Apple Inc. iCloud is a trademark of Apple Inc.

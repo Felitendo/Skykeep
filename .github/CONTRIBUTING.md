@@ -2,20 +2,19 @@
 
 Thank you for helping make Skykeep better. Whether it's a typo, a bug fix, a packaging recipe, a design idea or a new feature, it's welcome here.
 
-By taking part, you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Contributions are licensed under the project's license, [GPL-3.0-only](../LICENSE).
+Contributions are licensed under the project's license, [GPL-3.0-only](../LICENSE). Please be kind to each other.
 
 **Contents:** [Ways to help](#ways-to-help) · [Set up](#set-up) · [Run it](#run-it) · [The checks](#the-checks) · [Code map](#code-map) · [Testing with iCloud](#testing-with-icloud) · [Ground rules](#ground-rules) · [UI and design](#ui-and-design) · [Commit style](#commit-style) · [Pull requests](#pull-requests)
 
 ## Ways to help
 
-- **Good first issues:** [labelled here](https://github.com/YashwanthKamireddi/Skykeep/labels/good%20first%20issue), each sized for an afternoon.
 - **Bugs:** reproduce an open issue, or confirm a fix on your distribution or desktop.
 - **Packaging:** Nix, Fedora COPR, Debian, Snap, winget. Each one brings Skykeep to more people.
 - **Desktop integration:** GNOME, KDE and Windows shell integration.
 - **Design:** see [UI and design](#ui-and-design).
 - **Docs:** clearer install steps, FAQ answers, screenshots made with test data.
 
-For anything bigger than a small fix, please open an issue or a [Discussion](https://github.com/YashwanthKamireddi/Skykeep/discussions) first so we can agree on the approach before you invest the time.
+For anything bigger than a small fix, please open an issue first so we can agree on the approach before you invest the time.
 
 ## Set up
 
@@ -154,7 +153,7 @@ The crates keep the `quince-` prefix from the project's working name.
 
 Designers are very welcome. Skykeep aims to feel like Apple's own apps: calm, familiar and quietly premium.
 
-- **Start with a Discussion** in the Ideas category: a sketch, mockup or screenshot and the problem it solves. Agreeing on the direction first saves everyone time.
+- **Start with an issue**: a sketch, mockup or screenshot and the problem it solves. Agreeing on the direction first saves everyone time.
 - **Use the design system** in `src/components` (Toast, Confirm, EmptyState, PaneTitle, RowMenu and the rest) rather than one-off styles. Styles live in `src/styles`.
 - **Light and dark, always.** Honour Reduce Transparency and Increase Contrast.
 - **Motion:** no animation on large layers (whole panes, viewers, sheets). WebKitGTK on some Wayland compositors flickers, so these open and close instantly. Small, local motion is fine if it passes the frame-sampling suites in WebKit.
