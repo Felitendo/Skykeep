@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: skykeep-x86_64
+          name: skykeep-x86_64.flatpak
       - name: It installs and starts
         run: |
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
