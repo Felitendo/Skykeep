@@ -27,6 +27,8 @@
 #   launch    started headless under Xvfb on its own session bus, the page draws
 #             (window_ready) and the program is still running 8 s later — with --background,
 #             as the main launcher starts it, and as one app's launcher does (--app notes);
+#             the AppImage with no network at all (unshare -n, so the container needs
+#             CAP_SYS_ADMIN), as the AppImage catalog starts it;
 #   relaunch  with no tray to click, launching again hands over to the running Skykeep and
 #             its window shows;
 #   desktop   the launchers and the metainfo validate, the icon is in hicolor under the name
@@ -52,9 +54,12 @@ case "$like" in
     # container gst-libav (libavcodec links them) does not load and avdec_* looks missing.
     # libgpg-error too (under libgcrypt, on every system): libavcodec's libraries link it, and
     # without it gst-libav — every H.264 and HEVC decoder — does not load.
+    # ALSA is libasound2t64 from Ubuntu 24.04 and Debian 13 on, libasound2 before.
+    asound=libasound2t64
+    apt-cache show libasound2t64 >/dev/null 2>&1 || asound=libasound2
     [[ $pkg == *.AppImage ]] && tools+=" libgl1 libegl1 libgles2 libfontconfig1 fonts-dejavu-core \
       libx11-6 libx11-xcb1 libxcb1 libxcb-dri3-0 libdrm2 libharfbuzz0b libfribidi0 libfreetype6 \
-      libasound2t64 libgpg-error0"
+      $asound libgpg-error0"
     # shellcheck disable=SC2086
     apt-get install -y -qq --no-install-recommends $tools >/dev/null
     [[ $pkg == *.deb ]] && { apt-get install -y -q --no-install-recommends "$pkg" || exit 1; }
@@ -238,7 +243,16 @@ else
 fi
 SH
 chmod +x /tmp/session.sh
-results=$(dbus-run-session -- /tmp/session.sh "$probe" "$prog" "$libs")
+# The AppImage offline: the whole session in a network namespace of its own, with no network.
+offline=()
+if [[ $pkg == *.AppImage ]]; then
+  if unshare -n true 2>/dev/null; then
+    offline=(unshare -n) && echo "-- launches with no network (unshare -n)"
+  else
+    fail offline "unshare -n is not allowed here (the container needs CAP_SYS_ADMIN)"
+  fi
+fi
+results=$("${offline[@]}" dbus-run-session -- /tmp/session.sh "$probe" "$prog" "$libs")
 echo "$results"
 fails=$((fails + $(grep -c '^FAIL' <<<"$results")))
 
