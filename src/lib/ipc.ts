@@ -498,6 +498,8 @@ export type EventWrite = {
   repeatChanged?: boolean;
   /** For one occurrence of a repeating event: whether the change is for it alone or the series. */
   scope?: EventScope;
+  /** The event as the form opened it, its etag with it: what this save was made from. */
+  base?: CalendarEvent;
 };
 
 /** How an event repeats, in icloud.com's words. */

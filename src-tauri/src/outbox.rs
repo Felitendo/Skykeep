@@ -911,13 +911,15 @@ pub fn record_event_save(library: &mut Library, save: EventSave) -> quince_core:
                 .ok()
                 .map(|s| (p, s))
         });
-        let save = match waiting {
+        let (save, whole) = match waiting {
             Some((p, before)) if p.tries == 0 && before.scope == save.scope => {
                 let merged = before.then(save);
                 if !l.outbox_amend(p.id, &json(&merged)?)? {
                     l.outbox_append(CALENDAR, &guid, "save", &json(&merged)?)?;
                 }
-                merged
+                // Over the one it joins, which the library already shows: what the form
+                // holds now is the whole of it, a field put back as it was included.
+                (merged, true)
             }
             Some((_, before)) => {
                 let after = EventSave {
@@ -926,18 +928,22 @@ pub fn record_event_save(library: &mut Library, save: EventSave) -> quince_core:
                     ..save
                 };
                 l.outbox_append(CALENDAR, &guid, "save", &json(&after)?)?;
-                after
+                (after, false)
             }
             None => {
                 l.outbox_append(CALENDAR, &guid, "save", &json(&save)?)?;
-                save
+                (save, false)
             }
         };
-        lay_event_save(l, &save)
+        lay_event(l, &save, !whole)
     })
 }
 
-fn lay_event_save(l: &mut Library, s: &EventSave) -> quince_core::Result<()> {
+/// A save laid over the library. `merging`, as the send will settle it: a field this save left
+/// as its base had it shows the library's — another device's change, from a pass that landed
+/// after the save was made — rather than the older value the save carried. Not merging, the
+/// save is shown whole.
+fn lay_event(l: &mut Library, s: &EventSave, merging: bool) -> quince_core::Result<()> {
     if !l
         .calendars()?
         .iter()
@@ -945,10 +951,37 @@ fn lay_event_save(l: &mut Library, s: &EventSave) -> quince_core::Result<()> {
     {
         return Ok(());
     }
-    let mut event = s.event.clone();
-    // Apple's tag for it stays what the library last heard: what a write is made against.
-    event.etag = l.event(&event.guid)?.and_then(|e| e.etag);
+    let current = l.event(&s.event.guid)?;
+    let mut event = match (&s.base, &current) {
+        (Some(base), Some(current)) if merging => {
+            quince_icloud::calendar::merge_edit(base, &s.event, current)
+        }
+        _ => s.event.clone(),
+    };
+    // Apple's tag for it stays what the library last heard of Apple's own version.
+    event.etag = current.and_then(|e| e.etag);
     l.put_events(&[event])
+}
+
+/// What a save of event `guid` is made from: the event as the form opened it, when it says —
+/// not the library's copy at save time, which a pass may have brought another device's change
+/// into while the form was open. A create, or a window that sends none, has the library's.
+pub fn save_base(guid: &str, opened: Option<Event>, stored: Option<Event>) -> Option<Event> {
+    match opened {
+        Some(opened) if opened.guid == guid => Some(opened),
+        _ => stored,
+    }
+}
+
+/// The tag a save is sent with: its base's, the version it was made from — never the library's
+/// newest. Sent against a newer one, Apple took a save made from an older version whole, and
+/// another device's change to a field it left alone was lost; against its base's, Apple answers
+/// that it has changed, and the save is merged with what Apple holds.
+fn sent_etag(s: &EventSave) -> Option<String> {
+    match &s.base {
+        Some(base) => base.etag.clone(),
+        None => s.event.etag.clone(),
+    }
 }
 
 /// An event deleted here — the one day, those after it, or the whole series.
@@ -1069,7 +1102,7 @@ fn lay(l: &mut Library, p: &Pending) -> quince_core::Result<()> {
         }
         (CALENDAR, "save") => {
             if let Ok(s) = serde_json::from_str::<EventSave>(&p.payload) {
-                lay_event_save(l, &s)?;
+                lay_event(l, &s, true)?;
             }
         }
         (CALENDAR, "delete") => {
@@ -1749,8 +1782,7 @@ async fn send_event(
             let (event, ctag, from) = {
                 let l = library.lock().await;
                 let mut event = s.event.clone();
-                // Written against the version the library last heard of from Apple.
-                event.etag = l.event(&event.guid)?.and_then(|e| e.etag);
+                event.etag = sent_etag(&s);
                 let ctag = calendar_ctag(&l, &event.calendar_guid);
                 // Saved to another calendar than it was in: a move, from there.
                 let from = s
@@ -3375,5 +3407,283 @@ mod tests {
         };
         let back: Edit = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         assert_eq!(back, e);
+    }
+
+    /// A pretend Apple that holds one event: a save sent with its current tag is taken, one sent
+    /// with any other is answered "changed since" (412), as Apple's calendar does.
+    mod apple_calendar {
+        use super::*;
+        use std::sync::{Arc, Mutex as StdMutex};
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+        fn apple_json(e: &Event, etag: &str) -> serde_json::Value {
+            serde_json::json!({
+                "guid": e.guid, "pGuid": e.calendar_guid, "title": e.title,
+                "location": e.location, "tz": "Asia/Kolkata",
+                "startDate": [20260914, 2026, 9, 14, 9, 30, 570],
+                "endDate": [20260914, 2026, 9, 14, 10, 30, 630],
+                "etag": etag
+            })
+        }
+
+        /// Apple's copy and its tag number; each save taken makes a new tag.
+        #[derive(Clone)]
+        struct Held(Arc<StdMutex<(Event, u32)>>);
+
+        impl Held {
+            fn tag(&self) -> String {
+                format!("v{}", self.0.lock().unwrap().1)
+            }
+            fn event(&self) -> Event {
+                self.0.lock().unwrap().0.clone()
+            }
+        }
+
+        struct Detail(Held);
+        impl Respond for Detail {
+            fn respond(&self, _: &Request) -> ResponseTemplate {
+                let body =
+                    serde_json::json!({ "Event": [apple_json(&self.0.event(), &self.0.tag())] });
+                ResponseTemplate::new(200).set_body_json(body)
+            }
+        }
+
+        struct Save(Held);
+        impl Respond for Save {
+            fn respond(&self, r: &Request) -> ResponseTemplate {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                let sent = body["Event"]["etag"].as_str().map(str::to_owned);
+                if sent.as_deref() != Some(self.0.tag().as_str()) {
+                    return ResponseTemplate::new(412);
+                }
+                let mut held = self.0 .0.lock().unwrap();
+                held.0.title = body["Event"]["title"].as_str().unwrap_or_default().into();
+                held.0.location = body["Event"]["location"].as_str().map(str::to_owned);
+                held.1 += 1;
+                let tag = format!("v{}", held.1);
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "Event": [apple_json(&held.0, &tag)] }))
+            }
+        }
+
+        async fn apple(holds: &Event, tag: u32) -> (MockServer, Held) {
+            let held = Held(Arc::new(StdMutex::new((holds.clone(), tag))));
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path_regex(r".*/ca/eventdetail/.*"))
+                .respond_with(Detail(held.clone()))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path_regex(r".*/ca/collectiondetail/.*"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "Collection": [{ "guid": "work", "ctag": "c2" }] }),
+                ))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/ca/events/.*"))
+                .respond_with(Save(held.clone()))
+                .mount(&server)
+                .await;
+            (server, held)
+        }
+
+        fn dentist() -> Event {
+            Event {
+                guid: "E".into(),
+                calendar_guid: "work".into(),
+                title: "Dentist".into(),
+                location: Some("Room 1".into()),
+                starts_at: 1_789_358_400,
+                ends_at: 1_789_362_000,
+                timezone: Some("Asia/Kolkata".into()),
+                etag: Some("v1".into()),
+                ..Default::default()
+            }
+        }
+
+        fn edit_of(base: &Event) -> EventSave {
+            let mut mine = base.clone();
+            mine.title = "Dentist — bring forms".into();
+            EventSave {
+                event: mine,
+                base: Some(base.clone()),
+                create: false,
+                alerts: None,
+                repeat_changed: false,
+                repeat: None,
+                scope: None,
+            }
+        }
+
+        fn in_room_2(opened: &Event) -> Event {
+            let mut phone = opened.clone();
+            phone.location = Some("Room 2".into());
+            phone.etag = Some("v2".into());
+            phone
+        }
+
+        async fn send_waiting(lib: &crate::library_lock::LibraryLock, root: &str) {
+            let http = reqwest::Client::new();
+            let report = drain(lib, CALENDAR, &Mutex::new(()), |p| {
+                send_event(lib, &http, root, Vec::new(), p)
+            })
+            .await;
+            assert!(report.refused.is_empty(), "{:?}", report.refused);
+            assert!(lib
+                .lock()
+                .await
+                .outbox_pending(CALENDAR)
+                .unwrap()
+                .is_empty());
+        }
+
+        fn title_and_room(e: &Event) -> (&str, Option<&str>) {
+            (e.title.as_str(), e.location.as_deref())
+        }
+
+        /// Edited here offline; meanwhile the iPhone moved it to another room and a pass
+        /// brought that in. Both changes survive — shown at once, and at Apple once sent: the
+        /// save goes against the version it was made from, Apple answers "changed", and it is
+        /// merged. Sent with the library's newest tag, Apple took it whole and the room went
+        /// back.
+        #[tokio::test]
+        async fn an_offline_edit_and_a_newer_change_elsewhere_both_survive() {
+            let mut lib = Library::in_memory().unwrap();
+            calendars(&mut lib);
+            let opened = dentist();
+            lib.put_events(std::slice::from_ref(&opened)).unwrap();
+            record_event_save(&mut lib, edit_of(&opened)).unwrap();
+
+            // The iPhone's change, brought by a pass, with what waits laid back over it.
+            let phone = in_room_2(&opened);
+            lib.put_events(std::slice::from_ref(&phone)).unwrap();
+            replay(&mut lib, CALENDAR).unwrap();
+            assert_eq!(
+                title_and_room(&lib.event("E").unwrap().unwrap()),
+                ("Dentist — bring forms", Some("Room 2")),
+                "both shown before it is sent"
+            );
+
+            let (server, held) = apple(&phone, 2).await;
+            let lib = crate::library_lock::LibraryLock::new(lib, None);
+            send_waiting(&lib, &server.uri()).await;
+            assert_eq!(
+                title_and_room(&held.event()),
+                ("Dentist — bring forms", Some("Room 2")),
+                "both kept at Apple"
+            );
+            let posts = server
+                .received_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.method == reqwest::Method::POST)
+                .count();
+            assert_eq!(posts, 2, "refused as stale, then merged and taken");
+            let stored = lib.lock().await.event("E").unwrap().unwrap();
+            assert_eq!(stored.location.as_deref(), Some("Room 2"));
+            assert_eq!(
+                stored.etag.as_deref(),
+                Some("v3"),
+                "Apple's newest tag stored"
+            );
+        }
+
+        /// The form was open while a pass landed with the iPhone's change: the save is made
+        /// from the event as the form opened it, not the library's newer copy, so the room
+        /// the form never showed is not put back.
+        #[tokio::test]
+        async fn a_form_open_while_a_pass_lands_does_not_overwrite_it() {
+            let mut lib = Library::in_memory().unwrap();
+            calendars(&mut lib);
+            let opened = dentist();
+            lib.put_events(std::slice::from_ref(&opened)).unwrap();
+
+            // The pass, while the form is open.
+            let phone = in_room_2(&opened);
+            lib.put_events(std::slice::from_ref(&phone)).unwrap();
+
+            // Saved from the form: its fields as opened, the title changed.
+            let stored = lib.event("E").unwrap();
+            let base = save_base("E", Some(opened.clone()), stored.clone());
+            assert_eq!(
+                base.as_ref(),
+                Some(&opened),
+                "the form's base, not the library's"
+            );
+            assert_eq!(
+                save_base("E", None, stored.clone()),
+                stored,
+                "none sent: the library's"
+            );
+            let other = Event {
+                guid: "OTHER".into(),
+                ..dentist()
+            };
+            assert_eq!(
+                save_base("E", Some(other), stored.clone()),
+                stored,
+                "another event's base is never taken"
+            );
+            record_event_save(
+                &mut lib,
+                EventSave {
+                    base,
+                    ..edit_of(&opened)
+                },
+            )
+            .unwrap();
+            let shown = lib.event("E").unwrap().unwrap();
+            assert_eq!(
+                title_and_room(&shown),
+                ("Dentist — bring forms", Some("Room 2")),
+                "the phone's room still shown"
+            );
+            assert_eq!(
+                shown.etag.as_deref(),
+                Some("v2"),
+                "the library's tag is Apple's"
+            );
+
+            let (server, held) = apple(&phone, 2).await;
+            let lib = crate::library_lock::LibraryLock::new(lib, None);
+            send_waiting(&lib, &server.uri()).await;
+            assert_eq!(
+                title_and_room(&held.event()),
+                ("Dentist — bring forms", Some("Room 2"))
+            );
+        }
+
+        /// A second save made while the first is on its way follows it, made from what the
+        /// first sends: once the first has landed, the second still goes, merged over it.
+        #[tokio::test]
+        async fn a_save_behind_one_that_landed_still_goes() {
+            let mut lib = Library::in_memory().unwrap();
+            calendars(&mut lib);
+            let opened = dentist();
+            lib.put_events(std::slice::from_ref(&opened)).unwrap();
+            record_event_save(&mut lib, edit_of(&opened)).unwrap();
+            lib.outbox_take(CALENDAR).unwrap();
+            let mut later = lib.event("E").unwrap().unwrap();
+            later.location = Some("Room 9".into());
+            record_event_save(
+                &mut lib,
+                EventSave {
+                    event: later,
+                    ..edit_of(&opened)
+                },
+            )
+            .unwrap();
+            let (server, held) = apple(&opened, 1).await;
+            let lib = crate::library_lock::LibraryLock::new(lib, None);
+            send_waiting(&lib, &server.uri()).await;
+            assert_eq!(
+                title_and_room(&held.event()),
+                ("Dentist — bring forms", Some("Room 9"))
+            );
+        }
     }
 }

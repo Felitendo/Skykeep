@@ -261,6 +261,9 @@ type Draft = {
   /** A new event's alerts are its calendar's defaults until one is chosen, and follow a
    *  change of calendar or of all-day. */
   alertsDefault?: boolean;
+  /** The event as it was when this draft was made from it, Apple's tag with it: what a save
+   *  of it is made from, so a change another device made meanwhile is merged, not overwritten. */
+  opened?: CalendarEvent;
 };
 
 /**
@@ -349,6 +352,7 @@ const draftOf = (e: CalendarEvent): Draft => ({
   notes: e.notes ?? "",
   url: e.url,
   timezone: e.timezone,
+  opened: e,
 });
 
 /** Where a saved event ends: an all-day one at least a day on, a timed one never before its
@@ -846,6 +850,10 @@ export function CalendarView() {
       const step = undoable ? { kind: "change" as const, before: draftOf(was) } : null;
       if (step) lastAct.current = step;
       else if (undoing) lastAct.current = null;
+      // What the save is made from: the event as its draft was made from it, so a change
+      // another device made meanwhile is merged rather than overwritten. Undo puts the old
+      // fields back over the event as it is now.
+      const base = d.guid ? (undoing ? was : (d.opened ?? was)) : undefined;
       const saved = await write(async () => {
         await api.eventSave({
           ...(scope ? { scope } : {}),
@@ -861,6 +869,7 @@ export function CalendarView() {
           url: d.url?.trim() || null,
           ...(d.alertsChanged && d.alerts ? { alerts: d.alerts } : {}),
           ...(d.repeatChanged ? { repeat: d.repeat ?? null, repeatChanged: true } : {}),
+          ...(base ? { base } : {}),
         });
       }, (rows) => {
         // Shown where it now sits at once; a new one is drawn by its draft until Apple names it.

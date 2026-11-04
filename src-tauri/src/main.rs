@@ -2054,6 +2054,10 @@ struct EventDraft {
     repeat: Option<quince_icloud::calendar::EventRepeat>,
     #[serde(default)]
     repeat_changed: bool,
+    /// The event as the form opened it, Apple's tag with it: what this save was made from.
+    /// Absent (an older window, or a create), the library's copy at save time stands in.
+    #[serde(default)]
+    base: Option<Event>,
 }
 
 /// Everything an event write needs from the session, with the auth lock released first.
@@ -2159,6 +2163,11 @@ async fn event_save(draft: EventDraft, data: State<'_, Data>) -> UiResult<String
         if was_saved && existing.is_none() && !quince_icloud::calendar::is_occurrence(&guid) {
             return Err("This event was deleted on another device, so it wasn’t saved.".into());
         }
+        // Made from the event as the form showed it, not as the library holds it now: a pass
+        // that landed while the form was open brought another device's change, and a base
+        // taken now would make this save overwrite it.
+        let opened = draft.base.filter(|_| was_saved);
+        let base = outbox::save_base(&guid, opened, existing.clone());
         let event = Event {
             guid: guid.clone(),
             calendar_guid: draft.calendar_guid,
@@ -2170,14 +2179,14 @@ async fn event_save(draft: EventDraft, data: State<'_, Data>) -> UiResult<String
             timezone: draft.timezone,
             url: draft.url.filter(|s| !s.trim().is_empty()),
             notes: draft.notes.filter(|s| !s.trim().is_empty()),
-            etag: existing.as_ref().and_then(|e| e.etag.clone()),
+            etag: base.as_ref().and_then(|e| e.etag.clone()),
         };
         outbox::record_event_save(
             &mut library,
             outbox::EventSave {
                 event,
                 create: existing.is_none() && !was_saved,
-                base: existing,
+                base,
                 alerts: draft.alerts,
                 repeat_changed: draft.repeat_changed,
                 repeat: draft.repeat,
