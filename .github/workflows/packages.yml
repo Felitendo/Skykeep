@@ -16,6 +16,10 @@ on:
         description: "Release to package, without the v (its files must be on GitHub Releases)"
         type: string
         default: "0.1.2"
+  # A workflow GitHub has not yet seen on main cannot be run by hand, so the branch that brings
+  # it runs it on each push.
+  push:
+    branches: [packages]
 
 permissions:
   contents: read
@@ -25,7 +29,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VERSION: ${{ inputs.version }}
+  VERSION: ${{ inputs.version || '0.1.2' }}
 
 jobs:
   windows:
@@ -126,7 +130,7 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: windows-packages-${{ inputs.version }}
+          name: windows-packages-${{ env.VERSION }}
           path: |
             out/*.nupkg
             packaging/chocolatey/
