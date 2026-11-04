@@ -163,6 +163,8 @@ step "webkit: failing"  env ENGINE=webkit node .uiverify/boundary.mjs
 step "webkit: back"     env ENGINE=webkit node .uiverify/resume.mjs
 step "webkit: occasions" env ENGINE=webkit node .uiverify/occasions.mjs
 step "webkit: drive nav" env ENGINE=webkit node .uiverify/drive-nav.mjs
+step "sign-in keyring"  node .uiverify/signin-keyring.mjs
+step "lapse reason"     node .uiverify/lapse-reason.mjs
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then printf '\033[32mAll checks passed.\033[0m\n'; else printf '\033[31mSome checks failed.\033[0m\n'; fi

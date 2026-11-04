@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { SignIn } from "./screens/SignIn";
+import { SignIn, sentence } from "./screens/SignIn";
 import { CodeEntry } from "./screens/CodeEntry";
 import { Library } from "./screens/Library";
 import { ImportSheet } from "./components/ImportSheet";
@@ -58,7 +58,12 @@ export default function App() {
           // line over it, as a lapse does.
           const resumed = api.resume();
           setPhase("library");
-          const next = await resumed.catch(() => "signin" as const);
+          // A resume that failed says why (a locked account, say); only Apple declining the
+          // session is "signed you out".
+          const next = await resumed.catch((err) => {
+            if (!cancelled) setWhy(messageOf(err));
+            return "signin" as const;
+          });
           if (cancelled) return;
           if (next === "code") setPhase("code");
           else if (next === "signin") setLapsed(true);
@@ -107,13 +112,13 @@ export default function App() {
   useEffect(() => {
     if (!lapsed || phase !== "library") return undefined;
     const id = toast({
-      message: "Apple signed you out. Your copy on this computer is still here.",
+      message: `${why ? sentence(why) : "Apple signed you out."} Your copy on this computer is still here.`,
       tone: "error",
       duration: null,
       action: { label: "Sign In", run: () => setPhase("signin") },
     });
     return () => dismissToast(id);
-  }, [lapsed, phase]);
+  }, [lapsed, phase, why]);
 
   // Signed out, the window starts over: nothing of the account is left in its memory either —
   // no picture, no list, no cached answer — for whoever signs in next.
