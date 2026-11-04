@@ -298,12 +298,78 @@ pub async fn bytes(
                 .lookup_record(ZONE, media)
                 .await?
                 .ok_or(Error::NotFound)?;
+            // An attachment Apple keeps at size 0 (an old drawing from 2016) has no bytes, and
+            // its address answers 400 (coddingtonbear/icloud-md#55): it is empty, not refused.
+            if media
+                .pointer("/fields/Asset/value/size")
+                .and_then(Value::as_u64)
+                == Some(0)
+            {
+                return Ok(Vec::new());
+            }
             let url = media
                 .pointer("/fields/Asset/value/downloadURL")
                 .and_then(Value::as_str)
                 .ok_or(Error::NotFound)?;
             download(http, url).await
         }
+    }
+}
+
+#[cfg(test)]
+mod empty_asset_tests {
+    use super::*;
+    use wiremock::matchers::{body_string_contains, method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// An attachment whose file Apple keeps at size 0 opens empty; asked for, its address
+    /// answers 400, and opening it said Apple would not hand it over.
+    #[tokio::test]
+    async fn an_empty_attachment_is_empty_not_refused() {
+        let server = MockServer::start().await;
+        let lookup = |name: &str, record: serde_json::Value| {
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/records/lookup$"))
+                .and(body_string_contains(name.to_string()))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "records": [record] })),
+                )
+        };
+        lookup(
+            "\"ATT\"",
+            serde_json::json!({ "recordName": "ATT", "recordType": "Attachment", "recordChangeTag": "t1",
+                "fields": { "Media": { "value": { "recordName": "MEDIA" } } } }),
+        )
+        .mount(&server)
+        .await;
+        lookup(
+            "\"MEDIA\"",
+            serde_json::json!({ "recordName": "MEDIA", "recordType": "Media", "recordChangeTag": "t2",
+                "fields": { "Asset": { "value": { "size": 0,
+                    "downloadURL": format!("{}/asset/${{f}}", server.uri()) } } } }),
+        )
+        .mount(&server)
+        .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+        let got = bytes(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            "ATT",
+            Part::File,
+        )
+        .await
+        .expect("an empty file, not a refusal");
+        assert!(got.is_empty());
+        let asked = server.received_requests().await.unwrap();
+        assert!(
+            asked.iter().all(|r| r.method.as_str() != "GET"),
+            "nothing downloaded"
+        );
     }
 }
 
