@@ -217,6 +217,10 @@ jobs:
         fedora: ["43", "latest"]
     container:
       image: fedora:${{ matrix.fedora }}
+      # gnome-keyring 51 (Fedora 45) drops its process capabilities as it starts and aborts
+      # when a default container won't let it ("error dropping process capabilities"), so the
+      # keyring check had no Secret Service. A desktop session has no such limit.
+      options: --privileged
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
