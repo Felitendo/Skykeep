@@ -222,10 +222,21 @@ async fn link(
             return Err(Error::Conflict);
         }
     }
-    body.pointer("/data_token/url")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
+    download_link_in(&body)
         .ok_or_else(|| Error::Protocol("Apple's reply carried no download URL".into()))
+}
+
+/// The address a `download/by_id` reply gives for the bytes: `data_token` for a file, and
+/// `package_token` for a document that is a package — a Pages, Numbers or Keynote file, an
+/// app's bundle — which Apple serves whole from `packageDownload` (timlaing/pyicloud
+/// `drive.py`, mandarons/icloudpy#1, mandarons/icloud-docker#461). Read for `data_token`
+/// alone, every such document was "Apple's reply carried no download URL".
+fn download_link_in(body: &Value) -> Option<String> {
+    ["/data_token/url", "/package_token/url"]
+        .iter()
+        .find_map(|at| body.pointer(at).and_then(Value::as_str))
+        .filter(|url| !url.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Download a file's bytes to `destination`, streaming rather than holding the whole file
@@ -3313,6 +3324,47 @@ mod download_zone_tests {
         .await
         .unwrap();
         assert!(ordinary.ends_with("com.apple.CloudDocs"), "{ordinary}");
+    }
+
+    /// A Pages, Numbers or Keynote document is a package, and Apple answers its download with
+    /// a `package_token` rather than a `data_token` (timlaing/pyicloud `drive.py`,
+    /// mandarons/icloudpy#1). It downloads from there, rather than failing as a reply with
+    /// no address.
+    #[tokio::test]
+    async fn a_package_downloads_from_its_package_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ws/com.apple.CloudDocs/download/by_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "document_id": "KEY",
+                "package_token": { "url": "https://cvws.example/packageDownload?k=1" },
+                "double_etag": "e1"
+            })))
+            .mount(&server)
+            .await;
+        let mut talk = file("FILE::com.apple.CloudDocs::KEY");
+        talk.extension = Some("key".into());
+        talk.etag = Some("e1".into());
+        let http = reqwest::Client::new();
+        for exact in [false, true] {
+            let got = if exact {
+                download_url_of_version(&http, &server.uri(), vec![], &talk).await
+            } else {
+                download_url(&http, &server.uri(), vec![], &talk).await
+            };
+            assert_eq!(
+                got.unwrap(),
+                "https://cvws.example/packageDownload?k=1",
+                "exact: {exact}"
+            );
+        }
+        assert_eq!(
+            download_link_in(&serde_json::json!({ "data_token": { "url": "https://a" },
+                                                   "package_token": { "url": "https://b" } })),
+            Some("https://a".into()),
+            "a file's own bytes first"
+        );
+        assert_eq!(download_link_in(&serde_json::json!({})), None);
     }
 }
 
