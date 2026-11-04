@@ -24,10 +24,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: packages-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   VERSION: ${{ inputs.version || '0.1.2' }}
 
@@ -41,7 +37,10 @@ jobs:
         shell: pwsh
         run: |
           $base = "https://github.com/YashwanthKamireddi/Skykeep/releases/download/v$env:VERSION"
-          $sums = (Invoke-WebRequest "$base/SHA256SUMS-windows.txt" -UseBasicParsing).Content
+          # Saved and read back: the release serves it as octet-stream, which Invoke-WebRequest
+          # hands over as bytes, not text.
+          Invoke-WebRequest "$base/SHA256SUMS-windows.txt" -OutFile "$env:RUNNER_TEMP\sums.txt"
+          $sums = Get-Content "$env:RUNNER_TEMP\sums.txt" -Raw
           $line = $sums -split "`n" | Where-Object { $_ -match "\sSkykeep_$([regex]::Escape($env:VERSION))_x64-setup\.exe\s*$" }
           if (-not $line) { throw "no installer for $env:VERSION in SHA256SUMS-windows.txt" }
           $hash = ($line -split '\s+')[0].ToLower()
