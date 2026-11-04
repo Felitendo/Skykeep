@@ -1041,7 +1041,34 @@ impl Inner {
         if folder && !self.children(ino).map(|c| c.is_empty()).unwrap_or(false) {
             return Err(Errno::ENOTEMPTY);
         }
+        if folder {
+            self.empty_at_apple(&item)?;
+        }
         self.change(self.remote.delete(&item), &[&from])
+    }
+
+    /// A folder about to go is asked of Apple first, right before: empty here can be empty as
+    /// this computer last listed it, and files put in it on another device since would go to
+    /// Recently Deleted with it, with no word — Apple deletes a folder whole, against its
+    /// newest version. Anything there now is "not empty"; not reaching Apple deletes nothing.
+    fn empty_at_apple(&self, folder: &DriveItem) -> Result<(), Errno> {
+        let remote = Arc::clone(&self.remote);
+        let id = folder.drivewsid.clone();
+        let there = self
+            .rt
+            .block_on(async move { tokio::time::timeout(LIST_WAIT, remote.list(&id)).await })
+            .map_err(|_| Errno::ETIMEDOUT)?
+            .map_err(|e| {
+                quiet_note(&e);
+                Errno::EIO
+            })?;
+        // Listed, what Apple has is kept (the app stores every listing): the next look finds
+        // it there.
+        if there.is_empty() {
+            Ok(())
+        } else {
+            Err(Errno::ENOTEMPTY)
+        }
     }
 
     /// An item moved and renamed at Apple: into `to`, then given `newname`.
@@ -1981,6 +2008,83 @@ mod listing_tests {
         let again = inner.children(1).unwrap();
         assert_eq!(again.len(), 2001);
         assert_eq!(&again[..2000], &listed[..]);
+    }
+
+    /// A folder that is empty as this computer last listed it, with a file put in it on
+    /// another device since: removing it asks Apple first and is refused as not empty, so the
+    /// file is not sent to Recently Deleted with it. One Apple also finds empty goes.
+    #[test]
+    fn a_folder_filled_elsewhere_is_not_removed_as_empty() {
+        use std::sync::atomic::AtomicBool;
+        struct Elsewhere {
+            filled: AtomicBool,
+            deleted: Mutex<Vec<String>>,
+        }
+        impl Remote for Elsewhere {
+            fn list(&self, folder: &str) -> Fut<Vec<DriveItem>> {
+                let items = if folder == "FOLDER::Old" && self.filled.load(Ordering::SeqCst) {
+                    vec![DriveItem {
+                        parent_id: Some("FOLDER::Old".into()),
+                        ..file(7)
+                    }]
+                } else {
+                    Vec::new()
+                };
+                Box::pin(async move { Ok(items) })
+            }
+            fn read(&self, _item: &DriveItem, _offset: u64, _len: u64) -> Fut<Vec<u8>> {
+                Box::pin(async { Ok(Vec::new()) })
+            }
+            fn delete(&self, item: &DriveItem) -> Fut<()> {
+                self.deleted.lock().unwrap().push(item.drivewsid.clone());
+                Box::pin(async { Ok(()) })
+            }
+        }
+        // The library: the folder at the top, listed empty when last looked at.
+        struct Listed;
+        impl Store for Listed {
+            fn children(&self, folder: &str) -> Option<Vec<DriveItem>> {
+                match folder {
+                    ROOT => Some(vec![DriveItem {
+                        drivewsid: "FOLDER::Old".into(),
+                        parent_id: Some(ROOT.into()),
+                        name: "Old".into(),
+                        extension: None,
+                        kind: "FOLDER".into(),
+                        size: None,
+                        child_count: Some(0),
+                        created_at: None,
+                        modified_at: None,
+                        etag: Some("f1".into()),
+                    }]),
+                    _ => Some(Vec::new()),
+                }
+            }
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let remote = Arc::new(Elsewhere {
+            filled: AtomicBool::new(true),
+            deleted: Mutex::new(Vec::new()),
+        });
+        let fs = DriveFs::new(
+            Arc::clone(&remote) as Arc<dyn Remote>,
+            Arc::new(Listed),
+            Arc::new(Cache::new(cache.path()).unwrap()),
+            rt.handle().clone(),
+        );
+        assert!(matches!(
+            fs.0.remove(1, OsStr::new("Old"), true),
+            Err(Errno::ENOTEMPTY)
+        ));
+        assert!(remote.deleted.lock().unwrap().is_empty(), "nothing deleted");
+
+        remote.filled.store(false, Ordering::SeqCst);
+        assert!(fs.0.remove(1, OsStr::new("Old"), true).is_ok());
+        assert_eq!(
+            *remote.deleted.lock().unwrap(),
+            vec!["FOLDER::Old".to_string()]
+        );
     }
 
     /// Without a version to go by, every look reads the library, as it always did.
