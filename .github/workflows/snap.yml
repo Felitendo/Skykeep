@@ -35,8 +35,14 @@ jobs:
         run: |
           sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
           sudo apt-get install -y xvfb dbus-x11 >/dev/null
+          # Snaps start only inside a user session's scope, as on a desktop; a runner step sits
+          # in a system service's cgroup, so start one for this user and run inside it.
+          sudo loginctl enable-linger "$USER"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          for _ in $(seq 20); do [ -S "$XDG_RUNTIME_DIR/bus" ] && break; sleep 1; done
           set +e
-          timeout 20 dbus-run-session -- xvfb-run -a snap run skykeep > run.log 2>&1
+          systemd-run --user --scope --quiet -- \
+            timeout 20 xvfb-run -a snap run skykeep > run.log 2>&1
           code=$?
           cat run.log | tail -40
           # 124 = still running when the timeout ended it: it started and stayed up.
