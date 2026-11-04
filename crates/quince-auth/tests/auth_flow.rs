@@ -1016,3 +1016,33 @@ async fn a_locked_account_says_so_not_wrong_password() {
     );
     assert!(err.to_string().contains("iforgot.apple.com"), "{err}");
 }
+
+/// Asking for the code again too often is answered 429. That reads as "wait", the same as
+/// throttling anywhere else in sign-in, never as raw HTTP text, by either way of sending it.
+#[tokio::test]
+async fn asking_for_the_code_again_too_often_says_to_wait() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/phone"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+
+    let err = client.resend_to_devices().await.unwrap_err();
+    assert!(matches!(err, quince_auth::Error::RateLimited), "{err:?}");
+    let err = client.send_sms(1).await.unwrap_err();
+    assert!(matches!(err, quince_auth::Error::RateLimited), "{err:?}");
+}

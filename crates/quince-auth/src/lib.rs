@@ -1045,9 +1045,8 @@ impl Client {
         self.capture(&r);
         let status = r.status();
         if !status.is_success() && status != StatusCode::NO_CONTENT {
-            return Err(Error::Protocol(format!(
-                "couldn't resend the code ({status})"
-            )));
+            let body = r.text().await.unwrap_or_default();
+            return Err(apple_error("sending the code again", status, &body));
         }
         Ok(())
     }
@@ -1066,9 +1065,8 @@ impl Client {
         self.capture(&r);
         let status = r.status();
         if !status.is_success() && status != StatusCode::NO_CONTENT {
-            return Err(Error::Protocol(format!(
-                "couldn't send the text ({status})"
-            )));
+            let body = r.text().await.unwrap_or_default();
+            return Err(apple_error("texting the code", status, &body));
         }
         Ok(())
     }
