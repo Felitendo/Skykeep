@@ -113,12 +113,13 @@ async fn walk(
             return Err(crate::Error::StaleCursor);
         }
         records.extend(page.records);
-        token = page.sync_token;
+        let (next, advanced) = crate::cloudkit::advance(token.take(), page.sync_token);
+        token = next;
         if !page.more_coming {
             return Ok((records, token, true));
         }
-        // "More coming" with no position to carry on from would loop forever.
-        if token.is_none() {
+        // "More coming" with no new position to carry on from would ask the same again.
+        if !advanced {
             break;
         }
     }
@@ -2086,22 +2087,30 @@ mod tests {
         use wiremock::matchers::{method, path_regex};
         use wiremock::{Mock, MockServer};
         let server = MockServer::start().await;
+        // Each page a position further on, as Apple's are.
+        let pages = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = pages.clone();
         Mock::given(method("POST"))
             .and(path_regex(r".*/changes/zone"))
-            .respond_with(zone_reply(json!({
-                "records": [master_named("M1")], "syncToken": "further", "moreComing": true
-            })))
+            .respond_with(move |_: &wiremock::Request| {
+                let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                zone_reply(json!({
+                    "records": [master_named("M1")], "syncToken": format!("further-{n}"),
+                    "moreComing": true
+                }))
+            })
             .mount(&server)
             .await;
         let http = reqwest::Client::new();
         let fetched = fetch(&http, &server.uri(), vec![], None).await.unwrap();
         assert!(!fetched.complete);
-        assert_eq!(fetched.token.as_deref(), Some("further"));
+        let reached = format!("further-{PASS_PAGES}");
+        assert_eq!(fetched.token.as_deref(), Some(reached.as_str()));
         assert_eq!(fetched.records.len(), PASS_PAGES);
-        let again = fetch(&http, &server.uri(), vec![], Some("further"))
+        let again = fetch(&http, &server.uri(), vec![], Some(&reached))
             .await
             .unwrap();
-        assert!(again.incremental && again.from.as_deref() == Some("further"));
+        assert!(again.incremental && again.from.as_deref() == Some(reached.as_str()));
     }
 
     /// A whole walk read the way a refresh reads it — a few pages at a time, each stored

@@ -313,13 +313,16 @@ impl<'a> ZoneClient<'a> {
                 return Err(Error::StaleCursor);
             }
             records.extend(page.records);
-            token = page.sync_token;
+            let (next, advanced) = advance(token.take(), page.sync_token);
+            token = next;
             if !page.more_coming {
                 complete = true;
                 break;
             }
-            // A page that says "more coming" but hands back no cursor would loop forever.
-            if token.is_none() {
+            // "More coming" with no new position — none, or the one just sent — would ask
+            // the same thing again, up to the page limit (coddingtonbear/icloud-md#48): it
+            // stops there, unfinished, and the next pass asks again from where it is.
+            if !advanced {
                 break;
             }
         }
@@ -329,6 +332,17 @@ impl<'a> ZoneClient<'a> {
             token,
             complete,
         })
+    }
+}
+
+/// Where a walk carries on from after a page: the page's position, or — given none, or an empty
+/// one — the one it was asked from, so the last page leaving it out never loses the place
+/// (and the next pass never reads the whole zone again for it). Answers whether it moved.
+pub(crate) fn advance(asked: Option<String>, given: Option<String>) -> (Option<String>, bool) {
+    match given.filter(|t| !t.is_empty()) {
+        Some(t) if asked.as_ref() != Some(&t) => (Some(t), true),
+        Some(t) => (Some(t), false),
+        None => (asked, false),
     }
 }
 
@@ -700,6 +714,52 @@ mod tests {
             Some("t3"),
             "the final cursor is what resumes later"
         );
+    }
+
+    /// A server that says more-coming but hands back the position it was asked from would be
+    /// asked the same thing two hundred times (coddingtonbear/icloud-md#48): the walk stops,
+    /// unfinished, at the position it reached.
+    #[tokio::test]
+    async fn paging_stops_when_the_cursor_does_not_move() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "zones": [{ "records": [record("a", "Reminder")], "syncToken": "STUCK", "moreComing": true }]
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let client = ZoneClient::new(&http, &server.uri(), "com.apple.reminders", vec![]);
+        let walk = client.all_records("Reminders", None).await.unwrap();
+        assert!(!walk.complete, "not the whole zone");
+        assert_eq!(walk.token.as_deref(), Some("STUCK"));
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "asked once more, then stopped"
+        );
+    }
+
+    /// A last page that leaves its position out, or leaves it empty, keeps the one the walk
+    /// was at: dropped, the next pass read the whole zone again.
+    #[test]
+    fn a_page_without_a_position_keeps_the_one_before() {
+        assert_eq!(advance(Some("A".into()), None), (Some("A".into()), false));
+        assert_eq!(
+            advance(Some("A".into()), Some(String::new())),
+            (Some("A".into()), false)
+        );
+        assert_eq!(
+            advance(Some("A".into()), Some("A".into())),
+            (Some("A".into()), false)
+        );
+        assert_eq!(
+            advance(Some("A".into()), Some("B".into())),
+            (Some("B".into()), true)
+        );
+        assert_eq!(advance(None, Some("B".into())), (Some("B".into()), true));
+        assert_eq!(advance(None, None), (None, false));
     }
 
     /// A server that always says more-coming without a cursor must not spin.
