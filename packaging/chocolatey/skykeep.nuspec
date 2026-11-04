@@ -4,7 +4,7 @@
     <id>skykeep</id>
     <version>0.1.2</version>
     <packageSourceUrl>https://github.com/YashwanthKamireddi/Skykeep/tree/main/packaging/chocolatey</packageSourceUrl>
-    <owners>YashwanthKamireddi</owners>
+    <owners>yash_on_chocolatey</owners>
     <title>Skykeep</title>
     <authors>Yashwanth Kamireddi</authors>
     <projectUrl>https://github.com/YashwanthKamireddi/Skykeep</projectUrl>

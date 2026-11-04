@@ -13,7 +13,7 @@ artifact `windows-packages-<version>` holds the packed `.nupkg` for that version
 ## Account
 
 A free account at <https://community.chocolatey.org/account/Register>. The nuspec's
-`<owners>` is `YashwanthKamireddi`; change it if the account's username differs. The API key
+`<owners>` is the account's username, `yash_on_chocolatey`. The API key
 is under <https://community.chocolatey.org/account>.
 
 ## Publishing a release
