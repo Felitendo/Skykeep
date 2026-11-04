@@ -6,6 +6,11 @@
 //                                              window on this display
 //   ENGINE=msedge node .uiverify/calendar.mjs   Microsoft Edge — the engine WebView2 is, with
 //                                              Windows' own fonts — on a Windows machine
+//   WEBVIEW2=1 node .uiverify/photos-drag.mjs   Chromium as Skykeep's window is on Windows:
+//                                              WebView2's user agent, and no drag event of the
+//                                              engine's own reaching the page — Tauri holds the
+//                                              window's drop target there, for files dropped
+//                                              from Explorer (src/lib/drag.ts)
 //
 // Playwright's WebKit build wants a few libraries this machine's distribution names
 // differently; .uiverify/webkit-libs.sh fetches them into a private folder, no root needed.
@@ -27,6 +32,7 @@ export const engine = {
       ...(engineName === "gtk" ? { headless: false } : {}),
       ...(engineName === "msedge" ? { channel: "msedge" } : {}),
     });
+    if (webview2) return asWebView2(browser);
     if (engineName !== "gtk") return browser;
     const newContext = browser.newContext.bind(browser);
     browser.newContext = async (opts = {}) => {
@@ -43,3 +49,24 @@ export const engine = {
     return browser;
   },
 };
+
+/** Run as Skykeep's window on Windows (WEBVIEW2=1, Chromium only). */
+const webview2 = Boolean(process.env.WEBVIEW2) && base === chromium;
+const WEBVIEW2_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
+
+/** Every context WebView2's user agent, and the engine's own drag events kept from the page. */
+function asWebView2(browser) {
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (opts = {}) => {
+    const ctx = await newContext({ ...opts, userAgent: WEBVIEW2_AGENT });
+    await ctx.addInitScript(() => {
+      for (const type of ["dragenter", "dragover", "dragleave", "drop"]) {
+        window.addEventListener(type, (e) => { if (e.isTrusted) e.stopImmediatePropagation(); }, true);
+      }
+    });
+    return ctx;
+  };
+  browser.newPage = async (opts = {}) => (await browser.newContext(opts)).newPage();
+  return browser;
+}
