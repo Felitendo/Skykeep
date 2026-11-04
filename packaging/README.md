@@ -64,18 +64,23 @@ loads it (`ldd` on the binary doesn't list it).
 
 ### What the AppImage carries for photos and videos
 
-The AppImage is built on Ubuntu 24.04 and carries that system's media stack, so HEIC photos
-and H.264/HEVC videos work on a computer that has none of it:
+The AppImage is built in an Ubuntu 22.04 container (`.github/workflows/appimage.yml`): an
+AppImage uses the glibc and libstdc++ of the computer it runs on, so it runs on the system it
+was built on and newer ones, and 22.04 is the oldest Ubuntu LTS. The build fails if any ELF
+file in it needs more than glibc 2.35, GLIBCXX 3.4.30 or CXXABI 1.3.13. It carries that
+system's media stack, so HEIC photos and H.264/HEVC videos work on a computer that has none
+of it:
 
-- **GStreamer 1.24** (`bundle.linux.appimage.bundleMediaFramework`): Tauri's linuxdeploy
+- **GStreamer 1.20** (`bundle.linux.appimage.bundleMediaFramework`): Tauri's linuxdeploy
   GStreamer plugin copies every plugin installed on the build machine, with the libraries they
   link — the release builds install `gstreamer1.0-plugins-base` (playbin3, decodebin,
   videoconvert, appsink), `gstreamer1.0-plugins-good` (qtdemux for `.mov`/`.mp4`, videoflip)
-  and `gstreamer1.0-libav` (avdec_h264, avdec_h265 — FFmpeg's libavcodec 6.1 from Ubuntu's
+  and `gstreamer1.0-libav` (avdec_h264, avdec_h265 — FFmpeg's libavcodec 58 from Ubuntu's
   universe), and its AppRun hook points GStreamer at them. Not `-bad` or `-ugly`, and no
   openh264.
-- **libheif 1.17 with libde265's HEVC decoder** (`libheif-plugin-libde265`, listed in
-  `bundle.linux.appimage.files` with `libde265.so.0`): libheif looks for its decoder plugins
+- **libheif 1.19 with libde265's HEVC decoder**, built from their release tarballs (22.04's
+  libheif is 1.12, older than the 1.17 the app needs) into Ubuntu's multiarch paths, and
+  listed in `bundle.linux.appimage.files` (the plugin and `libde265.so.0`): libheif looks for its decoder plugins
   in the directory it was built with, which on another system is that system's (empty on a
   clean Debian or Fedora). At start-up, before libheif is used, Skykeep sets
   `LIBHEIF_PLUGIN_PATH` to the AppImage's own `usr/lib/libheif/plugins` — only when `APPDIR`
@@ -91,11 +96,11 @@ Arch package carry none of this — they use the system's own packages (Fedora a
 users add RPM Fusion or Packman for HEVC, as the README says).
 
 The files map uses Ubuntu's multiarch paths, so `npx tauri build --bundles appimage` is meant
-for an Ubuntu/Debian machine with `libheif-plugin-libde265` installed, as the release builds
-are; elsewhere build the `.rpm` or the Arch package.
+for an Ubuntu/Debian machine with `libheif-plugin-libde265` (or the one appimage.yml builds)
+installed; elsewhere build the `.rpm` or the Arch package.
 
-`linux-compat.yml` (Actions → Linux compatibility) builds the packages on Ubuntu 24.04,
-Debian 13, Fedora 42, openSUSE Tumbleweed and Arch from these instructions and installs each in a
+`linux-compat.yml` (Actions → Linux compatibility) builds the packages on Ubuntu 24.04 (the
+AppImage on 22.04, and starts it there with no network), Debian 13, Fedora 42, openSUSE Tumbleweed and Arch from these instructions and installs each in a
 clean container of its distribution; `linux-compat/check.sh` is what it runs there.
 
 ## Flatpak
@@ -105,11 +110,13 @@ and what's left before Flathub.
 
 ## What Skykeep needs to run
 
-The floor is glibc 2.39 (the bundles are built on Ubuntu 24.04) and libheif 1.17
+For the `.deb`, `.rpm` and Arch package, the floor is glibc 2.39 (they are built on Ubuntu
+24.04) and libheif 1.17
 (`libheif-rs` with `v1_17`): Ubuntu 24.04, Mint 22, Debian 13, Fedora 41, Tumbleweed, or later.
 The `.deb` and `.rpm` declare both as versioned dependencies in `src-tauri/tauri.conf.json`, so
 an older system is refused by its package manager with a clear message instead of a loader
-error at launch. The AppImage needs FUSE 2 to mount itself; without `libfuse2` it runs with
+error at launch. The AppImage carries its own libheif and needs glibc 2.35: Ubuntu 22.04 or
+later. It needs FUSE 2 to mount itself; without `libfuse2` it runs with
 `--appimage-extract-and-run`.
 
 - `webkit2gtk-4.1` for the window and `libsecret` for the keyring. Without a keyring the app
