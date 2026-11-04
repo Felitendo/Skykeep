@@ -141,9 +141,13 @@ pub fn text_from_base64(value: &str) -> Option<String> {
 pub fn text_from_bytes(raw: &[u8]) -> Option<String> {
     let plain = inflate(raw)?;
 
-    // Reminder titles and note bodies are wrapped in Apple's document protobuf.
-    if let Some(found) = field_at(&plain, TEXT_PATH) {
-        if let Some(text) = usable_text(found) {
+    // Reminder titles and note bodies are wrapped in Apple's document protobuf — whole (a
+    // Document holding a Version holding the String), or as a bare Version or a bare String,
+    // which Apple's records hold too (timlaing/pyicloud CHANGELOG 2026.10.1, "documents that
+    // are wrapped in a bare CloudKit Version"). Read only whole, a reminder titled the other
+    // way showed with no title. Text never begins with the bytes these wrappers begin with.
+    for path in [TEXT_PATH, &TEXT_PATH[1..], &TEXT_PATH[2..]] {
+        if let Some(text) = field_at(&plain, path).and_then(usable_text) {
             return Some(text);
         }
     }
@@ -163,6 +167,40 @@ pub fn stored_text_from_base64(value: &str) -> Option<String> {
     std::str::from_utf8(field_at(&plain, TEXT_PATH)?)
         .ok()
         .map(ToString::to_string)
+}
+
+/// A reminder's title as a bare `Version` (field 3, the topotext `String`, its text at 2)
+/// and as a bare `String`, read like a whole document.
+#[cfg(test)]
+mod bare_wrapper_tests {
+    use super::*;
+
+    fn len(field: u64, inner: &[u8]) -> Vec<u8> {
+        let mut out = vec![u8::try_from(field << 3 | 2).unwrap()];
+        out.push(u8::try_from(inner.len()).unwrap());
+        out.extend_from_slice(inner);
+        out
+    }
+
+    #[test]
+    fn a_title_in_a_bare_version_or_string_reads() {
+        let string = len(2, "Pick up the cake".as_bytes());
+        let version = [vec![0x08, 0x00, 0x10, 0x00], len(3, &string)].concat();
+        let document = [vec![0x08, 0x00], len(2, &version)].concat();
+        for (label, bytes) in [
+            ("whole", &document),
+            ("version", &version),
+            ("string", &string),
+        ] {
+            assert_eq!(
+                text_from_bytes(&gzip(bytes)).as_deref(),
+                Some("Pick up the cake"),
+                "{label}"
+            );
+        }
+        // Plain text is still plain text.
+        assert_eq!(text_from_bytes(b"Groceries").as_deref(), Some("Groceries"));
+    }
 }
 
 /// Valid, non-empty UTF-8 with nothing unprintable in it.
