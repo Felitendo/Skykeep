@@ -191,15 +191,15 @@ sudo zypper install --allow-vendor-change --from packman libavcodec62 libheif1 l
 </details>
 
 <details>
-<summary><b>The AppImage doesn't open on Ubuntu 24.04</b></summary>
+<summary><b>The AppImage doesn't open on Ubuntu</b></summary>
 
-Ubuntu 24.04 leaves out a small library AppImages usually use. Start it this way instead:
+Ubuntu leaves out a small library AppImages usually use. Start it this way instead:
 
 ```sh
 ./Skykeep-linux-x86_64.AppImage --appimage-extract-and-run
 ```
 
-Or install the library once with `sudo apt install libfuse2t64`, and the AppImage opens normally.
+Or install the library once with `sudo apt install libfuse2t64` (`libfuse2` on Ubuntu 22.04), and the AppImage opens normally.
 </details>
 
 <a id="arch-linux"></a>
@@ -225,7 +225,7 @@ Skykeep is coming to Flathub. The manifest is in [`packaging/flatpak`](packaging
 <details>
 <summary><b>What your system needs</b></summary>
 
-Windows 10 or 11. Or a Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Keyring or KWallet), on Wayland or X11, with glibc 2.39 and libheif 1.17 or newer: Ubuntu 24.04, Linux Mint 22, Debian 13, Fedora 41, openSUSE Tumbleweed, or later. The `.deb` and `.rpm` check this when you install, so an older system finds out then rather than at launch.
+Windows 10 or 11. Or a Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Keyring or KWallet), on Wayland or X11, with glibc 2.39 and libheif 1.17 or newer: Ubuntu 24.04, Linux Mint 22, Debian 13, Fedora 41, openSUSE Tumbleweed, or later. The `.deb` and `.rpm` check this when you install, so an older system finds out then rather than at launch. The AppImage carries its own libheif and runs on Ubuntu 22.04 or later.
 </details>
 
 ### Staying up to date
