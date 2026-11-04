@@ -457,6 +457,27 @@ impl Library {
         })
     }
 
+    /// A photo of each of `masters` already kept, by its master: any one of the assets made
+    /// from it. One query for all of them, in pieces of a few hundred.
+    pub fn photos_of_masters(
+        &self,
+        masters: &[String],
+    ) -> Result<std::collections::HashMap<String, Photo>> {
+        let mut found = std::collections::HashMap::new();
+        for chunk in masters.chunks(500) {
+            let marks = vec!["?"; chunk.len()].join(", ");
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT {COLUMNS} FROM photos WHERE master IN ({marks})"
+            ))?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk), row_to_photo)?;
+            for photo in rows {
+                let photo = photo?;
+                found.entry(photo.master.clone()).or_insert(photo);
+            }
+        }
+        Ok(found)
+    }
+
     /// How many photos each view holds.
     pub fn photo_counts(&self) -> Result<Vec<(View, i64)>> {
         let mut out = Vec::new();

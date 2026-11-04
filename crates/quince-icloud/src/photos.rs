@@ -396,6 +396,22 @@ fn with_asset(mut p: Photo, asset: &Value) -> Photo {
     p
 }
 
+/// A new asset `id` of the master `other` is a photo of: what the master gives (the file,
+/// its size and kind) kept, and everything of the other asset's own let go, for
+/// [`with_asset`] to lay this one's over.
+fn another_asset_of(other: &Photo, id: &str, asset: &Value) -> Photo {
+    let mut p = other.clone();
+    p.id = id.to_string();
+    p.subtype = field::int(asset, "assetSubtypeV2").unwrap_or(0);
+    p.burst = None;
+    p.burst_pick = false;
+    p.burst_count = 0;
+    p.deleted_at = None;
+    p.expunge_at = None;
+    p.change_tag = None;
+    p
+}
+
 /// A pass applied to the library, merged in as it comes, so a large library shows as it fills.
 ///
 /// A pass over what changed is only that. A whole read (one from the start, or one carrying
@@ -537,6 +553,29 @@ fn apply_whole(
     // Masters an asset in this pass was built from, and assets whose master is not here yet.
     let mut used: HashSet<&str> = HashSet::new();
     let mut waiting: Vec<&Value> = Vec::new();
+    // A new asset of a master already kept: a photo duplicated in Photos is a second asset
+    // made from the same master, and a pass over what changed brings the new asset alone —
+    // the master did not change (icloud_photos_downloader#1394, timlaing/pyicloud#395). It
+    // is built from the master's other photo here; held for a master that never comes, it
+    // was dropped when the pass ended, and the duplicate never showed until a whole read.
+    let elsewhere: HashMap<String, Photo> = {
+        let wanted: Vec<String> = assets
+            .iter()
+            .filter_map(|a| {
+                a.pointer("/fields/masterRef/value/recordName")
+                    .and_then(Value::as_str)
+            })
+            .filter(|m| !masters.contains_key(*m))
+            .map(str::to_string)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if wanted.is_empty() {
+            HashMap::new()
+        } else {
+            library.photos_of_masters(&wanted)?
+        }
+    };
     for a in assets {
         let master = a
             .pointer("/fields/masterRef/value/recordName")
@@ -546,10 +585,20 @@ fn apply_whole(
                 used.insert(name);
                 photo_of(a, m)
             }
-            // Only the asset changed: its flags laid over the photo already known.
-            None => field::record_name(a)
-                .and_then(|id| library.photo(&id).ok().flatten())
-                .map(|p| with_asset(p, a)),
+            // Only the asset changed: its flags laid over the photo already known — or,
+            // new, over its master's other photo.
+            None => field::record_name(a).and_then(|id| {
+                library
+                    .photo(&id)
+                    .ok()
+                    .flatten()
+                    .or_else(|| {
+                        master
+                            .and_then(|m| elsewhere.get(m))
+                            .map(|p| another_asset_of(p, &id, a))
+                    })
+                    .map(|p| with_asset(p, a))
+            }),
         };
         match built {
             Some(p) => photos.push(p),
@@ -1533,6 +1582,57 @@ mod tests {
         )
         .unwrap();
         assert!(lib.photo("A1").unwrap().is_none());
+    }
+
+    /// A photo duplicated in Photos is a second asset of the same master. A pass over what
+    /// changed brings the new asset alone, the master unchanged (icloud_photos_downloader#1394,
+    /// timlaing/pyicloud#395): it is a photo of its own, built from the master already kept,
+    /// with its own flags — not held for a master that never comes and dropped.
+    #[test]
+    fn a_new_asset_of_a_kept_master_is_a_photo_of_its_own() {
+        let mut lib = quince_core::Library::in_memory().unwrap();
+        let pass = |records, incremental| PhotosFetch {
+            records,
+            token: Some("T".into()),
+            from: None,
+            incremental,
+            complete: true,
+        };
+        apply(
+            &mut lib,
+            pass(vec![master(), asset(json!({"isFavorite": 1}))], false),
+        )
+        .unwrap();
+        let mut duplicate = asset(json!({ "captionEnc":
+            base64::engine::general_purpose::STANDARD.encode("the copy") }));
+        duplicate["recordName"] = json!("A2");
+        duplicate["recordChangeTag"] = json!("t9");
+        let (changed, _) = apply(&mut lib, pass(vec![duplicate], true)).unwrap();
+        assert_eq!(changed, 1);
+
+        let copy = lib
+            .photo("A2")
+            .unwrap()
+            .expect("the duplicate is in the library");
+        assert_eq!(copy.master, "M1");
+        assert_eq!(
+            copy.filename.as_deref(),
+            Some("IMG_0001.JPG"),
+            "the master's file"
+        );
+        assert_eq!(copy.size, Some(2_400_000));
+        assert!(!copy.favorite, "its own flags, not the first photo's");
+        assert_eq!(copy.title.as_deref(), Some("the copy"));
+        assert_eq!(copy.change_tag.as_deref(), Some("t9"));
+        let first = lib.photo("A1").unwrap().expect("the first is still there");
+        assert!(first.favorite);
+        assert_eq!(
+            lib.photos(quince_core::photos::View::Library)
+                .unwrap()
+                .len(),
+            2,
+            "two photos of one master"
+        );
     }
 
     /// Keywords and a place, from the bytes Apple holds for his photo titled "loupe": a binary
