@@ -6,8 +6,10 @@
 # and the program still up 8 s later, and the launchers, metainfo and icons valid.
 #
 # Not on every push: by hand (Actions → Linux compatibility → Run workflow), and for a release
-# tag. The packages are built the way release.yml builds them, on Ubuntu 24.04 — the oldest
-# base whose libheif (1.17) the app accepts; Debian 12 (libheif 1.15, glibc 2.36) cannot run it.
+# tag. The packages are built the way release.yml builds them: the .deb and .rpm on Ubuntu 24.04
+# — the oldest base whose libheif (1.17) the app accepts; Debian 12 (libheif 1.15, glibc 2.36)
+# cannot run them — and the AppImage in an Ubuntu 22.04 container (appimage.yml), carrying a
+# libheif of its own, so it runs on 22.04 and newer; there it is also started with no network.
 # `native` also builds from source on Debian 13, Fedora 42 and openSUSE Tumbleweed (and `arch`
 # on Arch) with the build dependencies CONTRIBUTING lists, and installs each of those packages
 # in a clean container of the distribution it was built on.
@@ -40,8 +42,7 @@ jobs:
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
             libheif-plugin-libde265 libheif-examples libheif-plugin-x265
-          # libheif-plugin-libde265 is the HEVC decoder the AppImage carries for HEIC photos
-          # (tauri.conf.json, bundle.linux.appimage.files); x265 only encodes the test's HEIC.
+          # x265 only encodes the test's HEIC.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -52,7 +53,7 @@ jobs:
       - name: Build the packages
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
-        run: npx tauri build
+        run: npx tauri build --bundles deb,rpm
       - name: Build the check's probe
         run: cargo build --release --locked -p quince-probe --example distro_check
       - name: A HEIC made for the test
@@ -69,7 +70,6 @@ jobs:
         run: |
           mkdir compat
           cp target/release/bundle/deb/*.deb target/release/bundle/rpm/*.rpm \
-             target/release/bundle/appimage/*.AppImage \
              target/release/examples/distro_check test.heic packaging/linux-compat/check.sh \
              crates/quince-media/tests/fixtures/black-start.mp4 \
              crates/quince-media/tests/fixtures/hevc.mov compat/
@@ -81,8 +81,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The AppImage and a probe built beside it, on Ubuntu 22.04: a probe from the 24.04 build would
+  # itself need glibc 2.39 there.
+  appimage:
+    uses: ./.github/workflows/appimage.yml
+    with:
+      probe: true
+      artifact: linux-compat-appimage
+
   install:
-    needs: build
+    needs: [build, appimage]
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -98,23 +106,39 @@ jobs:
           - { name: "Fedora 41 (.rpm)", image: "fedora:41", pkg: "*.rpm" }
           - { name: "Fedora 42 (.rpm)", image: "fedora:42", pkg: "*.rpm" }
           - { name: "openSUSE Tumbleweed (.rpm)", image: "opensuse/tumbleweed", pkg: "*.rpm" }
-          - { name: "Debian 13 (AppImage)", image: "debian:trixie", pkg: "*.AppImage" }
-          - { name: "Fedora 42 (AppImage)", image: "fedora:42", pkg: "*.AppImage" }
+          # The AppImage's launches run with no network (check.sh, unshare -n), which needs
+          # CAP_SYS_ADMIN in the container.
+          - { name: "Ubuntu 22.04 (AppImage)", image: "ubuntu:22.04", pkg: "*.AppImage", options: "--cap-add=SYS_ADMIN" }
+          - { name: "Ubuntu 24.04 (AppImage)", image: "ubuntu:24.04", pkg: "*.AppImage", options: "--cap-add=SYS_ADMIN" }
+          - { name: "Debian 13 (AppImage)", image: "debian:trixie", pkg: "*.AppImage", options: "--cap-add=SYS_ADMIN" }
+          - { name: "Fedora 42 (AppImage)", image: "fedora:42", pkg: "*.AppImage", options: "--cap-add=SYS_ADMIN" }
     container:
       image: ${{ matrix.image }}
+      options: ${{ matrix.options || '' }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux-compat
           path: /compat
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: matrix.pkg == '*.AppImage'
+        with:
+          name: linux-compat-appimage
+          path: /appimage
       - name: Install and run
         env:
           PKG: ${{ matrix.pkg }}
         run: |
           chmod +x /compat/check.sh /compat/distro_check
-          # shellcheck disable=SC2086
-          bash /compat/check.sh /compat/$PKG /compat/distro_check /compat/test.heic \
-            /compat/black-start.mp4 /compat/hevc.mov
+          if [ "$PKG" = '*.AppImage' ]; then
+            chmod +x /appimage/distro_check
+            bash /compat/check.sh /appimage/*.AppImage /appimage/distro_check /compat/test.heic \
+              /compat/black-start.mp4 /compat/hevc.mov
+          else
+            # shellcheck disable=SC2086
+            bash /compat/check.sh /compat/$PKG /compat/distro_check /compat/test.heic \
+              /compat/black-start.mp4 /compat/hevc.mov
+          fi
 
   # The packages built on each distribution itself, from the build dependencies CONTRIBUTING
   # lists for it — so a missing or renamed -devel package, a compiler that disagrees or a
