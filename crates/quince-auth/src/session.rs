@@ -543,6 +543,26 @@ impl Secrets for KeyFile {
     }
 }
 
+/// [`std::fs::rename`], tried again for up to a second while Windows says the file is held:
+/// Defender or the indexer opens a file just closed, and while it has it open the rename onto
+/// it is refused with access denied (5), a sharing violation (32) or a lock violation (33).
+/// The same numbers mean other things elsewhere, so only on Windows.
+fn rename_held(from: &Path, to: &Path) -> std::io::Result<()> {
+    let step = std::time::Duration::from_millis(50);
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e)
+                if cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33)) && tries < 20 =>
+            {
+                tries += 1;
+                std::thread::sleep(step);
+            }
+            done => return done,
+        }
+    }
+}
+
 /// Write `bytes` to `path` whole or not at all: to a file beside it, made sure of on disk, then
 /// renamed over it. Truncated in place, a crash or a full disk part way left an empty or cut-off
 /// cookie jar, read as no cookies at all: the session checked again from the start, and maybe
@@ -571,7 +591,7 @@ pub(crate) fn write_whole(path: &Path, bytes: &[u8], private: bool) -> std::io::
         let _ = private;
         file.write_all(bytes)?;
         file.sync_all()?;
-        std::fs::rename(&part, path)
+        rename_held(&part, path)
     })();
     if written.is_err() {
         let _ = std::fs::remove_file(&part);
