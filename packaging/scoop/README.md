@@ -41,8 +41,10 @@ scoop bucket add skykeep https://github.com/YashwanthKamireddi/scoop-bucket
 scoop install skykeep/skykeep
 ```
 
-At each release, on Windows with Scoop, update the manifest from the release and push it (and
-copy it back here):
+At each published release, `.github/workflows/stores.yml` moves `bucket/skykeep.json` to it
+(version, URL and hash) and pushes it, with the `SCOOP_BUCKET_TOKEN` secret (see
+[`../README.md`](../README.md#from-a-release-to-every-store)). By hand, on Windows with Scoop,
+update the manifest from the release and push it (and copy it back here):
 
 ```powershell
 & "$(scoop prefix scoop)\bin\checkver.ps1" -App skykeep -Dir .\bucket -Update

@@ -13,7 +13,8 @@
 # The identity (Partner Center → the app → Product identity) is taken from this run's inputs,
 # else from the repository variables MSIX_IDENTITY_NAME, MSIX_PUBLISHER and
 # MSIX_PUBLISHER_DISPLAY_NAME, else from stand-ins that make a package fit only for the test
-# install here — never for the Store.
+# install here — never for the Store. A published release (stores.yml) calls it with `store` on,
+# which refuses the stand-ins: the artifact it keeps is the one uploaded to Partner Center.
 name: MSIX for the Microsoft Store
 
 on:
@@ -35,6 +36,24 @@ on:
         description: "Release tag to build, such as v0.1.4 (empty: this branch)"
         type: string
         default: ""
+  workflow_call:
+    inputs:
+      identity_name:
+        type: string
+        default: ""
+      publisher:
+        type: string
+        default: ""
+      publisher_display_name:
+        type: string
+        default: ""
+      tag:
+        type: string
+        default: ""
+      # For the Store: fail unless the identity is Partner Center's, never the stand-ins.
+      store:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -55,6 +74,20 @@ jobs:
       PUBLISHER: ${{ inputs.publisher || vars.MSIX_PUBLISHER || 'CN=Skykeep Test' }}
       PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name || vars.MSIX_PUBLISHER_DISPLAY_NAME || 'Skykeep Test' }}
     steps:
+      - name: The Store's identity, not the stand-ins
+        if: inputs.store
+        shell: pwsh
+        env:
+          GIVEN_NAME: ${{ inputs.identity_name || vars.MSIX_IDENTITY_NAME }}
+          GIVEN_PUBLISHER: ${{ inputs.publisher || vars.MSIX_PUBLISHER }}
+          GIVEN_DISPLAY_NAME: ${{ inputs.publisher_display_name || vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          $missing = @()
+          if (-not $env:GIVEN_NAME) { $missing += "MSIX_IDENTITY_NAME" }
+          if (-not $env:GIVEN_PUBLISHER) { $missing += "MSIX_PUBLISHER" }
+          if (-not $env:GIVEN_DISPLAY_NAME) { $missing += "MSIX_PUBLISHER_DISPLAY_NAME" }
+          if ($missing) { throw "a Store package needs Partner Center's identity; set the repository variables: $($missing -join ', ')" }
+          "identity: $env:IDENTITY_NAME, $env:PUBLISHER, $env:PUBLISHER_DISPLAY_NAME"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

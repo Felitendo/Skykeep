@@ -1,0 +1,219 @@
+# Every store, from one published release. release.yml makes a draft; publishing it
+# (`gh release edit vX.Y.Z --draft=false`) runs this, and each channel takes that release:
+#   resolve    — the release is published, not a prerelease, its tag is vX.Y.Z and it has
+#                SHA256SUMS-windows.txt; nothing else runs otherwise;
+#   snap       — snap.yml: the Snap built from the release's .deb, installed and started, then
+#                uploaded to the Snap Store's stable channel (SNAPCRAFT_STORE_CREDENTIALS);
+#   chocolatey — packages.yml: the Chocolatey package and the Scoop manifest installed, checked
+#                and uninstalled on Windows, then the .nupkg pushed (CHOCOLATEY_API_KEY);
+#   scoop      — bucket/skykeep.json in the scoop-bucket repository moved to the release: its
+#                version, its URL and the installer's hash, checked against the file itself
+#                (SCOOP_BUCKET_TOKEN);
+#   winget     — a pull request to microsoft/winget-pkgs from the owner's fork, made by Komac
+#                from the release's NSIS installer (WINGET_TOKEN);
+#   msix       — msix.yml: the unsigned Microsoft Store package, kept as the `skykeep-msix`
+#                artifact for the owner to upload to Partner Center (there is no upload here).
+# COPR needs nothing: it builds each new tag from its own GitHub webhook.
+#
+# A release published with a person's token (gh, the web page) starts this; one published by a
+# workflow's GITHUB_TOKEN would not, as GitHub never lets that token start another workflow.
+# Re-run one release by hand: Actions → Stores → Run workflow, with its tag. Channels that
+# already have the version say so: Scoop and winget leave it as it is; Chocolatey's push and
+# the Snap upload are refused or add a revision, as those stores decide.
+name: Stores
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The published release to send to every store, such as v0.1.5"
+        type: string
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: stores-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      go: ${{ steps.release.outputs.go }}
+    steps:
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$TAG' is not a release tag (vX.Y.Z)"; exit 1
+          fi
+          info=$(gh release view "$TAG" --repo "$REPO" --json isDraft,isPrerelease,assets) \
+            || { echo "::error::no release $TAG (a draft is not published yet)"; exit 1; }
+          if [ "$(jq -r .isDraft <<<"$info")" = true ]; then
+            echo "::error::$TAG is still a draft: publish it first"; exit 1
+          fi
+          if [ "$(jq -r .isPrerelease <<<"$info")" = true ]; then
+            echo "::notice::$TAG is a prerelease: no store gets it"
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          jq -e '.assets[] | select(.name == "SHA256SUMS-windows.txt")' <<<"$info" >/dev/null \
+            || { echo "::error::$TAG has no SHA256SUMS-windows.txt"; exit 1; }
+          { echo "tag=$TAG"; echo "version=${TAG#v}"; echo "go=true"; } >> "$GITHUB_OUTPUT"
+          echo "$TAG goes to every store"
+
+  snap:
+    needs: resolve
+    if: needs.resolve.outputs.go == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/snap.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      publish: true
+    secrets:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+
+  chocolatey:
+    needs: resolve
+    if: needs.resolve.outputs.go == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/packages.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      publish: true
+      copr: false
+    secrets:
+      CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+
+  scoop:
+    needs: resolve
+    if: needs.resolve.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      BUCKET: ${{ github.repository_owner }}/scoop-bucket
+      REPO: ${{ github.repository }}
+    steps:
+      - name: The bucket's token is there
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          [ -n "$SCOOP_BUCKET_TOKEN" ] || { echo "::error::the SCOOP_BUCKET_TOKEN secret is not set: a fine-grained token with Contents read and write on $BUCKET only"; exit 1; }
+      - name: The installer, checked against SHA256SUMS-windows.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir "$RUNNER_TEMP/release"; cd "$RUNNER_TEMP/release"
+          installer="Skykeep_${VERSION}_x64-setup.exe"
+          gh release download "$TAG" --repo "$REPO" -p SHA256SUMS-windows.txt -p "$installer"
+          # Written on Windows: CRLF line ends.
+          hash=$(tr -d '\r' < SHA256SUMS-windows.txt | awk -v f="$installer" '$2 == f { print tolower($1) }')
+          [ "${#hash}" -eq 64 ] || { echo "::error::no hash for $installer in SHA256SUMS-windows.txt"; exit 1; }
+          echo "$hash  $installer" | sha256sum -c -
+          echo "HASH=$hash" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.BUCKET }}
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          path: bucket-repo
+      # Only the version, the URL and the hash change, in place: the rest of the manifest (its
+      # notes, which name versions of their own, and its layout) stays as written.
+      - name: bucket/skykeep.json moved to the release
+        working-directory: bucket-repo
+        run: |
+          f=bucket/skykeep.json
+          old=$(jq -r .version "$f")
+          oldhash=$(jq -r '.architecture."64bit".hash' "$f")
+          url="https://github.com/$REPO/releases/download/$TAG/Skykeep_${VERSION}_x64-setup.exe#/dl.7z"
+          if [ "$old" = "$VERSION" ] && [ "$oldhash" = "$HASH" ]; then
+            echo "::notice::the bucket already has Skykeep $VERSION"; exit 0
+          fi
+          oldv=$(printf '%s' "$old" | sed 's/\./\\./g')
+          sed -i -E \
+            -e "s|^(\s*\"version\": )\"$oldv\"|\1\"$VERSION\"|" \
+            -e "s|(\"url\": )\"https://[^\"]*/v$oldv/Skykeep_${oldv}_x64-setup\.exe#/dl\.7z\"|\1\"$url\"|" \
+            -e "s|(\"hash\": )\"$oldhash\"|\1\"$HASH\"|" \
+            "$f"
+          jq -e --arg v "$VERSION" --arg u "$url" --arg h "$HASH" \
+            '.version == $v and .architecture."64bit".url == $u and .architecture."64bit".hash == $h
+             and (.autoupdate.architecture."64bit".hash.url | endswith("SHA256SUMS-windows.txt"))' "$f" >/dev/null \
+            || { echo "::error::bucket/skykeep.json did not take the new version, URL and hash"; git diff; exit 1; }
+          git diff
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "skykeep $VERSION"
+          git push origin HEAD
+          echo "bucket: skykeep $old -> $VERSION"
+
+  winget:
+    needs: resolve
+    if: needs.resolve.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Komac reads the release with WINGET_TOKEN; this run's own token is not used.
+    permissions: {}
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      IDENTIFIER: YashwanthKamireddi.Skykeep
+      # Komac, pinned to one release and its published checksum rather than a moving action.
+      KOMAC_VERSION: 2.17.2
+      KOMAC_SHA256: b03b020eec98acfb0b53e284a6e21815b884be33de6785b97e7a120f0e748966
+    steps:
+      - name: The winget token is there, and winget-pkgs has the package
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::the WINGET_TOKEN secret is not set: a classic token with the public_repo scope"; exit 1; }
+          # Komac adds a version to a package winget already has; the first one is a manual PR.
+          gh api "repos/microsoft/winget-pkgs/contents/manifests/y/${IDENTIFIER//.//}" --silent \
+            || { echo "::error::microsoft/winget-pkgs has no $IDENTIFIER yet: its first version's pull request must be merged first"; exit 1; }
+      - name: Komac
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo komac.tar.gz "https://github.com/russellbanks/Komac/releases/download/v$KOMAC_VERSION/komac-$KOMAC_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$KOMAC_SHA256  komac.tar.gz" | sha256sum -c -
+          mkdir komac && tar -xzf komac.tar.gz -C komac komac
+          echo "$RUNNER_TEMP/komac" >> "$GITHUB_PATH"
+      # The per-user NSIS installer only: the versioned name, never the .msi or the unversioned
+      # copy (Skykeep-windows-x64-setup.exe) that sits beside it.
+      - name: The pull request to microsoft/winget-pkgs
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          installers=$(gh release view "$TAG" --repo "$REPO" --json assets \
+            --jq '.assets[] | select(.name | test("^Skykeep_[0-9]+\\.[0-9]+\\.[0-9]+_x64-setup\\.exe$")) | .url')
+          [ "$(printf '%s\n' "$installers" | grep -c .)" -eq 1 ] \
+            || { echo "::error::expected one NSIS installer in $TAG, found: ${installers:-none}"; exit 1; }
+          case "$installers" in */"Skykeep_${VERSION}_x64-setup.exe") ;; *) echo "::error::the installer is not $VERSION's: $installers"; exit 1 ;; esac
+          # In CI, Komac exits without a new PR when one for this version is already open.
+          komac update "$IDENTIFIER" --version "$VERSION" --urls "$installers" \
+            --release-notes-url "https://github.com/$REPO/releases/tag/$TAG" --submit
+
+  msix:
+    needs: resolve
+    if: needs.resolve.outputs.go == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/msix.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      store: true

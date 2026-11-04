@@ -17,6 +17,35 @@ Everything that turns a build into something people install.
 | `windows/msix/` | The Microsoft Store's MSIX package: its manifest and `pack.ps1`. |
 | `linux-compat/` | `check.sh`: installs a package in a clean distribution container and checks it runs. |
 
+## From a release to every store
+
+`release.yml` builds a tag into a draft release. Publishing it (`gh release edit vX.Y.Z
+--draft=false`) starts `.github/workflows/stores.yml`, which skips prereleases and sends the
+release to:
+
+- **Snap Store** (stable): `snap.yml`, built from the `.deb`, started, uploaded.
+- **Chocolatey**: `packages.yml`, packed, installed, uninstalled, then pushed.
+- **Scoop**: `bucket/skykeep.json` in `scoop-bucket` gets the new version, URL and hash,
+  checked against the installer itself, and is pushed.
+- **winget**: a pull request to `microsoft/winget-pkgs` from the owner's fork, made by Komac
+  (pinned release, checksum checked) from the NSIS `-setup.exe` only.
+- **Microsoft Store**: `msix.yml` builds the unsigned `.msix` as the `skykeep-msix` artifact of
+  the run; upload it to Partner Center by hand. It fails unless the `MSIX_*` repository
+  variables are set.
+- **COPR** builds each new tag from its own webhook.
+
+Re-run one release: Actions → Stores → Run workflow, with its tag. The secrets it reads:
+
+| Secret | What it is |
+|---|---|
+| `SNAPCRAFT_STORE_CREDENTIALS` | `snapcraft export-login` output. |
+| `CHOCOLATEY_API_KEY` | The community.chocolatey.org API key. |
+| `SCOOP_BUCKET_TOKEN` | A fine-grained token: repository access to `scoop-bucket` only, Contents read and write. |
+| `WINGET_TOKEN` | A classic token with the `public_repo` scope (Komac cannot open the pull request with a fine-grained one). |
+
+winget only updates a package it already has, so the first version's pull request must be
+merged before the winget job can succeed.
+
 ## Arch, CachyOS, EndeavourOS, Manjaro
 
 ```sh

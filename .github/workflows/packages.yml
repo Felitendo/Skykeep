@@ -7,6 +7,8 @@
 #   copr    — on each Fedora, makes the source RPM with .copr/Makefile exactly as COPR does,
 #             rebuilds it with rpmbuild, and installs and runs the package in a clean container
 #             of that Fedora (packaging/linux-compat/check.sh).
+# A published release (stores.yml) calls it with publish on and copr off: COPR builds each tag
+# itself, from its webhook.
 name: Packages
 
 on:
@@ -20,6 +22,24 @@ on:
         description: "Push the tested Chocolatey package to community.chocolatey.org"
         type: boolean
         default: false
+      copr:
+        description: "Also build and run the Fedora COPR package"
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      publish:
+        type: boolean
+        default: false
+      copr:
+        type: boolean
+        default: true
+    secrets:
+      CHOCOLATEY_API_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -151,6 +171,7 @@ jobs:
   # A HEIC made for check.sh, as linux-compat.yml makes it: Fedora's heif-enc has no HEVC
   # encoder.
   heic:
+    if: inputs.copr
     runs-on: ubuntu-24.04
     steps:
       - run: |
@@ -171,6 +192,7 @@ jobs:
 
   copr-build:
     name: COPR build (Fedora ${{ matrix.fedora }})
+    if: inputs.copr
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:

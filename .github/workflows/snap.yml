@@ -1,6 +1,6 @@
 # Builds the Snap from the release's .deb and checks that it installs and starts (offline, under
 # a virtual display). Uploading to the Snap Store needs SNAPCRAFT_STORE_CREDENTIALS and is a
-# separate step, run only on a tag.
+# separate step, run only when asked: by hand (publish), or by a published release (stores.yml).
 name: Snap
 
 on:
@@ -13,6 +13,18 @@ on:
         description: Upload to the Snap Store (stable)
         type: boolean
         default: false
+  # A published release (stores.yml): the same build and check, then the upload.
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      publish:
+        type: boolean
+        default: false
+    secrets:
+      SNAPCRAFT_STORE_CREDENTIALS:
+        required: false
   push:
     branches: [snap]
 
@@ -62,11 +74,17 @@ jobs:
 
   publish:
     # Uploads the tested snap to the Snap Store's stable channel. Runs only when asked, with the
-    # store credential (snapcraft export-login) saved as SNAPCRAFT_STORE_CREDENTIALS.
+    # store credential (snapcraft export-login) saved as SNAPCRAFT_STORE_CREDENTIALS. A push to
+    # the snap branch has no inputs, so it never publishes.
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    if: inputs.publish
     runs-on: ubuntu-24.04
     steps:
+      - name: The store credential is there
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          [ -n "$SNAPCRAFT_STORE_CREDENTIALS" ] || { echo "::error::the SNAPCRAFT_STORE_CREDENTIALS secret is not set (snapcraft export-login)"; exit 1; }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: skykeep-snap
