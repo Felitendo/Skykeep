@@ -153,23 +153,42 @@ fn heic_rgb(bytes: &[u8]) -> Result<image::RgbImage, String> {
 /// # Errors
 /// When the bytes are not a picture this can decode.
 pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    png_of(&upright(bytes)?)
+}
+
+/// A photo for Windows' clipboard: the PNG [`to_png`] makes, which browsers, chat apps and
+/// Office take, and the same picture as a device-independent bitmap (`CF_DIB`), the picture
+/// type every Windows app takes (Paint, WordPad, older apps). Decoded once for both.
+///
+/// # Errors
+/// When the bytes are not a picture this can decode.
+pub fn to_png_and_dib(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let picture = upright(bytes)?;
+    Ok((png_of(&picture)?, dib_of(&picture.to_rgb8())))
+}
+
+/// A photo decoded and turned upright: a HEIC by libheif (which turns it as the file says),
+/// anything else the way its camera wrote it.
+fn upright(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     use image::ImageDecoder;
-    let picture = if is_heif(bytes) {
-        image::DynamicImage::ImageRgb8(heic_rgb(bytes)?)
-    } else {
-        let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
-            .with_guessed_format()
-            .map_err(|e| e.to_string())?
-            .into_decoder()
-            .map_err(|e| e.to_string())?;
-        let orientation = decoder
-            .orientation()
-            .unwrap_or(image::metadata::Orientation::NoTransforms);
-        let mut picture = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
-        picture.apply_orientation(orientation);
-        picture
-    };
+    if is_heif(bytes) {
+        return Ok(image::DynamicImage::ImageRgb8(heic_rgb(bytes)?));
+    }
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .into_decoder()
+        .map_err(|e| e.to_string())?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut picture = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    picture.apply_orientation(orientation);
+    Ok(picture)
+}
+
+fn png_of(picture: &image::DynamicImage) -> Result<Vec<u8>, String> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     let mut out = Vec::new();
     picture
         .write_with_encoder(PngEncoder::new_with_quality(
@@ -179,6 +198,36 @@ pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
         ))
         .map_err(|e| e.to_string())?;
     Ok(out)
+}
+
+/// A picture as Windows' `CF_DIB`: a 40-byte `BITMAPINFOHEADER`, then 24-bit rows, blue first,
+/// bottom row first, each padded to a multiple of four bytes. 24-bit because a photo has no
+/// transparency, and every app reads it alike (the PNG alongside keeps any there is).
+fn dib_of(rgb: &image::RgbImage) -> Vec<u8> {
+    let (w, h) = rgb.dimensions();
+    let row = (w as usize * 3).div_ceil(4) * 4;
+    let image_size = row * h as usize;
+    let mut out = Vec::with_capacity(40 + image_size);
+    out.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    out.extend_from_slice(&w.to_le_bytes()); // biWidth
+    out.extend_from_slice(&h.to_le_bytes()); // biHeight: positive, bottom row first
+    out.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    out.extend_from_slice(&24u16.to_le_bytes()); // biBitCount
+    out.extend_from_slice(&0u32.to_le_bytes()); // biCompression: BI_RGB
+    out.extend_from_slice(&u32::try_from(image_size).unwrap_or(0).to_le_bytes()); // biSizeImage
+    out.extend_from_slice(&2835u32.to_le_bytes()); // biXPelsPerMeter: 72 dpi
+    out.extend_from_slice(&2835u32.to_le_bytes()); // biYPelsPerMeter
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+    for y in (0..h).rev() {
+        let start = out.len();
+        for x in 0..w {
+            let [r, g, b] = rgb.get_pixel(x, y).0;
+            out.extend_from_slice(&[b, g, r]);
+        }
+        out.resize(start + row, 0);
+    }
+    out
 }
 
 /// RGB rows (`stride` bytes apart) made a JPEG, as heic_to_jpeg makes one.
@@ -774,6 +823,38 @@ mod tests {
         let top = back.get_pixel(10, 5).0;
         assert!(top[0] > 200 && top[2] < 60, "{top:?}");
         assert!(super::to_png(b"not a picture").is_err());
+    }
+
+    /// Windows' copy of a photo: the PNG, and the same picture as a `CF_DIB` laid out as
+    /// Windows reads one — header, bottom row first, blue first, rows padded to four bytes.
+    #[test]
+    fn a_photo_is_copied_for_windows_as_a_png_and_a_bitmap() {
+        // 3×2: the top row red, the bottom row blue (3 pixels = 9 bytes, padded to 12).
+        let img = image::RgbImage::from_fn(3, 2, |_, y| {
+            if y == 0 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let (out_png, dib) = super::to_png_and_dib(&png).unwrap();
+        assert_eq!(&out_png[..8], b"\x89PNG\r\n\x1a\n");
+        let u32_at = |i: usize| u32::from_le_bytes(dib[i..i + 4].try_into().unwrap());
+        let u16_at = |i: usize| u16::from_le_bytes(dib[i..i + 2].try_into().unwrap());
+        assert_eq!(u32_at(0), 40, "BITMAPINFOHEADER");
+        assert_eq!((u32_at(4), u32_at(8)), (3, 2), "width, height (bottom-up)");
+        assert_eq!((u16_at(12), u16_at(14)), (1, 24), "planes, bits per pixel");
+        assert_eq!(u32_at(16), 0, "BI_RGB");
+        assert_eq!(u32_at(20), 24, "two rows of 12 bytes");
+        assert_eq!(dib.len(), 40 + 24);
+        // The bottom (blue) row first, each pixel blue-green-red, then the padding.
+        assert_eq!(&dib[40..52], &[255, 0, 0, 255, 0, 0, 255, 0, 0, 0, 0, 0]);
+        assert_eq!(&dib[52..64], &[0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 0]);
+        assert!(super::to_png_and_dib(b"not a picture").is_err());
     }
 
     use super::*;

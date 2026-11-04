@@ -2069,9 +2069,10 @@ pub async fn photos_counts(app: AppHandle, data: State<'_, Data>) -> UiResult<Ve
 /// picture itself. Decoded and made a PNG off the window's thread.
 ///
 /// On Linux it is offered on the clipboard here, through GTK — the window's own toolkit, which
-/// speaks Wayland's clipboard and X11's alike — and nothing comes back. Elsewhere the PNG comes
-/// back for the window to put there (the webview's own clipboard, which on Windows and macOS
-/// takes a PNG as the system's picture type).
+/// speaks Wayland's clipboard and X11's alike — and nothing comes back; on Windows it is set
+/// natively, as a PNG and a bitmap (`win_clipboard`). Elsewhere the PNG comes back for the
+/// window to put there (the webview's own clipboard, which on macOS takes a PNG as the
+/// system's picture type).
 #[tauri::command]
 pub async fn photo_copy(
     id: String,
@@ -2095,7 +2096,7 @@ pub async fn photo_copy(
     let png_of = |path: PathBuf| async move {
         crate::photo_cache::hold(&path);
         let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-        crate::cpu::run(move || quince_media::to_png(&bytes)).await?
+        crate::cpu::run(move || picture_for_clipboard(&bytes)).await?
     };
     if tokio::fs::metadata(&full).await.is_err() && tokio::fs::metadata(&original).await.is_err() {
         // Neither here yet: the whole picture, as the viewer would fetch it (a HEIC's comes with
@@ -2117,8 +2118,107 @@ pub async fn photo_copy(
         offer_png(&app, png).await?;
         Ok(tauri::ipc::Response::new(Vec::new()))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        let _ = app;
+        crate::cpu::run(move || win_clipboard::put(&png.0, &png.1)).await??;
+        Ok(tauri::ipc::Response::new(Vec::new()))
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     Ok(tauri::ipc::Response::new(png))
+}
+
+/// What Copy puts on the clipboard, made from a photo's bytes: a PNG; on Windows the same
+/// picture as a bitmap besides (`CF_DIB`), the type every Windows app pastes.
+#[cfg(not(windows))]
+fn picture_for_clipboard(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    quince_media::to_png(bytes)
+}
+#[cfg(windows)]
+fn picture_for_clipboard(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    quince_media::to_png_and_dib(bytes)
+}
+
+/// The one type Copy offers on Linux: the PNG, as a picture. No text type is offered, so an
+/// app that pastes text gets nothing rather than the picture's bytes as characters.
+#[cfg(any(target_os = "linux", test))]
+const PNG_TARGET: &str = "image/png";
+
+/// The bytes to answer a paste that asked for `target`: the PNG only when it asked for one.
+#[cfg(any(target_os = "linux", test))]
+fn answer_for<'a>(target: &str, png: &'a [u8]) -> Option<&'a [u8]> {
+    (target == PNG_TARGET).then_some(png)
+}
+
+/// Windows' clipboard, set from here rather than by the window: the PNG under the registered
+/// "PNG" format (browsers, chat apps, Office) and the same picture as `CF_DIB` (everything
+/// else; Windows makes `CF_BITMAP` and `CF_DIBV5` from it for apps that ask for those). Set
+/// natively, it needs no permission from the webview and is there however long the photo took
+/// to convert.
+#[cfg(windows)]
+mod win_clipboard {
+    use windows::core::w;
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Ole::CF_DIB;
+
+    const FAILED: &str = "The clipboard didn’t take the photo.";
+
+    /// `bytes` in memory the clipboard can own.
+    fn global(bytes: &[u8]) -> Result<HGLOBAL, String> {
+        unsafe {
+            let mem = GlobalAlloc(GMEM_MOVEABLE, bytes.len()).map_err(|_| FAILED)?;
+            let at = GlobalLock(mem).cast::<u8>();
+            if at.is_null() {
+                let _ = GlobalFree(Some(mem));
+                return Err(FAILED.into());
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), at, bytes.len());
+            let _ = GlobalUnlock(mem);
+            Ok(mem)
+        }
+    }
+
+    /// One format set; the memory is the clipboard's once it is taken, freed here if not.
+    fn set(format: u32, bytes: &[u8]) -> Result<(), String> {
+        let mem = global(bytes)?;
+        unsafe {
+            if SetClipboardData(format, Some(HANDLE(mem.0))).is_err() {
+                let _ = GlobalFree(Some(mem));
+                return Err(FAILED.into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn put(png: &[u8], dib: &[u8]) -> Result<(), String> {
+        unsafe {
+            // Another app may hold the clipboard for a moment: tried for half a second.
+            let mut opened = false;
+            for _ in 0..20 {
+                if OpenClipboard(None).is_ok() {
+                    opened = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            if !opened {
+                return Err(FAILED.into());
+            }
+            let result = EmptyClipboard()
+                .map_err(|_| FAILED.to_string())
+                .and_then(|()| set(u32::from(CF_DIB.0), dib))
+                .and_then(|()| match RegisterClipboardFormatW(w!("PNG")) {
+                    0 => Err(FAILED.into()),
+                    png_format => set(png_format, png),
+                });
+            let _ = CloseClipboard();
+            result
+        }
+    }
 }
 
 /// A PNG offered on the desktop's clipboard through GTK, on the thread GTK lives on. Held by
@@ -2129,12 +2229,14 @@ async fn offer_png(app: &AppHandle, png: Vec<u8>) -> Result<(), String> {
     app.run_on_main_thread(move || {
         let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
         let targets = [gtk::TargetEntry::new(
-            "image/png",
+            PNG_TARGET,
             gtk::TargetFlags::empty(),
             0,
         )];
         let offered = clipboard.set_with_data(&targets, move |_, selection, _| {
-            selection.set(&gdk::Atom::intern("image/png"), 8, &png);
+            if let Some(bytes) = answer_for(&selection.target().name(), &png) {
+                selection.set(&gdk::Atom::intern(PNG_TARGET), 8, bytes);
+            }
         });
         let _ = tx.send(offered);
     })
@@ -2926,6 +3028,26 @@ mod link_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Copy on Linux answers a paste only with the PNG, and only when a picture was asked
+    /// for: an app asking for text (a terminal, a text field) gets nothing, never the
+    /// picture's bytes as characters.
+    #[test]
+    fn copy_answers_only_a_paste_that_asks_for_a_picture() {
+        let png = b"\x89PNG\r\n\x1a\nrest";
+        assert_eq!(answer_for("image/png", png), Some(&png[..]));
+        for text in [
+            "text/plain",
+            "text/plain;charset=utf-8",
+            "UTF8_STRING",
+            "STRING",
+            "TEXT",
+            "text/uri-list",
+            "text/html",
+        ] {
+            assert_eq!(answer_for(text, png), None, "{text}");
+        }
+    }
 
     /// A record id becomes one name in the cache's folder, whatever it holds.
     #[test]

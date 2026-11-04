@@ -2459,8 +2459,8 @@ export function PhotosView() {
     }, 300);
     try {
       const png = await api.photoCopy(picked.id);
-      // Not on Linux, where the app has put it there itself: the webview's own clipboard, which
-      // takes a PNG as the system's picture.
+      // Not on Linux or Windows, where the app has put it there itself: the webview's own
+      // clipboard, which takes a PNG as the system's picture.
       if (png.byteLength) await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]);
       if (mine === copying.current) toast({ message: ids.length > 1 ? "Copied the first photo" : "Copied", tone: "done" });
     } catch (e) {
