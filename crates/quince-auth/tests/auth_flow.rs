@@ -1046,3 +1046,91 @@ async fn asking_for_the_code_again_too_often_says_to_wait() {
     let err = client.send_sms(1).await.unwrap_err();
     assert!(matches!(err, quince_auth::Error::RateLimited), "{err:?}");
 }
+
+/// Apple can refuse a locked account before the password is even tried: a 403 from
+/// `/signin/init`, or a 401 from `/signin/complete`, each carrying code -20209
+/// (timlaing/pyicloud#368, icloud_photos_downloader#1010). Read as a wrong password, a lapsed
+/// session signing itself back in threw away the password it keeps.
+#[tokio::test]
+async fn a_locked_account_refused_at_any_step_keeps_the_password() {
+    let locked = json!({
+        "serviceErrors": [{
+            "code": "-20209",
+            "message": "This Apple Account has been locked for security reasons."
+        }]
+    });
+    for (step, status) in [("init", 403), ("init", 401), ("complete", 401)] {
+        let dir = tempfile::tempdir().unwrap();
+        signed_in(dir.path()).await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/setup/ws/1/validate"))
+            .respond_with(ResponseTemplate::new(421))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/setup/ws/1/accountLogin"))
+            .respond_with(ResponseTemplate::new(421))
+            .mount(&server)
+            .await;
+        if step == "init" {
+            Mock::given(method("POST"))
+                .and(path("/appleauth/auth/signin/init"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(locked.clone()))
+                .mount(&server)
+                .await;
+        } else {
+            mount_init(&server, 200).await;
+            Mock::given(method("POST"))
+                .and(path("/appleauth/auth/signin/complete"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(locked.clone()))
+                .mount(&server)
+                .await;
+        }
+
+        let mut client = client_for(&server, dir.path());
+        assert!(
+            !client.resume().await.unwrap(),
+            "{step} {status}: not back in"
+        );
+        assert_eq!(
+            client.session().password.as_deref(),
+            Some("hunter2"),
+            "{step} {status}: a locked account is no wrong password; the password stays kept"
+        );
+        // Signed in by hand (on another install: this one now owes a wait), it says why.
+        let fresh = tempfile::tempdir().unwrap();
+        let err = client_for(&server, fresh.path())
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, quince_auth::Error::AccountLocked),
+            "{step} {status}: {err:?}"
+        );
+    }
+}
+
+/// A plain 401 or 403 with no code of Apple's is still the wrong password.
+#[tokio::test]
+async fn a_bare_refusal_is_still_a_wrong_password() {
+    for status in [401, 403] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/appleauth/auth/signin/init"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = client_for(&server, dir.path());
+        let err = client
+            .sign_in("someone@example.invalid", "nope")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, quince_auth::Error::BadCredentials),
+            "{status}: {err:?}"
+        );
+    }
+}

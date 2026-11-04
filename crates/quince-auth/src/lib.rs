@@ -209,6 +209,20 @@ fn apple_error(context: &str, status: StatusCode, body: &str) -> Error {
     Error::Protocol(format!("{context}: HTTP {status} {snippet}"))
 }
 
+/// Apple turning the password down (a 401, or a 403 before the password was even tried) —
+/// unless its own code in the reply says why it really refused.
+///
+/// A locked account is a 403 or 401 with code -20209 (timlaing/pyicloud#368,
+/// icloud_photos_downloader#1010). Read as a wrong password, a lapsed session signing itself
+/// back in threw away the password it keeps, so the account was locked *and* signed out, and
+/// the person was told to check a password that was right.
+fn refused_password(context: &str, status: StatusCode, body: &str) -> Error {
+    match apple_error(context, status, body) {
+        e @ (Error::AccountLocked | Error::RateLimited) => e,
+        _ => Error::BadCredentials,
+    }
+}
+
 /// A phone Apple will text a code to, when no trusted device responds.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -899,7 +913,7 @@ impl Client {
         let status = r.status();
         let text = r.text().await.unwrap_or_default();
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(Error::BadCredentials);
+            return Err(refused_password("starting sign-in", status, &text));
         }
         if !status.is_success() {
             return Err(apple_error("starting sign-in", status, &text));
@@ -994,7 +1008,7 @@ impl Client {
                 self.keep();
                 Ok(SignInOutcome::Complete)
             }
-            StatusCode::UNAUTHORIZED => Err(Error::BadCredentials),
+            StatusCode::UNAUTHORIZED => Err(refused_password("finishing sign-in", status, &text)),
             StatusCode::PRECONDITION_FAILED => Err(Error::UnsupportedAccount(
                 "two-factor auth isn't switched on".into(),
             )),
