@@ -987,3 +987,34 @@ async fn a_store_that_will_not_keep_the_session_never_fails_the_sign_in() {
     assert!(client.unsaved().is_none());
     assert!(client_for(&server, dir.path()).has_stored_session());
 }
+
+/// Apple refuses a proof by answering `/signin/complete` with a 403 that carries a fresh
+/// challenge. That is a password Apple didn't accept (most often an app-specific one), and it
+/// must read as one, not as Apple's raw reply.
+#[tokio::test]
+async fn a_refused_proof_is_a_password_apple_did_not_accept() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/signin/complete"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "iteration": 20347,
+            "salt": b64(&[0x51; 16]),
+            "protocol": "s2k",
+            "b": b64(&[0x6d; 256]),
+            "c": "challenge-c-2",
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    let err = client
+        .sign_in("probe@example.invalid", "app-specific-pass")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, quince_auth::Error::BadCredentials),
+        "got {err:?}"
+    );
+    assert!(!err.to_string().contains("403"), "no raw reply: {err}");
+}
