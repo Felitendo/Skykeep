@@ -100,8 +100,28 @@ pub fn locked_by_data_protection(body: &str) -> bool {
         || (lower.contains("access_denied") && lower.contains("private db access disabled"))
 }
 
+/// Where Apple's refusals are told when the person has turned diagnostics on (see the app's
+/// `diagnostics`): what was asked (`context`), the status, and Apple's answer — which the sink
+/// boils down to its error codes before anything is written. Unset, nothing is told.
+pub type DiagnosticsSink = fn(context: &str, status: u16, body: &str);
+static DIAGNOSTICS: std::sync::OnceLock<DiagnosticsSink> = std::sync::OnceLock::new();
+
+/// Turn diagnostics on for this crate's requests. Once per run; later calls change nothing.
+pub fn set_diagnostics(sink: DiagnosticsSink) {
+    let _ = DIAGNOSTICS.set(sink);
+}
+
+pub(crate) fn told(context: &str, status: reqwest::StatusCode, body: &str) {
+    if let Some(sink) = DIAGNOSTICS.get() {
+        sink(context, status.as_u16(), body);
+    }
+}
+
 /// [`Error::NeedsDeviceApproval`] for an answer [`locked_by_data_protection`] recognises.
+/// Every refusal passes through here on its way to an error, so it is also where one is told
+/// to diagnostics.
 pub(crate) fn approval_needed(status: reqwest::StatusCode, body: &str) -> Result<()> {
+    told("refused", status, body);
     if locked_by_data_protection(body) {
         quiet!("icloud: waiting for Advanced Data Protection approval ({status})");
         return Err(Error::NeedsDeviceApproval);

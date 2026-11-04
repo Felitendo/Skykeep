@@ -820,6 +820,7 @@ async fn write(
         return Err(Error::Conflict);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "contacts returned {status}: {}",
             text.chars().take(200).collect::<String>()
@@ -1214,6 +1215,7 @@ async fn write_list(
         return Err(Error::Conflict);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "contacts returned {status}: {}",
             text.chars().take(200).collect::<String>()
@@ -1348,6 +1350,7 @@ async fn co_text(
         return Err(Error::Conflict);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "contacts returned {status}: {}",
             text.chars().take(200).collect::<String>()
@@ -1891,6 +1894,7 @@ async fn startup(
         return Err(Error::ReauthRequired);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "/co/startup returned {status}: {}",
             text.chars().take(160).collect::<String>()

@@ -20,6 +20,7 @@ mod contacts_cmds;
 mod contacts_merge;
 mod cpu;
 mod data_access;
+mod diagnostics;
 mod drive_watch;
 mod export;
 mod grants;
@@ -102,6 +103,9 @@ struct SessionFacts {
     email: Option<String>,
     web_access_allowed: Option<bool>,
     data_protection: Option<bool>,
+    /// Apple has new iCloud terms, or wants the account finished, at icloud.com first.
+    terms_update_needed: bool,
+    repair_needed: bool,
     /// Signed in, but no keyring would keep the session: it lasts as long as Skykeep runs.
     unsaved: bool,
 }
@@ -127,6 +131,8 @@ impl SessionFacts {
             email: s.account_email.clone().or_else(|| s.apple_id.clone()),
             web_access_allowed: s.web_access_allowed,
             data_protection: s.data_protection,
+            terms_update_needed: s.terms_update_needed,
+            repair_needed: s.repair_needed,
             unsaved: client.unsaved().is_some(),
         }
     }
@@ -1361,6 +1367,12 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
         }
         Ok(true) => {
             TOLD.store(false, std::sync::atomic::Ordering::Relaxed);
+            // New iCloud terms waiting at icloud.com: asked again each pass, so the whole
+            // session opens by itself once the person has agreed — one request every few
+            // minutes, and only while they are waiting.
+            if guard.waits_on_icloud_com() {
+                let _ = guard.refresh_account().await;
+            }
             // Keys that ran out while the approval still holds are attached again before the
             // pass needs them — never a prompt on the person's phone from here.
             drop(guard);
@@ -2006,6 +2018,11 @@ struct AccountInfo {
     web_access_allowed: Option<bool>,
     /// Advanced Data Protection.
     data_protection: Option<bool>,
+    /// Apple has new iCloud terms waiting to be agreed to at icloud.com; until then it opens
+    /// only part of a web session and nothing can be read (issue #5).
+    terms_update_needed: bool,
+    /// Apple wants the account finished at icloud.com first.
+    repair_needed: bool,
     /// The person's own card, when it has a photo: theirs to show as the account's picture,
     /// served like any contact's.
     photo_contact: Option<String>,
@@ -2030,8 +2047,36 @@ async fn account_info(auth: State<'_, Auth>, data: State<'_, Data>) -> UiResult<
         email: s.email,
         web_access_allowed: s.web_access_allowed,
         data_protection: s.data_protection,
+        terms_update_needed: s.terms_update_needed,
+        repair_needed: s.repair_needed,
         photo_contact,
     })
+}
+
+/// Ask Apple for the account again — the person agreed to new iCloud terms at icloud.com and
+/// pressed Try Again — then read everything that was waiting on it.
+#[tauri::command]
+async fn account_refresh(
+    app: tauri::AppHandle,
+    auth: State<'_, Auth>,
+    data: State<'_, Data>,
+) -> UiResult<AccountInfo> {
+    let waiting = {
+        let mut client = auth.client.lock().await;
+        client.refresh_account().await.map_err(|e| e.to_string())?;
+        *auth
+            .known
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = SessionFacts::of(&client);
+        client.waits_on_icloud_com()
+    };
+    if !waiting {
+        let client = Arc::clone(&auth.client);
+        let result = refresh::all(&client, &data.0).await;
+        alerts::changed();
+        app.emit(SYNCED, told(&result)).ok();
+    }
+    account_info(auth, data).await
 }
 
 /// Settings' switches, as the backend obeys them.
@@ -6721,6 +6766,8 @@ fn main() {
                 // Neither a lock nor its stand-in: never run beside another unseen.
                 Err(why) => cannot_start(&dir, &why),
             }
+            // Before anything reaches Apple, so a run with diagnostics on has all of it.
+            diagnostics::start(&dir);
             let client = match Client::new(&dir) {
                 Ok(client) => client,
                 Err(quince_auth::Error::Io(e)) => cannot_start(&dir, &folder_problem(&e)),
@@ -6882,6 +6929,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             data_access::data_access_status,
             data_access::data_access_ask,
+            account_refresh,
             grants::pick_open,
             grants::pick_save,
             export::library_export_start,

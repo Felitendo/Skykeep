@@ -197,7 +197,9 @@ impl Client {
     /// holds no key for them, or the one it held ran out. Asks Apple nothing.
     #[must_use]
     pub fn data_access_missing(&self) -> Vec<&'static str> {
-        if self.session.web_access_allowed == Some(false) {
+        // Web access off, or terms waiting at icloud.com: no key is released either way (Apple
+        // answers requestPCS "Missing X-APPLE-WEBAUTH-TOKEN cookie"), so none is asked for.
+        if self.session.web_access_allowed == Some(false) || self.waits_on_icloud_com() {
             return Vec::new();
         }
         if self

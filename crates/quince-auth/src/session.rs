@@ -117,6 +117,15 @@ pub struct Session {
     /// whose key cookie is not known by name; the rest are read from the cookies themselves.
     #[serde(default)]
     pub pcs_until: std::collections::BTreeMap<String, u64>,
+    /// Apple has new iCloud terms the person has not agreed to (`termsUpdateNeeded`). Until
+    /// they do, `accountLogin` opens only part of a web session — no `X-APPLE-WEBAUTH-TOKEN`
+    /// — and every service, Calendar and Contacts too, answers "Missing X-APPLE-WEBAUTH-TOKEN
+    /// cookie" or "no auth method found" (issue #5; rclone#9658).
+    #[serde(default)]
+    pub terms_update_needed: bool,
+    /// Apple wants the account finished at icloud.com first (`isRepairNeeded`).
+    #[serde(default)]
+    pub repair_needed: bool,
 
     /// Failed sign-ins in a row. Drives the local backoff.
     #[serde(default)]

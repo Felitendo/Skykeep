@@ -1057,7 +1057,12 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
         }
         case "alerts_shown": return window.__alertsShown ?? true;
         case "diagnostics_save": (window.__diagnostics = (window.__diagnostics ?? 0) + 1); return "/home/user/Downloads/Skykeep diagnostics 2026-10-18 20.00.txt";
-        case "account_info": return { name: "Asha Rao", email: "asha@example.com", photoContact: window.__mePhoto ?? null, webAccessAllowed: window.__webAccess ?? true, dataProtection: false };
+        case "account_info": return { name: "Asha Rao", email: "asha@example.com", photoContact: window.__mePhoto ?? null, webAccessAllowed: window.__webAccess ?? true, dataProtection: false, termsUpdateNeeded: Boolean(window.__termsNeeded), repairNeeded: Boolean(window.__repairNeeded) };
+        // Asking Apple for the account again: counted, and answering what the test set next.
+        case "account_refresh":
+          window.__accountRefreshes = (window.__accountRefreshes ?? 0) + 1;
+          if (window.__termsAfterRefresh !== undefined) window.__termsNeeded = window.__termsAfterRefresh;
+          return { name: "Asha Rao", email: "asha@example.com", photoContact: null, webAccessAllowed: true, dataProtection: false, termsUpdateNeeded: Boolean(window.__termsNeeded), repairNeeded: Boolean(window.__repairNeeded) };
         // Advanced Data Protection's approval: nothing waits on one unless a test says so
         // (`window.__dataAccess`); asking again counts, and answers what the test set next.
         case "data_access_status": return window.__dataAccess ?? { state: "open", services: [], problem: null };

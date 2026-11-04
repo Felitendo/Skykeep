@@ -21,6 +21,7 @@ macro_rules! quiet {
     };
 }
 
+pub mod diag;
 pub mod pcs;
 pub mod releases;
 mod sealed;
@@ -582,7 +583,9 @@ impl Client {
         // long as bytes arrive); idle connections are let go of before they can go stale; and
         // keep-alives notice a dead one.
         let http = apple_only()
-            .cookie_provider(Arc::clone(&jar))
+            // The jar itself, telling diagnostics (when the person turned them on) which
+            // cookies go out and come back, by name.
+            .cookie_provider(Arc::new(diag::Told(Arc::clone(&jar))))
             .user_agent(UA)
             .default_headers(defaults)
             .connect_timeout(std::time::Duration::from_secs(15))
@@ -665,6 +668,7 @@ impl Client {
     // ---- persistence ----------------------------------------------------------------
 
     fn capture(&mut self, response: &Response) {
+        diag::answer(response.url(), response.status());
         for (header, field) in CAPTURED_HEADERS {
             if let Some(v) = response
                 .headers()
@@ -934,7 +938,9 @@ impl Client {
             return Err(transient(status)
                 .unwrap_or_else(|| Error::Protocol(format!("validate returned {status}"))));
         }
-        Ok(serde_json::from_str(&body).unwrap_or(Value::Null))
+        let data = serde_json::from_str(&body).unwrap_or(Value::Null);
+        diag::account("validate", &data);
+        Ok(data)
     }
 
     /// Keep the session warm.
@@ -1422,6 +1428,7 @@ impl Client {
             }));
         }
         let data: Value = serde_json::from_str(&text)?;
+        diag::account("accountLogin", &data);
         // New iCloud terms not yet accepted: Apple answers 200 but opens the session only
         // part-way, without the web cookies every service needs (rclone/rclone#9919), so every
         // sync failed afterwards with nothing to say why. Only icloud.com or a device of the
@@ -1478,6 +1485,34 @@ impl Client {
         {
             self.session.data_protection = Some(on);
         }
+        // Read from every answer that carries them, so agreeing at icloud.com clears them at
+        // the next `accountLogin` — the heartbeat's, or Try Again's.
+        if let Some(needed) = data.get("termsUpdateNeeded").and_then(Value::as_bool) {
+            if needed {
+                quiet!("quince: Apple has iCloud terms waiting to be agreed to");
+            }
+            self.session.terms_update_needed = needed;
+        }
+        if let Some(needed) = data.get("isRepairNeeded").and_then(Value::as_bool) {
+            self.session.repair_needed = needed;
+        }
+    }
+
+    /// Ask Apple for the account again — after the person agreed to new iCloud terms at
+    /// icloud.com, say: a fresh `accountLogin` opens the whole web session they were waiting on.
+    pub async fn refresh_account(&mut self) -> Result<()> {
+        let data = self.account_login().await?;
+        self.absorb(&data);
+        self.keep();
+        Ok(())
+    }
+
+    /// Apple is keeping this session from the account's data until something is done at
+    /// icloud.com: new terms agreed to, or the account finished. Nothing else can be read
+    /// meanwhile, so nothing else is asked.
+    #[must_use]
+    pub fn waits_on_icloud_com(&self) -> bool {
+        self.session.terms_update_needed || self.session.repair_needed
     }
 
     /// Query parameters every iCloud service endpoint expects alongside the session cookies.

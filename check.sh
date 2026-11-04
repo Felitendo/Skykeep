@@ -170,6 +170,7 @@ step "sign-in keyring"  node .uiverify/signin-keyring.mjs
 step "lapse reason"     node .uiverify/lapse-reason.mjs
 step "device approval"  node .uiverify/device-approval.mjs
 step "code only when asked" node .uiverify/code-lapse.mjs
+step "new iCloud terms"  node .uiverify/icloud-terms.mjs
 step "webkit: approval" env ENGINE=webkit node .uiverify/device-approval.mjs
 step "calendar undo"    node .uiverify/calendar-undo.mjs
 

@@ -299,7 +299,8 @@ fn now_seconds() -> i64 {
 /// {"ChangeSet":…}` — which says nothing to a person about what happened or what to do. The
 /// sentence says that; the path, status and body go to the log for whoever has to look.
 fn refusal(path: &str, status: reqwest::StatusCode, body: &str) -> Error {
-    let _ = (path, body);
+    let _ = path;
+    crate::told("calendar", status, body);
     quiet!("calendar: a request was refused ({status})");
     match status.as_u16() {
         409 | 412 => Error::Conflict,

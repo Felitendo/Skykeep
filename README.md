@@ -354,6 +354,21 @@ Personal Apple Accounts. Managed Apple Accounts from a school or workplace aren'
 Any time. **Settings → Export Everything** saves your notes as Markdown, events as iCalendar, contacts as vCard, and your files as they are.
 </details>
 
+<details>
+<summary><b>Something fails only on my account. How do I send a log?</b></summary>
+
+Quit Skykeep (from the tray too), then start it from a terminal with diagnostics turned on:
+
+```sh
+SKYKEEP_LOG=1 skykeep
+# Flatpak: flatpak run --env=SKYKEEP_LOG=1 io.github.yashwanthkamireddi.Skykeep
+```
+
+On Windows, run `$env:SKYKEEP_LOG=1` in PowerShell, then start `skykeep.exe` from that same window.
+
+Skykeep prints where it writes `diagnostics.log`, in its data folder (on Linux, usually `~/.local/share/io.github.yashwanthkamireddi.Skykeep/`). Sign in or sync, then attach the file to your issue. It lists which iCloud addresses Skykeep asked, Apple's answer codes, and the names of the cookies that were sent. It never contains cookie values, tokens, passwords, your name, your email or anything from your library, and Skykeep never uploads it. Start Skykeep normally again to turn diagnostics off.
+</details>
+
 ## Roadmap
 
 What I'd like to add next:

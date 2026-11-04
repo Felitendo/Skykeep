@@ -6,7 +6,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelLeft } from "lucide-react";
-import { api, DATA_ACCESS, messageOf, NEW_EVENT, OPEN_REMINDER, type DataAccess } from "../lib/ipc";
+import { api, DATA_ACCESS, messageOf, NEW_EVENT, OPEN_REMINDER, SYNCED, type AccountInfo, type DataAccess } from "../lib/ipc";
 import { ApprovalNotice, ApprovalScreen, awaitsApproval } from "../components/DeviceApproval";
 import { SyncProvider, useSync } from "../lib/sync";
 import { AccountCard } from "../components/Account";
@@ -289,9 +289,35 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
       return !was;
     });
 
-  useEffect(() => {
-    api.accountInfo().then((a) => setWebAccess(a?.webAccessAllowed ?? null), () => {});
+  /**
+   * Apple waiting on something at icloud.com — new iCloud terms to agree to, or the account to
+   * finish — before it opens a whole web session: every service fails until then, Calendar and
+   * Contacts too (issue #5). Read again after every pass, so it clears by itself once done.
+   */
+  const [atIcloud, setAtIcloud] = useState<"terms" | "repair" | null>(null);
+  const takeAccount = useCallback((a: AccountInfo | null | undefined) => {
+    setWebAccess(a?.webAccessAllowed ?? null);
+    setAtIcloud(a?.termsUpdateNeeded ? "terms" : a?.repairNeeded ? "repair" : null);
   }, []);
+  useEffect(() => {
+    api.accountInfo().then(takeAccount, () => {});
+    const off = listen(SYNCED, () => {
+      api.accountInfo().then(takeAccount, () => {});
+    });
+    return () => {
+      void off.then((f) => f());
+    };
+  }, [takeAccount]);
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const checkAgain = () => {
+    setChecking(true);
+    setCheckError(null);
+    api
+      .accountRefresh()
+      .then(takeAccount, (e) => setCheckError(messageOf(e)))
+      .finally(() => setChecking(false));
+  };
 
   /** Advanced Data Protection: which services wait on an approval on the person's devices. */
   const [access, setAccess] = useState<DataAccess | null>(null);
@@ -384,7 +410,8 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
   const frontService = selected && selected !== "settings" ? serviceOf(selected) : null;
   const approval: "screen" | "notice" | null =
     frontService && access && awaitsApproval(access, frontService) ? (held[frontService] ? "notice" : "screen") : null;
-  const noScreen = Boolean(error) || (ready && (!selected || webAccess === false || approval === "screen"));
+  const noScreen =
+    Boolean(error) || (ready && (!selected || webAccess === false || approval === "screen" || atIcloud !== null));
   useEffect(() => {
     if (noScreen) drawn();
   }, [noScreen, drawn]);
@@ -629,7 +656,28 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
             :has() across the whole content instead, WebKit checked it again on every change
             anywhere inside — every tile's selection in a 20,000-photo grid. */}
         <main className="content" ref={content} data-screen={selected}>
-          {webAccess === false && selected !== "settings" ? (
+          {atIcloud && webAccess !== false && selected !== "settings" ? (
+            // Apple opens only part of a web session until this is done at icloud.com, and
+            // every screen would fail its own way. One plain answer, with where to do it.
+            <div className="web-access-off icloud-com-waiting" role="alert">
+              <h1>{atIcloud === "terms" ? "Agree to the new iCloud terms" : "Finish setting up iCloud"}</h1>
+              <p>
+                {atIcloud === "terms"
+                  ? "Apple has updated the iCloud Terms and Conditions. Once you agree to them, your iCloud opens here."
+                  : "Apple needs one more step on your Apple Account before your iCloud opens here."}
+              </p>
+              <p>
+                Sign in at <b>icloud.com</b> in your browser and follow what it asks
+                {atIcloud === "terms" ? ", then agree to the terms" : ""}. Then click Try Again.
+              </p>
+              <p className="device-approval-status" role="status" aria-live="polite">
+                <span>{checkError ?? (checking ? "Checking with Apple…" : "")}</span>
+              </p>
+              <button className="primary" onClick={checkAgain} disabled={checking}>
+                Try Again
+              </button>
+            </div>
+          ) : webAccess === false && selected !== "settings" ? (
             // Advanced Data Protection with web access off: every read would fail, and each
             // screen would say so its own way. One plain answer, with Apple's own switch.
             <div className="web-access-off" role="alert">

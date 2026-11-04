@@ -450,6 +450,8 @@ export const api = {
   storageInfo: () => invoke<{ usedBytes: number; totalBytes: number }>("storage_info"),
   /** Who is signed in, as Apple names them. */
   accountInfo: () => invoke<AccountInfo>("account_info"),
+  /** Ask Apple for the account again, after something was done at icloud.com. */
+  accountRefresh: () => invoke<AccountInfo>("account_refresh"),
   /** Where an Advanced Data Protection approval stands. */
   dataAccess: () => invoke<DataAccess>("data_access_status"),
   /** Put the approval on the person's devices again, and follow it. */
@@ -773,6 +775,10 @@ export type AccountInfo = {
   email: string | null;
   webAccessAllowed?: boolean | null;
   dataProtection?: boolean | null;
+  /** Apple has new iCloud terms to agree to at icloud.com; until then nothing can be read. */
+  termsUpdateNeeded?: boolean;
+  /** Apple wants the account finished at icloud.com first. */
+  repairNeeded?: boolean;
   photoContact?: string | null;
 };
 
