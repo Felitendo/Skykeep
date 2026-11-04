@@ -2185,7 +2185,12 @@ const MonthView = memo(function MonthView({
       </div>
       <div className={`cal-grid${carry ? " is-carrying" : ""}`} role="grid" aria-label="Month" ref={grid}>
         {weeks.map((row, w) => {
-          const spans = weekSpans(events, row[0]);
+          const all = weekSpans(events, row[0]);
+          // Only the lanes that fit under the dates are drawn: in a short week the rest ran on
+          // over the weeks below. With any left over, one line stays free for "N more" — the
+          // day opens with every bar in its all-day row.
+          const fit = all.some((s) => s.lane >= rows) ? rows - 1 : rows;
+          const spans = all.filter((s) => s.lane < fit);
           return (
             <div className="cx-week" role="row" key={w}>
               {row.map((day, i) => {
@@ -2193,15 +2198,17 @@ const MonthView = memo(function MonthView({
                 // Only the lanes of the bars that cross this day are kept clear in it: a bar
                 // at the end of the week had left the days before it room for nothing.
                 const lanesHere = Math.max(0, ...spans.filter((s) => s.from <= i && s.to >= i).map((s) => s.lane + 1));
+                // Bars over this day that did not fit are counted in its "N more".
+                const cut = all.filter((s) => s.lane >= fit && s.from <= i && s.to >= i).length;
                 const room = Math.max(0, rows - lanesHere);
                 // What fits, and when it does not, one line fewer so "N more" has a line too.
                 // As dots, a row of them fits in any cell.
                 const visible = dots
                   ? list.slice(0, MOST_DOTS)
-                  : list.length > room
+                  : list.length > room || cut
                     ? list.slice(0, Math.max(0, room - 1))
                     : list;
-                const more = list.length - visible.length;
+                const more = list.length - visible.length + cut;
                 const isSelected = sameDay(day, selected);
                 const cellIndex = w * 7 + i;
                 return (
