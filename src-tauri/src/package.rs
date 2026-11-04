@@ -45,6 +45,7 @@ pub fn family_name() -> Option<String> {
 }
 
 /// The app ID Windows knows an entry by: `<family>!<id>` in a package, `id` itself otherwise.
+#[cfg(any(windows, test))]
 pub fn app_id(family: Option<&str>, id: &str) -> String {
     match family {
         Some(f) => format!("{f}!{id}"),
