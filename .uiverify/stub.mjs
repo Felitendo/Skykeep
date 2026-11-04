@@ -1074,7 +1074,11 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           const now = Math.floor(Date.now() / 1000);
           const f = (id, name, ext, opened) => ({ drivewsid: `FILE::r${id}`, parentId: "FOLDER::x", name, extension: ext, kind: "FILE",
             size: 34145, childCount: null, createdAt: now - 9e6, modifiedAt: now - 9e6, etag: "e", openedAt: opened });
-          return [f(1, "Invoice-0001", "pdf", now - 600), f(2, "Boarding pass", "pdf", now - 86400 - 3600), f(3, "Lease", "pdf", now - 40 * 86400)];
+          // Today and yesterday by this computer's own midnight: "ten minutes ago" and "a day and
+          // an hour ago" fell on yesterday and the day before in the first hour after midnight.
+          const midnight = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
+          const today = midnight + Math.floor((now - midnight) / 2);
+          return [f(1, "Invoice-0001", "pdf", today), f(2, "Boarding pass", "pdf", midnight - 12 * 3600), f(3, "Lease", "pdf", now - 40 * 86400)];
         }
         case "drive_trash": return !driveFixture ? [] : (window.__trash ??= [
           { drivewsid: "FILE::t1", parentId: null, name: "Old notes", extension: "pdf", kind: "FILE",
