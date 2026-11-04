@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Skykeep as an MSIX package, for the Microsoft Store: filled in and packed by pack.ps1
+  (.github/workflows/msix.yml). The double-underscored values are filled at pack time — the
+  identity from Partner Center (Product identity), the version from tauri.conf.json.
+
+  Seven Start-menu entries, as the .exe and the .msi make them (packaging/windows): Skykeep, and
+  each app on its own, started with the same app argument as the shortcuts (uap10:Parameters,
+  Windows 10 2004 and later). Each entry's Id is the
+  AppUserModelID the installers use, so Windows knows it as `<family name>!<that ID>` and each
+  app's window (src-tauri/src/taskbar.rs) is matched to its own entry. Never change an Id once
+  published: Windows keeps pinned tiles by it.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 desktop rescap">
+
+  <Identity
+    Name="__IDENTITY_NAME__"
+    Publisher="__PUBLISHER__"
+    Version="__VERSION__"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Skykeep</DisplayName>
+    <PublisherDisplayName>__PUBLISHER_DISPLAY_NAME__</PublisherDisplayName>
+    <Description>Your iCloud notes, reminders, calendar, contacts, Drive and photos, on this computer. Not affiliated with Apple.</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="io.github.yashwanthkamireddi.Skykeep" Executable="skykeep.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Skykeep" Description="Your iCloud, on this computer" BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\Square71x71Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- Open at Login: off until turned on in Settings (src-tauri/src/login.rs), then
+             listed in Task Manager's Startup apps. Started hidden, as the Run key starts it. -->
+        <desktop:Extension Category="windows.startupTask" Executable="skykeep.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--background">
+          <desktop:StartupTask TaskId="SkykeepStartup" Enabled="false" DisplayName="Skykeep" />
+        </desktop:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="icalendar">
+            <uap:DisplayName>Calendar events</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType ContentType="text/calendar">.ics</uap:FileType>
+              <uap:FileType ContentType="text/calendar">.ical</uap:FileType>
+              <uap:FileType ContentType="text/calendar">.icalendar</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="vcard">
+            <uap:DisplayName>Contact card</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType ContentType="text/vcard">.vcf</uap:FileType>
+              <uap:FileType ContentType="text/vcard">.vcard</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+
+    <Application Id="io.github.yashwanthkamireddi.Skykeep.Notes" Executable="skykeep.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--app notes">
+      <uap:VisualElements DisplayName="Skykeep Notes" Description="Notes from iCloud, on this computer" BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\Square71x71Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+
+    <Application Id="io.github.yashwanthkamireddi.Skykeep.Reminders" Executable="skykeep.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--app reminders">
+      <uap:VisualElements DisplayName="Skykeep Reminders" Description="Reminders from iCloud, on this computer" BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\Square71x71Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+
+    <Application Id="io.github.yashwanthkamireddi.Skykeep.Calendar" Executable="skykeep.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--app calendar">
+      <uap:VisualElements DisplayName="Skykeep Calendar" Description="Your iCloud calendars, on this computer" BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\Square71x71Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+
+    <Application Id="io.github.yashwanthkamireddi.Skykeep.Contacts" Executable="skykeep.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--app contacts">
+      <uap:VisualElements DisplayName="Skykeep Contacts" Description="Your iCloud contacts, on this computer" BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\Square71x71Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+
+    <Application Id="io.github.yashwanthkamireddi.Skykeep.Drive" Executable="skykeep.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--app drive">
+      <uap:VisualElements DisplayName="Skykeep Drive" Description="iCloud Drive, on this computer" BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\Square71x71Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+
+    <Application Id="io.github.yashwanthkamireddi.Skykeep.Photos" Executable="skykeep.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--app photos">
+      <uap:VisualElements DisplayName="Skykeep Photos" Description="iCloud Photos, on this computer" BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\Square71x71Logo.png" Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+</Package>

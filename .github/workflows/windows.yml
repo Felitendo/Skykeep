@@ -36,6 +36,10 @@ on:
       updater:
         type: boolean
         default: false
+      # What to build, when not the caller's own commit: a tag, for the Store's package (msix.yml).
+      ref:
+        type: string
+        default: ""
     secrets:
       TAURI_SIGNING_PRIVATE_KEY:
         required: false
@@ -55,6 +59,8 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22

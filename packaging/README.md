@@ -14,6 +14,7 @@ Everything that turns a build into something people install.
 | `*.desktop.in`, `*.metainfo.xml` | The main launcher entry and the AppStream data software centres show. |
 | `*.search-provider.ini`, `*.SearchProvider.service`, `*.krunner.desktop` | Results in GNOME Shell and KRunner search. |
 | `icons/` | The app, tray and notification icons. |
+| `windows/msix/` | The Microsoft Store's MSIX package: its manifest and `pack.ps1`. |
 | `linux-compat/` | `check.sh`: installs a package in a clean distribution container and checks it runs. |
 
 ## Arch, CachyOS, EndeavourOS, Manjaro
@@ -166,3 +167,26 @@ What the per-app `.desktop` files and `Actions=` are on Linux:
 `.github/workflows/windows.yml` checks all of this after a silent install: each entry's app ID
 and command line, each app window's app ID, every jump-list task, and that uninstalling leaves no
 entry behind.
+
+## The Microsoft Store (MSIX)
+
+`.github/workflows/msix.yml` (Actions → MSIX for the Microsoft Store → Run workflow) builds
+Windows as a release does, takes the program out of the `.msi` and packs it with
+`windows/msix/pack.ps1` into an unsigned `.msix` — the `skykeep-msix` artifact. The Store signs
+it. Then a signed copy is installed on the runner, started from its Start-menu entry, seen still
+running 15 s later, and removed.
+
+The package's identity comes from Partner Center (the app → Product management → Product
+identity): `Package/Identity/Name`, `Package/Identity/Publisher` and
+`Package/Properties/PublisherDisplayName`, given as the run's inputs or kept as the repository
+variables `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` and `MSIX_PUBLISHER_DISPLAY_NAME`. The package's
+display name is "Skykeep", the name reserved there. A tag input builds that release's code.
+
+The package has the same seven Start-menu entries as the installers, each entry's ID the
+installers' app ID, so Windows knows them as `<package family name>!io.github.yashwanthkamireddi.Skykeep`,
+`…!io.github.yashwanthkamireddi.Skykeep.Notes` and so on, and the windows, toasts and jump lists
+use those (`src-tauri/src/package.rs`, `taskbar.rs`). It opens `.ics` and `.vcf` files. Open at
+Login is the package's startup task (`SkykeepStartup`, listed in Task Manager's Startup apps),
+turned on and off through Windows' StartupTask API (`login.rs`), not the `Run` key. It never
+updates itself: a copy running from a package is the Store's to update (`updates.rs`,
+`Install::Store`), and the packed program's bundle mark says neither `.msi` nor `.exe`.
