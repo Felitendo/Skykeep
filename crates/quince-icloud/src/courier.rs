@@ -213,6 +213,18 @@ fn shell_signature(sig: &Signature) -> Vec<u8> {
     out
 }
 
+/// A new P-256 key from the system's random source. A random 32 bytes is a valid key except
+/// with odds of about one in 2^32, so the loop almost never runs twice.
+fn fresh_key() -> SigningKey {
+    loop {
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        if let Ok(key) = SigningKey::from_slice(&bytes) {
+            return key;
+        }
+    }
+}
+
 /// The key a connection is made with and the token Apple gave it. Kept across reconnects, so
 /// a dropped socket comes back on the same token and its registrations still stand.
 pub struct Identity {
@@ -230,7 +242,7 @@ impl Identity {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            key: SigningKey::random(&mut OsRng),
+            key: fresh_key(),
             token: None,
         }
     }
@@ -254,7 +266,7 @@ impl Identity {
             public_key: self
                 .key
                 .verifying_key()
-                .to_encoded_point(false)
+                .to_sec1_point(false)
                 .as_bytes()
                 .to_vec(),
             nonce,
@@ -805,8 +817,8 @@ mod tests {
         };
         let (r, sv) = (part(), part());
         let sig = Signature::from_scalars(
-            *p256::FieldBytes::from_slice(&r),
-            *p256::FieldBytes::from_slice(&sv),
+            p256::FieldBytes::try_from(r.as_slice()).unwrap(),
+            p256::FieldBytes::try_from(sv.as_slice()).unwrap(),
         )
         .unwrap();
         let key = VerifyingKey::from_sec1_bytes(&s.public_key).unwrap();

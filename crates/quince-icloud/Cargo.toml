@@ -27,7 +27,7 @@ aes-kw = "0.2"
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 # The live push channel (courier.rs): Apple's web push socket, its P-256 signed connect.
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]
