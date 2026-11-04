@@ -94,6 +94,10 @@
     <control>pointing</control>
   </recommends>
 
+  <branding>
+    <color type="primary" scheme_preference="light">#BFE0FF</color>
+    <color type="primary" scheme_preference="dark">#0B2A4A</color>
+  </branding>
   <releases>
     <release version="0.1.3" date="2026-11-04">
       <description>
