@@ -172,6 +172,8 @@ await page.locator(".confirm .confirm-answer").click();
 await page.waitForTimeout(300);
 ok((await page.locator(".px-tile").count()) === 4, "Hide Photo takes it out of the library at once");
 await page.locator(".px-source", { hasText: "Hidden" }).click();
+// Locked, as Photos keeps Hidden (photos-hidden-lock.mjs): viewed first.
+await page.getByRole("button", { name: "View Hidden Photos" }).click();
 await page.waitForTimeout(250);
 ok((await page.locator(".px-tile").count()) === 1, "and it is in Hidden");
 await page.locator(".px-tile").first().click();

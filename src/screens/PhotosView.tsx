@@ -8,7 +8,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { pickOpen } from "../lib/pick";
-import { ChevronLeft, ChevronRight, Ellipsis, GalleryThumbnails, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, SquareStack, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Ellipsis, GalleryThumbnails, CopyMinus, CopyPlus, Download, Clock, Heart, ImagePlus, Images, Info, Minus, Play, Plus, RotateCcw, Scan, Trash2, EyeOff, Lock, ArrowDownUp, MonitorPlay, Square, RectangleHorizontal, Star, Layers, SquareStack, Folder as FolderIcon, Aperture, Video, X, CalendarDays, Maximize2, Minimize2, Users, type LucideIcon } from "lucide-react";
 import {
   api,
   messageOf,
@@ -900,6 +900,12 @@ export function PhotosView() {
   const place: PhotoView = drawn.query ? "library" : view;
   const inAlbum = drawn.query ? null : album;
   const [sorts, setSorts] = useState(readSorts);
+  /**
+   * The Hidden album is locked, as in Photos: shown only once asked for, and locked again when
+   * it is left, when this screen or the window goes out of sight, and at every start (kept in
+   * memory only).
+   */
+  const [hiddenOpen, setHiddenOpen] = useState(false);
   const sortable = !drawn.query && !drawn.album && drawn.view !== "recentlyDeleted" && drawn.view !== "rated";
   const sort = sortable ? (sorts[drawn.view] ?? defaultSort(drawn.view)) : null;
   const chooseSort = (next: Sort) => {
@@ -945,6 +951,12 @@ export function PhotosView() {
   const read = useCallback(async () => {
     if (burstOpen.current) return;
     const mine = ++reads.current;
+    // Hidden, locked: nothing of it is read, so nothing of it can be drawn.
+    if (view === "hidden" && !album && !searching && !hiddenOpen) {
+      setPhotos(new PhotoList({ ids: [], keys: [], marks: [], first: null, last: null }, store));
+      setDrawn({ view, album, query: searching });
+      return;
+    }
     const source: PhotoSource = searching ? { query: searching } : album ? { album: album.id } : { view };
     const order: PhotoOrder | null = want;
     const d = drawnNow.current;
@@ -1017,11 +1029,27 @@ export function PhotosView() {
     setAlbums((was) => (same(was, a) ? was : a));
     // An album deleted elsewhere is not left open, empty.
     if (album && !a.some(([x]) => x.id === album.id)) setAlbum(null);
-  }, [view, album, searching, want?.by, want?.oldest]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, album, searching, want?.by, want?.oldest, hiddenOpen]); // eslint-disable-line react-hooks/exhaustive-deps
   // A pass that lands while another screen is in front is read when this one comes back, once,
   // not at every landing: a screen out of sight is still mounted (lib/screen), and each pass
   // lands a service at a time.
   const active = useScreenActive();
+  const hiddenLocked = view === "hidden" && !album && !searching && !hiddenOpen;
+  // Locked again once it is left — another place, an album, a search, another screen — and
+  // whenever the window goes out of sight (minimised, closed to the tray, another workspace).
+  const inHidden = view === "hidden" && !album && !searching && !albumsPage && !sharedPage && active;
+  useEffect(() => {
+    if (!inHidden) setHiddenOpen(false);
+  }, [inHidden]);
+  useEffect(() => {
+    const away = () => document.hidden && setHiddenOpen(false);
+    document.addEventListener("visibilitychange", away);
+    return () => document.removeEventListener("visibilitychange", away);
+  }, []);
+  // A hidden photo open when it locks closes with it.
+  useEffect(() => {
+    if (hiddenLocked) setOpen(null);
+  }, [hiddenLocked]);
   const seen = useRef(revision);
   if (active) seen.current = revision;
   const due = seen.current;
@@ -2989,10 +3017,11 @@ export function PhotosView() {
     const t = window.setTimeout(() => {
       const box = stageBox.w ? stageBox : { w: Math.max(320, window.innerWidth - 400), h: Math.max(240, window.innerHeight - 140) };
       // The view on screen has its pictures made first (Hidden is not in the library's).
-      api.photosPrepare({ cell, fit, stageW: box.w, stageH: box.h, dpr, view }).catch(() => {});
+      // Hidden, locked, has none made: the library's are.
+      api.photosPrepare({ cell, fit, stageW: box.w, stageH: box.h, dpr, view: hiddenLocked ? "library" : view }).catch(() => {});
     }, 400);
     return () => window.clearTimeout(t);
-  }, [cell, fit, open !== null, view, dpr]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cell, fit, open !== null, view, dpr, hiddenLocked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A new album or folder, at the top or in a folder: named in place in the sidebar.
   const startNew = (parent: string | null, folder: boolean) => {
@@ -3134,7 +3163,7 @@ export function PhotosView() {
     >
       <v.Icon className="px-glyph" size={16} strokeWidth={1.8} aria-hidden="true" />
       <span className="source-name px-label">{v.label}</span>
-      {counts[v.key] ? <span className="count px-count">{counts[v.key]}</span> : null}
+      {counts[v.key] && !(v.key === "hidden" && !hiddenOpen) ? <span className="count px-count">{counts[v.key]}</span> : null}
     </button>
   );
 
@@ -3484,10 +3513,19 @@ export function PhotosView() {
         </header>
 
 
-        {photos && photos.length === 0 && !drawn.query && (
+        {hiddenLocked && (
+          <EmptyState
+            className="px-empty px-locked"
+            icon={<Lock size={28} strokeWidth={1.6} />}
+            action={{ label: "View Hidden Photos", run: () => setHiddenOpen(true) }}
+          >
+            The Hidden album is locked.
+          </EmptyState>
+        )}
+        {!hiddenLocked && photos && photos.length === 0 && !drawn.query && (
           <Arriving service="photos" what="photos" className="px-empty" />
         )}
-        {photos && photos.length === 0 && !(arriving && !drawn.query) && (
+        {!hiddenLocked && photos && photos.length === 0 && !(arriving && !drawn.query) && (
           // One line, saying what the place is for, with its own symbol from the sidebar.
           <EmptyState
             className="px-empty"
