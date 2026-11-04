@@ -92,8 +92,10 @@ const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("That Apple Account or password wasn't accepted.")]
+    #[error("Apple didn't accept that Apple Account or password. Use your Apple Account password itself: an app-specific password can't sign in here.")]
     BadCredentials,
+    #[error("Apple has locked this Apple Account for security. Unlock it at iforgot.apple.com, then sign in here again.")]
+    AccountLocked,
     #[error("That code didn't match. Check your iPhone and try again.")]
     BadCode,
     #[error("Apple didn't return a trust token, so this session wouldn't survive a restart")]
@@ -165,6 +167,10 @@ fn apple_error(context: &str, status: StatusCode, body: &str) -> Error {
             // -21669 is Apple's "incorrect verification code".
             if code == "-21669" {
                 return Error::BadCode;
+            }
+            // -20209 is Apple's "locked for security reasons", most often after many tries.
+            if code == "-20209" {
+                return Error::AccountLocked;
             }
             if message.to_ascii_lowercase().contains("too many") {
                 return Error::RateLimited;
@@ -941,6 +947,13 @@ impl Client {
             .await?;
         self.capture(&r);
         let status = r.status();
+        // This step's own reply: its serviceErrors say why Apple refused (a locked account,
+        // a wrong password). The challenge from /signin/init is not the reason and is never shown.
+        let text = if status.is_success() || status == StatusCode::CONFLICT {
+            String::new()
+        } else {
+            r.text().await.unwrap_or_default()
+        };
 
         match status {
             StatusCode::CONFLICT => {
@@ -1689,6 +1702,20 @@ mod tests {
             backoff_seconds(5),
             "and it must be bounded"
         );
+    }
+
+    #[test]
+    fn a_locked_account_and_a_wrong_password_read_as_what_they_are() {
+        let words = Error::BadCredentials.to_string();
+        assert!(words.contains("app-specific"), "{words}");
+        let locked = r#"{"serviceErrors":[{"code":"-20209","message":"This Apple Account has been locked for security reasons."}]}"#;
+        assert!(matches!(
+            apple_error("finishing sign-in", StatusCode::FORBIDDEN, locked),
+            Error::AccountLocked
+        ));
+        assert!(Error::AccountLocked
+            .to_string()
+            .contains("iforgot.apple.com"));
     }
 
     #[test]
