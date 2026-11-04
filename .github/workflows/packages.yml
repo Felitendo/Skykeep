@@ -81,7 +81,7 @@ jobs:
         run: |
           Invoke-Expression "& {$(Invoke-RestMethod https://get.scoop.sh)} -RunAsAdmin"
           $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
-          scoop install packaging/scoop/skykeep.json
+          scoop install "$PWD\packaging\scoop\skykeep.json"
           if ($LASTEXITCODE) { throw "scoop install failed" }
           $dir = "$env:USERPROFILE\scoop\apps\skykeep\current"
           Get-ChildItem $dir | Format-Table Name, Length
