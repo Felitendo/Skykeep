@@ -115,6 +115,10 @@ pub enum Error {
     CoolingDown { seconds: u64 },
     #[error("this needs a fresh sign-in — Apple won't accept a resumed session for it")]
     ReauthRequired,
+    /// Apple holds the session back until new iCloud terms are accepted, which only a browser
+    /// or an Apple device can do.
+    #[error("Apple has new iCloud terms for this account. Sign in at icloud.com, accept them, then sign in here again.")]
+    TermsPending,
     // Apple's 429 and its 503 on sign-in both mean "not now", whether from too many tries or
     // its own load: say what to do, not which of the two it was.
     #[error(
@@ -822,6 +826,8 @@ impl Client {
                 self.keep();
                 return Ok(true);
             }
+            // Signing in again would only meet the same terms, and count as a failed attempt.
+            Err(Error::TermsPending) => return Err(Error::TermsPending),
             Err(e) => e,
         };
         // Unreachable is not rejected. Offline — no network yet after login, or a resume
@@ -949,7 +955,8 @@ impl Client {
                 | Error::Network(_)
                 | Error::Keyring(_)
                 | Error::Io(_)
-                | Error::Json(_),
+                | Error::Json(_)
+                | Error::TermsPending,
             ) => {}
             Err(e) => {
                 self.session.consecutive_failures =
@@ -1345,7 +1352,15 @@ impl Client {
                 Error::Protocol(format!("couldn't open the account ({status})"))
             }));
         }
-        Ok(serde_json::from_str(&text)?)
+        let data: Value = serde_json::from_str(&text)?;
+        // New iCloud terms not yet accepted: Apple answers 200 but opens the session only
+        // part-way, without the web cookies every service needs (rclone/rclone#9919), so every
+        // sync failed afterwards with nothing to say why. Only icloud.com or a device of the
+        // person's own can accept them.
+        if data.get("termsUpdateNeeded").and_then(Value::as_bool) == Some(true) {
+            return Err(Error::TermsPending);
+        }
+        Ok(data)
     }
 
     fn absorb(&mut self, data: &Value) {

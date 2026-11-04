@@ -1258,3 +1258,70 @@ async fn trusted_numbers_at_the_top_are_still_texted() {
     let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
     assert_eq!(body, json!({ "phoneNumber": { "id": 7 }, "mode": "sms" }));
 }
+
+/// New iCloud terms not yet accepted: `accountLogin` answers 200 with `termsUpdateNeeded`
+/// and opens the session only part-way (rclone/rclone#9919). Taken as signed in, every sync
+/// failed after with nothing to say why. It says so, and costs no wait: no password was wrong.
+#[tokio::test]
+async fn new_terms_to_accept_are_said_not_taken_for_a_sign_in() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 200).await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/accountLogin"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "termsUpdateNeeded": true,
+            "dsInfo": { "dsid": "1234567890" },
+            "webservices": {}
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    for attempt in 0..2 {
+        let err = client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, quince_auth::Error::TermsPending),
+            "attempt {attempt}: {err:?}"
+        );
+        assert!(err.to_string().contains("icloud.com"), "{err}");
+    }
+    assert!(client.session().webservices.is_none(), "not signed in");
+}
+
+/// The same for a session already kept: said, and kept, rather than signed in again with
+/// the password into the same terms.
+#[tokio::test]
+async fn new_terms_on_a_kept_session_keep_it() {
+    let dir = tempfile::tempdir().unwrap();
+    signed_in(dir.path()).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/validate"))
+        .respond_with(ResponseTemplate::new(421))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/accountLogin"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "termsUpdateNeeded": true })),
+        )
+        .mount(&server)
+        .await;
+    let mut client = client_for(&server, dir.path());
+    let err = client.resume().await.unwrap_err();
+    assert!(matches!(err, quince_auth::Error::TermsPending), "{err:?}");
+    assert!(
+        client.session().session_token.is_some(),
+        "the session is kept"
+    );
+    assert_eq!(client.session().password.as_deref(), Some("hunter2"));
+    let reqs = server.received_requests().await.unwrap();
+    assert!(
+        requests_to(&reqs, "/signin/init").is_empty(),
+        "no sign-in into the same terms"
+    );
+}

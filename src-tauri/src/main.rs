@@ -1349,6 +1349,19 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
             }
         }
         Ok(true) => TOLD.store(false, std::sync::atomic::Ordering::Relaxed),
+        // New iCloud terms to accept: nothing syncs until they are, and only icloud.com can
+        // take them. Said with its reason, where "Apple signed you out" would be untrue.
+        Err(e @ quince_auth::Error::TermsPending) => {
+            LIVE.store(false, Ordering::SeqCst);
+            app.emit(NEEDS_SIGNIN, e.to_string()).ok();
+            if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                alerts::tell(
+                    app,
+                    "Accept Apple's new iCloud terms",
+                    "Sign in at icloud.com and accept them. Your copy on this computer is still here.",
+                );
+            }
+        }
         // Not reaching Apple says nothing about the session.
         Err(_) => {}
     }
