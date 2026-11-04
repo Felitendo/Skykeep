@@ -102,6 +102,8 @@ pub struct Client {
 pub struct Proof {
     pub m1: [u8; 32],
     pub m2: [u8; 32],
+    /// The shared session key `K = H(PAD(S))`. Apple's escrow step sends it with its proof.
+    pub key: [u8; 32],
 }
 
 impl Client {
@@ -200,7 +202,7 @@ impl Client {
         // M2 = H(A || M1 || K)
         let m2 = sha256(&[&a_padded, &m1, &key]);
 
-        Some(Proof { m1, m2 })
+        Some(Proof { m1, m2, key })
     }
 }
 
@@ -332,7 +334,7 @@ mod tests {
         let a = pad(&be(&c.a_pub), w);
         let m1 = sha256(&[&x_or, &h_i, salt, &a, &pad(b, w), &key]);
         let m2 = sha256(&[&a, &m1, &key]);
-        Proof { m1, m2 }
+        Proof { m1, m2, key }
     }
 
     #[test]
@@ -378,5 +380,62 @@ mod tests {
         let want = reference_proof(&c, "pw", b"salt-salt-salt!!", &b, 1000);
         assert_eq!(got.m1, want.m1);
         assert_eq!(got.m2, want.m2);
+    }
+}
+
+#[cfg(test)]
+mod escrow_tests {
+    use super::*;
+
+    /// Apple's escrow step is the same exchange with an empty account name (icloud-photos-sync
+    /// #1124, rclone#10048): its M1 differs from the sign-in's, only by `H(I)`, and its session
+    /// key is the same for the same `a`, `B`, salt and password.
+    #[test]
+    fn an_empty_account_name_changes_the_proof_not_the_key() {
+        let a = [0x42u8; 32];
+        let salt = [0x77u8; 16];
+        let mut b = vec![0u8; 256];
+        b[255] = 0x05;
+        b[0] = 0x3c;
+        let signed = Client::with_private_key("someone@example.invalid", &a)
+            .process_challenge("hunter2", Protocol::S2k, &salt, &b, 1000)
+            .unwrap();
+        let escrow = Client::with_private_key("", &a)
+            .process_challenge("hunter2", Protocol::S2k, &salt, &b, 1000)
+            .unwrap();
+        assert_ne!(signed.m1, escrow.m1);
+        assert_eq!(signed.key, escrow.key);
+        let c = Client::with_private_key("", &a);
+        let reference = tests_reference(&c, &salt, &b);
+        assert_eq!(escrow.m1, reference.0);
+        assert_eq!(escrow.m2, reference.1);
+        assert_eq!(escrow.key, reference.2);
+    }
+
+    /// The proof for an empty account name, by the textbook formulas.
+    fn tests_reference(c: &Client, salt: &[u8], b: &[u8]) -> ([u8; 32], [u8; 32], [u8; 32]) {
+        let n = n();
+        let w = be(&n).len();
+        let g = BigUint::from(G);
+        let b_pub = BigUint::from_bytes_be(b);
+        let k = BigUint::from_bytes_be(&sha256(&[&pad(&be(&n), w), &pad(&be(&g), w)]));
+        let u = BigUint::from_bytes_be(&sha256(&[&pad(&be(&c.a_pub), w), &pad(b, w)]));
+        let derived = derive_key("hunter2", Protocol::S2k, salt, 1000);
+        let x = BigUint::from_bytes_be(&sha256(&[salt, &sha256(&[b":", &derived])]));
+        let v = g.modpow(&x, &n);
+        let base = (&b_pub + &n * &k - (&k * &v) % &n) % &n;
+        let s = base.modpow(&(&c.a + &u * &x), &n);
+        let key = sha256(&[&pad(&be(&s), w)]);
+        let h_n = sha256(&[&be(&n)]);
+        let h_g = sha256(&[&pad(&be(&g), w)]);
+        let mut x_or = [0u8; 32];
+        for i in 0..32 {
+            x_or[i] = h_n[i] ^ h_g[i];
+        }
+        let h_i = sha256(&[b""]);
+        let a = pad(&be(&c.a_pub), w);
+        let m1 = sha256(&[&x_or, &h_i, salt, &a, &pad(b, w), &key]);
+        let m2 = sha256(&[&a, &m1, &key]);
+        (m1, m2, key)
     }
 }

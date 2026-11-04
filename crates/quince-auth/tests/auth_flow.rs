@@ -1620,3 +1620,319 @@ async fn sign_in_is_not_held_up_by_a_cooldown_from_a_clock_that_ran_ahead() {
         1
     );
 }
+
+/// `/escrow/init` answering a well-formed challenge, and `/escrow/complete` a new session token.
+async fn mount_escrow(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/escrow/init"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "salt": b64(&[0x31; 16]),
+            "b": b64(&[0x6a; 256]),
+            "c": "escrow-c",
+            "iteration": 20173,
+            "protocol": "s2k",
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/escrow/complete"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Apple-Session-Token", "session-token-escrow")
+                .set_body_json(json!({})),
+        )
+        .mount(server)
+        .await;
+}
+
+/// The daily code: a computer Apple already trusts signs in again, and Apple answers 409 with
+/// `X-Apple-EDP` — "trust token accepted, now the escrow step" (rclone#10048,
+/// icloud-photos-sync#1124). Read as "a code", every lapse asked for one. Now: the escrow step,
+/// then the account — no code, nothing pushed to the phone.
+#[tokio::test]
+async fn a_trusted_sign_in_that_asks_for_escrow_needs_no_code() {
+    let dir = tempfile::tempdir().unwrap();
+    signed_in(dir.path()).await;
+
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/signin/complete"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .insert_header("X-Apple-EDP", "1")
+                .insert_header("X-Apple-Session-Token", "session-token-abc")
+                .set_body_json(json!({})),
+        )
+        .mount(&server)
+        .await;
+    mount_escrow(&server).await;
+    mount_trust_and_login(&server).await;
+
+    let mut client = client_for(&server, dir.path());
+    assert_eq!(
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap(),
+        SignInOutcome::Complete
+    );
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(code_pushes(&reqs), 0, "no code asked for");
+    let init = requests_to(&reqs, "/escrow/init");
+    assert_eq!(init.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&init[0].body).unwrap();
+    assert_eq!(
+        body["accountName"], "",
+        "the escrow proof is made with an empty account name"
+    );
+    assert_eq!(body["protocols"], json!(["s2k", "s2k_fo"]));
+    let complete = requests_to(&reqs, "/escrow/complete");
+    assert_eq!(complete.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&complete[0].body).unwrap();
+    assert_eq!(body["c"], "escrow-c", "the challenge is echoed");
+    for key in ["m1", "m2", "k"] {
+        let v = body[key].as_str().unwrap_or_default();
+        assert_eq!(
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, v)
+                .map(|b| b.len())
+                .unwrap_or(0),
+            32,
+            "{key} is a 32-byte value"
+        );
+    }
+    assert!(
+        requests_to(&reqs, "/setup/ws/1/accountLogin").len() == 1,
+        "and the account is opened"
+    );
+}
+
+/// Without a trust token a 409 is a code, escrow header or not: a first sign-in never skips it.
+#[tokio::test]
+async fn a_first_sign_in_that_mentions_escrow_still_asks_for_a_code() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/signin/complete"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .insert_header("X-Apple-EDP", "1")
+                .set_body_json(json!({})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    assert_eq!(
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap(),
+        SignInOutcome::NeedsTwoFactor
+    );
+    assert!(requests_to(&server.received_requests().await.unwrap(), "/escrow/init").is_empty());
+}
+
+/// An accepted code whose answer asks for escrow: the escrow step comes before the trust
+/// token is asked for — without it Apple does not honour that token next time.
+#[tokio::test]
+async fn an_accepted_code_that_asks_for_escrow_completes_it_before_trust() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .insert_header("X-Apple-PDP", "1")
+                .insert_header("X-Apple-Session-Token", "session-token-code")
+                .set_body_json(json!({ "securityCode": { "valid": true } })),
+        )
+        .mount(&server)
+        .await;
+    mount_escrow(&server).await;
+    mount_trust_and_login(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+    client.submit_two_factor("123456").await.unwrap();
+    let reqs = server.received_requests().await.unwrap();
+    let order: Vec<&str> = reqs
+        .iter()
+        .map(|r| r.url.path())
+        .filter(|p| p.ends_with("/escrow/complete") || p.ends_with("/2sv/trust"))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "/appleauth/auth/escrow/complete",
+            "/appleauth/auth/2sv/trust"
+        ],
+        "escrow first, then trust"
+    );
+    assert_eq!(
+        client.session().trust_token.as_deref(),
+        Some("trust-token-xyz")
+    );
+}
+
+/// `/signin/complete` answering 412: Apple's repair step, as icloudpd takes it, then the account
+/// — not "two-factor auth isn't switched on".
+#[tokio::test]
+async fn a_412_at_sign_in_is_repaired_and_carries_on() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 412).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/repair/complete"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    assert_eq!(
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap(),
+        SignInOutcome::Complete
+    );
+    let reqs = server.received_requests().await.unwrap();
+    let repair = requests_to(&reqs, "/repair/complete");
+    assert_eq!(repair.len(), 1);
+    assert_eq!(repair[0].body, b"{}");
+}
+
+/// A repair Apple refuses is said as what to do — at account.apple.com — and is not counted as
+/// a wrong password.
+#[tokio::test]
+async fn a_repair_apple_refuses_says_where_to_finish_it() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 412).await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/repair/complete"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    let err = client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, quince_auth::Error::RepairNeeded), "{err:?}");
+    assert!(err.to_string().contains("account.apple.com"));
+    assert_eq!(client.session().consecutive_failures, 0);
+}
+
+/// A texted code answered 412 with a repair session token was accepted (pyicloud#466): the
+/// sign-in finishes, never "That code didn't match".
+#[tokio::test]
+async fn a_texted_code_answered_412_with_a_repair_token_is_accepted() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/trusteddevice/securitycode"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/appleauth/auth/verify/phone/securitycode"))
+        .respond_with(
+            ResponseTemplate::new(412)
+                .insert_header("X-Apple-Repair-Session-Token", "repair-token")
+                .insert_header("X-Apple-Session-Token", "session-token-sms")
+                .set_body_json(json!({})),
+        )
+        .mount(&server)
+        .await;
+    mount_trust_and_login(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+    client.submit_sms_code(1, "123456").await.unwrap();
+    assert_eq!(
+        client.session().trust_token.as_deref(),
+        Some("trust-token-xyz")
+    );
+}
+
+/// An account that signs in with security keys is told so, not left at a code screen.
+#[tokio::test]
+async fn an_account_with_security_keys_is_recognised() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/appleauth/auth"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "trustedDeviceCount": 0,
+            "fsaChallenge": { "challenge": "Y2hhbGxlbmdl", "keyHandles": ["aGFuZGxl"], "rpId": "apple.com" },
+            "keyNames": ["Key"]
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    assert!(client.two_factor_options().await.unwrap().security_key);
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/appleauth/auth"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "trustedDeviceCount": 1, "fsaChallenge": { "challenge": "", "keyHandles": [] }
+        })))
+        .mount(&server)
+        .await;
+    let mut client = client_for(&server, dir.path());
+    assert!(
+        !client.two_factor_options().await.unwrap().security_key,
+        "an empty challenge is no security key"
+    );
+}
+
+/// An account Apple answers with no services at all (seen with a beta of iOS on it,
+/// icloudpd#1361): signed in, nothing to read, nothing crashes.
+#[tokio::test]
+async fn an_account_with_no_services_signs_in_and_offers_none() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 200).await;
+    Mock::given(method("POST"))
+        .and(path("/setup/ws/1/accountLogin"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "dsInfo": { "dsid": "1234567890", "hasUnreleasedOS": true },
+            "webservices": {},
+            "configBag": { "urls": {} }
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    assert_eq!(
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap(),
+        SignInOutcome::Complete
+    );
+    assert!(client.session().service_url("ckdatabasews").is_none());
+    assert!(client.data_access_missing().is_empty());
+}

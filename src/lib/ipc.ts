@@ -30,6 +30,8 @@ export type TwoFactorOptions = {
   trustedDeviceCount: number;
   phones: TrustedPhone[];
   tooManyCodesSent: boolean;
+  /** The account signs in with a security key, which Skykeep can't use yet. */
+  securityKey?: boolean;
 };
 
 /** How one service's refresh ended. */

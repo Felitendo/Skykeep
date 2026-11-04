@@ -31,6 +31,31 @@ fn only_apples_hosts_count_as_apples() {
     }
 }
 
+/// Apple's own hosts, but over plain HTTP: refused before anything leaves the machine, so the
+/// session's cookies never cross the network in the clear (pyicloud#356, #401) — an address in
+/// Apple's data, or a redirect down to HTTP, included.
+#[tokio::test(flavor = "multi_thread")]
+async fn apples_hosts_over_plain_http_are_refused() {
+    let client = quince_auth::apple_only().build().unwrap();
+    for url in [
+        "http://setup.icloud.com/setup/ws/1/validate",
+        "http://p45-contactsws.icloud.com/co/startup",
+        "http://idmsa.apple.com/appleauth/auth",
+        "http://cvws.icloud-content.com/B/abc",
+    ] {
+        let err = client
+            .get(url)
+            .send()
+            .await
+            .expect_err("plain HTTP to Apple");
+        let said = format!("{err:?}");
+        assert!(
+            said.contains("Apple's client reaches only Apple"),
+            "{url}: refused before connecting: {said}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_refuses_anything_but_apple_before_connecting() {
     let client = quince_auth::apple_only().build().unwrap();

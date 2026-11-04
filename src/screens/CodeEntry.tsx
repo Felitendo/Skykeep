@@ -96,6 +96,26 @@ export function CodeEntry({
     }
   }
 
+  // An account that signs in with a security key gets no code: Apple asks for the key. Said
+  // plainly, rather than a code screen waiting for something that never comes.
+  if (options?.securityKey) {
+    return (
+      <div className="sheet enter-sheet">
+        <Mark className="mark" />
+        <h1>This account uses a security key</h1>
+        <p className="lede">
+          Your Apple Account signs in with a security key. Skykeep can't sign in with security keys yet, so it
+          can't finish signing in to this account.
+        </p>
+        <div className="sheet-foot">
+          <button className="link" type="button" onClick={onCancel}>
+            Use a different Apple Account
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="sheet enter-sheet" aria-busy={verifying}>
       <Mark className="mark" />

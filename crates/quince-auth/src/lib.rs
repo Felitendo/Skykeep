@@ -104,6 +104,9 @@ pub enum Error {
     NoTrustToken,
     #[error("this account signs in a way Skykeep can't handle yet ({0})")]
     UnsupportedAccount(String),
+    /// Apple wants something finished on the account before it signs in anywhere new.
+    #[error("Apple needs one more step on your Apple Account first. Sign in at account.apple.com, finish what it asks, then sign in here again.")]
+    RepairNeeded,
     /// Said without the address, which carries account and client ids.
     #[error("couldn't reach Apple: {}", if .0.is_timeout() { "it took too long to answer" } else if .0.is_connect() { "check your connection" } else { "the connection dropped" })]
     Network(#[from] reqwest::Error),
@@ -344,6 +347,21 @@ pub struct TwoFactorOptions {
     pub phones: Vec<TrustedPhone>,
     /// Apple refuses further sends for a while.
     pub too_many_codes_sent: bool,
+    /// The account signs in with security keys (FIDO): Apple offers a WebAuthn challenge
+    /// (`fsaChallenge`) in place of a code (icloudpd#583, #1423). Skykeep cannot answer one yet,
+    /// so the code screen says so rather than waiting for a code that will not come.
+    pub security_key: bool,
+}
+
+/// Whether Apple's two-factor answer offers a security-key challenge: `fsaChallenge` with its
+/// `challenge`, `keyHandles` and `rpId`, as icloudpd reads it.
+fn offers_security_key(v: &Value) -> bool {
+    let c = &v["fsaChallenge"];
+    c.is_object()
+        && ["challenge", "keyHandles", "rpId"].iter().all(|k| {
+            let x = &c[*k];
+            !x.is_null() && x.as_str() != Some("") && x.as_array().is_none_or(|a| !a.is_empty())
+        })
 }
 
 /// What `sign_in` decided.
@@ -353,6 +371,65 @@ pub enum SignInOutcome {
     Complete,
     /// Apple wants a six-digit code. Call [`Client::submit_two_factor`] next.
     NeedsTwoFactor,
+}
+
+/// Apple's SRP challenge, from `/signin/init` or `/escrow/init`.
+struct Challenge {
+    salt: Vec<u8>,
+    b_pub: Vec<u8>,
+    c: String,
+    iterations: u32,
+    protocol: srp::Protocol,
+}
+
+impl Challenge {
+    fn of(init: &Value) -> Result<Self> {
+        let decode = |key: &str| -> Result<Vec<u8>> {
+            let raw = init[key]
+                .as_str()
+                .ok_or_else(|| Error::Protocol(format!("sign-in response had no `{key}`")))?;
+            B64.decode(raw)
+                .map_err(|_| Error::Protocol(format!("`{key}` wasn't valid base64")))
+        };
+        let salt = decode("salt")?;
+        let b_pub = decode("b")?;
+        let c = init["c"]
+            .as_str()
+            .ok_or_else(|| Error::Protocol("sign-in response had no `c`".into()))?
+            .to_string();
+        let iterations = {
+            let raw = init["iteration"]
+                .as_u64()
+                .ok_or_else(|| Error::Protocol("sign-in response had no `iteration`".into()))?;
+            u32::try_from(raw)
+                .ok()
+                .filter(|n| (MIN_PBKDF2_ITERATIONS..=MAX_PBKDF2_ITERATIONS).contains(n))
+                .ok_or_else(|| {
+                    Error::Protocol(format!(
+                        "Apple asked for an implausible {raw} key-derivation rounds"
+                    ))
+                })?
+        };
+        let protocol_name = init["protocol"].as_str().unwrap_or("s2k");
+        let protocol = srp::Protocol::parse(protocol_name)
+            .ok_or_else(|| Error::UnsupportedAccount(format!("SRP protocol {protocol_name}")))?;
+        Ok(Self {
+            salt,
+            b_pub,
+            c,
+            iterations,
+            protocol,
+        })
+    }
+}
+
+/// Whether Apple wants its escrow step: `X-Apple-EDP` or `X-Apple-PDP` on a 409 (icloud-photos-
+/// sync#1124, rclone#10048). Since iOS 26.4 Apple asks for it after an accepted code, and when
+/// a sign-in presents a trust token it accepts — and until it is done it does not honour the
+/// trust token, so every later sign-in looks as if it needs a code again.
+fn wants_escrow(response: &Response) -> bool {
+    let h = response.headers();
+    h.contains_key("x-apple-edp") || h.contains_key("x-apple-pdp")
 }
 
 /// Whether a sign-in that Apple wants a code for asks Apple to send it now.
@@ -1006,7 +1083,8 @@ impl Client {
                 | Error::Keyring(_)
                 | Error::Io(_)
                 | Error::Json(_)
-                | Error::TermsPending,
+                | Error::TermsPending
+                | Error::RepairNeeded,
             ) => {}
             Err(e) => {
                 self.session.consecutive_failures =
@@ -1080,36 +1158,13 @@ impl Client {
             return Err(apple_error("starting sign-in", status, &text));
         }
         let init: Value = serde_json::from_str(&text)?;
-
-        let decode = |key: &str| -> Result<Vec<u8>> {
-            let raw = init[key]
-                .as_str()
-                .ok_or_else(|| Error::Protocol(format!("sign-in response had no `{key}`")))?;
-            B64.decode(raw)
-                .map_err(|_| Error::Protocol(format!("`{key}` wasn't valid base64")))
-        };
-        let salt = decode("salt")?;
-        let b_pub = decode("b")?;
-        let c = init["c"]
-            .as_str()
-            .ok_or_else(|| Error::Protocol("sign-in response had no `c`".into()))?
-            .to_string();
-        let iterations = {
-            let raw = init["iteration"]
-                .as_u64()
-                .ok_or_else(|| Error::Protocol("sign-in response had no `iteration`".into()))?;
-            u32::try_from(raw)
-                .ok()
-                .filter(|n| (MIN_PBKDF2_ITERATIONS..=MAX_PBKDF2_ITERATIONS).contains(n))
-                .ok_or_else(|| {
-                    Error::Protocol(format!(
-                        "Apple asked for an implausible {raw} key-derivation rounds"
-                    ))
-                })?
-        };
-        let protocol_name = init["protocol"].as_str().unwrap_or("s2k");
-        let protocol = srp::Protocol::parse(protocol_name)
-            .ok_or_else(|| Error::UnsupportedAccount(format!("SRP protocol {protocol_name}")))?;
+        let Challenge {
+            salt,
+            b_pub,
+            c,
+            iterations,
+            protocol,
+        } = Challenge::of(&init)?;
 
         // --- /signin/complete: submit the proof ---
         let proof = client
@@ -1141,6 +1196,7 @@ impl Client {
             .await?;
         self.capture(&r);
         let status = r.status();
+        let escrow = wants_escrow(&r);
         // This step's own reply: its serviceErrors say why Apple refused (a locked account,
         // a wrong password). The challenge from /signin/init is not the reason and is never shown.
         let text = if status.is_success() || status == StatusCode::CONFLICT {
@@ -1150,6 +1206,15 @@ impl Client {
         };
 
         match status {
+            // Apple accepted this computer's trust token and wants its escrow step, not a code:
+            // read as "a code", every lapse asked for one — about daily.
+            StatusCode::CONFLICT if escrow && self.session.trust_token.is_some() => {
+                self.complete_escrow(password).await?;
+                let data = self.account_login().await?;
+                self.absorb(&data);
+                self.keep();
+                Ok(SignInOutcome::Complete)
+            }
             StatusCode::CONFLICT => {
                 self.keep();
                 // Ask for the code — when the person has just typed their password. Apple used
@@ -1175,9 +1240,16 @@ impl Client {
                 Ok(SignInOutcome::Complete)
             }
             StatusCode::UNAUTHORIZED => Err(refused_password("finishing sign-in", status, &text)),
-            StatusCode::PRECONDITION_FAILED => Err(Error::UnsupportedAccount(
-                "two-factor auth isn't switched on".into(),
-            )),
+            // "Precondition failed": Apple wants a step on the account finished first (seen right
+            // after new iCloud terms, and on accounts without two-factor). icloudpd answers it
+            // with an empty `POST repair/complete` and carries on; so does this.
+            StatusCode::PRECONDITION_FAILED => {
+                self.repair_complete().await?;
+                let data = self.account_login().await?;
+                self.absorb(&data);
+                self.keep();
+                Ok(SignInOutcome::Complete)
+            }
             s => Err(apple_error("finishing sign-in", s, &text)),
         }
     }
@@ -1220,6 +1292,7 @@ impl Client {
             trusted_device_count: counted.unwrap_or(u64::from(has_devices)),
             phones,
             too_many_codes_sent: too_many,
+            security_key: places.iter().any(|p| offers_security_key(p)),
         })
     }
 
@@ -1309,8 +1382,13 @@ impl Client {
             .await?;
         self.capture(&r);
         let status = r.status();
+        let escrow = wants_escrow(&r);
+        // A correct code on an account with steps waiting (right after new iCloud terms, say)
+        // is answered 412 with a repair session token, not 200 (pyicloud#466): accepted.
+        let repair = status == StatusCode::PRECONDITION_FAILED
+            && r.headers().contains_key("x-apple-repair-session-token");
         let body = r.text().await.unwrap_or_default();
-        if !status.is_success() && status != StatusCode::NO_CONTENT {
+        if !status.is_success() && status != StatusCode::NO_CONTENT && !repair {
             let err = apple_error("checking that texted code", status, &body);
             if matches!(err, Error::BadCode) {
                 return Err(err);
@@ -1323,6 +1401,7 @@ impl Client {
             }
             return Err(err);
         }
+        self.escrow_if_asked(escrow).await?;
         self.trust().await?;
         let data = self.account_login().await?;
         self.absorb(&data);
@@ -1346,6 +1425,7 @@ impl Client {
             .await?;
         self.capture(&r);
         let status = r.status();
+        let escrow = wants_escrow(&r);
         let body = r.text().await.unwrap_or_default();
         // Since iOS 26.4 a correct code is answered 409 with `securityCode.valid: true`.
         let accepted = status == StatusCode::CONFLICT
@@ -1371,11 +1451,122 @@ impl Client {
             return Err(err);
         }
 
+        self.escrow_if_asked(escrow).await?;
         self.trust().await?;
         let data = self.account_login().await?;
         self.absorb(&data);
         self.keep();
         Ok(())
+    }
+
+    /// Apple's escrow step: the SRP password proof again, with an empty account name, sending
+    /// the session key with it — `POST escrow/init` `{a, accountName: "", protocols}`, then
+    /// `POST escrow/complete` `{m1, m2, c, k}` (icloud-photos-sync#1124, rclone#10048). Apple
+    /// issues a new session token for it, taken with the other headers.
+    async fn complete_escrow(&mut self, password: &str) -> Result<()> {
+        let client = srp::Client::new("");
+        let r = self
+            .http
+            .post(format!("{}/escrow/init", self.endpoints.auth))
+            .headers(self.srp_headers())
+            .body(
+                json!({
+                    "a": B64.encode(client.a_public_bytes()),
+                    "accountName": "",
+                    "protocols": ["s2k", "s2k_fo"],
+                })
+                .to_string(),
+            )
+            .send()
+            .await?;
+        self.capture(&r);
+        let status = r.status();
+        let text = r.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(apple_error(
+                "confirming your password with Apple",
+                status,
+                &text,
+            ));
+        }
+        let challenge = Challenge::of(&serde_json::from_str(&text)?)?;
+        let proof = client
+            .process_challenge(
+                password,
+                challenge.protocol,
+                &challenge.salt,
+                &challenge.b_pub,
+                challenge.iterations,
+            )
+            .ok_or_else(|| {
+                Error::Protocol("Apple's sign-in challenge failed its safety check".into())
+            })?;
+        let r = self
+            .http
+            .post(format!("{}/escrow/complete", self.endpoints.auth))
+            .headers(self.srp_headers())
+            .body(
+                json!({
+                    "m1": B64.encode(proof.m1),
+                    "m2": B64.encode(proof.m2),
+                    "c": challenge.c,
+                    "k": B64.encode(proof.key),
+                })
+                .to_string(),
+            )
+            .send()
+            .await?;
+        self.capture(&r);
+        let status = r.status();
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            let text = r.text().await.unwrap_or_default();
+            return Err(apple_error(
+                "confirming your password with Apple",
+                status,
+                &text,
+            ));
+        }
+        quiet!("quince: Apple's escrow step is done");
+        Ok(())
+    }
+
+    /// `POST repair/complete` with `{}`, as icloudpd sends it when `/signin/complete` answers
+    /// 412. Refused, the account needs the person at account.apple.com.
+    async fn repair_complete(&mut self) -> Result<()> {
+        let r = self
+            .http
+            .post(format!("{}/repair/complete", self.endpoints.auth))
+            .headers(self.auth_headers())
+            .body("{}")
+            .send()
+            .await?;
+        self.capture(&r);
+        let status = r.status();
+        if status.is_success() || status == StatusCode::NO_CONTENT {
+            return Ok(());
+        }
+        if let Some(e) = transient(status) {
+            return Err(e);
+        }
+        Err(Error::RepairNeeded)
+    }
+
+    /// The password for the escrow step after a code: the one just typed, or the one kept.
+    fn password_for_escrow(&self) -> Option<String> {
+        self.pending
+            .as_ref()
+            .map(|(_, p)| p.clone())
+            .or_else(|| self.session.password.clone())
+    }
+
+    /// After an accepted code: Apple's escrow step when the answer asks for it, before the
+    /// trust token is asked for — without it Apple does not honour that token next time.
+    async fn escrow_if_asked(&mut self, asked: bool) -> Result<()> {
+        if !asked {
+            return Ok(());
+        }
+        let password = self.password_for_escrow().ok_or(Error::ReauthRequired)?;
+        self.complete_escrow(&password).await
     }
 
     /// `GET /2sv/trust` — yields the trust token. Without it, sign-in wouldn't outlive the process.
@@ -1744,7 +1935,13 @@ fn url_apples(url: &reqwest::Url, loopback: bool) -> bool {
         .parse::<std::net::IpAddr>()
     {
         Ok(ip) => loopback && ip.is_loopback(),
-        Err(_) => apple_host(host, loopback),
+        // Apple's hosts over TLS only. Plain HTTP to one — an address in Apple's data, or a
+        // redirect down to it — would carry the session's cookies where anyone on the network
+        // can read them (pyicloud#356, #401). This computer, in tests, is the one exception.
+        Err(_) => {
+            let secure = matches!(url.scheme(), "https" | "wss");
+            (secure || (loopback && host == "localhost")) && apple_host(host, loopback)
+        }
     }
 }
 
