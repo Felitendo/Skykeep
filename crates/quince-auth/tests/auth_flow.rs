@@ -1134,3 +1134,127 @@ async fn a_bare_refusal_is_still_a_wrong_password() {
         );
     }
 }
+
+/// Since its 2026 sign-in Apple can keep the trusted numbers under
+/// `direct.twoSV.bridgeInitiateData.phoneNumberVerification` (icloud_photos_downloader#1335),
+/// or send its sign-in page with them in a `boot_args` script (timlaing/pyicloud#322). Read
+/// only at the top, an account reached only by text showed "nowhere to send a code".
+#[tokio::test]
+async fn trusted_numbers_are_found_wherever_apple_keeps_them() {
+    let nested = json!({
+        "direct": {
+            "hasTrustedDevices": false,
+            "twoSV": {
+                "bridgeInitiateData": {
+                    "phoneNumberVerification": {
+                        "trustedPhoneNumbers": [
+                            { "id": 1, "numberWithDialCode": "+91 ••••• ••318", "pushMode": "sms" },
+                            { "id": 2, "obfuscatedNumber": "(•••) •••-••12", "pushMode": "voice", "nonFTEU": true }
+                        ],
+                        "trustedPhoneNumber": { "id": 1, "numberWithDialCode": "+91 ••••• ••318", "pushMode": "sms" },
+                        "securityCode": { "tooManyCodesSent": true }
+                    }
+                }
+            }
+        }
+    });
+    let page = format!(
+        "<html><head><script type=\"application/json\" class=\"boot_args\">\n{nested}\n</script></head></html>"
+    );
+    for (label, reply) in [
+        (
+            "json",
+            ResponseTemplate::new(200).set_body_json(nested.clone()),
+        ),
+        (
+            "page",
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string(page.clone()),
+        ),
+    ] {
+        let server = MockServer::start().await;
+        mount_init(&server, 200).await;
+        mount_complete(&server, 409).await;
+        Mock::given(method("GET"))
+            .and(path("/appleauth/auth"))
+            .respond_with(reply)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/appleauth/auth/verify/phone"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/appleauth/auth/verify/phone/securitycode"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        mount_trust_and_login(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut client = client_for(&server, dir.path());
+        client
+            .sign_in("someone@example.invalid", "hunter2")
+            .await
+            .unwrap();
+
+        let options = client.two_factor_options().await.unwrap();
+        let ids: Vec<u64> = options.phones.iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![1, 2], "{label}: each number once");
+        assert_eq!(options.phones[0].masked_number, "+91 ••••• ••318");
+        assert_eq!(options.phones[1].mode, "voice", "{label}");
+        assert_eq!(options.trusted_device_count, 0, "{label}");
+        assert!(options.too_many_codes_sent, "{label}");
+
+        // Sent and checked the way Apple reaches that number: by a call, with its flag.
+        client.send_sms(2).await.unwrap();
+        client.submit_sms_code(2, "123456").await.unwrap();
+        let reqs = server.received_requests().await.unwrap();
+        for sent in requests_to(&reqs, "/verify/phone")
+            .into_iter()
+            .chain(requests_to(&reqs, "/verify/phone/securitycode"))
+        {
+            let body: serde_json::Value = serde_json::from_slice(&sent.body).unwrap();
+            assert_eq!(body["mode"], "voice", "{label}: {body}");
+            assert_eq!(body["phoneNumber"]["id"], 2, "{label}: {body}");
+            assert_eq!(body["phoneNumber"]["nonFTEU"], true, "{label}: {body}");
+        }
+    }
+}
+
+/// The reply as it has always been, with the numbers at the top: read as before, texted.
+#[tokio::test]
+async fn trusted_numbers_at_the_top_are_still_texted() {
+    let server = MockServer::start().await;
+    mount_init(&server, 200).await;
+    mount_complete(&server, 409).await;
+    Mock::given(method("GET"))
+        .and(path("/appleauth/auth"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "trustedDeviceCount": 2,
+            "trustedPhoneNumbers": [{ "id": 7, "numberWithDialCode": "+1 (•••) •••-••01" }],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/appleauth/auth/verify/phone"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = client_for(&server, dir.path());
+    client
+        .sign_in("someone@example.invalid", "hunter2")
+        .await
+        .unwrap();
+    let options = client.two_factor_options().await.unwrap();
+    assert_eq!(options.trusted_device_count, 2);
+    assert_eq!(options.phones.len(), 1);
+    assert_eq!(options.phones[0].mode, "sms");
+    client.send_sms(7).await.unwrap();
+    let reqs = server.received_requests().await.unwrap();
+    let sent = requests_to(&reqs, "/verify/phone");
+    let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(body, json!({ "phoneNumber": { "id": 7 }, "mode": "sms" }));
+}

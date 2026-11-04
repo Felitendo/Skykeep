@@ -223,13 +223,110 @@ fn refused_password(context: &str, status: StatusCode, body: &str) -> Error {
     }
 }
 
-/// A phone Apple will text a code to, when no trusted device responds.
+/// A phone Apple will send a code to, when no trusted device responds.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustedPhone {
     pub id: u64,
     /// Already masked by Apple, e.g. "+91 ••••• ••123".
     pub masked_number: String,
+    /// How Apple reaches this number: `sms`, or `voice` for a number it calls (a landline).
+    /// Sent back as it came (timlaing/pyicloud#210): Apple takes a code for a number the way
+    /// it sends one there.
+    pub mode: String,
+    /// Apple's `nonFTEU` flag on the number, sent back with it when Apple gave one.
+    #[serde(skip)]
+    pub non_fteu: Option<bool>,
+}
+
+impl TrustedPhone {
+    /// The `phoneNumber` Apple's phone endpoints take for this number.
+    fn as_payload(&self) -> Value {
+        let mut phone = json!({ "id": self.id });
+        if let Some(flag) = self.non_fteu {
+            phone["nonFTEU"] = Value::Bool(flag);
+        }
+        phone
+    }
+}
+
+/// What Apple's `GET /appleauth/auth` answered, as JSON: the reply itself, or — when Apple
+/// sends its sign-in page instead — the JSON that page carries in its `boot_args` script
+/// (timlaing/pyicloud#322).
+fn auth_options_of(text: &str) -> Value {
+    if let Ok(v) = serde_json::from_str::<Value>(text) {
+        return v;
+    }
+    let Some(at) = text.find("boot_args") else {
+        return Value::Null;
+    };
+    let rest = &text[at..];
+    rest.find('>')
+        .map(|open| &rest[open + 1..])
+        .and_then(|body| body.find("</script").map(|end| &body[..end]))
+        .and_then(|json| serde_json::from_str(json.trim()).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// Every place Apple has kept the two-factor details in that reply: at the top, and — since
+/// its 2026 sign-in — under `phoneNumberVerification`, `direct.twoSV`, and
+/// `direct.twoSV.bridgeInitiateData.phoneNumberVerification` (icloud_photos_downloader#1335,
+/// timlaing/pyicloud#322).
+fn two_factor_places(v: &Value) -> Vec<&Value> {
+    let two_sv = v.pointer("/direct/twoSV");
+    [
+        Some(v),
+        v.get("phoneNumberVerification"),
+        v.get("direct"),
+        two_sv,
+        two_sv.and_then(|t| t.get("phoneNumberVerification")),
+        two_sv.and_then(|t| t.pointer("/bridgeInitiateData/phoneNumberVerification")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|p| p.is_object())
+    .collect()
+}
+
+/// The trusted phones in Apple's two-factor reply, wherever it kept them, each once.
+///
+/// Read only at the top, an account whose numbers Apple had moved inward showed "Apple has
+/// nowhere to send a code" — for someone with no other device, no way to sign in at all.
+fn trusted_phones(v: &Value) -> Vec<TrustedPhone> {
+    let mut phones: Vec<TrustedPhone> = Vec::new();
+    for place in two_factor_places(v) {
+        let listed = place
+            .get("trustedPhoneNumbers")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(place.get("trustedPhoneNumber").filter(|p| p.is_object()));
+        for p in listed {
+            let id = p["id"]
+                .as_u64()
+                .or_else(|| p["id"].as_str().and_then(|s| s.trim().parse().ok()));
+            let Some(id) = id else { continue };
+            if phones.iter().any(|known| known.id == id) {
+                continue;
+            }
+            phones.push(TrustedPhone {
+                id,
+                masked_number: p["numberWithDialCode"]
+                    .as_str()
+                    .or_else(|| p["obfuscatedNumber"].as_str())
+                    .unwrap_or("(hidden)")
+                    .to_string(),
+                mode: p["pushMode"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or("sms")
+                    .to_string(),
+                non_fteu: p["nonFTEU"].as_bool(),
+            });
+        }
+    }
+    phones
 }
 
 /// Where Apple is willing to send a code. Read after a `NeedsTwoFactor` outcome.
@@ -320,6 +417,9 @@ pub struct Client {
     persisted: std::sync::Mutex<Persisted>,
     /// The cookies on disk, as this start found them (see [`read_jar`]).
     cookies: Cookies,
+    /// The trusted phones Apple last listed, so a code is sent to and checked for each number
+    /// the way that number takes one.
+    phones: Vec<TrustedPhone>,
 }
 
 /// What became of the cookies kept on disk when the client started.
@@ -469,6 +569,7 @@ impl Client {
             unsaved: None,
             persisted: std::sync::Mutex::new(Persisted::default()),
             cookies,
+            phones: Vec::new(),
         })
     }
 
@@ -1031,33 +1132,38 @@ impl Client {
             .await?;
         self.capture(&r);
         let text = r.text().await.unwrap_or_default();
-        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let v = auth_options_of(&text);
+        let places = two_factor_places(&v);
 
-        let phones = v["trustedPhoneNumbers"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|p| {
-                        Some(TrustedPhone {
-                            id: p["id"].as_u64()?,
-                            masked_number: p["numberWithDialCode"]
-                                .as_str()
-                                .or_else(|| p["obfuscatedNumber"].as_str())
-                                .unwrap_or("(hidden)")
-                                .to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let phones = trusted_phones(&v);
+        self.phones.clone_from(&phones);
+        // A count where Apple gives one; where it says only that there are trusted devices
+        // (`direct.hasTrustedDevices`), at least one.
+        let counted = places
+            .iter()
+            .find_map(|p| p.get("trustedDeviceCount").and_then(Value::as_u64));
+        let has_devices = places
+            .iter()
+            .any(|p| p.get("hasTrustedDevices").and_then(Value::as_bool) == Some(true));
+        let too_many = places.iter().any(|p| {
+            p.pointer("/securityCode/tooManyCodesSent")
+                .and_then(Value::as_bool)
+                == Some(true)
+        });
 
         Ok(TwoFactorOptions {
-            trusted_device_count: v["trustedDeviceCount"].as_u64().unwrap_or(0),
+            trusted_device_count: counted.unwrap_or(u64::from(has_devices)),
             phones,
-            too_many_codes_sent: v["securityCode"]["tooManyCodesSent"]
-                .as_bool()
-                .unwrap_or(false),
+            too_many_codes_sent: too_many,
         })
+    }
+
+    /// The `phoneNumber` and `mode` for `phone_id`, as Apple last described the number.
+    fn phone_payload(&self, phone_id: u64) -> (Value, String) {
+        self.phones.iter().find(|p| p.id == phone_id).map_or_else(
+            || (json!({ "id": phone_id }), "sms".to_string()),
+            |p| (p.as_payload(), p.mode.clone()),
+        )
     }
 
     /// Ask Apple to push the code to trusted devices again.
@@ -1090,7 +1196,10 @@ impl Client {
             .http
             .put(format!("{}/verify/phone", self.endpoints.auth))
             .headers(headers)
-            .body(json!({ "phoneNumber": { "id": phone_id }, "mode": "sms" }).to_string())
+            .body({
+                let (phone, mode) = self.phone_payload(phone_id);
+                json!({ "phoneNumber": phone, "mode": mode }).to_string()
+            })
             .send()
             .await?;
         self.capture(&r);
@@ -1106,15 +1215,16 @@ impl Client {
     pub async fn submit_sms_code(&mut self, phone_id: u64, code: &str) -> Result<()> {
         let mut headers = self.auth_headers();
         headers.insert("accept", HeaderValue::from_static("application/json"));
+        let (phone, mode) = self.phone_payload(phone_id);
         let r = self
             .http
             .post(format!("{}/verify/phone/securitycode", self.endpoints.auth))
             .headers(headers)
             .body(
                 json!({
-                    "phoneNumber": { "id": phone_id },
+                    "phoneNumber": phone,
                     "securityCode": { "code": code },
-                    "mode": "sms",
+                    "mode": mode,
                 })
                 .to_string(),
             )

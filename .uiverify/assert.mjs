@@ -663,6 +663,9 @@ let failures = 0;
       { resend: false, text: true, says: /texted/i }],
     ["devices and a number", { trustedDeviceCount: 2, phones: [{ id: 1, maskedNumber: "+91 •••318" }], tooManyCodesSent: false },
       { resend: true, text: true, says: /2 of your devices/ }],
+    // A number Apple calls rather than texts (timlaing/pyicloud#210): offered as a call.
+    ["no device, a number Apple calls", { trustedDeviceCount: 0, phones: [{ id: 1, maskedNumber: "+44 •••• ••12", mode: "voice" }], tooManyCodesSent: false },
+      { resend: false, text: false, call: true, says: /call you/i }],
   ]) {
     const page = await ctx.newPage();
     await page.addInitScript((tf) => {
@@ -690,15 +693,17 @@ let failures = 0;
     const body = await page.locator(".sheet").innerText();
     const resend = await page.locator('button:has-text("Send to my devices again")').count();
     const text = await page.locator('button:has-text("Text ")').count();
+    const call = await page.locator('button:has-text("Call ")').count();
 
     const right =
       (resend > 0) === wants.resend &&
       (text > 0) === wants.text &&
+      (call > 0) === !!wants.call &&
       wants.says.test(body);
     console.log(
       right
         ? `PASS ${label}: offers only what can work`
-        : `FAIL ${label}: resend=${resend} text=${text}, said ${JSON.stringify(body.slice(0, 90))}`
+        : `FAIL ${label}: resend=${resend} text=${text} call=${call}, said ${JSON.stringify(body.slice(0, 90))}`
     );
     if (!right) failures++;
     await page.close();

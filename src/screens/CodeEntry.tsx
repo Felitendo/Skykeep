@@ -41,6 +41,9 @@ export function CodeEntry({
   }, [nothingSent]);
 
   const texted = options?.phones.find((p) => p.id === smsPhoneId);
+  /** A number Apple calls with the code rather than texting it (a landline). */
+  const calls = (phone: { mode?: string }) => phone.mode === "voice";
+  const onlyCalls = !!options && options.phones.length > 0 && options.phones.every(calls);
   const devices = options?.trustedDeviceCount ?? 0;
 
   async function verify(value: string) {
@@ -80,13 +83,17 @@ export function CodeEntry({
       <h1>Enter the code</h1>
       <p className="lede">
         {texted
-          ? `Apple texted a code to ${texted.maskedNumber}.`
+          ? calls(texted)
+            ? `Apple is calling ${texted.maskedNumber} with a code.`
+            : `Apple texted a code to ${texted.maskedNumber}.`
           : options === null
             ? "Apple sent a code to your devices."
             : nowhereToSend
               ? "Apple has nowhere to send a code for this account."
               : nothingSent
-                ? "No device is reachable, but a code can be texted to you."
+                ? onlyCalls
+                  ? "No device is reachable, but Apple can call you with a code."
+                  : "No device is reachable, but a code can be texted to you."
                 : `Apple sent a code to ${devices === 1 ? "one of your devices" : `${devices} of your devices`}.`}
       </p>
 
@@ -183,7 +190,7 @@ export function CodeEntry({
                     }, "")
                   }
                 >
-                  Text {phone.maskedNumber}
+                  {calls(phone) ? "Call" : "Text"} {phone.maskedNumber}
                 </button>
               ))}
             </div>

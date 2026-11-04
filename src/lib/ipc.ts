@@ -24,7 +24,8 @@ export type RefusedChange = {
 export type OutboxStatus = { waiting: WaitingChange[]; refused: RefusedChange[] };
 export type SignInResult = "complete" | "needs_two_factor";
 
-export type TrustedPhone = { id: number; maskedNumber: string };
+/** `mode` is how Apple reaches the number: "sms", or "voice" for one it calls. */
+export type TrustedPhone = { id: number; maskedNumber: string; mode?: string };
 export type TwoFactorOptions = {
   trustedDeviceCount: number;
   phones: TrustedPhone[];
