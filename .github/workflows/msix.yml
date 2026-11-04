@@ -17,6 +17,10 @@
 name: MSIX for the Microsoft Store
 
 on:
+  # TEMPORARY: GitHub dispatches only workflows on the default branch; this proves the
+  # workflow from its own branch before it reaches main. Removed before merging.
+  push:
+    branches: [msix]
   workflow_dispatch:
     inputs:
       identity_name:
