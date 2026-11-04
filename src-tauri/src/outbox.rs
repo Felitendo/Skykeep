@@ -1217,6 +1217,7 @@ fn transient(e: &Error, tries: i64) -> bool {
         | Error::ReauthRequired
         | Error::StaleCursor
         | Error::Busy
+        | Error::NeedsDeviceApproval
         | Error::Io(_)
         | Error::Storage(_) => true,
         Error::Protocol(_) | Error::Conflict => tries < PROTOCOL_TRIES,

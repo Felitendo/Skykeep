@@ -47,6 +47,12 @@ pub enum Error {
     Protocol(String),
     #[error("this needs a fresh sign-in")]
     ReauthRequired,
+    /// Advanced Data Protection holds this service's keys on the person's devices, and Apple
+    /// releases them to a session only once it is approved on one of them (see
+    /// `quince_auth::pcs`). Not a fault: the approval is asked for, and the service is read
+    /// again once it is given.
+    #[error("{APPROVAL_WORDS}")]
+    NeedsDeviceApproval,
     #[error("this changed on another device first — refresh and try again")]
     Conflict,
     /// The zone was mid-write for someone else and the change was not applied; it is sent
@@ -72,6 +78,37 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// What [`Error::NeedsDeviceApproval`] says to the person.
+pub const APPROVAL_WORDS: &str =
+    "Approve Skykeep on your iPhone, iPad or Mac to open this. Advanced Data Protection keeps it end-to-end encrypted.";
+
+/// Whether Apple turned a request down only because Advanced Data Protection is keeping the
+/// service's keys from this session — the two answers it gives, measured on an account with
+/// it on and "Access iCloud Data on the Web" allowed:
+///
+///   * iCloud Drive: `423 {"errorReason":"Missing PCS cookies from the request","errorCode":423}`
+///   * CloudKit (Notes, Reminders, Photos): `403 {"serverErrorCode":"ACCESS_DENIED",
+///     "reason":"private db access disabled for this account"}`, the same inside a zone's
+///     own result at 200.
+///
+/// The words are matched, never the status alone: Apple also answers 423 when it is rate
+/// limiting, and 403 ACCESS_DENIED for an endpoint it retired (`push`, `courier`).
+#[must_use]
+pub fn locked_by_data_protection(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("missing pcs cookies")
+        || (lower.contains("access_denied") && lower.contains("private db access disabled"))
+}
+
+/// [`Error::NeedsDeviceApproval`] for an answer [`locked_by_data_protection`] recognises.
+pub(crate) fn approval_needed(status: reqwest::StatusCode, body: &str) -> Result<()> {
+    if locked_by_data_protection(body) {
+        quiet!("icloud: waiting for Advanced Data Protection approval ({status})");
+        return Err(Error::NeedsDeviceApproval);
+    }
+    Ok(())
+}
+
 /// What went wrong reaching Apple, in words a person can act on — the address left out.
 fn network_words(e: &reqwest::Error) -> String {
     if e.is_timeout() {
@@ -82,5 +119,47 @@ fn network_words(e: &reqwest::Error) -> String {
         "iCloud's answer was cut off. Try again.".into()
     } else {
         "The connection to iCloud dropped. Try again.".into()
+    }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+
+    #[test]
+    fn the_two_answers_advanced_data_protection_gives_are_recognised() {
+        // As issue #4 reported them, word for word.
+        let drive = r#"{"errorReason":"Missing PCS cookies from the request","errorCode":423}"#;
+        let cloudkit = r#"{ "serverErrorCode" : "ACCESS_DENIED", "reason" : "private db access disabled for this account" }"#;
+        assert!(locked_by_data_protection(drive));
+        assert!(locked_by_data_protection(cloudkit));
+        // Inside a zone's own result, which CloudKit answers at 200.
+        assert!(locked_by_data_protection(&format!(
+            r#"{{"zones":[{cloudkit}]}}"#
+        )));
+        assert!(matches!(
+            approval_needed(reqwest::StatusCode::LOCKED, drive),
+            Err(Error::NeedsDeviceApproval)
+        ));
+        assert!(matches!(
+            approval_needed(reqwest::StatusCode::FORBIDDEN, cloudkit),
+            Err(Error::NeedsDeviceApproval)
+        ));
+        assert_eq!(Error::NeedsDeviceApproval.to_string(), APPROVAL_WORDS);
+    }
+
+    #[test]
+    fn look_alikes_are_not_read_as_advanced_data_protection() {
+        // 423 is also how Apple says "too many requests"; ACCESS_DENIED is also what a retired
+        // endpoint answers.
+        assert!(!locked_by_data_protection(""));
+        assert!(!locked_by_data_protection(r#"{"error":"Locked"}"#));
+        assert!(!locked_by_data_protection(
+            r#"{"serverErrorCode":"ACCESS_DENIED","reason":"This endpoint is deprecated."}"#
+        ));
+        assert!(!locked_by_data_protection(
+            "<html>Service Unavailable</html>"
+        ));
+        assert!(approval_needed(reqwest::StatusCode::LOCKED, "{}").is_ok());
     }
 }

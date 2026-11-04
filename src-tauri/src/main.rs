@@ -19,6 +19,7 @@ mod clipboard;
 mod contacts_cmds;
 mod contacts_merge;
 mod cpu;
+mod data_access;
 mod drive_watch;
 mod export;
 mod grants;
@@ -1348,7 +1349,13 @@ async fn keep_signed_in(app: &tauri::AppHandle, client: &Arc<Mutex<Client>>) {
                 );
             }
         }
-        Ok(true) => TOLD.store(false, std::sync::atomic::Ordering::Relaxed),
+        Ok(true) => {
+            TOLD.store(false, std::sync::atomic::Ordering::Relaxed);
+            // Keys that ran out while the approval still holds are attached again before the
+            // pass needs them — never a prompt on the person's phone from here.
+            drop(guard);
+            data_access::check(app, client, data_access::Ask::Background).await;
+        }
         // New iCloud terms to accept: nothing syncs until they are, and only icloud.com can
         // take them. Said with its reason, where "Apple signed you out" would be untrue.
         Err(e @ quince_auth::Error::TermsPending) => {
@@ -1696,6 +1703,15 @@ async fn signed_in(app: &tauri::AppHandle, client: &mut Client) -> Result<(), St
             .known
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = SessionFacts::of(client);
+        // Under Advanced Data Protection, Notes, Reminders, Photos and iCloud Drive wait on an
+        // approval on the person's devices: asked for now, as they sign in or open Skykeep —
+        // once the caller has let the session go, which this step takes for itself.
+        data_access::forget(app);
+        let app = app.clone();
+        let client = Arc::clone(&auth.client);
+        tauri::async_runtime::spawn(async move {
+            data_access::check(&app, &client, data_access::Ask::Window).await;
+        });
     }
     Ok(())
 }
@@ -1942,6 +1958,7 @@ async fn auth_sign_out(keep: bool, app: tauri::AppHandle, auth: State<'_, Auth>)
         .map_err(|e| e.to_string())?;
     let mut client = auth.client.lock().await;
     client.sign_out().map_err(|e| e.to_string())?;
+    data_access::forget(&app);
     if !keep {
         let data = app.state::<Data>();
         let mut library = data.0.lock().await;
@@ -5421,6 +5438,7 @@ async fn sync_all(
     let client = Arc::clone(&auth.client);
     keep_signed_in(&app, &client).await;
     let result = refresh::all(&client, &data.0).await;
+    data_access::after_pass(&app, &client, data_access::Ask::Window).await;
     alerts::changed();
     warm_contact_photos(app.clone());
     // Screens read the library, not the network, so they only need to be told to look again —
@@ -5445,6 +5463,7 @@ async fn sync_some(
     keep_signed_in(&app, &client).await;
     let names: Vec<&str> = services.iter().map(String::as_str).collect();
     let result = refresh::some(&client, &data.0, &names).await;
+    data_access::after_pass(&app, &client, data_access::Ask::Window).await;
     alerts::changed();
     if names.contains(&"contacts") {
         warm_contact_photos(app.clone());
@@ -5476,6 +5495,7 @@ fn spawn_auto_sync(app: tauri::AppHandle, client: Arc<Mutex<Client>>) {
             keep_signed_in(&app, &client).await;
             let data = app.state::<Data>();
             let result = refresh::all(&client, &data.0).await;
+            data_access::after_pass(&app, &client, data_access::Ask::Background).await;
             alerts::changed();
             warm_contact_photos(app.clone());
             app.emit(SYNCED, told(&result)).ok();
@@ -6841,6 +6861,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            data_access::data_access_status,
+            data_access::data_access_ask,
             grants::pick_open,
             grants::pick_save,
             export::library_export_start,

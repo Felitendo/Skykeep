@@ -145,6 +145,7 @@ pub async fn page(
     }
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         if text.contains("CHANGE_TOKEN_EXPIRED") || status.as_u16() == 400 && token.is_some() {
             return Err(Error::StaleCursor);
         }
@@ -205,6 +206,7 @@ pub async fn zones_moved(
         }
         let text = response.text().await.unwrap_or_default();
         if !status.is_success() {
+            crate::approval_needed(status, &text)?;
             if text.contains("CHANGE_TOKEN_EXPIRED") || status.as_u16() == 400 && asked_with_token {
                 return Err(Error::StaleCursor);
             }

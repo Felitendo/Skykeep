@@ -6,7 +6,8 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { PanelLeft } from "lucide-react";
-import { api, messageOf, NEW_EVENT, OPEN_REMINDER } from "../lib/ipc";
+import { api, DATA_ACCESS, messageOf, NEW_EVENT, OPEN_REMINDER, type DataAccess } from "../lib/ipc";
+import { ApprovalNotice, ApprovalScreen, awaitsApproval } from "../components/DeviceApproval";
 import { SyncProvider, useSync } from "../lib/sync";
 import { AccountCard } from "../components/Account";
 import { reveal, type Reveal } from "../lib/reveal";
@@ -292,6 +293,30 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
     api.accountInfo().then((a) => setWebAccess(a?.webAccessAllowed ?? null), () => {});
   }, []);
 
+  /** Advanced Data Protection: which services wait on an approval on the person's devices. */
+  const [access, setAccess] = useState<DataAccess | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.dataAccess().then((a) => live && setAccess(a), () => {});
+    const off = listen<DataAccess>(DATA_ACCESS, (e) => setAccess(e.payload));
+    return () => {
+      live = false;
+      void off.then((f) => f());
+    };
+  }, []);
+  // Apple saying web access is off, as the session found it, is the same screen as at sign-in.
+  useEffect(() => {
+    if (access?.state === "webAccessOff") setWebAccess(false);
+  }, [access]);
+  /** Which services already have their copy on this computer, while an approval is awaited. */
+  const [held, setHeld] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!access || access.state === "open") return;
+    api
+      .syncStatus()
+      .then((r) => setHeld(Object.fromEntries(r.services.map((s) => [s.service, Boolean(s.lastSyncedAt)]))), () => {});
+  }, [access]);
+
   useEffect(() => {
     api
       .services()
@@ -352,7 +377,14 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
     told.current = true;
     onShownRef.current?.();
   }, []);
-  const noScreen = Boolean(error) || (ready && (!selected || webAccess === false));
+  /**
+   * The screen in front waits on an approval: drawn in its place when there is nothing of it on
+   * this computer yet, or as a card over it when there is — its copy stays readable meanwhile.
+   */
+  const frontService = selected && selected !== "settings" ? serviceOf(selected) : null;
+  const approval: "screen" | "notice" | null =
+    frontService && access && awaitsApproval(access, frontService) ? (held[frontService] ? "notice" : "screen") : null;
+  const noScreen = Boolean(error) || (ready && (!selected || webAccess === false || approval === "screen"));
   useEffect(() => {
     if (noScreen) drawn();
   }, [noScreen, drawn]);
@@ -627,8 +659,11 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
                   coming back is instant, and finds it as it was left — its place, its
                   selection, its scroll — as a Mac app's windows are. Out of sight it is inert,
                   draws no menus and answers no keys (lib/screen). */}
+              {approval === "screen" && access && frontService && (
+                <ApprovalScreen access={access} service={frontService} onAccess={setAccess} />
+              )}
               {kept.map((key) => {
-                const on = key === selected;
+                const on = key === selected && approval !== "screen";
                 return (
                   <div key={key} className="screen-slot" hidden={!on} {...(on ? {} : { inert: "" })}>
                     <ScreenActive.Provider value={on}>
@@ -652,6 +687,9 @@ export function Library({ onSignOut, onShown }: { onSignOut: (keep: boolean) => 
           )}
         </main>
         <ToastHost>
+          {approval === "notice" && access && frontService && (
+            <ApprovalNotice access={access} service={frontService} onAccess={setAccess} />
+          )}
           <UpdateNotice />
         </ToastHost>
       </div>

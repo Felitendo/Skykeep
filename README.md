@@ -315,7 +315,7 @@ Skykeep signs in the way icloud.com does, with Apple's own two-factor, and syncs
 <details>
 <summary><b>I use Advanced Data Protection. Will it work?</b></summary>
 
-Yes, with **Access iCloud Data on the Web** turned on: on your iPhone, Settings → your name → iCloud. Skykeep tells you when it's needed.
+Yes, with **Access iCloud Data on the Web** turned on: on your iPhone, Settings → your name → iCloud. Skykeep tells you when it's needed. Calendar and Contacts open right away. For Notes, Reminders, Photos and iCloud Drive, approve Skykeep on your iPhone, iPad or Mac when it asks, just as you would for icloud.com. Apple's approval lasts about an hour at a time.
 </details>
 
 <details>

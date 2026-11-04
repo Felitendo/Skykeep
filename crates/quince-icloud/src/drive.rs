@@ -131,6 +131,7 @@ pub async fn fetch_folder(
         return Err(Error::ReauthRequired);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Drive returned {status}: {}",
             text.chars().take(160).collect::<String>()
@@ -202,6 +203,7 @@ async fn link(
         return Err(Error::ReauthRequired);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "couldn't prepare a download ({status}): {}",
             text.chars().take(160).collect::<String>()
@@ -486,6 +488,7 @@ pub async fn create_folder(
         return Err(Error::ReauthRequired);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Drive refused the folder ({status}): {}",
             text.chars().take(200).collect::<String>()
@@ -532,6 +535,7 @@ async fn raw_listing(
         return Err(Error::ReauthRequired);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Drive returned {status}: {}",
             text.chars().take(160).collect::<String>()
@@ -586,6 +590,7 @@ pub async fn rename(
     }
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Drive refused the rename ({status}): {}",
             text.chars().take(200).collect::<String>()
@@ -756,6 +761,7 @@ async fn ask_for_copy(
     }
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Drive refused the copy ({status}): {}",
             text.chars().take(200).collect::<String>()
@@ -838,10 +844,10 @@ pub async fn thumbnails(
         return Err(Error::ReauthRequired);
     }
     if !response.status().is_success() {
-        return Err(Error::Protocol(format!(
-            "thumbnails returned {}",
-            response.status()
-        )));
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        crate::approval_needed(status, &text)?;
+        return Err(Error::Protocol(format!("thumbnails returned {status}")));
     }
     let answer: Value = response
         .json()
@@ -917,6 +923,7 @@ pub async fn recents(
     }
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Drive returned {status}: {}",
             text.chars().take(160).collect::<String>()
@@ -979,6 +986,7 @@ pub async fn trash_items(
     }
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Drive returned {status}: {}",
             text.chars().take(160).collect::<String>()
@@ -1268,6 +1276,7 @@ pub async fn move_to(
     }
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Drive refused the move ({status}): {}",
             text.chars().take(200).collect::<String>()
@@ -2803,6 +2812,7 @@ async fn upload_once(
         return Err(Error::Refused(BUSY.into()));
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "Apple would not take the file ({status}): {}",
             text.chars().take(160).collect::<String>()
@@ -3049,6 +3059,7 @@ async fn post_json(
         return Err(Error::ReauthRequired);
     }
     if !status.is_success() {
+        crate::approval_needed(status, &text)?;
         quiet!("drive: a request was refused ({status})");
         if status.as_u16() == 409 && text.contains("ZONE_BUSY") {
             return Err(Error::Refused(BUSY.into()));

@@ -221,6 +221,7 @@ pub async fn set_completed(
     }
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
+        crate::approval_needed(status, &text)?;
         return Err(Error::Protocol(format!(
             "couldn't update that reminder ({status}): {}",
             text.chars().take(160).collect::<String>()

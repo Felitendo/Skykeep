@@ -115,6 +115,23 @@ export const OPEN_REMINDER = "quince://open-reminder";
 export const NEEDS_CODE = "quince://needs-code";
 /** Apple signed the session out and wants the password again. */
 export const NEEDS_SIGNIN = "quince://needs-signin";
+/** Where an Advanced Data Protection approval stands changed (`DataAccess`). */
+export const DATA_ACCESS = "quince://data-access";
+
+/**
+ * Advanced Data Protection: whether this session may read the end-to-end encrypted services
+ * yet. `open` — nothing waits on an approval; `waiting` — the approval is on the person's
+ * devices, or given and the keys on their way; `needed` — one is needed and none is on its
+ * way; `notSent` — Apple couldn't put it on any of their devices; `webAccessOff` — "Access
+ * iCloud Data on the Web" is off.
+ */
+export type DataAccess = {
+  state: "open" | "waiting" | "needed" | "notSent" | "webAccessOff";
+  /** The services waiting on it: `notes`, `reminders`, `photos`, `drive`. */
+  services: string[];
+  /** Why the last step failed, in words, when it did. */
+  problem: string | null;
+};
 
 export const api = {
   /** One refresh for every service. Never rejects for a single service failing. */
@@ -431,6 +448,10 @@ export const api = {
   storageInfo: () => invoke<{ usedBytes: number; totalBytes: number }>("storage_info"),
   /** Who is signed in, as Apple names them. */
   accountInfo: () => invoke<AccountInfo>("account_info"),
+  /** Where an Advanced Data Protection approval stands. */
+  dataAccess: () => invoke<DataAccess>("data_access_status"),
+  /** Put the approval on the person's devices again, and follow it. */
+  dataAccessAsk: () => invoke<DataAccess>("data_access_ask"),
   /** Settings' switches, as the backend obeys them. */
   /** Write a plain diagnostic report to Downloads; answers where. Nothing is sent anywhere. */
   diagnosticsSave: () => invoke<string>("diagnostics_save"),

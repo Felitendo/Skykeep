@@ -68,4 +68,5 @@ once opened is kept mounted and inert while another is in front, so coming back 
 | What is stored | `crates/quince-core/src/schema.rs`, then the service's file there |
 | How a write behaves offline | `src-tauri/src/outbox.rs` |
 | When syncing happens | `src-tauri/src/push.rs`, `refresh.rs` |
+| Advanced Data Protection approvals | `crates/quince-auth/src/pcs.rs`, `src-tauri/src/data_access.rs` |
 | A screen | `src/screens/`, its types in `src/lib/ipc.ts`, its suite in `.uiverify/` |

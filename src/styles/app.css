@@ -1721,6 +1721,12 @@
 .web-access-off h1 { font-size: var(--t-22); font-weight: 700; margin: 0 0 12px; }
 .web-access-off p { color: var(--text-2); font-size: var(--t-15); line-height: 1.5; margin: 0 0 12px; }
 .web-access-off b { color: var(--text); font-weight: 600; }
+/* Advanced Data Protection waiting on an approval (components/DeviceApproval): the same calm
+   page, with the device it is waiting on above it and where it stands under it. */
+.device-approval-glyph { display: block; margin: 0 auto 14px; color: var(--accent); }
+.web-access-off .device-approval-status { display: flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 1.5em; color: var(--text-2); font-size: var(--t-13); margin: 4px 0 18px; }
+.device-approval-notice .spinner { flex: none; margin-top: 2px; }
 
 /* A new folder in the grid, named as Finder names one: the field fits its cell under the
    icon, its text centred. At the field's own width it overflowed the 112px cell and was cut

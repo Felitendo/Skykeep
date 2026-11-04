@@ -131,6 +131,21 @@ With Advanced Data Protection on and "Access iCloud Data on the Web" off, Apple 
 let any app outside your devices read your iCloud data, Skykeep included. Skykeep says so
 plainly and shows the switch; it does not work around it.
 
+With "Access iCloud Data on the Web" on, Skykeep uses Apple's own approval, the one
+icloud.com uses (`crates/quince-auth/src/pcs.rs`). Calendar and Contacts work as usual. For
+Notes, Reminders, Photos and iCloud Drive, Skykeep asks Apple to put an approval request on
+your trusted iPhone, iPad or Mac. It asks when you sign in or open a window, at most once
+each time access runs out, or when you press Try Again, and never from a background sync.
+Once you approve, Apple's servers have that device send each service's key to this session.
+The keys arrive as `X-APPLE-WEBAUTH-PCS-*` cookies and are kept in Skykeep's sealed cookie
+jar with the rest of the session. Apple limits an approval to about an hour. While it lasts,
+Skykeep collects a key that ran out again without asking you. After that, it asks you to
+approve again.
+
+Skykeep never sees your device keys. It never approves anything for you, and it never turns
+Advanced Data Protection or any other Apple setting on or off. Health data and passwords in
+iCloud Keychain are outside what Apple lets the web reach at all.
+
 ## Reporting a vulnerability
 
 Please use GitHub's private vulnerability reporting on this repository (Security →

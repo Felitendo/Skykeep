@@ -343,6 +343,7 @@ async fn post(
             continue;
         }
         if !status.is_success() {
+            crate::approval_needed(status, &text)?;
             return Err(Error::Protocol(format!(
                 "CloudKit refused it ({status}): {}",
                 text.chars().take(200).collect::<String>()

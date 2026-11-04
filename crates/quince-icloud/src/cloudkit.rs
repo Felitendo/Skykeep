@@ -51,6 +51,9 @@ enum ZoneTrouble {
     Busy(Option<u64>),
     /// The session was not accepted for the zone: a fresh sign-in, not a fault in the zone.
     Unauthenticated,
+    /// Advanced Data Protection keeps the zone from this session until it is approved on one
+    /// of the person's devices (`ACCESS_DENIED`, "private db access disabled").
+    Locked,
     /// Something else, which is worth showing to somebody.
     Other(&'static str),
 }
@@ -60,6 +63,14 @@ fn trouble_with(zone_result: &Value) -> Option<ZoneTrouble> {
     let reason = zone_result.get("reason").and_then(Value::as_str);
     match code {
         Some("ZONE_NOT_FOUND") => Some(ZoneTrouble::Missing),
+        Some("ACCESS_DENIED")
+            if reason.is_some_and(|r| {
+                r.to_ascii_lowercase()
+                    .contains("private db access disabled")
+            }) =>
+        {
+            Some(ZoneTrouble::Locked)
+        }
         // An expired change token, with or without a reason. Without this arm a bare
         // `CHANGE_TOKEN_EXPIRED` matched nothing below and read as an empty, finished page:
         // "nothing changed", on a token that would never be read again — every change made
@@ -153,6 +164,12 @@ impl<'a> ZoneClient<'a> {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.trim().parse::<u64>().ok());
             let text = response.text().await.unwrap_or_default();
+            // Advanced Data Protection keeping this session out until it is approved on a
+            // device (403 ACCESS_DENIED, "private db access disabled"): said as that, for every
+            // CloudKit read and write, rather than as Apple's JSON.
+            if !status.is_success() {
+                crate::approval_needed(status, &text)?;
+            }
             // A zone busy with another write answers 409 ZONE_BUSY — "rejected, retry", the
             // whole request not applied — measured when a phone and this app wrote at once.
             // Two of this app's own writes to one zone close together (notes deleted one after
@@ -255,6 +272,7 @@ impl<'a> ZoneClient<'a> {
             Some(ZoneTrouble::StaleCursor) => return Err(Error::StaleCursor),
             Some(ZoneTrouble::Busy(asked)) => return Ok(Err(asked)),
             Some(ZoneTrouble::Unauthenticated) => return Err(Error::ReauthRequired),
+            Some(ZoneTrouble::Locked) => return Err(Error::NeedsDeviceApproval),
             Some(ZoneTrouble::Other(_)) => {
                 let reason = zone_result
                     .get("reason")
@@ -2020,6 +2038,60 @@ mod trouble_tests {
                 .expect("refused");
             assert!(matches!(err, Error::ReauthRequired), "{code}: {err:?}");
         }
+    /// Issue #4: an account with Advanced Data Protection, before its session is approved on
+    /// a device. Said as that — typed, so the approval can be asked for and the zone read again
+    /// once it is given — never as "iCloud sent back something unexpected" and Apple's JSON.
+    #[tokio::test]
+    async fn a_zone_kept_by_advanced_data_protection_asks_for_approval() {
+        for (status, body) in [
+            // As reported, at the HTTP level.
+            (
+                403,
+                json!({ "serverErrorCode": "ACCESS_DENIED",
+                        "reason": "private db access disabled for this account" }),
+            ),
+            // And inside the zone's own result, the way CloudKit answers most zone trouble.
+            (
+                200,
+                json!({ "zones": [{ "zoneID": { "zoneName": "Reminders" },
+                    "serverErrorCode": "ACCESS_DENIED",
+                    "reason": "private db access disabled for this account" }] }),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path_regex(r".*/changes/zone"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .mount(&server)
+                .await;
+            let http = reqwest::Client::new();
+            let uri = server.uri();
+            let client = client(&http, &uri, "com.apple.reminders");
+            let err = client.all_records("Reminders", None).await.err();
+            assert!(
+                matches!(err, Some(Error::NeedsDeviceApproval)),
+                "{status}: {err:?}"
+            );
+        }
+    }
+
+    /// ACCESS_DENIED for anything else — a retired endpoint says it too — is not read as
+    /// Advanced Data Protection: approving on a phone would not help.
+    #[tokio::test]
+    async fn another_access_denied_is_not_read_as_advanced_data_protection() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*/changes/zone"))
+            .respond_with(zone_reply(json!({
+                "serverErrorCode": "ACCESS_DENIED", "reason": "This endpoint is deprecated."
+            })))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::new();
+        let uri = server.uri();
+        let client = client(&http, &uri, "com.apple.reminders");
+        let err = client.all_records("Reminders", None).await.err();
+        assert!(matches!(err, Some(Error::Protocol(_))), "{err:?}");
     }
 
     /// CloudKit expires cursors. An app closed for a while comes back holding one Apple will

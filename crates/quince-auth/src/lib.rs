@@ -21,6 +21,7 @@ macro_rules! quiet {
     };
 }
 
+pub mod pcs;
 pub mod releases;
 mod sealed;
 pub mod session;
@@ -424,6 +425,8 @@ pub struct Client {
     /// The trusted phones Apple last listed, so a code is sent to and checked for each number
     /// the way that number takes one.
     phones: Vec<TrustedPhone>,
+    /// What this run knows of Advanced Data Protection approvals (see [`pcs`]).
+    pcs: pcs::Pcs,
 }
 
 /// What became of the cookies kept on disk when the client started.
@@ -574,6 +577,7 @@ impl Client {
             persisted: std::sync::Mutex::new(Persisted::default()),
             cookies,
             phones: Vec::new(),
+            pcs: pcs::Pcs::default(),
         })
     }
 
@@ -726,6 +730,7 @@ impl Client {
     /// Forget this account entirely.
     pub fn sign_out(&mut self) -> Result<()> {
         self.session = Session::default();
+        self.data_access_forget();
         if let Ok(mut jar) = self.jar.lock() {
             jar.clear();
         }
@@ -998,6 +1003,8 @@ impl Client {
         // Start clean. An interrupted previous attempt would otherwise announce a
         // half-finished session and Apple would reject this one as a conflict.
         self.clear_challenge_state();
+        // A new web session: its encrypted services' keys are its own to ask for.
+        self.data_access_forget();
 
         let client = srp::Client::new(apple_id);
 

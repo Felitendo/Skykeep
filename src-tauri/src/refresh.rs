@@ -848,6 +848,11 @@ where
             items: if changed { items } else { None },
         },
         Err(e) => {
+            // Advanced Data Protection keeping it out: the approval is asked for after the pass,
+            // and the service read again once it is given (`data_access`).
+            if matches!(e, quince_icloud::Error::NeedsDeviceApproval) {
+                crate::data_access::refused(service);
+            }
             let message = e.to_string();
             library.mark_sync_failed(service, &message).ok();
             ServiceReport {

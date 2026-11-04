@@ -112,6 +112,11 @@ pub struct Session {
     /// Advanced Data Protection, which Apple calls iCloud Data Protection (`iCDPEnabled`).
     #[serde(default)]
     pub data_protection: Option<bool>,
+    /// Under Advanced Data Protection, until when (unix seconds) each service's key — by its
+    /// `requestPCS` name — was released to this session (see `pcs`). Kept for the services
+    /// whose key cookie is not known by name; the rest are read from the cookies themselves.
+    #[serde(default)]
+    pub pcs_until: std::collections::BTreeMap<String, u64>,
 
     /// Failed sign-ins in a row. Drives the local backoff.
     #[serde(default)]
