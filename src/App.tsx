@@ -7,12 +7,14 @@ import { StatusLine } from "./components/StatusLine";
 import { dismissToast, toast } from "./components/Toast";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { api, NEEDS_CODE, NEEDS_SIGNIN } from "./lib/ipc";
+import { api, messageOf, NEEDS_CODE, NEEDS_SIGNIN } from "./lib/ipc";
 
 type Phase = "checking" | "signin" | "code" | "library";
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("checking");
+  // Why the stored session could not be taken up, said once on the sign-in screen.
+  const [why, setWhy] = useState<string | null>(null);
   // The window is shown once the first real screen (the library, or sign-in) is in the page:
   // never the session check before it (see window_ready, main.rs). Said as soon as React has
   // put it there, not after an animation frame: the window is hidden until then, and a hidden
@@ -63,7 +65,12 @@ export default function App() {
           return;
         }
         if (status.hasStoredSession) {
-          const next = await api.resume();
+          // A resume that could not be made says why on the sign-in screen — a keyring that
+          // is locked, most often — rather than a bare form that reads as signed out.
+          const next = await api.resume().catch((err) => {
+            if (!cancelled) setWhy(messageOf(err));
+            return "signin" as const;
+          });
           if (next !== "signin") return !cancelled && setPhase(next);
         }
       } catch {
@@ -134,6 +141,7 @@ export default function App() {
       {phase === "signin" && (
         <SignIn
           onCancel={lapsed ? () => setPhase("library") : undefined}
+          notice={why}
           onResult={(r) => {
             setLapsed(false);
             setPhase(r === "complete" ? "library" : "code");

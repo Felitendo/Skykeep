@@ -118,7 +118,9 @@ pub enum Error {
              repeated attempts risk a temporary lock"
     )]
     RateLimited,
-    #[error("couldn't use the system keyring: {0}")]
+    /// Said as what to do: the keyring's own words (a D-Bus error name, a Win32 code) are for
+    /// the log, and stay in the value.
+    #[error("{}", KEYRING_WORDS)]
     Keyring(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -127,6 +129,13 @@ pub enum Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+/// What a keyring that would not answer means to the person in front of it.
+#[cfg(windows)]
+pub const KEYRING_WORDS: &str = "Windows Credential Manager didn’t answer. Try again in a moment.";
+#[cfg(not(windows))]
+pub const KEYRING_WORDS: &str =
+    "Your system keyring is locked or not running. Unlock or start GNOME Keyring or KWallet, then try again.";
 
 /// A reply that says "not now" rather than "no": Apple's servers failing or overloaded.
 fn transient(status: reqwest::StatusCode) -> Option<Error> {
@@ -463,8 +472,14 @@ impl Client {
     }
 
     /// True when a stored session exists and is worth trying.
+    ///
+    /// A keyring that would not answer at the start (locked, or not up yet at login) may well
+    /// hold one: sealed cookies on disk say a keyring kept a session here before. Then it is
+    /// worth a resume, which asks the keyring again — and where it is locked, that is what
+    /// brings up its unlock prompt — rather than a sign-in screen that would replace it.
     pub fn has_stored_session(&self) -> bool {
         self.session.is_resumable()
+            || (self.keyring_error.is_some() && self.store.cookie_path().exists())
     }
 
     // ---- persistence ----------------------------------------------------------------
@@ -532,7 +547,7 @@ impl Client {
         match self.persist() {
             Ok(()) => self.unsaved = None,
             Err(e) => {
-                quiet!("quince: the session is kept in memory only: {e}");
+                quiet!("quince: the session is kept in memory only: {e:?}");
                 self.unsaved = Some(e.to_string());
             }
         }
@@ -631,7 +646,10 @@ impl Client {
                     self.session = session;
                     self.keyring_error = None;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    quiet!("quince: keyring: still not answering: {e:?}");
+                    return Err(e);
+                }
             }
         }
         self.read_cookies_again();
@@ -1910,6 +1928,39 @@ mod sealed_jar_tests {
         std::fs::write(&key, kept).unwrap();
         c.read_cookies_again();
         assert!(has_the_cookie(&c));
+    }
+
+    /// A keyring locked at login, or not up yet when Skykeep starts with the desktop: the
+    /// session it holds is still there. Read as nothing stored, the launch went to the sign-in
+    /// screen — never asking the keyring again, so its unlock prompt never came — and signing
+    /// in replaced the session and its trust token, with a code to type.
+    #[tokio::test]
+    async fn a_keyring_that_does_not_answer_is_asked_again_not_read_as_signed_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = holding_a_cookie(dir.path());
+        c.session.session_token = Some("token".into());
+        c.persist().unwrap();
+        assert!(cookies_file(dir.path()).exists());
+        // Where the session is kept will not answer.
+        let session = dir.path().join("session.json");
+        std::fs::remove_file(&session).unwrap();
+        std::fs::create_dir(&session).unwrap();
+
+        let mut c = client(dir.path());
+        assert!(c.has_stored_session(), "worth a resume, which asks again");
+        let said = c.resume().await.unwrap_err();
+        assert!(matches!(said, Error::Keyring(_)), "got {said:?}");
+        let words = said.to_string();
+        assert!(words.contains("keyring") || words.contains("Credential Manager"));
+        assert!(
+            !words.contains("Is a directory"),
+            "no raw OS words: {words}"
+        );
+
+        // A first run with no keyring kept nothing: the sign-in screen is right then.
+        let fresh = tempfile::tempdir().unwrap();
+        std::fs::create_dir(fresh.path().join("session.json")).unwrap();
+        assert!(!client(fresh.path()).has_stored_session());
     }
 
     /// Signing out takes the key with the cookies.

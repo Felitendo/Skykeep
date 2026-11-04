@@ -22,15 +22,18 @@ export function sentence(message: string) {
 export function SignIn({
   onResult,
   onCancel,
+  notice,
 }: {
   onResult: (r: SignInResult) => void;
   /** Back to the library: offered when signing in again after Apple signed the session out. */
   onCancel?: () => void;
+  /** Why the saved session could not be taken up, said in the error's place until a try. */
+  notice?: string | null;
 }) {
   const [appleId, setAppleId] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(notice ? sentence(notice) : null);
   const passwordRef = useRef<HTMLInputElement>(null);
   // A wait Apple's limits ask for, counted down where it is said, and the button held until
   // it is over — not a number frozen at the moment it was said.
@@ -46,8 +49,8 @@ export function SignIn({
   // Back to the password once a try has come back, so the next one is a type and an Enter.
   // After the fields are enabled again: a disabled field cannot take focus.
   useEffect(() => {
-    if (!busy && error) passwordRef.current?.focus();
-  }, [busy, error]);
+    if (!busy && error && appleId) passwordRef.current?.focus();
+  }, [busy, error, appleId]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

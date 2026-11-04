@@ -694,9 +694,12 @@ impl Store {
                 Ok(None) => return Ok(Session::default()),
                 Err(e) => return Err(crate::Error::Keyring(e)),
             },
+            // Absent is nothing stored; anything else stands in, in tests, for a keyring that
+            // would not answer.
             Backend::File(path) => match std::fs::read_to_string(path) {
                 Ok(j) => j,
-                Err(_) => return Ok(Session::default()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Session::default()),
+                Err(e) => return Err(crate::Error::Keyring(e.to_string())),
             },
         };
         Ok(serde_json::from_str(&json).unwrap_or_default())
