@@ -1,8 +1,8 @@
 //! Skykeep's own updates, from the project's GitHub Releases.
 //!
 //! Only a copy installed from the AppImage, the Windows installer (.exe) or the .msi updates
-//! itself. A .deb, an .rpm, the AUR, a distribution's own package or the Flatpak is updated by
-//! its package manager and is never offered an update here ([`install_kind`]).
+//! itself. A .deb, an .rpm, the AUR, a distribution's own package, Scoop or the Flatpak is
+//! updated by its package manager and is never offered an update here ([`install_kind`]).
 //!
 //! Shortly after launch, and about once a day after that, the latest release's `latest.json`
 //! is read through a client that can reach GitHub's release servers and nothing else
@@ -48,7 +48,8 @@ const WAIT_STEP: Duration = Duration::from_secs(2);
 pub enum Install {
     /// The AppImage, the Windows installer or the .msi: updated here.
     Here,
-    /// A .deb, an .rpm, the AUR or a distribution's package: its package manager updates it.
+    /// A .deb, an .rpm, the AUR, a distribution's package or Scoop: its package manager
+    /// updates it.
     PackageManager,
     /// Flatpak updates it.
     Flatpak,
@@ -60,12 +61,15 @@ pub enum Install {
 
 /// Who updates this copy. `bundle` is what Tauri's bundler wrote into the program when it
 /// packaged it (none for a `cargo build`, which is how the AUR and the Flatpak build it);
-/// `appimage` whether it runs as an AppImage now, which is the file the update replaces.
+/// `appimage` whether it runs as an AppImage now, which is the file the update replaces;
+/// `scoop` whether Scoop unpacked it (packaging/scoop): its installer, run here, would put a
+/// second copy beside Scoop's.
 pub fn install_kind(
     os: &str,
     bundle: Option<BundleType>,
     appimage: bool,
     flatpak: bool,
+    scoop: bool,
     debug: bool,
 ) -> Install {
     if debug {
@@ -73,6 +77,9 @@ pub fn install_kind(
     }
     if flatpak {
         return Install::Flatpak;
+    }
+    if os == "windows" && scoop {
+        return Install::PackageManager;
     }
     match (os, bundle) {
         ("linux", Some(BundleType::AppImage)) if appimage => Install::Here,
@@ -94,11 +101,22 @@ pub fn this_install(app: &AppHandle) -> Install {
         false
     };
     let flatpak = std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists();
+    // Scoop records the install in the folder it unpacks an app to: scoop-install.json, or
+    // install.json beside manifest.json in older Scoop.
+    let scoop = cfg!(windows)
+        && std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(Path::to_path_buf))
+            .is_some_and(|dir| {
+                dir.join("scoop-install.json").is_file()
+                    || (dir.join("install.json").is_file() && dir.join("manifest.json").is_file())
+            });
     install_kind(
         std::env::consts::OS,
         tauri::utils::platform::bundle_type(),
         appimage,
         flatpak,
+        scoop,
         cfg!(debug_assertions),
     )
 }
@@ -1024,7 +1042,7 @@ mod tests {
     #[test]
     fn who_updates_each_kind_of_install() {
         use BundleType::*;
-        let here = |os, b, ai| install_kind(os, b, ai, false, false);
+        let here = |os, b, ai| install_kind(os, b, ai, false, false, false);
         assert_eq!(here("linux", Some(AppImage), true), Install::Here);
         assert_eq!(here("linux", Some(AppImage), false), Install::Manual);
         assert_eq!(here("linux", Some(Deb), false), Install::PackageManager);
@@ -1036,17 +1054,26 @@ mod tests {
         assert_eq!(here("windows", Some(Nsis), false), Install::Here);
         assert_eq!(here("windows", Some(Msi), false), Install::Here);
         assert_eq!(here("windows", None, false), Install::Manual);
+        // Unpacked by Scoop, which updates it.
+        assert_eq!(
+            install_kind("windows", Some(Nsis), false, false, true, false),
+            Install::PackageManager
+        );
+        assert_eq!(
+            install_kind("linux", Some(AppImage), true, false, true, false),
+            Install::Here
+        );
         assert_eq!(here("macos", Some(App), false), Install::Manual);
         assert_eq!(
-            install_kind("linux", Some(AppImage), true, true, false),
+            install_kind("linux", Some(AppImage), true, true, false, false),
             Install::Flatpak
         );
         assert_eq!(
-            install_kind("linux", None, false, true, false),
+            install_kind("linux", None, false, true, false, false),
             Install::Flatpak
         );
         assert_eq!(
-            install_kind("windows", Some(Nsis), false, false, true),
+            install_kind("windows", Some(Nsis), false, false, false, true),
             Install::Development
         );
     }

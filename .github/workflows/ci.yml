@@ -5,10 +5,12 @@
 #   web  — npm ci, the type check, the production build, the model tests, and a smoke run of
 #          the key interface suites in Chromium against `vite preview`.
 # The two run side by side. A newer push to the same branch or pull request cancels the older
-# run. Windows is proven by windows.yml, by hand or by a release.
+# run. Windows is proven by windows.yml, by hand or by a release. A branch can be run by hand
+# (Actions → CI → Run workflow) before it goes to main.
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
