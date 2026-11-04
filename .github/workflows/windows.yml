@@ -82,17 +82,20 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: windows-release
-      # HEIC decoding: libheif with its default codecs (libde265 decodes), linked in statically.
+      # HEIC decoding: libheif with its default codecs (libde265 decodes), linked in statically,
+      # with the C and C++ runtimes too (the x64-windows-static triplet, /MT, matching Rust's
+      # crt-static below): skykeep.exe then needs no Visual C++ Redistributable, which a fresh
+      # Windows doesn't have — without it the program can't start at all (STATUS_DLL_NOT_FOUND).
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-libheif-default-x64-windows-static-md-v1
+          key: vcpkg-libheif-default-x64-windows-static-v1
       - name: HEIC decoder
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif:x64-windows-static-md"
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "libheif:x64-windows-static"
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-          "VCPKGRS_TRIPLET=x64-windows-static-md" >> $env:GITHUB_ENV
+          "VCPKGRS_TRIPLET=x64-windows-static" >> $env:GITHUB_ENV
       # The window's files must exist for the app crate to compile.
       - run: npm run build
       - name: Tests, on Windows
@@ -100,7 +103,7 @@ jobs:
         # In release mode, so the installer build below reuses what this compiled. The probe
         # examples are live tools for Linux (one mounts a FUSE folder), not tests.
         env:
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep -C target-feature=+crt-static
         run: cargo test --release --workspace --lib --bins --tests --locked --no-fail-fast
       - name: Build the installers
         # The build machine's paths are never written into the program. A release also signs
@@ -108,7 +111,7 @@ jobs:
         # the key is the release's alone, so any other build makes the installers only.
         shell: bash
         env:
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep -C target-feature=+crt-static
           UPDATER: ${{ inputs.updater && 'yes' || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.updater && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.updater && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
@@ -123,6 +126,16 @@ jobs:
           else
             npx tauri build
           fi
+      - name: The program needs no Visual C++ Redistributable
+        shell: pwsh
+        run: |
+          # The names of the DLLs a program imports are in it as plain text.
+          $exe = "target/release/skykeep.exe"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($exe))
+          $found = [regex]::Matches($text, '(?i)\b(msvcp1\d\d[_a-z0-9]*|vcruntime1\d\d[_a-z0-9]*|concrt1\d\d)\.dll') |
+            ForEach-Object Value | Sort-Object -Unique
+          if ($found) { throw "skykeep.exe imports $($found -join ', '): it would not start on a PC without the Visual C++ Redistributable" }
+          "skykeep.exe imports no Visual C++ runtime DLL"
       - name: Checksums
         shell: pwsh
         run: |
