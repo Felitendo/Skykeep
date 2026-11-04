@@ -46,7 +46,7 @@ jobs:
           $hash = ($line -split '\s+')[0].ToLower()
           [xml]$nuspec = Get-Content packaging/chocolatey/skykeep.nuspec
           $old = $nuspec.package.metadata.version
-          $oldHash = (Select-String packaging/chocolatey/tools/chocolateyinstall.ps1 "checksum64\s*=\s*'([0-9a-f]{64})'").Matches[0].Groups[1].Value
+          $oldHash = (Select-String -Path packaging/chocolatey/tools/chocolateyinstall.ps1 -Pattern "checksum64\s*=\s*'([0-9a-f]{64})'").Matches[0].Groups[1].Value
           foreach ($f in "packaging/chocolatey/skykeep.nuspec", "packaging/chocolatey/tools/chocolateyinstall.ps1", "packaging/scoop/skykeep.json") {
             (Get-Content $f -Raw).Replace($old, $env:VERSION).Replace($oldHash, $hash) | Set-Content $f -NoNewline
           }
