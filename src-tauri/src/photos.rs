@@ -285,15 +285,24 @@ pub async fn fitted(app: &AppHandle, id: &str, long: u32) -> Result<Vec<u8>, Str
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
         if let Some(bytes) = made {
+            // A grid picture is kept only while the disk has room (photo_cache::GRID_FLOOR);
+            // short of it, it is shown and made again when next wanted.
+            if !preview && !crate::photo_cache::grid_room(app) {
+                crate::photo_cache::grid_grew(app);
+                return Ok(bytes);
+            }
             if let Some(dir) = path.parent() {
                 let _ = tokio::fs::create_dir_all(dir).await;
             }
             let part = path.with_extension("part");
             if tokio::fs::write(&part, &bytes).await.is_ok()
                 && tokio::fs::rename(&part, &path).await.is_ok()
-                && preview
             {
-                crate::photo_cache::grew(app);
+                if preview {
+                    crate::photo_cache::grew(app);
+                } else {
+                    crate::photo_cache::grid_grew(app);
+                }
             }
             return Ok(bytes);
         }
@@ -450,10 +459,12 @@ async fn from_apple(
     if !done && !fetch(new_link(&http, &root, params, &photo, size).await?).await? {
         return Err("Apple did not send that picture.".into());
     }
-    // Held for whoever asked, and the cache checked against its cap soon after (thumbnails are
-    // never let go of, so a thumbnail landing asks nothing).
+    // Held for whoever asked, and the cache checked against its cap soon after (a thumbnail is
+    // held only to the disk's room: photo_cache::GRID_FLOOR).
     crate::photo_cache::hold(&path);
-    if size != Size::Thumb {
+    if size == Size::Thumb {
+        crate::photo_cache::grid_grew(app);
+    } else {
         crate::photo_cache::grew(app);
     }
     // A video's picture that is black (Apple makes them from the first frame) is made again

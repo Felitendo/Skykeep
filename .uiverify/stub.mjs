@@ -1026,7 +1026,8 @@ export function installStub({ screen, services, twoFactor, calendarFixture, note
           return null;
         }
         // The desktop's clipboard as the backend reads it: files copied in the file manager, or text.
-        case "clipboard_read": return { files: window.__clipFiles ?? [], text: window.__clipText ?? null };
+        case "clipboard_read":
+        case "clipboard_paste": return { files: window.__clipFiles ?? [], text: window.__clipText ?? null };
         case "drive_upload": (window.__driveUploads ??= []).push(args); return [];
         case "storage_info": return { usedBytes: 182196857, totalBytes: 5368709120 };
         // The local copy's room, as settings.rs measures it; clearing takes away only the cached pictures.

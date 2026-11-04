@@ -4,7 +4,10 @@
 //! What it holds, by folder under `photos/`:
 //!
 //! - `thumb/`, and `fit/<step>/` up to [`THUMB_STEP`]: the grid's pictures. Small, drawn by every
-//!   view, and never let go of — the library always scrolls from disk.
+//!   view, and kept — the library scrolls from disk — but only while the disk has room: below
+//!   [`GRID_FLOOR`] free, no more are kept and the longest unseen are let go of until there is
+//!   room again ([`trim_grid`]). A library of a hundred thousand photos makes gigabytes of
+//!   them, and nothing else held them to anything.
 //! - `original/`, `full/`, `medium/`, `video/`, `live/`, the larger `fit/` steps, and `open/`
 //!   (a video's name for the system's player, a hard link to its original): originals and
 //!   previews. These are what the cap holds, the longest unseen let go first.
@@ -47,6 +50,12 @@ pub const RECENT: Duration = Duration::from_secs(5 * 60);
 /// A download's `.part` untouched for this long belongs to a download that died with the app.
 /// One still landing is written to every moment.
 pub const STALE_PART: Duration = Duration::from_secs(60 * 60);
+/// Free room on the disk below which the grid's pictures stop being kept, and the longest
+/// unseen of them let go of: a full disk is never the price of scrolling.
+pub const GRID_FLOOR: u64 = 2 * GB;
+/// How far over [`GRID_FLOOR`] a trim of the grid's pictures brings the disk back, so the next
+/// picture made does not trim again at once.
+const GRID_SLACK: u64 = GRID_FLOOR / 4;
 /// The folders of originals and previews.
 const PREVIEWS: [&str; 6] = ["original", "full", "medium", "video", "live", "open"];
 
@@ -215,8 +224,8 @@ fn scan(root: &Path) -> Scan {
     scan
 }
 
-/// Room the grid's pictures take (thumbnails, and `fit/` steps up to [`THUMB_STEP`]).
-fn thumbnails(root: &Path) -> u64 {
+/// The grid's pictures on disk (thumbnails, and `fit/` steps up to [`THUMB_STEP`]).
+fn grid_files(root: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
     let mut files = Vec::new();
     walk(&root.join("thumb"), 0, &mut files);
     for e in std::fs::read_dir(root.join("fit"))
@@ -228,11 +237,36 @@ fn thumbnails(root: &Path) -> u64 {
             walk(&e.path(), 0, &mut files);
         }
     }
+    files.retain(|(p, _)| !is_part(p));
     files
-        .iter()
-        .filter(|(p, _)| !is_part(p))
-        .map(|(_, m)| on_disk(m))
-        .sum()
+}
+
+/// Room the grid's pictures take.
+fn thumbnails(root: &Path) -> u64 {
+    grid_files(root).iter().map(|(_, m)| on_disk(m)).sum()
+}
+
+/// The grid's pictures let go of, the longest unseen first (last written, or read where the
+/// disk keeps that), until the disk's `free` room has come back to `want` — none a reader
+/// holds. Answers how many went.
+pub fn trim_grid(root: &Path, free: u64, want: u64) -> usize {
+    if free >= want {
+        return 0;
+    }
+    let mut files = grid_files(root);
+    files.sort_by_key(|(_, m)| last_seen(m));
+    let mut freed = 0u64;
+    let mut removed = 0;
+    for (path, meta) in files {
+        if free.saturating_add(freed) >= want {
+            break;
+        }
+        if remove_unless_in_use(&path, &[]) {
+            freed = freed.saturating_add(on_disk(&meta));
+            removed += 1;
+        }
+    }
+    removed
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -654,7 +688,11 @@ pub fn trim_now(app: &AppHandle) -> (Outcome, u64) {
             now: SystemTime::now(),
         },
     );
-    if out.removed > 0 {
+    // The grid's pictures too, once the disk is short of room.
+    let grid = free_space(&root)
+        .filter(|free| *free < GRID_FLOOR)
+        .map_or(0, |free| trim_grid(&root, free, GRID_FLOOR + GRID_SLACK));
+    if out.removed + grid > 0 {
         let _ = app.emit(EVENT, status_of(&root, cap, out.after));
     }
     // Short of the limit only for what was on screen: tried again once that has had its time.
@@ -674,6 +712,19 @@ static LATER: AtomicBool = AtomicBool::new(false);
 /// A picture landed: the cap is checked soon, once, however many land together.
 pub fn grew(app: &AppHandle) {
     request(app, Duration::from_secs(2));
+}
+
+/// Whether a grid picture made now may be kept on disk: while the disk has [`GRID_FLOOR`]
+/// free (or cannot say how much it has).
+pub fn grid_room(app: &AppHandle) -> bool {
+    free_space(&root(app)).is_none_or(|free| free >= GRID_FLOOR)
+}
+
+/// A grid picture landed: nothing to do while the disk has room; short of it, a trim soon.
+pub fn grid_grew(app: &AppHandle) {
+    if !grid_room(app) {
+        grew(app);
+    }
 }
 
 /// A trim in the background after `after`; requests that come while one waits or runs are one.
@@ -794,6 +845,33 @@ mod side_tests {
         f.set_times(std::fs::FileTimes::new().set_accessed(at).set_modified(at))
             .unwrap();
         path
+    }
+
+    /// The grid's pictures, kept while the disk has room, are let go of once it is short: the
+    /// longest unseen first, only until the room wanted is back, never a picture a reader holds
+    /// and never a preview (those are the cap's).
+    #[test]
+    fn the_grid_gives_way_when_the_disk_is_short() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let hour = Duration::from_secs(3600);
+        let oldest = put(root, "thumb/a", 40_000, hour * 30);
+        let old_fit = put(root, "fit/256/b", 40_000, hour * 20);
+        let held = put(root, "thumb/c", 40_000, hour * 10);
+        let newest = put(root, "thumb/d", 40_000, hour);
+        let preview = put(root, "fit/2048/e", 40_000, hour * 40);
+        hold(&held);
+        let each = on_disk(&std::fs::metadata(&oldest).unwrap());
+
+        assert_eq!(trim_grid(root, GRID_FLOOR, GRID_FLOOR), 0, "room enough");
+        assert!(oldest.exists());
+
+        // Short by a little more than two pictures: three go, the held one passed over.
+        let free = GRID_FLOOR - 2 * each - 1;
+        assert_eq!(trim_grid(root, free, GRID_FLOOR), 2 + 1);
+        assert!(!oldest.exists() && !old_fit.exists() && !newest.exists());
+        assert!(held.exists(), "a picture being read stays");
+        assert!(preview.exists(), "a preview is the cap's, not the grid's");
     }
 
     /// Over its size, a cache lets go of the longest unseen first, never one just seen, and

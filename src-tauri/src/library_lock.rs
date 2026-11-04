@@ -388,9 +388,160 @@ pub fn hold(dir: &Path) -> std::io::Result<Option<std::fs::File>> {
     Ok(Some(file))
 }
 
+/// What keeps a second Skykeep off this library for as long as this one runs.
+#[derive(Debug)]
+pub enum Hold {
+    /// The lock on `skykeep.lock` ([`hold`]): held by being kept open, never read.
+    Locked(#[allow(dead_code)] std::fs::File),
+    /// Where no lock can be taken: `skykeep.pid`, made only if no other file of that name is
+    /// there ([`mark`]).
+    Marked(PathBuf),
+}
+
+/// [`hold`], and where the folder's disk refuses locks (a network share without them),
+/// [`mark`] instead: never a Skykeep running beside another on one library because neither
+/// could tell. `Ok(None)`: another Skykeep has it. `Err`: neither could be had, said in words
+/// to show before quitting.
+pub fn hold_or_mark(dir: &Path) -> Result<Option<Hold>, String> {
+    match hold(dir) {
+        Ok(Some(lock)) => Ok(Some(Hold::Locked(lock))),
+        Ok(None) => Ok(None),
+        Err(why) => mark(dir).map_err(|e| {
+            format!(
+                "Skykeep could not make sure it is the only copy using {}: the disk refused a \
+                 lock ({why}), and the file that stands in for one could not be made ({e}).",
+                dir.display()
+            )
+        }),
+    }
+}
+
+/// `skykeep.pid` beside the library, created only if no file of that name exists, holding this
+/// process's id: the lock where the disk takes none. One left by a Skykeep that ended without
+/// letting go — its process gone, or another program's now — is taken over; one a running
+/// Skykeep made answers `None`.
+pub fn mark(dir: &Path) -> std::io::Result<Option<Hold>> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("skykeep.pid");
+    let me = std::process::id();
+    for _ in 0..3 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(me.to_string().as_bytes())?;
+                file.sync_all()?;
+                drop(file);
+                // Two starting at once over a mark left behind may both have cleared it; the
+                // one whose id is in it now is the one that runs.
+                return Ok(match marked_by(&path) {
+                    Some(pid) if pid == me => Some(Hold::Marked(path)),
+                    _ => None,
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let by = marked_by(&path).filter(|pid| *pid != me);
+                if by.is_some_and(is_skykeep) {
+                    return Ok(None);
+                }
+                // Where whose it is cannot be asked, it is the person's to say.
+                if by.is_some() && !cfg!(target_os = "linux") {
+                    return Err(std::io::Error::other(format!(
+                        "{} is there. If no other Skykeep is running, remove it and open \
+                         Skykeep again",
+                        path.display()
+                    )));
+                }
+                // Left behind: let go of, and made again as this one's.
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("skykeep.pid kept coming back"))
+}
+
+fn marked_by(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// Whether process `pid` is running and is a Skykeep: the same program as this one. Asked of
+/// Linux's `/proc`; elsewhere it cannot be told, and `false` leaves it to [`mark`] to ask.
+/// Its program file, or (one updated while it ran, its file replaced) its name.
+fn is_skykeep(pid: u32) -> bool {
+    let exe = |p: &str| std::fs::read_link(format!("/proc/{p}/exe")).ok();
+    let name = |p: &str| std::fs::read_to_string(format!("/proc/{p}/comm")).ok();
+    let theirs = pid.to_string();
+    let same_file = matches!((exe(&theirs), exe("self")), (Some(a), Some(b)) if a == b);
+    let same_name = matches!((name(&theirs), name("self")), (Some(a), Some(b)) if a == b);
+    same_file || same_name
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        if let Hold::Marked(path) = self {
+            if marked_by(path) == Some(std::process::id()) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod hold_tests {
     use super::*;
+
+    /// Where the disk takes no lock: the mark stands in. Made by this Skykeep, a second is
+    /// told one is running; left by one that ended (its process gone), it is taken over; let
+    /// go of, it is gone.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn where_no_lock_can_be_taken_a_mark_stands_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("skykeep.pid");
+        // A running Skykeep's mark (this test's own process stands in for one).
+        let parent = std::os::unix::process::parent_id();
+        std::fs::write(&pid, std::process::id().to_string()).unwrap();
+        // Ours: taken again as ours.
+        let held = mark(dir.path()).unwrap();
+        assert!(matches!(held, Some(Hold::Marked(_))));
+        drop(held);
+        assert!(!pid.exists(), "let go of with the process");
+
+        // Another running process of this same program: refused. A process that is not
+        // this program (the test's parent, a shell or cargo), or none at all: taken over.
+        // SAFETY: the child only sleeps and exits, both safe after fork in a threaded process.
+        let other = unsafe { libc::fork() };
+        if other == 0 {
+            unsafe {
+                libc::sleep(30);
+                libc::_exit(0);
+            }
+        }
+        assert!(other > 0);
+        std::fs::write(&pid, other.to_string()).unwrap();
+        let refused = mark(dir.path()).unwrap();
+        // SAFETY: signals and reaps the child made above, nothing else.
+        unsafe {
+            libc::kill(other, libc::SIGKILL);
+            libc::waitpid(other, std::ptr::null_mut(), 0);
+        }
+        assert!(refused.is_none(), "another Skykeep has it");
+        std::fs::write(&pid, parent.to_string()).unwrap();
+        assert!(
+            mark(dir.path()).unwrap().is_some(),
+            "another program's id: left behind"
+        );
+        std::fs::write(&pid, "4194999").unwrap();
+        assert!(mark(dir.path()).unwrap().is_some(), "a process long gone");
+    }
 
     #[test]
     fn only_one_holds_the_library() {

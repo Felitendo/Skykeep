@@ -449,7 +449,10 @@ export const api = {
   driveCopy: (drivewsid: string, destinationId: string) =>
     invoke<void>("drive_copy", { drivewsid, destinationId }),
   /** The desktop's clipboard: files copied in the file manager, as paths, or else its text. */
+  /** What is on the clipboard, to offer Paste; grants nothing. */
   clipboardRead: () => invoke<{ files: string[]; text: string | null }>("clipboard_read"),
+  /** Drive's Paste: what is on the clipboard, its files granted for uploading. */
+  clipboardPaste: () => invoke<{ files: string[]; text: string | null }>("clipboard_paste"),
 };
 
 /** Tauri rejects with a plain string from our commands; keep it readable either way. */

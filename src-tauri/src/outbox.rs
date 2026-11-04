@@ -1725,8 +1725,10 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
     let Some(account) = crate::asked_as(&params) else {
         return Outcome::Later;
     };
+    // The book read once for the run, not once for each change in it.
+    let book = std::sync::Mutex::new(Book::default());
     let report = drain_as(&data.0, CONTACTS, &crate::CONTACTS_PASS, &account, |p| {
-        send_contact(&data.0, &http, &root, params.clone(), p)
+        send_contact(&data.0, &http, &root, params.clone(), p, &book)
     })
     .await;
     tell_refused(app, CONTACTS, &report);
@@ -1737,33 +1739,131 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
     report.outcome
 }
 
+/// The address book a run of queued contact changes is sent from: read once for the run, not
+/// once for each change — every read is the whole book, every card in it. A card the run has
+/// written since is read again before it is written again (the copy here is from before), and
+/// a write Apple says was made against an old book is sent once more from a fresh read.
+#[derive(Default)]
+struct Book {
+    read: Option<std::sync::Arc<BookRead>>,
+    written: std::collections::HashSet<String>,
+}
+
+/// One read of the book: each card as Apple wrote it, by id, and the tokens a write needs.
+struct BookRead {
+    cards: std::collections::HashMap<String, serde_json::Value>,
+    tokens: quince_icloud::contacts::Tokens,
+}
+
+impl Book {
+    /// The book to send a change to `record` from, read now if the run has none it can use;
+    /// and whether it was read just now.
+    async fn for_record(
+        book: &std::sync::Mutex<Self>,
+        http: &reqwest::Client,
+        root: &str,
+        params: &[(String, String)],
+        record: &str,
+    ) -> Result<(std::sync::Arc<BookRead>, bool), Error> {
+        let kept = {
+            let b = book
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            b.read.clone().filter(|_| !b.written.contains(record))
+        };
+        if let Some(read) = kept {
+            return Ok((read, false));
+        }
+        let (cards, tokens) =
+            quince_icloud::contacts::cards_with_tokens(http, root, params.to_vec()).await?;
+        let cards = cards
+            .into_iter()
+            .filter_map(|card| {
+                let id = card.get("contactId")?.as_str()?.to_string();
+                Some((id, card))
+            })
+            .collect();
+        let mut b = book
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let read = std::sync::Arc::new(BookRead { cards, tokens });
+        b.read = Some(std::sync::Arc::clone(&read));
+        b.written.clear();
+        Ok((read, true))
+    }
+
+    /// `record` written: its copy in the read is old now.
+    fn wrote(book: &std::sync::Mutex<Self>, record: &str) {
+        book.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .written
+            .insert(record.to_string());
+    }
+
+    /// The read let go of: written past it in ways it cannot track (a merge).
+    fn forget(book: &std::sync::Mutex<Self>) {
+        book.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read = None;
+    }
+}
+
 async fn send_contact(
     library: &crate::library_lock::LibraryLock,
     http: &reqwest::Client,
     root: &str,
     params: Vec<(String, String)>,
     p: Pending,
+    book: &std::sync::Mutex<Book>,
 ) -> Result<(), Error> {
     use quince_icloud::contacts as c;
     if p.kind == "merge" {
+        // A merge writes and deletes cards of its own, read by itself.
+        Book::forget(book);
         return crate::contacts_merge::send(library, http, root, params, &p).await;
     }
     if p.kind == "address" {
         let a: ContactAddress = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
+        Book::wrote(book, &p.record);
         return c::address::edit(http, root, params, &p.record, &a.base, &a.edits)
             .await
             .map(|_| ());
     }
+    let (read, fresh) = Book::for_record(book, http, root, &params, &p.record).await?;
+    let sent = send_contact_from(http, root, params.clone(), &p, &read).await;
+    if matches!(sent, Err(Error::Conflict)) && !fresh {
+        // Made against a book read earlier in the run, which Apple says is old now: from a
+        // fresh read, once.
+        Book::forget(book);
+        let (read, _) = Book::for_record(book, http, root, &params, &p.record).await?;
+        let again = send_contact_from(http, root, params, &p, &read).await;
+        Book::wrote(book, &p.record);
+        return again;
+    }
+    Book::wrote(book, &p.record);
+    sent
+}
+
+/// One queued card change sent, from `read`: Apple's card as it was read, and its tokens.
+async fn send_contact_from(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+    p: &Pending,
+    read: &BookRead,
+) -> Result<(), Error> {
+    use quince_icloud::contacts as c;
+    let tokens = &read.tokens;
+    let card = read.cards.get(&p.record);
     if p.kind == "delete" {
-        let (people, tokens) = c::fetch_with_tokens(http, root, params.clone()).await?;
         // Gone already — deleted elsewhere, or by an earlier send of this one.
-        let Some(card) = people.into_iter().find(|x| x.guid == p.record) else {
+        let Some(card) = card.and_then(|v| c::parse(&serde_json::json!({ "contacts": [v] })).pop())
+        else {
             return Ok(());
         };
-        return c::delete(http, root, params, &tokens, &card).await;
+        return c::delete(http, root, params, tokens, &card).await;
     }
     let s: ContactSave = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
-    let (_, tokens) = c::fetch_with_tokens(http, root, params.clone()).await?;
     if let Some(details) = &s.details {
         let whole = |contact: &Contact, details: &ContactDetails| Card {
             contact: contact.clone(),
@@ -1771,14 +1871,13 @@ async fn send_contact(
         };
         let mine = whole(&s.contact, details);
         if s.create {
-            return c::create_card_named(http, root, params, &tokens, &p.record, &mine).await;
+            return c::create_card_named(http, root, params, tokens, &p.record, &mine).await;
         }
-        let card = c::card(http, root, params.clone(), &p.record).await?;
         // A base from before the form showed these has none: compared with Apple's own, so
         // only what this form changed is written.
         let base_details = match &s.base_details {
             Some(d) => Some(d.clone()),
-            None => card.as_ref().map(|v| {
+            None => card.map(|v| {
                 c::parse_cards(&serde_json::json!({ "contacts": [v] }))
                     .pop()
                     .map(|c| c.details)
@@ -1789,28 +1888,18 @@ async fn send_contact(
             .base
             .as_ref()
             .map(|b| whole(b, &base_details.clone().unwrap_or_default()));
-        return c::update_card(
-            http,
-            root,
-            params,
-            &tokens,
-            &mine,
-            card.as_ref(),
-            base.as_ref(),
-        )
-        .await;
+        return c::update_card(http, root, params, tokens, &mine, card, base.as_ref()).await;
     }
     if s.create {
-        return c::create_named(http, root, params, &tokens, &p.record, &s.contact).await;
+        return c::create_named(http, root, params, tokens, &p.record, &s.contact).await;
     }
-    let card = c::card(http, root, params.clone(), &p.record).await?;
     c::update_from(
         http,
         root,
         params,
-        &tokens,
+        tokens,
         &s.contact,
-        card.as_ref(),
+        card,
         s.base.as_ref(),
     )
     .await
@@ -3586,6 +3675,71 @@ mod tests {
         assert!(matches!(report.outcome, Outcome::Later));
         assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(lib.lock().await.outbox_pending(REMINDERS).unwrap().len(), 1);
+    }
+
+    /// Three cards edited offline go in one run from one read of the address book — each read
+    /// is the whole book — not two reads for each card; a card edited twice is read again
+    /// before its second write, its copy from before the first being old.
+    #[tokio::test]
+    async fn queued_card_edits_are_sent_from_one_read_of_the_book() {
+        use wiremock::matchers::{method, path, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let card = |id: &str| serde_json::json!({ "contactId": id, "firstName": id, "etag": "e" });
+        Mock::given(method("GET"))
+            .and(path("/co/startup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "syncToken": "S", "prefToken": "P",
+                "contacts": [card("A"), card("B"), card("C")]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(path_regex(r".*/co/contacts/card$"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "contacts": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let mut l = library();
+        for (id, name) in [("A", "Ada"), ("B", "Bea"), ("C", "Cy")] {
+            let was = person(id, id);
+            l.put_contacts(std::slice::from_ref(&was)).unwrap();
+            record_contact_save(&mut l, &person(id, name), Some(was)).unwrap();
+        }
+        // Behind a save of A that is on its way: a second edit of A, sent after it.
+        l.outbox_take(CONTACTS).unwrap();
+        record_contact_save(&mut l, &person("A", "Ada L"), Some(person("A", "Ada"))).unwrap();
+        l.set_state(crate::ACCOUNT_KEY, "me").unwrap();
+        let lib = crate::library_lock::LibraryLock::new(l, None);
+        let http = reqwest::Client::new();
+        let book = std::sync::Mutex::new(Book::default());
+        let root = server.uri();
+        let report = drain_as(&lib, CONTACTS, &Mutex::new(()), "me", |p| {
+            send_contact(&lib, &http, &root, Vec::new(), p, &book)
+        })
+        .await;
+        assert!(report.refused.is_empty(), "{:?}", report.refused);
+        assert!(lib
+            .lock()
+            .await
+            .outbox_pending(CONTACTS)
+            .unwrap()
+            .is_empty());
+        let asked = server.received_requests().await.unwrap();
+        let reads = asked
+            .iter()
+            .filter(|r| r.url.path() == "/co/startup")
+            .count();
+        let writes = asked
+            .iter()
+            .filter(|r| r.url.path().ends_with("/co/contacts/card"))
+            .count();
+        assert_eq!(writes, 4);
+        assert_eq!(
+            reads, 2,
+            "one read for the run, and A's again before its second write"
+        );
     }
 
     /// A pretend Apple that holds one event: a save sent with its current tag is taken, one sent

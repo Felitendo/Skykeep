@@ -111,8 +111,9 @@ never handed to the account signing in.
 - **The window** loads only Skykeep's own bundled page, never a website, and may ask
   Tauri for no more than it uses: events, its version and a window title.
 - **Files on this computer** are read or written only when you chose them: in an open or save
-  dialog Skykeep shows from its Rust side, by dropping them on the window, or by opening them
-  with Skykeep. Each choice is recorded there (`src-tauri/src/grants.rs`) for ten minutes, a
+  dialog Skykeep shows from its Rust side, by dropping them on the window, by pasting them into
+  Drive after copying them in your file manager (only Paste itself grants them; the window
+  looking at what is on the clipboard grants nothing), or by opening them with Skykeep. Each choice is recorded there (`src-tauri/src/grants.rs`) for ten minutes, a
   save for one write only, and every command that reads or writes a file (uploads, imports,
   attachments, exports) refuses a path that is not one of them, compared with `..` and links
   resolved. So even script running in the window could not name a file of yours on its own.

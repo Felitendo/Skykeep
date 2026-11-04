@@ -541,6 +541,32 @@ pub async fn fetch_with_tokens(
     ))
 }
 
+/// Every card as Apple wrote it, with the tokens a write needs, in one read of the book: what
+/// a run of queued changes is sent from, rather than the whole book read again for each one.
+pub async fn cards_with_tokens(
+    http: &reqwest::Client,
+    root: &str,
+    params: Vec<(String, String)>,
+) -> Result<(Vec<Value>, Tokens)> {
+    let body = startup(http, root, params).await?;
+    let token = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .ok_or_else(|| Error::Protocol(format!("/co/startup carried no {key}")))
+    };
+    let tokens = Tokens {
+        sync: token("syncToken")?,
+        pref: token("prefToken")?,
+    };
+    let cards = body
+        .get("contacts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok((cards, tokens))
+}
+
 /// [`card_written`] for a card without the rest of its name and work: those stay as Apple
 /// has them.
 fn card_merged(contact: &Contact, existing: Option<&Value>, base: Option<&Contact>) -> Value {

@@ -6670,8 +6670,8 @@ fn main() {
             keep_private(&dir);
             // A second Skykeep the session bus could not stop (there is none): it ends here,
             // before it touches the library, sends anything or mounts a folder.
-            static HELD: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
-            match library_lock::hold(&dir) {
+            static HELD: std::sync::OnceLock<library_lock::Hold> = std::sync::OnceLock::new();
+            match library_lock::hold_or_mark(&dir) {
                 Ok(Some(lock)) => {
                     let _ = HELD.set(lock);
                 }
@@ -6679,8 +6679,8 @@ fn main() {
                     eprintln!("Skykeep is already running.");
                     std::process::exit(0);
                 }
-                // Somewhere a lock can't be taken (a share that refuses them): run as before.
-                Err(e) => quiet!("the library's lock could not be taken: {e}"),
+                // Neither a lock nor its stand-in: never run beside another unseen.
+                Err(why) => cannot_start(&dir, &why),
             }
             let client = match Client::new(&dir) {
                 Ok(client) => client,
@@ -7044,6 +7044,7 @@ fn main() {
             drive_duplicate,
             drive_copy,
             clipboard::clipboard_read,
+            clipboard::clipboard_paste,
             drive_thumbnails,
             drive_put_back,
             drive_delete_forever,

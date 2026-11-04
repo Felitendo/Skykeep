@@ -1239,7 +1239,7 @@ export function DriveView() {
    */
   // Each render's own, as the keys are: it uploads into the folder open now.
   const paste = async (move: boolean) => {
-    const board = await api.clipboardRead().catch(() => null);
+    const board = await api.clipboardPaste().catch(() => null);
     if (board?.files.length) {
       await upload(board.files);
       return;
