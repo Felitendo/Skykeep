@@ -9,6 +9,11 @@
 //! (packaging/windows). A window with the same ID as a shortcut is pinned as that shortcut;
 //! one with none to match is pinned by the relaunch command it carries here.
 //!
+//! From an MSIX package (the Microsoft Store, package.rs) Windows knows the package's entries
+//! only as `<family name>!<application id>`, and a process may claim no other ID; the manifest
+//! (packaging/windows/msix) gives the entries the same IDs as above, so there each ID is the
+//! usual one with the family name in front.
+//!
 //! A jump list's tasks are written by the running app; no installer can declare them. Each is
 //! a command line the app already takes (`--new note`, `--app notes`), handed by the single
 //! instance to the Skykeep already running.
@@ -38,13 +43,23 @@ use windows::Win32::UI::Shell::{
 use crate::apps::{launch_name, APPS, NEW};
 
 /// Skykeep's AppUserModelID: the identifier the installer was built with, so it is the one on
-/// its shortcuts even in a launch run under the old identifier (migrate.rs).
+/// its shortcuts even in a launch run under the old identifier (migrate.rs) — in a package,
+/// with the package's family name in front.
 static APP_ID: OnceLock<String> = OnceLock::new();
+
+/// The ID Skykeep's toasts are sent as: the one claimed, or `identifier` before any claim.
+pub fn own_id(identifier: &str) -> String {
+    APP_ID.get().cloned().unwrap_or_else(|| {
+        crate::package::app_id(crate::package::family_name().as_deref(), identifier)
+    })
+}
 
 /// Said before any window is made: every window, toast and jump list after it is Skykeep's.
 /// The jump lists are written meanwhile, off the startup path.
 pub fn claim(identifier: &str) {
-    let id = APP_ID.get_or_init(|| identifier.to_string());
+    let id = APP_ID.get_or_init(|| {
+        crate::package::app_id(crate::package::family_name().as_deref(), identifier)
+    });
     // SAFETY: a plain call with a valid, NUL-terminated string the shell copies.
     if let Err(e) = unsafe { SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(id.as_str())) }
     {

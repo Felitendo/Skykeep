@@ -1,0 +1,213 @@
+# Skykeep for the Microsoft Store: an unsigned .msix, packed from the program the .msi installs.
+#   build — the Windows pipeline (windows.yml), as a release builds it: the .msi and the .exe,
+#           the .exe's install-and-launch check;
+#   msix  — the program taken out of the .msi and packed (packaging/windows/msix/pack.ps1) with
+#           the identity Partner Center gives; kept as the `skykeep-msix` artifact, unsigned, for
+#           the Store to sign. Then a copy is signed with a certificate made for this run only,
+#           installed, its seven Start-menu entries and their app IDs checked, Skykeep started
+#           from its entry and seen still running 15 s later, Notes opened from its own, and the
+#           package removed. Nothing is uploaded to the Store and nothing is published.
+#
+# The identity (Partner Center → the app → Product identity) is taken from this run's inputs,
+# else from the repository variables MSIX_IDENTITY_NAME, MSIX_PUBLISHER and
+# MSIX_PUBLISHER_DISPLAY_NAME, else from stand-ins that make a package fit only for the test
+# install here — never for the Store.
+name: MSIX for the Microsoft Store
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity_name:
+        description: "Package/Identity/Name (Partner Center, Product identity)"
+        type: string
+        default: ""
+      publisher:
+        description: "Package/Identity/Publisher, as CN=…"
+        type: string
+        default: ""
+      publisher_display_name:
+        description: "Package/Properties/PublisherDisplayName"
+        type: string
+        default: ""
+      tag:
+        description: "Release tag to build, such as v0.1.3 (empty: this branch)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/windows.yml
+    with:
+      test_first: false
+      ref: ${{ inputs.tag }}
+
+  msix:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      IDENTITY_NAME: ${{ inputs.identity_name || vars.MSIX_IDENTITY_NAME || 'SkykeepTest.Skykeep' }}
+      PUBLISHER: ${{ inputs.publisher || vars.MSIX_PUBLISHER || 'CN=Skykeep Test' }}
+      PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name || vars.MSIX_PUBLISHER_DISPLAY_NAME || 'Skykeep Test' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: skykeep-windows
+          path: dist
+      - name: Pack the .msix from the .msi's program
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem dist -Recurse -Filter *.msi | Select-Object -First 1
+          if ($msi.Name -notmatch '^Skykeep_(\d+\.\d+\.\d+)_x64') { throw "no version in '$($msi.Name)'" }
+          $version = $Matches[1]
+          # An administrative install only unpacks the .msi's files: nothing is installed.
+          $unpacked = Join-Path $env:RUNNER_TEMP "msi"
+          $p = Start-Process msiexec.exe -ArgumentList "/a `"$($msi.FullName)`" /qn TARGETDIR=`"$unpacked`"" -Wait -PassThru
+          if ($p.ExitCode) { throw "msiexec /a failed ($($p.ExitCode))" }
+          $exe = Get-ChildItem $unpacked -Recurse -Filter skykeep.exe | Select-Object -First 1
+          if (-not $exe) { throw "no skykeep.exe in the .msi" }
+          "from the .msi: $((Get-ChildItem $exe.DirectoryName -File).Name -join ', ')"
+          $out = "out\Skykeep_${version}_x64.msix"
+          ./packaging/windows/msix/pack.ps1 -Payload $exe.DirectoryName -Out $out -Version $version `
+            -Name $env:IDENTITY_NAME -Publisher $env:PUBLISHER -PublisherDisplayName $env:PUBLISHER_DISPLAY_NAME
+          "MSIX=$((Resolve-Path $out).Path)" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: skykeep-msix
+          path: out/*.msix
+          if-no-files-found: error
+      - name: A signed copy installs, starts and stays up, and comes off again
+        shell: pwsh
+        run: |
+          # A certificate for this run alone, named as the package's publisher (Windows installs
+          # a package only when the two match), trusted on this machine only.
+          $sdk = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.*\x64\signtool.exe" |
+            Sort-Object { [version]($_.Directory.Parent.Name) } | Select-Object -Last 1
+          $cert = New-SelfSignedCertificate -Type Custom -Subject $env:PUBLISHER -KeyUsage DigitalSignature `
+            -FriendlyName "Skykeep MSIX test" -CertStoreLocation Cert:\CurrentUser\My `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+          $pw = ConvertTo-SecureString ([guid]::NewGuid().ToString()) -AsPlainText -Force
+          $pfx = Join-Path $env:RUNNER_TEMP "test.pfx"
+          Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $pw | Out-Null
+          Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\LocalMachine\TrustedPeople -Password $pw | Out-Null
+          $copy = Join-Path $env:RUNNER_TEMP "signed-copy.msix"
+          Copy-Item $env:MSIX $copy
+          & $sdk.FullName sign /fd SHA256 /f $pfx /p ([System.Net.NetworkCredential]::new("", $pw).Password) $copy
+          if ($LASTEXITCODE) { throw "signtool failed ($LASTEXITCODE)" }
+
+          Add-AppxPackage -Path $copy
+          $pkg = Get-AppxPackage -Name $env:IDENTITY_NAME
+          if (-not $pkg) { throw "installed, but Windows lists no $env:IDENTITY_NAME package" }
+          $pfn = $pkg.PackageFamilyName
+          "installed: $($pkg.PackageFullName) at $($pkg.InstallLocation)"
+          $installed = Join-Path $pkg.InstallLocation "skykeep.exe"
+          $text = [System.Text.Encoding]::Latin1.GetString([System.IO.File]::ReadAllBytes($installed))
+          if ($text.Contains("__TAURI_BUNDLE_TYPE_VAR_MSI") -or $text.Contains("__TAURI_BUNDLE_TYPE_VAR_NSS")) {
+            throw "the packaged program still says it is the .msi's or the .exe's, which update themselves"
+          }
+
+          # The seven entries, each under its own app ID.
+          $ids = [ordered]@{ "Skykeep" = "io.github.yashwanthkamireddi.Skykeep" }
+          foreach ($n in "Notes", "Reminders", "Calendar", "Contacts", "Drive", "Photos") { $ids["Skykeep $n"] = "io.github.yashwanthkamireddi.Skykeep.$n" }
+          $wrong = @()
+          for ($i = 0; $i -lt 30; $i++) {
+            $listed = @(Get-StartApps | Where-Object { $_.AppID -like "$pfn!*" })
+            $wrong = @($ids.Keys | Where-Object { $n = $_; -not ($listed | Where-Object { $_.Name -eq $n -and $_.AppID -eq "$pfn!$($ids[$n])" }) })
+            if (-not $wrong) { break }
+            Start-Sleep -Seconds 2
+          }
+          $listed | Format-Table -AutoSize | Out-String | Write-Host
+          if ($wrong) { throw "the Start menu does not list, with its own app ID: $($wrong -join ', ')" }
+          "start menu: $($listed.Count) entries"
+
+          # An app ID as the shell reads it from a window.
+          Add-Type -TypeDefinition '
+            using System; using System.Runtime.InteropServices;
+            namespace WinShell {
+              [StructLayout(LayoutKind.Sequential)] public struct PropKey { public Guid fmtid; public uint pid; }
+              [StructLayout(LayoutKind.Sequential)] public struct PropVar { public ushort vt, r1, r2, r3; public IntPtr p, p2; }
+              [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+              public interface IPropertyStore {
+                void GetCount(out uint count); void GetAt(uint i, out PropKey key); void GetValue(ref PropKey key, out PropVar v);
+                void SetValue(ref PropKey key, ref PropVar v); void Commit();
+              }
+              public static class Aumid {
+                [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+                public static string Of(IntPtr hwnd) {
+                  Guid iid = typeof(IPropertyStore).GUID; IPropertyStore store;
+                  if (SHGetPropertyStoreForWindow(hwnd, ref iid, out store) != 0) return null;
+                  PropKey key = new PropKey { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
+                  PropVar v; store.GetValue(ref key, out v); Marshal.ReleaseComObject(store);
+                  return (v.vt == 31 || v.vt == 8) ? Marshal.PtrToStringUni(v.p) : null;
+                }
+              }
+            }'
+          Add-Type -Namespace Win -Name U -MemberDefinition '
+            public delegate bool EnumProc(System.IntPtr h, System.IntPtr l);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, System.IntPtr l);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, out uint pid);
+            [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int n);
+          '
+          function Get-Windows([int]$procId) {
+            $found = New-Object System.Collections.Generic.List[object]
+            [Win.U]::EnumWindows({ param($h, $l)
+              $owner = 0; [void][Win.U]::GetWindowThreadProcessId($h, [ref]$owner)
+              if ($owner -eq $procId -and [Win.U]::IsWindowVisible($h)) {
+                $sb = New-Object System.Text.StringBuilder 256; [void][Win.U]::GetWindowText($h, $sb, 256)
+                $found.Add([pscustomobject]@{ Handle = $h; Title = $sb.ToString() })
+              }
+              $true }, [System.IntPtr]::Zero) | Out-Null
+            $found
+          }
+
+          # Started as a person starts it: its Start-menu entry.
+          Start-Process "shell:AppsFolder\$pfn!io.github.yashwanthkamireddi.Skykeep"
+          $p = $null
+          for ($i = 0; $i -lt 30 -and -not $p; $i++) {
+            Start-Sleep -Seconds 1
+            $p = Get-Process skykeep -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$($pkg.InstallLocation)*" } | Select-Object -First 1
+          }
+          if (-not $p) { throw "Skykeep did not start from its Start-menu entry" }
+          "started: $($p.Path) (pid $($p.Id))"
+          Start-Sleep -Seconds 15
+          $p.Refresh()
+          if ($p.HasExited) { throw "Skykeep exited within 15 s (code $($p.ExitCode))" }
+          "still running after 15 s; windows: '$((Get-Windows $p.Id).Title -join "', '")'"
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\skykeep-msix-on-windows.png")
+
+          # Notes from its own entry: handed to the Skykeep running, a window under Notes' ID.
+          Start-Process "shell:AppsFolder\$pfn!io.github.yashwanthkamireddi.Skykeep.Notes"
+          $w = $null
+          for ($i = 0; $i -lt 15 -and -not $w; $i++) {
+            Start-Sleep -Seconds 2
+            $w = Get-Windows $p.Id | Where-Object { $_.Title -eq "Notes" } | Select-Object -First 1
+          }
+          if (-not $w) { throw "no Notes window after 30 s (visible: '$((Get-Windows $p.Id).Title -join "', '")')" }
+          $id = [WinShell.Aumid]::Of($w.Handle)
+          $want = "$pfn!io.github.yashwanthkamireddi.Skykeep.Notes"
+          if ($id -ne $want) { throw "the Notes window has app ID '$id', not $want" }
+          "Notes window: app ID $id"
+          $p.Refresh()
+          if ($p.HasExited) { throw "Skykeep closed by itself" }
+
+          Stop-Process -Id $p.Id
+          Start-Sleep -Seconds 2
+          Remove-AppxPackage -Package $pkg.PackageFullName
+          if (Get-AppxPackage -Name $env:IDENTITY_NAME) { throw "removed, but the package is still installed" }
+          if (Get-StartApps | Where-Object { $_.AppID -like "$pfn!*" }) { throw "removed, but the Start menu still lists it" }
+          "removed: no Skykeep entries left"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: skykeep-msix-on-windows
+          path: skykeep-msix-on-windows.png
+          if-no-files-found: ignore

@@ -110,7 +110,7 @@ pub fn tell(app: &AppHandle, title: &str, body: &str) {
     std::thread::spawn(move || {
         let mut notice = notify_rust::Notification::new();
         #[cfg(windows)]
-        notice.app_id(&app.config().identifier);
+        notice.app_id(&crate::taskbar::own_id(&app.config().identifier));
         notice
             .appname("Skykeep")
             .summary(&title)
@@ -328,7 +328,7 @@ fn show(app: AppHandle, due: DueAlarm) {
             use tauri_winrt_notification::{Duration as Shown, Scenario, Sound, Toast};
             let answering = app.clone();
             let due_answered = due.clone();
-            let mut toast = Toast::new(&app.config().identifier)
+            let mut toast = Toast::new(&crate::taskbar::own_id(&app.config().identifier))
                 .title(&due.title)
                 .text1(&body)
                 .sound(Some(Sound::Reminder))
@@ -491,7 +491,7 @@ fn show_event(app: AppHandle, event: quince_core::calendar::Event, minutes: i64)
             // menu shortcut the installer stamps with the same ID; without it every alert
             // came from "Windows PowerShell".
             #[cfg(windows)]
-            toast.app_id(&app.config().identifier);
+            toast.app_id(&crate::taskbar::own_id(&app.config().identifier));
             // Windows' own reminder chime; without a sound named the toast was silent.
             #[cfg(windows)]
             toast.sound_name("Reminder");

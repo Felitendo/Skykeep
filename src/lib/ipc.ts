@@ -88,7 +88,7 @@ export type UploadEvent = {
 export const UPDATE = "quince://update";
 
 /** Who updates this copy of Skykeep: itself, or the package manager it came from. */
-export type UpdateInstall = "here" | "packageManager" | "flatpak" | "development" | "manual";
+export type UpdateInstall = "here" | "packageManager" | "flatpak" | "store" | "development" | "manual";
 export type UpdateStatus = {
   install: UpdateInstall;
   /** Check for Updates Automatically. */

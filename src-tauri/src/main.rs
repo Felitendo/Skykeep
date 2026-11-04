@@ -33,6 +33,8 @@ mod notes_cmds;
 #[cfg(target_os = "linux")]
 mod notices;
 mod outbox;
+// Whether this copy is an MSIX package's (the Microsoft Store), and its app IDs if so.
+mod package;
 mod photo_cache;
 mod photos;
 #[cfg(target_os = "linux")]

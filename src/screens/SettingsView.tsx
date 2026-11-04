@@ -978,6 +978,7 @@ function UpdatesGroup() {
   const elsewhere: Record<string, string> = {
     packageManager: "Updates come through your package manager.",
     flatpak: "Updates come through Flatpak.",
+    store: "Updates come through the Microsoft Store.",
     development: "This is a development build, so it doesn’t update itself.",
     manual: "This copy wasn’t installed by Skykeep’s installer, so it doesn’t update itself.",
   };

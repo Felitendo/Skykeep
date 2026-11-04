@@ -2,7 +2,8 @@
 //!
 //! Only a copy installed from the AppImage, the Windows installer (.exe) or the .msi updates
 //! itself. A .deb, an .rpm, the AUR, a distribution's own package or the Flatpak is updated by
-//! its package manager and is never offered an update here ([`install_kind`]).
+//! its package manager and is never offered an update here ([`install_kind`]); nor is the
+//! Microsoft Store's MSIX package, which the Store updates (package.rs).
 //!
 //! Shortly after launch, and about once a day after that, the latest release's `latest.json`
 //! is read through a client that can reach GitHub's release servers and nothing else
@@ -52,6 +53,8 @@ pub enum Install {
     PackageManager,
     /// Flatpak updates it.
     Flatpak,
+    /// An MSIX package, from the Microsoft Store: the Store updates it.
+    Store,
     /// A development build, run from the source.
     Development,
     /// Anything else, such as a program copied by hand: nothing here can replace it safely.
@@ -60,16 +63,22 @@ pub enum Install {
 
 /// Who updates this copy. `bundle` is what Tauri's bundler wrote into the program when it
 /// packaged it (none for a `cargo build`, which is how the AUR and the Flatpak build it);
-/// `appimage` whether it runs as an AppImage now, which is the file the update replaces.
+/// `appimage` whether it runs as an AppImage now, which is the file the update replaces;
+/// `msix` whether it is an MSIX package's — whatever bundle its program was taken from, a
+/// package's files are Windows' to replace, never this program's.
 pub fn install_kind(
     os: &str,
     bundle: Option<BundleType>,
     appimage: bool,
     flatpak: bool,
+    msix: bool,
     debug: bool,
 ) -> Install {
     if debug {
         return Install::Development;
+    }
+    if msix {
+        return Install::Store;
     }
     if flatpak {
         return Install::Flatpak;
@@ -99,6 +108,7 @@ pub fn this_install(app: &AppHandle) -> Install {
         tauri::utils::platform::bundle_type(),
         appimage,
         flatpak,
+        crate::package::packaged(),
         cfg!(debug_assertions),
     )
 }
@@ -989,6 +999,7 @@ fn refuse_unless_here(app: &AppHandle) -> Result<(), String> {
         Install::Here => Ok(()),
         Install::PackageManager => Err("Updates come through your package manager.".into()),
         Install::Flatpak => Err("Updates come through Flatpak.".into()),
+        Install::Store => Err("Updates come through the Microsoft Store.".into()),
         Install::Development => {
             Err("This is a development build, so it doesn't update itself.".into())
         }
@@ -1024,7 +1035,7 @@ mod tests {
     #[test]
     fn who_updates_each_kind_of_install() {
         use BundleType::*;
-        let here = |os, b, ai| install_kind(os, b, ai, false, false);
+        let here = |os, b, ai| install_kind(os, b, ai, false, false, false);
         assert_eq!(here("linux", Some(AppImage), true), Install::Here);
         assert_eq!(here("linux", Some(AppImage), false), Install::Manual);
         assert_eq!(here("linux", Some(Deb), false), Install::PackageManager);
@@ -1038,17 +1049,25 @@ mod tests {
         assert_eq!(here("windows", None, false), Install::Manual);
         assert_eq!(here("macos", Some(App), false), Install::Manual);
         assert_eq!(
-            install_kind("linux", Some(AppImage), true, true, false),
+            install_kind("linux", Some(AppImage), true, true, false, false),
             Install::Flatpak
         );
         assert_eq!(
-            install_kind("linux", None, false, true, false),
+            install_kind("linux", None, false, true, false, false),
             Install::Flatpak
         );
         assert_eq!(
-            install_kind("windows", Some(Nsis), false, false, true),
+            install_kind("windows", Some(Nsis), false, false, false, true),
             Install::Development
         );
+        // The Store's package never updates itself: its program is the .msi's, bundle type and
+        // all, but the Store replaces it.
+        for bundle in [Some(Msi), Some(Nsis), None] {
+            assert_eq!(
+                install_kind("windows", bundle, false, false, true, false),
+                Install::Store
+            );
+        }
     }
 
     #[test]
