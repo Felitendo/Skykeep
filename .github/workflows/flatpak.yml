@@ -1,37 +1,27 @@
-# The Flatpak, built from packaging/flatpak/ exactly as Flathub would build it (offline, from
-# the generated cargo and npm sources), and kept as a .flatpak bundle. Proves the manifest
-# without installing flatpak-builder anywhere. Run by hand: Actions → Flatpak → Run workflow.
+# Builds the Flatpak the way Flathub does: in the Flathub build container, offline, from the
+# manifest and the generated cargo and npm source lists. A test before submitting to Flathub.
 name: Flatpak
 
 on:
   workflow_dispatch:
+  push:
+    branches: [flatpak]
 
 permissions:
   contents: read
 
-concurrency:
-  group: flatpak-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  flatpak:
+  build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    # The GNOME 51 runtime and SDK, preinstalled (the manifest's runtime-version).
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
       options: --privileged
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@v5
         with:
-          # The manifest's main source is this repository as a git checkout (`path: ../..`);
-          # a shallow clone of it cannot be cloned again.
           fetch-depth: 0
-      - name: The checkout, trusted inside the container
-        run: git config --global --add safe.directory '*'
-      - uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          manifest-path: packaging/flatpak/io.github.yashwanthkamireddi.Skykeep.yml
           bundle: skykeep.flatpak
-          cache-key: flatpak-builder-${{ hashFiles('Cargo.lock', 'package-lock.json') }}
-          upload-artifact: true
+          manifest-path: packaging/flatpak/io.github.yashwanthkamireddi.Skykeep.yml
+          cache-key: flatpak-builder-${{ github.sha }}
