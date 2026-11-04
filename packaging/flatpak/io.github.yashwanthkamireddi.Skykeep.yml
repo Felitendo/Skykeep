@@ -106,7 +106,7 @@ modules:
           desktop-file-validate "$entry"
           install -Dm644 "$entry" "${FLATPAK_DEST}/share/applications/${entry##*/}"
         done
-        test "$(ls ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.*.desktop | wc -l)" -eq 7
+        test "$(ls ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}*.desktop | wc -l)" -eq 7
 
       - install -Dm644 ${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
 
