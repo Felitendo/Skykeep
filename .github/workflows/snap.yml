@@ -8,7 +8,11 @@ on:
     inputs:
       tag:
         description: Release whose .deb the Snap wraps
-        default: v0.1.2
+        default: v0.1.3
+      publish:
+        description: Upload to the Snap Store (stable)
+        type: boolean
+        default: false
   push:
     branches: [snap]
 
@@ -18,12 +22,14 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    outputs:
+      snap: ${{ steps.name.outputs.snap }}
     steps:
       - uses: actions/checkout@v5
       - name: The release's .deb
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || 'v0.1.2' }}
+          TAG: ${{ inputs.tag || 'v0.1.3' }}
         run: |
           gh release download "$TAG" -p 'Skykeep_*_amd64.deb' -D snap/local
           mv snap/local/Skykeep_*_amd64.deb snap/local/skykeep.deb
@@ -47,7 +53,26 @@ jobs:
           cat run.log | tail -40
           # 124 = still running when the timeout ended it: it started and stayed up.
           [ "$code" -eq 124 ] || { echo "::error::Skykeep exited ($code) instead of staying up"; exit 1; }
+      - id: name
+        run: echo "snap=$(basename '${{ steps.build.outputs.snap }}')" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: skykeep-snap
           path: ${{ steps.build.outputs.snap }}
+
+  publish:
+    # Uploads the tested snap to the Snap Store's stable channel. Runs only when asked, with the
+    # store credential (snapcraft export-login) saved as SNAPCRAFT_STORE_CREDENTIALS.
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: skykeep-snap
+      - uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ needs.build.outputs.snap }}
+          release: stable
