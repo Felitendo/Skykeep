@@ -31,12 +31,15 @@ const midnightIn = (n) => page.evaluate((n) => { const d = new Date(); d.setHour
 const scroller = page.locator(".cx-scroll");
 await scroller.evaluate((el) => { el.scrollTop = 18 * 48; });
 const before = await scroller.evaluate((el) => el.scrollTop);
-const title = await page.locator(".cx-title").getAttribute("aria-label");
+// The week is told by its first day, not the title: the title names only the month, and the
+// next week is often in the same month.
+const firstDay = () => document.querySelector(".cal-col-head")?.textContent;
+const title = await page.evaluate(firstDay);
 await page.keyboard.press("ArrowRight");
-await page.waitForFunction((t) => document.querySelector(".cx-title")?.getAttribute("aria-label") !== t, title);
+await page.waitForFunction((t) => document.querySelector(".cal-col-head")?.textContent !== t, title);
 ok(await scroller.evaluate((el) => el.scrollTop) === before, "the next week keeps the hours scrolled to");
 await page.keyboard.press("ArrowLeft");
-await page.waitForFunction((t) => document.querySelector(".cx-title")?.getAttribute("aria-label") === t, title);
+await page.waitForFunction((t) => document.querySelector(".cal-col-head")?.textContent === t, title);
 ok(await scroller.evaluate((el) => el.scrollTop) === before, "and so does the week before");
 
 // A double-click on a free part of the all-day row: an all-day event on that day.
