@@ -25,3 +25,24 @@ jobs:
           bundle: skykeep.flatpak
           manifest-path: packaging/flatpak/io.github.yashwanthkamireddi.Skykeep.yml
           cache-key: flatpak-builder-${{ github.sha }}
+
+  starts:
+    # The bundle installs and Skykeep starts and stays up, offline, under a virtual display.
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: skykeep-x86_64
+      - name: It installs and starts
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive skykeep.flatpak
+          set +e
+          timeout 20 dbus-run-session -- xvfb-run -a flatpak run io.github.yashwanthkamireddi.Skykeep > run.log 2>&1
+          code=$?
+          tail -40 run.log
+          [ "$code" -eq 124 ] || { echo "::error::Skykeep exited ($code) instead of staying up"; exit 1; }
