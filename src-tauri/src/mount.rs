@@ -58,14 +58,17 @@ impl Remote for AppRemote {
         let (app, folder) = (self.app.clone(), folder.to_string());
         Box::pin(async move {
             let (http, root, params) = context(&app, "drivews").await?;
+            let asked_for = crate::asked_as(&params);
             let pass = crate::drive_pass(&folder);
             let _one = pass.lock().await;
             let items = quince_icloud::drive::fetch_folder(&http, &root, params, &folder)
                 .await
                 .map_err(|e| e.to_string())?;
-            // Kept, so the window's Drive knows it too and the next look needs no network.
+            // Kept, so the window's Drive knows it too and the next look needs no network —
+            // only in the library of the account whose session read it.
             let data = app.state::<Data>();
             let mut library = data.0.lock().await;
+            crate::owned_by(&library, asked_for.as_deref())?;
             quince_icloud::drive::store_folder(&mut library, &folder, &items)
                 .map_err(|e| e.to_string())?;
             Ok(items)

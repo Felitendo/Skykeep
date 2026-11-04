@@ -88,10 +88,14 @@ on Windows.
   and Photos listings — and caches of pictures and files you opened. These are not encrypted
   by Skykeep; use full-disk encryption, as you would for the same data on a Mac.
 
-Signing out asks whether to keep a copy on this computer. Removing it deletes the library,
-its caches and Skykeep's file-manager thumbnails. Another Apple Account signing in never sees
-the last one's data: each account's library is set aside whole and brought back only for
-that account.
+Signing out asks whether to keep a copy on this computer. Removing it deletes the library's
+files themselves — `library.db`, its `-wal` and `-shm`, and any damaged copy Skykeep set aside
+beside them (`library.corrupt-*`) — not only the rows in them, so nothing of the account is
+left in the file's free space; then its caches and Skykeep's file-manager thumbnails. Another
+Apple Account signing in never sees the last one's data: each account's library is set aside
+whole and brought back only for that account, the iCloud Drive and Photos folders are let go
+of before it is, and a library that holds records but cannot say whose is set aside too,
+never handed to the account signing in.
 
 ## What runs on this computer
 

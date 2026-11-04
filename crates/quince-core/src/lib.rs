@@ -85,9 +85,20 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// The `app_state` keys that are this computer's, not an account's.
+/// The `app_state` keys that are this computer's, not an account's. The photo cache's size is
+/// chosen for this computer's disk, in Settings, as the others are.
 const COMPUTER_KEYS: &str = "key LIKE 'settings.%' OR key IN \
-     ('drive_folder_on', 'drive_folder_path', 'photos_folder_on', 'photos_folder_path')";
+     ('drive_folder_on', 'drive_folder_path', 'photos_folder_on', 'photos_folder_path', \
+      'photos.cacheCap')";
+
+/// Which account a library holds (the app's `ACCOUNT_KEY`): carried over with what waits to be
+/// sent when a damaged library is made again, so those changes stay that account's alone.
+const ACCOUNT_KEY: &str = "account";
+
+/// `app_state` keys a library makes for itself the moment it opens, whoever it is for: the
+/// id this installation signs note edits with (the app's `documents.writer`). Not a sign that
+/// any account's records are here.
+const MADE_ON_OPEN: &str = "key IN ('documents.writer')";
 
 /// Every table holding what an account brought: all but `app_state`, which is sorted key by key,
 /// and the search index's, which are not rows to delete one by one (`forget_account` empties it).
@@ -253,7 +264,10 @@ impl Library {
         let Ok(old) = Connection::open_with_flags(from, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
             return 0;
         };
-        let computer = format!("SELECT * FROM app_state WHERE {COMPUTER_KEYS}");
+        // The account's name goes with its changes: without it, a library holding one
+        // account's changes named no owner, and was given to whoever signed in next.
+        let computer =
+            format!("SELECT * FROM app_state WHERE {COMPUTER_KEYS} OR key = '{ACCOUNT_KEY}'");
         let mut moved = 0;
         for (table, select) in [
             ("outbox", "SELECT * FROM outbox ORDER BY id".to_string()),
@@ -573,7 +587,10 @@ impl Library {
             }
         }
         Ok(self.conn.query_row(
-            &format!("SELECT EXISTS (SELECT 1 FROM app_state WHERE NOT ({COMPUTER_KEYS}))"),
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM app_state \
+                 WHERE NOT ({COMPUTER_KEYS}) AND NOT ({MADE_ON_OPEN}))"
+            ),
             [],
             |r| r.get(0),
         )?)
@@ -646,16 +663,20 @@ mod tests {
                 .unwrap();
         }
         let mut fresh = Library::in_memory().unwrap();
-        assert_eq!(fresh.salvage(&old), 2, "the change waiting and the setting");
+        assert_eq!(
+            fresh.salvage(&old),
+            3,
+            "the change waiting, the setting and whose they are"
+        );
         assert_eq!(fresh.outbox_count().unwrap(), 1);
         assert_eq!(
             fresh.state("settings.alerts").unwrap().as_deref(),
             Some("on")
         );
         assert_eq!(
-            fresh.state("account").unwrap(),
-            None,
-            "the account's own is not"
+            fresh.state("account").unwrap().as_deref(),
+            Some("someone"),
+            "the change stays the account's that made it"
         );
     }
 
@@ -759,6 +780,13 @@ mod tests {
         );
         lib.forget_account().unwrap();
         assert!(!lib.holds_account().unwrap(), "nothing left to set aside");
+        // The id a library makes for itself as it opens is no account's records.
+        lib.set_state("documents.writer", "W").unwrap();
+        lib.set_state("photos.cacheCap", "1073741824").unwrap();
+        assert!(
+            !lib.holds_account().unwrap(),
+            "a fresh library is not taken for one"
+        );
         assert!(
             lib.drive_children("root").unwrap().is_empty(),
             "the files gone"

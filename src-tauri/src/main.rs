@@ -1408,7 +1408,9 @@ pub fn account_tag(dsid: &str) -> String {
 /// Someone else's library here — a sign-out kept a copy, then another Apple ID signed in — is
 /// set aside whole under `accounts/`, never deleted and never mixed, and this account's own,
 /// if it was set aside before, comes back where it was: its records, its caches, what it had
-/// still to send. A library from before accounts were told apart is simply claimed.
+/// still to send. A library that names no owner but holds an account's records — whose they
+/// are, nothing here can say — is set aside the same way, as unclaimed, rather than handed to
+/// whoever signs in next; only an empty one is simply claimed.
 async fn claim_library(app: &tauri::AppHandle, client: &Client) -> Result<(), String> {
     let Some(dsid) = client.session().dsid.as_deref() else {
         return Ok(());
@@ -1422,9 +1424,14 @@ async fn claim_library(app: &tauri::AppHandle, client: &Client) -> Result<(), St
     }
     let dir = state_dir(app);
     let home = dir.join(SET_ASIDE).join(&tag);
-    if known.is_some() || home.exists() {
+    if must_set_aside(&library, known.as_deref(), home.exists())? {
         let now = jiff::Timestamp::now().as_second();
         let away = known.unwrap_or_else(|| format!("unclaimed-{now}"));
+        // The folders the last account's session served go before its library does: left
+        // mounted, they went on answering from the next account's library and session.
+        tauri::async_runtime::spawn_blocking(|| mount::release_within(Duration::from_secs(3)))
+            .await
+            .map_err(|e| e.to_string())?;
         // The screens' readers let go of the file before it moves.
         data.0.forget_readers();
         switch_library(&mut library, &dir, &away, &home)?;
@@ -1433,6 +1440,17 @@ async fn claim_library(app: &tauri::AppHandle, client: &Client) -> Result<(), St
     library
         .set_state(ACCOUNT_KEY, &tag)
         .map_err(|e| e.to_string())
+}
+
+/// Whether the library here must be set aside before `account` takes it: it is another
+/// account's, `account`'s own is waiting to come back, or it names no owner but holds records
+/// all the same (a library whose owner was lost) — never given to an account it may not be.
+fn must_set_aside(
+    library: &Library,
+    owner: Option<&str>,
+    home_waits: bool,
+) -> Result<bool, String> {
+    Ok(owner.is_some() || home_waits || library.holds_account().map_err(|e| e.to_string())?)
 }
 
 /// One account's library and caches set aside under `away`, and the ones at `home` (if any)
@@ -1590,17 +1608,19 @@ fn asked_as(params: &[(String, String)]) -> Option<String> {
         .map(|(_, dsid)| account_tag(dsid))
 }
 
-/// Whether what was read with one account's session may be stored in this library: never in a
-/// library another account owns. A pass after a write read with the session the write was
+/// Whether what was read with one account's session may be stored in this library: only in
+/// the library that account owns. A pass after a write read with the session the write was
 /// sent with; another Apple ID signing in meanwhile swapped the library under it, and that
-/// pass stored the first account's notes, reminders and sync position in the second's.
+/// pass stored the first account's notes, reminders and sync position in the second's. A
+/// library that names no owner (signed out with nothing kept, or not yet claimed) is no
+/// account's to fill, and a request that names no account is no account's to store.
 fn owned_by(library: &quince_core::Library, asked_for: Option<&str>) -> Result<(), String> {
     let owner = library.state(ACCOUNT_KEY).ok().flatten();
     match (owner.as_deref(), asked_for) {
-        (Some(owner), Some(asked)) if owner != asked => Err(
+        (Some(owner), Some(asked)) if owner == asked => Ok(()),
+        _ => Err(
             "Signed in to another account while this was on its way, so nothing was stored.".into(),
         ),
-        _ => Ok(()),
     }
 }
 
@@ -1620,9 +1640,35 @@ mod account_write_tests {
             owned_by(&lib, b.as_deref()).is_err(),
             "the other account's read is refused"
         );
-        // A library from before accounts were told apart, and a request with no account, pass.
-        assert!(owned_by(&Library::in_memory().unwrap(), b.as_deref()).is_ok());
-        assert!(owned_by(&lib, None).is_ok());
+        // A library that names no owner is no account's to fill, and a request that names no
+        // account stores nothing.
+        assert!(owned_by(&Library::in_memory().unwrap(), b.as_deref()).is_err());
+        assert!(owned_by(&lib, None).is_err());
+    }
+
+    /// A library is handed to the account signing in only when it is that account's or holds
+    /// nothing. One that names no owner but holds records — its owner lost — is set aside as
+    /// unclaimed, never given to whoever signs in next; an empty one (a Remove Copy, a first
+    /// run), only the id it made for itself as it opened, is simply claimed.
+    #[test]
+    fn a_library_with_no_owner_but_records_is_set_aside() {
+        let mut lib = Library::in_memory().unwrap();
+        lib.set_state("documents.writer", "W").unwrap();
+        lib.set_state("settings.alerts.events", "0").unwrap();
+        assert!(
+            !must_set_aside(&lib, None, false).unwrap(),
+            "empty: claimed"
+        );
+        assert!(
+            must_set_aside(&lib, None, true).unwrap(),
+            "the account's own waits to come back"
+        );
+        assert!(must_set_aside(&lib, Some("other"), false).unwrap());
+        lib.outbox_push("reminders", "R1", "done", "{}").unwrap();
+        assert!(
+            must_set_aside(&lib, None, false).unwrap(),
+            "a change waiting, whose nobody can say"
+        );
     }
 }
 

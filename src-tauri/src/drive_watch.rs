@@ -191,6 +191,12 @@ async fn read_zones(
             |id| id == quince_core::drive::ROOT || library.drive_item(id).ok().flatten().is_some(),
         )
     };
+    // What this account's session read goes only into this account's library: another
+    // account signing in while the feed was read swapped the library under it.
+    let account = crate::account_tag(dsid);
+    let mine = |library: &quince_core::Library| {
+        crate::owned_by(library, Some(&account)).map_err(Error::Refused)
+    };
     let mut listed = Vec::new();
     for folder in folders {
         let pass = crate::drive_pass(&folder);
@@ -198,11 +204,13 @@ async fn read_zones(
         match quince_icloud::drive::fetch_folder(http, drivews, params.to_vec(), &folder).await {
             Ok(items) => {
                 let mut library = data.0.lock().await;
+                mine(&library)?;
                 quince_icloud::drive::store_folder(&mut library, &folder, &items)?;
             }
             // Gone since: forgotten here too, as when the window finds it gone.
             Err(Error::NotFound) => {
                 let mut library = data.0.lock().await;
+                mine(&library)?;
                 library.forget_drive_folder(&folder)?;
             }
             Err(e) => return Err(e),
@@ -210,7 +218,9 @@ async fn read_zones(
         listed.push(folder);
     }
     if let Ok(json) = serde_json::to_string(&positions) {
-        let _ = data.0.lock().await.set_state(POSITION, &json);
+        let mut library = data.0.lock().await;
+        mine(&library)?;
+        let _ = library.set_state(POSITION, &json);
     }
     if !listed.is_empty() {
         quiet!("drive watch: {} folder(s) changed", listed.len());

@@ -1239,12 +1239,47 @@ struct Report {
     refused: Vec<(String, String)>,
 }
 
-/// Send what is waiting for `service`, oldest first, with `send`. Stops at the first change
-/// Apple can't be reached for, leaving it and everything after it queued, in order.
+/// [`drain_as`] without asking whose the library is: the tests' pretend Apple.
+#[cfg(test)]
 async fn drain<F, Fut>(
     library: &crate::library_lock::LibraryLock,
     service: &str,
     pass: &Mutex<()>,
+    send: F,
+) -> Report
+where
+    F: Fn(Pending) -> Fut,
+    Fut: std::future::Future<Output = Result<(), Error>>,
+{
+    drain_checked(library, service, pass, None, send).await
+}
+
+/// Send `service`'s queue with the session of `account` (as the library names accounts), for
+/// as long as the library is still that account's: asked as each change is taken, under the
+/// same lock, so a sign-in of another account while the queue was going — which swaps the
+/// library under it — never has its changes sent with the session captured before.
+async fn drain_as<F, Fut>(
+    library: &crate::library_lock::LibraryLock,
+    service: &str,
+    pass: &Mutex<()>,
+    account: &str,
+    send: F,
+) -> Report
+where
+    F: Fn(Pending) -> Fut,
+    Fut: std::future::Future<Output = Result<(), Error>>,
+{
+    drain_checked(library, service, pass, Some(account), send).await
+}
+
+/// Send what is waiting for `service`, oldest first, with `send`. Stops at the first change
+/// Apple can't be reached for, leaving it and everything after it queued, in order — and,
+/// given an `account`, at the first change taken once the library is no longer its.
+async fn drain_checked<F, Fut>(
+    library: &crate::library_lock::LibraryLock,
+    service: &str,
+    pass: &Mutex<()>,
+    account: Option<&str>,
     send: F,
 ) -> Report
 where
@@ -1261,7 +1296,18 @@ where
         // the write and stored just after would put the old state back with nothing waiting
         // to lay over it.
         let _pass = pass.lock().await;
-        let next = library.lock().await.outbox_take(service);
+        let next = {
+            let mut l = library.lock().await;
+            let theirs = account
+                .is_none_or(|a| l.state(crate::ACCOUNT_KEY).ok().flatten().as_deref() == Some(a));
+            if theirs {
+                l.outbox_take(service)
+            } else {
+                // Another account's library now: what is left waits for its own session.
+                report.outcome = Outcome::Later;
+                return report;
+            }
+        };
         let p = match next {
             Ok(Some(p)) => p,
             Ok(None) => break,
@@ -1288,6 +1334,22 @@ where
         }
     }
     report
+}
+
+/// A queued change's record missing from the library: gone — deleted here, or on another
+/// device, and a pass has said so — once the library has had a pass of `service`. Before its
+/// first (a library made again after damage, its records not yet brought back) the record is
+/// not known yet, not gone: the change waits for that pass, rather than being dropped as done
+/// or refused as deleted elsewhere.
+async fn known_gone(
+    library: &crate::library_lock::LibraryLock,
+    service: &str,
+) -> Result<(), Error> {
+    if library.lock().await.last_synced(service)?.is_some() {
+        Ok(())
+    } else {
+        Err(Error::Busy)
+    }
 }
 
 fn unreadable(e: &serde_json::Error) -> Error {
@@ -1338,7 +1400,10 @@ async fn drain_reminders(app: &AppHandle) -> Outcome {
         // Not signed in, or the session is being renewed: nothing can go yet.
         return Outcome::Later;
     };
-    let report = drain(&data.0, REMINDERS, &crate::REMINDERS_PASS, |p| {
+    let Some(account) = crate::asked_as(&params) else {
+        return Outcome::Later;
+    };
+    let report = drain_as(&data.0, REMINDERS, &crate::REMINDERS_PASS, &account, |p| {
         send_reminder(&data.0, &http, &root, params.clone(), p)
     })
     .await;
@@ -1373,7 +1438,7 @@ async fn send_reminder(
             let d: Done = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
             // Gone from the library (deleted here or elsewhere): nothing left to tick.
             let Some(reminder) = stored else {
-                return Ok(());
+                return known_gone(library, REMINDERS).await;
             };
             // A change made on another device after this one was queued wins; the pass after
             // sending reads Apple's version back.
@@ -1418,7 +1483,7 @@ async fn send_reminder(
             let a: Advance = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
             // Gone from the library (deleted here or elsewhere): nothing left to tick.
             let Some(reminder) = stored else {
-                return Ok(());
+                return known_gone(library, REMINDERS).await;
             };
             // Moved on at Apple already — by an earlier send of this tick, or on another
             // device since — it is not moved on again.
@@ -1427,6 +1492,7 @@ async fn send_reminder(
         "edit" => {
             let e: Edit = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
             let Some(mut reminder) = stored else {
+                known_gone(library, REMINDERS).await?;
                 return Err(Error::Refused(
                     "This reminder was deleted on another device, so the change wasn’t saved."
                         .into(),
@@ -1504,7 +1570,10 @@ async fn drain_notes(app: &AppHandle) -> Outcome {
     let Ok((http, root, params)) = session else {
         return Outcome::Later;
     };
-    let report = drain(&data.0, NOTES, &crate::NOTES_PASS, |p| {
+    let Some(account) = crate::asked_as(&params) else {
+        return Outcome::Later;
+    };
+    let report = drain_as(&data.0, NOTES, &crate::NOTES_PASS, &account, |p| {
         send_note(&data.0, &http, &root, params.clone(), p)
     })
     .await;
@@ -1544,6 +1613,7 @@ async fn send_note(
         "move" => {
             let m: NoteMove = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
             let Some(note) = library.lock().await.note(&p.record)? else {
+                known_gone(library, NOTES).await?;
                 return Err(Error::Refused(
                     "This note was deleted on another device, so it wasn’t moved.".into(),
                 ));
@@ -1574,7 +1644,7 @@ async fn send_note(
             let x: NotePin = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
             // Gone since: nothing left to pin.
             let Some(note) = library.lock().await.note(&p.record)? else {
-                return Ok(());
+                return known_gone(library, NOTES).await;
             };
             n::pin_cloudkit(http, root, params, &note, x.pinned).await
         }
@@ -1593,6 +1663,7 @@ async fn send_note_save(
 ) -> Result<(), Error> {
     let s: NoteSave = serde_json::from_str(&p.payload).map_err(|e| unreadable(&e))?;
     let Some(note) = library.lock().await.note(&p.record)? else {
+        known_gone(library, NOTES).await?;
         return Err(Error::Refused(
             "This note was deleted on another device, so the edit wasn’t saved.".into(),
         ));
@@ -1651,7 +1722,10 @@ async fn drain_contacts(app: &AppHandle) -> Outcome {
         });
         return Outcome::Clear;
     }
-    let report = drain(&data.0, CONTACTS, &crate::CONTACTS_PASS, |p| {
+    let Some(account) = crate::asked_as(&params) else {
+        return Outcome::Later;
+    };
+    let report = drain_as(&data.0, CONTACTS, &crate::CONTACTS_PASS, &account, |p| {
         send_contact(&data.0, &http, &root, params.clone(), p)
     })
     .await;
@@ -1756,7 +1830,10 @@ async fn drain_calendar(app: &AppHandle) -> Outcome {
     let Ok((http, root, params)) = session else {
         return Outcome::Later;
     };
-    let report = drain(&data.0, CALENDAR, &crate::CALENDAR_PASS, |p| {
+    let Some(account) = crate::asked_as(&params) else {
+        return Outcome::Later;
+    };
+    let report = drain_as(&data.0, CALENDAR, &crate::CALENDAR_PASS, &account, |p| {
         send_event(&data.0, &http, &root, params.clone(), p)
     })
     .await;
@@ -3407,6 +3484,108 @@ mod tests {
         };
         let back: Edit = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
         assert_eq!(back, e);
+    }
+
+    /// A tick, a pin or a move for a record the library does not hold is dropped (ticks, pins)
+    /// or refused (moves) only once a pass has said what the library holds: in a library made
+    /// again after damage, before its first pass, the record is not known yet, and the change
+    /// waits — never quietly "sent" and lost.
+    #[tokio::test]
+    async fn a_change_for_a_record_not_known_yet_waits_for_a_pass() {
+        let lib = crate::library_lock::LibraryLock::new(Library::in_memory().unwrap(), None);
+        let http = reqwest::Client::new();
+        // Nothing listens here: any request at all fails as a network error, not Busy.
+        let nowhere = "http://127.0.0.1:9";
+        let pending = |service: &str, kind: &str, payload: String| Pending {
+            id: 1,
+            service: service.into(),
+            record: "GONE".into(),
+            kind: kind.into(),
+            payload,
+            tries: 0,
+        };
+        let tick = || {
+            let d = Done {
+                done: true,
+                at: 1,
+                base: Default::default(),
+            };
+            pending(REMINDERS, "done", serde_json::to_string(&d).unwrap())
+        };
+        let pin = || pending(NOTES, "pin", r#"{"pinned":true}"#.into());
+        let moved = || pending(NOTES, "move", r#"{"folder_guid":null}"#.into());
+
+        let waits = |r: Result<(), Error>| matches!(r, Err(e) if transient(&e, 99));
+        assert!(waits(
+            send_reminder(&lib, &http, nowhere, Vec::new(), tick()).await
+        ));
+        assert!(waits(
+            send_note(&lib, &http, nowhere, Vec::new(), pin()).await
+        ));
+        assert!(waits(
+            send_note(&lib, &http, nowhere, Vec::new(), moved()).await
+        ));
+
+        // A pass in: the record is gone, so a tick or a pin has nothing left to do, and a move
+        // says why it did not happen.
+        {
+            let l = lib.lock().await;
+            l.mark_synced(REMINDERS, Some("t")).unwrap();
+            l.mark_synced(NOTES, Some("t")).unwrap();
+        }
+        assert!(send_reminder(&lib, &http, nowhere, Vec::new(), tick())
+            .await
+            .is_ok());
+        assert!(send_note(&lib, &http, nowhere, Vec::new(), pin())
+            .await
+            .is_ok());
+        assert!(matches!(
+            send_note(&lib, &http, nowhere, Vec::new(), moved()).await,
+            Err(Error::Refused(_))
+        ));
+    }
+
+    /// The sender sends a library's changes only while the library is the account's whose
+    /// session it holds: asked as each change is taken. Another account's library — swapped in
+    /// by a sign-in while the queue was going — keeps every change, unsent.
+    #[tokio::test]
+    async fn changes_go_only_with_their_own_accounts_session() {
+        let mut l = library();
+        queue(&mut l, "R1", true);
+        queue(&mut l, "R2", true);
+        l.set_state(crate::ACCOUNT_KEY, "b").unwrap();
+        let lib = crate::library_lock::LibraryLock::new(l, None);
+        let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pass = Mutex::new(());
+        let count = std::sync::Arc::clone(&sent);
+        let report = drain_as(&lib, REMINDERS, &pass, "a", move |_p| {
+            let count = std::sync::Arc::clone(&count);
+            async move {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await;
+        assert!(matches!(report.outcome, Outcome::Later));
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(lib.lock().await.outbox_pending(REMINDERS).unwrap().len(), 2);
+
+        // Swapped part way: the first goes with its own account, the rest wait.
+        lib.lock().await.set_state(crate::ACCOUNT_KEY, "a").unwrap();
+        let lib = std::sync::Arc::new(lib);
+        let (inner, count) = (std::sync::Arc::clone(&lib), std::sync::Arc::clone(&sent));
+        let report = drain_as(&lib, REMINDERS, &pass, "a", move |_p| {
+            let (lib, count) = (std::sync::Arc::clone(&inner), std::sync::Arc::clone(&count));
+            async move {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                lib.lock().await.set_state(crate::ACCOUNT_KEY, "b").unwrap();
+                Ok(())
+            }
+        })
+        .await;
+        assert!(matches!(report.outcome, Outcome::Later));
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(lib.lock().await.outbox_pending(REMINDERS).unwrap().len(), 1);
     }
 
     /// A pretend Apple that holds one event: a save sent with its current tag is taken, one sent
