@@ -6,8 +6,8 @@
 #           the Store to sign. Then a copy is signed with a certificate made for this run only,
 #           installed, its seven Start-menu entries and their app IDs checked, Skykeep started
 #           from its entry and seen still running 15 s later, Notes opened from its own, Open at
-#           Login turned on and off through Skykeep itself (the package's startup task, read back
-#           from Windows), and the package removed. Nothing is uploaded to the Store and nothing
+#           Login (the package's startup task) turned on inside the package, read back as Enabled
+#           and turned off, and the package removed. Nothing is uploaded to the Store and nothing
 #           is published.
 #
 # The identity (Partner Center → the app → Product identity) is taken from this run's inputs,
@@ -171,10 +171,6 @@ jobs:
             $found
           }
 
-          # Skykeep's window open to this script, as a test drives it: WebView2's DevTools port, for
-          # the Open at Login check below. Set for the user, so the Start menu's launch has it.
-          [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222", "User")
-
           # Started as a person starts it: its Start-menu entry.
           Start-Process "shell:AppsFolder\$pfn!io.github.yashwanthkamireddi.Skykeep"
           $p = $null
@@ -209,55 +205,54 @@ jobs:
           $p.Refresh()
           if ($p.HasExited) { throw "Skykeep closed by itself" }
 
-          # Open at Login, as Settings' switch sets it: Skykeep's own login_item_set, run in its
-          # window. In a package it is the startup task (login.rs), never the Run key.
-          function Invoke-Skykeep([string]$command, [string]$argsJson) {
-            $targets = $null
-            for ($i = 0; $i -lt 15 -and -not $targets; $i++) {
-              try { $targets = @(Invoke-RestMethod "http://127.0.0.1:9222/json/list" | Where-Object { $_.type -eq "page" -and $_.url -like "http://tauri.localhost/*" }) } catch { Start-Sleep -Seconds 2 }
+          # Open at Login in a package: its startup task, through the StartupTask calls Skykeep
+          # makes (login.rs), made inside the package as Skykeep makes them — the API answers
+          # only a process with the package's identity. Turned on, then read back afresh as
+          # Enabled, as Windows records it for Task Manager, then turned off.
+          $probe = Join-Path $env:RUNNER_TEMP "startup-task.ps1"
+          Set-Content $probe @'
+          param([string]$Do, [string]$Out)
+          try {
+            Add-Type -AssemblyName System.Runtime.WindowsRuntime
+            $asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+              $_.Name -eq "AsTask" -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+            function Wait-Op($op, [Type]$type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+            $null = [Windows.ApplicationModel.StartupTask, Windows.ApplicationModel, ContentType = WindowsRuntime]
+            $task = Wait-Op ([Windows.ApplicationModel.StartupTask]::GetAsync("SkykeepStartup")) ([Windows.ApplicationModel.StartupTask])
+            switch ($Do) {
+              "on" { $state = Wait-Op ($task.RequestEnableAsync()) ([Windows.ApplicationModel.StartupTaskState]) }
+              "off" { $task.Disable(); $state = $task.State }
+              default { $state = $task.State }
             }
-            if (-not $targets) { throw "no Skykeep window on WebView2's DevTools port" }
-            $ws = New-Object System.Net.WebSockets.ClientWebSocket
-            $ws.ConnectAsync([uri]$targets[0].webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait()
-            $expr = "window.__TAURI_INTERNALS__.invoke('$command', $argsJson).then(r => JSON.stringify(r), e => 'ERROR ' + String(e))"
-            $msg = @{ id = 1; method = "Runtime.evaluate"; params = @{ expression = $expr; awaitPromise = $true; returnByValue = $true } } | ConvertTo-Json -Compress -Depth 5
-            $bytes = [Text.Encoding]::UTF8.GetBytes($msg)
-            $ws.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).Wait()
-            $buf = New-Object byte[] 65536
-            while ($true) {
-              $text = ""
-              do {
-                $r = $ws.ReceiveAsync([ArraySegment[byte]]::new($buf), [Threading.CancellationToken]::None).Result
-                $text += [Text.Encoding]::UTF8.GetString($buf, 0, $r.Count)
-              } until ($r.EndOfMessage)
-              $reply = $text | ConvertFrom-Json
-              if ($reply.id -eq 1) { break }
-            }
-            $ws.Dispose()
-            $value = $reply.result.result.value
-            if (-not $value -or $value.StartsWith("ERROR")) { throw "$command answered: $value $($reply | ConvertTo-Json -Compress -Depth 6)" }
-            $value | ConvertFrom-Json
+            Set-Content $Out "$state"
+          } catch { Set-Content $Out "ERROR $_" }
+          '@
+          function Invoke-StartupTask([string]$do) {
+            $out = Join-Path $env:RUNNER_TEMP "startup-task-$do-$([guid]::NewGuid()).txt"
+            Invoke-CommandInDesktopPackage -PackageFamilyName $pfn -AppId "io.github.yashwanthkamireddi.Skykeep" `
+              -Command "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+              -Args "-NoProfile -ExecutionPolicy Bypass -File `"$probe`" -Do $do -Out `"$out`""
+            for ($i = 0; $i -lt 30 -and -not (Test-Path $out); $i++) { Start-Sleep -Seconds 1 }
+            if (-not (Test-Path $out)) { throw "the startup task gave no answer to '$do'" }
+            $answer = (Get-Content $out -Raw).Trim()
+            if ($answer.StartsWith("ERROR")) { throw "the startup task, asked '$do': $answer" }
+            $answer
           }
           $taskKey = "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\SystemAppData\$pfn\SkykeepStartup"
-          function Get-TaskState { (Get-ItemProperty $taskKey -Name State -ErrorAction SilentlyContinue).State }
-          $set = Invoke-Skykeep "login_item_set" "{ on: true }"
-          "Open at Login turned on: $($set | ConvertTo-Json -Compress)"
-          if (-not $set.on -or $set.elsewhere) { throw "turned on, Skykeep says on=$($set.on), elsewhere='$($set.elsewhere)'" }
-          $read = Invoke-Skykeep "login_item_status" "{}"
-          if (-not $read.on) { throw "read back, the startup task is not Enabled: $($read | ConvertTo-Json -Compress)" }
-          "read back from Windows' StartupTask API: Enabled"
-          # 2 is StartupTaskState.Enabled, as Windows keeps it for Task Manager.
-          $state = Get-TaskState
-          "Windows' own record of the startup task: State=$state"
-          if ($state -ne 2) { throw "Windows records the startup task as State=$state, not 2 (Enabled)" }
-          $run = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name Skykeep -ErrorAction SilentlyContinue
-          if ($run) { throw "the Store install wrote the Run key, which Windows never reads for it" }
-          $off = Invoke-Skykeep "login_item_set" "{ on: false }"
-          if ($off.on) { throw "turned off, Skykeep still says on" }
-          $state = Get-TaskState
-          if ($state -eq 2) { throw "turned off, Windows still records the startup task as Enabled" }
-          "Open at Login turned off again: State=$state"
-          [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", $null, "User")
+          $before = Invoke-StartupTask "read"
+          "startup task as installed: $before"
+          if ($before -ne "Disabled") { throw "the startup task is '$before' before anyone turned it on" }
+          $on = Invoke-StartupTask "on"
+          "turned on: $on"
+          if ($on -ne "Enabled") { throw "turned on, Windows says '$on'" }
+          $read = Invoke-StartupTask "read"
+          "read back: $read"
+          if ($read -ne "Enabled") { throw "read back, the startup task is '$read', not Enabled" }
+          $recorded = (Get-ItemProperty $taskKey -Name State -ErrorAction SilentlyContinue).State
+          "Windows' own record for Task Manager: State=$recorded"
+          $off = Invoke-StartupTask "off"
+          "turned off: $off"
+          if ($off -ne "Disabled") { throw "turned off, Windows says '$off'" }
 
           Stop-Process -Id $p.Id
           Start-Sleep -Seconds 2
