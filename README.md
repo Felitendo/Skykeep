@@ -147,7 +147,9 @@ Skykeep is free. Each link below downloads the newest version straight away. The
 | Your system | Download | |
 |---|---|---|
 | **Windows 10 and 11** | [`Skykeep-windows-x64-setup.exe`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-windows-x64-setup.exe) | Installs just for you, no administrator password |
+| **Windows, with Scoop** | [Scoop bucket](https://github.com/YashwanthKamireddi/scoop-bucket) | `scoop bucket add skykeep https://github.com/YashwanthKamireddi/scoop-bucket` then `scoop install skykeep/skykeep` |
 | **Ubuntu 24.04+, Debian 13, Linux Mint 22** | [`Skykeep-linux-amd64.deb`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-amd64.deb) | `sudo apt install ./Skykeep-linux-amd64.deb` |
+| **Fedora 43+, updated by dnf** | [COPR](https://copr.fedorainfracloud.org/coprs/yashonfed/skykeep/) | `sudo dnf copr enable yashonfed/skykeep && sudo dnf install skykeep` |
 | **Fedora 41+** | [`Skykeep-linux-x86_64.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) | `sudo dnf install ./Skykeep-linux-x86_64.rpm` |
 | **openSUSE Tumbleweed** | [`Skykeep-linux-x86_64.rpm`](https://github.com/YashwanthKamireddi/Skykeep/releases/latest/download/Skykeep-linux-x86_64.rpm) | `sudo zypper install --allow-unsigned-rpm ./Skykeep-linux-x86_64.rpm` |
 | **Ubuntu, or any Linux with Snap** | [Snap Store](https://snapcraft.io/skykeep) | `sudo snap install skykeep` |
@@ -242,7 +244,7 @@ Windows 10 or 11. Or a Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Key
 
 ### Staying up to date
 
-The Windows installer and the AppImage keep Skykeep current on their own. A new version appears as a notice with **Update and Restart**. It installs only after it passes its signature check, and never while a change is still on its way to iCloud or while you're typing. The Snap is updated by Snap. For the `.deb` or `.rpm`, install a new version from the [Releases page](https://github.com/YashwanthKamireddi/Skykeep/releases/latest) over the old one; your library and sign-in stay.
+The Windows installer and the AppImage keep Skykeep current on their own. A new version appears as a notice with **Update and Restart**. It installs only after it passes its signature check, and never while a change is still on its way to iCloud or while you're typing. The Snap, COPR and Scoop copies are updated by Snap, dnf and Scoop. For the `.deb` or `.rpm`, install a new version from the [Releases page](https://github.com/YashwanthKamireddi/Skykeep/releases/latest) over the old one; your library and sign-in stay.
 
 **Settings ▸ Software Update** has **Check for Updates**, and a switch for the daily automatic check.
 
