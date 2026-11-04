@@ -593,11 +593,16 @@ pub async fn rename(
     }
 
     let after = folder_listing(http, root, &params, parent).await?;
+    // Compared composed: iCloud can hand a name back decomposed (NFD), "é" as "e" and an
+    // accent (rclone/rclone#9314), and read as bytes every rename to an accented name — any
+    // name typed in French, Vietnamese, Hindi with its marks — read as refused.
+    let wanted = quince_core::fold::composed(name);
+    let is_wanted = |n: &str| quince_core::fold::composed(n) == wanted;
     match after.iter().find(|i| i.drivewsid == item.drivewsid) {
         // Apple keeps a file's extension apart from its name: "final.pdf" comes back as
         // "final" and "pdf". Compared whole, every rename of a file with an extension read as
         // refused, and the old name was put back on screen.
-        Some(found) if found.name == name || found.display_name() == name => Ok(()),
+        Some(found) if is_wanted(&found.name) || is_wanted(&found.display_name()) => Ok(()),
         Some(found) => Err(Error::Protocol(format!(
             "Apple answered success but the name is still {:?}, not {name:?}",
             found.name
@@ -1289,8 +1294,9 @@ pub fn copy_name(stem: &str, extension: Option<&str>, taken: &[String]) -> Strin
         .filter(|e| !e.is_empty())
         .map(|e| format!(".{e}"))
         .unwrap_or_default();
-    let taken: std::collections::HashSet<String> = taken.iter().map(|t| t.to_lowercase()).collect();
-    let free = |name: &String| !taken.contains(&name.to_lowercase());
+    let key = quince_core::fold::name_key;
+    let taken: std::collections::HashSet<String> = taken.iter().map(|t| key(t)).collect();
+    let free = |name: &String| !taken.contains(&key(name));
     let whole = format!("{stem}{ext}");
     if free(&whole) {
         return whole;
@@ -1460,8 +1466,8 @@ async fn copy_file_to(
         );
         let want = copy_name(&file.name, ext, &dest_names);
         let free_in = |names: &[String], name: &str| {
-            let name = name.to_lowercase();
-            !names.iter().any(|n| n.to_lowercase() == name)
+            let name = quince_core::fold::name_key(name);
+            !names.iter().any(|n| quince_core::fold::name_key(n) == name)
         };
         // The name it travels under: free in the folder it leaves and in the one it goes to.
         let travel = if free_in(&source_names, &want) {
@@ -2032,6 +2038,55 @@ mod write_tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("still"), "{err}");
+    }
+
+    /// A name iCloud hands back decomposed (NFD) is the name asked for, composed (NFC): the
+    /// rename is done, not "Apple answered success but the name is still …" (rclone#9314).
+    #[tokio::test]
+    async fn a_rename_read_back_decomposed_is_done() {
+        let server = MockServer::start().await;
+        let mut renamed = file();
+        renamed.name = "Re\u{301}sume\u{301}".into();
+        renamed.extension = Some("pdf".into());
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetailsInFolders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(listing_of(
+                "FOLDER::com.apple.CloudDocs::root",
+                &renamed,
+                "e2",
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/renameItems"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})),
+            )
+            .mount(&server)
+            .await;
+        rename(
+            &reqwest::Client::new(),
+            &server.uri(),
+            vec![],
+            &file(),
+            "R\u{e9}sum\u{e9}.pdf",
+        )
+        .await
+        .unwrap();
+    }
+
+    /// A copy's name is free only if no name there is the same once composed and cased alike:
+    /// "Résumé.pdf" written decomposed by a Mac is taken for one typed here.
+    #[test]
+    fn a_decomposed_name_is_the_same_name() {
+        assert_eq!(
+            copy_name(
+                "R\u{e9}sum\u{e9}",
+                Some("pdf"),
+                &["RE\u{301}SUME\u{301}.PDF".into()]
+            ),
+            "R\u{e9}sum\u{e9} copy.pdf"
+        );
     }
 
     /// Apple keeps the extension apart from the name: a rename to "final.pdf" reads back as

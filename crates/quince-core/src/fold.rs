@@ -30,6 +30,21 @@ pub fn fold(text: &str) -> String {
         .collect()
 }
 
+/// `text` in Unicode's composed form (NFC): "é" one character however it was typed, so a
+/// name a Mac wrote decomposed (NFD) and the same name typed here are the same name.
+#[must_use]
+pub fn composed(text: &str) -> String {
+    icu_normalizer::ComposingNormalizerBorrowed::new_nfc()
+        .normalize(text)
+        .into_owned()
+}
+
+/// A file name as iCloud Drive tells two apart: composed, and without regard to case.
+#[must_use]
+pub fn name_key(name: &str) -> String {
+    composed(name).to_lowercase()
+}
+
 /// The words of a query, folded; empty when there is nothing to look for.
 #[must_use]
 pub fn words(query: &str) -> Vec<String> {
