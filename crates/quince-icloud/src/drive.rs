@@ -251,14 +251,21 @@ pub async fn download_to(
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
-    let url = download_url(http, docws_root, params, item).await?;
-    let response = http.get(&url).send().await?;
-    if !response.status().is_success() {
-        return Err(Error::Protocol(format!(
-            "the download itself failed ({})",
-            response.status()
-        )));
-    }
+    // An empty file has no bytes to fetch, and Apple answers asking for a link to them with a
+    // 400 (picklepete/pyicloud#301): it is saved empty without asking.
+    let response = if item.size == Some(0) {
+        None
+    } else {
+        let url = download_url(http, docws_root, params, item).await?;
+        let response = http.get(&url).send().await?;
+        if !response.status().is_success() {
+            return Err(Error::Protocol(format!(
+                "the download itself failed ({})",
+                response.status()
+            )));
+        }
+        Some(response)
+    };
 
     // Into a folder that is already there, never one made on the way: the caller chose the
     // folder (Downloads), and a name that reached for others would have them made for it.
@@ -303,9 +310,11 @@ pub async fn download_to(
         ));
     };
     let written: Result<()> = async {
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            file.write_all(&chunk?).await?;
+        if let Some(response) = response {
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                file.write_all(&chunk?).await?;
+            }
         }
         file.flush().await?;
         file.sync_all().await?;
@@ -3422,6 +3431,37 @@ mod download_zone_tests {
             "a file's own bytes first"
         );
         assert_eq!(download_link_in(&serde_json::json!({})), None);
+    }
+
+    /// An empty file is saved empty, without asking Apple for a link to no bytes: Apple
+    /// answers that with a 400 (picklepete/pyicloud#301), and the download failed.
+    #[tokio::test]
+    async fn an_empty_file_downloads_without_asking() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+        let dir =
+            std::env::temp_dir().join(format!("quince-empty-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let to = dir.join("empty.txt");
+        let mut empty = file("FILE::com.apple.CloudDocs::EMPTY");
+        empty.size = Some(0);
+        download_to(&reqwest::Client::new(), &server.uri(), vec![], &empty, &to)
+            .await
+            .expect("an empty file is saved");
+        assert_eq!(std::fs::read(&to).unwrap(), Vec::<u8>::new());
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "nothing asked of Apple"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "and no partial file left beside it"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
