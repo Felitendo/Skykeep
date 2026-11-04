@@ -964,13 +964,13 @@ export const zoneOf = (drivewsid: string): string | null =>
   drivewsid.split("::")[1] || null;
 
 /**
- * Whether files from this machine can be put in a folder.
+ * Whether Drive's own items can be copied into, or out of, a folder.
  *
- * An app library — Keynote's, Shortcuts', a third party's — belongs to the app that made it,
- * and Apple files a document by a bare id with no zone beside it. A file meant for one would
- * land somewhere else entirely, so it is not offered.
+ * An app library (Keynote's, Shortcuts', Obsidian's vault) is a zone of its own. Files from
+ * this machine go up into one, filed in its zone; Drive copies its items only beside the
+ * original, so a copy across zones is not offered.
  */
-export const acceptsUploads = (folderId: string): boolean =>
+export const takesDriveCopies = (folderId: string): boolean =>
   (zoneOf(folderId) ?? "com.apple.CloudDocs") === "com.apple.CloudDocs";
 
 export const driveName = (item: DriveItem) =>

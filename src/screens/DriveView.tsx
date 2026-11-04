@@ -11,7 +11,7 @@ import { Portal } from "../components/Portal";
 import { pickOpen } from "../lib/pick";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
-  acceptsUploads,
+  takesDriveCopies,
   api,
   driveName,
   isContainer,
@@ -446,10 +446,10 @@ function sameItems(a: DriveItem[], b: DriveItem[]): boolean {
 }
 
 /**
- * Files and folders of iCloud Drive's own: an app's library (Keynote, Shortcuts), and what is in
- * one, belongs to that app (see acceptsUploads), so it is not copied out of it.
+ * Files and folders of iCloud Drive's own: what is in an app's library (Keynote, Shortcuts) is in
+ * that library's zone (see takesDriveCopies), so it is not copied out of it.
  */
-const copyable = (item: DriveItem) => (item.kind === "FILE" || item.kind === "FOLDER") && acceptsUploads(item.drivewsid);
+const copyable = (item: DriveItem) => (item.kind === "FILE" || item.kind === "FOLDER") && takesDriveCopies(item.drivewsid);
 
 /** What a paste onto a name already there does: both kept ("Report 2.pdf"), or the one there replaced. */
 type Clash = "keep" | "replace" | null;
@@ -1113,15 +1113,15 @@ export function DriveView() {
     }
   };
   /**
-   * The folder whose row is under a point the window system gave (physical pixels), if it is
-   * one that takes files.
+   * The folder whose row is under a point the window system gave (physical pixels): files
+   * dropped there from this machine go into it, in an app's library as anywhere else.
    */
   const folderAt = (x: number, y: number): string | null => {
     const ratio = window.devicePixelRatio || 1;
     const under = document.elementFromPoint(x / ratio, y / ratio) as HTMLElement | null;
     const id = under?.closest?.<HTMLElement>(".drive-rows [data-id]")?.dataset.id;
     const item = id ? itemsRef.current.find((i) => i.drivewsid === id) : undefined;
-    return item && item.kind === "FOLDER" && acceptsUploads(item.drivewsid) ? item.drivewsid : null;
+    return item && item.kind === "FOLDER" ? item.drivewsid : null;
   };
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -1239,10 +1239,6 @@ export function DriveView() {
    */
   // Each render's own, as the keys are: it uploads into the folder open now.
   const paste = async (move: boolean) => {
-    if (!acceptsUploads(hereRef.current)) {
-      setError("This folder belongs to an app, which is the only thing that can add to it.");
-      return;
-    }
     const board = await api.clipboardRead().catch(() => null);
     if (board?.files.length) {
       await upload(board.files);
@@ -1250,6 +1246,12 @@ export function DriveView() {
     }
     const c = clipRef.current;
     if (!c) return;
+    // Drive copies its items only beside the original: not into an app's library, a zone of
+    // its own. Files from this machine go up into one (above).
+    if (!takesDriveCopies(hereRef.current)) {
+      setError("Items from elsewhere in iCloud Drive can't be pasted into an app's folder. Upload files from this computer instead.");
+      return;
+    }
     // Something else copied since (text in another app): that is what is on the clipboard.
     if (c.text !== null && board?.text != null && board.text !== c.text) return;
     const into = hereRef.current;
@@ -1754,19 +1756,12 @@ export function DriveView() {
             New Folder
           </button>
           </span>
-          {/* An app's own library takes files from the app, not from here. */}
           <span className="upload-menu-wrap">
             <button
               className="primary with-glyph"
               aria-haspopup="menu"
               aria-expanded={uploadMenu}
               onClick={() => setUploadMenu((open) => !open)}
-              disabled={!acceptsUploads(here.id)}
-              title={
-                acceptsUploads(here.id)
-                  ? undefined
-                  : "This folder belongs to an app, which is the only thing that can add to it"
-              }
             >
               <ActionGlyph name="upload" />
               Upload

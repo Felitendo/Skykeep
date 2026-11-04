@@ -1545,13 +1545,20 @@ mod checksum_tests {
     fn a_filed_document_is_accepted_only_when_it_is_the_file_sent() {
         let sig = "AcbV5Q1Z72Y4XYc0UObScQwypTml";
         assert_eq!(
-            filed_document(&filed(sig, 37, 0), sig, 37, "photo.jpg").unwrap(),
+            filed_document(&filed(sig, 37, 0), sig, 37, "photo.jpg", DOCUMENTS_ZONE).unwrap(),
             "FILE::com.apple.CloudDocs::06502863-6910-440B-A1B9-29536C125463"
         );
-        assert!(filed_document(&filed("Aother", 37, 0), sig, 37, "photo.jpg").is_err());
-        assert!(filed_document(&filed(sig, 36, 0), sig, 37, "photo.jpg").is_err());
-        assert!(filed_document(&filed(sig, 37, 1), sig, 37, "photo.jpg").is_err());
-        assert!(filed_document(&json!({}), sig, 37, "photo.jpg").is_err());
+        assert!(filed_document(
+            &filed("Aother", 37, 0),
+            sig,
+            37,
+            "photo.jpg",
+            DOCUMENTS_ZONE
+        )
+        .is_err());
+        assert!(filed_document(&filed(sig, 36, 0), sig, 37, "photo.jpg", DOCUMENTS_ZONE).is_err());
+        assert!(filed_document(&filed(sig, 37, 1), sig, 37, "photo.jpg", DOCUMENTS_ZONE).is_err());
+        assert!(filed_document(&json!({}), sig, 37, "photo.jpg", DOCUMENTS_ZONE).is_err());
     }
 }
 
@@ -2540,7 +2547,7 @@ fn zone_of(drivewsid: &str) -> Option<&str> {
     (!zone.is_empty()).then_some(zone)
 }
 
-/// The one zone a file uploaded from this machine belongs in.
+/// The ordinary iCloud Drive's zone: everything not in an app's own library.
 const DOCUMENTS_ZONE: &str = "com.apple.CloudDocs";
 
 /// Apple's checksum of a file's bytes, as its storage service reports it back.
@@ -2647,15 +2654,12 @@ async fn upload_once(
     if folder_id.trim().is_empty() {
         return Err(Error::Protocol("no folder was named to put this in".into()));
     }
-    // An app library belongs to the app that made it, and `update/documents` names the folder
-    // by a bare id with no zone beside it — so a file meant for one would be filed by an id
-    // that means something different in the documents zone, or nothing at all. Refusing is the
-    // honest answer; quietly putting someone's file somewhere else is not.
-    if zone_of(folder_id).is_some_and(|zone| zone != DOCUMENTS_ZONE) {
-        return Err(Error::Protocol(
-            "that folder belongs to an app, and only the app can put things in it".into(),
-        ));
-    }
+    // Filed in the folder's own zone. An app library (Obsidian's vault, Shortcuts', Keynote's)
+    // is a zone of its own, and `update/documents` names the folder by a bare id — so asked
+    // of the documents zone, Apple looked for that id there and refused with "out of order
+    // children ... parents were missing" (rclone/rclone#9729). Asked of the folder's own zone,
+    // the zone in the path says where the id is (rclone/rclone#9731).
+    let zone = zone_of(folder_id).unwrap_or(DOCUMENTS_ZONE);
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -2670,7 +2674,7 @@ async fn upload_once(
     // 1. Somewhere to put the bytes.
     let offered: Value = post_json(
         http,
-        &format!("{docws}/ws/com.apple.CloudDocs/upload/web"),
+        &format!("{docws}/ws/{zone}/upload/web"),
         &params,
         &json!({
             "filename": name,
@@ -2770,7 +2774,7 @@ async fn upload_once(
     let created = millis(meta.created()).unwrap_or(modified);
     let filed = post_json(
         http,
-        &format!("{docws}/ws/com.apple.CloudDocs/update/documents"),
+        &format!("{docws}/ws/{zone}/update/documents"),
         &params,
         &json!({
             // Apple renames rather than overwrites when the name is taken, which is what a
@@ -2794,7 +2798,7 @@ async fn upload_once(
     )
     .await;
     let stored = match filed {
-        Ok(filed) => filed_document(&filed, &local, size, &name)?,
+        Ok(filed) => filed_document(&filed, &local, size, &name, zone)?,
         // No answer is not "not filed": Apple may have filed it and the reply been lost. Asked
         // again from the start, the file would go up a second time beside the first — "photo
         // 2.jpg". The slot's document id is this file's alone, so the folder says which.
@@ -2803,7 +2807,7 @@ async fn upload_once(
         // asked for by its own id, which is current the moment it is filed, where the folder's
         // listing can lag behind it.
         Err(e @ (Error::Network(_) | Error::Refused(_))) => {
-            let id = format!("FILE::{DOCUMENTS_ZONE}::{document_id}");
+            let id = format!("FILE::{zone}::{document_id}");
             match item_details(http, drivews_root, &params, &id).await {
                 Ok(Some(item)) if item.size == Some(size as i64) => id,
                 _ => match folder_listing(http, drivews_root, &params, folder_id).await {
@@ -2898,8 +2902,15 @@ async fn item_details(
         .and_then(item_from))
 }
 
-/// The id of the document an `add_file` reply describes, once it is shown to be the file sent.
-fn filed_document(reply: &Value, checksum: &str, size: u64, name: &str) -> Result<String> {
+/// The id of the document an `add_file` reply describes, once it is shown to be the file sent:
+/// in `zone`, the folder's own, where it was filed.
+fn filed_document(
+    reply: &Value,
+    checksum: &str,
+    size: u64,
+    name: &str,
+    zone: &str,
+) -> Result<String> {
     let document = reply
         .pointer("/results/0/document")
         .ok_or_else(|| Error::Protocol(format!("Apple filed {name} without describing it")))?;
@@ -2918,7 +2929,7 @@ fn filed_document(reply: &Value, checksum: &str, size: u64, name: &str) -> Resul
         .get("document_id")
         .and_then(Value::as_str)
         .ok_or_else(|| Error::Protocol(format!("Apple filed {name} without an id")))?;
-    Ok(format!("FILE::{DOCUMENTS_ZONE}::{id}"))
+    Ok(format!("FILE::{zone}::{id}"))
 }
 
 /// A JSON POST to Drive that fails loudly rather than returning something unusable.
@@ -3096,35 +3107,81 @@ mod upload_tests {
 mod app_library_tests {
     use super::*;
 
-    /// Everyone has app libraries — Keynote, Shortcuts, whatever third-party apps they use —
-    /// and a file meant for one would be filed by a bare id that means something else in the
-    /// documents zone. Refusing beats putting someone's file somewhere they will not find it.
+    /// A file put in an app's library — Obsidian's vault, Shortcuts' — is asked a slot of and
+    /// filed in that library's own zone, under the folder's id there, and comes back with an id
+    /// in that zone (rclone/rclone#9729). Asked of the documents zone, Apple refused it: the
+    /// folder's id is not there.
     #[tokio::test]
-    async fn a_file_is_not_uploaded_into_an_app_library() {
-        let file = std::env::temp_dir().join("quince-zone-test.txt");
-        std::fs::write(&file, b"x").unwrap();
-        for folder in [
-            "FOLDER::com.apple.Keynote::documents",
-            "FOLDER::iCloud.is.workflow.my.workflows::documents",
-            "FOLDER::iCloud.dk.simonbs.Scriptable::documents",
-        ] {
-            let err = upload(
-                &reqwest::Client::new(),
-                "http://127.0.0.1:1",
-                "http://127.0.0.1:1",
-                vec![],
-                folder,
-                &file,
-                std::sync::Arc::new(|_, _| {}),
+    async fn a_file_is_filed_in_its_app_librarys_own_zone() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        const ZONE: &str = "iCloud.md.obsidian";
+        let server = MockServer::start().await;
+        let mut sum = AppleChecksum::default();
+        sum.update(b"# vault");
+        let sum = sum.finish();
+        Mock::given(method("POST"))
+            .and(path(format!("/ws/{ZONE}/upload/web")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "url": format!("{}/content", server.uri()), "document_id": "D1" }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "singleFile": { "fileChecksum": sum, "size": 7, "receipt": "r" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/ws/{ZONE}/update/documents")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [{ "document": {
+                    "document_id": "D1", "size": 7,
+                    "status": { "status_code": 0 }, "data": { "signature": sum }
+                } }]
+            })))
+            .mount(&server)
+            .await;
+        let folder = format!("FOLDER::{ZONE}::documents");
+        Mock::given(method("POST"))
+            .and(path("/retrieveItemDetails"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": [{
+                    "drivewsid": format!("FILE::{ZONE}::D1"), "parentId": folder,
+                    "name": "Note", "extension": "md", "type": "FILE", "size": 7, "status": "OK"
+                }]})),
             )
-            .await
-            .expect_err("an app's own library is not somewhere to put a file");
-            assert!(
-                err.to_string().contains("only the app"),
-                "the reason has to be the zone, not a network failure: {err}"
-            );
-        }
+            .mount(&server)
+            .await;
+        let file = std::env::temp_dir().join("quince-app-zone-Note.md");
+        std::fs::write(&file, b"# vault").unwrap();
+        let item = upload(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &server.uri(),
+            vec![],
+            &folder,
+            &file,
+            std::sync::Arc::new(|_, _| {}),
+        )
+        .await
+        .expect("an app's library takes a file in its own zone");
         std::fs::remove_file(&file).ok();
+        assert_eq!(item.drivewsid, format!("FILE::{ZONE}::D1"));
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            reqs.iter()
+                .all(|r| !r.url.path().contains("com.apple.CloudDocs")),
+            "nothing asked of the documents zone"
+        );
+        let filed = reqs
+            .iter()
+            .find(|r| r.url.path().ends_with("/update/documents"))
+            .expect("filed");
+        let body: Value = serde_json::from_slice(&filed.body).unwrap();
+        assert_eq!(body["path"]["starting_document_id"], "documents");
     }
 
     /// A busy Drive while the bytes go up: the file is tried again from a fresh slot, up to

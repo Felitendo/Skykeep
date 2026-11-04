@@ -104,5 +104,53 @@ const calls = await page.evaluate(() => window.__uploadCalls.map((c) => c.paths)
 ok(JSON.stringify(calls[1]) === JSON.stringify(["/home/me/Holiday"]),
   "a chosen folder is handed over whole", `the folder upload sent ${JSON.stringify(calls)}`);
 
+// An app's library (Obsidian's vault, Shortcuts') takes files from this computer too, filed in
+// its own zone by the backend (rclone/rclone#9729): Upload is offered there, and sends into it.
+{
+  const VAULT = "FOLDER::iCloud.md.obsidian::documents";
+  const appCtx = await b.newContext({ viewport: { width: 1280, height: 820 } });
+  await appCtx.addInitScript((vault) => {
+    window.__uploadCalls = [];
+    window.__TAURI_INTERNALS__ = {
+      transformCallback: (cb) => cb,
+      invoke: async (cmd, args) => {
+        if (cmd === "auth_status") return { hasStoredSession: true, signedIn: true };
+        if (cmd === "auth_resume") return "library";
+        if (cmd === "account_services") return ["drivews", "docws"];
+        if (cmd === "plugin:event|listen") return 0;
+        if (cmd === "pick_open" || cmd === "plugin:dialog|open") return ["/home/me/Note.md"];
+        if (cmd === "drive_children")
+          return (args?.folderId ?? args?.parentId ?? args?.folder ?? null) === vault
+            ? []
+            : [{ drivewsid: vault, parentId: null, name: "Obsidian", extension: null,
+                 kind: "APP_LIBRARY", size: null, childCount: 0, createdAt: 1780000000,
+                 modifiedAt: null, etag: null }];
+        if (cmd === "drive_item") return null;
+        if (cmd === "drive_sync_folder") return 0;
+        if (cmd === "drive_upload") { window.__uploadCalls.push(args); return []; }
+        if (cmd === "sync_all" || cmd === "sync_status") return { services: [], asOf: 1, tookMs: 0 };
+        return [];
+      },
+    };
+  }, VAULT);
+  const app = await appCtx.newPage();
+  await app.goto("http://localhost:4173", { waitUntil: "networkidle" });
+  await app.locator(".nav-item", { hasText: "Drive" }).click();
+  await app.locator(".drive-row-hit", { hasText: "Obsidian" }).dblclick();
+  await app.waitForTimeout(400);
+  const button = app.getByRole("button", { name: "Upload", exact: true });
+  const offered = await button.isEnabled();
+  ok(offered, "an app's library offers Upload", "Upload was disabled in an app's library");
+  if (offered) {
+    await button.click();
+    await app.getByRole("menuitem", { name: "Files" }).click();
+    await app.waitForTimeout(500);
+  }
+  const into = await app.evaluate(() => window.__uploadCalls.map((c) => c.folderId));
+  ok(JSON.stringify(into) === JSON.stringify([VAULT]),
+    "and the file goes into that library", `uploads went to ${JSON.stringify(into)}`);
+  await appCtx.close();
+}
+
 await b.close();
 process.exitCode = failures === 0 ? 0 : 1;
