@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>skykeep</id>
+    <version>0.1.2</version>
+    <packageSourceUrl>https://github.com/YashwanthKamireddi/Skykeep/tree/main/packaging/chocolatey</packageSourceUrl>
+    <owners>YashwanthKamireddi</owners>
+    <title>Skykeep</title>
+    <authors>Yashwanth Kamireddi</authors>
+    <projectUrl>https://github.com/YashwanthKamireddi/Skykeep</projectUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/YashwanthKamireddi/Skykeep@v0.1.2/packaging/icons/skykeep.svg</iconUrl>
+    <copyright>2026 Yashwanth Kamireddi</copyright>
+    <licenseUrl>https://github.com/YashwanthKamireddi/Skykeep/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/YashwanthKamireddi/Skykeep/tree/main</projectSourceUrl>
+    <docsUrl>https://github.com/YashwanthKamireddi/Skykeep#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/YashwanthKamireddi/Skykeep/issues</bugTrackerUrl>
+    <tags>skykeep icloud notes reminders calendar contacts drive photos sync foss gpl</tags>
+    <summary>Your iCloud on your PC: Notes, Reminders, Calendar, Contacts, Drive and Photos in one app.</summary>
+    <description><![CDATA[Skykeep brings your iCloud to Windows: Notes, Reminders, Calendar, Contacts, Drive and Photos, each in its own window and kept on your computer, so they open instantly and work offline.
+
+- Six apps in one install, each with its own Start menu entry and taskbar button
+- Changes you make show at once and sync to iCloud in the background
+- Free and open source (GPL-3.0)
+
+Skykeep is an independent project. Not affiliated with Apple. iCloud is a trademark of Apple Inc.
+]]></description>
+    <releaseNotes>https://github.com/YashwanthKamireddi/Skykeep/releases/tag/v0.1.2</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

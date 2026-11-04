@@ -1,0 +1,38 @@
+{
+    "version": "0.1.2",
+    "description": "Your iCloud on your PC: Notes, Reminders, Calendar, Contacts, Drive and Photos in one app. Not affiliated with Apple.",
+    "homepage": "https://github.com/YashwanthKamireddi/Skykeep",
+    "license": "GPL-3.0-only",
+    "notes": "Your library and settings are kept in your user profile, outside the app folder, so they stay across updates. Update with: scoop update skykeep",
+    "##": [
+        "The release's NSIS installer, unpacked by 7-Zip rather than run (the way Scoop Extras ships Tauri apps), so nothing is written outside Scoop's folder.",
+        "No persist: Skykeep keeps nothing in its own folder. Releases after 0.1.2 see Scoop's install.json beside skykeep.exe and leave updates to Scoop instead of offering their own installer."
+    ],
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/YashwanthKamireddi/Skykeep/releases/download/v0.1.2/Skykeep_0.1.2_x64-setup.exe#/dl.7z",
+            "hash": "e70c1473a1f2c4ef198725d6e4c68d1c73835e5a4f53f6f120a23401c47ab536"
+        }
+    },
+    "post_install": "Remove-Item \"$dir\\`$*\", \"$dir\\uninstall*\" -Force -Recurse -ErrorAction Ignore",
+    "shortcuts": [
+        ["skykeep.exe", "Skykeep"],
+        ["skykeep.exe", "Skykeep Notes", "--app notes"],
+        ["skykeep.exe", "Skykeep Reminders", "--app reminders"],
+        ["skykeep.exe", "Skykeep Calendar", "--app calendar"],
+        ["skykeep.exe", "Skykeep Contacts", "--app contacts"],
+        ["skykeep.exe", "Skykeep Drive", "--app drive"],
+        ["skykeep.exe", "Skykeep Photos", "--app photos"]
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/YashwanthKamireddi/Skykeep/releases/download/v$version/Skykeep_$version_x64-setup.exe#/dl.7z",
+                "hash": {
+                    "url": "$baseurl/SHA256SUMS-windows.txt"
+                }
+            }
+        }
+    }
+}
