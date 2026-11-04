@@ -188,9 +188,14 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+  # The Flatpak bundle, built offline in the Flathub container and proven to install and start.
+  # Attached to the release for anyone who installs Flatpaks by hand (not Flathub).
+  flatpak:
+    uses: ./.github/workflows/flatpak.yml
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [appimage, linux, windows]
+    needs: [appimage, linux, windows, flatpak]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -250,12 +255,23 @@ jobs:
           copy '*.deb' Skykeep-linux-amd64.deb
           copy '*.rpm' Skykeep-linux-x86_64.rpm
           copy '*.AppImage' Skykeep-linux-x86_64.AppImage
+          copy '*.flatpak' Skykeep-linux-x86_64.flatpak
           (cd "$out" && sha256sum Skykeep-* > SHA256SUMS-unversioned.txt && cat SHA256SUMS-unversioned.txt)
+      # The bundle under the release's own name, with a checksum list of its own, so it sits
+      # beside the .deb, .rpm and AppImage of the same version.
+      - name: The Flatpak under the release's name
+        run: |
+          found=$(find dist -type f -name '*.flatpak')
+          if [ "$(printf '%s\n' "$found" | grep -c .)" -ne 1 ]; then echo "::error::expected exactly one .flatpak, found: ${found:-none}"; exit 1; fi
+          mkdir -p dist/flatpak-release
+          name="Skykeep-${GITHUB_REF_NAME#v}-x86_64.flatpak"
+          mv "$found" "dist/flatpak-release/$name"
+          (cd dist/flatpak-release && sha256sum "$name" > SHA256SUMS-flatpak.txt && cat SHA256SUMS-flatpak.txt)
       - name: A draft release with every file
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' -o -name 'SHA256SUMS*' \
+          { find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.flatpak' -o -name '*.msi' -o -name '*-setup.exe' -o -name 'SHA256SUMS*' \
               -o -name '*.AppImage.sig' -o -name '*.msi.sig' -o -name '*-setup.exe.sig' -o -name 'latest.json' \) -print0
             find "$RUNNER_TEMP/oneclick" -type f -print0; } \
             | xargs -0 gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \

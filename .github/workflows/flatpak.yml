@@ -4,6 +4,8 @@ name: Flatpak
 
 on:
   workflow_dispatch:
+  # release.yml builds and tests the bundle for every release, which attaches it.
+  workflow_call:
   push:
     branches: [flatpak]
 
