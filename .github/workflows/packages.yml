@@ -85,7 +85,7 @@ jobs:
           if ($LASTEXITCODE) { throw "scoop install failed" }
           $dir = "$env:USERPROFILE\scoop\apps\skykeep\current"
           Get-ChildItem $dir | Format-Table Name, Length
-          foreach ($f in "skykeep.exe", "install.json", "manifest.json") {
+          foreach ($f in "skykeep.exe", "scoop-install.json", "scoop-manifest.json") {
             if (-not (Test-Path "$dir\$f")) { throw "no $f in $dir" }
           }
           if (Get-ChildItem $dir -Filter 'uninstall*') { throw "the NSIS uninstaller was left in $dir" }

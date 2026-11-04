@@ -101,13 +101,15 @@ pub fn this_install(app: &AppHandle) -> Install {
         false
     };
     let flatpak = std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists();
-    // Scoop writes its install.json and manifest.json into the folder it unpacks an app to.
+    // Scoop records the install in the folder it unpacks an app to: scoop-install.json, or
+    // install.json beside manifest.json in older Scoop.
     let scoop = cfg!(windows)
         && std::env::current_exe()
             .ok()
             .and_then(|e| e.parent().map(Path::to_path_buf))
             .is_some_and(|dir| {
-                dir.join("install.json").is_file() && dir.join("manifest.json").is_file()
+                dir.join("scoop-install.json").is_file()
+                    || (dir.join("install.json").is_file() && dir.join("manifest.json").is_file())
             });
     install_kind(
         std::env::consts::OS,

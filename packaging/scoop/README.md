@@ -3,13 +3,13 @@
 `skykeep.json` is the Scoop manifest. Scoop Extras asks for an established project (100+
 stars), so until then it is published from a bucket of your own. It unpacks the release's NSIS
 installer with 7-Zip instead of running it (the way Extras ships Tauri apps), so everything
-stays in Scoop's folder: Start menu shortcuts for Skykeep and its six apps, nothing in the
-registry. No `persist`: Skykeep keeps its library and settings in your profile
+stays in Scoop's folder, with Start menu shortcuts for Skykeep and its six apps. (The
+installer's `.ics`/`.vcf` file associations are not registered this way.) No `persist`: Skykeep keeps its library and settings in your profile
 (`%APPDATA%`, `%LOCALAPPDATA%`), never in its own folder, so they stay across updates.
 `checkver` reads the latest GitHub release and `autoupdate` takes the installer's hash from
 the release's `SHA256SUMS-windows.txt`.
 
-Releases after 0.1.2 see Scoop's `install.json` beside `skykeep.exe` and leave updates to
+Releases after 0.1.2 see Scoop's `scoop-install.json` beside `skykeep.exe` and leave updates to
 Scoop (`src-tauri/src/updates.rs`); 0.1.2 itself still offers its own update.
 
 Proven by `.github/workflows/packages.yml` (Actions → Packages → Run workflow): `scoop install`

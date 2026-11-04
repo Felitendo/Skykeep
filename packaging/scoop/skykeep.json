@@ -6,7 +6,7 @@
     "notes": "Your library and settings are kept in your user profile, outside the app folder, so they stay across updates. Update with: scoop update skykeep",
     "##": [
         "The release's NSIS installer, unpacked by 7-Zip rather than run (the way Scoop Extras ships Tauri apps), so nothing is written outside Scoop's folder.",
-        "No persist: Skykeep keeps nothing in its own folder. Releases after 0.1.2 see Scoop's install.json beside skykeep.exe and leave updates to Scoop instead of offering their own installer."
+        "No persist: Skykeep keeps nothing in its own folder. Releases after 0.1.2 see Scoop's scoop-install.json beside skykeep.exe and leave updates to Scoop instead of offering their own installer."
     ],
     "architecture": {
         "64bit": {
