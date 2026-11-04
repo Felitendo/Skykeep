@@ -2633,43 +2633,71 @@ export function PhotosView() {
         return { label: m.month, year: d.getFullYear(), month: d.getMonth(), cover: { id: m.items[0].id } };
       });
   }, [months, drawn]); // eslint-disable-line react-hooks/exhaustive-deps
+  /**
+   * The grid scrolled so `offset` (how far what is wanted sits below the top, measured afresh)
+   * is nothing. Months drawn as they come into view take their real height, and those above the
+   * one chosen move it. Chromium's scroll anchoring holds it in place; WebKit has none, and a
+   * month twenty years down landed a year off. So, for a moment after an instant jump, it is held
+   * at the top — let go at once if the person scrolls or presses a key themselves.
+   */
+  const scrollHeld = (el: HTMLElement, offset: () => number | null, instant: boolean) => {
+    const first = offset();
+    if (first === null) return;
+    const now = instant || still();
+    el.scrollTo({ top: el.scrollTop + first, behavior: now ? "auto" : "smooth" });
+    if (!now) return;
+    let frames = 0;
+    let held = true;
+    const letGo = () => { held = false; };
+    const opts = { once: true, passive: true } as const;
+    el.addEventListener("wheel", letGo, opts);
+    el.addEventListener("pointerdown", letGo, opts);
+    el.addEventListener("touchstart", letGo, opts);
+    window.addEventListener("keydown", letGo, { once: true });
+    const hold = () => {
+      const off = held ? offset() : null;
+      if (off === null) return;
+      if (Math.abs(off) > 1) el.scrollTop += off;
+      if (++frames < 30) requestAnimationFrame(hold);
+      else {
+        el.removeEventListener("wheel", letGo);
+        el.removeEventListener("pointerdown", letGo);
+        el.removeEventListener("touchstart", letGo);
+        window.removeEventListener("keydown", letGo);
+      }
+    };
+    requestAnimationFrame(hold);
+  };
   const goToMonth = (label: string, instant = false) => {
     const el = scroller.current;
     const at = el?.querySelector<HTMLElement>(`.px-month[data-month="${CSS.escape(label)}"]`);
     // Measured against the scroller itself: offsetTop counts from whatever positioned box
     // happens to hold the month, which is not always the scroller.
-    if (el && at) {
-      const top = at.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 4;
-      const now = instant || still();
-      el.scrollTo({ top, behavior: now ? "auto" : "smooth" });
-      // Months drawn as they come into view take their real height, and those above the one
-      // chosen move it. Chromium's scroll anchoring holds it in place; WebKit has none, and a
-      // month twenty years down landed a year off. So, for a moment after an instant jump, it
-      // is held at the top — let go at once if the person scrolls or presses a key themselves.
-      if (now) {
-        let frames = 0;
-        let held = true;
-        const letGo = () => { held = false; };
-        const opts = { once: true, passive: true } as const;
-        el.addEventListener("wheel", letGo, opts);
-        el.addEventListener("pointerdown", letGo, opts);
-        el.addEventListener("touchstart", letGo, opts);
-        window.addEventListener("keydown", letGo, { once: true });
-        const hold = () => {
-          if (!held || !at.isConnected) return;
-          const off = at.getBoundingClientRect().top - el.getBoundingClientRect().top - 4;
-          if (Math.abs(off) > 1) el.scrollTop += off;
-          if (++frames < 30) requestAnimationFrame(hold);
-          else {
-            el.removeEventListener("wheel", letGo);
-            el.removeEventListener("pointerdown", letGo);
-            el.removeEventListener("touchstart", letGo);
-            window.removeEventListener("keydown", letGo);
-          }
-        };
-        requestAnimationFrame(hold);
-      }
-    }
+    if (el && at) scrollHeld(el, () => (at.isConnected ? at.getBoundingClientRect().top - el.getBoundingClientRect().top - 4 : null), instant);
+  };
+  /**
+   * How far below the grid's top the tile at an index is: its own box, or — its month not built
+   * yet — where its row will be in the month's block, whose height is exactly its rows'.
+   */
+  const tileBelow = (index: number): number | null => {
+    const el = scroller.current;
+    if (!el) return null;
+    const box = el.getBoundingClientRect();
+    const tile = el.querySelector<HTMLElement>(`.px-tile[data-index="${index}"]`);
+    if (tile) return tile.getBoundingClientRect().top - box.top;
+    const g = months.findIndex((m) => m.items.length && index >= m.items[0].index && index <= m.items[m.items.length - 1].index);
+    const sec = el.querySelectorAll<HTMLElement>(".px-month")[g];
+    if (!sec) return null;
+    const row = Math.floor((index - months[g].items[0].index) / across);
+    const r = photosArea(sec);
+    return r.top - box.top + (row * r.height) / Math.ceil(months[g].items.length / across);
+  };
+  /** The tile at an index brought to the top of the grid, under the bar. */
+  const goToPhoto = (index: number) => {
+    const el = scroller.current;
+    if (!el) return;
+    const pad = parseFloat(getComputedStyle(el).scrollPaddingTop) || 0;
+    scrollHeld(el, () => { const t = tileBelow(index); return t === null ? null : t - pad; }, true);
   };
   const scroller = useRef<HTMLDivElement | null>(null);
   const looking = useRef(false);
@@ -2732,6 +2760,18 @@ export function PhotosView() {
   const toAll = useRef<Place | null | undefined>(undefined);
   /** The month at the top of All Photos. */
   const gridPlace = (): Place | null => {
+    // Sorted by Date Added the grid's months are when photos came in; Years and Months are by
+    // when they were taken, so the place is the month the photo at the top was taken in.
+    if (sort?.by === "added" && photos) {
+      const el = scroller.current;
+      const box = el?.getBoundingClientRect();
+      const pad = el ? parseFloat(getComputedStyle(el).scrollPaddingTop) || 0 : 0;
+      const top = box && [...el!.querySelectorAll<HTMLElement>(".px-tile")].find((t) => t.getBoundingClientRect().bottom > box.top + pad);
+      const p = top ? photos.at(Number(top.dataset.index)) : photos.at(0);
+      if (!p) return null;
+      const d = new Date(p.takenAt * 1000);
+      return { year: d.getFullYear(), month: d.getMonth() + 1 };
+    }
     const label = here ?? months[0]?.month;
     const g = months.find((m) => m.month === label && m.items.length);
     if (!g || !photos) return null;
@@ -2771,6 +2811,15 @@ export function PhotosView() {
       return;
     }
     if (!to) return;
+    // Sorted by Date Added, a month taken is spread through the months photos came in: All
+    // Photos opens at the photo that stands for it in Months.
+    if (sort?.by === "added") {
+      const of = (periodMonths ?? []).filter((m) => m.year === to.year && (to.month === undefined || m.month === to.month));
+      const key = (sort.oldest ? of[of.length - 1] : of[0])?.key;
+      const index = key && photos ? photos.indexOf(key) : -1;
+      if (index >= 0) goToPhoto(index);
+      return;
+    }
     // A year alone: its first month as the grid shows them.
     const label = to.month
       ? monthName(to.year, to.month)
@@ -2862,22 +2911,8 @@ export function PhotosView() {
     keepAt.current = null;
     const el = scroller.current;
     if (!k || !el) return;
-    const box = el.getBoundingClientRect();
-    const tile = el.querySelector<HTMLElement>(`.px-tile[data-index="${k.index}"]`);
-    let top: number | null = null;
-    if (tile) top = tile.getBoundingClientRect().top - box.top + el.scrollTop;
-    else {
-      // Its group not built yet: where its row will be, from the group's own block, whose
-      // height is exactly its rows'.
-      const g = months.findIndex((m) => m.items.length && k.index >= m.items[0].index && k.index <= m.items[m.items.length - 1].index);
-      const sec = el.querySelectorAll<HTMLElement>(".px-month")[g];
-      if (sec) {
-        const row = Math.floor((k.index - months[g].items[0].index) / across);
-        const r = photosArea(sec);
-        top = r.top - box.top + el.scrollTop + (row * r.height) / Math.ceil(months[g].items.length / across);
-      }
-    }
-    if (top !== null) el.scrollTop = Math.max(0, top - k.top);
+    const below = tileBelow(k.index);
+    if (below !== null) el.scrollTop = Math.max(0, below + el.scrollTop - k.top);
   }, [across]); // eslint-disable-line react-hooks/exhaustive-deps
   /*
    * Photos landing above the view leave it on the photos it showed, as a chat keeps its place
