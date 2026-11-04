@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build dependencies
         run: |
           sudo apt-get update
@@ -43,7 +43,7 @@ jobs:
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
             libheif-plugin-libde265 libheif-examples libheif-plugin-x265
           # x265 only encodes the test's HEIC.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -74,7 +74,7 @@ jobs:
              crates/quince-media/tests/fixtures/black-start.mp4 \
              crates/quince-media/tests/fixtures/hevc.mov compat/
           ls -l compat
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-compat
           path: compat/
@@ -116,11 +116,11 @@ jobs:
       image: ${{ matrix.image }}
       options: ${{ matrix.options || '' }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-compat
           path: /compat
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: matrix.pkg == '*.AppImage'
         with:
           name: linux-compat-appimage
@@ -185,7 +185,7 @@ jobs:
                 libheif-devel fuse3-devel gstreamer-devel gstreamer-plugins-base-devel \
                 pkgconf-pkg-config libayatana-appindicator3-devel ;;
           esac
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Rust, the version rust-toolchain.toml pins
         run: |
           curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
@@ -195,7 +195,7 @@ jobs:
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=skykeep
         run: npx tauri build --bundles ${{ matrix.bundle }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-${{ matrix.key }}
           path: target/release/bundle/${{ matrix.bundle }}/*.${{ matrix.bundle }}
@@ -223,11 +223,11 @@ jobs:
       - name: Tools the artifact actions need
         if: matrix.key == 'tumbleweed'
         run: zypper -n install --no-recommends tar gzip
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-compat
           path: /compat
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-${{ matrix.key }}
           path: /native
@@ -258,8 +258,8 @@ jobs:
     steps:
       - name: Build tools
         run: pacman -Syu --noconfirm --needed base-devel git rust nodejs npm
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: linux-compat
           path: /compat

@@ -25,7 +25,7 @@ jobs:
     outputs:
       snap: ${{ steps.name.outputs.snap }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: The release's .deb
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,7 +55,7 @@ jobs:
           [ "$code" -eq 124 ] || { echo "::error::Skykeep exited ($code) instead of staying up"; exit 1; }
       - id: name
         run: echo "snap=$(basename '${{ steps.build.outputs.snap }}')" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: skykeep-snap
           path: ${{ steps.build.outputs.snap }}
@@ -67,7 +67,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: skykeep-snap
       - uses: snapcore/action-publish@v1
