@@ -9,7 +9,11 @@
 //!
 //! On Windows it is the standard place too: a value under the user's own `Run` key, which
 //! Windows reads at sign-in (and lists in Task Manager's Startup apps, where it can be turned
-//! off as any other).
+//! off as any other). From an MSIX package (the Microsoft Store, package.rs) the registry is
+//! the package's own, which Windows never reads at sign-in: there it is the package's startup
+//! task (`SkykeepStartup` in packaging/windows/msix/AppxManifest.xml, started with
+//! `--background`), turned on and off through Windows' StartupTask API, and its state —
+//! including turned off in Task Manager or by an organization's policy — is what Settings shows.
 
 use serde::Serialize;
 use std::path::PathBuf;
@@ -100,6 +104,58 @@ pub struct LoginItem {
     /// sandbox's own config folder, which the desktop never reads, and the switch said "on"
     /// over nothing at all. There Settings says how to add it instead.
     pub available: bool,
+    /// Why the switch cannot change it here: Windows holds the package's startup task turned
+    /// off in Task Manager, or on or off by policy. `None` anywhere else.
+    pub elsewhere: Option<String>,
+}
+
+/// What Windows says of a package's startup task: its `StartupTaskState`.
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Startup {
+    Disabled,
+    DisabledByUser,
+    Enabled,
+    DisabledByPolicy,
+    EnabledByPolicy,
+}
+
+#[cfg(any(windows, test))]
+impl Startup {
+    /// From `StartupTaskState`'s value; `None` for one this build does not know.
+    pub fn from_state(state: i32) -> Option<Self> {
+        Some(match state {
+            0 => Self::Disabled,
+            1 => Self::DisabledByUser,
+            2 => Self::Enabled,
+            3 => Self::DisabledByPolicy,
+            4 => Self::EnabledByPolicy,
+            _ => return None,
+        })
+    }
+
+    /// Whether Skykeep opens at login, and why the switch cannot change that, if it cannot. A
+    /// task turned off in Task Manager can only be turned on there again: Windows refuses the
+    /// app's own request.
+    pub fn item(self) -> (bool, Option<&'static str>) {
+        match self {
+            Self::Disabled => (false, None),
+            Self::Enabled => (true, None),
+            Self::DisabledByUser => (
+                false,
+                Some("Turned off in Task Manager. To open Skykeep at login, turn it on in Task Manager’s Startup apps."),
+            ),
+            Self::DisabledByPolicy => (false, Some("Turned off by your organization.")),
+            Self::EnabledByPolicy => (true, Some("Turned on by your organization.")),
+        }
+    }
+}
+
+/// How this copy opens at login on Windows: the package's startup task when it runs with a
+/// package identity (only then does the StartupTask API answer), else the `Run` key.
+#[cfg(any(windows, test))]
+fn uses_startup_task(package_identity: bool) -> bool {
+    package_identity
 }
 
 /// Running inside a Flatpak.
@@ -219,9 +275,72 @@ fn reg(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
         .status()
 }
 
+/// The package's startup task, through Windows' own API. Each call blocks on Windows' answer,
+/// so it is made off the async runtime.
+#[cfg(windows)]
+mod startup_task {
+    use super::Startup;
+    use windows::core::HSTRING;
+    use windows::ApplicationModel::{StartupTask, StartupTaskState};
+
+    /// The TaskId in the package's manifest.
+    const ID: &str = "SkykeepStartup";
+
+    fn task() -> windows::core::Result<StartupTask> {
+        StartupTask::GetAsync(&HSTRING::from(ID))?.join()
+    }
+
+    fn known(state: StartupTaskState) -> Result<Startup, String> {
+        Startup::from_state(state.0)
+            .ok_or_else(|| format!("Windows says the startup task is in state {}.", state.0))
+    }
+
+    pub fn state() -> Result<Startup, String> {
+        let task = task().map_err(|e| e.message())?;
+        known(task.State().map_err(|e| e.message())?)
+    }
+
+    /// Asked on or off; what Windows then says, which may be other than asked (turned off in
+    /// Task Manager, or held by policy).
+    pub fn set(on: bool) -> Result<Startup, String> {
+        let task = task().map_err(|e| e.message())?;
+        if on {
+            let state = task
+                .RequestEnableAsync()
+                .and_then(|op| op.join())
+                .map_err(|e| e.message())?;
+            return known(state);
+        }
+        // Held on by policy, Disable is refused; the state read next says why.
+        if let Err(e) = task.Disable() {
+            quiet!("the startup task was not turned off: {e}");
+        }
+        known(task.State().map_err(|e| e.message())?)
+    }
+}
+
+/// The item Settings shows for the package's startup task in `state`.
+#[cfg(windows)]
+fn startup_item(state: Startup) -> LoginItem {
+    let (on, elsewhere) = state.item();
+    LoginItem {
+        on,
+        command: command(),
+        honoured: true,
+        available: true,
+        elsewhere: elsewhere.map(str::to_string),
+    }
+}
+
 #[cfg(windows)]
 #[tauri::command]
 pub async fn login_item_status(_app: AppHandle) -> Result<LoginItem, String> {
+    if uses_startup_task(crate::package::family_name().is_some()) {
+        let state = tauri::async_runtime::spawn_blocking(startup_task::state)
+            .await
+            .map_err(|e| e.to_string())??;
+        return Ok(startup_item(state));
+    }
     let on = tauri::async_runtime::spawn_blocking(|| {
         reg(&["query", RUN_KEY, "/v", RUN_VALUE]).is_ok_and(|s| s.success())
     })
@@ -232,12 +351,19 @@ pub async fn login_item_status(_app: AppHandle) -> Result<LoginItem, String> {
         command: command(),
         honoured: true,
         available: true,
+        elsewhere: None,
     })
 }
 
 #[cfg(windows)]
 #[tauri::command]
 pub async fn login_item_set(on: bool, app: AppHandle) -> Result<LoginItem, String> {
+    if uses_startup_task(crate::package::family_name().is_some()) {
+        let state = tauri::async_runtime::spawn_blocking(move || startup_task::set(on))
+            .await
+            .map_err(|e| e.to_string())??;
+        return Ok(startup_item(state));
+    }
     let line = command();
     let done = tauri::async_runtime::spawn_blocking(move || {
         if on {
@@ -267,6 +393,7 @@ pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
             command: format!("flatpak run {}", app.config().identifier),
             honoured: true,
             available: false,
+            elsewhere: None,
         });
     }
     let on = entry(&app).is_some_and(|p| p.exists());
@@ -278,6 +405,7 @@ pub async fn login_item_status(app: AppHandle) -> Result<LoginItem, String> {
         command: command(),
         honoured,
         available: true,
+        elsewhere: None,
     })
 }
 
@@ -323,6 +451,41 @@ mod tests {
 #[cfg(test)]
 mod search_launch_tests {
     use super::*;
+
+    /// Every state Windows reports for the package's startup task, as Settings shows it: on or
+    /// off, and — when Task Manager or a policy holds it — why the switch cannot change it.
+    #[test]
+    fn the_startup_task_state_as_settings_shows_it() {
+        let states: Vec<_> = (0..5).map(|i| Startup::from_state(i).unwrap()).collect();
+        assert_eq!(
+            states,
+            [
+                Startup::Disabled,
+                Startup::DisabledByUser,
+                Startup::Enabled,
+                Startup::DisabledByPolicy,
+                Startup::EnabledByPolicy
+            ]
+        );
+        assert_eq!(Startup::from_state(5), None);
+        assert_eq!(Startup::from_state(-1), None);
+        assert_eq!(Startup::Enabled.item(), (true, None));
+        assert_eq!(Startup::Disabled.item(), (false, None));
+        let (on, why) = Startup::DisabledByUser.item();
+        assert!(!on && why.unwrap().contains("Task Manager"));
+        let (on, why) = Startup::DisabledByPolicy.item();
+        assert!(!on && why.unwrap().contains("organization"));
+        let (on, why) = Startup::EnabledByPolicy.item();
+        assert!(on && why.unwrap().contains("organization"));
+    }
+
+    /// Only a copy with a package identity uses the startup task; the .exe and the .msi keep
+    /// the Run key.
+    #[test]
+    fn only_a_package_uses_the_startup_task() {
+        assert!(uses_startup_task(true));
+        assert!(!uses_startup_task(false));
+    }
 
     /// Started by a search on GNOME (no tray): no window, signed in or not. It used to show
     /// the main window — or the sign-in screen — on every search after a quit.

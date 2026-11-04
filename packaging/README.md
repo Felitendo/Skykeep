@@ -182,6 +182,8 @@ display name is "Skykeep", the name reserved there. A tag input builds that rele
 The package has the same seven Start-menu entries as the installers, each entry's ID the
 installers' app ID, so Windows knows them as `<package family name>!io.github.yashwanthkamireddi.Skykeep`,
 `…!io.github.yashwanthkamireddi.Skykeep.Notes` and so on, and the windows, toasts and jump lists
-use those (`src-tauri/src/package.rs`, `taskbar.rs`). It opens `.ics` and `.vcf` files. It never
+use those (`src-tauri/src/package.rs`, `taskbar.rs`). It opens `.ics` and `.vcf` files. Open at
+Login is the package's startup task (`SkykeepStartup`, listed in Task Manager's Startup apps),
+turned on and off through Windows' StartupTask API (`login.rs`), not the `Run` key. It never
 updates itself: a copy running from a package is the Store's to update (`updates.rs`,
 `Install::Store`), and the packed program's bundle mark says neither `.msi` nor `.exe`.

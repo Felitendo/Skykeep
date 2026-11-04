@@ -5,8 +5,10 @@
 #           the identity Partner Center gives; kept as the `skykeep-msix` artifact, unsigned, for
 #           the Store to sign. Then a copy is signed with a certificate made for this run only,
 #           installed, its seven Start-menu entries and their app IDs checked, Skykeep started
-#           from its entry and seen still running 15 s later, Notes opened from its own, and the
-#           package removed. Nothing is uploaded to the Store and nothing is published.
+#           from its entry and seen still running 15 s later, Notes opened from its own, Open at
+#           Login turned on and off through Skykeep itself (the package's startup task, read back
+#           from Windows), and the package removed. Nothing is uploaded to the Store and nothing
+#           is published.
 #
 # The identity (Partner Center → the app → Product identity) is taken from this run's inputs,
 # else from the repository variables MSIX_IDENTITY_NAME, MSIX_PUBLISHER and
@@ -165,6 +167,10 @@ jobs:
             $found
           }
 
+          # Skykeep's window open to this script, as a test drives it: WebView2's DevTools port, for
+          # the Open at Login check below. Set for the user, so the Start menu's launch has it.
+          [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222", "User")
+
           # Started as a person starts it: its Start-menu entry.
           Start-Process "shell:AppsFolder\$pfn!io.github.yashwanthkamireddi.Skykeep"
           $p = $null
@@ -198,6 +204,56 @@ jobs:
           "Notes window: app ID $id"
           $p.Refresh()
           if ($p.HasExited) { throw "Skykeep closed by itself" }
+
+          # Open at Login, as Settings' switch sets it: Skykeep's own login_item_set, run in its
+          # window. In a package it is the startup task (login.rs), never the Run key.
+          function Invoke-Skykeep([string]$command, [string]$argsJson) {
+            $targets = $null
+            for ($i = 0; $i -lt 15 -and -not $targets; $i++) {
+              try { $targets = @(Invoke-RestMethod "http://127.0.0.1:9222/json/list" | Where-Object { $_.type -eq "page" -and $_.url -like "http://tauri.localhost/*" }) } catch { Start-Sleep -Seconds 2 }
+            }
+            if (-not $targets) { throw "no Skykeep window on WebView2's DevTools port" }
+            $ws = New-Object System.Net.WebSockets.ClientWebSocket
+            $ws.ConnectAsync([uri]$targets[0].webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait()
+            $expr = "window.__TAURI_INTERNALS__.invoke('$command', $argsJson).then(r => JSON.stringify(r), e => 'ERROR ' + String(e))"
+            $msg = @{ id = 1; method = "Runtime.evaluate"; params = @{ expression = $expr; awaitPromise = $true; returnByValue = $true } } | ConvertTo-Json -Compress -Depth 5
+            $bytes = [Text.Encoding]::UTF8.GetBytes($msg)
+            $ws.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).Wait()
+            $buf = New-Object byte[] 65536
+            while ($true) {
+              $text = ""
+              do {
+                $r = $ws.ReceiveAsync([ArraySegment[byte]]::new($buf), [Threading.CancellationToken]::None).Result
+                $text += [Text.Encoding]::UTF8.GetString($buf, 0, $r.Count)
+              } until ($r.EndOfMessage)
+              $reply = $text | ConvertFrom-Json
+              if ($reply.id -eq 1) { break }
+            }
+            $ws.Dispose()
+            $value = $reply.result.result.value
+            if (-not $value -or $value.StartsWith("ERROR")) { throw "$command answered: $value $($reply | ConvertTo-Json -Compress -Depth 6)" }
+            $value | ConvertFrom-Json
+          }
+          $taskKey = "HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\SystemAppData\$pfn\SkykeepStartup"
+          function Get-TaskState { (Get-ItemProperty $taskKey -Name State -ErrorAction SilentlyContinue).State }
+          $set = Invoke-Skykeep "login_item_set" "{ on: true }"
+          "Open at Login turned on: $($set | ConvertTo-Json -Compress)"
+          if (-not $set.on -or $set.elsewhere) { throw "turned on, Skykeep says on=$($set.on), elsewhere='$($set.elsewhere)'" }
+          $read = Invoke-Skykeep "login_item_status" "{}"
+          if (-not $read.on) { throw "read back, the startup task is not Enabled: $($read | ConvertTo-Json -Compress)" }
+          "read back from Windows' StartupTask API: Enabled"
+          # 2 is StartupTaskState.Enabled, as Windows keeps it for Task Manager.
+          $state = Get-TaskState
+          "Windows' own record of the startup task: State=$state"
+          if ($state -ne 2) { throw "Windows records the startup task as State=$state, not 2 (Enabled)" }
+          $run = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name Skykeep -ErrorAction SilentlyContinue
+          if ($run) { throw "the Store install wrote the Run key, which Windows never reads for it" }
+          $off = Invoke-Skykeep "login_item_set" "{ on: false }"
+          if ($off.on) { throw "turned off, Skykeep still says on" }
+          $state = Get-TaskState
+          if ($state -eq 2) { throw "turned off, Windows still records the startup task as Enabled" }
+          "Open at Login turned off again: State=$state"
+          [Environment]::SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", $null, "User")
 
           Stop-Process -Id $p.Id
           Start-Sleep -Seconds 2

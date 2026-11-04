@@ -54,9 +54,10 @@ tauri = { version = "2", features = ["tray-icon"] }
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"
 # Each app its own taskbar button and the jump list's tasks (taskbar.rs), and whether this copy
-# is an MSIX package's (package.rs): the shell's own calls,
+# is an MSIX package's (package.rs) and its startup task (login.rs): the shell's own calls,
 # from the same build of the crate Tauri and the toasts already compile.
 windows = { version = "0.62", features = [
+    "ApplicationModel",
     "Win32_Foundation",
     "Win32_Storage_EnhancedStorage",
     "Win32_Storage_Packaging_Appx",

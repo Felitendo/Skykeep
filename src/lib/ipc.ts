@@ -1019,6 +1019,9 @@ export type LoginItem = {
   honoured: boolean;
   /** Whether Skykeep keeps the login entry itself (not in the Flatpak). */
   available?: boolean;
+  /** Why the switch can't change it: Windows holds the Store install's startup task off in
+   * Task Manager, or on or off by policy. */
+  elsewhere?: string | null;
 };
 
 export type DriveFolder = {
