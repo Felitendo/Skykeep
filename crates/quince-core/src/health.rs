@@ -54,7 +54,10 @@ impl Library {
     ///
     /// A delta cannot remove a record whose tombstone it never saw, so a full pass runs
     /// occasionally to reconcile against the whole truth. Never having done one counts as
-    /// due, which is what heals a library that predates this bookkeeping.
+    /// due, which is what heals a library that predates this bookkeeping. So does one stamped
+    /// later than now: made while the clock ran ahead (a dead RTC battery, a wrong time zone
+    /// on dual boot), it said "not due" until the clock caught up — for years, at worst, with
+    /// every record deleted elsewhere whose tombstone a delta missed still shown here.
     pub fn needs_full_sync(&self, service: &str, every_seconds: i64) -> Result<bool> {
         let last: Option<i64> = self
             .conn
@@ -65,9 +68,10 @@ impl Library {
             )
             .ok()
             .flatten();
+        let now = now();
         Ok(match last {
             None => true,
-            Some(at) => now().saturating_sub(at) >= every_seconds,
+            Some(at) => at > now || now.saturating_sub(at) >= every_seconds,
         })
     }
 
@@ -121,6 +125,22 @@ mod tests {
 
     fn library() -> Library {
         Library::in_memory().unwrap()
+    }
+
+    /// A full pass stamped in the future — the clock ran ahead when it was made, and was put
+    /// right since — is due now, not once the clock catches up with it.
+    #[test]
+    fn a_full_pass_stamped_in_the_future_is_due() {
+        let lib = library();
+        lib.mark_full_sync("drive").unwrap();
+        assert!(!lib.needs_full_sync("drive", 3600).unwrap(), "just done");
+        lib.conn
+            .execute(
+                "UPDATE sync_state SET last_full_at = ?1 WHERE service = 'drive'",
+                params![now() + 3 * 365 * 86_400],
+            )
+            .unwrap();
+        assert!(lib.needs_full_sync("drive", 3600).unwrap());
     }
 
     #[test]
