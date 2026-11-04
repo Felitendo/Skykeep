@@ -39,6 +39,20 @@ Skykeep brings your iCloud onto the computer itself. Your notes, reminders, cale
 - **Drive as a folder.** On Linux, iCloud Drive and Photos also appear as real folders in your file manager.
 - **Yours.** Open source, no Skykeep account, no analytics. Export everything whenever you like.
 
+## At a glance
+
+| | Linux | Windows |
+|---|:-:|:-:|
+| Notes, Reminders, Calendar, Contacts, iCloud Drive and Photos | ✅ | ✅ |
+| Kept on your computer: opens instantly, works offline, in sync with your iPhone | ✅ | ✅ |
+| Reminder alerts with Complete and Snooze | ✅ | ✅ |
+| Its own launcher or Start-menu entry for each app | ✅ | ✅ |
+| Tray icon and quick capture | ✅ | ✅ |
+| Export Everything to Markdown, iCalendar and vCard | ✅ | ✅ |
+| Updates itself | ✅ AppImage | ✅ |
+| iCloud Drive and Photos as folders in your file manager | ✅ | In the app |
+| Notes, reminders and contacts in system search | ✅ GNOME, KDE | |
+
 ## Features
 
 <table>
@@ -216,7 +230,7 @@ Windows 10 or 11. Or a Linux desktop with WebKitGTK 4.1 and a keyring (GNOME Key
 
 ### Staying up to date
 
-The Windows installer and the AppImage keep Skykeep current on their own. A new version appears as a notice with **Update and Restart**. It installs only after it passes its signature check, and never while a change is still on its way to iCloud or while you're typing. The `.deb`, `.rpm`, AUR and Flatpak copies update through your package manager.
+The Windows installer and the AppImage keep Skykeep current on their own. A new version appears as a notice with **Update and Restart**. It installs only after it passes its signature check, and never while a change is still on its way to iCloud or while you're typing. For the `.deb` or `.rpm`, install a new version from the [Releases page](https://github.com/YashwanthKamireddi/Skykeep/releases/latest) over the old one; your library and sign-in stay.
 
 **Settings ▸ Software Update** has **Check for Updates**, and a switch for the daily automatic check.
 

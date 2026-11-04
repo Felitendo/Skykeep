@@ -20,8 +20,8 @@ Skykeep's own updates:
 - `github.com`, then `release-assets.githubusercontent.com` (or
   `objects.githubusercontent.com`), where GitHub serves release files — only in a copy
   installed from the AppImage, the Windows installer or the `.msi`, to check for a new version
-  of Skykeep and, when you choose **Update and Restart**, to download it. A `.deb`, `.rpm`,
-  AUR or Flatpak copy never contacts GitHub: its package manager updates it.
+  of Skykeep and, when you choose **Update and Restart**, to download it. A `.deb` or `.rpm`
+  copy never contacts GitHub: you install new versions from the Releases page yourself.
 
 Each of these is reached by a connection that can reach its own hosts and nothing else,
 enforced in code rather than promised:
