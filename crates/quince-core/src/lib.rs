@@ -10,6 +10,7 @@ pub mod changes;
 pub mod contacts;
 pub mod drive;
 pub mod export;
+pub mod files;
 pub mod fold;
 pub mod health;
 pub mod notes;

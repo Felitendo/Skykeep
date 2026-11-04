@@ -792,7 +792,7 @@ async fn note_attachment_open(
             .await
             .map_err(|e| e.to_string())?;
     }
-    tokio::fs::rename(&partial, &path)
+    move_into_place(&partial, &path)
         .await
         .map_err(|e| e.to_string())?;
     saving::mark_from_internet(&path);
@@ -5409,6 +5409,19 @@ fn photo_path(dir: &std::path::Path, guid: &str, signature: &str) -> PathBuf {
     // "faces": the folder before held pictures cut with the crop read upside down, and is
     // never read again.
     dir.join("faces").join(format!("{guid_safe}-{safe}"))
+}
+
+/// A file just written renamed to its own name, waiting while Windows holds it — the virus
+/// scanner looks at each new file as it is closed, and a rename meanwhile is refused
+/// (quince_core::files). Off the async threads: the wait is a sleep.
+pub(crate) async fn move_into_place(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<()> {
+    let (from, to) = (from.to_path_buf(), to.to_path_buf());
+    tokio::task::spawn_blocking(move || quince_core::files::rename(&from, &to))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 /// Write `bytes` to `path` whole or not at all: to a file of its own beside it, then renamed

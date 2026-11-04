@@ -37,6 +37,11 @@ pub const CANCELLED: &str = "Export cancelled.";
 /// and may clear it — and nothing else.
 const MARKER: &str = ".skykeep-export";
 
+/// How long the finished export's folder waits to be renamed into place while Windows holds a
+/// file in it: a scan of the last large videos written can take a while, and the alternative
+/// is an export of hours thrown away at its very last step.
+const EXPORT_HELD_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static CANCEL: AtomicBool = AtomicBool::new(false);
 /// The last finished export, the one folder Show in Folder may show.
@@ -744,7 +749,10 @@ pub(crate) fn run(
         if cancel.load(Ordering::Relaxed) {
             return Err(Stop::Cancelled);
         }
-        std::fs::rename(&partial, &fin)?;
+        // On Windows a folder cannot be renamed while any file in it is open, and the files
+        // just written are being scanned (Defender), indexed, or made thumbnails of: the
+        // rename is tried again until they let go, rather than the whole export thrown away.
+        quince_core::files::rename_within(&partial, &fin, EXPORT_HELD_FOR)?;
         summary.path = fin.to_string_lossy().into_owned();
         Ok(summary)
     })();

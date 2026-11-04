@@ -312,8 +312,15 @@ pub async fn download_to(
             Ok(())
         }
         // A filesystem without links — a FAT or exFAT drive — takes a rename, checked first.
+        // So does a file Windows holds for a moment (the virus scanner, looking at it as it was
+        // closed): the rename waits for it to be let go (quince_core::files).
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists && !destination.exists() => {
-            tokio::fs::rename(&partial, destination).await.map_err(|e| {
+            let (from, to) = (partial.clone(), destination.to_path_buf());
+            let moved = tokio::task::spawn_blocking(move || quince_core::files::rename(&from, &to))
+                .await
+                .map_err(std::io::Error::other)
+                .and_then(|r| r);
+            moved.map_err(|e| {
                 let _ = std::fs::remove_file(&partial);
                 e.into()
             })

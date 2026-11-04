@@ -1098,8 +1098,11 @@ pub async fn fetch_to_file(
             "the picture broke off: {e}"
         )));
     }
-    tokio::fs::rename(&partial, path)
+    // Waiting while Windows holds the file just written (quince_core::files).
+    let (from, to) = (partial.clone(), path.to_path_buf());
+    tokio::task::spawn_blocking(move || quince_core::files::rename(&from, &to))
         .await
+        .map_err(|e| crate::Error::Protocol(e.to_string()))?
         .map_err(|e| crate::Error::Protocol(e.to_string()))?;
     Ok(true)
 }

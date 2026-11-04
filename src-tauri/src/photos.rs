@@ -406,7 +406,7 @@ async fn heic_full(app: &AppHandle, id: &str, path: &std::path::Path) -> Result<
     tokio::fs::write(&part, &jpeg)
         .await
         .map_err(|e| e.to_string())?;
-    tokio::fs::rename(&part, path)
+    crate::move_into_place(&part, path)
         .await
         .map_err(|e| e.to_string())?;
     crate::photo_cache::hold(path);
@@ -2334,7 +2334,7 @@ pub async fn photo_download(
         return Err(e);
     }
     drop(out);
-    tokio::fs::rename(&part, &path)
+    crate::move_into_place(&part, &path)
         .await
         .map_err(|e| e.to_string())?;
     crate::saving::mark_from_internet(&path);
